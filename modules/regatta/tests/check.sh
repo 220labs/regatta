@@ -87,6 +87,9 @@ check "$(py 'print(common.config_line("regatta/owner"))') $(jp 'print(j.WHO)')" 
 check "$(py 'print(common.DECLARED_LINE)')" "KAPITÄN, THIS SESSION IS DONE — IT LANDS BY ITSELF." "regatta/owner: the closing lines address it, upper-cased"
 check "$(py 'print(common.closing_kind("KAPITÄN, THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION. THE WORK CONTINUES IN THE NEW TAB."), common.closing_kind("THIS SESSION IS DONE — IT LANDS BY ITSELF."))')" "done None" "  every pattern opens with it; the unaddressed line is none"
 check "$(py 'print(common.ending("x\nKAPITÄN, THIS SESSION IS DUN")[2])')" "('unknown', 'KAPITÄN, THIS SESSION IS DUN')" "  an addressed line that is no closing line: unknown"
+check "$(py 'print(common.DECLARED_LINES[0]); print(common.DECLARED_LINE in common.DECLARED_LINES)')" "KAPITÄN, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.
+True" "the rename's declared lines: the new one addressed too, the old one still among them"
+check "$(py 'print(common.closing_kind("KAPITÄN, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF."), common.closing_kind("KAPITÄN, THIS SESSION IS DONE — IT LANDS BY ITSELF."))')" "done done" "  both read as done"
 check "$(py 'print(bool(common.ASK_EXEMPT_RE.search("the next step waits for kapitän to start it")))')" "True" "  the chain-depth line names it, any case"
 mkdir -p "$T/af"; printf '{"by": "kapitän"}' > "$T/af/autofinish"
 check "$(py 'print(common.autofinish_override("'"$T/af"'"))')" "{'by': 'kapitän'}" "  /autofinish's marker by it, lower-cased: an override"
@@ -130,6 +133,16 @@ check "$(cpy "$T" 'print(common.tool("finish-x"))')" "None" "  cwd outside the p
 check "$(cpy "$T/proj" 'print(common.module_path("wharf"))')" "$T/cache/wharf/1" "  module_path() reads the same row"
 mkdir "$T/gonecwd"
 check "$(cd "$T/gonecwd" && rmdir "$T/gonecwd" && CLAUDE_CONFIG_DIR="$CC" python3 -I -c "import sys; sys.path.insert(0, '$T/cache-core/hooks'); import common; print(common.tool('nope'))" 2>&1)" "None" "  a removed cwd: None, no traceback"
+
+echo "the rename's readers (both words count)"
+old='2026-10-18T10:00:00-07:00 run r claude/x landed pr=#3 session=s tip=t rule=C by=sweep — ok'  # the old word, kept beside launched: the map keeps a line holding both
+new='2026-10-18T10:00:00-07:00 run r claude/x launched pr=#3 session=s tip=t rule=C by=sweep account=a — ok'
+check "$(py "print(bool(common.RUN_LAUNCHED.match('$old')), bool(common.RUN_LAUNCHED.match('$new')), common.RUN_LANDED is common.RUN_LAUNCHED)")" "True True True" "RUN_LAUNCHED reads an old and a new run line; RUN_LANDED is its old name"
+check "$(py 'print(common.autofinish_outcome({"outcome": "landed", "pr": 3})); print(common.autofinish_outcome({"outcome": "launched", "pr": 4}))')" "this branch landed as #3
+this branch landed as #4" "autofinish_outcome: both words merged the branch (the message is unchanged)"
+mkdir -p "$T/cd/claude"; printf '2026-10-18T10:00 landed claude/a #1\n2026-10-18T11:00 launched claude/b #2\n' > "$T/cd/claude/autofinished"
+check "$(py 'print([(e["outcome"], common.autofinished_phrase(e)) for e in common.autofinished("'"$T/cd"'")])')" "[('landed', 'claude/a landed as #1'), ('launched', 'claude/b landed as #2')]" "  autofinished and its phrase take both"
+check "$(py 'print(common.REFUSED_GATES)')" "('refused', 'not-launched')" "REFUSED_GATES: the gate word and its old one"
 
 echo "the CLI"
 check "$("$RG" root)" "$ROOT" "regatta root"
