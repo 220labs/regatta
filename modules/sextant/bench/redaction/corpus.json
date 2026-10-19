@@ -1,0 +1,597 @@
+{
+ "about": "Synthetic voice-memo transcripts, written 2026-10-04 for docs/idea-redaction-2026-10-04.md. Every person, number, address and secret is invented. cats: the gold categories (empty = not sensitive); hard: needs context, or looks sensitive but is not.",
+ "transcripts": [
+  {
+   "id": "t1",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "Okay, so the idea is a lunchbox that kids can customise with stickers they print at home.",
+     "cats": []
+    },
+    {
+     "text": "We could sell the base box for about twenty dollars and the sticker packs for five.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Max said his sister's company already makes something similar, but they're struggling.",
+     "cats": [
+      "person"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Honestly she's going through a divorce right now, so don't mention it to her.",
+     "cats": [
+      "person",
+      "off-record"
+     ]
+    },
+    {
+     "text": "Anyway, the printing would go through a print-on-demand service.",
+     "cats": []
+    },
+    {
+     "text": "The card number for the test merchant is 4417 1234 5678 9113.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "And the API key I set up yesterday is sk-live-9f8a7b6c5d4e3f2a1b0c.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Target market is parents of kids between four and ten.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "My daughter would love it, she's in second grade at Lincoln Elementary on Oak Street.",
+     "cats": [
+      "family",
+      "place"
+     ]
+    },
+    {
+     "text": "Let's do a first batch of fifty and see.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "So about going international, I think San Francisco is the obvious first market.",
+     "cats": []
+    },
+    {
+     "text": "We'd need to hire at least two engineers there.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "My current employer is planning layoffs in November, which is not public yet.",
+     "cats": [
+      "work"
+     ]
+    },
+    {
+     "text": "If that happens I'd take the package and go full time on this.",
+     "cats": [
+      "work"
+     ],
+     "hard": true
+    },
+    {
+     "text": "My salary there is a hundred and eighty thousand, so I need the venture to cover at least half.",
+     "cats": [
+      "money"
+     ]
+    },
+    {
+     "text": "Don't put this in the notes, but I already interviewed with their competitor.",
+     "cats": [
+      "off-record",
+      "work"
+     ]
+    },
+    {
+     "text": "The visa situation is complicated for me because my green card is still pending.",
+     "cats": [
+      "legal"
+     ]
+    },
+    {
+     "text": "The case number is IOE0912345678.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Office space in the Mission is around four thousand a month.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Let's check what Stripe Atlas costs for incorporation.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "Quick one before I forget.",
+     "cats": []
+    },
+    {
+     "text": "Dad had the biopsy on Tuesday.",
+     "cats": [
+      "health"
+     ]
+    },
+    {
+     "text": "The results came back yesterday and it's not good.",
+     "cats": [
+      "health"
+     ],
+     "hard": true
+    },
+    {
+     "text": "He starts treatment next month, so I might be travelling a lot.",
+     "cats": [
+      "health"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Which is why the app idea matters: a shared calendar for families coordinating care.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Something simple, like who drives to which appointment.",
+     "cats": []
+    },
+    {
+     "text": "I've been on antidepressants since spring and my focus is not great.",
+     "cats": [
+      "health"
+     ]
+    },
+    {
+     "text": "So the build has to be really small.",
+     "cats": []
+    },
+    {
+     "text": "Maybe we pitch it to the hospital where he's treated, St. Mary's in Portland.",
+     "cats": [
+      "place",
+      "health"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Let's talk about it Thursday.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t4",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "The landlord is threatening to sue us over the deposit.",
+     "cats": [
+      "legal"
+     ]
+    },
+    {
+     "text": "We owe him about eleven thousand in back rent, which I haven't told anyone.",
+     "cats": [
+      "money",
+      "off-record"
+     ]
+    },
+    {
+     "text": "The lawyer says we'd probably settle.",
+     "cats": [
+      "legal"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Totally unrelated, I want to build a tool that reads leases and flags bad clauses.",
+     "cats": []
+    },
+    {
+     "text": "It could charge nine dollars per lease.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "We live at 42 Harbour Road, flat 3, so the lease is right here to test with.",
+     "cats": [
+      "place"
+     ]
+    },
+    {
+     "text": "My password for the landlord portal is Sunflower!2024, by the way, save it somewhere.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Public figures like Elon Musk tweet about leases all the time, that's free marketing.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Okay, end of memo.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t5",
+   "lang": "ru",
+   "sentences": [
+    {
+     "text": "Короче, идея такая: приложение, которое переводит сказки на йоруба и озвучивает их.",
+     "cats": []
+    },
+    {
+     "text": "Можно брать по три доллара за книжку.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "У Лены, моей соседки, сын аутист, и она говорит, что такие книжки ему очень помогают.",
+     "cats": [
+      "person",
+      "health"
+     ]
+    },
+    {
+     "text": "Только не говори никому, она просила держать это в секрете.",
+     "cats": [
+      "off-record"
+     ]
+    },
+    {
+     "text": "Пилот можно сделать в школе номер пятьдесят семь на Ленинском проспекте, куда ходит моя дочь.",
+     "cats": [
+      "place",
+      "family"
+     ]
+    },
+    {
+     "text": "Мой номер паспорта 4510 123456, мне его надо для регистрации компании.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Регистрацию компании лучше делать в Делавэре.",
+     "cats": []
+    },
+    {
+     "text": "Я сейчас должен банку около двух миллионов рублей по ипотеке.",
+     "cats": [
+      "money"
+     ]
+    },
+    {
+     "text": "Ладно, это всё, потом обсудим.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t6",
+   "lang": "ru",
+   "sentences": [
+    {
+     "text": "Слушай, по поводу нового проекта.",
+     "cats": []
+    },
+    {
+     "text": "На работе у нас готовится слияние с конкурентом, это пока закрытая информация.",
+     "cats": [
+      "work"
+     ]
+    },
+    {
+     "text": "Если сделка пройдёт, мой отдел сократят.",
+     "cats": [
+      "work"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Поэтому я хочу запустить свою штуку до конца года.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Юрист сказал, что неконкурентное соглашение у меня в контракте, скорее всего, не действует.",
+     "cats": [
+      "legal"
+     ]
+    },
+    {
+     "text": "Зарплата у меня сейчас триста тысяч в месяц.",
+     "cats": [
+      "money"
+     ]
+    },
+    {
+     "text": "Рынок онлайн-образования в России оценивают в сто миллиардов рублей.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Мама опять в больнице с давлением, так что я на этой неделе мало что сделаю.",
+     "cats": [
+      "health"
+     ]
+    },
+    {
+     "text": "Пароль от общего аккаунта: Kotik_1987.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Всё, до связи.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t7",
+   "lang": "ru",
+   "sentences": [
+    {
+     "text": "Идея для вечеринки: сделать квест в амбаре.",
+     "cats": []
+    },
+    {
+     "text": "Позвать человек тридцать, купить гирлянды.",
+     "cats": []
+    },
+    {
+     "text": "Мы с женой сейчас на грани развода, так что, может, это последняя общая вечеринка.",
+     "cats": [
+      "family"
+     ]
+    },
+    {
+     "text": "Но это между нами.",
+     "cats": [
+      "off-record"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Квест можно сделать про космос, детям понравится.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Адрес амбара: деревня Сосновка, улица Лесная, дом семь.",
+     "cats": [
+      "place"
+     ]
+    },
+    {
+     "text": "Бюджет на всё — тысяч пятьдесят рублей.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Ладно, записывай.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t8",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "Thinking about the agent orchestrator again.",
+     "cats": []
+    },
+    {
+     "text": "The thing with Tom is getting worse, he's drinking again and missed two weeks.",
+     "cats": [
+      "person",
+      "health"
+     ]
+    },
+    {
+     "text": "I'm not going to say more on that.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Technically the orchestrator needs a queue and a lock per machine.",
+     "cats": []
+    },
+    {
+     "text": "My Google login is test.owner@example.com, and the recovery code is 7731-0042-9918.",
+     "cats": [
+      "secret"
+     ]
+    },
+    {
+     "text": "Max wants the equity split sixty forty, I want fifty fifty.",
+     "cats": [
+      "money"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Our runway is about four months of savings.",
+     "cats": [
+      "money"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Let's ship the MVP by December.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t9",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "You know what happened with Kate last spring, well, it's happening again.",
+     "cats": [
+      "person"
+     ],
+     "hard": true
+    },
+    {
+     "text": "So she won't be around for the launch.",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "I'll record the demo after my appointment with Dr. Weiss on Friday.",
+     "cats": [
+      "health"
+     ],
+     "hard": true
+    },
+    {
+     "text": "The code for the shared vault ends in 4471, the rest is in my head.",
+     "cats": [
+      "secret"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Pricing-wise, we said nineteen a month, right?",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "Also the kids are with their mum this week, so evenings are free.",
+     "cats": [
+      "family"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Which honestly after the custody hearing is a miracle.",
+     "cats": [
+      "legal",
+      "family"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Anyway, let's use Postgres, not SQLite.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t10",
+   "lang": "mixed",
+   "sentences": [
+    {
+     "text": "Короче, по orchestrator, нужен lock per machine, это понятно.",
+     "cats": []
+    },
+    {
+     "text": "А, и Серёга опять пропал, у него там с бутылкой проблемы, ты знаешь.",
+     "cats": [
+      "person",
+      "health"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Его доля в проекте — пятнадцать процентов, надо решать, что с этим делать.",
+     "cats": [
+      "money",
+      "person"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Деплой делаем на Fly, там дешевле.",
+     "cats": []
+    },
+    {
+     "text": "Мой рабочий ноут под NDA, так что код только с личного.",
+     "cats": [
+      "work"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Ну и последнее: пусть это останется у нас, ладно?",
+     "cats": [
+      "off-record"
+     ],
+     "hard": true
+    },
+    {
+     "text": "Всё, отбой.",
+     "cats": []
+    }
+   ]
+  },
+  {
+   "id": "t11",
+   "lang": "en",
+   "sentences": [
+    {
+     "text": "so the thing is the tool should read the whole inbox and sort it by who wrote and I think we start with gmail because that's where everything is and then later outlook",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "and the reason I care is my boss keeps emailing at midnight about the reorg that nobody is supposed to know about and I miss stuff from the kids' school",
+     "cats": [
+      "work",
+      "family"
+     ],
+     "hard": true
+    },
+    {
+     "text": "anyway we could charge like twelve bucks and see if anyone bites",
+     "cats": [],
+     "hard": true
+    },
+    {
+     "text": "oh and remind me the pin for the garage is two two eight one",
+     "cats": [
+      "secret"
+     ],
+     "hard": true
+    },
+    {
+     "text": "okay that's it",
+     "cats": []
+    }
+   ]
+  }
+ ]
+}

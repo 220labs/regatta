@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# sextant's check: Sparks' suite (scratch dirs, stub whisper and claude, a fake GitHub remote and a
+# fake TypeSafe server; no network, no model), the redaction bench's --help (it loads the core
+# through common.tool(), G37), the launcher template compiled once with its two defines, and
+# install.sh's syntax. The suite needs macOS (`say`, `afconvert`): elsewhere it is skipped with one
+# printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish).
+# `sparks --help` prints its usage and an unknown argument exits 2 before anything runs (both
+# checked below); a bare `sparks` is still a live pass on the Mac's own config.
+#   bash modules/sextant/tests/check.sh            SPARKS_SUITE=0 skips the suite (about 6 min)
+set -u
+D="$(cd "$(dirname "$0")/.." && pwd)"
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+rc=0
+echo "== sparks"
+if [ "${SPARKS_SUITE:-1}" = 0 ]; then echo "  skipped: SPARKS_SUITE=0"
+elif [ "$(uname)" = Darwin ]; then bash "$D/tests/sparks.sh" || rc=1
+else echo "  skipped: the suite needs macOS (say, afconvert)"; fi
+echo "== the rest"
+ok() { if [ "$1" = 0 ]; then echo "  ok   $2"; else echo "  FAIL $2"; rc=1; fi; }
+python3 "$D/bench/redaction/run.py" --help >/dev/null; ok $? "bench/redaction/run.py --help finds the core"
+python3 -c "import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]" "$D/bin/sparks" "$D/bin/redactions"; ok $? "bin/sparks and bin/redactions parse"
+python3 "$D/bin/sparks" --help | grep -q 'sparks --route'; ok $? "sparks --help prints its usage"
+python3 "$D/bin/sparks" --bogus >/dev/null 2>&1; [ $? = 2 ]; ok $? "sparks refuses an unknown argument, running nothing"
+# the employer-org filter: only the knowledge repo's GitHub owner routes; with none, no GitHub repo does
+mkdir -p "$T/p/mine/.git" "$T/p/work/.git" "$T/p/local/.git" "$T/p/vault/.git"
+echo '{"repos": {"vault": {"knowledge": true, "github": "me/vault"}, "mine": {"github": "me/mine"}, "work": {"github": "corp/work"}, "local": {}}}' >"$T/r1.json"
+echo '{"repos": {"mine": {"github": "me/mine"}, "local": {}}}' >"$T/r2.json"
+cands() { SPARKS_CONFIG="$T/none.json" SPARKS_REPOS="$T/$1" SPARKS_PROJECTS="$T/p" python3 -c "
+import sys; from importlib.machinery import SourceFileLoader; sys.argv = ['sparks']
+print(' '.join(sorted(SourceFileLoader('sparks', '$D/bin/sparks').load_module().candidates())))"; }
+[ "$(cands r1.json)" = "local mine vault" ]; ok $? "routing skips another owner's repo"
+[ "$(cands r2.json)" = "local" ]; ok $? "  and every GitHub repo when no knowledge repo names an owner"
+# `redactions audit` and `trial` reach the classifier through classify_sentences(), not gate_ready():
+# it refuses on its own, before any request, without sextant/source or the vendor's quote
+C="$T/c"; mkdir -p "$C/regatta" "$T/proj" "$T/logs"; touch "$C/legacy"
+echo me >"$C/regatta/owner"; echo _vault >"$C/regatta/guarded"; echo none >"$C/regatta/orca-deny"
+echo "$T/logs" >"$C/regatta/log-dir"; echo "$T/proj" >"$C/regatta/projects"
+echo '{"sites": {"sparks.redact": {"kind": "classify", "provider": "jev", "when_off": "fail"}}}' >"$C/regatta/models.json"
+echo '{"redact_approved": {"typesafe": "ok"}}' >"$T/quoted.json"; echo '{}' >"$T/unquoted.json"
+classify() { REGATTA_CONFIG="$C" SPARKS_CONFIG="$T/$1" TYPESAFE_BASE_URL=http://127.0.0.1:9 TYPESAFE_API_KEY=x python3 -c "
+import sys; from importlib.machinery import SourceFileLoader; sys.argv = ['sparks']
+m = SourceFileLoader('sparks', '$D/bin/sparks').load_module()
+try: m.classify_sentences({'a': 'hello there.'}); print('sent')
+except m.gate.GateError as e: print(e)" 2>&1; }
+classify quoted.json | grep -q 'sextant/source is missing'; ok $? "redaction refuses without sextant/source"
+echo _vault >"$C/sextant-source.tmp"; mkdir -p "$C/sextant"; mv "$C/sextant-source.tmp" "$C/sextant/source"
+classify unquoted.json | grep -q 'redact_approved has no'; ok $? "  and without the vendor's quote"
+[ -z "$(ls -A "$T/logs")" ]; ok $? "  having sent nothing"
+# launcher.c.in is macOS-only (setiopolicy_np): CI's ubuntu has a cc too (review, 2026-10-19)
+if [ "$(uname)" = Darwin ] && command -v cc >/dev/null 2>&1; then
+  cc -O2 -Wall -Werror -x c -DSPARKS_SCRIPT='"/x/sparks"' -DSPARKS_CONFIG_PATH='"/x/c.json"' -o "$T/l" "$D/launcher.c.in" 2>"$T/cc.err"
+  ok $? "launcher.c.in compiles with its two defines"
+  ! cc -x c -o "$T/l2" "$D/launcher.c.in" 2>/dev/null; ok $? "  and refuses to without them"
+else echo "  skipped: launcher.c.in is macOS-only (or no cc)"; fi
+sh -n "$D/install.sh"; ok $? "install.sh parses"
+sh "$D/install.sh" --bogus >/dev/null 2>&1; [ $? = 2 ]; ok $? "install.sh refuses an unknown verb"
+exit $rc

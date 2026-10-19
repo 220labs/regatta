@@ -1,0 +1,100 @@
+/*
+ * The Sparks launcher — the program launchd starts to file ideas (Sextant's intake). A template:
+ * install.sh --launcher builds it with the two paths it may run as build-time defines,
+ *
+ *     cc -O2 -DSPARKS_SCRIPT='"<checkout>/modules/sextant/bin/sparks"' \
+ *            -DSPARKS_CONFIG_PATH='"<config dir>/sextant/sparks.json"' -o <bin> launcher.c.in
+ *
+ * and signs it ad hoc. An overlay may keep a launcher of its own; this one is for a stranger.
+ *
+ * Why a compiled launcher instead of python3 in the plist: macOS keeps a launchd job out of
+ * iCloud Drive and Google Drive ("Operation not permitted") unless the job has Full Disk Access,
+ * and TCC grants it to the *responsible process* — for a launchd job, the program the job starts.
+ * Granting it to /usr/bin/python3 would hand it to every Python script on the Mac; granting it to
+ * `claude` breaks at every update, because the grant is on a versioned file. This binary is the
+ * one thing the grant names.
+ *
+ * It runs exactly one script, SPARKS_SCRIPT, with HOME read from the account (never the
+ * environment) and a fixed environment: only WHISPER_BIN, WHISPER_MODEL, WHISPER_VAD and TMPDIR
+ * pass through from launchd, so CLAUDE_BIN, PUBLISH_BIN or PYTHONPATH cannot point the grant at
+ * something else. That stops accidents, not intent: the script is writable by the same user. It
+ * SPAWNS python as a child, never execs it: exec replaces the image and the process would present
+ * as python to TCC; a child inherits its parent's responsibility.
+ *
+ * It sets SPARKS_NOTES=1, the one way sparks asks Apple Notes for anything (bin/sparks, "Apple
+ * Notes"): the Automation grant (launcher → Notes) is this binary's alone; a run from a terminal
+ * would ask macOS to grant Notes to the terminal instead.
+ *
+ * It also turns on materialising dataless files for itself and its children. A launchd job
+ * inherits the default OFF, so a read of a recording iCloud or Drive has not downloaded yet fails
+ * with EDEADLK, Full Disk Access or not (man setiopolicy_np); recordings from a phone arrive
+ * exactly that way.
+ *
+ * TCC keys an ad-hoc signature on its code hash, so a rebuild needs both grants again —
+ * install.sh rebuilds only when this source, the two paths or the signing identifier changed
+ * (its stamp), and says so.
+ *
+ * Usage: <launcher> <sparks args...>      (the plist passes --chain)
+ */
+#ifndef SPARKS_SCRIPT
+#error "build with -DSPARKS_SCRIPT='\"/path/to/modules/sextant/bin/sparks\"' (install.sh --launcher)"
+#endif
+#ifndef SPARKS_CONFIG_PATH
+#error "build with -DSPARKS_CONFIG_PATH='\"/path/to/sparks.json\"' (install.sh --launcher)"
+#endif
+#include <errno.h>
+#include <pwd.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+static pid_t child = 0;
+static const char *PASS[] = {"WHISPER_BIN=", "WHISPER_MODEL=", "WHISPER_VAD=", "TMPDIR=", NULL};
+
+static void forward(int sig) {
+    if (child > 0) kill(child, sig);
+}
+
+int main(int argc, char **argv) {
+    struct passwd *pw = getpwuid(getuid());
+    if (!pw || !pw->pw_dir || !*pw->pw_dir) {
+        fprintf(stderr, "sparks launcher: no home directory for this user\n");
+        return 2;
+    }
+    const char *home = pw->pw_dir;
+    static char e_home[4200], e_user[512], e_path[4400], e_config[4300];
+    snprintf(e_home, sizeof e_home, "HOME=%s", home);
+    snprintf(e_user, sizeof e_user, "USER=%s", pw->pw_name);
+    snprintf(e_path, sizeof e_path, "PATH=/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin:/opt/homebrew/bin:/usr/local/bin", home);
+    snprintf(e_config, sizeof e_config, "SPARKS_CONFIG=%s", SPARKS_CONFIG_PATH);
+    char *env[16] = {e_home, e_user, e_path, e_config, "LANG=en_US.UTF-8", "SPARKS_NOTES=1", NULL};
+    int n = 6;
+    for (char **e = environ; *e && n < 15; e++)
+        for (const char **k = PASS; *k; k++)
+            if (strncmp(*e, *k, strlen(*k)) == 0) { env[n++] = *e; break; }
+    env[n] = NULL;
+    if (setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS,
+                       IOPOL_MATERIALIZE_DATALESS_FILES_ON) != 0)
+        perror("sparks launcher: setiopolicy_np");
+    char **args = calloc((size_t)argc + 3, sizeof(char *));
+    args[0] = "/usr/bin/python3";
+    args[1] = "-u";
+    args[2] = SPARKS_SCRIPT;
+    for (int i = 1; i < argc; i++) args[i + 2] = argv[i];
+    if (chdir(home) != 0) { perror("chdir"); return 1; }
+    signal(SIGTERM, forward);
+    signal(SIGINT, forward);
+    int rc = posix_spawn(&child, args[0], NULL, NULL, args, env);
+    if (rc != 0) { fprintf(stderr, "sparks launcher: spawn: %s\n", strerror(rc)); return 1; }
+    int status = 0;
+    /* only EINTR is retried: any other error (ECHILD with SIGCHLD ignored) would spin forever */
+    while (waitpid(child, &status, 0) < 0)
+        if (errno != EINTR) { perror("sparks launcher: waitpid"); return 1; }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}

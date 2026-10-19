@@ -1,0 +1,2198 @@
+#!/usr/bin/env python3
+"""Voice memos → one note per memo, filed into the project it belongs to (Atlas D16, D18).
+
+Named sparks since 2026-10-07 — the ship's radio operator, beside sextant — because two things
+were called memo (bin/keel answers D-lists); it was memo-run. Its shim went 2026-10-19, once
+the always-on Mac's launcher ran bin/sparks itself; the old state directory is read once (old_state()).
+Part of the sextant module since 2026-10-19 (Sextant's ideas intake): the module's README is the
+how-to, launcher.c.in and install.sh beside it the launcher a stranger builds.
+
+    sparks [--dry-run] [--limit N] [--verbose]
+    sparks --session-start          runs the pass detached (--background); no hook calls it since 2026-10-03
+    sparks --route <note.md>        where would this note go? prints the decision, lands nothing
+    sparks --chain                  this config's pass, then each `also` config's (what a watcher runs)
+    sparks --inboxes                the inbox of this config and of each `also` config, one per line
+
+Reads the folder a Shortcut drops recordings into, transcribes each new one on this Mac, asks
+Claude to turn the transcript into a note, asks Claude again — read-only — which project and
+folder the note belongs in, and files it there. Nothing is deleted: the audio moves to an
+archive outside every repo, and whatever the note proposes binning waits for a human.
+In a split config, a written note (.txt, .md, .rtf, .html, 2026-10-07) takes the same path with
+its words as the transcript: no whisper, no transcript copy, and `source: written note` on what it
+files. With `"apple_notes"` (2026-10-08) the pass first exports each settled note of one Apple Notes
+folder into its inbox and moves the note to a second folder, so an idea is written in Notes on any
+device (the section "Apple Notes" below). With `"voice_memos"` (2026-10-16) it first copies each new
+recording of this Mac's Voice Memos library into its inbox — an Action Button set to Voice Memo,
+on a phone or a watch, is then the whole capture (the section "Voice Memos"); `"notify"` texts the
+owner when a recording arrives and when it is filed (the section "notify").
+
+**This file is the mechanism; the content is not here.** Which folders and the prompts that
+shape and route the note come from a config file: $SPARKS_CONFIG, else `sextant/sparks.json` in the
+regatta config dir ($REGATTA_CONFIG, else ~/.config/regatta; an installer links it to a file in a
+private vault, never in this repo, 2026-09-18). Without a config it says so and exits; nothing here knows
+whose memos these are. Which model shapes and routes is one row each in `settings/models.json`
+(`sparks.shape`, `sparks.route`), read through `bin/gate` (docs/model-gate-2026-10-04.md);
+a `model` left in a config is ignored. Shaping off fails (the audio waits); routing off skips
+(the note lands in the inbox, unrouted).
+
+    {
+      "inbox":   "~/…/CloudDocs/VoiceMemos",   // where the Shortcut drops audio
+      "notes":   "~/projects/vault/inbox/memos",
+      "archive": "~/audio-archive",            // outside every repo: audio is not text
+      "prompt":  "memo-prompt.md",             // relative to the config file
+      "language": "auto", "commit": true,
+      "host":    "studio",                     // the one Mac that runs it (iCloud reaches both)
+      "route":   true,                         // D18: file into projects, not only the inbox
+      "land":    "merge",                      // "merge" | "pr" — see Landing below
+      "route_prompt": "memo-route.md",         // optional; the built-in one is generic
+      "deny":    ["vault/me/"],                // never file under these, on top of DENY_*
+      "also":    ["ideas.json"]                // more configs; --session-start runs each too
+    }
+
+A second config can file one note per topic instead (the ideas pipeline,
+docs/record/ideas-pipeline-2026-10-02.md): `"split": "topics"` writes each `###` under `## Topics` as
+its own note with `status: new` and the `Tags:` line as frontmatter, and never routes;
+`"transcript": "archive"` keeps the verbatim text beside the archived audio, not in a note;
+`"publish": "vault"` hands what the pass wrote to the lighthouse module's `publish` (absent: a log
+line, the note still filed); `"source"` and `"label"` name the
+notes and the commit. Give each config its own `state` (and so its own lock); the default is
+shared. `--session-start` runs the configs one after another in one detached child (`--chain`).
+A file one inbox already filed is archived, not filed again, by any other config whose state
+sits in the same directory and whose `"speaker"` is the same (filed_elsewhere, 2026-10-10).
+
+Redaction (docs/idea-redaction-2026-10-04.md): a split config with `"redact_approved":
+{"typesafe": "<the owner's quote>"}` sends the verbatim transcript, split into sentences, through
+bin/gate's `sparks.redact` row (Jev, threshold on the row) before Claude sees a word of it. A
+regex layer flags 7+ digit runs, e-mail addresses and key-shaped tokens as `secret` whatever the
+classifier says; a second classify names each flagged sentence's category. Each flagged sentence
+becomes `[redacted: health · r7f3ak]` in the text Claude shapes; the originals go to
+`<archive>/<audio>.redactions.json` beside the verbatim `.txt`, never into git. The reply's marker
+ids must all exist (an invented one is refused), the regex layer runs again over the reply, each
+note carries `redactions: pending | none`, and the audio is archived as
+`<yyyy-mm-dd-HHMM>-<key8>.<ext>` (Voice Memos names a file after the place). Any failure is fail
+closed: nothing is shaped, the audio waits — never the raw transcript to Claude. bin/redactions
+lists, shows (the owner's own terminal only), releases and stamps what was hidden. Without
+`redact_approved` the runner behaves as before.
+
+Whose idea (2026-10-03): `"speaker"` names whose voice a recording in this inbox is unless the
+transcript shows otherwise — one inbox per audience, so the folder says who dropped it — and
+`"people"` the names a note may carry (the speaker is always one). A prompt may use `{by}` (the
+built-in instruction), `{people}` and `{speaker}`; each topic's `By:` line becomes `by:` in the
+frontmatter: one of `people`, `both` or `unclear`; any other value is `unclear` and its line stays
+in the body; a topic with no `By:` line gets the config's speaker. Whisper labels no speakers, so this is Claude's
+reading of the words, not a voice print: `by:` is visible so a wrong one is corrected at review.
+
+Why these pieces (2026-09-17):
+  - Apple's on-device SpeechAnalyzer is faster and needs no install, but supports neither
+    Russian nor translation — most memos here are Russian, so whisper.cpp does the
+    transcription (`brew install whisper-cpp`, one 1.5 GB model in ~/.cache/whisper).
+  - Whisper transcribes *verbatim* in the original language; Claude translates. The
+    translation-capable Whisper models are twice the size for worse prose.
+  - `afconvert` is part of macOS, so there is no ffmpeg.
+  - Audio never enters a git repo (rule: git-workflow — repos here are text).
+
+Where it runs (2026-10-03): the ideas configs name the always-on Mac. There a launchd
+job (written by the installer: the module's install.sh, or an overlay's own) runs `--chain` the moment
+an inbox changes (`WatchPaths`, from `--inboxes`) and every 15 min besides (4 h until 2026-10-08;
+a note in Apple Notes has no inbox to watch, see "Apple Notes"). It starts through
+a small launcher binary (the module's launcher.c.in says why): the one program Full Disk Access is
+granted to, so the job can read iCloud and Drive. The session-start memo pass is retired
+(2026-10-03); `--session-start` remains for the tests and a run by hand.
+
+Why a session started it, not launchd (history, 2026-09-29; retired 2026-10-03): macOS keeps a launchd job out of iCloud
+Drive (`Operation not permitted`, every 06:00 run 09-18..09-29) and out of Google Drive too —
+probed the same day: a launchd python3 can neither list a shared drive's folder nor read a file
+another process wrote there; it can only write. An interactive Claude Code session can read the
+iCloud folder, so the SessionStart hook runs `--session-start`, which returns at once and runs
+the real pass detached. A lock keeps two sessions from filing the same memo twice.
+
+Routing (D18, 2026-09-29: "full auto-filing"): a second `claude -p`, with Read, Glob and
+Grep only and cwd = ~/projects, reads the candidate repos (repos.json) and answers with one
+line of JSON — repo, path, confidence, why. The runner trusts none of it: the repo must be a
+candidate, the path a new `.md` file in a folder that already exists on the repo's main, no
+dot-folder, and the confidence "high". Anything else lands in the vault inbox as before, with
+the proposed home and the reason on the note — the middle option, as the fallback.
+
+Landing: the vault (`knowledge` in repos.json) takes the file directly and commits it with the
+rest of the run. Every other repo gets a commit built on origin/main with plumbing — no
+worktree, no checkout touched — pushed as `claude/<host>/<date>-memo-<slug>`, a pull request,
+and with `"land": "merge"` the runner rebase-merges it itself (the rule's one exception,
+rules/git-workflow). It only ever adds one new file, so the merge cannot conflict. It then
+fetches and reads the file back from origin/main: a merge is "filed" only once it is there.
+The vault keeps a stub for every filed note (title, summary, the Bin list, the link) so the dream
+still sees it and /embark still gets the Bin proposal; the project copy carries no Bin section.
+
+Everything is overridable by environment variable, which is how the test drives it with
+stubs: SPARKS_IN, SPARKS_OUT, SPARKS_ARCHIVE, SPARKS_STATE, WHISPER_BIN, WHISPER_MODEL, CLAUDE_BIN,
+SPARKS_COMMIT (0 to skip the vault
+commit), SPARKS_ROUTE, SPARKS_LAND, SPARKS_PROJECTS, SPARKS_REPOS, SPARKS_HOST, SPARKS_LOG, WHISPER_VAD (a Silero model: whisper skips non-speech, which
+otherwise comes back as an invented "Bye." or "you"), SPARKS_FAKE_MERGE (tests: push to the remote's main instead of
+calling GitHub), SPARKS_SPLIT, SPARKS_TRANSCRIPT, SPARKS_PUBLISH, PUBLISH_BIN, OSASCRIPT_BIN, SPARKS_RETRY_WAIT, SPARKS_NOTES (1: ask
+Apple Notes; only sextant-host sets it), SPARKS_VOICEMEMOS (a Voice Memos library folder; set, the
+real app is never started), SPARKS_VM_WAIT (seconds a pass waits for a recording being written; 90).
+
+Stdlib only, Python 3.9 compatible. Exits 0 unless a *setup* problem needs a human: an
+unreadable inbox or a missing tool is reported and skipped, never retried in a loop.
+"""
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+from importlib.machinery import SourceFileLoader
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
+
+# The core (the regatta module) is found by lib/find_core.py: this checkout, else the config dir's
+# `home`, else the installed plugin — through a source shim __file__ is this file's own path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  host name, the GitHub client, tool() and the config dir
+gate = SourceFileLoader("gate", str(Path(common.__file__).resolve().parent.parent / "bin" / "gate")).load_module()
+
+HOME = Path.home()
+# The private values come through the config dir (the design's C3), never a literal here:
+#   sextant/sparks.json  the default config (a link into the vault); $SPARKS_CONFIG wins
+#   sextant/log          the log file's path, one line; else ~/Library/Logs/sparks.log
+#   sextant/source       the guarded source a recording counts as for bin/gate; required where an
+#                        overlay is installed (a `legacy` file), else `sparks`
+CONFIG = Path(os.environ.get("SPARKS_CONFIG") or common.CONFIG / "sextant" / "sparks.json").expanduser()
+
+
+def load_config():
+    """Config file, then environment overrides (which the tests use). Missing file is fine as
+    long as the environment names an inbox — otherwise there is nothing to do and we say so."""
+    try:
+        cfg = json.loads(CONFIG.read_text())
+    except (OSError, ValueError):
+        cfg = {}
+
+    def path(key, env, default=None):
+        raw = os.environ.get(env) or cfg.get(key) or default
+        return Path(raw).expanduser() if raw else None
+
+    def rel(key):
+        # beside the config's real file: the default config is a link in the config dir (review, 2026-10-19)
+        return (CONFIG.resolve().parent / cfg[key]).expanduser() if cfg.get(key) else None
+
+    # Typed by hand in a config: a bare string for "people" must not become its letters.
+    speaker = str(cfg.get("speaker") or "").strip().lower()
+    people = [str(p).strip().lower() for p in cfg["people"]] if isinstance(cfg.get("people"), list) else []
+
+    return {
+        "in": path("inbox", "SPARKS_IN"),
+        "out": path("notes", "SPARKS_OUT"),
+        "archive": path("archive", "SPARKS_ARCHIVE"),
+        "state": path("state", "SPARKS_STATE", HOME / ".cache/sparks/processed.json"),
+        "log": path("log", "SPARKS_LOG", common.config_line("sextant/log") or HOME / "Library/Logs/sparks.log"),
+        "projects": path("projects", "SPARKS_PROJECTS", common.PROJECTS),
+        # the registry through the core's one reader (C3); None where there is none: no candidates
+        "repos": path("repos", "SPARKS_REPOS", common.repos_json()),
+        "prompt": rel("prompt"),
+        "route_prompt": rel("route_prompt"),
+        "language": os.environ.get("SPARKS_LANGUAGE") or cfg.get("language") or "auto",
+        "commit": os.environ.get("SPARKS_COMMIT", "1" if cfg.get("commit", True) else "0") == "1",
+        "route": os.environ.get("SPARKS_ROUTE", "1" if cfg.get("route") else "0") == "1",
+        # `launch` from rename S2 (M23), `land` read forever: sparks.json keeps the old key until S7
+        # the key alone on its line: rename-map keeps a both-words line whole, so the key maps with CFG's reads
+        "land": (
+            os.environ.get("SPARKS_LAUNCH") or os.environ.get("SPARKS_LAND") or cfg.get("launch") or cfg.get("land") or "pr"),
+        "host": os.environ.get("SPARKS_HOST", cfg.get("host") or ""),
+        "deny": list(cfg.get("deny") or []),
+        "also": [(CONFIG.resolve().parent / a).expanduser() for a in (cfg.get("also") or [])],
+        "split": (os.environ.get("SPARKS_SPLIT") or cfg.get("split") or "") == "topics",
+        "transcript": os.environ.get("SPARKS_TRANSCRIPT") or cfg.get("transcript") or "note",
+        "publish": os.environ.get("SPARKS_PUBLISH", cfg.get("publish") or ""),
+        "speaker": speaker,
+        "people": [p for p in dict.fromkeys(people + [speaker]) if p],  # the speaker is always one
+        "source": cfg.get("source") or "voice memo",
+        "label": cfg.get("label") or "Memos",
+        # Any value turns redaction on; bin/gate refuses one that is not {vendor: quote}, which
+        # is the fail-closed path — never a pass that skips redaction.
+        "redact": cfg.get("redact_approved") is not None,
+        "redact_approved": cfg.get("redact_approved"),
+        "apple_notes": cfg.get("apple_notes") if isinstance(cfg.get("apple_notes"), dict) else None,
+        "voice_memos": cfg.get("voice_memos") if isinstance(cfg.get("voice_memos"), dict) else None,
+        "notify": cfg.get("notify") if isinstance(cfg.get("notify"), dict) else None,
+    }
+
+
+CFG = load_config()
+IN, OUT, ARCHIVE, STATE = CFG["in"], CFG["out"], CFG["archive"], CFG["state"]
+WHISPER = os.environ.get("WHISPER_BIN", "whisper-cli")
+MODEL = Path(os.environ.get("WHISPER_MODEL", HOME / ".cache/whisper/ggml-large-v3-turbo.bin")).expanduser()
+VAD = os.environ.get("WHISPER_VAD", "")
+CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
+# Optional peers, found through the core (G21, G34): None → a log line, the note still filed.
+PUBLISH = os.environ.get("PUBLISH_BIN") or common.tool("publish")
+AUDIO = {".m4a", ".mp3", ".wav", ".aiff", ".aifc", ".caf", ".mp4"}
+# Written ideas take the same path minus whisper (2026-10-07): a note lands in an inbox as text
+# (from Apple Notes, `"apple_notes"` below, or any file someone drops there), and its words are
+# the transcript. .rtf and .html go through textutil (part of macOS).
+TEXT = {".txt", ".md", ".rtf", ".html"}
+OSASCRIPT = os.environ.get("OSASCRIPT_BIN", "/usr/bin/osascript")  # tests stub it; sextant-host never passes it
+RETRY_WAIT = float(os.environ.get("SPARKS_RETRY_WAIT", 4 * 3600))  # a failed file's wait in the job (tests: 0)
+MAX_TRANSCRIPT = 40000  # characters handed to Claude; a 2 h memo is ~30k
+# Both calls run with every hook off: a headless text job has no use for them, and the
+# SessionStart hook would otherwise start sparks again from inside sparks.
+QUIET = ["--settings", '{"disableAllHooks": true}', "--no-session-persistence",
+         "--strict-mcp-config"]  # no connector tools either: nothing the account adds
+READ_ONLY = "Read,Glob,Grep"
+# Review 2026-09-29 (R1): --allowedTools only pre-approves; --tools is what limits the set, and
+# dontAsk refuses anything not approved instead of asking nobody. Hooks are off, so the
+# secrets guard is too — hence the explicit .env refusal.
+ROUTE_TOOLS = ["--tools", READ_ONLY, "--allowedTools", READ_ONLY, "--permission-mode", "dontAsk",
+               "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+               "Read(**/.env*)", "Grep(**/.env*)"]
+# W1: never where Claude Code reads a file as instructions, or runs it. The generic half; the
+# config's "deny" adds a person's own ("<repo>/<folder>/").
+DENY_NAMES = {"claude.md", "agents.md", "skill.md", "readme.md"}
+DENY_TOP = {"rules", "agents", "skills", "hooks", "bin", "templates", "commands"}
+
+FALLBACK_PROMPT = """Turn this verbatim voice-memo transcript into a markdown note, in
+English, in exactly this shape and nothing else: a `# title` line of five to eight words; a
+`## Summary` of at most three sentences; `## Topics` with one `### heading` per distinct topic,
+in the order spoken, translated where needed and tightened only by removing filler; and a
+`## Bin` list of parts worth deleting, quoting three or four words each, or `- nothing`. No
+preamble, no closing line, no invented content.
+
+Transcript:
+"""
+
+TOPICS_PROMPT = """Turn this verbatim transcript of a conversation into markdown, in English, in
+exactly this shape and nothing else: a `# title` line of five to eight words; a `## Summary` of
+at most two sentences; `## Topics` with one `### heading` per distinct topic, in the order each
+was first raised, gathering every part of the conversation that touches it. Under each heading,
+first a line `Tags: ` with one to three lowercase words (reuse these where they fit: {tags}),
+{by}then three to six sentences on what was said. No preamble, no invented content.
+
+Transcript:
+"""
+# Filled in for {by} only when the config names a speaker or people (see "Whose idea").
+BY_PROMPT = """then a plain line `By: ` with one plain word for whose idea the topic is — one of
+{people}, both or unclear; unless the words show otherwise, the voice is {speaker} —
+"""
+
+ROUTE_PROMPT = """You decide where one note belongs. It was made from a voice memo and is
+printed at the end. Your working directory holds the owner's projects; these are the
+repositories a note may be filed into (path relative to the working directory):
+
+{candidates}
+
+Look before you choose: Glob and Read the likely repositories — their README or CLAUDE.md,
+their folders, the names of files like this one — and follow the naming that folder already
+uses. Ignore anything under `.claude/worktrees/`: those are other sessions' copies.
+
+File the note only when all of it belongs to one repository and one folder that already
+exists there. Never invent a folder. Name a new `.md` file that does not exist yet. When
+unsure, when the note spans several projects, or when it is a personal thought with no clear
+project, answer with "repo": null — it then waits in the inbox for a human, which is fine.
+
+End your reply with exactly one line of JSON and nothing after it:
+{{"repo": "<one of the paths above, or null>", "path": "<file path inside that repo>", "confidence": "high" or "low", "why": "<one sentence>"}}
+
+Note:
+"""
+
+
+def prompt_text(key, fallback):
+    """The personal prompt from the config's directory, or the generic one."""
+    if CFG[key]:
+        try:
+            return CFG[key].read_text().rstrip() + "\n"
+        except OSError:
+            log(f"  prompt {CFG[key]} unreadable — using the built-in one")
+    return fallback
+
+
+def log(msg):
+    if "--verbose" in sys.argv or "-v" in sys.argv:
+        print(msg)
+
+
+# The state lived in ~/.cache/memo-run until the rename (2026-10-07, two things called memo).
+# A state file missing here whose old twin exists is moved over by the first pass that holds the
+# lock, and the pass says so: without it every recording still in an inbox is filed again.
+OLD_CACHE, CACHE = HOME / ".cache/memo-run", HOME / ".cache/sparks"
+
+
+def old_state():
+    """memo-run's file this state continues, when the new one does not exist yet; else None."""
+    try:
+        old = OLD_CACHE / STATE.relative_to(CACHE)
+    except ValueError:  # a config's own path elsewhere: nothing was renamed under it
+        return None
+    return old if old.is_file() and not STATE.exists() else None
+
+
+def load_state():
+    old = old_state()
+    if old:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(old, STATE)
+        stamp(f"state moved from {old} (memo-run's) to {STATE}")
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    """Atomic: another inbox's pass reads this file for duplicates (filed_elsewhere)."""
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    if CFG["speaker"]:
+        state["_speaker"] = CFG["speaker"]
+    else:  # a speaker taken off the config: a stale stamp would let a sibling match this inbox
+        state.pop("_speaker", None)
+    tmp = STATE.with_name(STATE.name + ".tmp")
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True))
+    os.replace(tmp, STATE)
+
+
+SIBLINGS = None  # {content key or same key: (state name, notes)}, read once per pass
+
+
+def words_key(text):
+    """A written note's words, case, spacing, Unicode form and closing punctuation aside: the
+    same note typed or saved again (one app exports NFD, another NFC — review 2026-10-19)."""
+    words = " ".join(unicodedata.normalize("NFC", text).casefold().split()).rstrip(".!?…")
+    return "w" + hashlib.sha256(words.encode()).hexdigest()[:15]
+
+
+def stamp_stale():
+    """Whether an idle pass rewrites the state: memo-run's old one waits to move, or its
+    `_speaker` is not this config's speaker. A state that does not parse is left alone —
+    load_state() reads it as {}, and the rewrite would empty it (review 2026-10-19)."""
+    if old_state():
+        return bool(CFG["speaker"])
+    try:
+        data = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("_speaker") != (CFG["speaker"] or None)
+
+
+def filed_notes(entry):
+    """The notes an entry filed, or None for nothing, a pending landing, or a copy archived as
+    something filed elsewhere — those name another entry's notes, never their own."""
+    note = entry.get("note") if isinstance(entry, dict) else None
+    return note if note and note != "(empty)" and not note.startswith(("(filed by", "(same as")) else None
+
+
+def filed_elsewhere(key):
+    """(state name, notes) when another inbox of the same speaker already filed this content
+    (its content key, or its `same` key — process()). Each inbox keeps its own state, so one
+    recording put in two inboxes was filed twice. Every ideas config runs on the always-on Mac (`host`),
+    so their states share one directory. Same speaker only (`_speaker`, which every pass that
+    files stamps, and an idle one; a pass that returns early with files waiting does not): a
+    recording in a shared inbox and a private one is filed in both, so the shared archive keeps
+    its transcript and its `by` (review 2026-10-10). A pass reads its siblings, never writes them."""
+    global SIBLINGS
+    if not CFG["speaker"]:  # no speaker, no sibling can match: skip reading every state
+        return None
+    if SIBLINGS is None:
+        SIBLINGS = {}
+        for f in sorted(STATE.parent.glob("*.json")):
+            if f == STATE:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("_speaker") != CFG["speaker"]:
+                continue  # a notes file, a marker, or another speaker's inbox
+            for k, entry in data.items():
+                note = filed_notes(entry)
+                if note:
+                    SIBLINGS.setdefault(k, (f.stem, note))
+                    if entry.get("same"):
+                        SIBLINGS.setdefault(entry["same"], (f.stem, note))
+    return SIBLINGS.get(key)
+
+
+def digest(path):
+    """Content hash, so the same memo re-synced by iCloud is not processed twice."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def run(cmd, **kw):
+    """A timed-out call comes back as a failure (124), never as an exception mid-landing."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {kw.get('timeout')} s")
+
+
+def git(repo, *args, **kw):
+    return run(["git", "-C", str(repo), *args], **kw)
+
+
+def to_wav(src, dest):
+    """16 kHz mono, what whisper.cpp wants. afconvert ships with macOS."""
+    r = run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(src), str(dest)])
+    return r.returncode == 0, (r.stderr or r.stdout).strip()
+
+
+def transcribe(wav):
+    vad = ["--vad", "-vm", VAD] if VAD and Path(VAD).is_file() else []
+    r = run([WHISPER, "-m", str(MODEL), "-l", CFG["language"], *vad, "-nt", "-np", str(wav)], timeout=3600)
+    if r.returncode != 0:
+        return None, (r.stderr or r.stdout).strip()[:400]
+    return " ".join(r.stdout.split()), None
+
+
+def tags_in_use():
+    """Every tag the notes already carry, most used first: the split prompt reuses them. Read
+    once per pass (a pass files a few recordings; the folder can hold hundreds of notes)."""
+    if TAGS:
+        return TAGS[0]
+    count = {}
+    for f in OUT.glob("*.md") if OUT and OUT.is_dir() else []:
+        m = re.search(r"^tags: \[(.*)\]$", f.read_text(errors="replace")[:800], flags=re.M)
+        for t in (m.group(1).split(",") if m else []):
+            if t.strip():
+                count[t.strip()] = count.get(t.strip(), 0) + 1
+    TAGS.append(sorted(count, key=lambda t: (-count[t], t)))
+    return TAGS[0]
+
+
+TAGS = []
+
+
+def model_flags(site):
+    """`claude -p` model flags for a call site, from the table's row — one run's model is
+    bin/gate's override, GATE_SPARKS_SHAPE_MODEL / GATE_SPARKS_ROUTE_MODEL. None when the row
+    is off + skip; GateError (GateOff too) when it cannot run."""
+    row = gate.resolve(site)
+    return None if row is None else gate.claude_flags(row)
+
+
+SHAPE = []  # the shaping row's flags, resolved once per pass
+
+
+def shape_flags():
+    """Resolved before the first whisper run (main() asks first), so a shaping row that is off
+    no longer transcribes every waiting recording again just to give up (model gate, Known gaps)."""
+    if not SHAPE:
+        flags = model_flags("sparks.shape")
+        if flags is None:  # the table may say skip; shaping cannot be skipped, so it waits
+            raise gate.GateError("sparks.shape is off (when_off: skip) — a note needs its shaping call")
+        SHAPE.append(flags)
+    return SHAPE[0]
+
+
+def redact_guard(row):
+    """GateError unless a sentence may go to the row's vendor: the guarded source is known and the
+    config quotes the owner's say-so for that vendor. Every path that sends calls it first — the
+    pass through gate_ready(), `redactions audit` and `trial` through classify_sentences() — since
+    the gate itself demands the quote only for a source it guards (review, 2026-10-19)."""
+    if REDACT_SOURCE_MISSING:
+        raise gate.GateError(f"refused: {common.CONFIG}/sextant/source is missing — the guarded "
+                             "source a recording counts as; run your overlay's bootstrap.sh --config")
+    vendor = gate.VENDOR.get(row["provider"], row["provider"])
+    ok = CFG["redact_approved"]
+    if not isinstance(ok, dict) or not str(ok.get(vendor) or "").strip():
+        raise gate.GateError(f"refused: data from {REDACT_SOURCE} goes to {vendor} only with the "
+                             f"owner's say-so — redact_approved has no {vendor!r} quote")
+
+
+def gate_ready():
+    """None when every row this pass needs can run, else why not (GateOff, a bad table)."""
+    try:
+        shape_flags()
+        if CFG["redact"]:
+            row = gate.resolve("sparks.redact")
+            if row is None:
+                raise gate.GateError("sparks.redact is off (when_off: skip) — a transcript is never "
+                                     "shaped unredacted")
+            # the two config errors gate.classify would refuse anyway — but only after whisper
+            if not CFG["split"]:
+                raise gate.GateError("redaction is built for \"split\": \"topics\" configs")
+            redact_guard(row)
+    except gate.GateError as e:
+        return str(e)[:400]
+    return None
+
+
+def to_note(transcript, redacted=False, written=False):
+    """Claude turns the transcript into the note. No tools: this is a text task."""
+    try:
+        flags = shape_flags()
+    except gate.GateError as e:
+        return None, str(e)[:400]
+    prompt = prompt_text("prompt", TOPICS_PROMPT if CFG["split"] else FALLBACK_PROMPT)
+    rules = ([MARKER_RULE] if redacted else []) + ([WRITTEN_RULE] if written else [])
+    if rules:  # the rules live here, not in a prompt file: a prompt without them would drop markers
+        body = prompt.rstrip()
+        tail = "Transcript:" if body.endswith("Transcript:") else ""
+        prompt = (body[:len(body) - len(tail)].rstrip() + "".join("\n\n" + r for r in rules)
+                  + ("\n\n" + tail if tail else "") + "\n")
+    if "{tags}" in prompt:
+        prompt = prompt.replace("{tags}", ", ".join(tags_in_use()[:40]) or "none yet")
+    prompt = prompt.replace("{by}", BY_PROMPT if CFG["speaker"] or CFG["people"] else "")
+    prompt = prompt.replace("{people}", ", ".join(CFG["people"]))
+    prompt = prompt.replace("{speaker}", CFG["speaker"] or "unknown")
+    r = run([CLAUDE, "-p", prompt + transcript[:MAX_TRANSCRIPT],
+             *flags, "--tools", "", "--allowedTools", "", "--output-format", "text",
+             *QUIET], timeout=900)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None, (r.stderr or "empty reply").strip()[:400]
+    return r.stdout.strip(), None
+
+
+# ---------------------------------------------------------------- redaction (idea-redaction E1)
+
+# The taxonomy is the only thing a marker shows. Same words as bench/redaction/run.py, whose
+# numbers (0 of 50 missed at p >= 0.3) are what the sparks.redact row's threshold rests on.
+CATS = {
+    "secret": "a credential, password, key, recovery code, or an account, card, passport, ID or case number, a phone number or e-mail",
+    "money": "money tied to a person: salary, debts, savings, runway, an equity split, what they paid",
+    "health": "anyone's health, illness, treatment, medication or hospital stay",
+    "legal": "lawsuits, settlements, visas, immigration, contracts and their enforceability",
+    "family": "the speaker's family, children and relationships: names, ages, schools, marital trouble",
+    "person": "a third party's private matters: their troubles, health, family, business problems",
+    "place": "a home address, a child's school, where someone lives or is treated",
+    "work": "an employer's confidential information, or the speaker's private job plans",
+    "off-record": "the speaker asks to keep something secret, between us, or out of the notes",
+}
+SENSITIVE = {"yes": "the sentence reveals something in one of the listed categories",
+             "no": "the sentence is about the idea, the product or generic plans only"}
+# A voice recording is personal data wherever its config lives: the guarded source makes bin/gate
+# demand the config's quote for whichever vendor the row names. Which name the gate guards is the
+# owner's (`sextant/source`); where an overlay is installed and the key is missing, gate_ready()
+# refuses rather than send under a name the gate does not guard.
+REDACT_SOURCE = common.config_line("sextant/source") or "sparks"
+REDACT_SOURCE_MISSING = (common.CONFIG / "legacy").exists() and not common.config_line("sextant/source")
+WRITTEN_RULE = ("The input below is a written note, not a recording: treat it as the transcript, "
+                "in one voice, and keep its own wording where you can, translated as the shape asks; "
+                "a short note makes a short topic. Every written note is at least one idea, however "
+                "short or vague (\"Would be cool\" is an idea): never leave `## Topics` empty.")
+# The example is no valid marker (MARKER_RE wants six id characters): a reply that echoes it is
+# not refused as carrying an invented id (review, 2026-10-05).
+MARKER_RULE = ("Some sentences of the transcript were withheld and replaced by markers of the form "
+               "`[redacted: <category> · <id>]`. Where a withheld sentence bears on a topic, keep its "
+               "marker verbatim in that topic's text. Never guess or reconstruct what it said, and "
+               "never write a marker that is not in the transcript.")
+MARKER_RE = re.compile(r"\[redacted:\s*([a-z-]+)\s*[·•]\s*([a-z0-9]{6})\s*\]")
+ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # 31: no i, l, o, 0, 1 — read aloud without doubt
+SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|\s*[\n\u2028\u2029]\s*")  # 2028: textutil's soft break
+MAX_SENTENCE = 300
+SECRET_RES = (
+    re.compile(r"(?<![\d])\+?\d(?:[ \-./()]{0,2}\d){6,}(?![\d])"),  # 7+ digits, separators but no comma
+    re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
+    re.compile(r"\b(?:sk-|ghp_|gho_|github_pat_|xox[abp]-)[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"\b[0-9a-fA-F]{32,}\b"),
+    re.compile(r"(?<![A-Za-z0-9+/_=])(?=[A-Za-z0-9+/_=]*\d)(?=[A-Za-z0-9+/_=]*[A-Za-z])[A-Za-z0-9+/_=]{32,}"),
+)
+
+
+def split_sentences(text):
+    """Whisper punctuates Russian and English, so a regex on its stops is the split; a written
+    note's lines often carry none, so a line break ends a sentence too (Whisper's text has no
+    newlines: sparks joins it with single spaces). A sentence over 300 characters is cut at
+    its commas (a run-on). Joining the pieces with one space gives the text back, whitespace
+    normalised."""
+    out = []
+    for s in SENTENCE_END.split(text.strip()):
+        if not s:
+            continue
+        if len(s) <= MAX_SENTENCE:
+            out.append(s)
+            continue
+        cur = ""
+        for part in re.split(r"(?<=,)\s+", s):
+            if cur and len(cur) + 1 + len(part) > MAX_SENTENCE:
+                out.append(cur)
+                cur = part
+            else:
+                cur = f"{cur} {part}" if cur else part
+        out.append(cur)
+    # a run-on with no commas: cut at the last space before the limit, so one sensitive clause is
+    # not judged inside 2,000 characters of everything else (review, 2026-10-05)
+    cut = []
+    for s in out:
+        while len(s) > MAX_SENTENCE and " " in s[1:MAX_SENTENCE]:
+            at = s.rindex(" ", 1, MAX_SENTENCE)
+            cut.append(s[:at])
+            s = s[at + 1:]
+        cut.append(s)
+    return cut
+
+
+# Not secrets, though 7+ digits: a round number grouped in thousands (Russian Whisper writes a market
+# size as `1 000 000` or `2 500 000`) \u2014 at most four groups, the last `000` \u2014 and an ISO date. Any
+# other grouped run (an account `40 817 810 \u2026`, a phone `916 123 456`) stays a secret (review,
+# 2026-10-05). The classifier still judges the sentence they stand in.
+NOT_SECRET = re.compile(r"\d{1,3}(?:[ \u00a0.]\d{3}){0,2}[ \u00a0.]000|\d{4}-\d{2}-\d{2}")
+
+
+def secret_spans(text):
+    """(start, end) of every regex-layer hit, merged."""
+    spans = sorted((m.start(), m.end()) for r in SECRET_RES for m in r.finditer(text)
+                   if not NOT_SECRET.fullmatch(m.group()))
+    out = []
+    for a, b in spans:
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(b, out[-1][1]))
+        else:
+            out.append((a, b))
+    return out
+
+
+def marker(category, mid):
+    return f"[redacted: {category} · {mid}]"
+
+
+def new_id(taken):
+    """Random, never a hash of the content: an id must not let anyone confirm a guess."""
+    while True:
+        mid = "".join(secrets.choice(ID_ALPHABET) for _ in range(6))
+        if mid not in taken:
+            return mid
+
+
+def definition():
+    people = ", ".join(CFG["people"])
+    return ("A voice recording about ideas is summarised into notes stored in a git repository that "
+            "other services and AI tools read. A sentence is SENSITIVE if it reveals any of: "
+            + "; ".join(f"{k} ({v})" for k, v in CATS.items())
+            + ". NOT sensitive: the idea itself, product prices, market sizes, generic business plans, "
+              "public figures, children mentioned only as a market. "
+            + (f"The speakers ({people}) are not third parties; everyone else is. " if people else "")
+            + "Judge each sentence with its neighbours as context.")
+
+
+def classify_sentences(items):
+    """{id: text} → ({id: {category, p, by}} for the flagged ones, cost). Regex hits are `secret`
+    whatever the classifier says; the classifier's flags get a second call for their category.
+    GateError on any failure — the caller fails closed."""
+    row = gate.resolve("sparks.redact")
+    if row is None:
+        raise gate.GateError("sparks.redact is off (when_off: skip) — a transcript is never shaped unredacted")
+    redact_guard(row)
+    kw = dict(context=definition(), source=REDACT_SOURCE, approved=CFG["redact_approved"],
+              caller="sparks")
+    r = gate.classify("sparks.redact", items, "Is this sentence sensitive?", SENSITIVE, **kw)
+    if r is None:
+        raise gate.GateError("sparks.redact is off (when_off: skip) — a transcript is never shaped unredacted")
+    cost = r["cost_usd"]
+    out = {k: {"category": "secret", "p": r["items"][k]["p"], "by": "regex"}
+           for k, t in items.items() if secret_spans(t)}
+    ask = [k for k in items if r["items"][k]["label"] == "yes" and k not in out]
+    if ask:
+        c = gate.classify("sparks.redact", {k: items[k] for k in ask},
+                          "Which category best describes what this sentence reveals?", CATS, **kw)
+        if c is None:
+            raise gate.GateError("sparks.redact went off between two calls")
+        cost += c["cost_usd"]
+        for k in ask:
+            out[k] = {"category": c["items"][k]["label"], "p": r["items"][k]["p"],
+                      "by": r.get("provider", "gate")}
+    return out, cost
+
+
+def redact(text):
+    """The verbatim transcript → {sentences, redacted, ids: {id: {sentence, category, p, by, text}},
+    cost_usd}. No sentence of `redacted` that was flagged survives in it."""
+    sents = split_sentences(text)
+    if not sents:
+        return {"sentences": 0, "redacted": text, "ids": {}, "cost_usd": 0.0}
+    flagged, cost = classify_sentences({f"s{i + 1}": s for i, s in enumerate(sents)})
+    ids, out = {}, []
+    for i, s in enumerate(sents):
+        f = flagged.get(f"s{i + 1}")
+        if f:
+            mid = new_id(ids)
+            ids[mid] = dict(f, sentence=i, text=s)
+            out.append(marker(f["category"], mid))
+        else:
+            out.append(s)
+    return {"sentences": len(sents), "redacted": " ".join(out), "ids": ids, "cost_usd": cost}
+
+
+def check_markers(note, ids):
+    """(note with every marker in its canonical form, None) or (None, why): a marker id the
+    transcript did not carry is invented, and the reply is refused."""
+    bad = [m.group(2) for m in MARKER_RE.finditer(note) if m.group(2) not in ids]
+    if bad:
+        return None, f"the shaping reply carries a marker id the transcript did not ({', '.join(bad[:3])})"
+    return MARKER_RE.sub(lambda m: marker(ids[m.group(2)]["category"], m.group(2)), note), None
+
+
+def wrap_secrets(note, ids, keep=()):
+    """The regex layer over the reply: each hit outside a marker becomes a new `secret` marker,
+    its text added to `ids` (by: note). `keep` holds texts a release put back on purpose."""
+    inside = [(m.start(), m.end()) for m in MARKER_RE.finditer(note)]
+    for a, b in reversed(secret_spans(note)):
+        if any(a < y and b > x for x, y in inside) or note[a:b] in keep:
+            continue
+        mid = new_id(ids)
+        ids[mid] = {"category": "secret", "p": None, "by": "note", "sentence": None, "text": note[a:b]}
+        note = note[:a] + marker("secret", mid) + note[b:]
+    return note
+
+
+def front(text):
+    """(frontmatter as an ordered {key: raw value}, body) of a note sparks wrote."""
+    m = re.match(r"---\n(.*?)\n---\n", text, flags=re.S)
+    if not m:
+        return {}, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        k, sep, v = line.partition(":")
+        if sep:
+            fm[k.strip()] = v.strip()
+    return fm, text[m.end():]
+
+
+def with_front(fm, body):
+    return "---\n" + "".join(f"{k}: {v}\n" for k, v in fm.items()) + "---\n" + body
+
+
+def front_blocks(text):
+    """([(key or None, raw lines)], body) — every frontmatter line kept: a key's block runs on
+    through its indented or list lines (Obsidian writes `tags:` as a block list), and a line
+    before any key (a comment) is a block of its own. None when there is no frontmatter."""
+    m = re.match(r"---\n(.*?)\n---\n", text, flags=re.S)
+    if not m:
+        return None, text
+    blocks = []
+    for line in m.group(1).splitlines():
+        k, sep, _ = line.partition(":")
+        if sep and line[:1] not in (" ", "\t", "-", "#") and k.strip():
+            blocks.append((k.strip(), [line]))
+        elif blocks and line[:1] in (" ", "\t", "-"):
+            blocks[-1][1].append(line)
+        else:
+            blocks.append((None, [line]))
+    return blocks, text[m.end():]
+
+
+def set_front(text, updates):
+    """`text` with each key in `updates` set — a str value becomes `key: value`, a list of raw
+    lines replaces the block as is — and every other frontmatter line exactly as it was.
+    front()/with_front() would flatten a block list to `tags: ` (review, 2026-10-05)."""
+    blocks, body = front_blocks(text)
+    if blocks is None:
+        blocks = []
+    todo = dict(updates)
+    out = []
+    for k, lines in blocks:
+        if k in todo:
+            v = todo.pop(k)
+            out.append(v if isinstance(v, list) else [f"{k}: {v}"])
+        else:
+            out.append(lines)
+    out += [v if isinstance(v, list) else [f"{k}: {v}"] for k, v in todo.items()]
+    return "---\n" + "".join(l + "\n" for ls in out for l in ls) + "---\n" + body
+
+
+def front_raw(text, key):
+    """The raw lines of one frontmatter key's block, or None."""
+    blocks, _ = front_blocks(text)
+    for k, lines in blocks or []:
+        if k == key:
+            return lines
+    return None
+
+
+def body_hash(text):
+    """The note body's hash at filing: a release refuses a note edited since (frontmatter aside —
+    `done` and review change that). `## Your notes` is the owner's to write in: outside the hash."""
+    body = front(text)[1]
+    return hashlib.sha256(body.split("\n## Your notes", 1)[0].encode()).hexdigest()[:16]
+
+
+def sidecar_of(dest):
+    return dest.with_name(dest.name + ".redactions.json")
+
+
+def write_sidecar(dest, original, when, key, text, red, notes):
+    """Beside the verbatim .txt, outside every repo; plain JSON (D3). Written once, at filing."""
+    data = {"audio": dest.name, "original_name": original, "recorded": f"{when:%Y-%m-%d %H:%M}",
+            "key": key, "config": str(CONFIG), "sentences": red["sentences"],
+            "transcript_sha": hashlib.sha256(" ".join(text.split()).encode()).hexdigest()[:16],
+            "redacted": red["redacted"], "ids": red["ids"], "cost_usd": red["cost_usd"],
+            "notes": {n.name: body_hash(n.read_text()) for n in notes}, "released": [],
+            "filed": dt.datetime.now().isoformat(timespec="seconds")}
+    path = sidecar_of(dest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
+def slug(text, when):
+    words = re.findall(r"[A-Za-z0-9]+", text.lower())[:5]
+    return f"{when:%Y-%m-%d}-{'-'.join(words) or 'memo'}"[:60]
+
+
+# ---------------------------------------------------------------- routing (D18)
+
+def candidates():
+    """Every repo in repos.json that is cloned on this Mac: name → dir, knowledge, main.
+    A repo marked "published" is never a candidate: a note merged onto its main goes out to
+    the world unreviewed (a site that serves its main; its own check keeps private names out,
+    and sparks never runs it). Review 2026-10-04.
+    "memos_to": "<repo>" sends a skipped repo's notes elsewhere: the target is listed to the
+    router as also taking notes about it (a repo shared with a friend and going public sends its
+    notes to a private one; D1, 2026-10-05)."""
+    try:
+        repos = json.loads(CFG["repos"].read_text())["repos"]
+    except (OSError, ValueError, KeyError, AttributeError):   # AttributeError: no registry at all
+        return {}
+    also = {}
+    for name, meta in repos.items():
+        if meta.get("memos_to"):
+            also.setdefault(meta["memos_to"], []).append(name)
+    # An employer org's repo is never a candidate either: colleagues read it, and these notes are
+    # personal ideas (github-repo --owner, 2026-10-18). Owner = the vault's: the GitHub owner of
+    # the registry's `knowledge` repo, where these notes themselves are kept. No such owner: no
+    # repo on GitHub is a candidate — the filter fails closed (review, 2026-10-19).
+    me = next((str(m.get("github") or "").split("/")[0] for m in repos.values()
+               if isinstance(m, dict) and m.get("knowledge") and m.get("github")), "")
+    out = {}
+    for name, meta in repos.items():
+        if meta.get("github") and not meta.get("twin_of") \
+                and meta["github"].split("/")[0].lower() != me.lower():
+            continue
+        d = CFG["projects"] / name
+        if meta.get("published") or meta.get("twin_of") or not (d / ".git").exists():  # a twin is public too
+            continue
+        try:
+            main = json.loads((d / ".claude/workflow.json").read_text()).get("main", "main")
+        except (OSError, ValueError):
+            main = "main"
+        out[name] = {"dir": d, "knowledge": bool(meta.get("knowledge")), "main": main,
+                     "also": sorted(also.get(name, []))}
+    return out
+
+
+def last_json(text):
+    """The last line of the reply that parses as a JSON object — the decision."""
+    for line in reversed(text.strip().splitlines()):
+        line = line.strip().strip("`")
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    return None
+
+
+def route(note, repos):
+    """Ask Claude, read-only, where the note belongs. Returns the decision dict or None."""
+    try:
+        flags = model_flags("sparks.route")
+    except gate.GateError as e:
+        return None, f"no routing model ({str(e)[:200]})"
+    if flags is None:
+        return None, "routing is off in settings/models.json (sparks.route)"
+    listing = "\n".join(f"- {n}" + (f" (also takes notes about {', '.join(m['also'])})"
+                                    if m.get("also") else "")
+                        for n, m in sorted(repos.items()))
+    prompt = prompt_text("route_prompt", ROUTE_PROMPT).replace("{candidates}", listing)
+    prompt = prompt.replace("{{", "{").replace("}}", "}") + note
+    r = run([CLAUDE, "-p", prompt, *flags, *ROUTE_TOOLS, "--output-format", "text",
+             *QUIET], cwd=str(CFG["projects"]), timeout=900)
+    if r.returncode != 0:
+        return None, f"the routing call failed ({(r.stderr or '').strip()[:200]})"
+    d = last_json(r.stdout)
+    return (d, None) if isinstance(d, dict) else (None, "the routing reply carried no decision")
+
+
+def check(decision, repos):
+    """The runner's own rules over Claude's answer: (repo, path) or (None, reason). The
+    folder-exists and file-is-new checks against the repo's main happen at landing."""
+    why = str(decision.get("why") or "").strip()
+    repo, path = decision.get("repo"), decision.get("path")
+    if isinstance(repo, str):   # a router that copied the listing's "(also takes notes about …)"
+        repo = re.sub(r"\s*\(also takes notes about [^)]*\)\s*$", "", repo)
+    if not repo:
+        return None, None, f"left for a human ({why or 'no reason given'})"
+    if not isinstance(repo, str):
+        return None, None, f"not one repo ({repo!r})"
+    if repo not in repos:
+        return None, None, f"{repo} is not a repo on this Mac"
+    if not isinstance(path, str) or not path.strip():
+        return None, None, "no path"
+    if re.search(r"[\x00-\x1f\x7f]", path):
+        return None, None, "a control character in the path"
+    p = PurePosixPath(path.strip())
+    if p.is_absolute() or ".." in p.parts or any(x.startswith(".") for x in p.parts) or p.suffix != ".md":
+        return None, None, f"{path} is not a plain .md path inside the repo"
+    if p.name.lower() in DENY_NAMES or p.parts[0].lower() in DENY_TOP or any(
+            f"{repo}/{p}/".startswith(d.rstrip("/") + "/") for d in CFG["deny"]):
+        return None, None, f"{path} is where instructions or code live — never a memo"
+    if decision.get("confidence") != "high":
+        return None, None, f"not sure ({why or 'confidence ' + str(decision.get('confidence'))})"
+    return repo, str(p), None
+
+
+def taken(repo, ref, path):
+    """Why `path` may not be created on `ref`, or None: it exists there, differs from an
+    existing name only by case or Unicode form (one file on a Mac, two in git — R6), or another
+    claude/* branch already adds it (a live session's doc — R5)."""
+    if git(repo, "cat-file", "-e", f"{ref}:{path}").returncode == 0:
+        return f"{path} already exists"
+    parent = str(PurePosixPath(path).parent)
+    norm = lambda n: unicodedata.normalize("NFC", n).casefold()
+    names = git(repo, "ls-tree", "--name-only", f"{ref}:{parent}" if parent != "." else ref).stdout.splitlines()
+    if norm(PurePosixPath(path).name) in {norm(n) for n in names}:
+        return f"{path} differs from an existing file only by case"
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/claude", "refs/heads/claude").stdout.split()
+    hit = next((r for r in refs if git(repo, "cat-file", "-e", f"{r}:{path}").returncode == 0), None)
+    return f"{path} is being written on {hit.split('/', 2)[-1]}" if hit else None
+
+
+def in_place_of(repo):
+    """The records `repo` writes on its main (.claude/workflow.json `in_place`), normalized —
+    None when it declares none (no opt-in, the no-workflow marker, no key): then any path goes."""
+    repo = Path(repo)
+    if (repo / ".claude" / "no-workflow").exists():
+        return None
+    try:
+        v = json.loads((repo / ".claude" / "workflow.json").read_text()).get("in_place")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(v, list):
+        return None
+    return [e.strip("/") for e in v if isinstance(e, str) and e.strip("/")] or None
+
+
+def is_in_place(entries, rel):
+    return any(rel == e or rel.startswith(e + "/") for e in entries)
+
+
+def land_vault(meta, path, content, pending=False):
+    """The vault is the working branch: write the file; the run's commit takes it along. The
+    folder must be one git tracks and the path one it would commit — a gitignored folder
+    (`Claude outputs/`) would leave the note on this disk only (review 2026-09-29, W2). And,
+    once the vault is on the worktree workflow, one of its in-place records: anything else lands
+    only reviewed, so a note filed there could never be committed (gap review, limit 2)."""
+    repo, dest = meta["dir"], meta["dir"] / path
+    if pending and dest.exists():
+        return {"state": "filed", "url": None}, None
+    records = in_place_of(repo)
+    if records is not None and not is_in_place(records, path):
+        return None, f"{path} is not one of the vault's in-place records ({', '.join(records)})"
+    parent = str(PurePosixPath(path).parent)
+    if parent != "." and git(repo, "cat-file", "-t", f"HEAD:{parent}").stdout.strip() != "tree":
+        return None, f"{parent}/ is not a folder git tracks in the vault"
+    if git(repo, "check-ignore", "-q", path).returncode == 0:
+        return None, f"{path} is gitignored in the vault"
+    why = taken(repo, "HEAD", path)
+    if why:
+        return None, why
+    try:
+        with open(dest, "x") as fh:
+            fh.write(content)
+    except OSError as e:
+        return None, f"could not write {path} ({e.strerror})"
+    return {"state": "filed", "url": None}, None
+
+
+def land_git(name, meta, path, content, title, key, pending=False):
+    """One new file on origin/<main>, by plumbing: nothing checked out, no worktree, no local
+    branch. Push as claude/*, PR, merge (or leave the PR), then read it back from origin."""
+    repo, main = meta["dir"], meta["main"]
+    if git(repo, "fetch", "-q", "origin", main, timeout=90).returncode != 0:
+        return None, f"could not fetch {name}'s origin/{main}"
+    base = git(repo, "rev-parse", f"origin/{main}").stdout.strip()
+    if not base:
+        return None, f"no origin/{main} in {name}"
+    if pending and git(repo, "cat-file", "-e", f"{base}:{path}").returncode == 0:
+        return {"state": "merged", "url": None, "branch": None}, None  # an earlier pass landed it
+    parent = str(PurePosixPath(path).parent)
+    if parent != "." and git(repo, "cat-file", "-t", f"{base}:{parent}").stdout.strip() != "tree":
+        return None, f"{parent}/ does not exist on {name}'s {main}"
+    why = taken(repo, base, path)
+    if why:
+        return None, f"{why} ({name})"
+
+    blob = run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input=content).stdout.strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / "index"))
+        steps = [["read-tree", base], ["update-index", "--add", "--cacheinfo", f"100644,{blob},{path}"]]
+        for s in steps:
+            if git(repo, *s, env=env).returncode != 0:
+                return None, f"git {s[0]} failed in {name}"
+        tree = git(repo, "write-tree", env=env).stdout.strip()
+    msg = (f"Memo: {title}\n\nFiled by sparks from a voice memo (D18): {path}\n\n"
+           "Co-Authored-By: Claude <noreply@anthropic.com>\n")
+    commit = run(["git", "-C", str(repo), "commit-tree", tree, "-p", base], input=msg).stdout.strip()
+    if not commit:
+        return None, f"git commit-tree failed in {name}"
+
+    tail = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", slug(title, dt.date.today()))[:40].strip("-") or key[:8]
+    branch = f"claude/{common.host_name()}/{dt.date.today():%Y-%m-%d}-memo-{tail}"
+    if git(repo, "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}", timeout=60).returncode == 0:
+        branch += f"-{key[:6]}"
+    push = git(repo, "push", "-q", "origin", f"{commit}:refs/heads/{branch}", timeout=120)
+    if push.returncode != 0:
+        return None, f"push of {branch} failed ({(push.stderr or '').strip()[:160]})"
+
+    url, state = None, "pr"
+    if os.environ.get("SPARKS_FAKE_MERGE") == "1":  # tests: the bare remote plays GitHub
+        if CFG["land"] == "merge":
+            git(repo, "push", "-q", "origin", f"{commit}:refs/heads/{main}")
+            state = "merged"
+    else:
+        slug_ = common.repo_slug(git(repo, "remote", "get-url", "origin").stdout.strip())
+        tok = common.token()
+        if not slug_ or not tok:
+            return {"state": "branch", "url": None, "branch": branch}, "no GitHub token or repo — the branch is pushed, no PR"
+        body = (f"A voice memo, filed by `sparks` (D18) from `{common.host_name()}`.\n\n"
+                f"Adds `{path}` and nothing else.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+        pr = common.open_pr(slug_, branch, main, f"Memo: {title}", body, tok)
+        if not pr:
+            return {"state": "branch", "url": None, "branch": branch}, "the PR could not be opened — the branch is pushed"
+        url = pr.get("html_url")
+        if CFG["land"] == "merge":
+            if not common.ready_pr(pr, tok):
+                return {"state": "pr", "url": url, "branch": branch}, "PR open, still a draft"
+            # bin/pr merge's wait: one retry 5 s on (GitHub computes mergeability lazily), and
+            # where `base` has automerge.yml, up to 3 min for the automerge that lands it once
+            # `check` passes — a token that is no admin is refused until then
+            has_am = git(repo, "cat-file", "-e", f"{base}:{common.AUTOMERGE_YML}").returncode == 0
+            ok, why = common.merge_pr_waiting(slug_, pr["number"], tok, automerge=has_am)
+            state = "merged"  # or not: the read-back below decides, a lost reply included
+            if not ok:
+                git(repo, "fetch", "-q", "origin", main, timeout=90)
+                if git(repo, "cat-file", "-e", f"origin/{main}:{path}").returncode != 0:
+                    return {"state": "pr", "url": url, "branch": branch}, f"PR open, merge refused ({why})"
+
+    if state == "pr":
+        return {"state": "pr", "url": url, "branch": branch}, "PR open, waiting for a merge (\"land\": \"pr\")"
+    if state == "merged":
+        git(repo, "fetch", "-q", "origin", main, timeout=90)
+        if git(repo, "cat-file", "-e", f"origin/{main}:{path}").returncode != 0:
+            return {"state": "pr", "url": url, "branch": branch}, "merged, but the file is not on origin — check the PR"
+    return {"state": state, "url": url, "branch": branch}, None
+
+
+def ensure_topic(note, words):
+    """A written note is never nothing: someone typed it as an idea ("Would be cool" filed 0
+    notes on 2026-10-07). When the shaping reply carries no `###` topic, however it drifted, the
+    note's own words (the text that was shaped, markers and all) become one. Applied to the reply,
+    before check_markers and wrap_secrets, so those words pass every layer a reply passes; the
+    Tags and By lines are written here so topic_notes never reads the owner's lines as either."""
+    if topics_of(note) or not words.strip():
+        return note
+    words = words.strip()
+    # The first words no marker or regex secret touches (a redacted note is one line, its markers
+    # in it): wrap_secrets would otherwise hide the same number twice, under two ids.
+    clean = MARKER_RE.sub("\n", words)
+    for a, b in sorted(secret_spans(clean), reverse=True):
+        clean = clean[:a] + "\n" + clean[b:]
+    first = next((x for x in split_sentences(clean) if x.strip()), "")
+    heading = " ".join(re.sub(r"^[#>*_\-\s]+", "", first).split()[:8]) or "Written note"
+    # A heading line in a .md note would end the topic (`## `) or split it (`### `), and the
+    # split part's Tags:/By: lines would be read as metadata again: escaped, it stays words.
+    words = re.sub(r"^(#{1,6})(?=[ \t])", r"\\\1", words, flags=re.M)
+    by = f"By: {CFG['speaker'] or 'unclear'}\n" if CFG["speaker"] or CFG["people"] else ""
+    rest = re.sub(r"^## Topics[ \t]*(?:\n.*?)?(?=^## |\Z)", "", note, flags=re.M | re.S).rstrip()
+    return f"{rest}\n\n## Topics\n### {heading}\nTags:\n{by}{words}\n"
+
+
+def split_bin(note):
+    """(the note without its ## Bin section, the Bin section's lines)."""
+    m = re.search(r"^## Bin\s*\n(.*?)(?=^## |\Z)", note, flags=re.M | re.S)
+    if not m:
+        return note, "- nothing"
+    return (note[:m.start()] + note[m.end():]).rstrip() + "\n", m.group(1).strip() or "- nothing"
+
+
+def summary_of(note):
+    m = re.search(r"^## Summary\s*\n(.*?)(?=^## |\Z)", note, flags=re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def topics_of(note):
+    """[(heading, body)] for each `###` under `## Topics`, in the order written."""
+    m = re.search(r"^## Topics\s*\n(.*?)(?=^## |\Z)", note, flags=re.M | re.S)
+    parts = re.split(r"^### +(.+?)\s*$", m.group(1), flags=re.M) if m else []
+    return [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts) - 1, 2)]
+
+
+def file_topics(title, note, when, head):
+    """`"split": "topics"`: one note per topic, written into the inbox; the paths."""
+    return [write_inbox(name, text) for name, text in topic_notes(title, note, when, head)]
+
+
+def topic_notes(title, note, when, head):
+    """[(slug, text)]: one note per topic, `status: new`, tags lifted into frontmatter. A
+    reply with no `## Topics` at all drifted from the shape and is filed whole, as one idea,
+    rather than lost; an empty `## Topics` (an unintelligible recording) files nothing — the
+    audio and its transcript are in the archive either way. A written note never reaches here
+    without a topic: ensure_topic gives it one first."""
+    topics = topics_of(note)
+    m = re.search(r"^## Topics[ \t]*$", note, flags=re.M)
+    if not topics and m and not note[m.end():].strip():
+        return []
+    files = []
+    for heading, body in topics or [(title, note.strip())]:
+        tags = []
+        m = re.search(r"^Tags:[ \t]*(.*)$", body, flags=re.M | re.I)
+        if m:
+            tags = [t.strip().lower() for t in m.group(1).split(",") if t.strip()][:3]
+            body = (body[:m.start()] + body[m.end():]).strip()
+        by = ""
+        if CFG["speaker"] or CFG["people"]:
+            by = CFG["speaker"] or "unclear"
+            # Markdown around the label or the name ("**By:** Sam", "By: `both`") still counts.
+            m = re.search(r"^[-*_> \t]*By[*_]*:[*_ \t]*(.*)$", body, flags=re.M | re.I)
+            if m:
+                said = m.group(1).strip().strip("*_`. ").lower()
+                if said in CFG["people"] + ["both", "unclear"]:
+                    by = said
+                    body = (body[:m.start()] + body[m.end():]).strip()
+                else:  # "Sam (with Alex)": unclear, and the line stays for whoever corrects it
+                    by = "unclear"
+            by = f"by: {by}\n"
+        files.append((slug(heading, when), (
+            f"---\n{head}{by}status: new\ntags: [{', '.join(tags)}]\nfrom: {json.dumps(title, ensure_ascii=False)}\n---\n\n"
+            f"# {heading}\n\n{body}\n{YOUR_NOTES}")))
+    return files
+
+
+# The owner's own section, after the split so a `##` never ends a topic (the ideas README, 2026-10-03;
+# the first 20 notes were backfilled by hand, and the runner never added it until 2026-10-07).
+YOUR_NOTES = "\n## Your notes\n\n<!-- your thoughts, feedback, what to try first -->\n"
+
+
+# ---------------------------------------------------------------- one memo
+
+def archive_label(dest):
+    """Where the audio went, as the note names it. Under a Google shared drive it is the path from
+    the drive's name down (`project_data/ideas/archive/talk.m4a`), under iCloud Drive from
+    `iCloud Drive/` down: several configs archive into different places, and only the full path
+    says which one, and who else can open it."""
+    parts = dest.parts
+    if "Shared drives" in parts:
+        return "/".join(parts[parts.index("Shared drives") + 1:])
+    if "com~apple~CloudDocs" in parts:  # iCloud Drive, as Files and Finder name it
+        return "/".join(("iCloud Drive",) + parts[parts.index("com~apple~CloudDocs") + 1:])
+    return f"{dest.parent.name}/{dest.name}"
+
+
+def write_inbox(name, text):
+    OUT.mkdir(parents=True, exist_ok=True)
+    out = OUT / f"{name}.md"
+    n = 2
+    while out.exists():
+        out = OUT / f"{name}-{n}.md"
+        n += 1
+    out.write_text(text)
+    return out
+
+
+def archive_copy(path, key):
+    """A copy of something already filed goes to the archive; under redaction its name, which
+    may hold a place, does not."""
+    dest = ARCHIVE / (f"dup-{key[:8]}{path.suffix}" if CFG["redact"] else path.name)
+    if dest.exists():  # under redaction never the inbox name: it may be the place
+        dest = ARCHIVE / (f"dup-{key}{path.suffix}" if CFG["redact"] else f"{path.stem}-{key}{path.suffix}")
+    ARCHIVE.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(dest))
+
+
+def process(path, state):
+    key = digest(path)
+    if path.suffix.lower() in TEXT and state.get(key, {}).get("note") == "(empty)":
+        # Filed as nothing — before a written note always made one (2026-10-07), every re-save of
+        # "Would be cool" was archived as a copy of that nothing. Saved again, it is filed now.
+        del state[key]
+    if "note" in state.get(key, {}):
+        if state[key].get("archived") is False:  # filed, but the move failed: only move it now
+            dest = ARCHIVE / state[key].get("dest", path.name)
+            if dest.exists():  # from the planned name, never the inbox's: that may be the place
+                dest = ARCHIVE / f"{dest.stem}-{key}{dest.suffix}"
+            ARCHIVE.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(dest))
+            state[key]["archived"] = True
+            return f"✓ {path.name} → archived (its notes were filed on an earlier run)"
+        # The same note saved twice: archive the copy, so the inbox empties. A byte-identical
+        # recording still stays, logged as seen, as before 2026-10-10; a copy with other bytes
+        # or one a sibling inbox filed is archived below.
+        if path.suffix.lower() in TEXT:
+            archive_copy(path, key)
+            return f"✓ {path.name} → archived (the same note was filed on an earlier run)"
+        log(f"  seen already: {path.name}")
+        return None
+    other = None if key in state else filed_elsewhere(key)
+    if other:  # the same file dropped in two inboxes: filed once, the copy archived beside its own inbox's
+        archive_copy(path, key)
+        state[key] = {"file": path.name, "note": f"(filed by {other[0]}: {other[1]})", "archived": True}
+        return f"✓ {path.name} → archived (already filed from the {other[0]} inbox: {other[1]})"
+    # R2: a landing recorded but never finished (a crash or timeout after the push) picks up on
+    # the same repo and path, so a merged note is recognised, not filed a second time.
+    pending = state.get(key, {}).get("landing")
+    when = dt.datetime.fromtimestamp(path.stat().st_mtime)
+    written = path.suffix.lower() in TEXT
+    # The `same` key catches a copy whose bytes differ: New Recording 5 came in three times on
+    # 2026-10-03 and -08 with three content hashes, re-saved by Voice Memos or iCloud. Audio is
+    # keyed on its decoded samples, before Whisper — they matched bit for bit, while the words
+    # drifted with the model and VAD (review 2026-10-10). A written note on its words, 5 or more.
+    # A pending landing (R2) always goes on: it is this file's own record, never a duplicate.
+    wav = None
+    if written:
+        text, err = read_text(path)
+        if text is None:
+            return f"⚠ {path.name}: could not read the note ({err[:120]})"
+        # A note may quote a filed note's marker; a Whisper transcript never can. Disarmed to round
+        # brackets, so check_markers does not refuse it as an invented id on every pass.
+        text = MARKER_RE.sub(lambda m: "(" + m.group(0)[1:-1] + ")", text)
+        same = words_key(text) if len(text.split()) >= 5 else None
+    else:
+        wav = Path(os.environ.get("TMPDIR", "/tmp")) / f"memo-{key}.wav"
+        ok, err = to_wav(path, wav)
+        if not ok:
+            return f"⚠ {path.name}: could not convert audio ({err[:120]})"
+        same = "p" + digest(wav)[:15]
+    if same and not pending:
+        mine = next((filed_notes(e) for e in state.values() if isinstance(e, dict) and e.get("same") == same
+                     and filed_notes(e)), None)
+        other = ("this inbox", mine) if mine else filed_elsewhere(same)
+        if other:  # filed already in another copy: archived, never transcribed or shaped again
+            if wav:
+                wav.unlink(missing_ok=True)
+            archive_copy(path, key)
+            src = other[0] if mine else f"the {other[0]} inbox"
+            state[key] = {"file": path.name, "note": f"(same as {src}: {other[1]})", "archived": True, "same": same}
+            return f"✓ {path.name} → archived (the same {'note' if written else 'recording'} was filed from {src}: {other[1]})"
+    if wav:
+        text, err = transcribe(wav)
+        wav.unlink(missing_ok=True)
+        if text is None:
+            return f"⚠ {path.name}: transcription failed ({err})"
+    red = None
+    if CFG["redact"]:  # fail closed at every step: the audio waits, Claude never sees the raw text
+        if not CFG["split"]:
+            return f"⚠ {path.name}: redaction is built for \"split\": \"topics\" configs — audio kept"
+        try:
+            red = redact(text)
+        except gate.GateError as e:
+            if time.time() - path.stat().st_mtime > 86400:
+                stamp(f"a recording has waited over a day for redaction ({str(e)[:200]})", once="redact-wait")
+            return f"⚠ {path.name}: redaction failed ({str(e)[:300]}) — audio kept, will retry next run"
+        stamp(f"redaction {key[:8]}: {red['sentences']} sentences, {len(red['ids'])} flagged, "
+              f"${red['cost_usd']:.4f}")
+    shaped_from = red["redacted"] if red else text
+    note, err = (to_note(shaped_from, redacted=bool(red), written=written) if text.strip()
+                 else ("## Summary\nEmpty recording.\n\n## Topics\n\n## Bin\n- the whole recording", None))
+    if note is None:
+        return f"⚠ {path.name}: Claude failed ({err}) — audio kept, will retry next run"
+    if written and CFG["split"]:
+        note = ensure_topic(note, shaped_from)
+    if red:
+        note, err = check_markers(note, red["ids"])
+        if note is None:
+            return f"⚠ {path.name}: {err} — refused, audio kept, will retry next run"
+        note = wrap_secrets(note, red["ids"])
+
+    if red is not None:  # Voice Memos names the file after the place; the sidecar keeps that name
+        dest = ARCHIVE / f"{when:%Y-%m-%d-%H%M}-{key[:8]}{path.suffix}"
+        n = 2
+        while dest.exists() or sidecar_of(dest).exists():  # a re-filed recording keeps the first's sidecar
+            dest = ARCHIVE / f"{when:%Y-%m-%d-%H%M}-{key[:8]}-{n}{path.suffix}"
+            n += 1
+    # Claude's first line is the title; fall back to the file name if it drifted from the shape —
+    # the archived name when redacting: the inbox name is the place (review, 2026-10-05).
+    lines = note.splitlines()
+    fallback = dest.stem if red is not None else path.stem
+    title = re.sub(r"^#\s*", "", lines[0]).strip() if lines and lines[0].startswith("# ") else fallback
+    note = "\n".join(lines[1:]).lstrip("\n") if lines and lines[0].startswith("# ") else note
+    name = slug(title, when)
+    if red is None:
+        dest = ARCHIVE / path.name
+        if dest.exists():
+            dest = ARCHIVE / f"{path.stem}-{key}{path.suffix}"
+    # `audio:` names the archived original even for a written note: bin/redactions finds the
+    # sidecar by it. A note has no size worth a line, and says what it is in `source:`.
+    head = (f"source: {'written note' if written else CFG['source']}\nrecorded: {when:%Y-%m-%d %H:%M}\n"
+            f"audio: {archive_label(dest)}\n"
+            + ("" if written else f"size: {round(path.stat().st_size / 1_000_000, 1)} MB\n"))
+    if red is not None:
+        head += f"redactions: {'pending' if red['ids'] else 'none'}\n"
+    verbatim = f"<details><summary>Verbatim transcript</summary>\n\n{shaped_from}\n\n</details>\n"
+
+    # D18: where does it belong? Any doubt, any failure → the inbox, with the reason on it.
+    landed, where, reason = None, None, "routing is off" if not CFG["route"] else None
+    if CFG["split"]:  # ideas never route: they have one home
+        outs = file_topics(title, note, when, head) if text.strip() else []
+        if red is not None:  # before the state says "filed": a release needs it for every note
+            try:
+                write_sidecar(dest, path.name, when, key, text, red, outs)
+            except OSError as e:  # notes whose originals are kept nowhere never go out (review, 2026-10-05)
+                for o in outs:
+                    o.unlink(missing_ok=True)
+                return (f"⚠ {path.name}: the sidecar could not be written ({type(e).__name__}) — "
+                        f"its {len(outs)} note(s) withdrawn, audio kept, will retry next run")
+        WROTE.extend(outs)  # at once: a failure in the archive below must not orphan them
+        # Recorded before the archive step: if the move fails, the next run (every 15 min on
+        # the always-on Mac) only retries the move instead of filing the same topics again as -2, -3.
+        state[key] = {"file": path.name, "note": ", ".join(o.name for o in outs) or "(empty)",
+                      "archived": False, "dest": dest.name, "same": same}
+        save_state(state)
+        result = (f"✓ {dest.name if red is not None else path.name} → {len(outs)} note(s)"
+                  + "".join(f"\n    {o.name}" for o in outs))
+    elif CFG["route"] and not text.strip():
+        reason = "an empty recording"
+    elif CFG["route"]:
+        repos = candidates()
+        if pending:
+            decision, reason = dict(pending, confidence="high"), None
+        else:
+            decision, reason = route(f"# {title}\n\n{note}", repos) if repos else (None, "no candidate repos")
+        if decision:
+            repo, rpath, reason = check(decision, repos)
+            if repo:
+                where = f"{repo}/{rpath}"
+                body, _ = split_bin(note)
+                content = f"---\n{head}---\n\n# {title}\n\n{body}\n{verbatim if CFG['transcript'] == 'note' else ''}"
+                meta = repos[repo]
+                state[key] = {"landing": {"repo": repo, "path": rpath}}
+                save_state(state)
+                landed, reason = (land_vault(meta, rpath, content, bool(pending)) if meta["knowledge"]
+                                  else land_git(repo, meta, rpath, content, title, key, bool(pending)))
+                if landed and landed["state"] == "filed":
+                    WROTE.append(meta["dir"] / rpath)
+            elif decision.get("repo"):
+                where = f"{decision.get('repo')}/{decision.get('path')}"
+
+    if CFG["split"]:
+        pass
+    elif landed and landed["state"] in ("filed", "merged"):
+        _, binned = split_bin(note)
+        link = f"\npr: {landed['url']}" if landed.get("url") else ""
+        out = write_inbox(name, (
+            f"---\n{head}filed: {where}{link}\n---\n\n# {title}\n\n"
+            f"Filed to `{where}`{' — ' + landed['url'] if landed.get('url') else ''}. This stub is for "
+            f"Aurora's dream and /embark; the note and its transcript live there.\n\n"
+            f"## Summary\n{summary_of(note)}\n\n## Bin\n{binned}\n"))
+        result = f"✓ {path.name} → {where}{' (' + landed['url'] + ')' if landed.get('url') else ''}"
+    else:
+        extra = ""
+        if landed:  # a PR or branch that did not merge: the note stays readable in the inbox too
+            extra = f"pr: {landed.get('url') or 'none — branch ' + landed.get('branch', '?')}\n"
+        route_line = f"route: {where or 'none'} — not filed: {reason}\n" if CFG["route"] else ""
+        keep = verbatim if CFG["transcript"] == "note" else ""
+        out = write_inbox(name, f"---\n{head}{route_line}{extra}---\n\n# {title}\n\n{note}\n\n{keep}")
+        result = f"✓ {path.name} → inbox/memos/{out.name}" + (f" (not filed: {reason})" if CFG["route"] else "")
+
+    ARCHIVE.mkdir(parents=True, exist_ok=True)
+    if CFG["transcript"] == "archive" and not written:  # D2 (ideas): the words stay with the audio,
+        # not in git; a written note is its own words. Written before the move, named after the
+        # whole audio name (talk.m4a, talk.mp3 differ)
+        dest.with_name(dest.name + ".txt").write_text(text + "\n")
+    shutil.move(str(path), str(dest))
+    if CFG["split"]:
+        state[key] = {"file": path.name, "note": ", ".join(o.name for o in outs) or "(empty)",
+                      "at": dt.datetime.now().isoformat(timespec="seconds"), "same": same}
+        return result
+    WROTE.append(out)
+    filed = landed and landed["state"] in ("filed", "merged")
+    state[key] = {"file": path.name, "note": out.name, "filed": where if filed else None,
+                  "at": dt.datetime.now().isoformat(timespec="seconds"), "same": same}
+    return result
+
+
+# ---------------------------------------------------------------- entry points
+
+WROTE = []  # vault files this pass wrote: the only ones its commit may take (NIT1)
+
+
+def stamp(msg, once=None):
+    """One dated line in the memo log; with `once`, at most once a day per kind (R3: the
+    background pass used to fail without a word, as launchd did for eleven days)."""
+    if once:
+        mark = STATE.parent / f"said-{STATE.stem}-{once}-{dt.date.today():%Y-%m-%d}"
+        if mark.exists():
+            return
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        mark.touch()
+    print(f"{dt.datetime.now():%Y-%m-%d %H:%M} sparks: {msg}")
+
+
+def on_alarm(signum, frame):
+    stamp("the inbox did not answer in 20 s (a permission dialog?) — stopped", once="alarm")
+    os._exit(0)
+
+
+def read_text(path):
+    """(text, None) or (None, why). Plain files as UTF-8; rich text through textutil."""
+    if path.suffix.lower() in (".txt", ".md"):
+        return path.read_text(errors="replace"), None
+    r = run(["textutil", "-noload", "-convert", "txt", "-stdout", str(path)], timeout=60)  # -noload: never fetch a remote image
+    if r.returncode != 0:
+        return None, (r.stderr or r.stdout).strip() or f"textutil exit {r.returncode}"
+    return r.stdout, None
+
+
+# ---------------------------------------------------------------- Apple Notes (2026-10-08)
+
+# Ideas written in Apple Notes on any device (the owner, 2026-10-07: "it would be better if the notes
+# can be added from anywhere, not just the phone"), replacing a phone Shortcut that saved them as
+# .txt. A split config with
+#     "apple_notes": {"account": "iCloud", "from": "_ideas", "to": "_ideas_filed", "settle_minutes": 10}
+# exports each note in `from` into its own inbox as `<created>-note-<id8>.txt`, then moves the
+# note to `to`; the written-note path above files the text like any other. The file is the durable
+# copy: once it is written the note may move, and a filing that fails keeps the file for a retry.
+#
+# AppleScript (JXA), not NoteStore.sqlite: it is the public interface, it can move a note, and it
+# asks only for the two folders it names. The same store holds the owner's private notes: this script
+# never lists the account's notes, never reads a note outside `from`, and of `to` resolves only the
+# folder. Folders go by name, and only when exactly one carries it (the Shortcut's folder ids are
+# not ids AppleScript knows). It needs one Automation grant, sextant-host → Notes, clicked once at
+# the Mac's screen; a rebuild of sextant-host loses it, as it loses Full Disk Access.
+#
+# Only sextant-host asks: it sets SPARKS_NOTES=1 (bin/sextant-host.c). Without it — a run by hand, a
+# build of sextant-host from before this section — the pass leaves Notes alone, so the Automation
+# dialog is never raised for a terminal, or for a build whose grant the next rebuild would lose.
+#
+# Settling: a note edited in the last `settle_minutes` waits — it may still be being typed on
+# another device, and moving it mid-sentence would file half an idea. That is why the trigger is
+# the job's 15-minute interval, not a WatchPaths on the Notes container: the edit that fires the
+# watch is exactly the one too fresh to take.
+NOTES_JXA = r"""
+function run(argv) {
+  var mode = argv[0], account = argv[1], ids = argv.slice(4);
+  var app = Application('Notes');
+  var acc = app.accounts.byName(account);
+  if (!acc.exists()) throw new Error('no Notes account named ' + account);
+  function one(name) {
+    var f = acc.folders.whose({name: name})();
+    if (f.length !== 1) throw new Error(f.length + ' folders named ' + name + ' in ' + account);
+    return f[0];
+  }
+  var src = one(argv[2]), dst = one(argv[3]);
+  if (mode === 'move') {
+    ids.forEach(function (id) {  // one note that will not move never stops the others
+      try { app.move(src.notes.byId(id), {to: dst}); } catch (e) {}
+    });
+    return JSON.stringify(src.notes.id());  // the read-back decides what moved
+  }
+  return JSON.stringify(src.notes().map(function (n) {
+    try {
+      var locked = n.passwordProtected();
+      return {id: n.id(), created: n.creationDate().toISOString(),
+              modified: n.modificationDate().toISOString(), locked: locked,
+              text: locked ? '' : n.plaintext()};
+    } catch (e) { return null; }  // unreadable (mid-sync, say): this pass leaves it, the rest go on
+  }).filter(function (x) { return x !== null; }));
+}
+"""
+
+
+def notes_call(mode, *ids):
+    """(parsed JSON, None) or (None, why): one osascript run against the two named folders.
+    `list` gives the notes in `from`; `move` moves the ids and gives the ids still in `from` —
+    the read-back, since an Apple event that "succeeded" is not a note that moved."""
+    n = CFG["apple_notes"]
+    r = run([OSASCRIPT, "-l", "JavaScript", "-e", NOTES_JXA, mode, str(n.get("account") or "iCloud"),
+             str(n["from"]), str(n["to"]), *ids], timeout=150)
+    if r.returncode != 0:
+        why = " ".join((r.stderr or r.stdout).split())
+        if any(c in why for c in ("-1743", "-1744", "-1712", "Not authorized")) or r.returncode == 124:
+            why = ("Notes refused or did not answer — the Automation grant for sextant-host is missing, or "
+                   "its dialog waits on the screen (System Settings → Privacy & Security → Automation): " + why)
+        return None, why[:400]
+    try:
+        return json.loads(r.stdout), None
+    except ValueError:
+        return None, f"Notes answered no JSON: {r.stdout.strip()[:200]}"
+
+
+def utc(iso):
+    return dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def from_notes(dry=False):
+    """Export each settled note in the config's Notes folder into the inbox, then move it; the
+    lines worth printing. Exported-but-not-moved notes are remembered by id and text hash beside
+    the state, so a move that fails is retried without exporting (and filing) the note again."""
+    n = CFG["apple_notes"]
+    out = []
+
+    def say(msg, once):  # the job's log once a day; a run by hand, or a dry run, sees it every time
+        if "--background" in sys.argv and not dry:
+            stamp(msg, once=once)
+        else:
+            out.append(f"⚠ {msg}")
+
+    if not (n.get("from") and n.get("to")):
+        say(f"apple_notes in {CONFIG} needs `from` and `to` folder names — Notes not read", "notes-config")
+        return out
+    if not CFG["split"]:
+        say('apple_notes is built for "split": "topics" configs — Notes not read', "notes-config")
+        return out
+    listing, why = notes_call("list")
+    if listing is None:
+        say(f"Apple Notes: {why}", "notes")
+        return out
+    path = STATE.with_name(STATE.stem + ".notes.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = old_state()  # memo-run's cache moved to sparks' (old_state): the pending moves move with it
+    old = old and old.with_name(old.stem + ".notes.json")
+    if old and old.is_file() and not path.exists():
+        os.replace(old, path)
+    try:
+        seen = json.loads(path.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    here = {x["id"] for x in listing}
+    seen = {k: v for k, v in seen.items() if k in here}  # gone from `from`: moved, or deleted — done
+    settle = dt.timedelta(minutes=float(n.get("settle_minutes", 10)))
+    now = dt.datetime.now(dt.timezone.utc)
+    ready, wordless, failed = [], 0, 0
+    for x in listing:
+        text = (x.get("text") or "").replace("\r\n", "\n").replace("\r", "\n")
+        if x.get("locked") or not text.strip():
+            wordless += 1
+            continue
+        if now - utc(x["modified"]) < settle:
+            continue  # perhaps still being typed: a later pass takes it
+        h = hashlib.sha256(text.encode(errors="replace")).hexdigest()[:16]
+        if seen.get(x["id"]) != h:
+            created = utc(x["created"]).astimezone()
+            name = f"{created:%Y-%m-%d-%H%M}-note-{hashlib.sha256(x['id'].encode()).hexdigest()[:8]}.txt"
+            if dry:
+                out.append(f"would export from Notes: {name}")
+                continue
+            part = IN / f".{name}.part"  # a dot-file: no listing takes it half-written
+            try:  # one note that cannot be written (a lone surrogate, say) never holds up the others
+                part.write_text(text if text.endswith("\n") else text + "\n", errors="replace")
+                os.utime(part, (created.timestamp(), created.timestamp()))  # `recorded:` is when it was written
+                os.replace(part, IN / name)
+            except (OSError, ValueError):
+                failed += 1
+                continue
+            seen[x["id"]] = h
+            path.write_text(json.dumps(seen, indent=1, sort_keys=True))
+            out.append(f"  exported a note from {n['from']} as {name}")
+        ready.append(x["id"])
+    if wordless:
+        say(f"Apple Notes: {wordless} note(s) in {n['from']} have no words to read (locked, or only "
+            "attachments) — they stay there", "notes-wordless")
+    if failed:
+        say(f"Apple Notes: {failed} note(s) in {n['from']} could not be written to {IN} — they stay "
+            "there for the next pass", "notes-write")
+    if ready and not dry:
+        left, why = notes_call("move", *ready)
+        moved = [i for i in ready if left is not None and i not in left]
+        for i in moved:
+            seen.pop(i, None)
+        if len(moved) < len(ready):
+            say(f"Apple Notes: {len(ready) - len(moved)} exported note(s) did not move to {n['to']} — "
+                f"the next pass tries the move again{': ' + why if why else ''}", "notes-move")
+        if moved:
+            out.append(f"  moved {len(moved)} note(s) to {n['to']}")
+    if not dry:
+        path.write_text(json.dumps(seen, indent=1, sort_keys=True))
+    return out
+
+
+# ---------------------------------------------------------------- Voice Memos (2026-10-16)
+
+# Spoken ideas recorded with Apple's own Voice Memos — the Action Button of an iPhone or an Apple
+# Watch Ultra set to Voice Memo: one press starts, one stops — reach this Mac through iCloud, into
+# its Voice Memos library, and each new one is copied into the inbox (docs/spark-capture-2026-10-16.md).
+# It replaces a Shortcut (Record Audio → Save File to iCloud Drive) that held the audio in memory
+# until the save: on the watch the save runs on the paired phone ("Remote execution timed out"),
+# and a run that failed anywhere lost the recording outright (2026-10-15: 3–4 lost in one hour).
+# Voice Memos writes to the device that records and syncs when it can: a failure delays a
+# recording, it never loses one.
+#
+#     "voice_memos": {"since": "2026-10-01", "folders": false, "settle_seconds": 60}
+#
+# Read-only: the audio is copied, never moved, and the database is read from a snapshot — the
+# .db and its -wal copied to a scratch folder — because SQLite gives a reader no way to leave a WAL
+# database's folder as it found it: even mode=ro creates -wal and -shm when they are missing (the
+# test caught it). A copy taken mid-checkpoint can miss the newest rows; the next pass sees them.
+# Nothing here writes to Voice Memos. Which recordings: every one dated from `since` on, except one in a folder —
+# record inside a folder (or move one there before this Mac sees it) to keep it out; `"folders":
+# true` takes those too. A recording already filed by hand counts as filed: the share sheet names
+# its copy after the title and re-encodes it, so a hash cannot see it, but this config's state
+# and archive hold an audio file under that exact title. Settled: the copy waits until the audio
+# file is complete — its duration within two seconds of the library's, and untouched for
+# `settle_seconds` (default 10). iCloud writes the file in place over seconds (probed: created
+# 00:51:00, last written 00:51:21), and the new file is what starts the job, so a pass that finds
+# one still being written waits for it — every 5 s, 90 s at most — rather than leave it to the
+# next run, 15 minutes on: the owner hears "got it" within a minute of the sync. Named `<title> vm-<id8>.m4a` (from the title alone, a second "Recording 27" would
+# look filed) and dated when it was recorded, which `recorded:` reads.
+#
+# The Mac's library fills only while the app runs (probed on the always-on Mac 2026-10-16: an empty library
+# until Voice Memos was opened, all 93 recordings seven minutes later), so each pass opens it,
+# hidden, when it is not running. Reading another app's container takes Full Disk Access, which
+# sextant-host has. `--inboxes` lists the library's folder, so a new recording starts the job.
+VOICE_MEMOS = Path(os.environ.get("SPARKS_VOICEMEMOS") or
+                   HOME / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings")
+APPLE_EPOCH = 978307200  # Core Data dates count from 2001-01-01
+
+
+def vm_rows():
+    """Every recording the library knows: (id, recorded, seconds, folder, file name, title)."""
+    db = VOICE_MEMOS / "CloudRecordings.db"
+    if not db.is_file():
+        raise sqlite3.OperationalError("no CloudRecordings.db")
+    with tempfile.TemporaryDirectory(prefix="sparks-vm-") as tmp:
+        snap = Path(tmp) / db.name
+        shutil.copyfile(db, snap)
+        if db.with_name(db.name + "-wal").is_file():  # the newest rows live here until a checkpoint
+            shutil.copyfile(db.with_name(db.name + "-wal"), snap.with_name(snap.name + "-wal"))
+        con = sqlite3.connect(f"file:{quote(str(snap))}", uri=True, timeout=10)
+        try:
+            # ZEVICTIONDATE: set on a recording deleted on any device (Recently Deleted keeps its
+            # row and file for 30 days); a deleted memo is never filed (review, 2026-10-16)
+            rows = con.execute("SELECT ZUNIQUEID, ZDATE, ZDURATION, ZFOLDER, ZPATH, ZENCRYPTEDTITLE "
+                               "FROM ZCLOUDRECORDING WHERE ZEVICTIONDATE IS NULL").fetchall()
+        finally:
+            con.close()
+    return [(str(i), dt.datetime.fromtimestamp(d + APPLE_EPOCH), float(s or 0), f, p or "", t or "")
+            for i, d, s, f, p, t in rows if i and d is not None]
+
+
+def audio_seconds(path):
+    """The file's own duration (afinfo, part of macOS), or None when it cannot be read yet."""
+    r = run(["afinfo", str(path)], timeout=30)
+    m = re.search(r"estimated duration:\s*([0-9.]+)", r.stdout or "")
+    return float(m.group(1)) if r.returncode == 0 and m else None
+
+
+def filed_titles():
+    """Names of audio this config already filed — its state and its archive — without extension."""
+    names = set()
+    try:
+        names |= {Path(v["file"]).stem for v in json.loads(STATE.read_text()).values()
+                  if isinstance(v, dict) and v.get("file")}
+    except (OSError, ValueError):
+        pass
+    for d in (ARCHIVE, IN):  # the inbox too: a hand-shared copy may still wait there
+        try:
+            names |= {p.stem for p in d.iterdir() if p.suffix.lower() in AUDIO}
+        except OSError:
+            pass
+    return names
+
+
+def safe_title(title):
+    t = re.sub(r"[/:\\\x00-\x1f]", " ", unicodedata.normalize("NFC", title)).strip(" .")
+    return re.sub(r"\s+", " ", t)[:60].strip() or "Recording"
+
+
+def vm_keep_open():
+    """The library syncs only while Voice Memos runs; -g -j: hidden, in the background."""
+    if os.environ.get("SPARKS_VOICEMEMOS"):
+        return  # a test's library: never start the real app
+    if run(["pgrep", "-x", "VoiceMemos"], timeout=10).returncode != 0:
+        run(["open", "-g", "-j", "-a", "VoiceMemos"], timeout=30)
+
+
+def from_voice_memos(dry=False):
+    """Copy each new, settled recording into the inbox; (lines worth printing, the copies made)."""
+    v = CFG["voice_memos"]
+    out, made = [], []
+
+    def say(msg, once):  # a setup problem: the job's log once a day, a run by hand every time
+        if "--background" in sys.argv and not dry:
+            stamp(msg, once=once)
+        else:
+            out.append(f"⚠ {msg}")
+
+    try:
+        since = dt.datetime.fromisoformat(str(v.get("since") or ""))
+    except ValueError:
+        say(f"voice_memos in {CONFIG} needs `since` as a date (2026-10-01) — Voice Memos not read", "vm-config")
+        return out, made, False
+    if not dry and "--background" in sys.argv:
+        vm_keep_open()
+    signal.alarm(20)  # another app's container can raise a permission dialog for a terminal
+    try:
+        rows = vm_rows()
+    except (sqlite3.Error, OSError) as e:
+        say(f"Voice Memos: the library at {VOICE_MEMOS} is not readable ({e}) — on a Mac where "
+            "Voice Memos has never run, open it once; a launchd job needs Full Disk Access", "vm-read")
+        return out, made, False
+    finally:
+        signal.alarm(0)
+    path = STATE.with_name(STATE.stem + ".voicememos.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        seen = json.loads(path.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    # The first pass is the backfill: it texts nothing on arrival, and only recordings made before
+    # it can have been shared by hand — a title match after it is a reused title, not a copy.
+    first = "_first" not in seen
+    seen.setdefault("_first", time.time())
+    settle = float(v.get("settle_seconds", 10))
+    titles = None  # read once, only if a recording needs it
+    wait = float(os.environ.get("SPARKS_VM_WAIT", max(90, settle + 30)))  # tests shorten it
+    deadline = time.time() + wait
+    stale = []
+    while True:
+        fresh, stale = take(rows, since, v, seen, settle, titles, out, made, path, dry)
+        if not fresh or dry or time.time() >= deadline:
+            break
+        time.sleep(5)  # a file being written now: this pass waits for it (see above)
+        titles = filed_titles()
+    if stale:
+        say(f"Voice Memos: {len(stale)} recording(s) whose file never matches the library's length or "
+            f"type wait, not filed: {', '.join(stale[:5])}", "vm-stale")
+    if not dry:
+        save_seen(path, seen)
+    return out, made, first
+
+
+def save_seen(path, seen):
+    """Atomic: a truncated file would make every recording since `since` look new."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(seen, indent=1, sort_keys=True))
+    os.replace(tmp, path)
+
+
+def take(rows, since, v, seen, settle, titles, out, made, path, dry):
+    """One look at the library: copy what is ready; (the count still being written right now,
+    the names of those that never settle)."""
+    fresh, stale = 0, []
+    cutover = dt.datetime.fromtimestamp(seen["_first"])
+    for rid, when, secs, folder, fname, title in sorted(rows, key=lambda r: r[1]):
+        if rid in seen or when < since or (folder is not None and not v.get("folders")):
+            continue
+        if titles is None:
+            titles = filed_titles()
+        name = f"{safe_title(title)} vm-{rid.replace('-', '')[:8].lower()}"
+        if name in titles or (title and title in titles and when < cutover):
+            seen[rid] = "filed by hand" if name not in titles else name
+            continue
+        src = VOICE_MEMOS / fname if fname else None
+        if not src or not src.is_file():
+            continue  # not downloaded yet: the file's arrival starts the job again
+        if src.suffix.lower() not in AUDIO:
+            stale.append(src.name)
+            continue
+        age = time.time() - src.stat().st_mtime
+        got = audio_seconds(src) if age >= settle else None
+        if got is None or abs(got - secs) > 2:
+            if age < 120:
+                fresh += 1  # being written: worth waiting for
+            elif got is not None:
+                stale.append(title or src.name)
+            continue
+        name += src.suffix.lower()
+        if dry:
+            out.append(f"would copy from Voice Memos: {name}")
+            continue
+        part = IN / f".{name}.part"  # a dot-file: no listing takes it half-copied
+        try:
+            shutil.copyfile(src, part)
+            os.utime(part, (when.timestamp(), when.timestamp()))  # `recorded:` is when it was recorded
+            os.replace(part, IN / name)
+        except OSError as e:
+            out.append(f"⚠ Voice Memos: {name} could not be copied ({e}) — the next pass tries again")
+            part.unlink(missing_ok=True)
+            continue
+        seen[rid] = name
+        save_seen(path, seen)
+        made.append((IN / name, title or name, secs, when))
+        out.append(f"  copied from Voice Memos: {name}")
+    return fresh, stale
+
+
+# ---------------------------------------------------------------- notify (2026-10-16)
+
+# A text to the owner when a recording arrives and when it is filed, so a spark is never a guess
+# (the owner, 2026-10-16: "I want to be notified after I have just recorded!").
+#
+#     "notify": {"command": ["~/bin/text-me", "--self"],
+#                "on": ["received", "filed", "failed"]}
+#
+# The command gets the message as its last argument. This file knows no messenger: a
+# messenger that queues it for its own job, which already holds the Messages permission, means this
+# job (its launcher) needs no new grant. `received` fires for a recording copied in from Voice
+# Memos in the last hour — a backfill of old ones stays quiet; `filed` once per pass; `failed`
+# once per file, the first time it fails. A notifier that fails is logged once a day and never
+# holds up the filing. The command runs as a child of the job, so with sextant-host's grants — the
+# same trust as the config's prompts and the whisper and claude it already starts; the config is
+# the owner's, never a repo another person writes (review, 2026-10-16).
+def notify(event, text):
+    n = CFG["notify"]
+    on = n.get("on") if n else None
+    if not n or event not in (on if isinstance(on, list) else ["received", "filed", "failed"]):
+        return
+    cmd = [str(Path(c).expanduser()) if str(c).startswith("~") else str(c) for c in n.get("command") or []]
+    if not cmd:
+        return
+    try:
+        r = run([*cmd, text], timeout=60)
+    except Exception as e:  # a missing or unrunnable command: said once a day, the pass goes on
+        r = subprocess.CompletedProcess(cmd, 127, "", f"{type(e).__name__}: {e}")
+    if r.returncode != 0:
+        stamp(f"notify {event}: {' '.join(((r.stderr or r.stdout) or f'exit {r.returncode}').split())[:200]}",
+              once="notify")
+
+
+def clock(secs):
+    secs = int(round(secs))
+    return f"{secs // 3600}:{secs // 60 % 60:02d}:{secs % 60:02d}" if secs >= 3600 else f"{secs // 60}:{secs % 60:02d}"
+
+
+def note_titles(paths):
+    """The `# ` line of each note this pass wrote, in order."""
+    out = []
+    for p in paths:
+        try:
+            m = re.search(r"^# (.+)$", Path(p).read_text(), re.M)
+        except OSError:
+            continue
+        if m:
+            out.append(m.group(1).strip())
+    return out
+
+
+def filed_message(recordings, titles):
+    """One text for the whole pass: what was filed, as note titles; capped, never a wall."""
+    head = (f"⚡ Filed {recordings[0]}" if len(recordings) == 1 else f"⚡ Filed {len(recordings)} recordings")
+    if not titles:
+        return f"{head} — nothing to keep in it"
+    body = f"{head} → {len(titles)} note{'s' if len(titles) != 1 else ''}: " + "; ".join(titles)
+    return body if len(body) <= 400 else body[:399].rstrip() + "…"
+
+
+LOCK = []
+
+
+def hold_lock():
+    """One pass at a time per config: every session start may run one, and two would file a memo
+    twice; two configs never wait on each other. Taken once, held to the end of the process (the
+    Notes export takes it before the filing does)."""
+    if LOCK:
+        return True
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(STATE.with_suffix(".lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    LOCK.append(fh)
+    return True
+
+
+def audio_in_inbox():
+    """Recordings, and written notes where the config splits topics, oldest first; a dot-file (an
+    iCloud placeholder) is neither. A routed inbox stays audio-only: a stray .txt there would be
+    filed into a project repo and merged (review, 2026-10-07)."""
+    kinds = AUDIO | TEXT if CFG["split"] else AUDIO
+    return sorted((p for p in IN.iterdir()
+                   if p.suffix.lower() in kinds and not p.name.startswith(".")),
+                  key=lambda p: p.stat().st_mtime)
+
+
+def session_start():
+    """The SessionStart hook: silent, instant, and it never touches iCloud itself — an
+    unattended run can stall on a macOS permission dialog there (dream SKILL, 2026-09-16), so
+    the listing happens in the detached child, under an alarm. Only a session someone is at
+    starts it: Claude Code sets CLAUDE_CODE_SESSION_ATTENDED=1 there and 0 in `claude -p`
+    (probed 2026-09-29), so the weekly loop never does. XPC_SERVICE_NAME was the first idea and
+    is useless — /usr/bin/python3 sees "0" whatever launchd set. Prints nothing: hook output
+    lands in every session's context."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "1":
+        return 0
+    if not IN and not CFG["also"]:
+        return 0
+    CFG["log"].parent.mkdir(parents=True, exist_ok=True)
+    with open(CFG["log"], "a") as fh:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--chain"],
+                         stdin=subprocess.DEVNULL, stdout=fh, stderr=fh, start_new_session=True,
+                         cwd=str(HOME))
+    return 0
+
+
+def chain():
+    """The detached child of --session-start: this config's pass, then each `also` config's,
+    one after another — never two whisper runs or two vault commits at once (review
+    2026-10-03: knowledge-commit takes no lock). Per-config locks alone let two chains from two
+    session starts interleave (B skips the config A holds and takes the next), so the whole chain
+    holds one lock too; a second chain exits, and the next session start picks up what is left."""
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    held = open(STATE.parent / "chain.lock", "w")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+    for c in ([None] if IN else []) + CFG["also"]:
+        env = dict(os.environ, SPARKS_CONFIG=str(c)) if c else None
+        try:  # output goes straight to the log this child already writes to
+            subprocess.run([sys.executable, str(Path(__file__).resolve()), "--background"],
+                           env=env, cwd=str(HOME), timeout=3 * 3600)
+        except subprocess.TimeoutExpired:
+            stamp(f"{c or CONFIG}: a pass ran over 3 h — stopped, the next run retries")
+    return 0
+
+
+def route_only(note_path):
+    """`--route <note.md>`: the decision and the runner's verdict on it, nothing landed."""
+    note = Path(note_path).read_text()
+    repos = candidates()
+    decision, reason = route(note, repos)
+    print(json.dumps(decision, ensure_ascii=False) if decision else f"no decision: {reason}")
+    if decision:
+        repo, rpath, reason = check(decision, repos)
+        print(f"would file to {repo}/{rpath}" if repo else f"would stay in the inbox: {reason}")
+    return 0
+
+
+def inboxes():
+    """`--inboxes`: what a watcher should watch — this config's inbox and every `also` config's,
+    and the Voice Memos library when any of them reads it (a new recording starts the job)."""
+    vm = bool(CFG["voice_memos"])
+    for c in CFG["also"]:
+        try:
+            cfg = json.loads(c.read_text())
+        except (OSError, ValueError):
+            cfg = {}
+        if cfg.get("inbox"):
+            print(Path(cfg["inbox"]).expanduser())
+        vm = vm or isinstance(cfg.get("voice_memos"), dict)
+    if vm:
+        print(VOICE_MEMOS)
+    return 0
+
+
+FLAGS = {"--dry-run", "--verbose", "-v", "--session-start", "--background", "--chain", "--inboxes"}
+VALUED = {"--limit", "--route"}  # each takes the next argument
+
+
+def bad_args(argv):
+    """Why argv is not a call sparks knows, else None. A bare run is a live pass, so `--help` or a
+    typo must never fall through to one: the plugin puts sparks on every session's PATH (review,
+    2026-10-19)."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in VALUED:
+            if i + 1 >= len(argv):
+                return f"{a} takes a value"
+            i += 2
+            continue
+        if a not in FLAGS:
+            return f"unknown argument {a!r}"
+        i += 1
+    return None
+
+
+def main():
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(__doc__.split("\n\n")[2])
+        return 0
+    why = bad_args(sys.argv[1:])
+    if why:
+        print(f"sparks: {why} — nothing ran; `sparks --help` lists the calls", file=sys.stderr)
+        return 2
+    if "--inboxes" in sys.argv:
+        if IN:
+            print(IN)
+        return inboxes()
+    if "--session-start" not in sys.argv and CFG["host"] and CFG["host"] != common.host_name():
+        return 0  # the config names another Mac; iCloud brings the audio to both
+    if "--route" in sys.argv:
+        return route_only(sys.argv[sys.argv.index("--route") + 1])
+    if "--session-start" in sys.argv:
+        return session_start()  # before the host check: an `also` config may name this Mac
+    if "--chain" in sys.argv:
+        return chain()
+    if IN is None and "--background" in sys.argv:
+        stamp(f"no inbox in {CONFIG} — nothing to do", once="no-config")
+        return 0
+    if IN is None:
+        print(f"sparks: no config at {CONFIG} and no SPARKS_IN — nothing to do. "
+              "The config says where memos arrive, where notes go, and which prompt shapes them; "
+              "see the sextant module's README.")
+        return 0
+    if OUT is None or ARCHIVE is None:
+        print(f"sparks: {CONFIG} must name both `notes` and `archive`")
+        return 0
+    background = "--background" in sys.argv  # started by the hook: quiet unless there is work
+    if background:
+        sys.stdout.reconfigure(line_buffering=True)  # the log is a file: show progress as it happens
+    signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(20)  # a stat or listing stuck on a permission dialog ends here, lock not yet held
+    try:
+        present = IN.is_dir()
+    except PermissionError:  # TCC can refuse the stat itself, not only the listing
+        present = None
+    if present is False:
+        msg = f"no inbox at {IN} — create it, or point SPARKS_IN elsewhere"
+        stamp(msg, once="no-inbox") if background else print(f"sparks: {msg}")
+        return 0
+    try:
+        if present is None:
+            raise PermissionError
+        files = audio_in_inbox()
+    except PermissionError:
+        msg = (f"{IN} is not readable from here — a launchd job needs Full Disk Access, which on "
+               "the always-on Mac is granted to its launcher binary (every rebuild loses it); "
+               "elsewhere run sparks by hand from a Claude Code session")
+        stamp(msg, once="unreadable") if background else print(f"sparks: {msg}")
+        return 0
+    signal.alarm(0)
+    dry = "--dry-run" in sys.argv
+    if CFG["apple_notes"] and os.environ.get("SPARKS_NOTES") != "1":
+        if background:  # the job, run by a sextant-host built before SPARKS_NOTES: nothing files
+            stamp("apple_notes is set, but this sextant-host predates SPARKS_NOTES — Notes is not read "
+                  "until it is rebuilt (bootstrap.sh --schedule) and granted Automation → Notes", once="notes-host")
+        else:
+            log("apple_notes: Notes is asked only under sextant-host (SPARKS_NOTES=1) — skipped")
+    elif CFG["apple_notes"] and (dry or hold_lock()):  # after the listing proved the inbox readable
+        try:
+            for l in from_notes(dry):
+                print(l)
+        except Exception as e:  # a note never stops the inbox's own files from being filed
+            print(f"⚠ Apple Notes: {type(e).__name__}: {e}")
+        files = audio_in_inbox()  # what it exported is filed in this pass
+    if CFG["voice_memos"] and (dry or hold_lock()):
+        try:
+            lines, made, first = from_voice_memos(dry)
+        except Exception as e:  # the library never stops the inbox's own files from being filed
+            lines, made, first = [f"⚠ Voice Memos: {type(e).__name__}: {e}"], [], False
+        for l in lines:
+            print(l)
+        for _, title, secs, when in made:
+            if not first:  # the first pass is the backfill; after it, every arrival is news
+                notify("received", f"🎙 Got it: {title} ({clock(secs)}). Filing now.")
+        files = audio_in_inbox()
+    if not files:
+        # Stamped while idle too: a sibling skips a state without `_speaker` (filed_elsewhere), and
+        # memo-run's old state moves over here rather than at the next file. Never on a dry run.
+        if not dry and stamp_stale() and hold_lock():
+            save_state(load_state())
+        log("nothing new")
+        return 0
+    if any(p.suffix.lower() in AUDIO for p in files) and (shutil.which(WHISPER) is None or not MODEL.is_file()):
+        msg = (f"{WHISPER} or the model is missing — `brew install whisper-cpp` and "
+               f"put ggml-large-v3-turbo.bin in {MODEL.parent}")
+        stamp(msg, once="whisper") if background else print(f"sparks: {msg}")
+        files = [p for p in files if p.suffix.lower() in TEXT]  # the recordings wait; notes go on
+        if not files:
+            return 0
+    if "--limit" in sys.argv:  # after the filter: a limit must not spend itself on recordings that wait
+        files = files[:int(sys.argv[sys.argv.index("--limit") + 1])]
+    if dry:
+        print("would process:", ", ".join(p.name for p in files))
+        return 0
+
+    if not hold_lock():
+        stamp("another pass is filing — leaving it to that one") if background else \
+            log("another sparks pass is filing — leaving it to that one")
+        return 0
+    files = [p for p in files if p.exists()]  # the pass that held the lock may have moved some
+    why = gate_ready()  # before whisper: a row that cannot run must not cost a transcription each pass
+    if why:
+        msg = f"⚠ {len(files)} recording(s) wait: {why}"
+        stamp(msg, once="gate") if background else print(msg)
+        return 0
+
+    state = load_state()
+    # A file whose filing failed waits RETRY_WAIT before the job tries it again: the job runs every
+    # 15 minutes (for Apple Notes), and each retry of a recording is a Whisper run and a model call.
+    # A run by hand retries at once. Keyed by content hash under "retry", beside the per-file entries.
+    now = time.time()
+    retry = {k: t for k, t in state.get("retry", {}).items() if t > now}  # a wait that is over goes
+    state["retry"] = retry
+    if background:
+        files = [p for p in files if retry.get(digest(p), 0) <= now]
+        if not files:
+            log("only files waiting out a failed try")
+            return 0
+    stamp(f"{len(files)} recording(s)")
+    lines, filed = [], []
+    for p in files:
+        try:
+            line = process(p, state)
+        except Exception as e:  # W3: one memo never stops the batch; its audio stays for a retry
+            line = f"⚠ {p.name}: {type(e).__name__}: {e} — audio kept, will retry next run"
+        if line and line.startswith("⚠") and p.exists():
+            k = digest(p)
+            if k not in state.get("warned", {}):  # the first failure only, whatever the kind
+                state.setdefault("warned", {})[k] = now
+                notify("failed", f"⚠ Not filed yet: {re.sub(r' vm-[0-9a-z]{8}$', '', p.stem)} — "
+                                 f"{line.split(': ', 1)[-1][:160]}")
+            if "will retry" in line:
+                retry[k] = now + RETRY_WAIT
+        elif line and line.startswith("✓") and "→ archived" not in line and p.suffix.lower() in AUDIO:
+            filed.append(re.sub(r" vm-[0-9a-z]{8}$", "", p.stem))
+        lines.append(line)
+        save_state(state)  # per memo: a crash later must not re-file one already filed
+    done = [l for l in lines if l]
+    for l in done:
+        print(l)
+    n = sum(1 for l in done if l.startswith('✓'))
+    if filed:  # before the commit: the text is about the recording, not the vault's push
+        notify("filed", filed_message(filed, note_titles(WROTE)))
+    for l in commit_publish(WROTE, f"{CFG['label']}: {len(WROTE)} note(s) from {n} recording(s)"
+                            if CFG["split"] else f"{CFG['label']}: {n} note(s) from voice memos"):
+        print(l)
+    return 0
+
+
+def commit_publish(files, message):
+    """The vault commit and the publish step for files this process wrote; one line each.
+    bin/redactions calls it too, for a release or a `done`."""
+    out = []
+    if files and CFG["commit"]:
+        kc, vault = KNOWLEDGE_COMMIT or common.tool("knowledge-commit"), vault_name(files[0])
+        if not kc:   # G34: atlas is an optional peer
+            out.append("  vault commit: atlas not installed (no knowledge-commit) — the notes are filed, uncommitted")
+        elif not vault:
+            out.append(f"  vault commit: {files[0]} is in no git repo — the notes are filed, uncommitted")
+        else:
+            r = run([str(kc), vault, "-m", message, *[str(w) for w in files]], timeout=180)
+            tail = (r.stdout + r.stderr).strip().splitlines()
+            out.append(f"  vault commit: {tail[-1] if tail else 'exit ' + str(r.returncode)}")
+    if files and CFG["publish"] in ("vault", "data") and not PUBLISH:   # G21: lighthouse is optional
+        out.append(f"  publish --{CFG['publish']}: lighthouse not installed (no publish) — the notes are filed, not copied")
+    elif files and CFG["publish"] in ("vault", "data"):
+        r = run([str(PUBLISH), f"--{CFG['publish']}", *[str(w) for w in files]], timeout=300)
+        tail = (r.stdout + r.stderr).strip().splitlines()
+        out.append(f"  publish --{CFG['publish']}: {len(files)} file(s), "
+                   f"{'ok' if r.returncode == 0 else 'exit ' + str(r.returncode)}{' — ' + tail[-1] if tail and r.returncode else ''}")
+    return out
+
+
+# The suite's stub; else the atlas module's, found at the commit (G34).
+KNOWLEDGE_COMMIT = os.environ.get("KNOWLEDGE_COMMIT_BIN")
+
+
+def vault_name(path):
+    """The name of the repo a written note sits in, which knowledge-commit takes (the vault's
+    checkout folder), or None outside any repo."""
+    for d in Path(path).resolve().parents:
+        if (d / ".git").exists():
+            return d.name
+    return None
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # a background job never dies loudly
+        print(f"sparks: {e}")
+        sys.exit(0)
