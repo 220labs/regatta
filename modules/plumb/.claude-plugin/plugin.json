@@ -1,6 +1,6 @@
 {
   "name": "plumb",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Measure: the owner's own time per project, counted weekly from what is already on disk (crew-report).",
   "author": { "name": "220 Labs" },
   "dependencies": ["regatta"]

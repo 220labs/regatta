@@ -1,5 +1,12 @@
 # Changelog — plumb
 
+## 0.4.2 — 2026-10-19
+
+- `reports` defaults to `~/.local/state/regatta/crew-report` (was a folder under the projects
+  folder that named one owner's layout). A deployment that publishes sets `reports` under the
+  publish tool's root, which refuses a file outside it; without that, the weekly publish fails
+  with one `publish FAILED` log line and the report stays local.
+
 ## 0.4.1 — 2026-10-19
 
 The /finish review's fixes.

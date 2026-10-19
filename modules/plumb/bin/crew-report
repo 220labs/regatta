@@ -78,7 +78,7 @@ sys.path.insert(0, find_core.hooks())
 import common  # noqa: E402
 
 # Public defaults for the launchers wharf ships: dispatch's unattended preamble, autofinish's
-# /finish, a pickup tab's prefill and its resume line. A deployment adds its own in config.
+# /finish, a pickup tab's prefill and its picked-up line. A deployment adds its own in config.
 UNATTENDED = [r"^You are an unattended session started by dispatch",
               r"<command-name>/finish</command-name>[\s\S]*--unattended"]
 # The pickup prefill only (`/pickup '<branch>' …`): a /pickup the person types with other args counts.
@@ -87,7 +87,7 @@ MACHINE = UNATTENDED + [r"<command-name>/pickup</command-name>\s*<command-args>'
 DEFAULTS = {
     "projects_root": "~/projects",
     "transcripts": "~/projects/transcripts",
-    "reports": "~/projects/usage-data/reports/crew-report",
+    "reports": "~/.local/state/regatta/crew-report",
     "tz": "",
     "gap_minutes": 20,
     "sensitivity": [10, 30],
