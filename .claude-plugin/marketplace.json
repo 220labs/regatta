@@ -4,18 +4,15 @@
   "owner": {
     "name": "220 Labs"
   },
-  "metadata": {
-    "pluginRoot": "./modules"
-  },
   "plugins": [
     {
       "name": "regatta",
-      "source": "./regatta",
+      "source": "./modules/regatta",
       "description": "The core every module builds on: shared library, model gate, cost, secrets, the regatta CLI."
     },
     {
       "name": "helloworld",
-      "source": "./helloworld",
+      "source": "./modules/helloworld",
       "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."
     }
   ]
