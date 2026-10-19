@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""redactions — what sparks's redaction step hid, per recording, and putting it back on the owner's word.
+
+    redactions list                         recordings with pending notes: date, notes, count per category
+    redactions show <recording>             each hidden sentence with its id and one sentence either side;
+                                            the owner's own terminal only — refuses inside Claude Code (D2)
+    redactions release <id>… [--force]      puts those sentences back and re-shapes the recording's notes
+    redactions done <recording>…            stamps its notes `redactions: reviewed`; the rest stays hidden
+    redactions audit <note>…                the regex layer and the classifier over a note filed before
+                                            redaction existed: markers in place, a sidecar beside its audio
+    redactions trial <archive>/<audio>.txt… S2's dry run on real transcripts: the classifier only, nothing
+                                            shaped; a note-less sidecar for `show`; counts, never a sentence
+    --dry-run (release, done, audit, trial) say what would change; no model call, no write
+    --config <file> (repeatable)            default: $SPARKS_CONFIG, else sparks.json and sextant.json
+                                            under sextant/ in the regatta config dir, each with its `also`
+                                            configs — those with `redact_approved` (the ideas configs
+                                            hang off sextant.json)
+
+<recording> is the archived audio's name (`2026-10-04-1312-ab12cd34.m4a`, with or without the
+extension), its key's first 6+ characters, or the file name of one of its notes.
+
+Why (docs/idea-redaction-2026-10-04.md): the review unit is the recording, not the span — `show`,
+then one `release` line or `done`. Only `show` prints an original, and only where no Claude Code
+session can read it back (CLAUDECODE unset): a session transcript is re-read by later sessions.
+`release` sends the restored sentences to Claude in the re-shape (that is what release means), keeps
+each note's file name, `status` and `tags`, and refuses a note whose body changed since filing (the
+sidecar's hash) unless --force. A sentence `audit` hid is put back in place, with no re-shape: an
+audited note has no redacted transcript to shape from. Every write is committed through sparks's
+own commit and publish step, so the vault and its published copy move together.
+
+The mechanism is sparks's (split, markers, sidecar, gate calls): this file loads it once per
+config, so what a release re-shapes with is exactly what filing shaped with. Stdlib, Python 3.9.
+"""
+import datetime as dt
+import json
+import os
+import re
+import shlex
+import signal
+import sys
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SPARKS = HERE / "sparks"
+# sparks.json's `also` is empty; the ideas configs hang off sextant.json, which the scheduled job
+# runs as SPARKS_CONFIG (the launcher). Both roots, or `list` says "nothing" (review, 2026-10-05).
+# Both are links in the regatta config dir ($REGATTA_CONFIG, else ~/.config/regatta), which the
+# installer writes; the files themselves stay in the owner's vault.
+_CFG_DIR = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser() / "sextant"
+DEFAULT_CONFIGS = [_CFG_DIR / "sparks.json", _CFG_DIR / "sextant.json"]
+CONFIG_ARGS = []  # the --config flags given, repeated in every line printed for pasting
+
+
+class Refused(Exception):
+    pass
+
+
+def paste(*words):
+    """A command line for the owner's terminal: this script, the same --config flags, quoted."""
+    return " ".join(shlex.quote(str(w)) for w in [Path(__file__).resolve()] + CONFIG_ARGS + list(words))
+
+
+def load_runner(config, n=[0]):
+    """sparks as a module, configured by `config` (it reads SPARKS_CONFIG at import)."""
+    n[0] += 1
+    os.environ["SPARKS_CONFIG"] = str(config)
+    loader = SourceFileLoader(f"sparks{n[0]}", str(SPARKS))
+    mod = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def runners(configs):
+    """One loaded sparks per config that redacts; the default config's `also` list included."""
+    if not configs:
+        env = os.environ.get("SPARKS_CONFIG")
+        roots = [Path(env).expanduser()] if env else [p for p in DEFAULT_CONFIGS if p.exists()]
+        configs = []
+        for root in roots:
+            configs += [root] + list(load_runner(root).CFG["also"])
+    out, seen = [], set()
+    for c in configs:
+        c = Path(c).expanduser().resolve()
+        if c in seen:
+            continue
+        seen.add(c)
+        mod = load_runner(c)
+        if mod.CFG["redact"] and mod.ARCHIVE and mod.OUT:
+            out.append(mod)
+    return out
+
+
+class Rec:
+    """One recording: its sidecar and the sparks that filed it."""
+
+    def __init__(self, mod, path):
+        self.mod, self.path = mod, path
+        self.data = json.loads(path.read_text())
+
+    @property
+    def audio(self):
+        return self.data["audio"]
+
+    def note_path(self, name):
+        return self.mod.OUT / name
+
+    def save(self):
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1) + "\n")
+        os.replace(tmp, self.path)
+
+    def matches(self, arg):
+        a = arg.strip()
+        stem = self.audio.rsplit(".", 1)[0]
+        return (a in (self.audio, stem) or a in self.data.get("notes", {})
+                or Path(a).name in self.data.get("notes", {})
+                or (len(a) >= 6 and str(self.data.get("key") or "").startswith(a)))
+
+    def pending(self):
+        """Notes still marked pending, read from the notes themselves (review edits them)."""
+        out = []
+        for n in self.data.get("notes", {}):
+            p = self.note_path(n)
+            if p.exists() and self.mod.front(p.read_text())[0].get("redactions") == "pending":
+                out.append(n)
+        return out
+
+    def hidden(self):
+        """Ids still hidden: every id minus the released ones."""
+        rel = set(self.data.get("released", []))
+        return {i: v for i, v in self.data.get("ids", {}).items() if i not in rel}
+
+
+def records(mods):
+    out = []
+    for m in mods:
+        if m.ARCHIVE.is_dir():
+            out += [Rec(m, p) for p in sorted(m.ARCHIVE.glob("*.redactions.json"))]
+    return out
+
+
+def find(recs, arg):
+    hit = [r for r in recs if r.matches(arg)]
+    if not hit:
+        raise Refused(f"no recording matches {arg!r} — `redactions list` names them")
+    if len(hit) > 1:
+        raise Refused(f"{arg!r} matches {len(hit)} recordings — give more of the name")
+    return hit[0]
+
+
+def counts(ids):
+    c = {}
+    for v in ids.values():
+        c[v["category"]] = c.get(v["category"], 0) + 1
+    return ", ".join(f"{k} {n}" for k, n in sorted(c.items(), key=lambda x: (-x[1], x[0])))
+
+
+# ---------------------------------------------------------------- verbs
+
+def _alarm(signum, frame):
+    raise TimeoutError("listing took over 10 s")
+
+
+def cmd_list(mods, recs):
+    shown = 0
+    for r in recs:
+        pend = r.pending()
+        # a recording with hidden sentences and no note at all (everything hidden, or no topic
+        # filed) is listed too: it may be the most sensitive one (review, 2026-10-05)
+        orphan = not r.data.get("notes") and not r.data.get("trial") and r.hidden() and not r.data.get("reviewed")
+        if not pend and not orphan:
+            continue
+        shown += 1
+        print(f"{r.data.get('recorded') or '?'}  {r.audio}  {len(r.data.get('notes', {}))} note(s), "
+              f"{len(pend)} pending — {counts(r.hidden()) or 'nothing hidden'}")
+    if not shown:
+        print("no recording has pending notes")
+    old = signal.signal(signal.SIGALRM, _alarm)  # sparks installs its handler only in main()
+    for m in mods:  # R2: what waits for a classifier that is down or a key that expired
+        try:
+            signal.alarm(10)  # iCloud can hang a listing on a permission dialog
+            waiting = len(m.audio_in_inbox()) if m.IN and m.IN.is_dir() else 0
+        except (OSError, TimeoutError):
+            waiting = 0
+        finally:
+            signal.alarm(0)
+        if waiting:
+            print(f"waiting in {m.IN}: {waiting} recording(s) — sparks.log says why")
+    signal.signal(signal.SIGALRM, old)
+    return 0
+
+
+def cmd_show(recs, arg):
+    if os.environ.get("CLAUDECODE"):
+        print("redactions show prints the hidden sentences, and a Claude Code session's transcript is "
+              "re-read by later sessions — so it runs only in your own terminal (D2). Paste this there:\n\n"
+              f"    {paste('show', arg)}")
+        return 2
+    r = find(recs, arg)
+    txt = r.mod.ARCHIVE / (r.audio + ".txt")
+    written = not txt.exists() and Path(r.audio).suffix.lower() in r.mod.TEXT
+    sents = None
+    try:
+        if written:  # a written note is its own verbatim text; its line breaks are sentence ends,
+            # so it is split as filed (unflattened) and only the hash sees it flattened
+            t, _ = r.mod.read_text(r.mod.ARCHIVE / r.audio)
+            t = t or ""
+        else:
+            t = " ".join(txt.read_text().split())
+        if r.mod.hashlib.sha256(" ".join(t.split()).encode()).hexdigest()[:16] == r.data.get("transcript_sha"):
+            sents = r.mod.split_sentences(t)
+    except OSError:
+        pass
+    rel = set(r.data.get("released", []))
+    order = sorted(r.data.get("ids", {}).items(),
+                   key=lambda kv: (kv[1].get("sentence") is None, kv[1].get("sentence") or 0))
+    print(f"{r.audio} ({r.data.get('recorded') or '?'}), {len(order)} redaction(s)"
+          + ("" if sents else " — no verbatim transcript to show context from"))
+    for i, v in order:
+        p = "" if v.get("p") is None else f" p={v['p']:.2f}"
+        print(f"\n{i}  {v['category']}{p}  by {v.get('by', '?')}{'  (released)' if i in rel else ''}")
+        s = v.get("sentence")
+        if sents and s is not None and s > 0:
+            print(f"    … {sents[s - 1]}")
+        print(f"    ▶ {v['text']}")
+        if sents and s is not None and s + 1 < len(sents):
+            print(f"    … {sents[s + 1]}")
+    if r.data.get("trial"):
+        print("\na trial (S2): nothing was filed, so there is nothing to release or stamp")
+    else:
+        print(f"\nput some back: {paste('release')} <id>…    keep all hidden: {paste('done', r.audio)}")
+    return 0
+
+
+def check_unchanged(r, force):
+    changed = []
+    for n, h in r.data.get("notes", {}).items():
+        p = r.note_path(n)
+        if not p.exists():
+            changed.append(f"{n} (gone)")
+        elif r.mod.body_hash(p.read_text()) != h:
+            changed.append(n)
+    if changed and not force:
+        raise Refused(f"{r.audio}: edited since filing — {', '.join(changed)}; a re-shape would overwrite "
+                      "that. Re-run with --force to accept, or put the sentence back by hand")
+    return changed
+
+
+def restore_in_place(r, ids, dry):
+    """Audited ids: the marker in the note becomes its text again; no model call."""
+    files = []
+    for n in r.data.get("notes", {}):
+        p = r.note_path(n)
+        if not p.exists():
+            continue
+        text = p.read_text()
+        new = text
+        for i in ids:
+            new = new.replace(r.mod.marker(r.data["ids"][i]["category"], i), r.data["ids"][i]["text"])
+        if new != text:
+            files.append(p)
+            if not dry:
+                p.write_text(new)
+    return files
+
+
+def reshape(r, ids, force, dry):
+    """Re-shape the recording from its redacted transcript with `ids` put back. Returns files."""
+    m, d = r.mod, r.data
+    if d.get("trial") or not d.get("recorded"):  # before any model call (review, 2026-10-05)
+        raise Refused(f"{r.audio}: a trial sidecar — nothing was filed, so there is nothing to re-shape")
+    if d.get("redacted") is None:
+        raise Refused(f"{r.audio}: no redacted transcript in its sidecar — nothing to re-shape from")
+    released = list(dict.fromkeys(d.get("released", []) + ids))
+    transcript = d["redacted"]
+    for i in released:
+        v = d["ids"][i]
+        if v.get("sentence") is not None:
+            transcript = transcript.replace(m.marker(v["category"], i), v["text"])
+    olds = [n for n in d.get("notes", {}) if r.note_path(n).exists()]
+    if dry:
+        print(f"would re-shape {r.audio} with {len(ids)} sentence(s) put back; notes: {', '.join(olds) or 'none'}")
+        return []
+    written = Path(d["audio"]).suffix.lower() in m.TEXT
+    note, err = m.to_note(transcript, redacted=True, written=written)
+    if note is None:
+        raise Refused(f"{r.audio}: the re-shape failed ({err}) — nothing changed")
+    if written:  # the same floor as at filing: a re-shape never empties a written note
+        note = m.ensure_topic(note, transcript)
+    hidden = {i: v for i, v in d["ids"].items() if i not in released}
+    note, err = m.check_markers(note, hidden)
+    if note is None:
+        raise Refused(f"{r.audio}: {err} — nothing changed")
+    # Released on purpose, whichever layer hid it: the sentence and every regex hit inside it. The
+    # regex layer would otherwise wrap the number again under a new id (review, 2026-10-05).
+    keep = set()
+    for i in released:
+        t = d["ids"][i]["text"]
+        keep |= {t} | {t[a:b] for a, b in m.secret_spans(t)}
+    # A hidden hit the regex layer found in the old reply is found again in the new one, under a
+    # new id; the old id would otherwise stay "hidden" with no note carrying it.
+    ids_all = {i: v for i, v in d["ids"].items() if v.get("by") != "note" or i in released}
+    note = m.wrap_secrets(note, ids_all, keep=keep)
+    lines = note.splitlines()
+    title = re.sub(r"^#\s*", "", lines[0]).strip() if lines and lines[0].startswith("# ") else r.audio
+    body = "\n".join(lines[1:]).lstrip("\n") if lines and lines[0].startswith("# ") else note
+    first = m.front(r.note_path(olds[0]).read_text())[0] if olds else {}
+    head = "".join(f"{k}: {first[k]}\n" for k in ("source", "recorded", "audio", "size") if k in first)
+    when = dt.datetime.strptime(d["recorded"], "%Y-%m-%d %H:%M")
+    files, notes = [], {}
+    new = m.topic_notes(title, body, when, head)
+    # A new topic goes to the old file of the same name first (`<slug>.md`, `<slug>-2.md`), then
+    # the rest in order: a topic the restored sentence adds or moves must not land in another
+    # topic's file under its status and tags (review, 2026-10-05).
+    base = {n: re.sub(r"-\d+$", "", n[:-3]) for n in olds}
+    target, free = {}, list(olds)
+    for k, (name, _) in enumerate(new):
+        hit = next((n for n in free if base[n] == name), None)
+        if hit:
+            target[k] = hit
+            free.remove(hit)
+    for k in range(len(new)):
+        if k not in target and free:
+            target[k] = free.pop(0)
+    kept = free  # fewer topics now: these stay as filed
+    for n in kept:  # their markers stay hidden under their ids, whichever layer made them
+        for _, i in m.MARKER_RE.findall(r.note_path(n).read_text()):
+            if i in d["ids"]:
+                ids_all[i] = d["ids"][i]
+    still = [i for i in ids_all if i not in released]
+    state = "pending" if still else "reviewed"
+    for k, (name, text) in enumerate(new):
+        text = m.set_front(text, {"redactions": state, "released": "[" + ", ".join(released) + "]"})
+        if k in target:  # the same file, its status and tags kept as they were written
+            p = r.note_path(target[k])
+            old = p.read_text()
+            text = m.set_front(text, {key: m.front_raw(old, key) for key in ("status", "tags")
+                                      if m.front_raw(old, key) is not None})
+            if "\n## Your notes" in old:  # what the owner wrote there survives the re-shape
+                text = text.split("\n## Your notes", 1)[0] + "\n## Your notes" + old.split("\n## Your notes", 1)[1]
+            p.write_text(text)
+            print(f"  {name} → {p.name}")
+        else:
+            p = m.write_inbox(name, text)
+        files.append(p)
+        notes[p.name] = m.body_hash(p.read_text())
+    for n in kept:
+        notes[n] = d["notes"][n]
+        print(f"  kept {n} as filed: the re-shape has no topic for it — delete it by hand if it is gone")
+    # `redacted` stays the filed text: markers of released ids are replaced again on the next release
+    d.update(ids=ids_all, released=released, notes=notes)
+    return files
+
+
+def cmd_release(recs, ids, force, dry):
+    if not ids:
+        raise Refused("release which? `redactions show <recording>` lists the ids")
+    by_rec = {}
+    for i in ids:
+        hit = [r for r in recs if i in r.data.get("ids", {})]
+        if not hit:
+            raise Refused(f"no recording hides {i!r}")
+        if hit[0].data.get("trial"):
+            raise Refused(f"{i} is from a trial ({hit[0].audio}): nothing was filed, nothing to release")
+        by_rec.setdefault(id(hit[0]), (hit[0], []))[1].append(i)
+    for r, mine in by_rec.values():
+        already = [i for i in mine if i in r.data.get("released", [])]
+        mine = [i for i in mine if i not in already]
+        if already:
+            print(f"{r.audio}: already released — {', '.join(already)}")
+        if not mine:
+            continue
+        check_unchanged(r, force)
+        audited = [i for i in mine if r.data["ids"][i].get("by") == "audit"]
+        shaped = [i for i in mine if i not in audited]
+        files = restore_in_place(r, audited, dry) if audited else []
+        if audited and not dry:
+            r.data["released"] = list(dict.fromkeys(r.data.get("released", []) + audited))
+            for p in files:
+                r.data["notes"][p.name] = r.mod.body_hash(p.read_text())
+        if shaped:
+            files += reshape(r, shaped, force, dry)
+        if dry:
+            if audited:
+                print(f"would put back {len(audited)} audited sentence(s) in place in {r.audio}")
+            continue
+        if not r.hidden():
+            for p in files:
+                if r.mod.front(p.read_text())[0].get("redactions") == "pending":
+                    p.write_text(r.mod.set_front(p.read_text(), {"redactions": "reviewed"}))
+        r.data["released_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        r.save()
+        print(f"✓ {r.audio}: released {len(mine)}, {len(r.hidden())} still hidden; "
+              f"{len(files)} note(s) rewritten")
+        for l in r.mod.commit_publish(list(dict.fromkeys(files)),
+                                      f"{r.mod.CFG['label']}: released {len(mine)} redaction(s) in {r.audio}"):
+            print(l)
+    return 0
+
+
+def cmd_done(recs, args, dry):
+    if not args:
+        raise Refused("done with which recording? `redactions list` names them")
+    for a in args:
+        r = find(recs, a)
+        files = []
+        for n in r.pending():
+            p = r.note_path(n)
+            files.append(p)
+            if not dry:
+                p.write_text(r.mod.set_front(p.read_text(), {"redactions": "reviewed"}))
+        if dry:
+            print(f"would stamp {len(files)} note(s) of {r.audio} reviewed")
+            continue
+        r.data["reviewed"] = dt.datetime.now().isoformat(timespec="seconds")
+        r.save()
+        print(f"✓ {r.audio}: {len(files)} note(s) reviewed, {len(r.hidden())} sentence(s) stay hidden")
+        for l in r.mod.commit_publish(files, f"{r.mod.CFG['label']}: redactions reviewed in {r.audio}"):
+            print(l)
+    return 0
+
+
+def cmd_audit(mods, notes, dry):
+    """The notes filed before redaction: markers in place of what the note itself says."""
+    if not notes:
+        raise Refused("audit which notes?")
+    by_mod = {}
+    for n in notes:
+        p = Path(n).expanduser().resolve()
+        own = [m for m in mods if m.OUT.resolve() == p.parent]
+        if not own:
+            raise Refused(f"{n}: not in the notes folder of a config that redacts")
+        by_mod.setdefault(id(own[0]), (own[0], []))[1].append(p)
+    for m, paths in by_mod.values():
+        written = []
+        for p in paths:
+            text = p.read_text()
+            fm, body = m.front(text)
+            if "redactions" in fm:
+                print(f"{p.name}: already stamped redactions: {fm['redactions']} — skipped")
+                continue
+            # No audio: line, no sidecar — and a marker with no sidecar is a sentence gone for
+            # good. Refused, not written (review, 2026-10-05).
+            audio = fm.get("audio", "").rsplit("/", 1)[-1]
+            if not audio:
+                print(f"{p.name}: no audio: line, so no sidecar could keep what it hides — skipped; "
+                      "redact it by hand")
+                continue
+            side = m.ARCHIVE / (audio + ".redactions.json")
+            if side.exists() and json.loads(side.read_text()).get("trial"):
+                print(f"{p.name}: {side.name} is a trial (S2) — skipped; rename that file first")
+                continue
+            lines = body.split("\n")
+            items, where = {}, {}
+            for li, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                # a heading is judged too, its `#`s kept out of the sentence (review, 2026-10-05);
+                # the frontmatter's `from:` title is not: S6 says so
+                hashes = re.match(r"#+\s*", line)
+                lead = hashes.group() if hashes else ""
+                for si, s in enumerate(m.split_sentences(line[len(lead):])):
+                    k = f"s{len(items) + 1}"
+                    items[k], where[k] = s, (li, si)
+            regex = sum(1 for s in items.values() if m.secret_spans(s))
+            if dry:
+                print(f"would audit {p.name}: {len(items)} sentence(s) to the classifier, {regex} regex hit(s)")
+                continue
+            flagged, cost = m.classify_sentences(items) if items else ({}, 0.0)
+            data = json.loads(side.read_text()) if side.exists() else {
+                "audio": audio, "original_name": audio, "recorded": fm.get("recorded"),
+                "key": None, "config": str(m.CONFIG), "redacted": None, "ids": {}, "notes": {},
+                "released": [], "audited": dt.datetime.now().isoformat(timespec="seconds")}
+            per_line = {}
+            for k, v in flagged.items():
+                li, si = where[k]
+                mid = m.new_id(data["ids"])
+                data["ids"][mid] = dict(v, by="audit", sentence=None, note=p.name, text=items[k])
+                per_line.setdefault(li, {})[si] = m.marker(v["category"], mid)
+            for li, repl in per_line.items():
+                hashes = re.match(r"#+\s*", lines[li])
+                lead = hashes.group() if hashes else ""
+                parts = m.split_sentences(lines[li][len(lead):])
+                lines[li] = lead + " ".join(repl.get(si, s) for si, s in enumerate(parts))
+            new_text = m.set_front(text, {"redactions": "pending" if flagged else "none"})
+            new_text = new_text[:len(new_text) - len(m.front_blocks(new_text)[1])] + "\n".join(lines)
+            # the sidecar first: a note whose markers no file keeps must never be written
+            data["notes"][p.name] = m.body_hash(new_text)
+            side.parent.mkdir(parents=True, exist_ok=True)
+            tmp = side.with_name(side.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+            os.replace(tmp, side)
+            p.write_text(new_text)
+            written.append(p)
+            print(f"✓ {p.name}: {len(items)} sentence(s), {len(flagged)} hidden ({counts(data['ids']) or 'none'}), "
+                  f"${cost:.4f}")
+        for l in m.commit_publish(written, f"{m.CFG['label']}: redaction audit of {len(written)} note(s)"):
+            print(l)
+    return 0
+
+
+def cmd_trial(mods, txts, force, dry):
+    """S2's dry run: the split, the regex layer and the classifier over archived verbatim
+    transcripts. Nothing is shaped, no note is touched; a sidecar with no notes lands beside each
+    .txt so `show` reads it in the owner's terminal. Prints counts, never a sentence."""
+    if not txts:
+        raise Refused("trial which transcripts? <archive>/<audio>.txt")
+    for t in txts:
+        p = Path(t).expanduser().resolve()
+        own = [m for m in mods if m.ARCHIVE.resolve() == p.parent]
+        if not own or not p.name.endswith(".txt"):
+            raise Refused(f"{t}: not a .txt in the archive of a config that redacts")
+        m = own[0]
+        audio = p.name[:-len(".txt")]
+        side = m.ARCHIVE / (audio + ".redactions.json")
+        if side.exists():
+            # --force replaces a trial only: a filed or audited sidecar is the one copy of what its
+            # notes hide (review, 2026-10-05)
+            if not json.loads(side.read_text()).get("trial"):
+                raise Refused(f"{side.name} belongs to filed or audited notes — a trial never replaces it")
+            if not force:
+                raise Refused(f"{side.name} exists — --force replaces it")
+        text = " ".join(p.read_text().split())
+        n = len(m.split_sentences(text))
+        if dry:
+            print(f"would classify {audio}: {n} sentence(s), "
+                  f"{sum(1 for s in m.split_sentences(text) if m.secret_spans(s))} regex hit(s)")
+            continue
+        red = m.redact(text)
+        sha = m.hashlib.sha256(text.encode()).hexdigest()[:16]
+        # the key, not the audio name, goes on screen: Voice Memos names a file after the place
+        data = {"audio": audio, "original_name": audio, "recorded": None, "key": sha,
+                "config": str(m.CONFIG), "sentences": red["sentences"], "trial": True,
+                "transcript_sha": sha,
+                "redacted": red["redacted"], "ids": red["ids"], "cost_usd": red["cost_usd"],
+                "notes": {}, "released": [], "filed": dt.datetime.now().isoformat(timespec="seconds")}
+        side.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+        print(f"✓ trial {sha[:8]}: {red['sentences']} sentences, {len(red['ids'])} hidden "
+              f"({counts(red['ids']) or 'none'}; {sum(1 for v in red['ids'].values() if v['by'] == 'regex')} "
+              f"by the regex layer), ${red['cost_usd']:.4f} — read them: {paste('show', sha[:8])}")
+    return 0
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    configs = []
+    while "--config" in argv:
+        i = argv.index("--config")
+        configs.append(argv[i + 1])
+        CONFIG_ARGS.extend(["--config", str(Path(argv[i + 1]).expanduser().resolve())])
+        del argv[i:i + 2]
+    dry, force = "--dry-run" in argv, "--force" in argv
+    args = [a for a in argv if a not in ("--dry-run", "--force")]
+    if not args or args[0] not in ("list", "show", "release", "done", "audit", "trial"):
+        print(__doc__.split("\n\n")[0] + "\n\n" + __doc__.split("\n\n")[1])
+        return 2
+    cmd, rest = args[0], args[1:]
+    try:
+        mods = runners(configs)
+        if not mods:
+            print("redactions: no config with redact_approved — nothing is redacted yet")
+            return 0
+        recs = records(mods)
+        if cmd == "list":
+            return cmd_list(mods, recs)
+        if cmd == "show":
+            if len(rest) != 1:
+                raise Refused("show one recording")
+            return cmd_show(recs, rest[0])
+        if cmd == "release":
+            return cmd_release(recs, rest, force, dry)
+        if cmd == "done":
+            return cmd_done(recs, rest, dry)
+        if cmd == "trial":
+            return cmd_trial(mods, rest, force, dry)
+        return cmd_audit(mods, rest, dry)
+    except Refused as e:
+        print(f"redactions: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # a gate failure, an unreadable sidecar: said, never a traceback of data
+        print(f"redactions: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

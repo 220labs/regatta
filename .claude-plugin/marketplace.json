@@ -19,6 +19,11 @@
       "name": "plumb",
       "source": "./modules/plumb",
       "description": "Measure: crew-report, the owner's own time per project each week, beside the model cost."
+    },
+    {
+      "name": "sextant",
+      "source": "./modules/sextant",
+      "description": "Strategy towards your North Star; today its ideas intake, Sparks: voice memos, written notes and Apple Notes in, one note per idea out."
     }
   ]
 }
