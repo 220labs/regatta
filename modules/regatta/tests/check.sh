@@ -280,6 +280,21 @@ else
   echo "  skip claude plugin validate: no claude on PATH"
 fi
 
+# Each catalogue entry names its module's folder outright: `plugin validate` passes a bare source
+# under metadata.pluginRoot, but `plugin install` (2.1.303) ignores pluginRoot, so a stranger's
+# install failed on it (2026-10-19).
+bad=$(python3 -I - "$ROOT" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+d = json.load(open(os.path.join(root, ".claude-plugin", "marketplace.json")))
+bad = [p["name"] for p in d["plugins"]
+       if not (isinstance(p.get("source"), str) and p["source"].startswith("./modules/")
+               and os.path.isfile(os.path.join(root, p["source"], ".claude-plugin", "plugin.json")))]
+print(" ".join(bad) or "none")
+PY
+)
+check "$bad" none "every marketplace source is ./modules/<name> and holds a plugin.json"
+
 # A newer Python turns an invalid escape into a SyntaxWarning on stderr, which every case that
 # reads a tool's output then fails on (CI's ubuntu, 2026-10-18: `\~` in EXEC_SHIM). The Macs' 3.9
 # stays quiet, so the compile runs with warnings as errors here.
