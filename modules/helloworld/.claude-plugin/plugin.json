@@ -1,0 +1,7 @@
+{
+  "name": "helloworld",
+  "version": "0.1.0",
+  "description": "The public door: name a project (name-check, /name) and publish its allowlisted files to a public twin through a privacy scan (helloworld).",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

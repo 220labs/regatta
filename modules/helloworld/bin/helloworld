@@ -1,0 +1,1147 @@
+#!/usr/bin/env python3
+"""helloworld — publish an allowlisted squash of a private repo to its public twin, the privacy
+scan as the gate.
+
+    helloworld check   <repo> [--ref REF]   build the public tree, scan it, print; never pushes
+    helloworld publish <repo> [-m MSG]      the same at origin/main, then the repo's name typed
+                                            back, one commit, one push; the owner's terminal only
+    helloworld publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT]
+                                            the same tree as a pull request on the public repo,
+                                            from a claude/publish/* branch; the agent's verb;
+                                            the owner's merge is the publish
+
+Was `opensource` until 2026-10-18; the old names still read (below). The design ("don't make it
+too complex to update"), what the gate cannot see, and the post-mortem a hard push on a public
+repo owes: the module's README.md.
+
+A repo opts in with these files, read from the ref being published (what is reviewed is what is
+used), never from the working tree:
+  .helloworld/allowlist.txt   one path per line, file by file: no globs, no folders
+  .helloworld/exemptions.txt  `<file>:<exact string>` per line — text already public (the film's
+                              own words, the public contact, a notice's author) and nowhere else
+  .helloworld/remote          the public repo's URL
+  .helloworld/identities      the addresses that may stand in the public history, one per line
+                              (optional: the machine's git identity stands in, with a warning)
+`#` lines and blank lines are skipped in both lists. Nothing under `.helloworld/` is ever published.
+A ref without `.helloworld/` but with the old `.opensource/` is read from there, with a printed
+note to `git mv` it; neither folder is ever published.
+
+The private word list (household names, the house, the employer, accounts, login dirs, machine
+names; one per line, case-blind) is a file outside every repo, as a brand's blocklist is:
+$HELLOWORLD_WORDLIST, else $OPENSOURCE_WORDLIST (the old name), else helloworld/wordlist.txt in
+the regatta config dir ($REGATTA_CONFIG, else .config/regatta in the home folder), else the old
+default, .config/opensource/wordlist.txt in the home folder. Without it the gate refuses to run:
+a scan that cannot see the household is not a gate. An entry of 5 or more characters matches
+anywhere, inside `harbourview_home`, `MyLaptopSetup` or `mylaptop2` too; a shorter one only
+between non-letters (`Ed`, not `Fred`); the spaces in a two-word name match any whitespace, a line
+wrap included. Erring towards a false finding is the safe side: an exemption clears one. A
+trailing `# comment` on an entry is stripped (`Harbourview  # the house` is Harbourview), and a `#`
+left inside an entry is refused: it would never match.
+
+The scan, over every file's whole text and its path (P2 of the design, extended, and widened by
+the landing review of 2026-10-09 and the PR mode's review the same day): machine paths, `~/` and
+`$HOME/` paths, Drive and scratchpad paths, LAN addresses (RFC 1918, Tailscale's 100.64/10,
+link-local, IPv6 unique-local and link-local) and LAN host names (`.local`, `.lan`, `.home.arpa`,
+a tailnet's `.ts.net`), e-mail addresses, session links and `Claude-Session`, anything embedded as
+`data:<type>/<subtype>[;…];base64,`, credential shapes (vendor keys, JWTs, Telegram bot tokens, key-like
+assignments; always printed masked), and the word list. Every pattern runs on the raw text. `CREDITS.yaml` at
+the tree's root is the consent list: a word-list entry that equals a name under its `people:`
+(case-blind) is dropped from the list, and nothing else changes — a credit hides no address, no
+path and no other name. A `lines:` or `fix:` key in a cut list (a .yaml, .yml or .json under a
+folder named `edl`) is refused and no exemption reaches it: those are the people's spoken words,
+kept in sidecars under $WORK (E1). A file that is not UTF-8 is refused. An exemption clears only
+the findings that lie wholly inside an occurrence of its exact string, in the file it names; one
+whose string is not in that file, or that clears nothing, is refused, and each one used is printed
+with the count it cleared, so a string that left the film leaves the list (R5). Run inside an
+agent's shell (CLAUDECODE set), private words and addresses print masked: the transcript is read
+again by later sessions.
+
+How the tree is built: a temporary index holding only the allowlisted blobs of the ref, written
+as one tree (`write-tree`) — the same tree a detached worktree and
+`read-tree` produce, with nothing checked out and nothing to clean up. `check` fetches origin and
+the public main's objects, writes that tree object, and changes no ref of its own; it never
+commits and never pushes.
+
+`publish` refuses inside an agent's shell (CLAUDECODE set) and without a terminal on stdin. That
+stops accidents, not intent: a shell that unsets the variable and fakes a terminal gets through
+(tests/helloworld.sh does exactly that to prove the publish path), the same trade as
+GIT_PUSH_OK; a PreToolUse deny on `helloworld publish` would be the next layer. It refuses a
+remote that is one of the private repo's own remotes (the allowlist-only tree would fast-forward
+the private main). It fetches origin, builds and scans origin/main (never a branch: what goes
+public has landed), scans and shows both identities the commit carries (dates in UTC, so no time
+zone goes public), shows the diff-stat against the public repo's main, asks for the public repo's
+owner/name, commits the tree and pushes it as main with GIT_PUSH_OK=1 (the repo's own pre-push
+guard lets it through). The first publish is an orphan;
+every later one is a child of the public main as fetched, so it fast-forwards: branch protection
+(applied after the first push) forbids a force-push, and a credit merged on GitHub stays in the
+public history, while the diff-stat shows whether this tree keeps it. The push is read back with
+ls-remote before it counts. The record of each publish goes to
+<git dir>/helloworld/PUBLISHED.md (<git dir>/opensource/ while only that exists), private and
+outside the working tree (not .helloworld/: a file there would leave the primary main dirty after
+every publish and need its own pull request); the next run's diff base is the public repo itself, which is the ground truth.
+
+`publish --pr` is the route that needs no typed name (the owner, 2026-10-09: "publishing through a
+PR is the right way"; auto-merge stays off): the same tree, built and scanned at origin/main, becomes
+one commit on top of the public main, dated in UTC like publish's, and goes up as a branch with a
+pull request against main. The owner's merge on GitHub is the publish, so an agent may run it, and
+nothing here ever writes the public main. Everything a PR shows is public the moment it is
+pushed, drafts included, so the title (the commit's message too), the body, the branch name, the
+commit's identities and the gh login that opens the PR are scanned with the files, against the
+whole word list (a credit is consent for the published tree, not for this tool's own words), and
+nothing is pushed unless all of them pass — bar a login that already authored a merged PR in a
+public repo of the target owner, which is public already (a failed search scans it). The body is built from the scan, not copied from this
+tool's output: no local path, no private sha, the exemptions as files and counts, never their
+strings, and removed files counted, not named (a take-back must not be refused for naming what
+it takes back).
+  The branch is claude/publish/<date>-<topic>, not claude/<host>/…: machine names are on the
+private word list. The push runs from a clone of the public repo kept in the private repo's git
+dir (<git dir>/helloworld/public, origin = .helloworld/remote), with the wharf module's
+templates/code/git-hooks/pre-push (found through the core; without it --pr refuses) copied into
+the clone's own hooks folder (a set core.hooksPath is refused: git would
+never run it) and GIT_PUSH_OK and VSCODE_GIT_COMMAND stripped, so the push reaches claude/* only.
+The commit is made in the private repo under refs/helloworld/pr, fetched into the clone by that
+ref — which carries only the objects the commit reaches, the allowlisted blobs and the public
+history — and the ref is deleted again, so no ref of the gate's own outlives a run. Auto-merge is
+off by refusal: a workflow on the public main or in the proposed tree whose name or content says
+auto-merge (`gh pr merge`, `merge --auto`, enablePullRequestAutoMerge, `pulls.merge`, a
+`/pulls/N/merge` call), or a Mergify, Kodiak or Bulldozer config, stops the run — a text check of
+the house shapes, not of GitHub's own settings, since a ready claude/* PR would land itself. The same tree already on a
+claude/publish/* branch is not proposed twice while that branch's PR is open; without an open PR
+the run exits 2 with the command to open one. A first publish has no main to be a pull request
+against, so it stays `publish`.
+
+The public repo's history is scanned too (the 220-film incident, 2026-10-10: GitHub authored a
+squash commit with the merging account's private address, and the gate saw only the tree and its own
+commit). `check` fetches every public branch and tag (the one fetch that also gives the diff base's
+objects; no ref of ours moves) and reads every commit reachable from them as raw objects: author and
+committer, the tagger of any mergetag header, the whole message; each annotated tag (a tag of a tag
+one level at a time, by its object header): tagger and message; every ref name. Addresses and names
+go through the e-mail pattern and the word list, ref names and messages through the word list too.
+Passing addresses: those in .helloworld/identities (one per line, from the reviewed ref; without
+the file, the identity this machine's git would publish as, and a WARNING line), `noreply@github.com`
+as committer or in text, and `[<id>+]<login-or-name[bot]>@users.noreply.github.com`; any other
+address is a finding labelled `history <sha> <field>`, masked in an agent's shell like the tree's.
+With the file, publish and publish --pr refuse when git's own address is not in it, unless it is a
+person's GitHub noreply address (a bot's still needs its line). A time-zone offset other than +0000 is a printed warning only. Such a commit can only go by a hard push
+(the owner's; README.md). A public repo that cannot be reached leaves the history unread:
+check exits 2 (1 if the tree also has findings), as publish does. publish --pr also reads the
+public repo's merge settings (gh api repos/<o>/<r>) and refuses unless squash and merge commits
+are off: a squash commit is authored by the merging account's own address.
+
+Exit 0 clean (or published), 1 refused by the scan, 2 a setup or usage error. Stdlib, Python 3.9.
+"""
+import argparse
+import datetime as dt
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+CONF = ".helloworld"
+OLD_CONF = ".opensource"   # the name until 2026-10-18; read when a ref has no .helloworld/
+CONFS = (CONF, OLD_CONF)
+PR_REF = "refs/helloworld/pr"
+PR_PREFIX = "claude/publish/"
+GUARD_REL = Path("templates") / "code" / "git-hooks" / "pre-push"
+
+
+def guard_path():
+    """The pre-push guard the public clone runs: the wharf module's template, else the old
+    checkout's (`REGATTA_LEGACY`, the legacy file), else None — then --pr refuses (the design's
+    G30). Through the core, never a path beside this file: the guard is wharf's."""
+    for base in (common.module_path("wharf"), common.legacy_root()):
+        if base and (base / GUARD_REL).is_file():
+            return base / GUARD_REL
+    return None
+
+# (category, pattern, masked). Masked hits print their first two characters only.
+PATTERNS = [
+    ("machine path", re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+|/private/(?:tmp|var)/|/var/folders/|"
+                                r"/Volumes/|[A-Za-z]:\\Users\\"), False),
+    ("home path", re.compile(r"(?<![\w.~/])~/[\w.]|\$\{?HOME\}?/"), False),
+    ("Drive or scratchpad path", re.compile(r"GoogleDrive-|CloudStorage|Shared drives|My Drive/|scratchpad|"
+                                            r"\.claude/worktrees|/tmp/claude", re.I), False),
+    # RFC 1918, Tailscale's CGNAT range (100.64/10: every tailnet address) and link-local.
+    ("LAN address", re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|"
+                               r"172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|"
+                               r"100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})"
+                               r"(?!\.?\d)"), False),
+    # IPv6 unique-local (fc00::/7, Tailscale's fd7a:…) and link-local (fe80::/10).
+    ("LAN address", re.compile(r"(?<![\w:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):(?:[0-9a-f]{0,4}:){1,6}[0-9a-f]{0,4}"
+                               r"(?![\w:])", re.I), False),
+    # A name only the LAN or the tailnet resolves, ended by anything but a word character, a call
+    # or a longer name (review 2026-10-09: an allow-list of end characters let `tower.local` in
+    # backticks, <http://nas.lan> and `@host.local>` through). `threading.local()` is not one;
+    # a bare `threading.local` or `settings.local` is, and an exemption clears it.
+    ("LAN host name", re.compile(r"(?<![\w.-])[\w-]+(?:\.[\w-]+)*\.(?:local|lan|home\.arpa|ts\.net)"
+                                 r"(?![\w(-])(?!\.\w)", re.I), False),
+    ("e-mail address", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"), False),
+    ("session link", re.compile(r"claude\.ai/(?:code/)?session|Claude-Session|session_0[0-9A-Za-z]{10,}"), False),
+    # A picture, a sound or a document inside a text file: the gate reads text, so whatever it
+    # holds passes unseen (review 2026-10-09: parameters before ;base64, and audio, too).
+    ("embedded data", re.compile(r"data:[\w.+-]+/[\w.+-]+(?:;[\w.+=-]+)*;base64,", re.I), False),
+    # Vendor shapes (OpenAI incl. sk-proj, Anthropic, Stripe, Porkbun's pk1_/sk1_, GitHub, AWS,
+    # Google, Slack, a JWT such as Home Assistant's long-lived token, a Telegram bot token), then
+    # the generic rule: a quoted value of 8+ characters, any symbols; or an unquoted one that does
+    # not go on into a call or an attribute (`token = os.environ.get(…)` is code, not a secret).
+    # Every vendor shape sits behind one left edge (review 2026-10-09: `task1_processing` and
+    # `risk_test_cases` hit as sk1_ and sk_test_ inside an identifier).
+    ("credential", re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{20,}|sk-ant-[\w-]{8,}|[sr]k_(?:live|test)_\w{16,}|[ps]k1_\w{16,}|"
+                              r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|"
+                              r"xox[abprs]-[\w-]{10,}|eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,})|"
+                              r"-----BEGIN [A-Z ]*PRIVATE KEY-----|(?<!\d)\d{8,10}:AA[\w-]{30,}|"
+                              r"(?i:(?:api[_-]?key|secret|token|passw(?:or)?d)\w*['\"]?\s*[:=]\s*"
+                              r"(?:['\"][^'\"\s]{8,}['\"]|[A-Za-z0-9_\-+/=.]{8,}(?![\w(\[.\-+/=])))"), True),
+]
+# A key, quoted or bare, at the start of a block line (after any run of "- ") or inside a flow
+# mapping or sequence; quoted text that says "fix:" is not a key.
+EDL_KEY = re.compile(r"^\s*(?:-\s+)*[\"']?(?:lines|fix)[\"']?\s*:|[{,\[]\s*[\"']?(?:lines|fix)[\"']?\s*:")
+# "IMG_5814@496.json" is a transcript's file name, not an address (P2 of the design counted one):
+# digits after the @ and a file suffix. company.sh and example.md stay addresses.
+FILE_NAME_AT = re.compile(r"@\d+\.(?:json|ya?ml|md|txt|csv|tsv|srt|vtt|mp4|mov|m4a|wav|mp3|jpe?g|png|heic|pdf)$", re.I)
+CREDIT_NAME = re.compile(r"(?:^|[{,\s])name:\s*(?:\"([^\"]+)\"|'([^']+)'|([^,}\n#]+?))\s*(?:[,}#]|$)")
+MASK_IN_AGENT = {"private word", "e-mail address"}
+# A workflow that lands a PR by itself, by its name or by what it runs (review 2026-10-09:
+# auto-merge.yml, or a pr.yml running `gh pr merge --auto`, passed a name-only check), and
+# Mergify, which needs no workflow at all.
+AUTOMERGE = re.compile(r"auto[-_]?merge|merge\s+--auto|enablePullRequestAutoMerge|gh\s+pr\s+merge|"
+                       r"pulls\.merge|/pulls/[^/\s]+/merge", re.I)
+MERGIFY = {".mergify.yml", ".github/mergify.yml", ".mergify/config.yml", ".kodiak.toml", ".github/.kodiak.toml",
+           ".bulldozer.yml"}
+
+
+class Refused(Exception):
+    """A setup error: printed, exit 2."""
+
+
+# No replace refs, ever: a refs/replace/* in a clone would show this gate another tree and other
+# commits than the ones that go public.
+GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
+
+
+def git(repo, *args, check=True, env=None, input=None):
+    e = dict(os.environ, **{**GIT_ENV, **(env or {})})
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=e, input=input)
+    if check and r.returncode:
+        raise Refused(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def blob(repo, sha):
+    return subprocess.run(["git", "-C", str(repo), "cat-file", "blob", sha],
+                          capture_output=True, check=True, env=dict(os.environ, **GIT_ENV)).stdout
+
+
+def entries(repo, ref):
+    """Every file of the ref: path -> (mode, sha)."""
+    out = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", ref],
+                         capture_output=True, check=True, env=dict(os.environ, **GIT_ENV)).stdout.decode()
+    files = {}
+    for rec in filter(None, out.split("\0")):
+        meta, path = rec.split("\t", 1)
+        mode, kind, sha = meta.split()
+        files[path] = (mode, kind, sha)
+    return files
+
+
+def lines_of(text):
+    return [s for s in (l.rstrip("\r") for l in text.splitlines()) if s.strip() and not s.lstrip().startswith("#")]
+
+
+def conf_dir(files):
+    """The ref's opt-in folder: .helloworld/, else the old .opensource/, else .helloworld/ (whose
+    absence read_conf then names)."""
+    for c in CONFS:
+        if any(f.startswith(c + "/") for f in files):
+            return c
+    return CONF
+
+
+def read_conf(repo, ref, files, name, conf=CONF):
+    path = f"{conf}/{name}"
+    if path not in files:
+        raise Refused(f"{ref} has no {path} — the repo has not opted in")
+    return blob(repo, files[path][2]).decode()
+
+
+def wordlist_path():
+    """The first that is set or exists: $HELLOWORLD_WORDLIST, $OPENSOURCE_WORDLIST, the config
+    dir's helloworld/wordlist.txt, the old default; a variable that is set wins even when its file
+    is missing, so a typo is refused rather than passed over. The same for the config dir's entry:
+    one that exists but is no readable file (a broken link, a Drive file not yet downloaded) is
+    refused, never passed over for the old list, which may lack the newest words."""
+    for v in ("HELLOWORLD_WORDLIST", "OPENSOURCE_WORDLIST"):
+        if os.environ.get(v):
+            return Path(os.path.expanduser(os.environ[v]))
+    new = common.CONFIG / "helloworld" / "wordlist.txt"
+    old = Path.home() / ".config" / "opensource" / "wordlist.txt"
+    return old if old.is_file() and not os.path.lexists(new) else new
+
+
+def wordlist():
+    p = wordlist_path()
+    if not p.is_file():
+        raise Refused(f"no private word list at {p} — household, machine and account names cannot be "
+                      "checked, so nothing is scanned (one word or name per line)")
+    # A trailing comment is stripped, not matched: `Harbourview  # the house` must still find
+    # Harbourview. A `#` that is still inside an entry would never match anything: refused.
+    words = [re.sub(r"\s+#.*$", "", w).strip() for w in lines_of(p.read_text())]
+    odd = [w for w in words if "#" in w]
+    if odd:
+        raise Refused(f"the private word list {p} has an entry with '#' in it — a comment goes on its own "
+                      "line or after a space")
+    if not words:
+        raise Refused(f"the private word list {p} is empty")
+    return p, words
+
+
+def norm(name):
+    return " ".join(name.split()).casefold()
+
+
+def words_regex(words, credited=()):
+    """The word list, one pattern per entry (so overlapping entries are each found), less the
+    entries a person credited themselves with. Built from the original spellings: casefold turns
+    "ß" into "ss", and the entry would no longer match itself."""
+    drop = {norm(c) for c in credited}
+    out = []
+    for w in dict.fromkeys(w for w in words if norm(w) not in drop):
+        body = r"\s+".join(map(re.escape, w.split()))
+        out.append(re.compile(body if len(w) >= 5 else r"(?<![A-Za-z])" + body + r"(?![A-Za-z])", re.I))
+    return out
+
+
+def mask_words(text, words_rx):
+    """Inside an agent's shell, every private word in a printed line — a path, a machine-path hit."""
+    if not os.environ.get("CLAUDECODE"):
+        return text
+    for rx in words_rx:
+        text = rx.sub(lambda m: m.group()[:2] + "…", text)
+    return text
+
+
+def credits(text):
+    """Names under CREDITS.yaml's top-level `people:`, block or flow style; comments skipped."""
+    names, inside = [], False
+    for line in text.splitlines():
+        if re.match(r"\S", line) and not line.startswith("#"):
+            inside = line.startswith("people:")
+        if not inside or line.lstrip().startswith("#"):
+            continue
+        for m in CREDIT_NAME.finditer(line):
+            n = next(g for g in m.groups() if g).strip()
+            if n:
+                names.append(n)
+    return names
+
+
+def allowlist(text, files):
+    paths, bad = [], []
+    for raw in lines_of(text):
+        p = raw.strip()
+        if re.search(r"[*?\[]", p):
+            bad.append(f"{p}: a glob — list files one by one")
+        elif p.startswith("/") or ".." in p.split("/"):
+            bad.append(f"{p}: not a path inside the repo")
+        elif any(p == c or p.startswith(c + "/") for c in CONFS):
+            bad.append(f"{p}: the gate's own lists are never published")
+        elif p in paths:
+            bad.append(f"{p}: listed twice")
+        elif p not in files:
+            under = any(f.startswith(p.rstrip("/") + "/") for f in files)
+            bad.append(f"{p}: {'a folder — list its files' if under else 'not in the tree'}")
+        elif files[p][1] != "blob":
+            bad.append(f"{p}: a {files[p][1]}, not a file")
+        else:
+            paths.append(p)
+    return paths, bad
+
+
+def exemptions(text):
+    ex = []
+    for raw in lines_of(text):
+        f, sep, s = raw.partition(":")
+        if not sep or not s:
+            raise Refused(f"exemption '{raw}' is not <file>:<exact string>")
+        ex.append((f.strip(), s))
+    return ex
+
+
+def is_edl(path):
+    parts = path.split("/")
+    return "edl" in (d.lower() for d in parts[:-1]) and path.lower().endswith((".yaml", ".yml", ".json"))
+
+
+def shown(cat, text, masked):
+    if masked or (cat in MASK_IN_AGENT and os.environ.get("CLAUDECODE")):
+        return text[:2] + "…"
+    return " ".join(text.split())
+
+
+def text_hits(text, words_rx, skip=(), only=None):
+    """Every finding in text as (start, end, category, shown), whole text at once; `only` limits
+    the categories looked for."""
+    out = []
+    for cat, rx, masked in PATTERNS + [("private word", rx, False) for rx in words_rx]:
+        if cat in skip or (only is not None and cat not in only):
+            continue
+        for m in rx.finditer(text):
+            if cat == "e-mail address" and FILE_NAME_AT.search(m.group()):
+                continue
+            out.append((m.start(), m.end(), cat, shown(cat, m.group(), masked)))
+    return out
+
+
+def line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def scan(repo, paths, files, ex, words, message=None, idents=(), meta=()):
+    """Hits as (where, category, shown text); exemptions used as (file, string, cleared); bad exemptions.
+    `meta` is the text a pull request makes public beside the files — (where, text, skip) — scanned
+    whole against the entire word list: no exemption and no credit reaches it."""
+    hits, used, bad = [], [], []
+    texts = {}
+    for p in paths:
+        try:
+            texts[p] = blob(repo, files[p][2]).decode("utf-8")
+        except UnicodeDecodeError:
+            hits.append((p, "not UTF-8 text", "the gate reads text only"))
+    words_rx = words_regex(words, credits(texts.get("CREDITS.yaml", "")))
+    for f, s in ex:
+        if f not in texts:
+            bad.append(f"{f}:{s} — {f} is not published")
+        elif s not in texts[f]:
+            bad.append(f"{f}:{s} — the string is not in {f}")
+    for p, raw in texts.items():
+        if is_edl(p):
+            for n, line in enumerate(raw.splitlines(), 1):
+                m = EDL_KEY.search(line)
+                if m:  # the key only: the line itself is the words
+                    hits.append((f"{p}:{n}", "people's words in a cut list", m.group().strip(" -{,[")))
+        spans = [(f, s, [(m.start(), m.end()) for m in re.finditer(re.escape(s), raw)]) for f, s in ex if f == p]
+        cleared = {(f, s): 0 for f, s, _ in spans}
+        for start, end, cat, txt in text_hits(raw, words_rx):
+            cover = next(((f, s) for f, s, occ in spans if any(a <= start and end <= b for a, b in occ)), None)
+            if cover:
+                cleared[cover] += 1
+            else:
+                hits.append((f"{p}:{line_of(raw, start)}", cat, txt))
+        for (f, s), c in cleared.items():
+            if c:
+                used.append((f, s, c))
+            elif s in raw:
+                bad.append(f"{f}:{s} — clears no finding in {f}")
+        hits += [(f"{p} (its path)", cat, txt) for _, _, cat, txt in text_hits(p, words_rx)]
+    if message is not None:
+        hits += [(f"commit message:{line_of(message, a)}", cat, txt) for a, _, cat, txt in text_hits(message, words_rx)]
+    for label, ident in idents:  # the address is the identity the owner chose to publish; the rest is scanned
+        hits += [(f"commit {label}", cat, txt) for _, _, cat, txt in text_hits(ident, words_rx, skip={"e-mail address"})]
+    every_word = words_regex(words)
+    for where, text, skip in meta:
+        hits += [(f"{where}:{line_of(text, a)}", cat, txt) for a, _, cat, txt in text_hits(text, every_word, skip)]
+    return hits, used, bad
+
+
+def public_name(remote):
+    """owner/name — the last segment alone is the same for someone/film and their-org/film."""
+    return "/".join(url_key(remote).split("/")[-2:])
+
+
+# GitHub's own committer on a squash, a merge or a web edit; the committer field only, and in text.
+GITHUB_COMMITTER = "noreply@github.com"
+# <id>+<login>@users.noreply.github.com, the older <login>@users.noreply.github.com, and a bot's
+# <id>+<name>[bot]@users.noreply.github.com: addresses GitHub makes up, never a person's own.
+NOREPLY = re.compile(r"^(?:\d+\+)?[A-Za-z0-9-]+(?:\[bot\])?@users\.noreply\.github\.com$", re.I)
+IDENT = re.compile(r"^(.*?)\s*<([^<>]*)>\s*(?:(\d+)\s+([+-]\d{4}))?\s*$")
+REMEDY = ("a commit like this can only go by a hard push, which is the owner's, and owes a post-mortem "
+          "(helloworld's README.md, \"Post-mortem: a public repo needed a hard push\")")
+NO_IDENTITIES = ("WARNING: identities from this machine's git config; add .helloworld/identities "
+                 "(one address per line, read from the reviewed ref)")
+
+
+def split_ident(text):
+    """'Name <addr> 1700000000 -0700' as (name, addr, tz); tz is None without a timestamp, and
+    without angle brackets the whole text is the name."""
+    m = IDENT.match(text.strip())
+    return (m.group(1), m.group(2).strip(), m.group(4)) if m else (text.strip(), "", None)
+
+
+def publishing_emails(idents):
+    """The addresses of the identity the owner chose to publish: what `publish` commits as."""
+    return {split_ident(who)[1].lower() for _, who in idents if split_ident(who)[1]}
+
+
+def identity_list(text):
+    """.helloworld/identities: one address per line (`Name <addr>` is read as its address)."""
+    out = set()
+    for l in lines_of(text):
+        m = IDENT.match(l.strip())
+        out.add((m.group(2) if m else l.strip()).lower())
+    return out
+
+
+def address_ok(addr, allowed, committer=False):
+    a = addr.lower()
+    return a in allowed or bool(NOREPLY.match(a)) or (committer and a == GITHUB_COMMITTER)
+
+
+def git_bytes(repo, *args, input=None):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, input=input, env=dict(os.environ, **GIT_ENV))
+    if r.returncode:
+        raise Refused(f"git {' '.join(args[:3])}: {r.stderr.decode(errors='replace').strip()}")
+    return r.stdout
+
+
+def read_objects(repo, shas):
+    """sha -> (type, raw bytes), all through one `git cat-file --batch`."""
+    shas = list(dict.fromkeys(shas))
+    out = git_bytes(repo, "cat-file", "--batch", input=("\n".join(shas) + "\n").encode()) if shas else b""
+    objs, i = {}, 0
+    for sha in shas:
+        j = out.index(b"\n", i)
+        head, i = out[i:j].split(), j + 1
+        if len(head) == 3:
+            size = int(head[2])
+            objs[sha] = (head[1].decode(), out[i:i + size])
+            i += size + 1
+    return objs
+
+
+def split_object(raw):
+    """A commit or tag object as ([(header, value)], message); a continuation line (one that starts
+    with a space: gpgsig, mergetag) belongs to the header above it, joined by newlines."""
+    head, _, body = raw.decode("utf-8", errors="replace").partition("\n\n")
+    headers = []
+    for line in head.split("\n"):
+        if line.startswith(" ") and headers:
+            headers[-1][1] += "\n" + line[1:]
+        elif line:
+            k, _, v = line.partition(" ")
+            headers.append([k, v])
+    return headers, body
+
+
+def history_scan(repo, refs, allowed, words):
+    """(findings, warnings) in the public repo's history: every commit reachable from every branch
+    and tag, read as raw objects (no format string to fool). For each commit its author and
+    committer, the tagger of any mergetag header, and the whole message; for each annotated tag,
+    peeled one level at a time, its tagger and message; every ref name. Names and addresses go
+    through the word list and the address pattern, whole messages likewise. Only the addresses in
+    `allowed` (.helloworld/identities, else the publishing identity), GitHub's noreply@github.com
+    as committer or in text, and *@users.noreply.github.com pass. A time-zone offset other than
+    +0000 is a warning only (the owner's call, 2026-10-10): a rebase merge writes the merging account's own
+    offset as the committer's. The commits GitHub makes itself (a squash or merge, a web edit, a
+    repository's first commit) carry the merging account's own address, which this gate never wrote
+    and the tree scan never sees."""
+    rx = words_regex(words)
+    hits, warns = [], []
+
+    def text_findings(label, text, numbered=False):
+        out = []
+        for a, b, cat, txt in text_hits(text, rx, only={"e-mail address", "private word"}):
+            if cat == "e-mail address" and (address_ok(text[a:b], allowed) or text[a:b].lower() == GITHUB_COMMITTER):
+                continue
+            out.append((f"{label}:{line_of(text, a)}" if numbered else label, cat, txt))
+        return out
+
+    def ident(label, line, committer=False):
+        name, addr, tz = split_ident(line)
+        out = text_findings(label, name)
+        if addr:
+            if address_ok(addr, allowed, committer):
+                out += [(label, cat, txt) for _, _, cat, txt in text_hits(addr, rx, only={"private word"})]
+            else:
+                out.append((label, "e-mail address", shown("e-mail address", addr, False)))
+        hits.extend(out)
+        if tz and tz != "+0000":
+            warns.append(f"{label}: time zone {tz} (warning)")
+
+    for name, _ in refs:
+        hits.extend((f"history ref {name}", cat, txt) for _, _, cat, txt in text_hits(name, rx, only={"private word"}))
+
+    tips, seen, pending = [], set(), [sha for _, sha in refs]
+    while pending:  # annotated tags one level at a time, through their object header
+        nxt = []
+        for sha, (kind, raw) in read_objects(repo, pending).items():
+            if sha in seen:
+                continue
+            seen.add(sha)
+            if kind == "commit":
+                tips.append(sha)
+            elif kind == "tag":
+                headers, message = split_object(raw)
+                for k, v in headers:
+                    if k == "tagger":
+                        ident(f"history {sha[:7]} tagger", v)
+                    elif k == "object":
+                        nxt.append(v.strip())
+                hits.extend(text_findings(f"history {sha[:7]} tag message", message, True))
+        pending = nxt
+    if not tips:
+        return hits, warns
+    commits = git(repo, "rev-list", "--stdin", input="\n".join(tips) + "\n").stdout.split()
+    for sha, (kind, raw) in read_objects(repo, commits).items():
+        headers, message = split_object(raw)
+        for k, v in headers:
+            if k == "author":
+                ident(f"history {sha[:7]} author", v)
+            elif k == "committer":
+                ident(f"history {sha[:7]} committer", v, committer=True)
+            elif k == "mergetag":  # a signed tag merged in: its tagger and its words travel with it
+                for line in v.split("\n"):
+                    if line.startswith("tagger "):
+                        ident(f"history {sha[:7]} mergetag tagger", line[7:])
+                hits.extend(text_findings(f"history {sha[:7]} mergetag",
+                                          "\n".join(l for l in v.split("\n") if not l.startswith("tagger ")), True))
+        hits.extend(text_findings(f"history {sha[:7]} message", message, True))
+    return hits, warns
+
+
+def public_state(repo, remote):
+    """The public repo as (main sha or None, [(ref name, object sha)] for every branch and tag). One ls-remote and one fetch, objects only (FETCH_HEAD; no ref of ours moves):
+    the diff base and the history scan read the same objects. Refused when the remote is unreachable."""
+    r = git(repo, "ls-remote", remote, "refs/heads/*", "refs/tags/*", check=False)
+    if r.returncode:
+        raise Refused(f"cannot reach {remote}: {r.stderr.strip()[:200]}")
+    refs = {}
+    for l in r.stdout.splitlines():
+        sha, _, name = l.partition("\t")
+        if name and not name.endswith("^{}"):  # a peeled line repeats its tag; the walk follows object headers
+            refs[name] = sha
+    if refs:
+        git(repo, "fetch", "-q", "--no-tags", remote, *refs)
+    main = refs.get("refs/heads/main")
+    if main:
+        git(repo, "cat-file", "-e", f"{main}^{{commit}}")
+    return main, list(refs.items())
+
+
+def url_key(url):
+    """One spelling per repo: git@host:o/r, https://host/o/r(.git) and a local path compare equal."""
+    u = re.sub(r"^[a-z+]+://(?:[^@/]+@)?", "", url.strip())
+    u = re.sub(r"^[^@/]+@", "", u)
+    u = re.sub(r"^([^/:]+):\d+/", r"\1/", u).replace(":", "/")  # ssh://host:22/o/r is host/o/r
+    return re.sub(r"\.git$", "", u.rstrip("/")).lower()
+
+
+def own_remotes(repo):
+    """Every fetch and push URL of the repo's remotes, insteadOf applied."""
+    urls = []
+    for name in git(repo, "remote", check=False).stdout.split():
+        for extra in ([], ["--push"]):
+            urls += git(repo, "remote", "get-url", "--all", *extra, name, check=False).stdout.splitlines()
+    return urls
+
+
+def build(repo, ref, check_only):
+    """Everything up to the scan's verdict. Returns a dict for the caller to print and act on."""
+    top = git(Path(repo).resolve(), "rev-parse", "--show-toplevel", check=False)
+    if top.returncode:
+        raise Refused(f"{repo} is not a git repo")
+    repo = Path(top.stdout.strip())  # a subfolder passed as <repo> is the repo, for every git call
+    notes = []
+    if ref == "origin/main":
+        r = git(repo, "fetch", "-q", "origin", "main", check=False)
+        if r.returncode:
+            if not check_only:
+                raise Refused(f"could not fetch origin: {r.stderr.strip()[:200]} — publish needs the current main")
+            notes.append("origin not fetched; checking the origin/main this clone has")
+    head = git(repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False).stdout.strip()
+    if not head:
+        raise Refused(f"no commit {ref} in {repo}")
+    files = entries(repo, head)
+    conf = conf_dir(files)
+    if conf == OLD_CONF:
+        notes.append(f"read from {OLD_CONF}/, the old name — git mv {OLD_CONF} {CONF} when next touched")
+    remote = read_conf(repo, ref, files, "remote", conf).strip()
+    if not remote:
+        raise Refused(f"{conf}/remote is empty")
+    if url_key(remote) in {url_key(u) for u in own_remotes(repo)}:
+        raise Refused(f"{conf}/remote is {remote}, one of this repo's own remotes — the public twin is another repo")
+    paths, bad_allow = allowlist(read_conf(repo, ref, files, "allowlist.txt", conf), files)
+    if not paths and not bad_allow:  # an empty tree would delete every public file
+        raise Refused(f"{conf}/allowlist.txt names no file — publishing it would empty the public repo")
+    ex = exemptions(read_conf(repo, ref, files, "exemptions.txt", conf)) if f"{conf}/exemptions.txt" in files else []
+    wl, words = wordlist()
+    # The addresses that may stand in the public history: .helloworld/identities from the reviewed
+    # ref; without it, the identity this machine's git would publish as (and a warning to add the file).
+    idents = identities(repo)
+    listed = f"{conf}/identities" in files
+    allowed = identity_list(read_conf(repo, ref, files, "identities", conf)) if listed else publishing_emails(idents)
+    if listed and not check_only:
+        # Mine is the commit's author and committer; a person not on the list would sign the public
+        # history with an address the gate has never been told may stand there. A GitHub noreply
+        # address passes without a line, as in the history scan (address_ok) and the files' headers;
+        # a bot's does not: the gate's own commit is a person's.
+        if not all(a in allowed or (NOREPLY.match(a) and "[bot]@" not in a) for a in publishing_emails(idents)):
+            raise Refused(f"the address git would commit as is not in {conf}/identities at {ref} — "
+                          "add it there (reviewed), or set user.email to a listed one")
+    return dict(repo=repo, ref=ref, head=head, files=files, remote=remote, paths=paths, bad_allow=bad_allow,
+                ex=ex, wl=wl, words=words, notes=notes, idents=idents, allowed=allowed, listed=listed, warnings=[])
+
+
+def history(b, refs):
+    """The history findings; the time-zone warnings go to b for report to print."""
+    hits, b["warnings"] = history_scan(b["repo"], refs, b["allowed"], b["words"])
+    return hits
+
+
+def write_tree(repo, paths, files):
+    with tempfile.TemporaryDirectory() as d:
+        env = {"GIT_INDEX_FILE": str(Path(d) / "index")}
+        info = "".join(f"{files[p][0]} {files[p][2]}\t{p}\n" for p in paths)
+        git(repo, "update-index", "--add", "--index-info", env=env, input=info)
+        return git(repo, "write-tree", env=env).stdout.strip()
+
+
+def report(b, hits, used, bad_ex):
+    when = git(b["repo"], "log", "-1", "--format=%cs", b["head"]).stdout.strip()
+    wl_when = dt.date.fromtimestamp(b["wl"].stat().st_mtime).isoformat()
+    print(f"helloworld — {b['repo']} at {b['ref']} ({b['head'][:7]}, {when})")
+    print(f"  lists: allowlist {len(b['paths'])} files, exemptions {len(b['ex'])} (both from {b['ref']}); "
+          f"word list {b['wl']} ({len(b['words'])} words, changed {wl_when})")
+    print(f"  public: {b['remote']}")
+    for n in b["notes"]:
+        print(f"  note: {n}")
+    if not b["listed"]:
+        print(f"  {NO_IDENTITIES}")
+    for w in b["warnings"]:
+        print(f"  warning: {w}")
+    rxs = words_regex(b["words"])
+    for f, s, c in used:
+        print(mask_words(f"  exemption used: {f}: \"{s}\" cleared {c}", rxs))
+    problems = [f"allowlist: {x}" for x in b["bad_allow"]] + [f"exemption: {x}" for x in bad_ex]
+    problems += [f"{w}: {cat} — {txt}" for w, cat, txt in hits]
+    if problems:
+        print(f"  REFUSED — {len(problems)} finding(s):")
+        for p in problems:
+            print(mask_words(f"    {p}", rxs))
+        if any(w.startswith("history ") for w, _, _ in hits):
+            print(f"  history: {REMEDY}")
+    return not problems
+
+
+def diff_lines(b, tree, parent):
+    """The diff-stat of this tree against the public main; None when they are the same tree."""
+    if git(b["repo"], "rev-parse", f"{parent}^{{tree}}").stdout.strip() == tree:
+        return None
+    return git(b["repo"], "diff", "--stat", parent, tree).stdout.rstrip().splitlines()
+
+
+def diffstat(b, tree, parent):
+    if not parent:
+        print("  diff: the public repo has no main yet — this is the first publish")
+        return True
+    stat = diff_lines(b, tree, parent)
+    if stat is None:
+        print("  diff: nothing — the public main already has exactly this tree")
+        return False
+    print(f"  diff against the public main ({parent[:7]}):")
+    print("\n".join(mask_words("    " + l, words_regex(b["words"])) for l in stat))
+    return True
+
+
+def identities(repo):
+    """The two identities a commit made here would carry, without the timestamp."""
+    out = []
+    for k in ("author", "committer"):
+        r = git(repo, "var", f"GIT_{k.upper()}_IDENT", check=False)  # none set: check still runs, and fails closed
+        if not r.returncode:
+            out.append((k, r.stdout.rsplit(" ", 2)[0]))
+    return out
+
+
+def author_trailer(idents):
+    """`Signed-off-by: <the author identity>`, or None when git has no author identity.
+
+    The public repo's DCO check wants every commit to carry one that matches its author's address,
+    and the gate's own commits come from `git commit-tree`, which adds none. The identity is the
+    `idents` author, read by `git var` in the repo and env the commit-tree runs in (never
+    predicted). With none, commit-tree fails closed on its own."""
+    author = dict(idents).get("author")
+    return f"Signed-off-by: {author}" if author else None
+
+
+def signed_off(message, idents):
+    """The message plus its author's trailer after a blank line; one already there is not doubled."""
+    trailer = author_trailer(idents)
+    if not trailer or any(l.strip().lower() == trailer.lower() for l in message.splitlines()):
+        return message
+    return message.rstrip("\n") + "\n\n" + trailer
+
+
+def log_path(repo):
+    """<git dir>/helloworld/PUBLISHED.md; the old <git dir>/opensource/ while only it exists, so a
+    clone that published before the rename keeps its log and its public clone in one place."""
+    common_dir = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    new, old = common_dir / "helloworld", common_dir / "opensource"
+    return (old if old.is_dir() and not new.exists() else new) / "PUBLISHED.md"
+
+
+def cmd_check(args):
+    b = build(args.repo, args.ref, check_only=True)
+    hits, used, bad_ex = scan(b["repo"], b["paths"], b["files"], b["ex"], b["words"])
+    # The same fetch the diff base uses also brings every branch and tag of the public repo, whose
+    # commit identities (GitHub's squash commits among them) are scanned beside the tree.
+    parent, unreachable = None, None
+    try:
+        parent, refs = public_state(b["repo"], b["remote"])
+        hits += history(b, refs)
+    except Refused as e:
+        unreachable = e
+    clean = report(b, hits, used, bad_ex)
+    if unreachable:  # fails closed: a history that was not read is not a clean one
+        print(f"  history: not scanned — {unreachable}")
+        return 1 if not clean else 2
+    if clean:
+        tree = write_tree(b["repo"], b["paths"], b["files"])
+        diffstat(b, tree, parent)
+        print(f"  clean: {len(b['paths'])} files, tree {tree[:7]}. Nothing was pushed.")
+    return 0 if clean else 1
+
+
+def cmd_publish(args):
+    if os.environ.get("CLAUDECODE"):
+        raise Refused("publish runs in the owner's own terminal, never an agent's shell (CLAUDECODE is set); "
+                      "`helloworld check` is the agent's verb")
+    if not sys.stdin.isatty():
+        raise Refused("publish asks for the repo's name typed back; stdin is not a terminal")
+    b = build(args.repo, "origin/main", check_only=False)
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()  # UTC, as the commit's dates
+    message = args.message or f"Published {today}"
+    idents = b["idents"]
+    hits, used, bad_ex = scan(b["repo"], b["paths"], b["files"], b["ex"], b["words"], message=message, idents=idents)
+    parent, refs = public_state(b["repo"], b["remote"])
+    hits += history(b, refs)
+    if not report(b, hits, used, bad_ex):
+        return 1
+    tree = write_tree(b["repo"], b["paths"], b["files"])
+    last = log_path(b["repo"])
+    rows = [l.split() for l in last.read_text().splitlines() if l.startswith("- ")] if last.is_file() else []
+    # "- <date> from <private sha> <published sha> <remote>", this remote's rows only;
+    # "- <date> pr <branch> <sha> <url>" rows are proposals, not publishes
+    rows = [r for r in rows if len(r) == 6 and r[2] == "from" and r[5] == b["remote"]]
+    logged = rows[-1][4] if rows else None
+    if parent and logged and parent != logged:
+        print(f"  note: the public main ({parent[:7]}) is not the last publish logged here ({logged[:7]}) — "
+              "something was merged on GitHub; the diff below says whether this tree keeps it")
+    if not diffstat(b, tree, parent):
+        return 0
+    name = public_name(b["remote"])
+    print(f"  commit: \"{message}\", {'a child of ' + parent[:7] if parent else 'an orphan'}, dated in UTC")
+    for k, who in idents:
+        print(f"    {k}: {who}")
+    print(f"    trailer: {author_trailer(idents) or 'none — git has no author identity, so the commit will fail'}")
+    try:
+        typed = input(f"Type the public repo's name ({name}) to push it to {b['remote']}: ").strip()
+    except EOFError:
+        typed = ""
+    if typed.lower() != name:
+        print("Not published: the name did not match.")
+        return 2
+    cargs = ["commit-tree", tree, "-m", signed_off(message, idents)] + (["-p", parent] if parent else [])
+    utc = f"{int(time.time())} +0000"
+    sha = git(b["repo"], *cargs, env={"GIT_AUTHOR_DATE": utc, "GIT_COMMITTER_DATE": utc}).stdout.strip()
+    git(b["repo"], "push", "-q", b["remote"], f"{sha}:refs/heads/main", env={"GIT_PUSH_OK": "1"})
+    seen = git(b["repo"], "ls-remote", b["remote"], "refs/heads/main").stdout.split()
+    if not seen or seen[0] != sha:
+        print(f"Pushed, but the public main reads {seen[0][:7] if seen else 'nothing'}, not {sha[:7]} — look before trusting it.")
+        return 2
+    log_row(b["repo"], f"- {today} from {b['head']} {sha} {b['remote']}")
+    print(f"Published {sha[:7]} to {b['remote']} (read back). Logged in {last}.")
+    return 0
+
+
+def log_row(repo, row):
+    last = log_path(repo)
+    last.parent.mkdir(parents=True, exist_ok=True)
+    with last.open("a") as fh:
+        if fh.tell() == 0:
+            fh.write("# What `helloworld publish` pushed from this clone: date, from (private), published.\n")
+        fh.write(row + "\n")
+
+
+def public_clone(b):
+    """The private repo's clone of the public one, fetched now, its pre-push the wharf guard."""
+    d = log_path(b["repo"]).parent / "public"
+    if not (d / ".git").is_dir():
+        d.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(["git", "clone", "-q", "--no-checkout", "--no-tags", b["remote"], str(d)],
+                           capture_output=True, text=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        if r.returncode:
+            raise Refused(f"cannot clone {b['remote']}: {r.stderr.strip()[:200]}")
+    # An emptied or half-made public/.git is no repo, and git would walk up to the private
+    # repo's own .git: every call below would then rewrite the private origin and push from it
+    # (review 2026-10-09). The clone must be its own repo before anything runs in it.
+    own = git(d, "rev-parse", "--absolute-git-dir", check=False).stdout.strip()
+    if not own or Path(own).resolve() != (d / ".git").resolve():
+        raise Refused(f"{d} is not a clone of its own (git finds {own or 'nothing'}) — remove it and run again")
+    git(d, "remote", "set-url", "origin", b["remote"])
+    git(d, "fetch", "-q", "--prune", "--no-tags", "origin")
+    guard = guard_path()
+    if not guard:
+        raise Refused("no pre-push guard: the wharf module's templates/code/git-hooks/pre-push is not installed "
+                      "here — the clone would push unguarded")
+    # The clone's own hooks folder: --git-path would follow a global core.hooksPath and overwrite
+    # a shared pre-push, and with one set git would never run this one.
+    if git(d, "config", "--get", "core.hooksPath", check=False).stdout.strip():
+        raise Refused("core.hooksPath is set — the clone's pre-push guard would not run")
+    hook = Path(git(d, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()) / "hooks" / "pre-push"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(guard, hook)
+    hook.chmod(0o755)
+    return d
+
+
+def automerge_in(repo, ref):
+    """The first file in ref that would let a PR merge itself, or None."""
+    # -z: without it git quotes a non-ASCII path ("…mergé.yml") and the prefix check misses it.
+    for n in filter(None, git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", ref).stdout.split("\0")):
+        if n in MERGIFY:
+            return n
+        if n.startswith(".github/workflows/") and (
+                AUTOMERGE.search(n) or AUTOMERGE.search(git(repo, "cat-file", "-p", f"{ref}:{n}").stdout)):
+            return n
+    return None
+
+
+def gh(*args, cwd=None):
+    try:
+        return subprocess.run(["gh", *args], capture_output=True, text=True, cwd=cwd)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(["gh"], 127, "", "gh is not installed")
+
+
+def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=False):
+    """What the PR says, built from the scan's verdict alone: everything in it is public."""
+    per_file = {}
+    for f, _s, c in used:
+        per_file[f] = per_file.get(f, 0) + c
+    out = [f"Publishes {n_files} allowlisted files from the private workshop as one commit on main "
+           f"(tree {tree[:7]}). Merging this pull request is the publish; nothing has reached main yet.", ""]
+    if note:
+        out += [note.strip(), ""]
+    out.append(f"Privacy scan (`helloworld`, {dt.datetime.now(dt.timezone.utc).date().isoformat()}): {n_files} files, the title, this "
+               "body, the branch name, the commit identities"
+               + (" (the PR's author is already public in this org)" if author_public else " and the PR's author")
+               + "; 0 findings.")
+    if per_file:
+        out.append("Exemptions used (exact strings, each in its own file only): "
+                   + ", ".join(f"{f} ×{c}" for f, c in sorted(per_file.items())) + ".")
+    out += ["", f"Diff against main ({parent[:7]}):", "", "```"] + stat + ["```"]
+    if removed:
+        out += ["", f"Removes {removed} file{'s' if removed > 1 else ''} from main, not named here."]
+    return "\n".join(out) + "\n"
+
+
+def cmd_publish_pr(args):
+    for v in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+        if os.environ.get(v):  # it would point every clone call at the private repo
+            raise Refused(f"{v} is set — the clone's git calls would act on another repo")
+    b = build(args.repo, "origin/main", check_only=False)
+    # The UTC date, as the commit's: a local date beside a UTC timestamp tells the time zone.
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    title = args.message or f"Publish {today}"
+    topic = re.sub(r"[^a-z0-9-]+", "-", (args.topic or "publish").lower()).strip("-") or "publish"
+    slug = common.repo_slug(b["remote"])
+    if not slug:
+        raise Refused(f"{b['remote']} is not a GitHub URL — the pull request is opened with gh")
+    tree = write_tree(b["repo"], b["paths"], b["files"])
+    parent, refs = public_state(b["repo"], b["remote"])
+    if not parent:
+        raise Refused("the public repo has no main yet — a pull request needs one to merge into; "
+                      "the first publish is `publish`, in the owner's terminal")
+    # Auto-merge stays off (the owner, 2026-10-09) by refusal, not by absence: a ready claude/* PR lands
+    # itself wherever an automerge workflow is on main, so neither the
+    # public main nor the tree proposed for it may carry one.
+    for where, ref in (("the public main", parent), ("this tree", tree)):
+        n = automerge_in(b["repo"], ref)
+        if n:
+            raise Refused(f"{where} has {n} — a PR would merge itself; auto-merge stays off until the owner turns it on")
+    stat = diff_lines(b, tree, parent)
+    clone = public_clone(b)
+    if git(clone, "rev-parse", "-q", "--verify", "refs/remotes/origin/main", check=False).stdout.strip() != parent:
+        raise Refused("the public main moved while this ran — run it again")
+    branches = [l.split() for l in git(clone, "for-each-ref", "--format=%(refname:lstrip=3) %(tree) %(objectname)",
+                                        f"refs/remotes/origin/{PR_PREFIX.rstrip('/')}").stdout.splitlines() if l]
+    # A proposal of this tree counts only on top of the current public main: a merged branch
+    # nobody deleted must not block a take-back to its tree (review 2026-10-09).
+    same = [n for n, t, c in branches
+            if t == tree and git(clone, "rev-parse", "-q", "--verify", f"{c}^", check=False).stdout.strip() == parent
+            # and only a signed one: a proposal the gate pushed before it signed fails the DCO check
+            # for good, so a run replaces it rather than pointing at it (review 2026-10-10).
+            and author_trailer(b["idents"]) in git(clone, "log", "-1", "--format=%B", c).stdout.splitlines()]
+    # Files first, alone, so the body can count the exemptions they used.
+    hits, used, bad_ex = scan(b["repo"], b["paths"], b["files"], b["ex"], b["words"])
+    hits += history(b, refs)
+    if stat is None or same:
+        if not report(b, hits, used, bad_ex):
+            return 1
+        if stat is None:
+            print("  nothing to propose — the public main already has exactly this tree. Nothing was pushed.")
+            return 0
+        # A branch with this tree is enough only while its PR is open: one whose PR was closed, or
+        # whose `gh pr create` failed, would otherwise block this tree for good.
+        for n in same:
+            r = gh("pr", "list", "--repo", slug, "--head", n, "--state", "open", "--json", "url", "--jq", ".[].url")
+            url = r.stdout.strip().splitlines()[0] if not r.returncode and r.stdout.strip() else ""
+            if url:
+                print(f"  nothing to propose — branch {n} already has exactly this tree, PR {url}. Nothing was pushed.")
+                return 0
+        why = "has no open PR" if not r.returncode else f"could not be checked for a PR: {(r.stderr or '').strip()[:200]}"
+        print(f"  branch {same[0]} already has exactly this tree but {why}. Nothing was pushed.\n"
+              f"  open it with: gh pr create --repo {slug} --base main --head {same[0]}")
+        return 2
+    taken = {n for n, _t, _c in branches}
+    branch, k = f"{PR_PREFIX}{today}-{topic}", 2
+    while branch in taken:
+        branch, k = f"{PR_PREFIX}{today}-{topic}-{k}", k + 1
+    idents = b["idents"]
+    # The body's diff-stat leaves out removed files: their names are already public, and a
+    # take-back that drops a leaked file must not be refused for naming it (review 2026-10-09).
+    # --no-renames: a rename would print `old => new` and name the old path after all.
+    body_stat = git(b["repo"], "diff", "--stat", "--no-renames", "--diff-filter=d", parent, tree).stdout.rstrip().splitlines()
+    removed = len(git(b["repo"], "diff", "--name-only", "--no-renames", "-z", "--diff-filter=D", parent, tree)
+                  .stdout.split("\0")) - 1
+    # The PR's author is the gh login, shown on the public PR: a machine account is a private word.
+    # Unread, it is unscanned, so nothing goes up (fails closed; an early version skipped it and pushed).
+    r = gh("api", "user", "--jq", ".login")
+    if r.returncode or not r.stdout.strip():
+        raise Refused("cannot read the gh login the PR would show, so it cannot be scanned; nothing was pushed "
+                      f"({(r.stderr or 'no login').strip()[:200]})")
+    login = r.stdout.strip()
+    # A login that already authored a merged pull request in a public repo of the target owner is
+    # public already (the owner's own first PR on a twin), so it passes even when the word list
+    # holds it to catch private repo paths like <login>/pipeline (2026-10-10: a first publish
+    # refused the owner's own login). Not org membership: the owner's is private, and the org's
+    # public_members was empty (probed). `is:public` matters: the token sees private
+    # repos too; `org:` matches a user-owned namespace as well (probed). The machine account has no
+    # such PR (probed: 0), so it stays refused. Searched only for a login on the word list (the
+    # search API's limit is small), and only a well-formed login, whose own name the result must
+    # carry. A failed search prints its error body on stdout, so only its exit code is trusted; it
+    # then scans the login as before (fails closed).
+    words_rx, public_as = words_regex(b["words"]), ""
+    if any(rx.search(login) for rx in words_rx) and re.fullmatch(r"[A-Za-z0-9-]+", login):
+        r = gh("api", "-X", "GET", "search/issues", "-f",
+               f"q=is:pr is:merged is:public author:{login} org:{slug.split('/')[0]}",
+               "--jq", f'[.items[] | select(.user.login == "{login}")][0].html_url // empty')
+        public_as = r.stdout.strip() if not r.returncode else ""
+        if r.returncode:
+            print(f"  PR author: the search for a public merged PR failed, so the login is scanned "
+                  f"({(r.stderr or 'no answer').strip()[:200]})")
+    body = pr_body(len(b["paths"]), tree, parent, body_stat, removed, used, args.note, bool(public_as))
+    # The identities' address is the one the owner chose to publish (as publish's): the address
+    # shape is not a finding there, a private word (a machine, an account) is.
+    meta = [("PR title", title, ()), ("PR body", body, ()), ("PR branch", branch, ())]
+    meta += [(f"commit {k}", who, {"e-mail address"}) for k, who in idents]
+    # The commit's Signed-off-by trailer repeats the author identity (the address is the owner's
+    # chosen one, as above); scanned as written so the message that goes public is covered whole.
+    meta.append(("commit trailer", author_trailer(idents) or "", {"e-mail address"}))
+    if public_as:
+        print(mask_words(f"  PR author: {login}, already public as the author of {public_as}", words_rx))
+    else:
+        meta.append(("PR author (gh login)", login, ()))
+    # Prevention, beside the scan: a squash or merge commit is authored by GitHub with the merging
+    # account's own address (the 220-film incident); a rebase merge keeps the commit's author. The
+    # repo's settings must say rebase only, or the owner's merge would be the next leak. Unread is refused.
+    r = gh("api", f"repos/{slug}", "--jq", "[.allow_squash_merge, .allow_merge_commit] | map(tostring) | join(\" \")")
+    state = r.stdout.split() if not r.returncode else []
+    if state != ["false", "false"]:
+        why = ("allow_squash_merge or allow_merge_commit is on" if "true" in state else
+               f"the merge settings could not be read ({(r.stderr or 'no answer').strip()[:200]})")
+        raise Refused(f"{slug}: {why} — a squash or merge commit would be authored by the merging account's own "
+                      f"address. Set rebase-only first: gh api -X PATCH repos/{slug} -F allow_squash_merge=false "
+                      "-F allow_merge_commit=false. Nothing was pushed.")
+    hits += scan(b["repo"], [], b["files"], [], b["words"], meta=meta)[0]
+    if not report(b, hits, used, bad_ex):
+        print("  Nothing was pushed.")
+        return 1
+    print(f"  diff against the public main ({parent[:7]}):")
+    print("\n".join(mask_words("    " + l, words_regex(b["words"])) for l in stat))
+    print(f"  commit: \"{title}\", a child of {parent[:7]}, dated in UTC")
+    for k, who in idents:
+        print(f"    {k}: {who}")
+    print(f"    trailer: {author_trailer(idents) or 'none — git has no author identity, so the commit will fail'}")
+    utc = f"{int(time.time())} +0000"
+    sha = git(b["repo"], "commit-tree", tree, "-p", parent, "-m", signed_off(title, idents),
+              env={"GIT_AUTHOR_DATE": utc, "GIT_COMMITTER_DATE": utc}).stdout.strip()
+    # The clone fetches the commit by a ref of the gate's own, which lives for this fetch only.
+    git(b["repo"], "update-ref", PR_REF, sha)
+    try:
+        git(clone, "fetch", "-q", "--no-tags", str(b["repo"]), f"+{PR_REF}:refs/heads/{branch}")
+    finally:
+        git(b["repo"], "update-ref", "-d", PR_REF, check=False)
+    if git(clone, "rev-parse", f"refs/heads/{branch}").stdout.strip() != sha:
+        raise Refused(f"the clone's {branch} is not {sha[:7]} after the fetch")
+    # GIT_PUSH_OK and VS Code's marker stripped: the guard decides, and it lets claude/* through
+    # and nothing else.
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_PUSH_OK", "VSCODE_GIT_COMMAND")}
+    r = subprocess.run(["git", "-C", str(clone), "push", "-q", "origin", f"refs/heads/{branch}:refs/heads/{branch}"],
+                       capture_output=True, text=True, env=dict(env, GIT_TERMINAL_PROMPT="0"))
+    if r.returncode:
+        raise Refused(f"push of {branch} refused: {(r.stderr or r.stdout).strip()[:300]}")
+    seen = git(clone, "ls-remote", "origin", f"refs/heads/{branch}").stdout.split()
+    if not seen or seen[0] != sha:
+        print(f"Pushed, but the public {branch} reads {seen[0][:7] if seen else 'nothing'}, not {sha[:7]} — "
+              "look before opening a PR.")
+        return 2
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(body)
+    try:
+        # No --draft (a draft is as public as a PR, and the owner's merge is the gate) and no --auto:
+        # auto-merge stays off (the owner, 2026-10-09).
+        r = gh("pr", "create", "--repo", slug, "--base", "main", "--head", branch,
+               "--title", title, "--body-file", fh.name, cwd=str(clone))
+    finally:
+        os.unlink(fh.name)
+    if r.returncode:
+        print(f"Pushed {branch} ({sha[:7]}, read back), but no PR: {(r.stderr or r.stdout).strip()[:300]}\n"
+              f"  open it with: gh pr create --repo {slug} --base main --head {branch}")
+        return 2
+    url = (r.stdout.strip().splitlines() or [""])[-1]
+    log_row(b["repo"], f"- {today} pr {branch} {sha} {url}")
+    print(f"Proposed {sha[:7]} as {branch} (read back): {url}\n"
+          f"  Merging it is the publish; the public main is untouched until then. Logged in {log_path(b['repo'])}.")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="helloworld", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="verb", required=True)
+    c = sub.add_parser("check", help="build and scan; never pushes")
+    c.add_argument("repo")
+    c.add_argument("--ref", default="origin/main", help="the commit to build from (default: origin/main, fetched)")
+    p = sub.add_parser("publish", help="check origin/main, then commit and push (the owner's terminal only); "
+                                       "--pr: a pull request instead (an agent may run it)")
+    p.add_argument("repo")
+    p.add_argument("--pr", action="store_true", help="push a claude/publish/* branch and open a PR; never main")
+    p.add_argument("-m", "--message", help="the public commit's message, and with --pr the PR's title "
+                                           "(default: Published <date>; with --pr, Publish <date>)")
+    p.add_argument("--topic", help="--pr: the branch's topic (default: publish); scanned")
+    p.add_argument("--note", help="--pr: a paragraph for the PR body — what this publish carries; scanned")
+    args = ap.parse_args(argv)
+    if args.verb == "publish" and not args.pr and (args.topic or args.note):
+        ap.error("--topic and --note go with --pr")
+    try:
+        if args.verb == "check":
+            return cmd_check(args)
+        return cmd_publish_pr(args) if args.pr else cmd_publish(args)
+    except Refused as e:
+        print(f"helloworld {args.verb}: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

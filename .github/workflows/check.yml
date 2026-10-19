@@ -1,0 +1,47 @@
+# The repo's check in CI, so a pull request proves itself before it lands.
+#
+# The `run:` line is the `check:` command from AGENTS.md's session contract, the same command a
+# session runs locally: the marketplace and every module, then each module's tests/check.sh. A new
+# module appends its check here and there in the same change.
+#
+# ubuntu unless the check reads a macOS tool: a private repo bills macOS minutes at 10x. A
+# matrix job reports as `check (<value>)`, and the branch protection must name exactly that;
+# read the names back with `gh pr checks <n>`, never predict them.
+# helloworld's suite makes scratch commits, some in repos with no identity of their own: the
+# runner gets one below, and the full history is not needed (each suite builds its own repos).
+name: check
+on:
+  push:
+    branches: [main]
+  # ready_for_review: a draft's pushes skip the job below, so leaving draft is what runs it
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+permissions:
+  contents: read
+# A newer push to the same ref makes the older run moot; every run bills the account's minutes.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    # Not on a draft: the checkpoint hook pushes one every ~10 min, and those runs were most
+    # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
+    # check, so a merge waits for a run on this head that is not skipped.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: claude CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.302
+      - name: a git identity for the suites' scratch commits
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+      - name: check
+        run: |
+          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh

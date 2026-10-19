@@ -1,0 +1,6 @@
+{
+  "name": "regatta",
+  "version": "0.1.0",
+  "description": "Regatta's core: the shared library, the model gate, the cost formatter, the secrets check and the regatta CLI every module builds on.",
+  "author": { "name": "220 Labs" }
+}

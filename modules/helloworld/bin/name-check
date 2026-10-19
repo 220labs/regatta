@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""name-check — is a name free as a domain and as a handle, and what does the domain cost?
+Read-only, stdlib, 3.9.
+
+    name-check NAME [NAME…] [--tlds io,ai,dev,com]
+
+Prints one Markdown table, ready to paste into a naming doc: a row per name with a cell per TLD
+plus GitHub, npm and PyPI, then a price row (Porkbun: first year / renewal / 10 years). Cells:
+`free`, `taken`, or `?` with a note under the table saying why. Exit 0 once the table is printed,
+2 on a bad argument. Buys, registers and reserves nothing.
+
+Ground truth per cell, all probed live 2026-10-04:
+- Domain: RDAP where IANA's bootstrap (data.iana.org/rdap/dns.json) lists the TLD — 404 is free,
+  200 taken. Otherwise whois over port 43: whois.iana.org names the TLD's server (.io and .co
+  have no RDAP; whois.nic.io answers "Domain not found." for a free name). Asks one server
+  one query at a time: whois.nic.io answers parallel connections with nothing or a reset.
+  A record carrying both a free phrase and "Domain Name:" is `?`, never `free`.
+- GitHub: api.github.com/users/NAME covers users and orgs alike; 404 is free. With the token git
+  already has (the core's common.token(): 5,000 requests an hour; sent to api.github.com only,
+  never to an override), else unauthenticated at 60 an hour — a 403 shows as `?`.
+- npm: registry.npmjs.org/NAME; PyPI: pypi.org/simple/NAME/ (not /pypi/NAME/json, which 404s
+  for a project whose releases were all deleted — a name nobody can register). 404 is free.
+- A handle's `free` means no such account or package, not that it can be claimed: npm and PyPI
+  refuse a name too close to an existing one (foolabs beside foo-labs), GitHub keeps some
+  retired names.
+- Price: Porkbun's public api.porkbun.com/api/json/v3/pricing/get (POST, no key). 10 years is
+  the first year plus nine renewals: the renewal is the real price, the first year a loss-leader.
+
+`free` is the registry's answer, not a registrar's quote: a premium or reserved name still reads
+`free` here and costs more at checkout. .ai is often sold with a two-year minimum (Porkbun's
+transfer price for it is double); the price list does not say, so this does not check it.
+
+Overrides, for tests/name-check.sh: NAME_CHECK_RDAP_BOOTSTRAP (URL of dns.json),
+NAME_CHECK_WHOIS (host:port — every whois query goes there, the IANA referral included),
+NAME_CHECK_GITHUB, NAME_CHECK_NPM, NAME_CHECK_PYPI, NAME_CHECK_PORKBUN (base URLs).
+"""
+import argparse
+import concurrent.futures as cf
+import datetime as dt
+import json
+import os
+import re
+import socket
+import sys
+import threading
+import urllib.error
+import urllib.request
+from http.client import HTTPException
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+ENV = os.environ.get
+BOOTSTRAP = ENV("NAME_CHECK_RDAP_BOOTSTRAP", "https://data.iana.org/rdap/dns.json")
+WHOIS = ENV("NAME_CHECK_WHOIS", "")
+GITHUB = ENV("NAME_CHECK_GITHUB", "https://api.github.com").rstrip("/")
+NPM = ENV("NAME_CHECK_NPM", "https://registry.npmjs.org").rstrip("/")
+PYPI = ENV("NAME_CHECK_PYPI", "https://pypi.org").rstrip("/")
+PORKBUN = ENV("NAME_CHECK_PORKBUN", "https://api.porkbun.com").rstrip("/")
+TIMEOUT = 20
+LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+# What registries say for a name nobody holds. Checked before "Domain Name:", which only a
+# registered name's record carries.
+WHOIS_FREE = re.compile(r"no match for|domain not found|^not found|no data found|no entries found"
+                        r"|status:\s*(free|available)|queried object does not exist", re.I | re.M)
+WHOIS_TAKEN = re.compile(r"^\s*domain name:", re.I | re.M)
+
+
+def http(url, body=None, read=True, auth=None):
+    """(status, bytes); status 0 with the reason as bytes when the request never got an answer.
+    read=False skips the body: a taken npm name's document runs to megabytes."""
+    headers = {"User-Agent": "name-check (stdlib)", "Accept": "application/json"}
+    if auth:
+        headers["Authorization"] = "Bearer " + auth
+    req = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return r.status, (r.read() if read else b"")
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except (urllib.error.URLError, OSError, HTTPException) as e:
+        return 0, (str(getattr(e, "reason", e)) or type(e).__name__).encode()
+
+
+def by_status(url, auth=None):
+    """free / taken / ?reason, from a 404-means-free endpoint."""
+    status, body = http(url, read=False, auth=auth)
+    if status == 404:
+        return "free"
+    if status == 200:
+        return "taken"
+    return "?" + (f"HTTP {status}" if status else body.decode("utf-8", "replace"))
+
+
+_guard = threading.Lock()
+_locks = {}
+
+
+def whois(query, server):
+    """The server's answer: one query per server at a time, an empty answer asked once more."""
+    if WHOIS:
+        host, _, port = WHOIS.rpartition(":")
+        addr = (host, int(port))
+    else:
+        addr = (server, 43)
+    with _guard:
+        lock = _locks.setdefault(addr, threading.Lock())
+    with lock:
+        text = _ask(addr, query)
+        return text if text.strip() else _ask(addr, query)
+
+
+def _ask(addr, query):
+    with socket.create_connection(addr, timeout=TIMEOUT) as s:
+        s.sendall((query + "\r\n").encode())
+        chunks = []
+        while True:
+            c = s.recv(4096)
+            if not c:
+                break
+            chunks.append(c)
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def rdap_bases():
+    status, body = http(BOOTSTRAP)
+    if status != 200:
+        return {}
+    bases = {}
+    try:
+        for tlds, urls in json.loads(body).get("services", []):
+            for t in tlds:
+                bases[t.lower()] = urls[0]
+    except (ValueError, AttributeError, TypeError, IndexError):
+        return {}  # a captive portal's HTML 200: every TLD falls back to whois
+    return bases
+
+
+def domain(name, tld, bases, servers):
+    fqdn = f"{name}.{tld}"
+    if tld in bases:
+        return by_status(bases[tld].rstrip("/") + "/domain/" + fqdn)
+    server = servers[tld]
+    if server.startswith("?"):
+        return server
+    try:
+        text = whois(fqdn, server)
+    except OSError as e:
+        return f"?whois {server}: {e}"
+    free, taken = WHOIS_FREE.search(text), WHOIS_TAKEN.search(text)
+    if free and taken:
+        return f"?whois {server} reads both free and taken"
+    if free:
+        return "free"
+    if taken:
+        return "taken"
+    if not text.strip():
+        return f"?whois {server} answered nothing, twice (rate-limited?)"
+    return f"?whois {server} gave no answer this script reads"
+
+
+def whois_server(tld):
+    """The TLD's whois server as IANA names it, or ?reason."""
+    try:
+        # [ \t]*, not \s*: IANA prints an empty "whois:" line for a TLD without a server, and
+        # \s* would cross the newline and take the next line's "status:" for one.
+        m = re.search(r"^whois:[ \t]*(\S+)", whois(tld, "whois.iana.org"), re.M)
+    except OSError as e:
+        return f"?whois.iana.org: {e}"
+    return m.group(1) if m else "?no RDAP and no whois server for ." + tld
+
+
+def prices(tlds):
+    status, body = http(PORKBUN + "/api/json/v3/pricing/get", b"{}")
+    try:
+        table = json.loads(body).get("pricing", {}) if status == 200 else {}
+    except ValueError:
+        table = {}
+    out = {}
+    for t in tlds:
+        p = table.get(t)
+        if not p:
+            out[t] = "not at Porkbun" if table else "no price list"
+            continue
+        try:
+            first, renew = float(p["registration"]), float(p["renewal"])
+        except (KeyError, ValueError, TypeError):
+            out[t] = "price unreadable"
+            continue
+        out[t] = f"${first:.2f} / ${renew:.2f} / ${first + 9 * renew:,.0f}"
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Probe names as domains and handles; one table.")
+    ap.add_argument("names", nargs="+")
+    ap.add_argument("--tlds", default="io,ai,dev,com")
+    a = ap.parse_args()
+    names = [n.lower() for n in a.names]
+    tlds = [t.strip().lstrip(".").lower() for t in a.tlds.split(",") if t.strip()]
+    bad = [n for n in names if not LABEL.match(n)] + [t for t in tlds if not LABEL.match(t)]
+    if bad or not tlds:
+        print("name-check: not a domain label: " + (", ".join(bad) or "--tlds is empty"), file=sys.stderr)
+        return 2
+
+    bases = rdap_bases()
+    servers = {t: whois_server(t) for t in tlds if t not in bases}
+    gh = common.token() if GITHUB == "https://api.github.com" else None
+    handles = {"GitHub": GITHUB + "/users/{}", "npm": NPM + "/{}", "PyPI": PYPI + "/simple/{}/"}
+    with cf.ThreadPoolExecutor(max_workers=8) as pool:
+        jobs = {(n, t): pool.submit(domain, n, t, bases, servers) for n in names for t in tlds}
+        jobs.update({(n, h): pool.submit(by_status, u.format(n), gh if h == "GitHub" else None) for n in names for h, u in handles.items()})
+        price = pool.submit(prices, tlds)
+        cells = {k: f.result() for k, f in jobs.items()}
+        price = price.result()
+
+    cols = tlds + list(handles)
+    head = ["name"] + ["." + t for t in tlds] + list(handles)
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"Probed {now}. `free` = the registry has no such name; not a registrar quote "
+          "(a premium or reserved name still reads free); for a handle, no such account or "
+          "package, not a promise it can be claimed.\n")
+    print("| " + " | ".join(head) + " |")
+    print("|" + " --- |" * len(head))
+    notes = []
+    for n in names:
+        row = []
+        for c in cols:
+            v = cells[(n, c)]
+            if v.startswith("?"):
+                notes.append(f"- {n} {'.' + c if c in tlds else c}: {v[1:]}")
+                v = "?"
+            row.append(v)
+        print(f"| {n} | " + " | ".join(row) + " |")
+    print("| price: first / renewal / 10 y | " + " | ".join(price[t] for t in tlds)
+          + " |" + " |" * len(handles))
+    how = [f".{t} " + ("RDAP" if t in bases else "none" if servers[t].startswith("?") else "whois")
+           for t in tlds]
+    print("\nDomains by " + ", ".join(how) + ". Prices: Porkbun's public list, USD.")
+    if notes:
+        print("\n`?` — no answer read:\n" + "\n".join(notes))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

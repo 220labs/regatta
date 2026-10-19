@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Money spent on models, always as list and effective — "$1.33 ($0.02 effective)".
+
+    cost 1.33 [0.40 …] [--provider P]   # each amount as list and effective, one per line
+    cost ratio [--json]                 # the ratio in use, its week and how it was made
+    cost lint <doc.md>…                 # amounts a doc shows without their effective cost, and
+                                        # effective figures on real money
+
+Why (the owner, 2026-10-05): an API list price alone is not apples-to-apples with what the plan
+really costs. Effective = list × the provider's ratio, which a weekly usage report recomputes and
+commits to a private file the config dir links as regatta/cost-ratio.json ($COST_RATIO overrides);
+a provider not named there is pay-per-use
+(effective = list). The formatter and the lint live in hooks/common.py (cost_text, bare_costs), so
+the hooks, usage-report and memo's hand-over lint use the same ones.
+
+Effective applies to Claude prices only, or another provider where the claimed and the real-life
+price differ (the owner, 2026-10-18). Real money — a subscription, rent, a domain, extra usage — is plain,
+and a doc line of it says `list-only`; a zero amount ($0) needs no effective figure. `lint` warns on
+the reverse too: an effective figure on real money (common.real_money_effective) — the marker must touch
+the figure, so a Claude cost beside a plain bill on one line passes. A session quoting a cost runs
+`cost <amount>` rather than multiplying by a ratio it remembers.
+
+Stdlib only, Python 3.9. `lint` exits 1 when it finds a bare amount or a misplaced effective figure; the rest exit 0.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import common  # noqa: E402
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "ratio":
+        ap = argparse.ArgumentParser(prog="cost ratio")
+        ap.add_argument("--json", action="store_true")
+        a = ap.parse_args(argv[1:])
+        r, e = common.cost_ratio()
+        if a.json:
+            print(json.dumps({"ratio": r, "file": str(common.COST_RATIO), "entry": e}, indent=1))
+        elif r is None:
+            print(f"{common.ratio_note()} — usage-report ratio --write makes one")
+        else:
+            print(f"{common.ratio_note()} ({e.get('plan', '?')} ${e.get('plan_usd_week', 0):.2f} a week over "
+                  f"${e.get('list_usd_week', 0):,.0f} of list spend); other providers: pay-per-use, × 1")
+        return 0
+    if argv and argv[0] == "lint":
+        ap = argparse.ArgumentParser(prog="cost lint")
+        ap.add_argument("docs", nargs="+")
+        a = ap.parse_args(argv[1:])
+        found = 0
+        for d in a.docs:
+            text = Path(d).read_text(encoding="utf-8")
+            msgs = [(n, "no effective cost", l) for n, l in common.bare_costs(text)]
+            msgs += [(n, "effective figure on real money — write it plain with `list-only` (the owner's rule, 2026-10-18)", l)
+                     for n, l in common.real_money_effective(text)]
+            for n, why, l in sorted(msgs):
+                print(f"{d}:{n}: {why}: {l[:120]}")
+                found += 1
+        return 1 if found else 0
+    ap = argparse.ArgumentParser(prog="cost", description=__doc__.split("\n")[0])
+    ap.add_argument("amounts", nargs="+", help="list-price amounts in US dollars, without `$`")
+    ap.add_argument("--provider", default="anthropic")
+    a = ap.parse_args(argv)
+    amounts = []
+    for x in a.amounts:
+        # `cost $1.33` reaches us as ".33": the shell took `$1`. Refuse rather than price the wrong amount.
+        if x.startswith(".") or not x.lstrip("$"):
+            ap.error(f"{x!r}: the shell took a `$` — write the amount without it (cost 1.33)")
+        try:
+            amounts.append(float(x.lstrip("$").replace(",", "")))
+        except ValueError:
+            ap.error(f"{x!r} is not an amount")
+    r, e = common.cost_ratio(a.provider)
+    if r == 1.0 and e is None:
+        print(f"cost: {a.provider} is not in {common.COST_RATIO.name}: pay-per-use, effective = list", file=sys.stderr)
+    for x in amounts:
+        print(common.cost_text(x, a.provider))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

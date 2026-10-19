@@ -1,0 +1,22 @@
+{
+  "name": "regatta",
+  "description": "Regatta: an open-source Business-as-Code framework, one installable plugin per module.",
+  "owner": {
+    "name": "220 Labs"
+  },
+  "metadata": {
+    "pluginRoot": "./modules"
+  },
+  "plugins": [
+    {
+      "name": "regatta",
+      "source": "./regatta",
+      "description": "The core every module builds on: shared library, model gate, cost, secrets, the regatta CLI."
+    },
+    {
+      "name": "helloworld",
+      "source": "./helloworld",
+      "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."
+    }
+  ]
+}

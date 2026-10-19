@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""jev — the one client for TypeSafe's Jev on this machine. Stdlib, Python 3.9.
+
+    jev ask --questions FILE [--state FILE|-] [--model M] [--source REPO] [--approved TEXT] [--dry-run]
+    jev check --questions FILE [--state FILE|-]      offline: shape and token budget, no call
+    jev models                                       the aliases the account can send
+
+From Python (the same loader the core's tests/check.sh uses):
+
+    from importlib.machinery import SourceFileLoader
+    jev = SourceFileLoader("jev", "<regatta checkout>/modules/regatta/bin/jev").load_module()
+    r = jev.ask(state, questions, source="house")     # r["answers"], r["cost_usd"], r["model"]
+
+Why it exists: every session that touched Jev re-derived the key, the request shape, the score
+trap, retries and cost (docs/record/jev-tooling-2026-10-02.md, E1-E5). This header is the one home for
+those facts; the plugin skill (/typesafe:typesafe-ai) stays the home for *designing* questions.
+A script calls bin/gate's classify(), never this file (it is the Jev adapter's internals); only
+benches call it directly (AGENTS.md, docs/model-gate-2026-10-04.md).
+
+Facts — verified 2026-10-02 against docs.typesafe.ai and live probes. recheck: 2026-11-02
+(/sextant compares this list with docs.typesafe.ai/models.md and model-jaggedness/).
+- POST https://api.typesafe.ai/v1/systemone, `Authorization: Bearer <key>`, body
+  {model, state, questions: {id: question}}. The id is for code only; the model never sees it.
+- Question types (all take `instructions`: string, object or array):
+  noul   — criteria optional {"true": ..., "false": ...}; answer `noul` = P(yes), no confidence.
+  choice — criteria a MAP option -> description (or null), at most 255 options; answer
+           `choice`, `probabilities`, `confidence`.
+  score  — criteria a LIST of 2-10 level descriptions, lowest first. A map is HTTP 422
+           ("Input should be a valid list") — probed; the docs only say it in a type annotation.
+           Answer `score` (probability-weighted, lands between levels), `probabilities` and
+           `legend` keyed "0".."n", `confidence`.
+- All questions in one request run in parallel against one state: batch them (one call is
+  ~10x cheaper and faster than many, the vendor's parallel-questions cookbook).
+- Model: `jev-latest` -> jev-1.13.0 today; the alias moves without notice. A gate with a tuned
+  threshold pins the version id in its own constants and reruns its bench before moving. The
+  response's `model` says who answered; it is logged.
+- Price: $0.042 per million input tokens; output free. Limits: 100k tokens/s, 40 requests/s,
+  adjusted by the vendor without notice (429). Context: 64k tokens per request; 32k for state
+  plus the longest single question. Text only; English best.
+- Errors: 4xx carries a JSON `detail`; this client raises JevError with it verbatim. Unknown
+  model is 400 api_usage_error. No rate-limit headers seen on 200/400/422; a 429's
+  `retry-after` is honoured if present (unverified live). Responses carry x-typesafe-request-id.
+- Weak spots (jaggedness page, jev-1.13): literal reading — write the exact condition;
+  counting, maths and date comparison — do them in code; multi-hop indirection; large state
+  full of irrelevant detail — filter first; adversarial text in state; criteria contradicting
+  the instructions. It generates nothing.
+- Not deterministic: identical requests can differ in the second decimal (bench/router.py's 42
+  calls rerun 2026-10-02: AUROC 0.66 -> 0.65). A bench reports one run; a gate's threshold
+  needs margin for it.
+
+Policy (the owner, 2026-10-02; E5 of the record above):
+- Never from a hook (hooks stay offline and deterministic).
+- Data from a guarded source (GUARDED: the config dir's regatta/guarded, one repo per line; none
+  without it) goes only with the owner's say-so for that use: ask() refuses unless `approved`
+  quotes it ("<owner>, <date>: send the inbox subjects"); the quote is logged. The owner is the
+  one regatta/owner names, as for the core's closing lines.
+  The source is the `source` argument, else the git repo the caller runs in; the CLI also checks
+  the --state file's path (symlinks resolved). A caller sending data gathered across repos (a
+  corpus, a session sweep) passes source=<that item's repo> on every call: the cwd default only
+  fits a single-repo caller, and from Python it says on stderr which repo it assumed. A
+  heuristic, not a wall — it stops accidents, not intent.
+
+Key: $TYPESAFE_API_KEY, else the config dir's regatta/.env (a link the overlay's bootstrap.sh
+--config writes; agents never open its target — the app reads its own value), else, only where
+that is absent, its regatta/.env.fallback (a second key, for a checkout that has only that one).
+Base URL:
+$TYPESAFE_BASE_URL (the SDK's variable). Log: one JSON line per call to $JEV_LOG, default
+jev.jsonl in log_dir(), local to each Mac — timestamp, host, caller, source, model,
+tokens, cost, ms, attempts, request id, status, approval. Never the state, never the key; a 4xx
+`detail` is cut to each entry's `loc` and `msg`, since a validation error may echo the input.
+"""
+import argparse
+import json
+import errno
+import os
+import socket
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")
+PRICE_PER_M_INPUT = 0.042
+CONTEXT_TOTAL, CONTEXT_STATE_PLUS_ONE = 64000, 32000
+RETRY = (429, 500, 502, 503, 504, 529)
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _core_common():
+    """The core's hooks/common.py beside this file, loaded under a private name: the private values
+    through its one reader, and its rule — with the overlay installed and a key missing or
+    unreadable, loading jev fails as importing the core does (common.config_problems). Never
+    `import common` and never sys.path: an importer with a `common` of its own keeps it, and gets
+    no stray one from here (code review, 2026-10-18)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_regatta_jev_common", os.path.join(os.path.dirname(HERE), "hooks", "common.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+common = _core_common()
+
+# Which repos' data may go to a model vendor only on the owner's quote, decided per vendor in
+# bin/gate's `approved` (the owner, 2026-10-02): the overlay's list, none without it. Not the list
+# of what may leave the Mac on a board, which is another tool's on purpose.
+GUARDED = tuple(common.config_lines("regatta/guarded") or ())
+WHO = common.OWNER_NAME or "the owner"       # "only with <WHO>'s say-so"
+QUOTE_BY = common.OWNER_NAME or "<owner>"    # the quote asked for: "<QUOTE_BY>, <date>: <what>"
+
+
+def log_dir():
+    """Where jev.jsonl and the gate's gate.jsonl go: the core's LOG_DIR (regatta/log-dir)."""
+    return str(common.LOG_DIR)
+
+
+class JevError(RuntimeError):
+    def __init__(self, msg, status=None):
+        RuntimeError.__init__(self, msg)
+        self.status = status
+
+
+def _key():
+    k = os.environ.get("TYPESAFE_API_KEY")
+    if k:
+        return k
+    unreadable = []
+    # Resolved per call, never frozen at import: a long-lived importer and the suites move it.
+    cfg = os.path.join(os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta"), "regatta")
+    own = [p for p in (os.environ.get("JEV_ENV_FILE"), os.path.join(cfg, ".env")) if p]
+    # .env.fallback holds a partner's key: read only where no personal .env exists at all, so an
+    # unreadable or empty .env on the owner's Mac fails loudly instead of billing the partner's account.
+    if not any(os.path.lexists(os.path.normpath(p)) for p in own):
+        own += [os.path.join(cfg, ".env.fallback")]
+    for p in own:
+        try:
+            for line in open(os.path.normpath(p)):
+                line = line.strip()
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+                if line.startswith("TYPESAFE_API_KEY="):
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if v:
+                        return v
+        except OSError as e:
+            if e.errno != errno.ENOENT:  # EPERM: no Full Disk Access (launchd); EDEADLK: Drive not downloaded
+                unreadable.append("%s unreadable: %s" % (p, e.strerror))
+    if unreadable:
+        raise JevError("; ".join(unreadable))
+    raise JevError("no TYPESAFE_API_KEY in the environment or the config dir's regatta/.env / "
+                   "regatta/.env.fallback — make one at https://console.typesafe.ai/keys and link "
+                   "it there (the overlay's bootstrap.sh --config)")
+
+
+def repo_of(path):
+    """The repo a path belongs to: the folder holding .git, with a worktree under
+    <repo>/.claude/worktrees/ counted as <repo>."""
+    p = os.path.realpath(path)  # follow links: a session's memory folder may point into a guarded repo
+    if "/.claude/worktrees/" in p:
+        p = p.split("/.claude/worktrees/")[0]
+    while p != os.path.dirname(p):
+        if os.path.exists(os.path.join(p, ".git")):
+            return os.path.basename(p)
+        p = os.path.dirname(p)
+    return None
+
+
+def _tokens(x):
+    return len(x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)) // 4
+
+
+def check(questions, state=None):
+    """Offline. Returns (errors, warnings); ask() refuses on any error before calling."""
+    errs, warns = [], []
+    if not isinstance(questions, dict) or not questions:
+        return ["questions must be a non-empty map of id -> question"], warns
+    for qid, q in questions.items():
+        if not isinstance(q, dict):
+            errs.append("%s: a question is an object {type, instructions, criteria}" % qid)
+            continue
+        t = q.get("type")
+        if t not in ("noul", "choice", "score"):
+            errs.append("%s: type must be noul, choice or score, not %r" % (qid, t))
+            continue
+        if not q.get("instructions"):
+            errs.append("%s: instructions missing" % qid)
+        c = q.get("criteria")
+        if t == "score":
+            if isinstance(c, dict):
+                errs.append("%s: score criteria must be a LIST of levels, lowest first — a map "
+                            "is HTTP 422" % qid)
+            elif not isinstance(c, list) or not 2 <= len(c) <= 10:
+                errs.append("%s: score criteria must be a list of 2-10 levels" % qid)
+        elif t == "choice":
+            if not isinstance(c, dict) or not c:
+                errs.append("%s: choice criteria must be a map option -> description" % qid)
+            elif len(c) > 255:
+                errs.append("%s: choice has %d options; the API takes 255" % (qid, len(c)))
+        elif c is not None and (not isinstance(c, dict) or set(c) - {"true", "false"}):
+            errs.append("%s: noul criteria, if given, is {\"true\": ..., \"false\": ...}" % qid)
+    if state is not None:
+        s = _tokens(state)
+        qs = [_tokens(q) for q in questions.values()]
+        for used, cap, what in ((s + sum(qs), CONTEXT_TOTAL, "state + all questions"),
+                                (s + max(qs), CONTEXT_STATE_PLUS_ONE, "state + longest question")):
+            if used > cap:
+                errs.append("%s ~%d tokens, over the %d limit (estimate: characters/4)" % (what, used, cap))
+            elif used > 0.8 * cap:
+                warns.append("%s ~%d tokens, over 80%% of %d (estimate: characters/4)" % (what, used, cap))
+    return errs, warns
+
+
+def _log(rec):
+    path = os.environ.get("JEV_LOG") or os.path.join(log_dir(), "jev.jsonl")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _detail(text):
+    """An error body, without any echo of the request: keep each entry's loc and msg only."""
+    try:
+        d = json.loads(text).get("detail")
+    except (ValueError, AttributeError):
+        return text[:300]
+    if isinstance(d, list):
+        d = [{"loc": x.get("loc"), "msg": x.get("msg")} if isinstance(x, dict) else x for x in d]
+    return json.dumps({"detail": d}, ensure_ascii=False)[:600]
+
+
+def _request(method, path, body, key, timeout, attempts):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers={
+        "Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    last = None
+    for n in range(1, attempts + 1):
+        wait = min(2 ** (n - 1), 30)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw, rid = r.read().decode(errors="replace"), r.headers.get("x-typesafe-request-id")
+            try:
+                return json.loads(raw), rid, n
+            except ValueError:
+                err = JevError("HTTP 200 with a body that is not JSON: %r" % raw[:80])
+                err.attempts = n
+                raise err
+        except urllib.error.HTTPError as e:
+            last = JevError("HTTP %d %s" % (e.code, _detail(e.read().decode(errors="replace"))), e.code)
+            if e.code not in RETRY:
+                last.attempts = n
+                raise last
+            ra = e.headers.get("retry-after")
+            if ra and ra.replace(".", "", 1).isdigit():
+                wait = min(float(ra), 60)
+        except (urllib.error.URLError, OSError) as e:
+            last = JevError("no response: %s" % e)
+        if n < attempts:
+            time.sleep(wait)
+    last.attempts = attempts
+    raise last
+
+
+def ask(state, questions, model="jev-latest", key=None, timeout=60, attempts=5,
+        source=None, approved=None, caller=None):
+    """One request. Returns {answers, usage, cost_usd, model, ms, attempts, request_id}."""
+    errs, _ = check(questions, state)
+    if errs:
+        raise JevError("refused before calling: " + "; ".join(errs))
+    if not source:
+        source = repo_of(os.getcwd())
+        if caller != "jev-cli":
+            print("jev: no source given; assuming the cwd's repo, %s — pass source= when the "
+                  "data comes from elsewhere" % source, file=sys.stderr)
+    if source in GUARDED and not (approved or "").strip():
+        raise JevError("refused: data from %s goes to TypeSafe only with %s's say-so — ask, "
+                       "then pass approved=\"%s, <date>: <what>\"" % (source, WHO, QUOTE_BY))
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname().split(".")[0],
+           "caller": caller or os.path.basename(sys.argv[0]),
+           "source": source, "model_asked": model, "questions": len(questions)}
+    if approved:
+        rec["approved"] = approved
+    t0 = time.time()
+    try:
+        res, rid, n = _request("POST", "/v1/systemone",
+                               {"model": model, "state": state, "questions": questions},
+                               key or _key(), timeout, attempts)
+    except JevError as e:
+        rec.update(status=e.status or "error", ms=int((time.time() - t0) * 1000),
+                   attempts=getattr(e, "attempts", 1), error=str(e)[:200])
+        _log(rec)
+        raise
+    usage = res.get("usage") or {}
+    out = {"answers": res.get("answers", {}), "usage": usage, "model": res.get("model"),
+           "cost_usd": (usage.get("input_tokens") or 0) * PRICE_PER_M_INPUT / 1e6,
+           "ms": int((time.time() - t0) * 1000), "attempts": n, "request_id": rid}
+    rec.update(status=200, model=out["model"], input_tokens=usage.get("input_tokens"),
+               cost_usd=out["cost_usd"], ms=out["ms"], attempts=n, request_id=rid)
+    _log(rec)
+    return out
+
+
+def models(key=None, timeout=30):
+    return _request("GET", "/v1/models", None, key or _key(), timeout, 3)[0].get("models", [])
+
+
+def _load(path):
+    try:
+        raw = sys.stdin.read() if path == "-" else open(path).read()
+    except OSError as e:
+        raise JevError("cannot read %s: %s" % (path, e.strerror))
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw  # plain text state
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="jev", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("ask", "check"):
+        p = sub.add_parser(name)
+        p.add_argument("--questions", required=True, help="JSON file: {id: question}")
+        p.add_argument("--state", help="JSON or text file, or - for stdin")
+        if name == "ask":
+            p.add_argument("--model", default="jev-latest")
+            p.add_argument("--source", help="repo the state comes from (default: the cwd's)")
+            # argparse %-formats a help string: a % in a configured name is doubled
+            p.add_argument("--approved", help=("%s's say-so, quoted, for data from a guarded source (%s)"
+                           % (WHO, ", ".join(GUARDED) or "none configured")).replace("%", "%%"))
+            p.add_argument("--dry-run", action="store_true", help="print the request body; no call")
+    sub.add_parser("models")
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "models":
+            for m in models():
+                print("%-14s %s  %s" % (m.get("name"), (m.get("release_date") or "")[:10], m.get("description")))
+            return 0
+        if a.cmd not in ("ask", "check"):
+            ap.print_help()
+            return 2
+        questions = _load(a.questions)
+        state = _load(a.state) if a.state else None
+        errs, warns = check(questions, state)
+        for w in warns:
+            print("warning: " + w, file=sys.stderr)
+        if a.cmd == "check":
+            for e in errs:
+                print("error: " + e)
+            print("ok" if not errs else "%d error(s)" % len(errs))
+            return 1 if errs else 0
+        if state is None:
+            raise JevError("ask needs --state")
+        source = a.source or repo_of(os.getcwd())
+        if repo_of(a.state) in GUARDED and a.state != "-":
+            source = repo_of(a.state)
+        if a.dry_run:
+            print(json.dumps({"model": a.model, "state": state, "questions": questions},
+                             ensure_ascii=False, indent=1))
+            return 0
+        r = ask(state, questions, model=a.model, source=source, approved=a.approved, caller="jev-cli")
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+        return 0
+    except JevError as e:
+        print("jev: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

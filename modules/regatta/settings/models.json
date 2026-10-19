@@ -1,0 +1,20 @@
+{
+  "_": "The defaults beside the gate. Your own table goes in ${REGATTA_CONFIG:-~/.config/regatta}/regatta/models.json and wins over this one, whole. bin/gate show | set | check.",
+  "defaults": {
+    "claude": {
+      "model": "opus"
+    },
+    "jev": {
+      "model": "jev-latest",
+      "threshold": 0.5
+    }
+  },
+  "sites": {
+    "example.classify": {
+      "kind": "classify",
+      "provider": "off",
+      "when_off": "skip",
+      "note": "the table's shape; a module's call sites are rows in your own table"
+    }
+  }
+}

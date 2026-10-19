@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""regatta — the core's command line: where the core, a module and a tool are; the config check;
+the shims an old path keeps while its file moves. Stdlib, Python 3.9.
+
+    regatta root                the regatta checkout the core belongs to (exit 1: none)
+    regatta has <module>        the module's path, or "<module> not installed" (exit 1)
+    regatta which <tool>        a peer's path through common.tool(), or "<tool> not installed" (exit 1)
+    regatta check               the config directory: home, legacy, each link with its target, the private values
+    regatta shim <path>         the shim an old path keeps for <path> (relative to the root): a
+                                source shim for a Python file, an exec shim for any other
+    regatta <name> [args…]      run a tool kept off PATH (C1: `pr`, `helm`) from its module
+
+Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
+PATH, so `/usr/bin/pr` or an installed `helm` would win over a module's (the design's C1).
+"""
+import os
+import shlex
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+if sys.argv[1:] == ["check"]:
+    # The check is the one caller that must load the core whatever the config dir holds: it sets
+    # _REGATTA_CHECK before the module runs, so a missing private value is reported, not raised.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("common", str(Path(sys.path[0]) / "common.py"))
+    common = importlib.util.module_from_spec(_spec)
+    common._REGATTA_CHECK = True
+    sys.modules["common"] = common
+    _spec.loader.exec_module(common)
+else:
+    import common  # noqa: E402
+
+SOURCE_SHIM = '''#!/usr/bin/env python3
+# Source shim: this file moved to the regatta checkout, at {rel}.
+# Its source runs here, in this module, with __file__ set to that path, so `import`,
+# load_module, exec_module and a run as a script all behave as the file itself (design P5).
+# Made by `regatta shim {rel}`; regenerate, never edit.
+def _regatta_load(rel):
+    import os
+    home = os.environ.get("REGATTA_HOME")
+    if not home:
+        f = os.path.join(os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta"), "home")
+        try:
+            with open(f) as fh:
+                home = fh.readline().strip()
+        except OSError:
+            raise ImportError("regatta: core not found: no REGATTA_HOME and no %s (clone the regatta repo, "
+                              "then run its install.sh, or your overlay's bootstrap.sh --config)" % f)
+        if not home:
+            raise ImportError("regatta: core not found: %s is empty" % f)
+    path = os.path.join(os.path.expanduser(home), rel)
+    if not os.path.isfile(path):
+        raise ImportError("regatta: core missing at %s" % path)
+    # The loader, not open(): it decodes as import does (UTF-8, PEP 263), whatever the locale,
+    # and keeps the core's .pyc, so a hook does not recompile the core on every call.
+    from importlib.machinery import SourceFileLoader
+    return path, SourceFileLoader("_regatta_core", path).get_code("_regatta_core")
+
+
+__file__, _regatta_code = _regatta_load({rel_py})
+del _regatta_load
+exec(_regatta_code)
+'''
+
+EXEC_SHIM = '''#!/usr/bin/env bash
+# Exec shim: this file moved to the regatta checkout, at {rel}.
+# Made by `regatta shim {rel}`; regenerate, never edit.
+home=${{REGATTA_HOME:-$(head -1 "${{REGATTA_CONFIG:-$HOME/.config/regatta}}/home" 2>/dev/null)}}
+home=${{home/#\\~/$HOME}}
+[ -n "$home" ] || {{ echo "regatta: core not found: no REGATTA_HOME and no ${{REGATTA_CONFIG:-$HOME/.config/regatta}}/home (clone the regatta repo, then run its install.sh, or your overlay's bootstrap.sh --config)" >&2; exit 127; }}
+exec "$home/"{rel_sh} "$@"
+'''
+
+
+def shim(rel):
+    root = common.regatta_root()
+    target = (root / rel) if root else None
+    if not target or not target.is_file():
+        print("regatta shim: no %s under %s" % (rel, root), file=sys.stderr)
+        return 1
+    first = target.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
+    python = target.suffix == ".py" or "python" in first
+    sys.stdout.write((SOURCE_SHIM if python else EXEC_SHIM).format(rel=rel, rel_py=repr(rel), rel_sh=shlex.quote(rel)))
+    return 0
+
+
+def check():
+    """Each item of the config dir: ok, or what is wrong with it. Exit 1 on any finding."""
+    bad = 0
+    print("config: %s" % common.CONFIG)
+    root = common.regatta_root()
+    # The file, not $REGATTA_HOME: hooks and launchd jobs see only the file.
+    home = common.config_line("home")
+    if os.environ.get("REGATTA_HOME"):
+        print("  ..  REGATTA_HOME=%s (this shell only)" % os.environ["REGATTA_HOME"])
+    if not home:
+        print("  --  home: none (no home file)")
+        bad += 1
+    elif not (Path(home).expanduser() / "modules" / "regatta" / "hooks" / "common.py").is_file():
+        print("  --  home: %s holds no core" % home)
+        bad += 1
+    else:
+        print("  ok  home: %s" % home)
+    old = common.legacy_root()
+    if old:
+        print(("  ok  legacy: %s" if old.is_dir() else "  --  legacy: %s is no directory") % old)
+        bad += 0 if old.is_dir() else 1
+    refused = {x.split()[0] for x in common.CONFIG_PROBLEMS}   # said once, below, never also `ok`
+    if common.CONFIG.is_dir():
+        for p in sorted(common.CONFIG.glob("*/*")):
+            if str(p.relative_to(common.CONFIG)) in refused:
+                continue
+            if p.is_symlink():
+                t = os.readlink(p)
+                ok = p.exists()
+                print("  %s  %s → %s%s" % ("ok" if ok else "--", p.relative_to(common.CONFIG), t, "" if ok else " (missing)"))
+                bad += 0 if ok else 1
+            elif p.is_file():
+                print("  ok  %s" % p.relative_to(common.CONFIG))
+    for problem in common.CONFIG_PROBLEMS:   # the private values (README): each one the core refuses
+        print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
+        bad += 1
+    print("core: %s" % (root or "not in a checkout"))
+    return 1 if bad else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "root":
+        root = common.regatta_root()
+        if root:
+            print(root)
+        return 0 if root else 1
+    if cmd == "has" and len(rest) == 1:
+        p = common.module_path(rest[0])
+        print(p if p else "%s not installed" % rest[0])
+        return 0 if p else 1
+    if cmd == "which" and len(rest) == 1:
+        p = common.tool(rest[0])
+        print(p if p else "%s not installed" % rest[0])
+        return 0 if p else 1
+    if cmd == "check" and not rest:
+        return check()
+    if cmd == "shim" and len(rest) == 1:
+        return shim(rest[0])
+    if cmd in ("root", "has", "which", "check", "shim"):
+        print("regatta %s: wrong arguments — `regatta help`" % cmd, file=sys.stderr)
+        return 2
+    p = common.tool(cmd)
+    if not p or not p.is_file() or not os.access(str(p), os.X_OK):
+        print("regatta: %s not installed" % cmd, file=sys.stderr)
+        return 2
+    os.execv(str(p), [str(p)] + rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

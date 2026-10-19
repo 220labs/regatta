@@ -1,0 +1,644 @@
+#!/usr/bin/env python3
+"""gate — which provider and model each script call site uses, read from one table. Stdlib, 3.9.
+
+    gate show                          one line per site, defaults applied, and the table's commit
+    gate set <site> <key>=<value>…     validate and write one row (value `none` removes the key)
+    gate check                         the file validates, overrides ignored (the overlay's check runs it)
+
+From Python (the same loader bin/jev uses):
+
+    from importlib.machinery import SourceFileLoader
+    gate = SourceFileLoader("gate", "<regatta checkout>/modules/regatta/bin/gate").load_module()
+    row = gate.resolve("sparks.shape")             # None when off + skip; GateOff when off + fail
+    cmd = ["claude", "-p", *gate.claude_flags(row)]  # --model, and --effort when the row sets one
+    r = gate.classify("sparks.redact", {"s1": "…"}, "Is this sentence sensitive?",
+                      {"yes": "…", "no": "…"}, context=DEFINITION, source="notes",
+                      approved={"typesafe": "<owner>, 2026-10-04: …"})
+    r["items"]["s1"]                                 # {"label": "yes", "p": 0.82 | None}
+
+Why (docs/model-gate-2026-10-04.md, revision 2): every model choice a script makes is one row in
+settings/models.json, so moving a step to Jev, Claude, a smaller model or (later) Codex is a
+`gate set`, not a code change, and no script grows its own vendor dependency. This file is the
+only reader of the table; scripts call resolve() for generation and classify() for judgments.
+
+The table: `defaults.<provider>` gives model, effort, threshold; `sites.<site>` is one row.
+- kind      generate | review | classify | media
+- provider  always written on the row, never inherited: the approval quote and the bench bind to
+            the vendor, and a flip that moves data must be a visible edit. Per kind:
+              generate, review  claude, codex, off
+              classify          jev, claude, codex, off
+              media             flow-browser, seedance, off
+- model, effort, threshold, batch   from the row, else defaults.<provider>, else absent (no flag).
+- when_off  fail (default: GateOff, the caller takes its fail-closed path) | skip (None)
+- bench, note   pointers for people; `set` prints the bench.
+A threshold left on a row after a flip to claude is kept and ignored, so flipping back restores
+the tuned value.
+Overrides, one variable per site and key: GATE_<SITE>_<KEY>, the site upper-cased with `.` and
+`-` as `_`, KEY one of PROVIDER, MODEL, EFFORT, THRESHOLD, BATCH, WHEN_OFF (GATE_SPARKS_SHAPE_MODEL=
+sonnet, GATE_REVIEW_GATE_MERGE_EFFORT=low; `none` removes the key, as in `set`). load() applies them
+after reading the file and before validating it, so an override validates like a written row and
+an error names the variable. Any other GATE_* variable but GATE_TABLE and GATE_LOG raises: a typo
+must never quietly run the table's row. `check` refuses two sites whose variable names collide;
+`show` marks an overridden value (env); classify logs the site's overrides; `set` never writes one. Unknown keys, providers and kinds raise; a missing row raises — never a default
+vendor. Media rows are declarations (Flow has no API): resolve() on one raises.
+
+classify(): items in, a label per item out. `labels` is {label: description}, 2-255 of them.
+- Jev adapter: labels exactly yes/no -> one noul per item, p = P(yes), label = yes iff p >= the
+  row's threshold; any other set -> one choice per item, p = the chosen label's probability.
+  State {context, items}; each question quotes its item (Jev's weak spot is indirection). Items
+  are chunked to fit Jev's 64k window (80% of each limit, bin/jev's estimate), or `batch` per
+  request when the row sets it.
+- Claude adapter: one `claude -p` for all items, review-gate's proven flags, plus --json-schema
+  with an enum of the labels per id (probed 2026-10-04 on 2.1.289: the answer arrives in
+  `structured_output`; `result` is parsed when it does not). p is None: Claude gives a label,
+  and nobody applies a threshold to it. Every id must carry a listed label; one retry, then
+  GateError — a missing id is never read as "no".
+- Guarded sources (bin/jev's GUARDED, one home): `approved` is a dict keyed by vendor
+  (typesafe, anthropic, openai); the resolved vendor's quote is required and logged.
+Log: one JSON line per classify call to $GATE_LOG, default gate.jsonl in bin/jev's log_dir():
+site, provider, model, source, items, cost, ms, approval, status. Never the items. Jev calls
+also land in jev.jsonl, as before.
+
+Never from a hook. Benches call bin/jev directly: a bench routed through the table would compare
+a vendor with itself.
+"""
+import difflib
+import json
+import os
+import re
+import socket
+import functools
+import subprocess
+import sys
+import threading
+import time
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# The table: GATE_TABLE (a suite, one shell — never exported, or `set`'s on-main guard is off),
+# else the config dir's (on the owner's Macs a symlink into the overlay), else the defaults beside the gate.
+CONFIG_TABLE = os.path.join(os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta"),
+                            "regatta", "models.json")
+DEFAULT_TABLE = os.path.normpath(os.path.join(HERE, "..", "settings", "models.json"))
+# lexists: a dangling config link fails as "cannot read" there, never silently the defaults.
+TABLE = CONFIG_TABLE if os.path.lexists(CONFIG_TABLE) else DEFAULT_TABLE
+PROVIDERS = {
+    "generate": ("claude", "codex", "off"),
+    "review": ("claude", "codex", "off"),
+    "classify": ("jev", "claude", "codex", "off"),
+    "media": ("flow-browser", "seedance", "off"),
+}
+VENDOR = {"jev": "typesafe", "claude": "anthropic", "codex": "openai"}
+ROW_KEYS = ("kind", "provider", "model", "effort", "threshold", "batch", "when_off", "bench", "note")
+DEFAULT_KEYS = ("model", "effort", "threshold", "batch")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ENV_KEYS = ("provider", "model", "effort", "threshold", "batch", "when_off")
+ENV_OWN = ("GATE_TABLE", "GATE_LOG")  # the gate's own variables, never an override
+CLAUDE_TIMEOUT = 600
+
+
+class GateError(RuntimeError):
+    """A bad table, a missing row, a provider with no adapter, a bad reply. Callers fail closed."""
+
+
+class GateOff(GateError):
+    """The row is `off` with when_off `fail`: the caller must not go ahead without the call."""
+
+
+def _path(table=None):
+    return table or os.environ.get("GATE_TABLE") or TABLE
+
+
+@functools.lru_cache(maxsize=None)
+def _repo_of(path):
+    """The git checkout holding the real file behind `path`, or None (also with no git at all).
+    Cached: _rel names the table on every load, and classify runs from many threads."""
+    d = os.path.dirname(os.path.realpath(path))
+    try:
+        top = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return top or None
+
+
+def _rel(path):
+    """The table as its repo names it (`settings/models.json`), through any config symlink."""
+    real = os.path.realpath(path)
+    for root in (_repo_of(path), os.path.dirname(os.path.realpath(HERE))):
+        if root and real.startswith(root + os.sep):
+            return real[len(root) + 1:]
+    return path
+
+
+def validate(t, name="settings/models.json"):
+    """Every problem in a parsed table, each naming the file and the row."""
+    errs = []
+    if not isinstance(t, dict):
+        return ["%s: the table is a JSON object" % name]
+    for k in t:
+        if k not in ("_", "defaults", "sites"):
+            errs.append("%s: unknown top-level key %r" % (name, k))
+    d = t.get("defaults", {})
+    if not isinstance(d, dict):
+        errs.append("%s: defaults is a map provider -> {model, effort, threshold}" % name)
+        d = {}
+    for p, v in d.items():
+        where = "%s: defaults.%s" % (name, p)
+        if p not in VENDOR:
+            errs.append("%s: no such provider (%s)" % (where, ", ".join(VENDOR)))
+        if not isinstance(v, dict):
+            errs.append("%s: a map of %s" % (where, ", ".join(DEFAULT_KEYS)))
+            continue
+        errs += ["%s: %s" % (where, e) for e in _values(v, DEFAULT_KEYS)]
+    sites = t.get("sites")
+    if not isinstance(sites, dict) or not sites:
+        return errs + ["%s: sites is a non-empty map site -> row" % name]
+    seen = {}
+    for s in sites:
+        v = env_name(s, "provider")
+        if v in seen:
+            errs.append("%s: sites.%s and sites.%s share their override variables (%s…) — rename one"
+                        % (name, seen[v], s, v[:-len("PROVIDER")]))
+        seen[v] = s
+    for s, row in sites.items():
+        where = "%s: sites.%s" % (name, s)
+        if not isinstance(row, dict):
+            errs.append("%s: a row is an object" % where)
+            continue
+        kind, prov = row.get("kind"), row.get("provider")
+        if not isinstance(kind, str) or kind not in PROVIDERS:  # a list would raise TypeError, not this
+            errs.append("%s: kind must be one of %s, not %r" % (where, ", ".join(PROVIDERS), kind))
+        elif prov is None:
+            errs.append("%s: provider is written on every row, never inherited" % where)
+        elif not isinstance(prov, str) or prov not in PROVIDERS[kind]:
+            errs.append("%s: provider %r is not one a %s row takes (%s)"
+                        % (where, prov, kind, ", ".join(PROVIDERS[kind])))
+        if row.get("when_off", "fail") not in ("fail", "skip"):
+            errs.append("%s: when_off is fail or skip, not %r" % (where, row["when_off"]))
+        errs += ["%s: %s" % (where, e) for e in _values(row, ROW_KEYS)]
+    return errs
+
+
+def _values(v, allowed):
+    errs = ["unknown key %r (%s)" % (k, ", ".join(allowed)) for k in v if k not in allowed]
+    if "effort" in v and v["effort"] not in EFFORTS:
+        errs.append("effort is one of %s, not %r" % (", ".join(EFFORTS), v["effort"]))
+    th = v.get("threshold")
+    if "threshold" in v and (isinstance(th, bool) or not isinstance(th, (int, float)) or not 0 <= th <= 1):
+        errs.append("threshold is a number from 0 to 1, not %r" % (th,))
+    b = v.get("batch")
+    if "batch" in v and (isinstance(b, bool) or not isinstance(b, int) or b < 1):
+        errs.append("batch is a whole number of items per request, not %r" % (b,))
+    if "model" in v and (not isinstance(v["model"], str) or not v["model"]):
+        errs.append("model is a non-empty string")
+    return errs
+
+
+def env_name(site, key):
+    """The variable that overrides one key of one site: GATE_SPARKS_SHAPE_MODEL."""
+    return "GATE_%s_%s" % (site.upper().replace(".", "_").replace("-", "_"), key.upper())
+
+
+def _env_value(key, s):
+    if s in ("none", "null"):
+        return None
+    return _value(s) if key in ("threshold", "batch") else s
+
+
+def _apply_env(t, name, environ=None):
+    """Write every GATE_<SITE>_<KEY> into its row; {site: {key: variable}}. An unknown one raises."""
+    environ = os.environ if environ is None else environ
+    sites = t.get("sites") if isinstance(t, dict) else None
+    known = {}
+    if isinstance(sites, dict):
+        known = {env_name(s, k): (s, k) for s in sites for k in ENV_KEYS}
+    over = {}
+    for var in sorted(environ):
+        if not var.startswith("GATE_") or var in ENV_OWN:
+            continue
+        if var not in known:
+            near = difflib.get_close_matches(var, list(known), 1)
+            raise GateError("%s names no site and key in %s — GATE_<SITE>_<KEY>, KEY one of %s%s; "
+                            "unset it or fix the name, the table's row is not run in its place"
+                            % (var, name, ", ".join(k.upper() for k in ENV_KEYS),
+                               " (did you mean %s?)" % near[0] if near else ""))
+        site, key = known[var]
+        row = sites[site]
+        if isinstance(row, dict):
+            v = _env_value(key, environ[var])
+            if v is None:
+                row.pop(key, None)
+            else:
+                row[key] = v
+        over.setdefault(site, {})[key] = var
+    return over
+
+
+def _blame(err, name, over):
+    """An error about an overridden key names the variable that set it."""
+    for site, keys in over.items():
+        pre = "%s: sites.%s: " % (name, site)
+        if err.startswith(pre):
+            for k, var in keys.items():
+                if err[len(pre):].startswith(k + " "):
+                    return "%s (from %s)" % (err, var)
+    return err
+
+
+def _load(table=None, env=True):
+    path = _path(table)
+    name = _rel(path)
+    try:
+        raw = open(path).read()
+    except OSError as e:
+        raise GateError("%s: cannot read: %s" % (name, e.strerror))
+    try:
+        t = json.loads(raw)
+    except ValueError as e:
+        raise GateError("%s: not valid JSON: %s" % (name, e))
+    over = _apply_env(t, name) if env else {}
+    errs = validate(t, name)
+    if errs:
+        raise GateError("; ".join(_blame(e, name, over) for e in errs))
+    return t, over
+
+
+def load(table=None, env=True):
+    """The table, the environment's overrides applied (env=False: the file alone, as `set` writes)."""
+    return _load(table, env)[0]
+
+
+def resolve(site, table=None):
+    """The row with defaults applied (plus `site`), None for off + skip; GateOff for off + fail."""
+    t, over = _load(table)
+    name = _rel(_path(table))
+    row = t["sites"].get(site)
+    if row is None:
+        raise GateError("%s: no row for %s — a call site needs its row before it runs" % (name, site))
+    if row["kind"] == "media":
+        raise GateError("%s: sites.%s is a media row: a declaration, no adapter calls it" % (name, site))
+    if row["provider"] == "off":
+        if row.get("when_off", "fail") == "skip":
+            return None
+        raise GateOff("%s: sites.%s is off (when_off: fail)" % (name, site))
+    out = dict(t.get("defaults", {}).get(row["provider"], {}))
+    out.update(row)
+    out["site"] = site
+    if over.get(site):
+        out["env"] = {v: os.environ[v] for v in over[site].values()}
+    return out
+
+
+def claude_flags(row):
+    """`claude -p` flags for a resolved row: --model, and --effort when set. Raises off Claude."""
+    if row is None:
+        raise GateError("claude_flags: the row is off (skip) — check for None before building a call")
+    if row.get("provider") != "claude":
+        raise GateError("%s: provider %s has no adapter here — only claude takes claude -p flags"
+                        % (row.get("site"), row.get("provider")))
+    flags = []
+    if row.get("model") and row["model"] != "inherit":
+        flags += ["--model", row["model"]]
+    if row.get("effort"):
+        flags += ["--effort", row["effort"]]
+    return flags
+
+
+# --- classify ---------------------------------------------------------------------------------
+
+_JEV, _JEV_LOCK = None, threading.Lock()
+
+
+def _jev_module():
+    """bin/jev, loaded once: review-gate classifies from 8 threads, and load_module() run
+    concurrently can drop the module from sys.modules under another thread (Python 3.9)."""
+    global _JEV
+    with _JEV_LOCK:
+        if _JEV is None:
+            _JEV = SourceFileLoader("jev", os.path.join(HERE, "jev")).load_module()
+        return _JEV
+
+
+def _text(x):
+    return x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)
+
+
+def _log(rec):
+    path = os.environ.get("GATE_LOG") or os.path.join(_jev_module().log_dir(), "gate.jsonl")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def classify(site, items, ask, labels, context=None, source=None, approved=None, caller=None,
+             timeout=None, attempts=None, table=None):
+    """{items: {id: {label, p}}, provider, model, cost_usd, ms}; None when off + skip."""
+    if not isinstance(items, dict) or not items:
+        raise GateError("%s: items is a non-empty map id -> text" % site)
+    if not isinstance(labels, dict) or not 2 <= len(labels) <= 255:
+        raise GateError("%s: labels is a map label -> description, 2 to 255 of them" % site)
+    row = resolve(site, table)
+    if row is None:
+        return None
+    if row["kind"] != "classify":
+        raise GateError("%s: a %s row, not classify" % (site, row["kind"]))
+    prov = row["provider"]
+    jev = _jev_module()
+    if not source:
+        source = jev.repo_of(os.getcwd())
+        print("gate: no source given; assuming the cwd's repo, %s" % source, file=sys.stderr)
+    quote = None
+    if source in jev.GUARDED:
+        vendor = VENDOR.get(prov, prov)
+        if not isinstance(approved, dict):
+            raise GateError("%s: refused: data from %s needs %s's quote per vendor — "
+                            "approved={\"%s\": \"%s, <date>: <what>\"}, not %s"
+                            % (site, source, jev.WHO, vendor, jev.QUOTE_BY, type(approved).__name__))
+        quote = (approved.get(vendor) or "").strip()
+        if not quote:
+            raise GateError("%s: refused: data from %s goes to %s only with %s's say-so — "
+                            "approved has no %r quote (it has: %s)"
+                            % (site, source, vendor, jev.WHO, vendor, ", ".join(approved) or "none"))
+    items = {str(k): v for k, v in items.items()}
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname().split(".")[0],
+           "caller": caller or os.path.basename(sys.argv[0]), "site": site, "provider": prov,
+           "model": row.get("model"), "source": source, "items": len(items)}
+    if quote:
+        rec["approved"] = quote
+    if row.get("env"):
+        rec["overrides"] = row["env"]
+    t0 = time.time()
+    try:
+        if prov == "jev":
+            out = _classify_jev(jev, row, items, ask, labels, context, source, quote, caller or site,
+                                timeout, attempts)
+        elif prov == "claude":
+            out = _classify_claude(row, items, ask, labels, context, timeout)
+        else:
+            raise GateError("%s: provider %s has no classify adapter yet" % (site, prov))
+    except Exception as e:
+        rec.update(status="error", ms=int((time.time() - t0) * 1000), error=str(e)[:200])
+        _log(rec)
+        if isinstance(e, GateError):
+            raise
+        raise GateError("%s: %s" % (site, e))
+    out.update(provider=prov, ms=int((time.time() - t0) * 1000))
+    rec.update(status="ok", model=out.get("model"), cost_usd=out["cost_usd"], ms=out["ms"])
+    _log(rec)
+    return out
+
+
+def _chunks(jev, row, items, questions, context):
+    """Item-id lists, each fitting one Jev request: `batch` per request, else 80% of both limits."""
+    ids = list(items)
+    if row.get("batch"):
+        n = row["batch"]
+        return [ids[i:i + n] for i in range(0, len(ids), n)]
+    base = jev._tokens(context or "") + 10
+    out, cur, state, qsum, qmax = [], [], base, 0, 0
+    for i in ids:
+        it, q = jev._tokens(items[i]) + 4, jev._tokens(questions[i])
+        fits = (state + it + qsum + q <= 0.8 * jev.CONTEXT_TOTAL
+                and state + it + max(qmax, q) <= 0.8 * jev.CONTEXT_STATE_PLUS_ONE)
+        if cur and not fits:
+            out.append(cur)
+            cur, state, qsum, qmax = [], base, 0, 0
+        cur.append(i)
+        state, qsum, qmax = state + it, qsum + q, max(qmax, q)
+    return out + [cur]
+
+
+def _classify_jev(jev, row, items, ask, labels, context, source, quote, caller, timeout, attempts):
+    yesno = set(labels) == {"yes", "no"}
+    questions = {}
+    for i, x in items.items():
+        q = {"instructions": "%s Item `%s`: \"%s\"" % (ask, i, _text(x))}
+        if yesno:
+            q.update(type="noul", criteria={"true": labels["yes"], "false": labels["no"]})
+        else:
+            q.update(type="choice", criteria=dict(labels))
+        questions[i] = q
+    th = row.get("threshold", 0.5)
+    opts = {k: v for k, v in (("timeout", timeout), ("attempts", attempts)) if v is not None}
+    res, cost, model = {}, 0.0, None
+    for chunk in _chunks(jev, row, items, questions, context):
+        state = {"items": {i: items[i] for i in chunk}}
+        if context:
+            state = {"context": context, "items": state["items"]}
+        r = jev.ask(state, {i: questions[i] for i in chunk}, model=row.get("model", "jev-latest"),
+                    source=source, approved=quote, caller=caller, **opts)
+        cost, model = cost + r["cost_usd"], r.get("model") or model
+        for i in chunk:
+            a = r["answers"].get(i) or {}
+            if yesno:
+                p = a.get("noul")
+                if not isinstance(p, (int, float)):
+                    raise GateError("%s: Jev gave no probability for %s" % (row["site"], i))
+                res[i] = {"label": "yes" if p >= th else "no", "p": float(p)}
+            else:
+                c = a.get("choice")
+                if c not in labels:
+                    raise GateError("%s: Jev answered %r for %s, not a listed label" % (row["site"], c, i))
+                p = (a.get("probabilities") or {}).get(c)
+                res[i] = {"label": c, "p": float(p) if p is not None else None}
+    return {"items": res, "model": model, "cost_usd": cost}
+
+
+def _claude_prompt(items, ask, labels, context):
+    parts = []
+    if context:
+        parts += ["Context:", context, ""]
+    parts += ["Task: " + ask, "", "Labels:"]
+    parts += ["- %s: %s" % (k, v or "") for k, v in labels.items()]
+    parts += ["", "Items, one per line as `id: text`:"]
+    parts += ["%s: %s" % (i, _text(x).replace("\n", " ")) for i, x in items.items()]
+    parts += ["", "Reply with only a JSON object mapping each id to exactly one of the labels."]
+    return "\n".join(parts)
+
+
+def _claude_reply(res, items, labels):
+    got = res.get("structured_output")
+    if not isinstance(got, dict):
+        txt = res.get("result") or ""
+        m = re.findall(r"```(?:json)?\s*\n(.*?)\n```", txt, re.S)
+        try:
+            got = json.loads(m[-1] if m else txt)
+        except ValueError:
+            return None, "the reply is not JSON: %r" % txt[:120]
+    if not isinstance(got, dict):
+        return None, "the reply is not a JSON object"
+    bad = [i for i in items if not isinstance(got.get(i), str) or got.get(i) not in labels]
+    if bad:
+        return None, "no listed label for %s (got %r)" % (", ".join(bad[:5]), [got.get(i) for i in bad[:5]])
+    return {i: {"label": got[i], "p": None} for i in items}, None
+
+
+def _classify_claude(row, items, ask, labels, context, timeout):
+    schema = {"type": "object", "additionalProperties": False, "required": list(items),
+              "properties": {i: {"enum": list(labels)} for i in items}}
+    cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", *claude_flags(row), "--output-format", "json",
+           "--tools", "", "--setting-sources", "", "--no-session-persistence",
+           "--json-schema", json.dumps(schema)]
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    prompt, cost, why = _claude_prompt(items, ask, labels, context), 0.0, None
+    for _ in range(2):  # one retry on a bad reply, then raise
+        try:
+            p = subprocess.run(cmd, input=prompt, env=env, capture_output=True, text=True,
+                               timeout=timeout or CLAUDE_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise GateError("%s: claude -p did not answer: %s" % (row["site"], e))
+        try:
+            res = json.loads(p.stdout)
+        except ValueError:
+            raise GateError("%s: no JSON from claude -p: %s" % (row["site"], (p.stdout + p.stderr)[-300:]))
+        cost += float(res.get("total_cost_usd") or 0)
+        if res.get("is_error"):
+            raise GateError("%s: claude -p: %s" % (row["site"], str(res.get("result"))[:300]))
+        out, why = _claude_reply(res, items, labels)
+        if out is not None:
+            return {"items": out, "model": row.get("model"), "cost_usd": cost}
+    raise GateError("%s: Claude's reply, twice: %s" % (row["site"], why))
+
+
+# --- the CLI -------------------------------------------------------------------------------------
+
+def dump(t):
+    """The table's own layout: one row per line, so a `gate set` diff is one line."""
+    out = ["{"]
+    if "_" in t:
+        out.append("  \"_\": %s," % json.dumps(t["_"], ensure_ascii=False))
+    for sec in ("defaults", "sites"):
+        rows = list(t.get(sec, {}).items())
+        out.append("  \"%s\": {" % sec)
+        for n, (k, v) in enumerate(rows):
+            out.append("    %s: %s%s" % (json.dumps(k), json.dumps(v, ensure_ascii=False),
+                                         "," if n < len(rows) - 1 else ""))
+        out.append("  }%s" % ("," if sec == "defaults" else ""))
+    return "\n".join(out + ["}"]) + "\n"
+
+
+def _value(s):
+    if s in ("none", "null"):
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+def _commit(path):
+    path = os.path.realpath(path)   # git runs where the real file is: the config dir is no repo
+    d = os.path.dirname(path)
+    c = subprocess.run(["git", "-C", d, "log", "-1", "--format=%h %cs", "--", path],
+                       capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", path],
+                           capture_output=True, text=True).stdout.strip()
+    return (c or "not committed") + (", edited since" if dirty else "")
+
+
+def _line(site, row, defaults, env=()):
+    r = dict(defaults.get(row["provider"], {}))
+    r.update(row)
+    mark = lambda k: " (env)" if k in env else ""
+    bits = [r["provider"] + mark("provider")]
+    shown = ["provider"]
+    for k in ("model", "effort"):
+        if r.get(k):
+            bits.append("%s=%s%s" % (k, r[k], mark(k)))
+            shown.append(k)
+    if r["provider"] == "jev" and "threshold" in r:
+        bits.append("threshold=%s%s" % (r["threshold"], mark("threshold")))
+        shown.append("threshold")
+    if r.get("batch"):
+        bits.append("batch=%s%s" % (r["batch"], mark("batch")))
+        shown.append("batch")
+    if r["provider"] == "off":
+        bits.append("when_off=%s%s" % (r.get("when_off", "fail"), mark("when_off")))
+        shown.append("when_off")
+    for k in env:  # an override show would otherwise hide: a removed key, a threshold on claude
+        if k not in shown:
+            bits.append("%s=%s (env)" % (k, r.get(k, "none")))
+    return "%-24s %-9s %s" % (site, r["kind"], " ".join(bits))
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    cmd = argv[0] if argv else ""
+    path = _path()
+    try:
+        if cmd == "check":
+            t = load(env=False)  # the file alone: an override in this shell must not hide or fake a bad row
+            print("gate: %s validates, %d sites" % (_rel(path), len(t["sites"])))
+            return 0
+        if cmd == "show":
+            t, over = _load()
+            for s, row in t["sites"].items():
+                print(_line(s, row, t.get("defaults", {}), over.get(s, {})))
+            print("table: %s @ %s" % (_rel(path), _commit(path)))
+            if over:
+                print("overridden here: %s" % ", ".join(sorted(v for o in over.values() for v in o.values())))
+            return 0
+        if cmd == "set" and len(argv) >= 3:
+            # The primary checkout's table on main is live at save: a flip there bypasses /finish
+            # and the checkpoint (which never sees a script's writes). A worktree's copy is fine.
+            # The guard and the write both go to the real file: through the config symlink an
+            # os.replace would swap the link for a plain file and leave the overlay's table as it was.
+            path = os.path.realpath(path)
+            br = subprocess.run(["git", "-C", os.path.dirname(path), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True).stdout.strip()
+            if not os.environ.get("GATE_TABLE") and not br and path == os.path.realpath(DEFAULT_TABLE):
+                # A plugin cache: the next update reverts the edit, and the user thinks it flipped.
+                raise GateError("not written: %s is the module's shipped defaults — copy it to %s "
+                                "and set it there" % (path, CONFIG_TABLE))
+            if not os.environ.get("GATE_TABLE") and br == "main":
+                raise GateError("not written: %s is on main, live at save — flip from a worktree "
+                                "(open one, then GATE_TABLE=<its path>/settings/models.json "
+                                "<its path>/bin/gate set …)" % _rel(path))
+            t = load(env=False)  # the file alone: an override is never written into it
+            site, before = argv[1], dict(t["sites"].get(argv[1], {}))
+            if not before and not any(a.startswith("kind=") for a in argv[2:]):
+                raise GateError("%s: no such row — a new one needs kind= and provider=" % site)
+            row = dict(before)
+            for a in argv[2:]:
+                if "=" not in a:
+                    raise GateError("%r: each change is key=value" % a)
+                k, v = a.split("=", 1)
+                v = _value(v)
+                if v is None:
+                    row.pop(k, None)
+                else:
+                    row[k] = v
+            t["sites"][site] = row
+            errs = validate(t, _rel(path))
+            if errs:
+                raise GateError("not written: " + "; ".join(errs))
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(dump(t))
+            os.replace(tmp, path)
+            print(_line(site, row, t.get("defaults", {})))
+            if row.get("bench"):
+                print("bench: %s — a flip changes the classifier; rerun it before trusting the new row"
+                      % row["bench"])
+            if (row.get("provider") != before.get("provider") and row.get("provider") in VENDOR
+                    and _jev_module().GUARDED):   # nothing guarded, nothing to say
+                print("a caller with guarded data (%s) now needs approved[\"%s\"]"
+                      % (", ".join(_jev_module().GUARDED), VENDOR[row["provider"]]))
+            return 0
+        print(__doc__.split("\n\n")[1])
+        return 2
+    except GateError as e:
+        print("gate: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
