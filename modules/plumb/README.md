@@ -111,7 +111,7 @@ it the defaults apply: prompts, and measured reading when `reads` holds rows; ga
 
 ```json
 {"projects_root": "~/projects", "transcripts": "~/projects/transcripts",
- "reports": "~/projects/usage-data/reports/crew-report", "tz": "",
+ "reports": "~/.local/state/regatta/crew-report", "tz": "",
  "gap_minutes": 20, "sensitivity": [10, 30],
  "machine_prompts": [], "unattended_prompts": [],
  "notes": "", "audio_roots": {}, "chrome": "", "words_per_minute": 200,
@@ -137,6 +137,10 @@ published file has one publisher, the job, and says so in one line. A person's h
 `data` only for a share whose members may read them. The tool absent: the report's last line
 reads "publish: lighthouse not installed — local only" and nothing else happens. The tool failing
 or timing out: one `publish FAILED` line in the log, the local files stand, the exit code stays 0.
+The tool places a file by its path under the projects folder and refuses one outside it, so a
+deployment that publishes sets `reports` to a folder there (the tool's own root: `~/projects`, or
+its `PUBLISH_PROJECTS`); the default, in the core's default state folder, keeps an unpublished
+report off every share.
 
 **Cache.** `cache` is a folder (default `~/.cache/regatta/plumb`; `""` turns it off) holding two
 things a weekly pass would otherwise recompute, so that it stays under two minutes as the transcript
@@ -158,7 +162,7 @@ sh <this module>/install.sh --remove      # unload it and delete the plist
 ```
 
 `--schedule` writes one launchd agent, `dev.regatta.plumb.crew-report` (`PLUMB_LABEL` names another),
-that runs `crew-report week --write` on Mondays at 07:30 local time, after usage-report's morning
+that runs `crew-report week --write --publish` on Mondays at 07:30 local time, after usage-report's morning
 render so the cost CSVs are complete. A Mac asleep at 07:30 runs it at the first wake. Its PATH
 holds `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`; its log is `crew-report.log` in the
 core's log folder (`regatta/log-dir`, default `~/.local/state/regatta`). The plist records the path
