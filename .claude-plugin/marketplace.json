@@ -14,6 +14,11 @@
       "name": "helloworld",
       "source": "./modules/helloworld",
       "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."
+    },
+    {
+      "name": "plumb",
+      "source": "./modules/plumb",
+      "description": "Measure: crew-report, the owner's own time per project each week, beside the model cost."
     }
   ]
 }
