@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-night.svg">
+  <img src="assets/banner-day.svg" alt="Sailboats cross a finish line under fireworks, drawn in text characters">
+</picture>
+
 # Regatta
 
 An open-source Business-as-Code framework that puts wind into your project's sails: run your
