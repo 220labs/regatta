@@ -1,0 +1,1412 @@
+#!/usr/bin/env python3
+"""crew-report — the owner's own time per project, counted weekly from what is already on disk.
+
+    crew-report week [--week YYYY-Www] [--until ISO] [--write [--publish]]
+        one ISO week's report; stdout, or <reports>/<week>.md (and latest.md for the last complete
+        week); --until is a replay's cut and only prints
+
+Zero tokens, stdlib. Writes its report, its cache, and, through keel's drain, keel's reads.jsonl;
+`CREW_REPORT_NO_DRAIN=1 crew-report week` (no --write) is the pass that changes nothing but the
+cache. Sources, each optional:
+  prompts     what the person typed into Claude Code: every login dir's projects/**/*.jsonl plus
+              the transcript archive, deduped by event uuid (the archive copies live files)
+  cost        the week's model cost per project from usage-report's CSVs, when that tool is found
+  recordings  voice notes (`notes`: front matter `recorded:`, `audio:`, `size:`) whose title or body
+              matches a project's `terms`; one recording per audio file, the interval ending at
+              `recorded:`, as long as afinfo (else ffprobe, else size at 64 kbit/s) says. They join the
+              prompts as one union per project, so talk during a session counts once.
+  est. reading  the *.md/*.html/*.htm docs the project's repos' refs added in the week (author date),
+              minus `exclude` and `reading.exclude`, plus `reading.include` back over them, words at
+              200/min: for reference, never in the total. HTML as Chrome renders it, else static.
+  measured reading  the heartbeats keel files for a doc's course page (`reads`: reads.jsonl rows
+              {doc, repo, branch, path, ts, who}; each says "active on that page in the minute up
+              to ts"). Per project and doc, heartbeats no more than `read_gap_minutes` apart are one
+              run spanning [first - 1 min, last]; tabs and docs of a project are one union, and
+              the union joins the prompts' and recordings' as the total. Only `viewer`'s own rows
+              are charged when it is set. `week` first asks keel to drain its rooms into the file
+              (`keel sheep drain`; CREW_REPORT_NO_DRAIN=1 skips it), and says if that failed.
+--write --publish (the weekly job's flags) also hands the written files to lighthouse's publish tool
+when `publish` is "vault" or "data" (found through common.tool(); absent, the report says "local
+only"; a failure is one logged line, never fatal); a hand --write never publishes, since a published
+file has one publisher. Peer tools can be pinned with $CREW_REPORT_KEEL, $CREW_REPORT_PUBLISH and
+$CREW_REPORT_USAGE_REPORT (a path, or "none"). A cache under `cache` (default ~/.cache/regatta/plumb) keeps what a pass would
+otherwise recompute: the word count of each rendered HTML doc, by hash of its text, and the prompt
+candidates of each transcript file, by size and mtime, with a digest where the text would be. Neither
+holds a prompt's text or a doc's text or title (the transcript one holds the file's path, the
+prompt's time and working folder); `"cache": ""` turns them off.
+
+The typed-prompt rule (probed on real transcripts, 2026-10-18): a `user` event, not isMeta, not
+isSidechain, content not all tool_result, and either origin.kind == "human", or no origin on a
+local slash command (`<command-name>`, which carries none) typed in VS Code or the CLI. Not
+counted: relays (no origin: the Session-tab message, Talk answers), compaction continuations,
+interrupts, task notifications and peer hand-backs (their own origin kinds), AskUserQuestion
+answers (inside a tool_result). origin "human" is not proof a person typed: a launcher's prompt
+carries it too, so a prompt matching `machine_prompts` is dropped, a session opening on an
+`unattended_prompts` match drops every prompt in it, and an `sdk-cli` session counts nothing.
+
+Time: one timeline per project; consecutive prompts no more than `gap_minutes` apart are time,
+longer gaps are not, no allowance per burst; `sensitivity` gaps printed beside. ISO weeks in the
+local zone (`tz` overrides), cut at Monday 00:00, so a gap across Sunday midnight splits there.
+
+Config (the design's C3): $CREW_REPORT_CONFIG, else plumb/crew-report.json in the regatta config
+dir; no file means the defaults below. Login dirs come from the accounts registry
+($ACCOUNTS_FILE, else lighthouse/accounts.json in the config dir) through the core's
+account_rows/account_home, else the default login dir alone. Names, terms and paths of a real
+person live in that private file, never here.
+"""
+import argparse
+import datetime as dt
+import glob
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+# Public defaults for the launchers wharf ships: dispatch's unattended preamble, autofinish's
+# /finish, a pickup tab's prefill and its resume line. A deployment adds its own in config.
+UNATTENDED = [r"^You are an unattended session started by dispatch",
+              r"<command-name>/finish</command-name>[\s\S]*--unattended"]
+# The pickup prefill only (`/pickup '<branch>' …`): a /pickup the person types with other args counts.
+MACHINE = UNATTENDED + [r"<command-name>/pickup</command-name>\s*<command-args>'", r"^Picked up with /pickup"]
+
+DEFAULTS = {
+    "projects_root": "~/projects",
+    "transcripts": "~/projects/transcripts",
+    "reports": "~/projects/usage-data/reports/crew-report",
+    "tz": "",
+    "gap_minutes": 20,
+    "sensitivity": [10, 30],
+    "notes": "",                # a folder of idea notes (front matter: recorded, audio, size)
+    "audio_roots": {},          # prefix of an `audio:` path → the folder it lives in here
+    "chrome": "",               # Chrome for rendering HTML docs; "" = the standard app, else static
+    "cache": "~/.cache/regatta/plumb",   # rendered docs' word counts by text hash; "" = none
+    "publish": "",              # "" = local only; "vault" or "data" = lighthouse's publish scope
+    "words_per_minute": 200,
+    "reads": ["~/.local/state/memo/reads.jsonl"],   # keel's heartbeat files (measured reading)
+    "viewer": "",               # the `who` to charge; "" = every viewer, the distinct count printed
+    "read_gap_minutes": 5,      # heartbeats this close are one run; reading only (prompts: gap_minutes)
+    "exclude": ["TODO.md", "AGENTS.md", "CLAUDE.md", "README.md", "CHANGELOG.md", "**/sources/**", "docs/handoff/**"],
+    "machine_prompts": [],      # added to MACHINE
+    "unattended_prompts": [],   # added to UNATTENDED
+    "projects": {},
+}
+EM = "—"
+
+
+def config_path():
+    return Path(os.environ.get("CREW_REPORT_CONFIG") or common.CONFIG / "plumb" / "crew-report.json").expanduser()
+
+
+def load_config():
+    c = json.loads(json.dumps(DEFAULTS))
+    p = config_path()
+    if p.is_file():
+        try:
+            c.update(json.loads(p.read_text(encoding="utf-8")))
+        except ValueError as e:
+            sys.exit(f"crew-report: {p} is not JSON: {e}")
+        c["_file"] = str(p)
+    # 0 is a real value (never join heartbeats), so only a missing or null one is the default.
+    g = c.get("read_gap_minutes")
+    try:
+        c["read_gap_minutes"] = DEFAULTS["read_gap_minutes"] if g is None else float(g)
+    except (TypeError, ValueError):
+        sys.exit(f"crew-report: read_gap_minutes is not a number: {g!r}")
+    c["_machine"] = [re.compile(r) for r in MACHINE + list(c.get("machine_prompts") or [])]
+    c["_unattended"] = [re.compile(r) for r in UNATTENDED + list(c.get("unattended_prompts") or [])]
+    return c
+
+
+def zone(c):
+    """The report's zone: `tz`, else $TZ, else the system's named zone (/etc/localtime's link), so a
+    week on the other side of a DST change gets its own offset; today's fixed offset only when no
+    name is found (a fixed offset leaves an hour between weeks across a change)."""
+    from zoneinfo import ZoneInfo
+    names = [c.get("tz"), os.environ.get("TZ", "").lstrip(":")]
+    link = os.path.realpath("/etc/localtime")
+    if "/zoneinfo/" in link:
+        names.append(link.split("/zoneinfo/", 1)[1])
+    for i, n in enumerate(names):
+        if not n:
+            continue
+        try:
+            return ZoneInfo(n)
+        except (ValueError, OSError, LookupError):
+            if i == 0:
+                sys.exit(f"crew-report: tz '{n}' is not a zone name")
+    return dt.datetime.now().astimezone().tzinfo
+
+
+def tool(name):
+    """A peer's tool: $CREW_REPORT_<NAME> ("none" = absent; the suite stubs keel, publish and
+    usage-report this way, so a module moving into the checkout never swaps the stub for the real
+    one), else the core's lookup."""
+    v = os.environ.get("CREW_REPORT_" + name.upper().replace("-", "_"))
+    if v:
+        return None if v == "none" else Path(v)
+    return common.tool(name)
+
+
+# ---- where transcripts are ---------------------------------------------------------------------
+
+def login_dirs():
+    """Every Claude login dir on this Mac, by realpath once: the registry's claude rows (Orca's
+    logins added by the core), plus the default dir ($CLAUDE_CONFIG_DIR, else ~/.claude) when the
+    registry names no claude row of its own: Orca's rows alone must not hide it."""
+    f = Path(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json").expanduser()
+    rows = []
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        rows = d.get("accounts", []) if isinstance(d, dict) else d
+    except (OSError, ValueError):
+        pass
+    own = [a for a in rows if isinstance(a, dict) and a.get("provider", "claude") == "claude"]
+    homes = [common.account_home(a) for a in common.account_rows(rows) if a.get("provider", "claude") == "claude"]
+    homes = [h for h in homes if h]
+    if not own:
+        homes.insert(0, Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser())
+    out, seen = [], set()
+    for h in homes:
+        p = h / "projects"
+        if p.is_dir() and os.path.realpath(p) not in seen:
+            seen.add(os.path.realpath(p))
+            out.append(p)
+    return out
+
+
+def transcript_files(c, since):
+    """Every *.jsonl under the login dirs and the archive, each real file once, skipping files last
+    written before `since` (a prompt cannot be newer than its file)."""
+    roots = login_dirs()
+    arch = Path(c["transcripts"]).expanduser() if c.get("transcripts") else None
+    if arch and arch.is_dir():
+        roots.append(arch)
+    files, seen, cut = [], set(), since.timestamp()
+    for r in roots:
+        for f in glob.glob(str(r / "**" / "*.jsonl"), recursive=True):
+            rp = os.path.realpath(f)
+            try:
+                if rp in seen or os.path.getmtime(rp) < cut:
+                    continue
+            except OSError:
+                continue
+            seen.add(rp)
+            files.append(rp)
+    return roots, sorted(files)
+
+
+# ---- which events are a typed prompt -----------------------------------------------------------
+
+CMD_RE = re.compile(r"<command-name>")
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    blocks = [b for b in content if isinstance(b, dict)]
+    if blocks and all(b.get("type") == "tool_result" for b in blocks):
+        return None
+    return "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+
+
+def stamp(s):
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+
+
+def classify(d):
+    """('typed', text) | (reason not counted, None) | (None, None) for an event that is no prompt."""
+    if d.get("type") == "attachment":
+        a = d.get("attachment") or {}
+        if a.get("type") == "queued_command" and (a.get("origin") or {}).get("kind") == "human":
+            p = a.get("prompt")
+            t = p if isinstance(p, str) else (text_of(p) or "")
+            return ("queued", t) if t.strip() else (None, None)
+        return None, None
+    if d.get("type") != "user" or d.get("isMeta") or d.get("isSidechain"):
+        return None, None
+    msg = d.get("message") or {}
+    t = text_of(msg.get("content"))
+    if t is None or not t.strip():
+        return None, None
+    origin = (d.get("origin") or {}).get("kind")
+    if origin == "human":
+        return "typed", t
+    if origin is None:
+        if t.startswith("[Request interrupted"):
+            return "interrupt", None
+        if CMD_RE.search(t) and d.get("entrypoint") in ("claude-vscode", "cli"):
+            return "typed", t
+        return ("relay" if d.get("promptSource") == "sdk" else "no origin"), None
+    return None, None   # task-notification, peer, system: not the person's
+
+
+QUOTE = re.compile(r"<command-name>(/[\w:-]+)</command-name>")
+
+
+def digest(s):
+    return hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def extract_file(f, c):
+    """What one transcript file says, in the form the cache keeps: (asks, entries). `asks` are the
+    ids of its AskUserQuestion calls. An entry is a list [uuid, timestamp, ask_ids, kind, session,
+    entrypoint, cwd, key, command, machine, unattended, lead] for each line that is a prompt candidate
+    (kind: typed, queued, or the reason it is not counted) or that answers one of those calls
+    (ask_ids: the ids in its tool_result blocks that this file asked). The prompt's text is never
+    kept: `key` is a digest of its first 100 characters (the typed-before-queued check), `lead` one
+    of its first 40 (a launcher's preamble shares them, so a new launcher shows in the first-prompt
+    counts without its text), `command`
+    its leading slash command, and `machine` / `unattended` say whether the configured launcher
+    patterns match it, which is why the cache is keyed by those patterns."""
+    entries, asks, forks = [], set(), []
+    try:
+        fh = open(f, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            if d.get("type") == "forked-from":
+                forks.append((d.get("sessionId"), (d.get("from") or {}).get("sessionId"), stamp(d.get("cutoff"))))
+                continue
+            if d.get("type") == "assistant":
+                for b in (d.get("message") or {}).get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion":
+                        asks.add(b.get("id"))
+                continue
+            ids = None
+            if d.get("type") == "user" and isinstance((d.get("message") or {}).get("content"), list):
+                ids = [b.get("tool_use_id") for b in d["message"]["content"] if isinstance(b, dict) and b.get("type") == "tool_result"] or None
+            kind, text = classify(d)
+            if kind is None and ids is None:
+                continue
+            e = [d.get("uuid"), d.get("timestamp"), ids, kind, None, None, None, None, None, False, False, None]
+            if kind in ("typed", "queued"):
+                m = QUOTE.search(text)
+                e[4:] = [d.get("sessionId") or f, d.get("entrypoint"), d.get("cwd"), text.strip()[:100], m.group(1) if m else None,
+                         any(p.search(text) for p in c["_machine"]), any(p.search(text) for p in c["_unattended"]),
+                         digest(text.strip()[:40])[:6]]
+            entries.append(e)
+    # The ask ids a result line answers are known once the file is read: keep only those.
+    for e in entries:
+        e[2] = [i for i in (e[2] or []) if i in asks] or None
+    entries = [e for e in entries if e[3] is not None or e[2]]
+    # A fork (/fork, pickup's move) copies its source's rows under its own sessionId, then writes a
+    # `forked-from` record: the rows up to its cutoff are the source session's, so a fork of a
+    # dispatch session is not judged by the inherited preamble, and the person's own lines after
+    # the move count.
+    for new, old, cut in forks:
+        for e in entries:
+            if e[4] == new and old and cut and (stamp(e[1]) or cut) <= cut:
+                e[4] = old
+    for e in entries:
+        if e[4] is not None:
+            e[4], e[7] = digest(e[4]), digest(e[7])
+    return sorted(asks, key=str), entries
+
+
+class TranscriptCache:
+    """extract_file's result per file, keyed by the file's real path, size and mtime, so a week's
+    pass reads only the files that changed since the last. Holds timestamps, paths, digests and
+    flags — no prompt text (the privacy section of the design). The file's name carries a digest of
+    the launcher patterns and the format, so changing either starts a fresh one and removes the
+    old. Best effort like the render cache: unreadable or unwritable means no cache. `cache` in
+    the config names the folder; "" turns it off."""
+
+    VERSION = "2"   # 2: a fork's inherited rows belong to its source session; the lead digest
+
+    def __init__(self, c):
+        d = c.get("cache")
+        sig = digest(json.dumps([self.VERSION, [p.pattern for p in c["_machine"]], [p.pattern for p in c["_unattended"]]]))
+        self.dir = Path(d).expanduser() if d else None
+        self.file = self.dir / f"transcripts-{sig}.json" if self.dir else None
+        self.files, self.dirty = {}, False
+        if self.file:
+            try:
+                data = json.loads(self.file.read_text(encoding="utf-8"))
+                self.files = data if isinstance(data, dict) else {}
+            except (OSError, ValueError):
+                self.files = {}
+
+    def get(self, f, c):
+        try:
+            st = os.stat(f)
+        except OSError:
+            return None
+        hit = self.files.get(f)
+        if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns:
+            return hit[2], hit[3]
+        got = extract_file(f, c)
+        if got is not None and self.file:
+            self.files[f] = [st.st_size, st.st_mtime_ns, got[0], got[1]]
+            self.dirty = True
+        return got
+
+    def save(self):
+        if not (self.file and self.dirty):
+            return
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            keep = {f: v for f, v in self.files.items() if os.path.exists(f)}
+            tmp = self.file.with_name(self.file.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(keep), encoding="utf-8")
+            os.replace(tmp, self.file)
+            for old in self.dir.glob("transcripts-*.json"):
+                if old != self.file:
+                    old.unlink()
+        except OSError:
+            pass
+
+
+def collect(c, start, end, lead=dt.timedelta(0)):
+    """Typed prompts by project (every one in the files read: a gap may reach back `lead` across
+    Monday 00:00, and a session's first row decides it), deduped by uuid, machine starts dropped;
+    plus the counts of what was not counted, over [start, end) alone so no line is in two weeks'
+    reports."""
+    roots, files = transcript_files(c, start - lead - dt.timedelta(days=1))
+    cache = TranscriptCache(c)
+    seen, sessions = set(), {}
+    skipped = {"machine starts": 0, "relays": 0, "asks": 0, "interrupts": 0, "no origin": 0}
+    ask_ids = set()
+    for f in files:
+        got = cache.get(f, c)
+        if got is None:
+            continue
+        ask_ids.update(got[0])
+        for u, ts, ids, kind, sid, entry, cwd, key, cmd, mach, unatt, lead in got[1]:
+            if u:
+                if u in seen:
+                    continue
+                seen.add(u)
+            t = stamp(ts)
+            if ids and t and start <= t < end:
+                skipped["asks"] += sum(1 for i in ids if i in ask_ids)
+            if kind is None or t is None:
+                continue
+            if kind not in ("typed", "queued"):
+                if start <= t < end:
+                    k = {"relay": "relays", "interrupt": "interrupts"}.get(kind, kind)
+                    skipped[k] = skipped.get(k, 0) + 1
+                continue
+            s = sessions.setdefault(sid, {"entry": entry, "cwd": cwd, "rows": []})
+            s["entry"] = s["entry"] or entry
+            s["cwd"] = s["cwd"] or cwd
+            s["rows"].append((t, kind, key, cwd or s["cwd"], cmd or f"(text #{lead})", mach, unatt))
+    cache.save()
+    by_project, firsts = {}, {}
+    for s in sessions.values():
+        rows = sorted(s["rows"], key=lambda r: r[0])
+        typed = {r[2] for r in rows if r[1] == "typed"}
+        rows = [r for r in rows if r[1] == "typed" or r[2] not in typed]
+        if not rows:
+            continue
+        first = rows[0]
+        if first[0] >= start and first[0] < end:
+            k = first[4]
+            firsts[k] = firsts.get(k, 0) + 1
+        whole = s["entry"] == "sdk-cli" or first[6]
+        for t, _kind, _key, cwd, _cmd, mach, _unatt in rows:
+            if whole or mach:
+                if start <= t < end:
+                    skipped["machine starts"] += 1
+                continue
+            by_project.setdefault(project_of(c, cwd), []).append(t)
+    return roots, files, by_project, skipped, firsts
+
+
+_REPO = {}
+
+
+def project_of(c, cwd):
+    """The main checkout relative to projects_root, else '?'. Unlike usage-report's key, a session
+    started in a repo's subfolder is that repo's: the nearest folder holding `.git`, else the path
+    (cost_by_project re-keys usage-report's rows through this, so the two agree). A path under the
+    same root in another user's home (a reads file pulled from the other Mac) is read as this one's,
+    as usage-report reads both Macs' paths."""
+    p = (cwd or "").split("/.claude/worktrees/")[0].rstrip("/")
+    root = str(Path(c["projects_root"]).expanduser()).rstrip("/")
+    if not p.startswith(root + "/"):
+        rp, pp = Path(root).parts, Path(p).parts
+        if len(rp) >= 3 and len(pp) > len(rp) and pp[len(rp) - 1] == rp[-1] and pp[:len(rp) - 2] == rp[:-2]:
+            p = root + "/" + "/".join(pp[len(rp):])
+        else:
+            return "?"
+    if p not in _REPO:
+        q = Path(p)
+        while str(q) != root and not (q / ".git").exists() and str(q.parent).startswith(root + "/"):
+            q = q.parent
+        _REPO[p] = str(q) if (q / ".git").exists() else p
+    return _REPO[p][len(root) + 1:]
+
+
+# ---- time --------------------------------------------------------------------------------------
+
+def runs(times, gap):
+    """Sorted datetimes → intervals: consecutive ones no more than `gap` minutes apart joined."""
+    out = []
+    for t in sorted(times):
+        if out and (t - out[-1][1]).total_seconds() <= gap * 60:
+            out[-1][1] = t
+        else:
+            out.append([t, t])
+    return out
+
+
+def minutes(intervals, start, end):
+    """The union of intervals, clipped to [start, end), in minutes."""
+    merged = []
+    for a, b in sorted((max(a, start), min(b, end)) for a, b in intervals):
+        if b <= a:
+            continue
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return sum((b - a).total_seconds() for a, b in merged) / 60
+
+
+def week_bounds(week, tz):
+    y, w = (int(x) for x in re.fullmatch(r"(\d{4})-W(\d{2})", week).groups())
+    mon = dt.datetime.combine(dt.date.fromisocalendar(y, w, 1), dt.time(), tzinfo=tz)
+    return mon, mon + dt.timedelta(days=7)
+
+
+def last_complete_week(tz):
+    y, w, _ = (dt.datetime.now(tz) - dt.timedelta(days=7)).isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+# ---- cost (usage-report, optional) -------------------------------------------------------------
+
+def cost_by_project(c, start, end, this_host=False):
+    """List $ per project from usage-report's CSVs, or None when the tool is not found or fails.
+    usage-report keys a row by its cwd under ~/projects, subfolder kept, or by the path itself;
+    each key is mapped through this tool's project_of so a subfolder's cost joins its repo's row
+    and a path outside the root joins "?"."""
+    p = tool("usage-report")
+    if not p:
+        return None
+    try:
+        spec = importlib.util.spec_from_loader("usage_report", importlib.machinery.SourceFileLoader("usage_report", str(p)))
+        ur = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ur)
+        last = (end - dt.timedelta(days=1)).date().isoformat()
+        rows = ur.load_rows({"data": ur.data_dir()}, start.date().isoformat(), last)
+    except Exception:
+        return None
+    out, root = {}, str(Path(c["projects_root"]).expanduser()).rstrip("/")
+    if this_host:   # the minutes are this Mac's: --this-host makes the cost match them
+        rows = [r for r in rows if r.get("host") == common.host_name()]
+    for r in rows:
+        k = r.get("project") or "?"
+        if k != "?":
+            k = project_of(c, os.path.expanduser(k) if k.startswith(("~", "/")) else root + "/" + k)
+        out[k] = out.get(k, 0.0) + float(r.get("cost") or 0)
+    return out
+
+
+# ---- recordings (voice notes whose text matches a project's terms) ------------------------------
+
+AFINFO_RE = re.compile(r"estimated duration:\s*([0-9.]+)\s*sec")
+BITRATE = 64000   # bit/s: the size fallback's guess for a voice recording
+
+
+def front_matter(path):
+    """({key: value}, body) of a note: a leading `---` block of `key: value` lines (YAML-ish; the
+    notes carry nothing deeper), else ({}, whole text)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}, ""
+    m = re.match(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", text, re.S)
+    if not m:
+        return {}, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        k, sep, v = line.partition(":")
+        if sep and re.fullmatch(r"[A-Za-z_][\w-]*", k.strip()):
+            fm[k.strip().lower()] = v.strip().strip("\"'")
+    return fm, text[m.end():]
+
+
+SIZE_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*([KMG]?)B?", re.I)
+
+
+def size_bytes(raw):
+    """A note's `size:` in bytes: plain bytes, or "39.9 MB" as the notes write it (decimal units,
+    as macOS reports file sizes); 0 when it does not parse."""
+    m = SIZE_RE.fullmatch((raw or "").strip())
+    if not m:
+        return 0
+    return int(float(m.group(1)) * {"": 1, "K": 1e3, "M": 1e6, "G": 1e9}[m.group(2).upper()])
+
+
+def term_regex(name, terms):
+    if not terms:
+        return None
+    try:
+        return re.compile("|".join(f"(?:{t})" for t in terms), re.I)
+    except re.error:
+        sys.exit(f"crew-report: a term of project '{name}' is not a regular expression")
+
+
+def audio_path(c, raw):
+    """`audio:` → a path: the longest `audio_roots` prefix it starts with is swapped for its folder,
+    else the path as written."""
+    best = ""
+    for pre in c.get("audio_roots") or {}:
+        # A whole leading segment only: a root `/aud` is not the start of `/audio-other/…`.
+        if pre and (raw == pre or raw.startswith(pre.rstrip("/") + "/")) and len(pre) > len(best):
+            best = pre
+    if best:
+        return Path(str(c["audio_roots"][best])).expanduser() / raw[len(best):].lstrip("/")
+    return Path(raw).expanduser()
+
+
+def which_tool(name):
+    """On PATH, else where Homebrew puts it: a launchd job's PATH lacks /opt/homebrew/bin."""
+    p = shutil.which(name)
+    if p:
+        return p
+    for d in ("/opt/homebrew/bin", "/usr/local/bin"):
+        q = os.path.join(d, name)
+        if os.access(q, os.X_OK):
+            return q
+    return None
+
+
+def audio_seconds(path):
+    """Seconds of an audio file from afinfo (or its test stub), else ffprobe; None when neither
+    answers or the file is not there."""
+    if not path.is_file():
+        return None
+    afinfo = os.environ.get("CREW_REPORT_AFINFO") or which_tool("afinfo")
+    if afinfo:
+        try:
+            r = subprocess.run([afinfo, str(path)], capture_output=True, text=True, timeout=30)
+            m = AFINFO_RE.search(r.stdout)
+            if m:
+                return float(m.group(1))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    ffprobe = which_tool("ffprobe")
+    if ffprobe:
+        try:
+            r = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
+                                "default=noprint_wrappers=1:nokey=1", str(path)],
+                               capture_output=True, text=True, timeout=30)
+            return float(r.stdout.strip())
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    return None
+
+
+def recordings(c, start, stop, tz):
+    """({project: {'iv': [(a, b)], 'files', 'est', 'unresolved'}}, why nothing was read or ''). A note
+    belongs to a project when its `terms` match the title, file name or body (case-blind); the notes
+    of one `audio:` file are one recording of that project, ending at the earliest `recorded:` of
+    them. Counts only: nothing that names a note, a term or a file leaves this function."""
+    notes = c.get("notes")
+    if not notes:
+        return {}, "no `notes` folder in the config: recordings skipped"
+    root = Path(notes).expanduser()
+    if not root.is_dir():
+        return {}, "the `notes` folder is not found: recordings skipped"
+    pats = {n: term_regex(n, (p or {}).get("terms")) for n, p in c["projects"].items()}
+    pats = {n: p for n, p in pats.items() if p}
+    if not pats:
+        return {}, "no project has `terms`: recordings skipped"
+    horizon = stop + dt.timedelta(days=1)   # a recording ends where it is saved: later ones cannot reach the week
+    files = {n: {} for n in pats}   # project → audio: value → [recorded, size]
+    errs = []   # a folder launchd may not read (no grant) is counted, never silent
+    for dirpath, _dirs, names in os.walk(root, onerror=errs.append):
+        for fn in names:
+            if not fn.lower().endswith(".md"):
+                continue
+            fm, body = front_matter(os.path.join(dirpath, fn))
+            if not fm.get("audio") or not fm.get("recorded"):
+                continue
+            try:
+                rec = dt.datetime.strptime(fm["recorded"][:16], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                continue
+            if not (start < rec < horizon):
+                continue
+            hay = f"{fm.get('title', '')}\n{Path(fn).stem}\n{body}"
+            for n, pat in pats.items():
+                if pat.search(hay):
+                    cur = files[n].setdefault(fm["audio"], [rec, 0])
+                    cur[0] = min(cur[0], rec)
+                    cur[1] = max(cur[1], size_bytes(fm.get("size")))
+    secs, out = {}, {}
+    for n, fs in files.items():
+        items = []
+        for raw, (rec, size) in fs.items():
+            p = audio_path(c, raw)
+            if p not in secs:
+                secs[p] = audio_seconds(p)
+            d, how = secs[p], ""
+            if d is None and size > 0:
+                d, how = size * 8 / BITRATE, "est"
+            elif d is None:
+                d, how = 0.0, "unresolved"
+            items.append((rec, d, how))
+        # Two files can share a save minute (a copy artefact) and both are real talk: a file that
+        # would overlap a later one is moved back to end where that one begins, so none is lost.
+        items.sort(key=lambda x: x[0], reverse=True)
+        iv, cursor = [], None
+        for rec, d, how in items:
+            b = rec if cursor is None or rec <= cursor else cursor
+            a = b - dt.timedelta(seconds=d)
+            iv.append((a, b, how))
+            cursor = a
+        kept = [x for x in iv if (x[0] < stop and x[1] > start) or (x[0] == x[1] and start <= x[0] < stop)]
+        if kept:
+            out[n] = rec_entry(kept)
+    return out, (f"{plural(len(errs), 'folder')} under `notes` unreadable" if errs else "")
+
+
+def rec_entry(kept):
+    """A project's recordings from its kept (a, b, how) intervals: the counts follow the intervals,
+    so a replay's cut that drops a file drops its est. or unresolved mark too."""
+    return {"iv": [(a, b) for a, b, _ in kept], "marks": [h for _, _, h in kept], "files": len(kept),
+            "est": sum(1 for *_, h in kept if h == "est"), "unresolved": sum(1 for *_, h in kept if h == "unresolved")}
+
+
+# ---- measured reading (keel's heartbeats of a doc's course page) --------------------------------
+
+DRAIN_TIMEOUT = 300      # seconds keel gets: the design's worst case is 231 pins at under 1 s each
+DRAIN_STALE_HOURS = 6    # a newest row older than this is said
+MINUTE = dt.timedelta(minutes=1)
+
+
+def drain_reads():
+    """Ask keel to file the rooms' undrained heartbeats into reads.jsonl once, before the week is
+    counted. Returns (the report line for a drain that did not happen, '' when it did or was
+    skipped; the time it ran, or None). CREW_REPORT_NO_DRAIN=1 skips it. Never fatal: keel absent,
+    a keel without the subcommand (it is built in another step), a timeout or a failure are one
+    line each. It runs in an empty scratch folder: a keel without `sheep drain` reads "drain" as a
+    doc to deploy, resolved against the cwd, and an empty folder holds no such doc."""
+    if os.environ.get("CREW_REPORT_NO_DRAIN") == "1":
+        return "", None
+    keel = tool("keel")
+    if not keel:
+        return "drain: keel not found", None
+    try:
+        with tempfile.TemporaryDirectory(prefix="crew-report-drain-") as cwd:
+            r = subprocess.run([sys.executable, str(keel), "sheep", "drain"], capture_output=True, text=True, cwd=cwd,
+                               errors="replace", timeout=DRAIN_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return f"drain: failed — timed out after {DRAIN_TIMEOUT} s", None
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"drain: failed — {type(e).__name__}", None
+    if r.returncode:
+        why = next((ln.strip() for ln in (r.stderr + "\n" + r.stdout).splitlines() if ln.strip()), "")
+        return f"drain: failed — exit {r.returncode}" + (f": {why[:80]}" if why else ""), None
+    return "", dt.datetime.now(dt.timezone.utc)
+
+
+def utc(s):
+    """A heartbeat's `ts` as an aware datetime: the room's times end in Z and are UTC; a stamp with
+    no zone at all is read as UTC too, and a number as epoch seconds (keel's opens.jsonl writes its
+    `ts` that way, and reads.jsonl is filed like an open)."""
+    if isinstance(s, (int, float)) and not isinstance(s, bool):
+        try:
+            return dt.datetime.fromtimestamp(s, dt.timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    t = stamp(s)
+    return t.replace(tzinfo=dt.timezone.utc) if t is not None and t.tzinfo is None else t
+
+
+def read_files(c):
+    v = c.get("reads") or []
+    return [Path(x).expanduser() for x in ([v] if isinstance(v, str) else v)]
+
+
+def read_rows(c):
+    """([(ts, project, repo, doc, who)], files found, rows unreadable) over the `reads` files. Rows
+    are not deduped across files: two tabs, two files and a re-drained room all land in the union,
+    which counts a minute once."""
+    rows, found, bad = [], 0, 0
+    for f in read_files(c):
+        try:
+            fh = open(f, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        found += 1
+        with fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    d = None
+                t = utc(d.get("ts")) if isinstance(d, dict) else None
+                if t is None or not isinstance(d.get("repo"), str) or not isinstance(d.get("doc"), str):
+                    bad += 1
+                    continue
+                rows.append((t, project_of(c, d["repo"]), d["repo"], d["doc"], str(d.get("who") or "")))
+    return rows, found, bad
+
+
+def read_intervals(rows, gap):
+    """{project: {(repo, doc): [(a, b)]}} from rows [(ts, project, repo, doc, who)]: one run per
+    stretch of heartbeats no more than `gap` minutes apart, spanning [first - 1 min, last] since
+    each heartbeat says "active in the minute up to ts"."""
+    times = {}
+    for t, proj, repo, doc, _who in rows:
+        times.setdefault(proj, {}).setdefault((repo, doc), []).append(t)
+    return {proj: {k: [(a - MINUTE, b) for a, b in runs(ts, gap)] for k, ts in docs.items()}
+            for proj, docs in times.items()}
+
+
+def measured_reading(c, start, stop, until=None):
+    """The week's measured reading: {'iv': {project: [(a, b)]} (the viewer's, every doc of a project
+    in one list: the union happens in `minutes`), 'min': {project: minutes}, 'raw': minutes summed
+    per doc before the union, 'docs': {project: {doc paths with a heartbeat in the week}},
+    'others': minutes of other viewers (None when `viewer` is empty), 'viewers': distinct names in
+    the week, 'newest': the newest row's time in the files whatever its week, 'files', 'bad'}."""
+    rows, files, bad = read_rows(c)
+    newest = max((r[0] for r in rows), default=None)
+    gap = c["read_gap_minutes"]
+    # A run reaching across Sunday midnight is joined first and split by the clip, as a prompt gap
+    # is: rows up to one gap past the week's end stay. A replay's cut drops what was filed after it.
+    horizon = until if until and until <= stop else stop + dt.timedelta(minutes=gap)
+    rows = [r for r in rows if r[0] <= horizon]
+    viewer = c.get("viewer") or ""
+    mine = [r for r in rows if not viewer or r[4] == viewer]
+    others = [r for r in rows if viewer and r[4] != viewer]
+    iv, mins, raw, docs = {}, {}, 0.0, {}
+    for proj, per_doc in read_intervals(mine, gap).items():
+        flat = [x for v in per_doc.values() for x in v]
+        m = minutes(flat, start, stop)
+        if m <= 0:
+            continue
+        iv[proj], mins[proj] = flat, m
+        raw += sum(minutes(v, start, stop) for v in per_doc.values())
+    for t, proj, repo, doc, _who in mine:
+        if t > start and t - MINUTE < stop:
+            docs.setdefault(proj, set()).add((os.path.realpath(repo), doc))
+    # Docs whose page was loaded in the week (keel's opens.jsonl beside each reads file) but never
+    # heartbeat: a page deployed before the heartbeat, or heartbeats refused (the design's G6).
+    opened, nopens = {}, 0
+    for f in read_files(c):
+        try:
+            fh = open(f.with_name("opens.jsonl"), encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        nopens += 1
+        with fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                t = utc(d.get("ts")) if isinstance(d, dict) else None
+                if t is None or not (start <= t < stop) or not isinstance(d.get("repo"), str) or not isinstance(d.get("doc"), str):
+                    continue
+                if viewer and d.get("who") and d["who"] != viewer:
+                    continue
+                opened.setdefault(project_of(c, d["repo"]), set()).add((os.path.realpath(d["repo"]), d["doc"]))
+    unread = {proj: len(v - docs.get(proj, set())) for proj, v in opened.items()}
+    omin = None
+    if viewer:
+        omin = sum(minutes([x for v in per_doc.values() for x in v], start, stop)
+                   for per_doc in read_intervals(others, gap).values())
+    return {"iv": iv, "min": mins, "raw": raw, "docs": docs, "others": omin,
+            "viewers": len({r[4] for r in rows if r[0] > start and r[0] - MINUTE < stop}),
+            "newest": newest, "files": files, "bad": bad, "opens": nopens, "unread": {k: v for k, v in unread.items() if v}}
+
+
+# ---- estimated reading (docs the project's branches added; reference, never in the total) ------
+
+CHROME_APP = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+DOC_EXT = (".md", ".html", ".htm")
+
+
+def glob_re(g):
+    """A path glob as a regex: `*` stays inside a segment, `**` crosses them, `**/` may be empty."""
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif g.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif g[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif g[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(g[i]), i + 1
+    return re.compile(out)
+
+
+def excluded(path, globs):
+    """A glob without `/` matches the file's basename anywhere; one with `/` matches the whole path."""
+    base = path.rsplit("/", 1)[-1]
+    return any(glob_re(g).fullmatch(path if "/" in g else base) for g in globs)
+
+
+def git(repo, *args, timeout=60):
+    # The ceiling keeps a folder that is no repo from resolving to one above it.
+    env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(Path(repo).parent), LC_ALL="C")
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "-c", "core.quotepath=off", *args],
+                           capture_output=True, text=True, errors="replace", timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def added_docs(repo, start, stop):
+    """{path: author date} of the *.md/*.html/*.htm files any ref added with an author date in
+    [start, stop), or None when `repo` is no repo. `git log --since/--until` filters on the committer
+    date, so the window is widened by a week and the author date decides; a path added more than
+    once keeps its earliest date."""
+    out = git(repo, "log", "--all", "--diff-filter=A", "--name-only", "--format=@@%ad", "--date=iso-strict",
+              f"--since={(start - dt.timedelta(days=7)).isoformat()}", f"--until={(stop + dt.timedelta(days=7)).isoformat()}")
+    if out is None:
+        return None
+    found, when = {}, None
+    for line in out.splitlines():
+        if line.startswith("@@"):
+            when = stamp(line[2:].strip())
+        elif line.strip() and when and line.lower().endswith(DOC_EXT):
+            if line not in found or when < found[line]:
+                found[line] = when
+    return {p: t for p, t in found.items() if start <= t < stop}
+
+
+def doc_text(repo, path):
+    """The file at the newest ref holding it (the add-commit is often an early draft). Every filter
+    letter but D: the newest commit touching a path may be its deletion, which holds no text."""
+    sha = (git(repo, "log", "-1", "--all", "--diff-filter=AMCRTUXB", "--format=%H", "--", path) or "").strip()
+    return git(repo, "show", f"{sha}:{path}") if sha else None
+
+
+def docs_text(repo, paths, start):
+    """{path: text} for the docs of one repo, in two git calls instead of two per doc (G5: a week's
+    pass made 756 of them). One log lists, newest first, what each commit since the week's start
+    (less the author/committer slack) touched; the first non-deleting commit that touches a path
+    is the newest ref holding it, as `doc_text` finds it per path. One `cat-file --batch` then
+    reads every `<commit>:<path>`. A path the log misses falls back to `doc_text`."""
+    paths = list(paths)
+    if not paths:
+        return {}
+    want, newest = set(paths), {}
+    out = git(repo, "log", "--all", "--no-renames", "--name-status", "--format=@@%H",
+              f"--since={(start - dt.timedelta(days=7)).isoformat()}", timeout=120)
+    sha = None
+    for line in (out or "").splitlines():
+        if line.startswith("@@"):
+            sha = line[2:].strip()
+        elif sha and "\t" in line:
+            st, _, name = line.partition("\t")
+            if st != "D" and name in want and name not in newest:
+                newest[name] = sha
+    text = {}
+    if newest:
+        names = sorted(newest)
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "-c", "core.quotepath=off", "cat-file", "--batch"],
+                               input="".join(f"{newest[n]}:{n}\n" for n in names).encode("utf-8", "replace"),
+                               capture_output=True, timeout=120,
+                               env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(Path(repo).parent), LC_ALL="C"))
+            data, i = r.stdout, 0
+            for n in names:
+                eol = data.find(b"\n", i)
+                if eol < 0:
+                    break
+                head = data[i:eol].split()
+                if len(head) == 3 and head[1] == b"blob":
+                    size = int(head[2])
+                    text[n] = data[eol + 1:eol + 1 + size].decode("utf-8", "replace")
+                    i = eol + 1 + size + 1
+                else:   # "<spec> missing": no body follows
+                    i = eol + 1
+        except (OSError, subprocess.SubprocessError, ValueError):
+            text = {}
+    for n in paths:
+        if n not in text:
+            t = doc_text(repo, n)
+            if t is not None:
+                text[n] = t
+    return text
+
+
+LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)|\[([^\]]*)\]\[[^\]]*\]")
+URL_RE = re.compile(r"<?(?:https?|file|mailto):[^\s>)]*>?|<[^>]+>")
+
+
+def tokens(s):
+    return sum(1 for t in s.split() if re.search(r"[^\W_]", t))
+
+
+def md_words(text):
+    """Weighted words of a Markdown file: prose 1.0, fenced code and table rows 0.5; link text kept,
+    URLs, tags and markup characters dropped."""
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    total, fence = 0.0, None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"(`{3,}|~{3,})", s)
+        if m:
+            if fence is None:
+                fence = m.group(1)[0]
+            elif m.group(1)[0] == fence:
+                fence = None
+            continue
+        if fence:
+            total += 0.5 * tokens(s)
+            continue
+        s = LINK_RE.sub(lambda g: " " + (g.group(1) or g.group(2) or "") + " ", s)
+        s = URL_RE.sub(" ", s)
+        s = re.sub(r"^(?:>\s*)*(?:[-*+]|\d+[.)])\s+", "", s)
+        s = re.sub(r"[`*_#>|~=\\]", " ", s)
+        total += (0.5 if line.lstrip().startswith("|") else 1.0) * tokens(s)
+    return total
+
+
+class _Text(HTMLParser):
+    """Visible text of an HTML document, weighted: inside <pre> or a table row 0.5, else 1.0. HTML5
+    lets `</head>` and `</tr>` go unwritten: <body> ends the head, and a row ends at the next row
+    or the table's end, so neither leaves the rest of the page skipped or halved."""
+    SKIP = {"script", "style", "template", "noscript", "svg"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.total, self.skip, self.pre, self.row, self.head = 0.0, 0, 0, False, False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+        elif tag == "head":
+            self.head = True
+        elif tag == "body":
+            self.head = False
+        elif tag == "pre":
+            self.pre += 1
+        elif tag == "tr":
+            self.row = True
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag == "head":
+            self.head = False
+        elif tag == "pre":
+            self.pre = max(0, self.pre - 1)
+        elif tag in ("tr", "table"):
+            self.row = False
+
+    def handle_data(self, data):
+        if not self.skip and not self.head:
+            self.total += (0.5 if self.pre or self.row else 1.0) * tokens(data)
+
+
+def html_words(markup):
+    p = _Text()
+    p.feed(markup)
+    p.close()
+    return p.total
+
+
+def chrome_path(c):
+    """`chrome` from the config (set but missing: none, files are read statically), else the
+    standard macOS app, else a Chrome on PATH."""
+    if c.get("chrome"):
+        p = os.path.expanduser(c["chrome"])
+        return p if os.access(p, os.X_OK) else None
+    if os.access(CHROME_APP, os.X_OK):
+        return CHROME_APP
+    return shutil.which("google-chrome") or shutil.which("chromium")
+
+
+def render_html(chrome, text):
+    """The DOM after the page's scripts ran (5 s of virtual time), from a scratch copy so nothing
+    is written beside the repo; None when Chrome fails."""
+    # mkdtemp and an rmtree that ignores errors, not TemporaryDirectory: a Chrome helper that
+    # outlives a timeout still writes into the profile, and Python 3.9's cleanup would raise
+    # through the render pool and lose the whole report.
+    d = tempfile.mkdtemp(prefix="crew-report-")
+    try:
+        f = Path(d) / "doc.html"
+        f.write_text(text, encoding="utf-8")
+        r = subprocess.run([chrome, "--headless", "--disable-gpu", "--no-first-run", f"--user-data-dir={d}/profile",
+                            "--virtual-time-budget=5000", "--dump-dom", f.as_uri()],
+                           capture_output=True, text=True, errors="replace", timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return r.stdout if r.returncode == 0 and r.stdout.strip() else None
+
+
+def project_repos(c, name):
+    root = Path(c["projects_root"]).expanduser()
+    repos = ((c["projects"].get(name) or {}).get("repos")) or [name]
+    return [root / Path(r).expanduser() for r in repos]   # an absolute path stays itself
+
+
+# ---- the render cache (G5) -----------------------------------------------------------------------
+
+CACHE_FILE = "render-v2.json"   # the rule's version is in the name: v2, an unclosed <head>/<tr> is read
+RENDER_WORKERS = 4              # headless Chrome instances at once, each with its own profile dir
+
+
+class RenderCache:
+    """Word counts of rendered HTML docs, keyed by the sha256 of the doc's text, so a doc is rendered
+    once however many weeks and refs hold it. The file holds hashes and numbers only: no text, title
+    or path. Best effort: a folder that cannot be read or written means no cache, never an error.
+    `cache` in the config names the folder; "" turns it off."""
+
+    def __init__(self, c):
+        d = c.get("cache")
+        self.file = Path(d).expanduser() / CACHE_FILE if d else None
+        self.words, self.dirty = {}, False
+        if self.file:
+            try:
+                data = json.loads(self.file.read_text(encoding="utf-8"))
+                self.words = {k: float(v) for k, v in data.items()} if isinstance(data, dict) else {}
+            except (OSError, ValueError, TypeError):
+                self.words = {}
+
+    def save(self):
+        if not (self.file and self.dirty):
+            return
+        try:
+            self.file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.file.with_name(self.file.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(self.words, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, self.file)
+        except OSError:
+            pass
+
+
+def text_key(text):
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def rendered_words(chrome, texts, cache):
+    """{key: words or None} for each HTML text {key: text}: from the cache, else rendered by Chrome
+    (RENDER_WORKERS at a time) and remembered. None where Chrome failed: the caller reads that doc
+    statically, and a failure is never cached."""
+    out, todo = {}, []
+    for k in texts:
+        if k in cache.words:
+            out[k] = cache.words[k]
+        else:
+            todo.append(k)
+    if todo:
+        with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as pool:
+            for k, dom in zip(todo, pool.map(lambda k: render_html(chrome, texts[k]), todo)):
+                out[k] = html_words(dom) if dom else None
+                if dom:
+                    cache.words[k] = out[k]
+                    cache.dirty = True
+    return out
+
+
+def reading(c, names, start, stop):
+    """{project: {'docs', 'minutes', 'rendered', 'static'}} over the docs the project's repos' refs
+    added in the week, minus the excludes. Only a project with a readable repo gets an entry."""
+    wpm = float(c.get("words_per_minute") or 200)
+    chrome = chrome_path(c)
+    cache = RenderCache(c)
+    found, htmls = {}, {}
+    for name in sorted(names):
+        rd = (c["projects"].get(name) or {}).get("reading") or {}
+        globs = list(c.get("exclude") or []) + list(rd.get("exclude") or [])
+        include = list(rd.get("include") or [])   # back in, over any exclude
+        r = {"docs": 0, "words": 0.0, "rendered": 0, "static": 0, "paths": set()}
+        ok, pending = False, []
+        for repo in project_repos(c, name):
+            if not repo.is_dir():
+                continue
+            docs = added_docs(repo, start, stop)
+            if docs is None:
+                continue
+            ok = True
+            want = [p for p in sorted(docs) if not excluded(p, globs) or excluded(p, include)]
+            for path, text in sorted(docs_text(repo, want, start).items()):
+                # Two repos of a project may each add docs/plan.md: both are docs, told apart by repo.
+                r["paths"].add((os.path.realpath(repo), path))
+                r["docs"] += 1
+                if path.lower().endswith(".md"):
+                    r["words"] += md_words(text)
+                else:
+                    pending.append(text)
+        if ok:
+            found[name] = (r, pending)
+            if chrome:
+                htmls.update((text_key(t), t) for t in pending)
+    done = rendered_words(chrome, htmls, cache) if htmls else {}
+    cache.save()
+    out = {}
+    for name, (r, pending) in found.items():
+        for text in pending:
+            w = done.get(text_key(text)) if chrome else None
+            r["rendered" if w is not None else "static"] += 1
+            r["words"] += w if w is not None else html_words(text)
+        r["minutes"] = r.pop("words") / wpm
+        out[name] = r
+    return out
+
+
+# ---- the report --------------------------------------------------------------------------------
+
+def hm(m):
+    m = int(round(m))
+    return f"{m // 60} h {m % 60:02d} min" if m >= 60 else f"{m} min"
+
+
+def plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def reading_lines(c, mr, rows, drain, now, tz):
+    """The lines under the table about measured reading: what was read and from where, the raw
+    minutes and how much of them the prompts and recordings already held, other viewers, opens
+    without a heartbeat, the drain, what is not measured. Counts only: no doc path, branch or
+    name. `drain` is drain_reads()'s (note, time it ran or None)."""
+    L = []
+    drain_note, drained = drain
+    if drain_note:
+        L.append(drain_note + ".")
+    if not mr["files"]:
+        L.append("Measured reading: no reads file found (keel has not drained a course page's heartbeats here yet).")
+    else:
+        # What the reading overlapped of the prompts-and-recordings union at the main gap, per project.
+        inside = sum(r[7] + (r[6] or 0) - r[4][c["gap_minutes"]] for r in rows if r[6])
+        L.append(f"reading raw: {hm(mr['raw'])} before overlap removal (each doc's runs summed); prompts and recordings "
+                 f"already held {hm(max(inside, 0))} of the reading, counted once in the total. Reading is joined at gaps up to {c['read_gap_minutes']:g} min; the "
+                 f"{' / '.join(str(g) for g in c['sensitivity'])} columns move the prompt gap only.")
+        if c.get("viewer"):
+            L.append(f"other viewers: {hm(mr['others'])}, never charged.")
+        else:
+            L.append(f"Viewers: every name is charged ({mr['viewers']} distinct this week); set `viewer` to charge one.")
+        if mr["bad"]:
+            L.append(f"Measured reading: {plural(mr['bad'], 'unreadable row')} skipped.")
+    if mr["unread"] and mr["files"]:   # before keel files any heartbeat, every open would be listed
+        L.append("Opened without a heartbeat (docs): " + ", ".join(f"{p} {n}" for p, n in sorted(mr["unread"].items())) + ".")
+    if c.get("viewer") and mr["files"] and not mr["min"] and mr["unread"]:
+        # The name a heartbeat carries may have changed: say how many names were seen, never which.
+        L.append(f"`viewer` read nothing while docs were opened; {plural(mr['viewers'], 'distinct name')} in the week's rows.")
+    if drained:
+        L.append(f"drained: {drained.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')}")
+    if mr["newest"]:
+        L.append(f"newest heartbeat: {mr['newest'].astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')}")
+        age = (now - mr["newest"]).total_seconds() / 3600
+        if not drained and age > DRAIN_STALE_HOURS:
+            L.append(f"No drain this run and the newest heartbeat is {age:.0f} h old (over {DRAIN_STALE_HOURS} h): reading since may not be in this file.")
+    elif mr["files"]:
+        L.append("newest heartbeat: no rows yet")
+    L.append("Not measured: reading on GitHub or in an editor, comments typed into the page, docs with no course page, "
+             "and a course re-read after its branch landed and its pin was pruned (about 14 days).")
+    return L
+
+
+def report(c, week, until=None, drain=("", None), this_host=False):
+    tz = zone(c)
+    start, end = week_bounds(week, tz)
+    stop = min(end, until) if until else end
+    roots, files, by_project, skipped, firsts = collect(c, start, stop, dt.timedelta(minutes=max([c["gap_minutes"]] + list(c["sensitivity"]))))
+    cost = cost_by_project(c, start, end, this_host)
+    rec, rec_note = recordings(c, start, stop, tz)
+    if until:   # a replay's cut: a recording saved after it did not exist yet
+        rec = {k: rec_entry([(a, b, h) for (a, b), h in zip(v["iv"], v["marks"]) if b < until]) for k, v in rec.items()}
+        rec = {k: v for k, v in rec.items() if v["iv"]}
+    docs = reading(c, set(by_project) | set(c["projects"]), start, stop)
+    mr = measured_reading(c, start, stop, until)
+    gaps = [c["gap_minutes"]] + list(c["sensitivity"])
+    rows = []
+    for proj in set(by_project) | set(rec) | set(docs) | set(mr["iv"]):
+        times = by_project.get(proj, [])
+        if until:   # a replay's cut: nothing typed after it exists (a week's end only splits)
+            times = [t for t in times if t < until]
+        n = sum(1 for t in times if start <= t < stop)
+        riv = rec.get(proj, {}).get("iv", [])
+        mriv = mr["iv"].get(proj, [])
+        pmin = minutes(runs(times, c["gap_minutes"]), start, stop)
+        rmin = minutes(riv, start, stop)
+        # Prompts, recordings and measured reading are one union: talk or reading while a session
+        # ran is counted once. The sensitivity gaps move the prompts' gap only, never the reading's.
+        mins = {g: minutes(runs(times, g) + riv + mriv, start, stop) for g in gaps}
+        est = docs[proj]["minutes"] if proj in docs else None
+        if n == 0 and not riv and not mriv and not (docs.get(proj) or {}).get("docs"):
+            continue
+        rows.append((proj, n, pmin, rmin, mins, est, mr["min"].get(proj),
+                     minutes(runs(times, c["gap_minutes"]) + riv, start, stop)))
+    rows.sort(key=lambda r: (-r[4][c["gap_minutes"]], r[0]))
+    now = dt.datetime.now(tz)
+    home = os.path.realpath(Path.home())
+    L = [f"# crew-report — {week}",
+         "",
+         f"{start.date()} to {(end - dt.timedelta(days=1)).date()}, zone {start.tzname()}"
+         + (f", cut at {stop.strftime('%Y-%m-%d %H:%M')}" if stop < end else "") + ".",
+         f"Minutes cover this Mac ({common.host_name()}); login dirs read: "
+         + ", ".join(os.path.realpath(r).replace(home, "~") for r in roots) + f"; {len(files)} transcript files.",
+         ("Cost covers this Mac only (--this-host)." if this_host else "Cost covers every host usage-report collects.")
+         if cost is not None else "Cost: usage-report not found.",
+         "",
+         f"| project | prompts | recordings | reading | total (gap ≤ {c['gap_minutes']}, reading ≤ {c['read_gap_minutes']:g}) | "
+         + " / ".join(str(g) for g in c["sensitivity"]) + " min | est. reading | cost |",
+         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    tot = {g: sum(r[4][g] for r in rows) for g in gaps}
+    for proj, n, pmin, rmin, mins, est, mread, _pr in rows:
+        cc = common.cost_text(cost[proj]) if cost and proj in cost else EM
+        r = rec.get(proj)
+        L.append(f"| {proj} | {n} · {hm(pmin)} | " + (f"{r['files']} · {hm(rmin)}" if r else EM) + f" | {hm(mread) if mread else EM} | {hm(mins[c['gap_minutes']])} | "
+                 + " / ".join(hm(mins[g]) for g in c["sensitivity"]) + " | " + (hm(est) if est is not None else EM) + f" | {cc} |")
+    L.append(f"| **all** | {sum(r[1] for r in rows)} | "
+             + (f"{sum(rec[r[0]]['files'] for r in rows if r[0] in rec)} · {hm(sum(r[3] for r in rows))}" if rec else EM) + f" | {hm(sum(r[6] for r in rows if r[6])) if mr['min'] else EM} | **{hm(tot[c['gap_minutes']])}** | "
+             + " / ".join(hm(tot[g]) for g in c["sensitivity"]) + " | "
+             + (hm(sum(r[5] for r in rows if r[5] is not None)) if docs else EM) + " | "
+             + (common.cost_text(sum(cost.values())) if cost else EM) + " |")
+    L += ["",
+          "Not counted: " + ", ".join(f"{k} {v}" for k, v in skipped.items()) + ".",
+          "Sessions by first prompt: " + (", ".join(f"{k} {v}" for k, v in sorted(firsts.items(), key=lambda x: -x[1])[:5]) or "none") + "."]
+    if rec_note and not rec:
+        L.append(f"Recordings: {rec_note}.")
+    elif not rec:
+        L.append("Recordings: none in the week.")
+    else:
+        parts = []
+        for p, v in sorted(rec.items()):
+            s = f"{p} {plural(v['files'], 'file')}"
+            if v["est"]:
+                s += f", {v['est']} est. from size"
+            if v["unresolved"]:
+                s += f", {plural(v['unresolved'], 'file')} unresolved"
+            parts.append(s)
+        L.append("Recordings counted: " + "; ".join(parts) + ". Total = prompts, recordings and reading as one union, overlap counted once."
+                 + (f" {rec_note[0].upper()}{rec_note[1:]}." if rec_note else ""))
+    shown = sorted((r[0], docs[r[0]]) for r in rows if r[0] in docs)
+    if shown:
+        L.append("Estimated reading is for reference, by the docs the branches added (author date), never in the total:")
+        for p, d in shown:
+            html = d["rendered"] + d["static"]
+            L.append(f"- {p} — docs added: {d['docs']}" + (f"; html: {d['rendered']} rendered, {d['static']} static" if html else "")
+                     + f"; with a course: {len(d['paths'] & mr['docs'].get(p, set()))}")
+    L += reading_lines(c, mr, rows, drain, now, tz)
+    # Prompts, not rows: recordings, reading and docs make rows of their own and would hide it.
+    if not sum(r[1] for r in rows) and any(skipped.values()):
+        L.append("Warning: no typed prompt found while others were — check the typed-prompt rule against this Claude Code version.")
+    if "_file" not in c:
+        L.append(f"No config at {os.path.realpath(config_path()).replace(home, '~')}: defaults, prompts only.")
+    L.append("")
+    return "\n".join(L)
+
+
+# ---- publish (lighthouse's tool, optional) -------------------------------------------------------
+
+PUBLISH_NOTE_ABSENT = "publish: lighthouse not installed — local only"
+
+
+def publish_target(c):
+    """(scope, tool) for `publish`: ("", None) when the report stays local; (scope, None) when a scope
+    is set but lighthouse's publish tool is not found. A scope that is neither vault nor data is
+    said and ignored, like usage-report's."""
+    scope = c.get("publish") or ""
+    if not scope:
+        return "", None
+    if scope not in ("vault", "data"):
+        print(f"crew-report: publish: '{scope}' is not a scope (vault or data); not published")
+        return "", None
+    return scope, tool("publish")
+
+
+def publish(scope, tool, files):
+    """Hand the written files to the publish tool (the way usage-report does: its scope flag, the
+    paths, one line per file in this job's log). Never fatal: a failure is one line, the local files
+    stand. Returns the tool's exit code, or None when it could not run."""
+    try:
+        r = subprocess.run([sys.executable, str(tool), "--" + scope] + [str(f) for f in files],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"crew-report: publish FAILED ({type(e).__name__}) — local only")
+        return None
+    for ln in (r.stdout + r.stderr).splitlines():
+        print(f"  {ln}")
+    if r.returncode:
+        print(f"crew-report: publish FAILED (exit {r.returncode}) — local only")
+    return r.returncode
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="crew-report", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    w = sub.add_parser("week", help="one ISO week's report")
+    w.add_argument("--week", help="YYYY-Www; default the last complete week")
+    w.add_argument("--until", help="ISO time: count nothing after it (a replay's cut)")
+    w.add_argument("--write", action="store_true", help="write <reports>/<week>.md, and latest.md for the last complete week")
+    w.add_argument("--this-host", action="store_true", help="the cost column for this Mac's calls only, as the minutes are")
+    w.add_argument("--publish", action="store_true",
+                   help="with --write: hand the files to the publish tool; the weekly job's flag, since a "
+                        "published file has one publisher, never a hand run")
+    a = ap.parse_args(argv)
+    if a.write and a.until:
+        ap.error("--until is a replay: it prints, it never writes over a week's file")
+    if a.publish and not a.write:
+        ap.error("--publish goes with --write")
+    c = load_config()
+    tz = zone(c)
+    week = a.week or last_complete_week(tz)
+    if not re.fullmatch(r"\d{4}-W\d{2}", week):
+        ap.error("--week takes YYYY-Www")
+    until = None
+    if a.until:
+        until = dt.datetime.fromisoformat(a.until)
+        until = until if until.tzinfo else until.replace(tzinfo=tz)
+    text = report(c, week, until, drain_reads(), a.this_host)
+    if not a.write:
+        sys.stdout.write(text)
+        return 0
+    scope, pub = publish_target(c) if a.publish else ("", None)
+    if c.get("publish") and not a.publish:
+        print("crew-report: not published — the weekly job publishes (--publish), a hand run never does")
+    if scope and not pub:   # said in the report itself, so a reader of the file knows it stayed local
+        text = text.rstrip("\n") + "\n" + PUBLISH_NOTE_ABSENT + "\n"
+    out = Path(c["reports"]).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+    written = [out / f"{week}.md"]
+    # latest.md is the last complete week's: a backfill of an older one leaves it alone.
+    if week == last_complete_week(tz):
+        written.append(out / "latest.md")
+    for f in written:
+        f.write_text(text, encoding="utf-8")
+    print(f"crew-report: wrote {', '.join(str(f) for f in written)}")
+    if scope and pub:
+        publish(scope, pub, written)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
