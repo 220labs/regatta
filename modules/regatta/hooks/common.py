@@ -920,9 +920,15 @@ WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
 # 40 idle minutes.
 DECLARED_LINE = ADDRESS + "THIS SESSION IS DONE — IT LANDS BY ITSELF."
+# The rename's reader step (the overlay's wharf-rename design, M3): the line /autofinish says once
+# the writers switch, beside the one it says today. Every reader takes both until the aliases are
+# dropped — a session started before the switch still ends on the old line — and compares with
+# `in DECLARED_LINES`, never `== DECLARED_LINE`. Both literals on one line: the rename's map script
+# keeps a line holding both words, so a later map run cannot make it (new, new).
+DECLARED_LINES = (ADDRESS + "THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.", ADDRESS + "THIS SESSION IS DONE — IT LANDS BY ITSELF.")
 CLOSING = (
     ("done", "|".join(re.escape(x) for x in FINISH_LINES)),                       # /finish, /evacuate
-    ("done", re.escape(DECLARED_LINE)),                                            # /autofinish
+    ("done", "|".join(re.escape(x) for x in DECLARED_LINES)),                     # /autofinish
     ("done", _TO + r"THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION\. THE WORK CONTINUES "
              r"(IN THE NEW TAB|IN TERMINAL|IN ITS RUNNING SESSION|IN \S+'S WINDOW)\."),  # /pickup
     ("done", _TO + r"THIS WAS ONLY THE MOVE — CLOSE THIS SESSION\. THE WORK CONTINUES "
@@ -1134,8 +1140,24 @@ def autofinish_armed():
 # prose (widen review, 2026-10-07). Fields: iso, repo, branch, outcome, " gate=<g>" or "",
 # " pr=#<n>" or "", session, tip, rule, by, the first line kept, "; <notes>" or "".
 RUN_END = "%s run %s %s %s%s%s session=%s tip=%s rule=%s by=%s account=%s — %s%s"
-# account= since the account pool (2026-10-08): optional, so the lines before it still count
-RUN_LANDED = re.compile(r"^(\S+) run (\S+) (\S+) landed(?: gate=\S+)?(?: pr=#\S+)? session=(\S+) tip=\S+ rule=\S+ by=(\S+)(?: account=\S+)? —")
+# account= since the account pool (2026-10-08): optional, so the lines before it still count.
+# `landed` until the rename switches the writer to `launched`; both forever: the landing door
+# counts the week's old lines beside the new (the wharf-rename design, M8, risk R2).
+RUN_LAUNCHED = re.compile(r"^(\S+) run (\S+) (\S+) (?:landed|launched)(?: gate=\S+)?(?: pr=#\S+)? session=(\S+) tip=\S+ rule=\S+ by=(\S+)(?: account=\S+)? —")
+# The old name, for an overlay whose callers still say RUN_LANDED (not RUN_LAUNCHED): the core
+# lands first (the overlay's main imports it before its reader step says RUN_LAUNCHED). It goes
+# once no overlay caller says RUN_LANDED instead of RUN_LAUNCHED (S8).
+RUN_LANDED = RUN_LAUNCHED
+# An ended run's outcome that merged its branch (autofinish.json's `outcome`, the `autofinished`
+# lines, RUN_END's): `landed` until the writers switch, `launched` after; every reader takes both
+# forever (M7).
+LAUNCHED_OUTCOMES = ("launched", "landed")
+# The runner's gate for a start refused before any session: nothing ran. `not-launched` until the
+# start word changed (2026-10-17); read both forever — old run records and dated logs keep the old
+# word. One home for the lander, its runner and the stall reader.
+REFUSED = "refused"
+NOT_LAUNCHED = "not-launched"
+REFUSED_GATES = (REFUSED, NOT_LAUNCHED)
 
 
 # Rule L (the owner, 2026-10-13: "If the code is deployed already, it should be landed ASAP"): a commit
@@ -1205,7 +1227,7 @@ def iso_clock(iso):
 def autofinish_outcome(rec):
     """What an ended run came to, in the words the prompt note uses, or None while it runs."""
     outcome = rec.get("outcome")
-    if outcome == "landed":
+    if outcome in LAUNCHED_OUTCOMES:
         return f"this branch landed as #{rec.get('pr') or '?'}"
     if outcome == "stopped":
         return f"autofinish stopped here at {rec.get('gate') or '?'}"
@@ -1227,7 +1249,7 @@ def autofinished(common_dir):
     out = []
     for raw in text.splitlines():
         parts = raw.split(" ", 3)
-        if len(parts) >= 3 and parts[1] in ("landed", "stopped", "never-started", "died"):
+        if len(parts) >= 3 and parts[1] in LAUNCHED_OUTCOMES + ("stopped", "never-started", "died"):
             out.append({"ts": parts[0], "outcome": parts[1], "branch": parts[2],
                         "detail": parts[3] if len(parts) > 3 else "", "raw": raw})
     return out
@@ -1236,7 +1258,7 @@ def autofinished(common_dir):
 def autofinished_phrase(e):
     """One ended run as a line for the owner: `claude/x landed as #12` / `claude/y stopped at G4: …` /
     `claude/z died before an outcome at 1a2b3c4: …`."""
-    if e["outcome"] == "landed":
+    if e["outcome"] in LAUNCHED_OUTCOMES:
         return f"{e['branch']} landed as {e['detail'] or '#?'}"
     if e["outcome"] == "stopped":
         return f"{e['branch']} stopped at {e['detail'] or '?'}"

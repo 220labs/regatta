@@ -11,6 +11,9 @@
   closed); with or without one, so is an unreadable key or a relative path key. `regatta check`
   reports them. Jev loads the core under a private name, never `import common`. One reader for the core
   and Jev (`config_read`), one projects folder (`common.PROJECTS`) and log folder (`LOG_DIR`).
+- The land→launch rename's readers take both words: `DECLARED_LINES`, `RUN_LAUNCHED` (with
+  `RUN_LANDED` kept as its old name: launched and landed lines alike), `LAUNCHED_OUTCOMES`,
+  `REFUSED`, `NOT_LAUNCHED`, `REFUSED_GATES`. No writer or message changes (landed stays, launched waits).
 
 ## 0.1.0 — 2026-10-17
 
