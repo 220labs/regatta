@@ -53,7 +53,7 @@ except j.JevError as e: print(e)'; }
 gref() { GATE_EXAMPLE_CLASSIFY_PROVIDER=jev gp 'try: g.classify("example.classify", {"s1": "a"}, "Q?", {"yes": "y", "no": "n"}, source="notes", approved={"anthropic": "x"})
 except g.GateError as e: print(e)'; }
 refusal() { "$@" 2>&1 | tail -1; }   # an importer's last line: the ImportError, when there is one
-check "$(py 'print(repr(common.ADDRESS), common.DECLARED_LINE)')" "'' THIS SESSION IS DONE — IT LANDS BY ITSELF." "no overlay, no keys: the closing lines address no one"
+check "$(py 'print(repr(common.ADDRESS), common.DECLARED_LINE)')" "'' THIS SESSION IS DONE — IT LAUNCHES BY ITSELF." "no overlay, no keys: the closing lines address no one"
 check "$(py 'print(common.closing_kind(common.FINISH_LINES[0]), common.closing_kind(common.WAITING_PREFIX + "D1"))')" "done waiting" "  and still read as closing lines"
 check "$(py 'print(common.OVERRIDE_BY, common.ORCA_ROW["repos"]["deny"])')" "owner []" "  the override marker is owner's, no repo denied an Orca login"
 check "$(jp 'print(j.GUARDED, j.WHO)')" "() the owner" "  jev guards nothing and asks the owner"
@@ -84,11 +84,12 @@ check "$(refusal py 'pass' | grep -o 'regatta/projects [^—]*')" "regatta/proje
 printf '\xef\xbb\xbf\n  Kapitän\n' > "$T/config/regatta/owner"; printf 'notes\n\nlogbook\n' > "$T/config/regatta/guarded"
 printf 'logbook\n' > "$T/config/regatta/orca-deny"; printf '~%s\n' /logs > "$T/config/regatta/log-dir"; printf '~%s\n' /work > "$T/config/regatta/projects"
 check "$(py 'print(common.config_line("regatta/owner"))') $(jp 'print(j.WHO)')" "Kapitän Kapitän" "one reader: the first non-blank line, the BOM dropped, for the core and jev alike"
-check "$(py 'print(common.DECLARED_LINE)')" "KAPITÄN, THIS SESSION IS DONE — IT LANDS BY ITSELF." "regatta/owner: the closing lines address it, upper-cased"
-check "$(py 'print(common.closing_kind("KAPITÄN, THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION. THE WORK CONTINUES IN THE NEW TAB."), common.closing_kind("THIS SESSION IS DONE — IT LANDS BY ITSELF."))')" "done None" "  every pattern opens with it; the unaddressed line is none"
+check "$(py 'print(common.DECLARED_LINE)')" "KAPITÄN, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF." "regatta/owner: the closing lines address it, upper-cased"
+check "$(py 'print(common.closing_kind("KAPITÄN, THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION. THE WORK CONTINUES IN THE NEW TAB."), common.closing_kind("THIS SESSION IS DONE — IT LANDS BY ITSELF."), common.closing_kind("THIS SESSION IS DONE — IT LAUNCHES BY ITSELF."))')" "done None None" "  every pattern opens with it; an unaddressed line, old or new, is none"
 check "$(py 'print(common.ending("x\nKAPITÄN, THIS SESSION IS DUN")[2])')" "('unknown', 'KAPITÄN, THIS SESSION IS DUN')" "  an addressed line that is no closing line: unknown"
 check "$(py 'print(common.DECLARED_LINES[0]); print(common.DECLARED_LINE in common.DECLARED_LINES)')" "KAPITÄN, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.
 True" "the rename's declared lines: the new one addressed too, the old one still among them"
+check "$(py 'print(common.DECLARED_LINE == common.DECLARED_LINES[0], common.DECLARED_LINES[1])')" "True KAPITÄN, THIS SESSION IS DONE — IT LANDS BY ITSELF." "  the line said is the new one (S4); the old one is still read until S8"
 check "$(py 'print(common.closing_kind("KAPITÄN, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF."), common.closing_kind("KAPITÄN, THIS SESSION IS DONE — IT LANDS BY ITSELF."))')" "done done" "  both read as done"
 check "$(py 'print(bool(common.ASK_EXEMPT_RE.search("the next step waits for kapitän to start it")))')" "True" "  the chain-depth line names it, any case"
 mkdir -p "$T/af"; printf '{"by": "kapitän"}' > "$T/af/autofinish"
@@ -104,7 +105,7 @@ JEV_LOG= jp 'j._log({"t": "jev"})'; GATE_LOG= gp 'g._log({"t": "gate"})'
 check "$(cat "$H/logs/jev.jsonl" "$H/logs/gate.jsonl" 2>&1 | tr '\n' ' ')" '{"t": "jev"} {"t": "gate"} ' "  jev's and the gate's lines land there, an empty JEV_LOG or GATE_LOG no override"
 check "$(sp 'print(s.PROJECTS)') $(py 'print(common.PROJECTS)')" "$H/work $H/work" "regatta/projects: one projects folder, ~ the home folder"
 printf 'O’Hara\n' > "$T/config/regatta/owner"; printf '100%%\n' > "$T/config/regatta/guarded"
-check "$(py 'print(common.ADDRESS, common.closing_kind("O’HARA, THIS SESSION IS DONE — IT LANDS BY ITSELF."))')" "O'HARA,  done" "a typographic apostrophe in the name: straight, as bare() reads a line"
+check "$(py 'print(common.ADDRESS, common.closing_kind("O’HARA, THIS SESSION IS DONE — IT LANDS BY ITSELF."), common.closing_kind("O’HARA, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF."))')" "O'HARA,  done done" "a typographic apostrophe in the name: straight, as bare() reads a line"
 "$J" ask --help > "$T/help.out" 2>&1; check "$?:$(grep -c '100%' "$T/help.out")" "0:1" "  jev's --approved help survives a % in a configured name"
 # jev loads the core under a private name: a caller's own `common` is never replaced, nor found by jev.
 mkdir -p "$T/own"; printf 'MINE = 1\n' > "$T/own/common.py"
@@ -240,7 +241,7 @@ out=$(REGATTA_CONFIG="$T/eh" python3 -I -c "import sys; sys.path.insert(0, '$T/o
 check "$out" "ImportError: regatta: core not found: $T/eh/home is empty" "  an empty home file: one ImportError line saying so"
 printf 'Kapitän\n' > "$T/config/regatta/owner"   # its own owner, a non-ASCII one, put back empty after
 out=$(LC_ALL=en_US.ISO8859-1 LANG=en_US.ISO8859-1 python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(ascii(common.DECLARED_LINE))" 2>&1)
-check "$out" "'KAPIT\\xc4N, THIS SESSION IS DONE \\u2014 IT LANDS BY ITSELF.'" "  a non-UTF-8 locale: the core and its config decode as an import would"
+check "$out" "'KAPIT\\xc4N, THIS SESSION IS DONE \\u2014 IT LAUNCHES BY ITSELF.'" "  a non-UTF-8 locale: the core and its config decode as an import would"
 : > "$T/config/regatta/owner"
 mkdir -p "$T/root/.claude-plugin" "$T/root/modules"; : > "$T/root/.claude-plugin/marketplace.json"; cp -R "$M" "$T/root/modules/regatta"
 printf '#!/usr/bin/env bash\necho "bash $*"\n' > "$T/root/modules/regatta/bin/.probe-sh"; chmod +x "$T/root/modules/regatta/bin/.probe-sh"
