@@ -132,7 +132,8 @@ check "$(ls "$CSD/cfg" | grep -c 'bak-')" 5 "backups pruned to the newest 5"
 out=$(cs check)
 check "$(echo "$out" | head -1)" "user settings: 1 declared, 0 missing, 1 undeclared" "check counts declared, missing, undeclared"
 check "$(echo "$out" | grep -c "claude-settings declare deniedMcpServers '{\"serverName\": \"mine\"}'")" 1 "  and gives the declare line for a live entry nobody declared — shared, for both Macs"
-check "$(echo "$out" | grep -c 'allow')" 0 "  and ignores permissions.allow while nobody declares it"
+# The key, not the word: the fix lines print this tool's path, and a checkout named *allow* matched.
+check "$(echo "$out" | grep -c 'permissions')" 0 "  and ignores permissions.allow while nobody declares it"
 # Host parity (the owner, 2026-10-04): mode and allow rules are declared, so Server runs as the laptop.
 cp "$CSD/cfg/settings.json" "$CSD/pre-parity"; cp "$CSD/cfg/settings.declared.json" "$CSD/pre-parity-state"
 csdecl '{"shared":{"permissions.defaultMode":"auto","permissions.allow":["ExitWorktree"]}}'
