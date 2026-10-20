@@ -726,9 +726,11 @@ check "$([ -e "$T/gh.args" ] && echo opened || echo none)" none "  and no PR was
 check "$(gaterefs)" 0 "  and the private repo holds no ref of the gate's own"
 
 refs0=$(pubrefs)
-# Hides the legacy guard only: guard_path() tries modules/wharf first, so the step that moves wharf
-# into this repo (entry B5) must hide that one too, or this case finds the real guard.
-check "$(REGATTA_LEGACY="$T/none" prun --note 'One new line in the README.')" 2 "no wharf pre-push guard installed (G30): --pr refused"
+# Hides both guards: the legacy one by REGATTA_LEGACY, and wharf's own — in this repo since B5 —
+# by running a copy of the tree without the wharf module (guard_path() tries modules/wharf first).
+NW="$T/nowharf"; mkdir -p "$NW/.claude-plugin" "$NW/modules"; : > "$NW/.claude-plugin/marketplace.json"
+cp -R "$B/../../regatta" "$NW/modules/regatta"; cp -R "$B/.." "$NW/modules/helloworld"
+check "$(B="$NW/modules/helloworld/bin" REGATTA_LEGACY="$T/none" prun --note 'One new line in the README.')" 2 "no wharf pre-push guard installed (G30): --pr refused"
 has "$T/out" "no pre-push guard: the wharf module's templates/code/git-hooks/pre-push is not installed" "  in one line"
 check "$(pubrefs)" "$refs0" "  nothing pushed unguarded"
 rm -f "$T/gh.search"
