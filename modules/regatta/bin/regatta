@@ -11,6 +11,9 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta shim --hook <path>  a hook's source shim: run with no core, one line and exit 0 (C4)
     regatta shim --deny <path>  a deny hook's source shim: run as a hook with no core, it refuses a
                                 PreToolUse call instead of dying (C4)
+    regatta shim --deny-prompt <path>
+                                the same, and it also blocks a prompt in a secondary login dir
+                                (CLAUDE_CONFIG_DIR set): for a prompt guard (account_guard)
     regatta <name> [args…]      run a tool kept off PATH (C1: `pr`, `helm`) from its module
 
 Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
@@ -69,7 +72,8 @@ def _regatta_load(rel):
 # names the fix; any other event gets the line on stderr and exit 0. Imported, it raises as ever.
 # Any load failure, not ImportError alone: a conflicted pull leaves a SyntaxError, a bad mode an
 # OSError, and either would die with exit 1 (B5 review). One call passes: a plain `git -C <dir>
-# fetch` or `pull --ff-only`, no shell operators, so a checkout that predates the module can be
+# fetch` or `pull --ff-only`, no shell operators and no option word but a harmless few (never
+# `--upload-pack`), so a checkout that predates the module can be
 # fast-forwarded from the session itself, as the hook's own core_missing() allows.
 DENY_TAIL = '''try:
     __file__, _regatta_code = _regatta_load({rel_py})
@@ -84,7 +88,7 @@ except Exception as _regatta_exc:
         _event = {{}}
     _cmd = str(((_event.get("tool_input") or {{}}) if isinstance(_event, dict) else {{}}).get("command") or "")
     import re as _re
-    _repair = bool(_re.fullmatch(r"\\s*git -C [\\w./~-]+ (fetch|pull --ff-only)( [\\w./-]+)*\\s*", _cmd))
+    _repair = bool(_re.fullmatch(r"\\s*git -C [\\w./~][\\w./~-]* (fetch|pull --ff-only)( [\\w./][\\w./-]*| --all| --prune| -q| --quiet| -v)*\\s*", _cmd))
     if isinstance(_event, dict) and _event.get("hook_event_name") == "PreToolUse" and not _repair:
         print(_json.dumps({{"hookSpecificOutput": {{"hookEventName": "PreToolUse", "permissionDecision": "deny",
               "permissionDecisionReason": "\\u26d4 %s. This hook cannot judge the call without it, so it refuses it; "
@@ -93,6 +97,19 @@ except Exception as _regatta_exc:
 del _regatta_load
 exec(_regatta_code)
 '''
+# A prompt guard's shim (`--deny-prompt`, B9 review): DENY_TAIL, and with no core a UserPromptSubmit
+# in a secondary login dir (CLAUDE_CONFIG_DIR set) is blocked too, as lighthouse's account_guard
+# blocks when bin/account cannot run. Only for a hook whose module fails closed on prompts:
+# checkpoint.py's `--deny` lets a prompt pass on purpose (B5's deny proof 2), and the default
+# login, which holds the repair, is never blocked.
+DENY_PROMPT_TAIL = DENY_TAIL.replace('''    _sys.exit(0)
+del _regatta_load''', '''    if (isinstance(_event, dict) and _event.get("hook_event_name") == "UserPromptSubmit"
+            and __import__("os").environ.get("CLAUDE_CONFIG_DIR")):
+        print(_json.dumps({{"decision": "block", "reason": "\\u26d4 %s. This guard cannot check the login without it, "
+              "so it blocks the prompt; in a terminal, `git -C <the core\\'s checkout> pull --ff-only` or the fix it names, then send it again." % _regatta_exc}}))
+    _sys.exit(0)
+del _regatta_load''', 1)
+assert DENY_PROMPT_TAIL != DENY_TAIL, "DENY_PROMPT_TAIL's anchor is gone from DENY_TAIL"
 # Any other hook's shim (C4: a hook runs to a quiet exit with the core missing): run as a hook
 # with no core, one line on stderr and exit 0 — never exit 1's traceback at every session start,
 # never exit 2, which on UserPromptSubmit erases the prompt. Imported, it raises as ever.
@@ -122,7 +139,7 @@ exec "$home/"{rel_sh} "$@"
 '''
 
 
-TAILS = {None: SOURCE_TAIL, "--hook": HOOK_TAIL, "--deny": DENY_TAIL}
+TAILS = {None: SOURCE_TAIL, "--hook": HOOK_TAIL, "--deny": DENY_TAIL, "--deny-prompt": DENY_PROMPT_TAIL}
 
 
 def shim(rel, kind=None):
@@ -236,7 +253,7 @@ def main(argv):
         return check()
     if cmd == "shim" and len(rest) == 1:
         return shim(rest[0])
-    if cmd == "shim" and len(rest) == 2 and rest[0] in ("--hook", "--deny"):
+    if cmd == "shim" and len(rest) == 2 and rest[0] in ("--hook", "--deny", "--deny-prompt"):
         return shim(rest[1], rest[0])
     if cmd in ("root", "has", "which", "check", "shim"):
         print("regatta %s: wrong arguments — `regatta help`" % cmd, file=sys.stderr)

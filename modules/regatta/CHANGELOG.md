@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `regatta shim --deny-prompt <path>`: `--deny`'s shim, and with no core a UserPromptSubmit in a
+  secondary login dir (`CLAUDE_CONFIG_DIR` set) is blocked too. Made for lighthouse's `account_guard`
+  (B9 review: its `--deny` shim let every prompt through where the overlay's old hook blocked); `--deny`
+  keeps letting a prompt pass, as checkpoint's B5 choice wants. The deny shims' repair (`git -C <dir>
+  fetch` / `pull --ff-only`) no longer takes a word starting with a dash, so `--upload-pack <program>`
+  is refused.
 - `regatta shim --deny <path>`: a deny hook's source shim. Run as a hook with no core to load
   from, it denies a PreToolUse call in one line and exits 0 instead of dying with exit 1, which
   Claude Code reads as no objection (C4); imported, it raises as the plain shim does. Made for
