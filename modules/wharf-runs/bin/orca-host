@@ -1,0 +1,801 @@
+#!/usr/bin/env python3
+"""orca-host — Orca on this Mac, kept to what the registry declares: the app, its projects grouped
+by scope, and its pairings with the other Macs.
+
+  orca-host [check]       what this Mac's Orca holds against what it should; exit 1 naming each
+                          gap in the app or the scopes. Pairings and the relay sign-in are listed,
+                          never a fault: each needs a click in the app (below)
+  orca-host setup [--dry-run]
+                          the app from the stablyai/orca tap if missing, its CLI on PATH, a running
+                          runtime, then `scopes`, then `account orca-sync` where that tool is
+                          installed; ends with `check`
+  orca-host scopes [--dry-run]
+                          one Orca project group per scope in the registry, in the registry's order;
+                          each repo this Mac carries registered, named, coloured and placed in its
+                          scope's group anchor first; a worktree Orca makes starts from local main
+                          in <repo>/.claude/worktrees/, and every worktree made elsewhere (VS Code's
+                          sessions) shows in Orca's sidebar
+  orca-host pair PEER [--link -] [--dry-run]
+                          PEER's Orca becomes an environment of this Mac's, named PEER: the link is
+                          read from the clipboard (or stdin with --link -), checked to be a runtime
+                          link to PEER's Tailscale address, handed to `orca environment add`, and the
+                          pairing proved by reading PEER's repos through it; the clipboard is cleared
+  orca-host --on PEER <verb> [...]
+                          the same verb on PEER over ssh, this very script copied there first, so a
+                          branch can set the other Mac up before it lands; PEER's own registry, core
+                          and config decide what its Orca holds
+
+Which Macs are which is private and comes from the config dir (the design's C3), one item per line:
+
+  wharf-runs/orca-pairs   <host>:<peer> — PEER's Orca is an environment of HOST's (PAIRS)
+  wharf-runs/ssh          <peer>:<ssh alias> — how `--on PEER` reaches it (PEERS)
+
+Without them no Mac pairs and `--on` knows no peer; where an overlay is installed (a `legacy`
+file in the config dir) a missing one is an error naming it, as the core does for its own keys.
+The registry is the core's `repos_json()`; `scopes` (its scope order, anchor and twins) and
+`account` (orca-sync) are peers found by `common.tool()`.
+
+The facts each choice rests on, read from Orca 1.4.227's source (github.com/stablyai/orca, tag
+v1.4.227) on 2026-10-17, checked again against the installed 1.4.229 bundle on 2026-10-18:
+
+- **The relay is the phone's road, not the Macs'.** relay.onorca.dev splices a phone to a desktop;
+  a runtime pairing through it is refused outright ("relay v1 is mobile-only",
+  src/shared/mobile-relay-pairing-offer.ts), and no route lists an account's hosts. So Mac-to-Mac is
+  a direct link to the server Mac's Tailscale address, and signing in at the relay (a `cloud-linked`
+  profile) only matters for the phone: `check` reports it, nothing waits on it.
+- **A pairing link is minted by the app alone while the app runs**: Settings → Remote Orca Servers →
+  New Link (renderer IPC `mobile:getRuntimePairingUrl`). `orca serve` mints one only where no app
+  runs — a second instance exits 3 and hands the first its argv, which a serve-mode argv never wakes
+  (src/main/startup/single-instance-lock.ts). The link is a long-lived bearer credential with no
+  expiry; it is never printed, never written to disk, only passed to `environment add`.
+- **The CLI has no project groups**; the runtime does (`projectGroup.create`, `.moveProject`,
+  `repo.update`), over the unix socket orca-runtime.json names, one JSON line per request carrying
+  that file's owner token — exactly what the CLI's own transport sends (src/cli/runtime/transport.ts).
+  Undocumented, so every answer is checked: an unknown method or a refused call is an error naming
+  it, never a silent skip.
+- **A bare `brew install --cask orca` installs plotly's chart tool** (homebrew/cask's `orca`); this
+  app's cask is `stablyai/orca/orca`.
+- **Left out of Orca**: a twin only (it is published from its source by helloworld, never worked
+  in). A private repo is in like every other: which login works where is not Orca's to keep — Orca
+  picks one login per app, not per repo — but the account guard's, on every prompt, before any
+  model call (the core's `orca-deny`). A repo sits in one scope's group only: an Orca repo is in
+  one group, where a VS Code scope file lists it in every window.
+- **Pairing goes one way**: the Mac at the keyboard drives the always-on one's Orca, never the
+  reverse — work flows to the server, and a link back would fail whenever the laptop sleeps.
+  PAIRS declares it, and `check` expects exactly those.
+- **Worktrees**: Orca's default base is origin/HEAD and its default home ~/orca/workspaces; the
+  workflow starts a branch from local `main` inside <repo>/.claude/worktrees/, where the
+  checkpoint hook, the locks and sync.py look. `worktreeBasePath` places `<base>/<name>` only while
+  the global `nestWorkspaces` is off (src/main/ipc/worktree-logic.ts), so `check` names it when on.
+
+Nothing here removes: a group or repo Orca holds that no scope names is listed in `check`, not
+deleted (scratch repos earlier probes registered are other sessions' to clear).
+
+Python 3.9, stdlib only. Tests: tests/orca-host.sh.
+"""
+import base64
+import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+import uuid
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from pathlib import Path
+
+HOME = Path.home()
+
+
+def core_hooks():
+    """The core's hooks/ folder: the checkout this file sits in, else $REGATTA_HOME, else the config
+    dir's `home` file, else the core's installPath as Claude Code recorded it — helloworld's
+    lib/find_core.py, inlined because `--on` copies this one file to the peer. None found: one line
+    and exit 2, never a fallback copy of the core."""
+    out = [Path(__file__).resolve().parents[2] / "regatta" / "hooks"]
+    cfg = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+    try:
+        # the first non-blank line, a BOM dropped: what the core's config_read takes
+        home = next((l.strip() for l in (cfg / "home").read_text(encoding="utf-8-sig").splitlines() if l.strip()), "")
+    except (OSError, UnicodeDecodeError):
+        home = ""
+    out += [Path(h).expanduser() / "modules" / "regatta" / "hooks" for h in (os.environ.get("REGATTA_HOME"), home) if h]
+    reg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude").expanduser() / "plugins" / "installed_plugins.json"
+    try:
+        rows = json.loads(reg.read_text(encoding="utf-8")).get("plugins", {}).get("regatta@regatta") or []
+        out += [Path(r["installPath"]) / "hooks" for r in rows if isinstance(r, dict) and r.get("installPath")]
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    for c in out:
+        if (c / "common.py").is_file():
+            return str(c)
+    print("orca-host: the regatta core is missing — install the `regatta` plugin, or name a clone in "
+          "the regatta config dir's `home` file (its install.sh writes it)", file=sys.stderr)
+    sys.exit(2)
+
+
+sys.path.insert(0, core_hooks())
+import common  # noqa: E402
+
+ORCA_DATA = Path(os.environ.get("ORCA_HOST_DATA") or HOME / "Library/Application Support/orca")
+ORCA_APP = Path(os.environ.get("ORCA_HOST_APP") or "/Applications/Orca.app")
+CASK = "stablyai/orca/orca"
+REMOTE_COPY = "~/.cache/orca-host/orca-host"
+# Orca's own badge palette (src/shared/constants.ts REPO_COLORS) minus its neutral grey, which a
+# scope past the seventh falls back to.
+PALETTE = ["#8b5cf6", "#22c55e", "#ef4444", "#f97316", "#14b8a6", "#eab308", "#ec4899"]
+NEUTRAL = "#737373"
+PAIRS_KEY, PEERS_KEY = "wharf-runs/orca-pairs", "wharf-runs/ssh"
+
+
+class OrcaError(Exception):
+    pass
+
+
+def config_map(key):
+    """{host: [value, …]} from `<config>/<key>`'s `host:value` lines; {} without the file. With an
+    overlay installed a missing or unreadable key is an OrcaError naming it: read as empty, the
+    "not paired with PEER" line would silently vanish from `check`. Names are lower-cased, as
+    `pair PEER` names an environment; an ssh alias is kept as written."""
+    lines, why = common.config_read(key)
+    if why or (lines is None and (common.CONFIG / "legacy").exists()):
+        raise OrcaError(f"{common.CONFIG / key} {why or 'missing'} — run your overlay's bootstrap.sh --config")
+    out = {}
+    for line in lines or []:
+        host, _, value = line.partition(":")
+        host, value = host.strip().lower(), value.strip()
+        if host and value:
+            out.setdefault(host, []).append(value.lower() if key == PAIRS_KEY else value)
+    return out
+
+
+def peers_of(host):
+    """The Macs whose Orca this Mac's should hold as environments (PAIRS)."""
+    return list(config_map(PAIRS_KEY).get(host) or [])
+
+
+def ssh_alias(peer):
+    """How `--on PEER` reaches PEER (PEERS), or None."""
+    return (config_map(PEERS_KEY).get(peer) or [None])[0]
+
+
+def _load(name, path):
+    """A file without a .py name as a module: spec and exec_module (load_module is deprecated)."""
+    spec = spec_from_loader(name, SourceFileLoader(name, str(path)))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_SCOPES = []
+
+
+def scopes_mod():
+    """The `scopes` peer, loaded once per run (setup reads the scopes three times)."""
+    if not _SCOPES:
+        p = common.tool("scopes")
+        if not p:
+            raise OrcaError("no `scopes` tool found (the wharf module, or the overlay's legacy checkout)")
+        _SCOPES.append(_load("scopes", p))
+    return _SCOPES[0]
+
+
+def registry():
+    """(repos, scopes) from the core's registry (`common.repos_json()`)."""
+    p = common.repos_json()
+    if not p:
+        raise OrcaError(f"no registry: {common.CONFIG / 'wharf' / 'repos.json'} (or CLAUDE_REPOS_JSON)")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        repos, scopes = data["repos"], data.get("scopes") or {}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise OrcaError(f"the registry {p} does not read: {e}")
+    if not isinstance(repos, dict) or not isinstance(scopes, dict) \
+            or not all(isinstance(v, dict) for v in [*repos.values(), *scopes.values()]):
+        raise OrcaError(f"the registry {p} is not a map of repos and of scopes")
+    return repos, scopes
+
+
+# ---------------------------------------------------------------------------- talking to Orca
+
+def orca_bin():
+    """The app's own CLI first: a bare `orca` on PATH may be plotly's chart tool (homebrew/cask's
+    `orca`, above), which every call here would run with --json and fail on."""
+    app_cli = ORCA_APP / "Contents/Resources/bin/orca"
+    return os.environ.get("ORCA_HOST_CLI") or (str(app_cli) if app_cli.exists() else shutil.which("orca"))
+
+
+def orca_env():
+    """The env the app's CLI runs in: /opt/homebrew/bin first, ELECTRON_RUN_AS_NODE dropped (the
+    CLI's launcher sets it itself on 1.4.229; dropping an inherited one costs nothing)."""
+    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
+    env["PATH"] = "/opt/homebrew/bin:" + env.get("PATH", "")
+    return env
+
+
+def cli(*args, stdin=None, timeout=120):
+    """`orca ARGS --json` → its result, or OrcaError with Orca's own message (never ARGS, which
+    may hold a pairing link)."""
+    exe = orca_bin()
+    if not exe:
+        raise OrcaError("no orca CLI: run `orca-host setup`")
+    try:
+        r = subprocess.run([exe, *args, "--json"], capture_output=True, text=True, env=orca_env(),
+                           input=stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:  # a peer asleep or off the tailnet: said, never a traceback
+        raise OrcaError(f"orca {args[0]}: no answer in {timeout} s")
+    try:
+        out = json.loads(r.stdout or "null")
+    except ValueError:
+        out = None
+    if r.returncode != 0 or not isinstance(out, dict) or out.get("ok") is False:
+        err = (out or {}).get("error") if isinstance(out, dict) else None
+        msg = (err.get("message") if isinstance(err, dict) else err) or (r.stderr or r.stdout).strip()[-300:]
+        raise OrcaError(f"orca {args[0]} {args[1] if len(args) > 1 and not args[1].startswith('-') else ''}".rstrip()
+                        + f": {msg or 'exit ' + str(r.returncode)}")
+    return out.get("result", out)
+
+
+class Runtime:
+    """The running app's RPC, as its CLI reaches it: orca-runtime.json names a unix socket and the
+    owner token; a request is one JSON line, the answer the line carrying the same id."""
+
+    def __init__(self, data=None, timeout=20):
+        self.data, self.timeout = Path(data or ORCA_DATA), timeout
+
+    def meta(self):
+        try:
+            meta = json.loads((self.data / "orca-runtime.json").read_text())
+            ep = next(t["endpoint"] for t in meta.get("transports") or [] if t.get("kind") == "unix")
+            return ep, meta["authToken"]
+        except (OSError, ValueError, KeyError, StopIteration):
+            raise OrcaError("Orca's runtime is not running here (no orca-runtime.json socket)")
+
+    def call(self, method, params=None):
+        ep, token = self.meta()
+        rid = str(uuid.uuid4())
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(self.timeout)
+        try:
+            s.connect(ep)
+            s.sendall((json.dumps({"id": rid, "authToken": token, "method": method,
+                                   "params": params or {}}) + "\n").encode())
+            buf = b""
+            while True:
+                chunk = s.recv(1 << 20)
+                if not chunk:
+                    raise OrcaError(f"{method}: Orca closed the connection without an answer")
+                buf += chunk
+                *lines, buf = buf.split(b"\n")
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    msg = json.loads(line)
+                    if msg.get("id") != rid:
+                        continue        # a keepalive or another frame
+                    if not msg.get("ok"):
+                        err = msg.get("error")
+                        raise OrcaError(f"{method}: {err.get('message') if isinstance(err, dict) else err}")
+                    return msg.get("result") or {}
+        except (OSError, ValueError) as e:
+            raise OrcaError(f"{method}: {e}")
+        finally:
+            s.close()
+
+
+# ---------------------------------------------------------------------------- what Orca should hold
+
+def main_branch(path):
+    """The branch a worktree starts from: the repo's workflow.json "main", else main."""
+    try:
+        return json.loads((Path(path) / ".claude" / "workflow.json").read_text()).get("main") or "main"
+    except (OSError, ValueError, AttributeError):
+        return "main"
+
+
+def wanted(repos, scopes, host, base, sc, exists=None):
+    """[{name, color, order, repos: [{key, path, name, color, base_ref}]}] — every scope that has a
+    repo on this Mac, in registry order. A scope's repos: its anchor first, then its others as the
+    scope file orders them, less twins, keys another host carries and folders that are not git
+    checkouts here."""
+    exists = exists or (lambda p: (Path(p) / ".git").exists())
+    out = []
+    for i, (name, scope) in enumerate(scopes.items()):
+        color = PALETTE[i] if i < len(PALETTE) else NEUTRAL
+        mine = set(sc.members(scope, repos))
+        keys = [k for k in sc.folders(scope, repos) if k in mine]
+        rows = []
+        for k in keys:
+            meta = repos.get(k) or {}
+            if meta.get("twin_of") or host not in [h.lower() for h in meta.get("hosts") or [host]]:
+                continue
+            path = str(Path(base) / k)
+            if exists(path):
+                rows.append({"key": k, "path": path, "color": color})
+        if rows:
+            out.append({"name": name, "color": color, "order": len(out), "repos": rows})
+    seen = {}
+    for g in out:
+        for r in g["repos"]:
+            seen.setdefault(Path(r["key"]).name, []).append(r["key"])
+    for g in out:
+        for r in g["repos"]:
+            short = Path(r["key"]).name
+            r["name"] = short if len(seen[short]) == 1 else r["key"]
+            r["base_ref"] = main_branch(r["path"])
+            # only a repo on the worktree workflow keeps its worktrees in .claude/worktrees/ (and
+            # ignores them); any other keeps Orca's own home rather than gain an untracked folder
+            on = (Path(r["path"]) / ".claude" / "workflow.json").exists()
+            r["base_path"] = str(Path(r["path"]) / ".claude" / "worktrees") if on else None
+    return out
+
+
+def real(p):
+    try:
+        return os.path.realpath(p)
+    except OSError:
+        return p
+
+
+def plan(want, groups, orca_repos, nest=False):
+    """The steps from what Orca holds to `want`, in the order they run: ("group", name, color,
+    order), ("group-set", id, updates), ("add", key, path), ("set", key, path, updates),
+    ("show", key, path), ("move", key, path, group name, order). Empty when converged. Plus the
+    notes `check` lists: extra groups and repos Orca holds, and a nestWorkspaces clash."""
+    steps, notes = [], []
+    by_name = {g.get("name"): g for g in groups}
+    by_path = {real(r.get("path", "")): r for r in orca_repos}
+    for g in want:
+        have = by_name.get(g["name"])
+        if not have:
+            steps.append(("group", g["name"], g["color"], g["order"]))
+        else:
+            upd = {k: v for k, v in (("color", g["color"]), ("tabOrder", g["order"])) if have.get(k) != v}
+            if upd:
+                steps.append(("group-set", have["id"], upd))
+        for i, r in enumerate(g["repos"]):
+            cur = by_path.get(real(r["path"]))
+            if not cur:
+                steps.append(("add", r["key"], r["path"]))
+                cur = {}
+            upd = {"displayName": r["name"], "badgeColor": r["color"], "worktreeBaseRef": r["base_ref"]}
+            if r.get("base_path"):
+                upd["worktreeBasePath"] = r["base_path"]
+            elif (cur.get("worktreeBasePath") or "").rstrip("/").endswith("/.claude/worktrees"):
+                upd["worktreeBasePath"] = ""   # left the workflow: back to Orca's own home, no untracked folder
+            upd = {k: v for k, v in upd.items() if cur.get(k) != v}
+            if upd:
+                steps.append(("set", r["key"], r["path"], upd))
+            if cur.get("externalWorktreeVisibility") != "show":
+                steps.append(("show", r["key"], r["path"]))
+            if not have or cur.get("projectGroupId") != have.get("id") or cur.get("projectGroupOrder") != i:
+                steps.append(("move", r["key"], r["path"], g["name"], i))
+    wanted_paths = {real(r["path"]) for g in want for r in g["repos"]}
+    notes += [f"Orca holds {r.get('displayName') or r.get('path')} ({r.get('path')}), which no scope names here"
+              for p, r in by_path.items() if p not in wanted_paths]
+    notes += [f"Orca has a group {n!r}, which no scope names" for n in by_name if n not in {g['name'] for g in want}]
+    if nest:
+        notes.append("Orca's nestWorkspaces is on: a worktree would land in .claude/worktrees/<repo>/<name>; "
+                     "turn it off in Orca's settings (Workspaces)")
+    return steps, notes
+
+
+def describe(step):
+    kind = step[0]
+    if kind == "group":
+        return f"create group {step[1]} ({step[2]})"
+    if kind == "group-set":
+        return f"set group {step[1]}: {step[2]}"
+    if kind == "add":
+        return f"register {step[1]}"
+    if kind == "set":
+        return f"set {step[1]}: " + ", ".join(f"{k}={v}" for k, v in step[3].items())
+    if kind == "show":
+        return f"show {step[1]}'s worktrees made outside Orca"
+    return f"place {step[1]} in {step[3]} at {step[4]}"
+
+
+def apply(steps, rt, groups):
+    ids = {g.get("name"): g.get("id") for g in groups}
+    for step in steps:
+        kind = step[0]
+        if kind == "group":
+            g = rt.call("projectGroup.create", {"name": step[1], "createdFrom": "manual"}).get("group") or {}
+            if not g.get("id"):
+                raise OrcaError(f"projectGroup.create {step[1]}: no id came back")
+            ids[step[1]] = g["id"]
+            rt.call("projectGroup.update", {"groupId": g["id"], "updates": {"color": step[2], "tabOrder": step[3]}})
+        elif kind == "group-set":
+            rt.call("projectGroup.update", {"groupId": step[1], "updates": step[2]})
+        elif kind == "add":
+            cli("repo", "add", "--path", step[2])
+        elif kind == "set":
+            rt.call("repo.update", {"repo": "path:" + step[2], "updates": step[3]})
+        elif kind == "show":
+            cli("repo", "set", "--repo", "path:" + step[2], "--external-worktree-visibility", "show")
+        elif kind == "move":
+            rt.call("projectGroup.moveProject", {"repo": "path:" + step[2], "groupId": ids[step[3]], "order": step[4]})
+        print(f"  ✓ {describe(step)}")
+
+
+def state(rt):
+    groups = rt.call("projectGroup.list").get("groups") or []
+    repos = rt.call("repo.list").get("repos") or []
+    settings = rt.call("settings.get")
+    settings = settings.get("settings", settings)
+    return groups, repos, bool(settings.get("nestWorkspaces"))   # the one key read; settings hold API keys
+
+
+def scope_steps(rt):
+    sc = scopes_mod()
+    repos, scopes = registry()
+    # resolved, as scopes' own projects() was: Orca records a repo by its real path, and a
+    # symlinked projects folder would send selectors it never matches
+    want = wanted(repos, scopes, common.host_name(), Path(os.path.realpath(common.PROJECTS)), sc)
+    groups, orca_repos, nest = state(rt)
+    steps, notes = plan(want, groups, orca_repos, nest)
+    return want, groups, steps, notes
+
+
+def cmd_scopes(dry):
+    rt = Runtime()
+    want, groups, steps, notes = scope_steps(rt)
+    n = sum(len(g["repos"]) for g in want)
+    print(f"orca-host scopes: {len(want)} groups, {n} repos on this Mac; {len(steps)} step(s)")
+    if dry:
+        for s in steps:
+            print(f"  · {describe(s)}")
+    else:
+        apply(steps, rt, groups)
+        _, _, again, _ = scope_steps(rt)
+        if again:   # read back: Orca accepted every call, so anything left is a call that did nothing
+            for s in again:
+                print(f"  ✗ still to do after applying: {describe(s)}")
+            return 1
+    for x in notes:
+        print(f"  note: {x}")
+    return 0
+
+
+# ---------------------------------------------------------------------------- the app, the relay
+
+def relay_signed_in(data=None):
+    """True when an Orca profile here is linked to an Orca account (needed for the phone only)."""
+    try:
+        idx = json.loads((Path(data or ORCA_DATA) / "orca-profile-index.json").read_text())
+        return any(p.get("kind") == "cloud-linked" for p in idx.get("profiles") or [])
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def runtime_up():
+    try:
+        Runtime(timeout=5).call("projectGroup.list")
+        return True
+    except OrcaError:
+        return False
+
+
+def cmd_setup(dry):
+    steps = []
+    if not ORCA_APP.exists():
+        steps.append(("install the app", ["brew", "install", "--cask", CASK]))
+    if not shutil.which("orca", path=orca_env()["PATH"]):
+        steps.append(("put its CLI on PATH", ["ln", "-sf", str(ORCA_APP / "Contents/Resources/bin/orca"),
+                                              "/opt/homebrew/bin/orca"]))
+    for what, argv in steps:
+        print(f"  {'·' if dry else '→'} {what}: {shlex.join(argv)}")
+        if not dry and subprocess.run(argv).returncode != 0:
+            print(f"  ✗ {what} failed")
+            return 1
+    if not runtime_up():
+        agent = serve_agent()
+        if agent:  # a headless Mac (one since 2026-10-18): `orca open` would take the lock serve needs
+            # -k: a serve that runs but does not answer is wedged, and a plain kickstart of a running
+            # service is a no-op that still exits 0 (man launchctl)
+            argv = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{agent}"]
+            print(f"  {'·' if dry else '→'} restart its headless Orca: {shlex.join(argv)}")
+            if not dry:
+                if subprocess.run(argv).returncode != 0:
+                    print(f"  ✗ {agent} did not restart")
+                    return 1
+                for _ in range(120):   # up to a minute for the runtime to answer, as `orca open` waits
+                    if runtime_up():
+                        break
+                    time.sleep(0.5)
+                else:
+                    print(f"  ✗ {agent} restarted, but Orca's runtime did not answer within a minute")
+                    return 1
+        else:
+            print(f"  {'·' if dry else '→'} start Orca: orca open")
+            if not dry:
+                try:
+                    cli("open", timeout=180)
+                except OrcaError as e:
+                    print(f"  ✗ {e} — Orca needs this Mac's GUI session logged in")
+                    return 1
+    if dry and not runtime_up():
+        print("  · then: scopes, account orca-sync")
+        return 0
+    try:
+        rc = cmd_scopes(dry)
+    except OrcaError as e:   # said, and the sync and the check still run
+        print(f"  ✗ scopes: {e}")
+        rc = 1
+    if dry:
+        return rc
+    account = common.tool("account")
+    if not account:   # the logins Orca holds are the account tool's to read back; none here, nothing to sync
+        print("  · account orca-sync skipped: no `account` tool found (the lighthouse module, or the overlay)")
+        checked = cmd_check()   # always, as below: a failed step must not hide the rest
+        return rc or checked
+    r = subprocess.run([sys.executable, str(account), "orca-sync"], capture_output=True, text=True)
+    said = [x.strip() for x in (r.stderr + r.stdout).splitlines() if x.strip()]
+    why = " / ".join(x for x in said if "⚠" in x or "✗" in x) or (said[-1] if said else f"exit {r.returncode}")
+    print(f"  {'✓' if r.returncode == 0 else '✗'} account orca-sync" + ("" if r.returncode == 0 else ": " + why))
+    checked = cmd_check()   # always: a failed sync must not hide the rest of the Mac's state
+    return rc or r.returncode or checked
+
+
+def serve_agent():
+    """The Label of a LaunchAgent whose program runs `orca serve` here (a headless Orca), or None —
+    read from each plist's ProgramArguments, one argument or inside an `sh -c` string."""
+    for path in sorted((HOME / "Library/LaunchAgents").glob("*.plist")):
+        try:
+            with open(path, "rb") as f:
+                pl = plistlib.load(f)
+        except Exception:
+            continue
+        args = " ".join(str(a) for a in pl.get("ProgramArguments") or [pl.get("Program") or ""])
+        if "orca" in args.lower() and re.search(r"(^|\s)(--)?serve(\s|$)", args) and pl.get("Label"):
+            return pl["Label"]
+    return None
+
+
+# ---------------------------------------------------------------------------- pairing
+
+def decode_link(link):
+    """orca://pair?code=<base64url JSON> → the offer dict, or OrcaError (never echoing the link)."""
+    u = urllib.parse.urlparse((link or "").strip())
+    code = (urllib.parse.parse_qs(u.query).get("code") or [""])[0]
+    if u.scheme != "orca" or u.netloc != "pair" or not code:
+        raise OrcaError("that is not an Orca pairing link (orca://pair?code=…)")
+    try:
+        offer = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)))
+        if isinstance(offer, dict):
+            return offer
+        raise ValueError("not an object")
+    except (ValueError, TypeError):
+        raise OrcaError("the pairing link's code does not decode")
+
+
+def check_offer(offer, peer, addresses):
+    """None when the offer is a runtime link to one of PEER's addresses, else why not."""
+    if offer.get("scope") != "runtime":
+        return f"it is a {offer.get('scope') or 'scopeless'} link, not a runtime one (New Link under Remote Orca Servers, not the phone QR)"
+    host = urllib.parse.urlparse(offer.get("endpoint") or "").hostname
+    if host not in addresses:
+        return (f"it points at {host}, not at {peer} ({', '.join(sorted(addresses)) or 'no Tailscale address found'});"
+                f" pick {peer}'s Tailscale address when making the link")
+    return None
+
+
+def tailscale_addresses(peer):
+    """PEER's Tailscale IPs and MagicDNS name, read back from this Mac's tailscale status."""
+    for exe in (shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale"):
+        if not exe or not os.path.exists(exe):
+            continue
+        try:
+            r = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            continue
+        try:
+            st = json.loads(r.stdout)
+        except ValueError:
+            continue
+        for node in [st.get("Self") or {}, *(st.get("Peer") or {}).values()]:
+            if (node.get("HostName") or "").lower() == peer:
+                return set(node.get("TailscaleIPs") or []) | {(node.get("DNSName") or "").rstrip(".")} - {""}
+    return set()
+
+
+def paired(peer):
+    envs = cli("environment", "list").get("environments") or []
+    return next((e for e in envs if e.get("name") == peer), None)
+
+
+def prove(peer):
+    """PEER's repos, read through the pairing: the ground truth that it works."""
+    return len(cli("repo", "list", "--environment", peer, timeout=60).get("repos") or [])
+
+
+def clear_link_from_clipboard():
+    """Empties the clipboard when it holds an Orca pairing link (a credential), and only then."""
+    if subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip().startswith("orca://"):
+        subprocess.run(["pbcopy"], input="", text=True)
+
+
+def cmd_pair(peer, link_from, dry):
+    if paired(peer):
+        if link_from != "-" and not dry:
+            clear_link_from_clipboard()   # a link copied for nothing is still a credential
+        try:
+            print(f"orca-host pair: {peer} already paired; its Orca answers with {prove(peer)} repos")
+            return 0
+        except OrcaError as e:
+            print(f"orca-host pair: {peer} is paired but does not answer ({e}); "
+                  f"remove it with `orca environment rm --environment {peer}` and pair again")
+            return 1
+    addresses = tailscale_addresses(peer)
+    ip = next(iter(sorted(a for a in addresses if a[:1].isdigit())), peer + "’s Tailscale IP")
+    how = (f"On {peer}'s Orca app: Settings → Remote Orca Servers → New Link, address {ip}; on a headless "
+           f"{peer}: the link `orca serve --pairing-address {ip}` prints when it starts. Copy it, then run this again")
+    link = sys.stdin.read() if link_from == "-" else subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+    if not link.strip().startswith("orca://"):
+        print(f"orca-host pair: no link {'on stdin' if link_from == '-' else 'on the clipboard'}. {how}")
+        return 1
+    try:
+        why = check_offer(decode_link(link), peer, addresses)
+        if why:
+            print(f"orca-host pair: not pairing — {why}")
+            return 1
+        if dry:
+            print(f"orca-host pair: would add {peer} from a runtime link to {peer}")
+            return 0
+        try:
+            cli("environment", "add", "--name", peer, "--pairing-code", link.strip())
+            n = prove(peer)
+        except OrcaError as e:
+            print(f"orca-host pair: ✗ {e}")
+            return 1
+    finally:  # the link is a credential: off the clipboard after any read of one, refusals included —
+        if link_from != "-" and not dry:   # bar a dry run, whose link the real run still needs
+            subprocess.run(["pbcopy"], input="", text=True)
+    print(f"orca-host pair: ✓ {peer} paired; its Orca answers with {n} repos")
+    return 0
+
+
+# ---------------------------------------------------------------------------- check
+
+def cmd_check():
+    faults, notes = [], []
+    if not ORCA_APP.exists():
+        faults.append(f"Orca.app is not installed: orca-host setup (brew install --cask {CASK})")
+    if not orca_bin():
+        faults.append("the orca CLI is not on PATH: orca-host setup")
+    rt = Runtime()
+    if not runtime_up():
+        faults.append("Orca's runtime is not running: orca-host setup (orca open)")
+    else:
+        # a missing peer tool, registry or config key is a fault line, never the end of the
+        # report: the app's, the pairings' and the relay's lines still print
+        try:
+            want, _, steps, more = scope_steps(rt)
+            faults += [f"scopes: {describe(s)} — orca-host scopes" for s in steps]
+            notes += more
+            print(f"orca-host check: {sum(len(g['repos']) for g in want)} repos in {len(want)} scope groups")
+        except OrcaError as e:
+            faults.append(f"scopes: {e}")
+            print("orca-host check: the scope groups could not be read")
+        try:
+            envs = {e.get("name") for e in cli("environment", "list").get("environments") or []}
+        except OrcaError as e:
+            envs = set()
+            notes.append(str(e))
+        try:
+            want_peers = peers_of(common.host_name())
+        except OrcaError as e:   # PAIRS unknown: no environment is called unwanted, none gets an `rm` hint
+            want_peers = None
+            faults.append(f"pairs: {e}")
+        for p in want_peers or []:
+            notes.append(f"paired with {p} (Orca's own record; `orca-host pair {p}` proves it live)" if p in envs
+                         else f"not paired with {p}: orca-host pair {p}")
+        if want_peers is not None:
+            notes += [f"an environment PAIRS does not name: {e} (orca environment rm --environment {e} if unwanted)"
+                      for e in sorted(x for x in envs - set(want_peers) if x)]
+    if not relay_signed_in():
+        notes.append("not signed in at Orca's relay (only the phone needs it): sign in from Orca's settings")
+    for f in faults:
+        print(f"  ✗ {f}")
+    for n in notes:
+        print(f"  · {n}")
+    if not faults:
+        print("  ✓ Orca here holds what the registry declares")
+    return 1 if faults else 0
+
+
+# ---------------------------------------------------------------------------- the other Mac
+
+def run_on(peer, argv, stdin=None):
+    """argv of this script on PEER: the script copied to REMOTE_COPY (mode 600), then run there
+    with PEER's own registry. ORCA_HOST_SSH overrides the ssh command for tests."""
+    try:
+        alias = ssh_alias(peer)
+    except OrcaError as e:
+        print(f"orca-host: {e}")
+        return 2
+    if not alias:
+        known = ", ".join(config_map(PEERS_KEY)) or "none"
+        print(f"orca-host: no ssh alias for {peer} in {common.CONFIG / PEERS_KEY} (known: {known})")
+        return 2
+    ssh = shlex.split(os.environ.get("ORCA_HOST_SSH") or f"ssh -o ConnectTimeout=10 {alias}")
+    src = Path(__file__).read_text()
+    try:
+        put = subprocess.run(ssh + [f"umask 077; mkdir -p ~/.cache/orca-host && cat > {REMOTE_COPY}"],
+                             input=src, text=True, capture_output=True, timeout=60)
+        if put.returncode != 0:
+            print(f"orca-host: could not copy the script to {peer}: {put.stderr.strip()[-200:]}")
+            return put.returncode
+        remote = ("PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH python3 " + REMOTE_COPY + " "
+                  + " ".join(shlex.quote(a) for a in argv))
+        return subprocess.run(ssh + [remote], input=stdin, text=True, timeout=600).returncode
+    except subprocess.TimeoutExpired as e:   # a peer asleep or off the tailnet: one line, never a traceback
+        print(f"orca-host: {peer} did not answer within {int(e.timeout)} s")
+        return 1
+
+
+def main(argv):
+    on = None
+    if argv[:1] == ["--on"]:
+        if len(argv) < 2:
+            print(__doc__)
+            return 2
+        on, argv = argv[1].lower(), argv[2:]
+    verb = argv[0] if argv else "check"
+    rest = argv[1:]
+    dry = "--dry-run" in rest
+    if "--link" in rest and rest[rest.index("--link") + 1:rest.index("--link") + 2] != ["-"]:
+        print("orca-host: --link takes only `-` (the link on stdin); a link in argv would sit in the shell's history")
+        return 2
+    if on:
+        if verb == "pair" and (not rest or rest[0].startswith("-")):
+            print(__doc__)
+            return 2
+        if verb == "pair":
+            # the link is read here, where the owner copied it (or from stdin with --link -), checked
+            # here, and travels on ssh's stdin, never argv; nothing else on the clipboard leaves this Mac
+            piped = "--link" in rest
+            link = sys.stdin.read() if piped else subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+            if not link.strip().startswith("orca://"):
+                print(f"orca-host pair: no Orca pairing link {'on stdin' if piped else 'on the clipboard'}; nothing sent")
+                return 1
+            args = rest if piped else [*rest, "--link", "-"]
+            try:
+                try:
+                    scope = decode_link(link).get("scope")
+                except OrcaError as e:
+                    print(f"orca-host pair: {e}; nothing sent")
+                    return 1
+                if scope != "runtime":   # a phone link never leaves this Mac; the address is checked there
+                    print(f"orca-host pair: it is a {scope or 'scopeless'} link, not a runtime one; nothing sent")
+                    return 1
+                return run_on(on, [verb, *args], stdin=link)
+            finally:   # off the clipboard, whatever the peer said — bar a dry run, as `pair --dry-run` here
+                if not dry and not piped:
+                    subprocess.run(["pbcopy"], input="", text=True)
+        return run_on(on, [verb, *rest])
+    try:
+        if verb == "check":
+            return cmd_check()
+        if verb == "setup":
+            return cmd_setup(dry)
+        if verb == "scopes":
+            return cmd_scopes(dry)
+        if verb == "pair" and rest and not rest[0].startswith("-"):
+            link_from = rest[rest.index("--link") + 1] if "--link" in rest else None
+            return cmd_pair(rest[0].lower(), link_from, dry)
+    except OrcaError as e:
+        print(f"orca-host {verb}: ✗ {e}")
+        return 1
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

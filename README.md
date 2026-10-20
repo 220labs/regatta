@@ -15,6 +15,8 @@ own. Every module needs the core.
 | --- | --- |
 | [`regatta`](modules/regatta/README.md) | the core: the shared library, the model gate, cost, the secrets check and the `regatta` CLI |
 | [`helloworld`](modules/helloworld/README.md) | the public door: name a project (`name-check`, `/name`), then publish it through a privacy scan (`helloworld`) |
+| [`plumb`](modules/plumb/README.md) | measure: `crew-report`, the owner's own time per project each week, beside the model cost |
+| [`wharf-runs`](modules/wharf-runs/README.md) | runs across a fleet of Macs: `orca-host` keeps Orca on each Mac to the registry's scopes and pairs the Macs |
 
 ## Install
 
@@ -26,6 +28,6 @@ In Claude Code: `claude plugin marketplace add 220labs/regatta`, then
 
 ## Check
 
-`claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh`
+`claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/wharf-runs/tests/check.sh`
 
 Licence: MIT (`LICENSE`).

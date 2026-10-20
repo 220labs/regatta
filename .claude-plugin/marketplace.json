@@ -16,6 +16,11 @@
       "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."
     },
     {
+      "name": "wharf-runs",
+      "source": "./modules/wharf-runs",
+      "description": "Unattended runs across a fleet of Macs: Orca kept to the registry's scopes on each (needs a `scopes` tool, not yet published), and the Macs paired."
+    },
+    {
       "name": "plumb",
       "source": "./modules/plumb",
       "description": "Measure: crew-report, the owner's own time per project each week, beside the model cost."
