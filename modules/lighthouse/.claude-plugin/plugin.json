@@ -1,0 +1,7 @@
+{
+  "name": "lighthouse",
+  "version": "0.1.0",
+  "description": "Upkeep of the machines: a daily health pass, declared Claude Code settings, several logins on one Mac, shared-drive publishing, folder trust, tiled windows — and the guards that keep secrets, logins and the live settings file out of an agent's reach.",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

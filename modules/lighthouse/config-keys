@@ -1,0 +1,5 @@
+# lighthouse's private values that are an error when absent (README, "Private values"; the rest
+# have a default): `regatta check` reports each one missing where an overlay is installed, or
+# unreadable. bin/account refuses on them itself (overlay_key_missing).
+lighthouse/accounts.json
+lighthouse/vault

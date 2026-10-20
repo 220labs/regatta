@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""tiling — Claude's Terminal windows on one native desktop (the fifth when installed), tiled by
+yabai; every other desktop floats.
+
+    tiling install   link the home folder's .yabairc to the yabairc below, make Desktop 5 the
+                     claude desktop (Terminal's Dock binding) and (re)start yabai (laptop only)
+    tiling apply     yabai's whole config; .yabairc runs it at every yabai start
+    tiling status    the claude desktop, its windows, and the macOS settings this rests on
+
+The owner, 2026-10-05: AeroSpace's own workspaces "don't work for me" — real Apple desktops, and every
+claude terminal a seed opens tiled on desktop 5. SIP stays on (docs/tiling-2026-10-05.md D1), so:
+- Nothing can move a window to another desktop: yabai needs its Dock scripting addition for that,
+  i.e. SIP partly off (yabai wiki). A new Terminal window opens on the desktop in view.
+- So the view goes first: pickup and fork_claude_session open claude through open_in_terminal,
+  which activates Terminal, waits a second, then opens the window (bin/dispatch-rc does the same for
+  a seed's visible run, with `open -a Terminal` — from launchd that does not switch the desktop,
+  D2 in docs/tiling-2026-10-05.md) — and activating switches to
+  the desktop Terminal's windows are on (Desktop & Dock > "switch to a Space with open windows",
+  the default; `status` warns when it is off). Probed live 2026-10-05: from Desktop 1, the window
+  landed on Desktop 5, tiled. The Dock's Assign To did NOT override that (with windows on another
+  desktop activation went there), so placement follows Terminal's windows, not the binding.
+- Hence the claude desktop is a desktop, not a position: the one Terminal is bound to (the
+  `app-bindings` uuid in com.apple.spaces, what Dock > Options > Assign To writes), chosen as the
+  fifth by `install`. A desktop added before it makes it the sixth, still tiled with its
+  Terminals; the owner drags it back in Mission Control. Re-binding by position was tried and dropped
+  the same day: activation kept sending seeds to the old desktop while bsp moved to an empty one.
+- Tiling is yabai: bsp on the claude desktop, float everywhere else.
+
+The yabairc is the config dir's `lighthouse/yabairc` when there is one (an overlay's own, read
+through its link), else this module's settings/yabairc in the primary checkout — the regatta
+`home` file's, never the checkout this runs from: a worktree is removed after landing and would
+leave the link dangling.
+
+Python 3.9, stdlib only.
+"""
+import json
+import os
+import plistlib
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+DESKTOP = 5                      # the position install picks; the only copy of the number
+APP = "com.apple.terminal"       # app-bindings keys are lowercased bundle ids
+YABAI = "/opt/homebrew/bin/yabai"
+# never tiled, even on the claude desktop: dialogs and panels that are not a terminal's job
+FLOAT_APPS = "^(System Settings|System Information|Finder|Calculator|Archive Utility|Installer)$"
+PAD = "6"
+
+
+def spaces_prefs():
+    out = subprocess.run(["defaults", "export", "com.apple.spaces", "-"], capture_output=True).stdout
+    return plistlib.loads(out) if out else {}
+
+
+def bound_uuid(prefs):
+    return (prefs.get("app-bindings") or {}).get(APP)
+
+
+def desktop_uuid(prefs, n=DESKTOP):
+    """uuid of the n-th ordinary desktop (type 0; full-screen apps are type 4) on the main display."""
+    for m in prefs.get("SpacesDisplayConfiguration", {}).get("Management Data", {}).get("Monitors", []):
+        if m.get("Display Identifier") != "Main":
+            continue
+        desks = [s.get("uuid", "") for s in m.get("Spaces", []) if s.get("type") == 0]
+        return desks[n - 1] if len(desks) >= n else None
+    return None
+
+
+def yabai(*args):
+    try:
+        return subprocess.run([YABAI, "-m", *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
+
+
+def query_spaces(wait=30):
+    """yabai's spaces, or None. At login .yabairc runs apply while yabai is still starting: on
+    2026-10-06 the query answered a bare "[" and apply died before Desktop 5 got bsp, so every
+    desktop floated until yabai restarted a day later. Poll until the answer parses into at least
+    one space: there is always one, so an empty answer is yabai still starting too."""
+    deadline = time.time() + wait
+    while True:
+        r = yabai("query", "--spaces")
+        if r.returncode == 0:
+            try:
+                spaces = json.loads(r.stdout or "[]")
+                if spaces:
+                    return spaces
+            except ValueError:
+                pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(1)
+
+
+def plan(spaces, uuid):
+    """(index of the claude desktop or None, indexes to set back to float): bsp left on another
+    space — one that was the claude desktop before an install — would keep tiling."""
+    idx = next((s["index"] for s in spaces if uuid is not None and s.get("uuid") == uuid), None)
+    return idx, [s["index"] for s in spaces if s["index"] != idx and s.get("type") == "bsp"]
+
+
+def apply():
+    # global settings first: they must hold even when the claude desktop is missing
+    for cmd in (
+        ["config", "layout", "float"],
+        ["config", "window_placement", "second_child"],
+        ["config", "focus_follows_mouse", "off"],
+        ["config", "mouse_follows_focus", "off"],
+        ["rule", "--add", "label=float-apps", "app=" + FLOAT_APPS, "manage=off"],
+        ["rule", "--apply", "float-apps"],   # a rule reaches only later windows unless applied
+    ):
+        r = yabai(*cmd)
+        if r.returncode != 0:
+            print("tiling: yabai %s: %s" % (" ".join(cmd), (r.stderr or r.stdout).strip()))
+    spaces = query_spaces()
+    if spaces is None:
+        sys.exit("tiling: yabai not answering — running, with Accessibility allowed?")
+    uuid = bound_uuid(spaces_prefs())
+    idx, unfloat = plan(spaces, uuid)
+    for i in unfloat:
+        yabai("config", "--space", str(i), "layout", "float")
+    if idx is None:
+        sys.exit("tiling: Terminal is bound to no desktop yabai sees (%r): run `tiling install`" % uuid)
+    for key, val in (("layout", "bsp"), ("top_padding", PAD), ("bottom_padding", PAD),
+                     ("left_padding", PAD), ("right_padding", PAD), ("window_gap", PAD)):
+        yabai("config", "--space", str(idx), key, val)
+
+
+def status():
+    if subprocess.run(["defaults", "read", "NSGlobalDomain", "AppleSpacesSwitchOnActivate"],
+                      capture_output=True, text=True).stdout.strip() == "0":
+        print("WARNING: Desktop & Dock > 'switch to a Space with open windows' is off; seeds open on the desktop in view")
+    # absent means macOS's default, which is on
+    if subprocess.run(["defaults", "read", "com.apple.dock", "mru-spaces"],
+                      capture_output=True, text=True).stdout.strip() != "0":
+        print("WARNING: Desktop & Dock > 'Automatically rearrange Spaces' is on; desktops move by use")
+    prefs = spaces_prefs()
+    uuid = bound_uuid(prefs)
+    spaces = query_spaces(wait=5)
+    if spaces is None:
+        sys.exit("yabai not answering — running, with Accessibility allowed?")
+    s = next((s for s in spaces if uuid is not None and s.get("uuid") == uuid), None)
+    if not s:
+        sys.exit("Terminal is bound to no desktop yabai sees (%r): run `tiling install`" % uuid)
+    pos = [x["index"] for x in spaces if x.get("display") == s.get("display")
+           and not x.get("is-native-fullscreen")].index(s["index"]) + 1
+    print("claude desktop: Desktop %d%s, yabai space %d, layout %s, %d windows"
+          % (pos, "" if pos == DESKTOP else " (installed as %d: drag it back in Mission Control)" % DESKTOP,
+             s["index"], s["type"], len(s["windows"])))
+    if s["type"] != "bsp":
+        print("WARNING: the claude desktop does not tile: run `tiling apply` (it runs at yabai's start)")
+    w = yabai("query", "--windows", "--space", str(s["index"]))
+    for win in json.loads(w.stdout or "[]"):
+        state = "float" if win["is-floating"] else "tiled"
+        if win.get("is-visible") and not win.get("has-ax-reference", True):
+            state = "NOT MANAGED: yabai lost its accessibility handle — yabai --restart-service"
+        print("  %-10s %-50s %s" % (win["app"], win["title"][:50], state))
+
+
+def core():
+    """The regatta core's `common`, imported only here: `apply` runs at yabai's start and needs
+    none, so a missing core or an incomplete config never floats every desktop (B9 review)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+    import find_core
+    sys.path.insert(0, find_core.hooks())
+    import common
+    return common
+
+
+def rc_source():
+    """The file .yabairc links to (header), or None when neither exists yet."""
+    common = core()
+    key = common.CONFIG / "lighthouse" / "yabairc"
+    if key.exists():
+        return os.path.realpath(str(key))
+    home = common.config_line("home") or os.environ.get("REGATTA_HOME")
+    conf = Path(home).expanduser() / "modules" / "lighthouse" / "settings" / "yabairc" if home else None
+    return str(conf) if conf and conf.is_file() else None
+
+
+def install():
+    if not os.path.exists(YABAI):
+        sys.exit("no yabai at %s: brew install asmvik/formulae/yabai (the laptop only)" % YABAI)
+    link, conf = os.path.join(str(Path.home()), ".yabairc"), rc_source()
+    # the link and yabairc's `tiling apply` resolve in a primary checkout: before this lands
+    # there, yabai would start on a config that fails (review of 2026-10-05)
+    if not conf:
+        sys.exit("no yabairc yet (the config dir's lighthouse/yabairc, or settings/yabairc in the "
+                 "checkout the regatta home file names): land the branch, then install")
+    if os.path.islink(link) or not os.path.exists(link):
+        if os.path.islink(link):
+            os.remove(link)
+        os.symlink(conf, link)
+        print("linked %s -> %s" % (link, conf))
+    else:
+        print("%s is a real file; left alone — move it aside and re-run" % link)
+    prefs = spaces_prefs()
+    uuid = desktop_uuid(prefs)
+    if uuid is None:
+        sys.exit("fewer than %d desktops: add one in Mission Control and re-run" % DESKTOP)
+    if bound_uuid(prefs) != uuid:
+        subprocess.run(["defaults", "write", "com.apple.spaces", "app-bindings", "-dict-add", APP, uuid], check=True)
+        subprocess.run(["killall", "Dock"])   # the Dock reads app-bindings only at start
+    print("claude desktop: Desktop %d (%s); Terminal windows elsewhere stay put — drag them over once" % (DESKTOP, uuid))
+    running = subprocess.run(["pgrep", "-x", "yabai"], capture_output=True).returncode == 0
+    subprocess.run([YABAI, "--restart-service" if running else "--start-service"])
+    # Without Accessibility yabai quits with exit 0, which launchd's KeepAlive (SuccessfulExit
+    # false) takes as done: granting it later starts nothing (2026-10-05). Hence the re-run.
+    print("yabai service %s; on a first install, allow yabai under System Settings > Privacy &"
+          " Security > Accessibility, then run install again" % ("restarted" if running else "started"))
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    {"apply": apply, "status": status, "install": install}.get(cmd, lambda: sys.exit(__doc__))()

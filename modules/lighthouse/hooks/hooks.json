@@ -1,0 +1,13 @@
+{
+  "description": "lighthouse's guards: a login kept out of the repos it may not open, the secrets folders and the live settings file closed to agents, design artifacts made on the primary login, the package managers' bin on every Bash PATH.",
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/tool_path.py\""}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/account_guard.py\""}]}],
+    "PreToolUse": [
+      {"matcher": "Edit|Write|NotebookEdit|Bash", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secrets_guard.py\""}]},
+      {"matcher": "Read|Grep", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secrets_guard.py\""}]},
+      {"matcher": "Artifact", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/design_route.py\""}]}
+    ],
+    "PostToolUse": [{"matcher": "Artifact", "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/design_route.py\""}]}]
+  }
+}

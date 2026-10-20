@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""Machine settings as code — Claude Code's user settings.json declared in git, applied on every Mac.
+
+    claude-settings apply [--if-changed]      merge the declaration into this Mac's live file
+    claude-settings check [--json]            what is declared but missing, and what is live but undeclared
+    claude-settings declare [--host H] [--remove] <key> <json>
+    claude-settings deny-mcp "<server name>"  sugar: declare deniedMcpServers {"serverName": …}
+    claude-settings session-start             wharf's sync.py calls it: apply --if-changed + check, as hook JSON
+
+Why (docs/record/machine-settings-2026-09-29.md, D1-D4 answered 2026-09-29): a change the owner
+asks for "everywhere" — Claude Docs denied, a synced plugin off — used to live only in the one
+Mac's settings.json it was typed on. Nothing carried it to the other Mac, nothing recorded it,
+nothing noticed drift. Now the declaration (a `user.json` in a git repo, the config dir's
+`lighthouse/user.json`) is the record: a `shared` section and one section per host (`hosts.<name>`,
+the names common.host_name() gives, listed in the config dir's `lighthouse/hosts`), each a flat
+map of dotted key -> value.
+
+Only the keys in ALLOWED are declarable — ALLOWED, ENV_KEYS, VALUES and SEED are the
+declaration's schema. `env` only for the names in ENV_KEYS, which hold no secret — the rest of
+`env` holds secrets, so it is never declared, never compared and never printed (model routing D3,
+docs/record/model-routing-2026-09-30.md: CLAUDE_CODE_SUBAGENT_MODEL, declarable since 2026-10-04,
+not declared yet — held 2026-10-05, see ENV_KEYS). An install's own names join ENV_KEYS from the
+config dir's `lighthouse/env-keys.json` ({name: [the values it may take]}). Never
+`additionalDirectories` (the paths differ per Mac). Permissions are declared (the owner,
+2026-10-04: "[the always-on Mac] should be AT LEAST as unattended as [laptop] sessions"):
+`permissions.defaultMode` and `permissions.allow` were per machine until then, and the always-on
+Mac ran with no mode at all while the laptop ran `auto`, so its sessions asked for what the
+laptop's never did. A Mac's own allow click still lands in its live file; `check` then names it as
+undeclared, and declaring it in `shared` is how every Mac gets it. `model` and `theme` stay per
+machine: the one is chosen per session, the other is cosmetic.
+
+Apply keeps a state file beside the live one (`settings.declared.json`): what this Mac last took
+from the declaration. That is what lets a removal in git reach the live file, while an entry the
+machine added itself (a `/plugin` toggle, a Mac's own `ask` rule) is never touched — no ownership
+marks in the live file. Lists: declared entries are ensured, entries in state but no longer
+declared are removed. Maps: declared keys are set; a key in state but no longer declared is
+removed only while its live value still equals what was set. Declaring an entry the machine
+set by hand hands it to the declaration: un-declaring it later removes it here too (the
+laptop's 13 overrides and 4 plugins became declared this way on 2026-09-29). Writes are backup-first, atomic,
+and re-read afterwards; the report is what the re-read shows, never the return code. Backups
+(`settings.json.bak-*`, which the overlay's bootstrap.sh --hooks also writes and which hold env
+values) are pruned to the newest 5. The live file keeps its mode (0600: it holds env values);
+backups are 0600 too. Concurrent session starts serialise on a lock beside the state file.
+
+Hooks, the status line and working directories stay with the overlay's `bootstrap.sh --hooks`
+(add-only, bar its RETIRED list): moving them here was the design's E3, left out of the first cut
+so the session-start path changes as little as possible. `--hooks` calls `apply` after its own merge.
+
+Every settings change is reviewed before it lands (the owner, 2026-09-29, D3: "we still need a
+review, in case we switch off something important"). So `declare` edits the declaration in a
+worktree of the repo that holds it and stops at atlas's knowledge-commit review gate, printing the
+two commands that finish it: the reviewer agent on the diff, then `knowledge-commit … --review` and
+`apply`. Without atlas installed, `declare` refuses and says so (the design's G17).
+
+Paths: $CLAUDE_CONFIG_DIR (else the default config dir) for the live file; for the declaration
+$CLAUDE_SETTINGS_DECLARED, else the config dir's `lighthouse/user.json` (a link to the primary
+checkout's file, i.e. what has landed); $CLAUDE_SETTINGS_HOST overrides the host name (tests). No
+declaration: every verb is a silent no-op, which is what keeps the test suites off the real file
+(a suite that keeps the real config dir sets CLAUDE_SETTINGS_DECLARED to a missing file).
+Tests: tests/hooks.sh, "claude-settings".
+"""
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+ALLOWED = {  # key -> "list" | "map" | "scalar"
+    "deniedMcpServers": "list",
+    "disabledMcpjsonServers": "list",
+    "permissions.deny": "list",
+    "permissions.ask": "list",
+    "permissions.allow": "list",
+    "permissions.defaultMode": "scalar",  # a host section wins over shared
+    # Effort per model: the laptop had it for every model, the always-on Mac only for Opus, so a
+    # Fable fallback there ran at the default effort (host parity, 2026-10-04). SEED, below.
+    "effortLevel": "scalar",
+    "modelSettings": "map",
+    # Laptop only (its hosts section): on the always-on Mac launchd's Remote Control hosts serve
+    # the same folders, and a second claimant makes a host exit ("already served", rc-hosts revive()).
+    "remoteControlAtStartup": "scalar",
+    "skillOverrides": "map",
+    "enabledPlugins": "map",
+    # Paths Claude Code links from the main checkout into every worktree it creates itself — a
+    # Remote Control spawn included (orchestration E2, 2026-10-02). Neither switches anything on
+    # nor widens a permission: `.env` gets the link the git-workflow rule's recipe makes by hand.
+    # Probed on 2.1.288 with `claude -p --worktree`: a file works, and a linked .env too.
+    "worktree.symlinkDirectories": "list",
+    "env": "map",  # only the names in ENV_KEYS
+}
+# Environment names whose values hold no secret and mean the same on every machine — a command or
+# a `~` path is fine. A token or a per-Mac absolute path never goes here:
+# any other name under `env` is refused in the declaration, and skipped by `check`, whose
+# undeclared list would otherwise print its value.
+# Each name maps to the values it may take: a typo'd model alias would otherwise reach both Macs
+# and Claude Code falls back to the parent's model with only a debug-log line (review 2026-10-05).
+ENV_KEYS = {
+    # Unpinned agents (general-purpose, claude, guides) and forked skills with no `model:` run on
+    # this, not the parent's model (model routing D3, the owner 2026-10-02). Agents with `model:` set
+    # are unaffected. Rolling back: `declare --remove env`, apply, then revert — code from before
+    # ENV_KEYS never touches env, so a revert alone leaves the value in both live files.
+    "CLAUDE_CODE_SUBAGENT_MODEL": {"sonnet", "opus", "haiku", "fable", "inherit"},
+}
+
+
+def _install_env_keys():
+    """The install's own names, from the config dir's lighthouse/env-keys.json: {name: [values]}.
+    An unreadable file adds nothing (a declaration naming them is then refused, loudly)."""
+    try:
+        extra = json.loads((common.CONFIG / "lighthouse" / "env-keys.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(extra, dict):
+        return {}
+    return {k: set(v) for k, v in extra.items() if isinstance(k, str) and isinstance(v, list)
+            and all(isinstance(x, (str, int, float, bool)) for x in v)}
+
+
+ENV_KEYS.update(_install_env_keys())
+# Seed-only keys: set where absent, never reported or reset once present. /effort writes
+# modelSettings.<model>.effortLevel per task, as the tier table asks; declaring them as values
+# would report every such choice as drift and reset it at the next apply (review 2026-10-04).
+SEED = {"effortLevel", "modelSettings"}
+# Scalars take a known value or are refused: a typo or a widening mode must not reach both Macs.
+# bypassPermissions is left out on purpose — the design declares nothing that switches checks off.
+VALUES = {
+    "permissions.defaultMode": {"acceptEdits", "auto", "default", "dontAsk", "plan"},
+    "effortLevel": {"low", "medium", "high", "xhigh"},
+    "remoteControlAtStartup": {True, False},
+}
+# validate(): a shared allow list keeps it. Not ExitWorktree: a bare rule would also pass
+# remove-with-discard; hooks/worktree_allow.py approves every other ExitWorktree (review 2026-10-07).
+REQUIRED_ALLOW = ("EnterWorktree",)
+KEEP_BACKUPS = 5
+# common.host_name() on each Mac, from the config dir; without the key any lowercase host name is
+# taken (the check is for a typo, `Laptop` for `laptop`).
+HOSTS = set(common.config_lines("lighthouse/hosts") or [])
+HOST_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def tilde(p):
+    """p with the home folder written `~`, as a session in any repo can type it."""
+    home, p = str(Path.home()), str(p)
+    return "~" + p[len(home):] if p == home or p.startswith(home + os.sep) else p
+
+
+def _tool():
+    """This tool by the path sessions know: the overlay's old path while it is a shim there, else
+    this file."""
+    old = common.legacy_root()
+    return tilde(old / "bin" / "claude-settings") if old and (old / "bin" / "claude-settings").is_file() \
+        else tilde(Path(__file__).resolve())
+
+
+TOOL = _tool()
+
+
+def known_host(h):
+    return h in HOSTS if HOSTS else bool(HOST_NAME.fullmatch(h))
+
+
+def hosts_text():
+    return f"one of {sorted(HOSTS)}" if HOSTS else "a lowercase host name"
+
+
+def config_dir():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+
+
+def live_path():
+    return config_dir() / "settings.json"
+
+
+def state_path():
+    return config_dir() / "settings.declared.json"
+
+
+def declared_path():
+    p = os.environ.get("CLAUDE_SETTINGS_DECLARED")
+    if p:
+        return Path(p).expanduser()
+    return common.CONFIG / "lighthouse" / "user.json"
+
+
+def declaration_repo():
+    """(the git repo holding the declaration, its path in that repo), or (None, None)."""
+    real = Path(os.path.realpath(str(declared_path())))
+    r = subprocess.run(["git", "-C", str(real.parent), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None, None
+    top = Path(r.stdout.strip())
+    return top, real.relative_to(top)
+
+
+def declaration_label():
+    """`<repo>'s <path>` for a declaration in git, else its path."""
+    top, rel = declaration_repo()
+    return f"{top.name}'s {rel}" if top else tilde(declared_path())
+
+
+def host():
+    h = os.environ.get("CLAUDE_SETTINGS_HOST")
+    if h:
+        return h
+    return common.host_name()
+
+
+class Refused(Exception):
+    pass
+
+
+def validate(decl):
+    """The declaration's own shape: sections of allowed keys, each the right type."""
+    if not isinstance(decl, dict):
+        raise Refused("the declaration is not a JSON object")
+    extra = set(decl) - {"_about", "shared", "hosts"}
+    if extra:
+        raise Refused(f"unknown top-level key(s) {sorted(extra)}: only _about, shared, hosts")
+    sections = [("shared", decl.get("shared", {}))]
+    hosts = decl.get("hosts", {})
+    if not isinstance(hosts, dict):
+        raise Refused("`hosts` is not an object")
+    for h in hosts:
+        if not known_host(h):
+            raise Refused(f"`hosts.{h}`: a host is {hosts_text()} (common.host_name())")
+    sections += [(f"hosts.{h}", s) for h, s in hosts.items()]
+    for name, sec in sections:
+        if not isinstance(sec, dict):
+            raise Refused(f"`{name}` is not an object")
+        for k, v in sec.items():
+            if k.startswith("env."):
+                raise Refused(f"`{name}.{k}`: declare env as a map, `env: {{NAME: value}}`")
+            if k not in ALLOWED:
+                raise Refused(f"`{name}.{k}` is not declarable (allowed: {', '.join(sorted(ALLOWED))})")
+            want = {"list": list, "map": dict, "scalar": (str, int, float, bool)}[ALLOWED[k]]
+            if not isinstance(v, want):
+                raise Refused(f"`{name}.{k}` must be a {ALLOWED[k]}")
+            if k in VALUES and (type(v) is not type(next(iter(VALUES[k]))) or v not in VALUES[k]):
+                raise Refused(f"`{name}.{k}` = {json.dumps(v)} is not one of "
+                              f"{sorted(json.dumps(x) for x in VALUES[k])}")
+            if k == "env":
+                bad = sorted(set(v) - set(ENV_KEYS))
+                if bad:
+                    raise Refused(f"`{name}.env.{bad[0]}`: env is declared only for "
+                                  f"{', '.join(sorted(ENV_KEYS))} — other values are secrets")
+                for ek, ev in sorted(v.items()):
+                    if ev not in ENV_KEYS[ek]:
+                        raise Refused(f"`{name}.env.{ek}` = {json.dumps(ev)} is not one of "
+                                      f"{sorted(ENV_KEYS[ek])}")
+    # The owner, 2026-10-06: worktrees never ask, on any account. A shared allow list that drops one
+    # is refused here, so neither check nor apply carries the drop to a Mac. The cross-repo case
+    # needs hooks/worktree_allow.py as well (bootstrap.sh --check reports it); this is the rest.
+    allow = decl.get("shared", {}).get("permissions.allow")
+    if allow is not None:
+        gone = [t for t in REQUIRED_ALLOW if t not in allow]
+        if gone:
+            raise Refused(f"`shared.permissions.allow` must keep {', '.join(gone)} (the owner, 2026-10-06: "
+                          "worktrees never ask; hooks/worktree_allow.py)")
+    return decl
+
+
+def load_declaration():
+    """(raw text, effective {key: value} for this host), or (None, None) when there is none."""
+    p = declared_path()
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    try:
+        decl = json.loads(raw)
+    except ValueError as exc:
+        raise Refused(f"{p} is not valid JSON: {exc}")
+    validate(decl)
+    eff = {}
+    for sec in (decl.get("shared", {}), decl.get("hosts", {}).get(host(), {})):
+        for k, v in sec.items():
+            if ALLOWED[k] == "list":
+                have = eff.setdefault(k, [])
+                have.extend(e for e in v if e not in have)
+            elif ALLOWED[k] == "scalar":
+                eff[k] = v
+            else:
+                eff.setdefault(k, {}).update(v)
+    return raw, eff
+
+
+def get_path(cfg, key):
+    cur = cfg
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def set_path(cfg, key, value):
+    parts = key.split(".")
+    cur = cfg
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def del_path(cfg, key):
+    parts = key.split(".")
+    cur = cfg
+    for part in parts[:-1]:
+        cur = cur.get(part) if isinstance(cur, dict) else None
+        if cur is None:
+            return
+    cur.pop(parts[-1], None)
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except ValueError:
+        raise Refused(f"{path} is not valid JSON — fix it first, nothing changed")
+
+
+def fingerprint(raw):
+    return hashlib.sha256(f"{host()}\n{raw}".encode()).hexdigest()
+
+
+def merge(cfg, eff, prev):
+    """Apply `eff` to `cfg` in place, given what the last apply took (`prev`). Returns changes."""
+    changes = []
+    for key in sorted(set(eff) | set(prev)):
+        kind = ALLOWED.get(key)
+        if kind is None:
+            continue  # a key the allow-list dropped: left alone, like any machine-own key
+        want, was = eff.get(key), prev.get(key)
+        live = get_path(cfg, key)
+        if key in SEED:
+            if kind == "scalar" and want is not None and live is None:
+                changes.append(f"{key} = {json.dumps(want)}")
+                set_path(cfg, key, want)
+            elif kind == "map" and want:
+                live = dict(live) if isinstance(live, dict) else {}
+                fill = {k: v for k, v in want.items() if k not in live}
+                if fill:
+                    changes += [f"{key}.{k} = {json.dumps(v)}" for k, v in sorted(fill.items())]
+                    set_path(cfg, key, {**live, **fill})
+        elif kind == "scalar":
+            # Declared: set. Un-declared: removed only while it still holds what was set, as a
+            # map key is — a value the machine chose since is its own.
+            if want is not None and live != want:
+                changes.append(f"{key} = {json.dumps(want)}")
+                set_path(cfg, key, want)
+            elif want is None and was is not None and live == was:
+                changes.append(f"{key} = (removed)")
+                del_path(cfg, key)
+        elif kind == "list":
+            want, was = want or [], was or []
+            live = list(live) if isinstance(live, list) else []
+            # A required allow entry is never taken off a Mac, even when a declaration drops the
+            # key outright (validate only sees a list that is there; review 2026-10-10).
+            keep = REQUIRED_ALLOW if key == "permissions.allow" else ()
+            new = [e for e in live if not (e in was and e not in want and e not in keep)]
+            new += [e for e in want if e not in new]
+            if new != live:
+                gone = [e for e in live if e not in new]
+                added = [e for e in new if e not in live]
+                changes += [f"{key} -{json.dumps(e)}" for e in gone] + [f"{key} +{json.dumps(e)}" for e in added]
+                if new:
+                    set_path(cfg, key, new)
+                else:
+                    del_path(cfg, key)
+        else:
+            want, was = want or {}, was or {}
+            live = dict(live) if isinstance(live, dict) else {}
+            new = dict(live)
+            for k, v in was.items():
+                if k not in want and new.get(k) == v:
+                    del new[k]
+            new.update(want)
+            if new != live:
+                for k in sorted(set(live) | set(new)):
+                    if live.get(k, "∅") != new.get(k, "∅"):
+                        changes.append(f"{key}.{k} = {json.dumps(new[k]) if k in new else '(removed)'}")
+                if new:
+                    set_path(cfg, key, new)
+                else:
+                    del_path(cfg, key)
+    return changes
+
+
+def write_private(path, data, mode=0o600):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
+def write_atomic(path, obj):
+    """Per-process tmp (two session starts at once), the target's own mode kept, else 0600."""
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    write_private(tmp, (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode(), mode)
+    os.chmod(tmp, mode)  # O_CREAT's mode is masked by the umask
+    try:
+        json.loads(tmp.read_text(encoding="utf-8"))  # never leave an invalid file behind
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+class Lock:
+    """flock beside the state file: one apply at a time on this Mac (as sync.py's indicator).
+    `d`: the config dir whose settings.json is written, when that is not this session's
+    (bin/sheep writes every login dir's)."""
+    def __init__(self, d=None):
+        self.d = Path(d) if d else None
+
+    def __enter__(self):
+        d = self.d or config_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        self.fh = open(d / "settings.declared.lock", "w")
+        deadline = time.time() + 3
+        while True:
+            try:
+                fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.time() > deadline:
+                    raise Refused("another apply holds the lock — skipped this time")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        self.fh.close()
+
+
+def prune_backups(live):
+    baks = sorted(live.parent.glob(live.name + ".bak-*"))
+    for old in baks[:-KEEP_BACKUPS]:
+        old.unlink()
+
+
+def apply(if_changed=False):
+    """Returns the list of change lines (empty: nothing to do)."""
+    raw, eff = load_declaration()
+    if raw is None:
+        return []
+    with Lock():
+        return _apply(raw, eff, if_changed)
+
+
+def _apply(raw, eff, if_changed):
+    live, state_p = live_path(), state_path()
+    state = read_json(state_p, {})
+    fp = fingerprint(raw)
+    if if_changed and state.get("hash") == fp:
+        return []
+    cfg = read_json(live, {})
+    if not isinstance(cfg, dict):
+        raise Refused(f"{live} is not a JSON object — nothing changed")
+    changes = merge(cfg, eff, state.get("applied") or {})
+    if changes:
+        if live.exists():
+            write_private(live.with_name(f"{live.name}.bak-{dt.datetime.now():%Y%m%d%H%M%S}"), live.read_bytes())
+        write_atomic(live, cfg)
+        prune_backups(live)
+        missing = gaps(read_json(live, {}), eff)[0]  # the re-read, not the write, is the report
+        if missing:
+            raise Refused(f"wrote {live} but a re-read misses: {'; '.join(missing[:3])}")
+    write_atomic(state_p, {"hash": fp, "host": host(), "at": dt.datetime.now().isoformat(timespec="seconds"),
+                           "applied": eff})
+    return changes
+
+
+def gaps(cfg, eff):
+    """(missing, undeclared): declared entries absent live; live entries under a declared key
+    that no section declares for this host."""
+    missing, undeclared = [], []
+    for key, want in sorted(eff.items()):
+        live = get_path(cfg, key)
+        if key in SEED:
+            if ALLOWED[key] == "scalar" and live is None:
+                missing.append(f"{key} = {json.dumps(want)}")
+            elif ALLOWED[key] == "map":
+                live = live if isinstance(live, dict) else {}
+                missing += [f"{key}.{k} = {json.dumps(v)}" for k, v in want.items() if k not in live]
+        elif ALLOWED[key] == "scalar":
+            if live != want:
+                missing.append(f"{key} = {json.dumps(want)}")
+        elif ALLOWED[key] == "list":
+            live = live if isinstance(live, list) else []
+            missing += [f"{key} {json.dumps(e)}" for e in want if e not in live]
+            undeclared += [(key, e) for e in live if e not in want]
+        else:
+            live = live if isinstance(live, dict) else {}
+            missing += [f"{key}.{k} = {json.dumps(v)}" for k, v in want.items() if live.get(k, "∅") != v]
+            undeclared += [(key, {k: v}) for k, v in live.items()
+                           if k not in want and (key != "env" or k in ENV_KEYS)]  # never print a secret
+    return missing, undeclared
+
+
+def fix_line(key, value):
+    # shared, not --host: the Macs work the same unless there is a reason (the owner, 2026-10-04);
+    # a per-host entry is the exception, typed on purpose.
+    return f"{TOOL} declare {key} {shlex.quote(json.dumps(value, ensure_ascii=False))}"
+
+
+def check(as_json=False):
+    raw, eff = load_declaration()
+    if raw is None:
+        out = {"declared": 0, "missing": [], "undeclared": [], "note": f"no declaration at {declared_path()}"}
+    else:
+        missing, undeclared = gaps(read_json(live_path(), {}), eff)
+        n = sum(1 if ALLOWED[k] == "scalar" else len(v) for k, v in eff.items())
+        out = {"declared": n, "missing": missing,
+               "undeclared": [{"key": k, "value": v, "fix": fix_line(k, v)} for k, v in undeclared]}
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False))
+        return out
+    if "note" in out:
+        print(out["note"])
+        return out
+    print(f"user settings: {out['declared']} declared, {len(out['missing'])} missing, "
+          f"{len(out['undeclared'])} undeclared")
+    for m in out["missing"]:
+        print(f"  missing     {m}   ({TOOL} apply)")
+    for u in out["undeclared"]:
+        print(f"  undeclared  {u['key']} {json.dumps(u['value'], ensure_ascii=False)}   ({u['fix']})")
+    return out
+
+
+def declare(args):
+    h, remove = None, False
+    while args and args[0].startswith("--"):
+        if args[0] == "--host" and len(args) > 1:
+            h, args = args[1].lower(), args[2:]
+            if not known_host(h):
+                raise Refused(f"--host is {hosts_text()}")
+        elif args[0] == "--remove":
+            remove, args = True, args[1:]
+        else:
+            raise Refused(f"unknown option {args[0]}")
+    if len(args) != 2:
+        raise Refused("usage: declare [--host H] [--remove] <key> <json>")
+    try:
+        key, value = args[0], json.loads(args[1])
+    except ValueError:
+        raise Refused(f"the value must be JSON — a string is quoted: '\"{args[1]}\"'")
+    if key not in ALLOWED:
+        raise Refused(f"`{key}` is not declarable (allowed: {', '.join(sorted(ALLOWED))})")
+    if key == "env" and not remove:
+        validate({"shared": {key: value}})  # a secret's name is refused before touching git
+    kc = str(common.tool("knowledge-commit") or "")
+    if not kc:
+        raise Refused(f"atlas's knowledge-commit is not installed: edit {tilde(declared_path())} by hand, "
+                      "have the diff reviewed, land it, then apply (G17)")
+    top, rel = declaration_repo()
+    if not top:
+        raise Refused(f"the declaration {tilde(declared_path())} is in no git repo: declare edits it through a review")
+    # One worktree per call: --open reuses a slug's worktree, and a second session's --in would
+    # otherwise carry the first one's pending edit into its own review.
+    slug = f"settings-{dt.datetime.now():%H%M%S}"
+    wt = subprocess.run([kc, top.name, "--open", slug], capture_output=True, text=True)
+    if wt.returncode != 0:
+        raise Refused(f"knowledge-commit --open failed: {wt.stderr.strip()}")
+    wt = Path(wt.stdout.strip().splitlines()[-1])
+    path = wt / rel
+    decl = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"shared": {}, "hosts": {}}
+    sec = decl.setdefault("hosts", {}).setdefault(h, {}) if h else decl.setdefault("shared", {})
+    if ALLOWED[key] == "list":
+        items = value if isinstance(value, list) else [value]
+        cur = sec.get(key, [])
+        cur = [e for e in cur if e not in items] if remove else cur + [e for e in items if e not in cur]
+    elif ALLOWED[key] == "scalar":
+        cur = None if remove else value
+    else:
+        if not isinstance(value, dict):
+            raise Refused(f"`{key}` is a map: give an object, e.g. '{{\"name\": false}}'")
+        cur = dict(sec.get(key, {}))
+        for k, v in value.items():
+            if remove:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+    if (cur is not None) if ALLOWED[key] == "scalar" else cur:
+        sec[key] = cur
+    else:
+        sec.pop(key, None)
+    validate(decl)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, decl)
+    where = f"hosts.{h}" if h else "shared"
+    what = f"{'remove from' if remove else 'add to'} {where} {key}: {json.dumps(value, ensure_ascii=False)}"
+    print(f"declared in {path}: {what}")
+    print("Every settings change is reviewed before it lands (D3). Next, in this session:")
+    q, msg = shlex.quote, shlex.quote(f"Settings: {what}")
+    print(f"  1. {q(kc)} {q(top.name)} --in {q(str(wt))} -m {msg}   (stops at the review gate, prints the diff)")
+    print("  2. the reviewer agent on that diff: does this switch off anything a session needs?")
+    print(f"  3. {q(kc)} {q(top.name)} --in {q(str(wt))} --review <report> -m {msg}")
+    print(f"  4. {TOOL} apply   (this Mac now; the other at its next session start)")
+
+
+def session_start():
+    """One JSON line for sync.py: {"user": [...], "model": [...]}."""
+    user, model = [], []
+    try:
+        changes = apply(if_changed=True)
+        if changes:
+            user.append(f"settings: {len(changes)} declared change(s) applied — " + "; ".join(changes[:4])
+                        + (" …" if len(changes) > 4 else ""))
+        raw, eff = load_declaration()
+        if raw is not None:
+            missing, undeclared = gaps(read_json(live_path(), {}), eff)
+            if undeclared or missing:
+                model.append(
+                    f"{tilde(live_path())} differs from {declaration_label()}: "
+                    f"{len(undeclared)} undeclared, {len(missing)} missing — `{TOOL} check` "
+                    "lists each with the `declare` line that records it; record one only if it was meant")
+    except Exception as exc:  # never a traceback into a session start
+        user.append(f"⚠ settings: {exc}")
+    print(json.dumps({"user": user, "model": model}, ensure_ascii=False))
+
+
+def main(argv):
+    verb, args = (argv[0], argv[1:]) if argv else ("", [])
+    try:
+        if verb == "apply":
+            changes = apply(if_changed="--if-changed" in args)
+            print("\n".join(f"  {c}" for c in changes) if changes else "claude-settings: nothing to apply")
+        elif verb == "check":
+            check(as_json="--json" in args)
+        elif verb == "declare":
+            declare(args)
+        elif verb == "deny-mcp" and len(args) == 1:
+            declare(["deniedMcpServers", json.dumps({"serverName": args[0]})])
+        elif verb == "session-start":
+            session_start()
+        else:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+    except Refused as exc:
+        print(f"claude-settings: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
