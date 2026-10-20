@@ -17,7 +17,7 @@ claude terminal a seed opens tiled on desktop 5. SIP stays on (docs/tiling-2026-
   D2 in docs/tiling-2026-10-05.md) — and activating switches to
   the desktop Terminal's windows are on (Desktop & Dock > "switch to a Space with open windows",
   the default; `status` warns when it is off). Probed live 2026-10-05: from Desktop 1, the window
-  landed on Desktop 5, tiled. The Dock's Assign To did NOT override that (with windows on another
+  opened on Desktop 5, tiled. The Dock's Assign To did NOT override that (with windows on another
   desktop activation went there), so placement follows Terminal's windows, not the binding.
 - Hence the claude desktop is a desktop, not a position: the one Terminal is bound to (the
   `app-bindings` uuid in com.apple.spaces, what Dock > Options > Assign To writes), chosen as the
@@ -28,7 +28,7 @@ claude terminal a seed opens tiled on desktop 5. SIP stays on (docs/tiling-2026-
 
 The yabairc is the config dir's `lighthouse/yabairc` when there is one (an overlay's own, read
 through its link), else this module's settings/yabairc in the primary checkout — the regatta
-`home` file's, never the checkout this runs from: a worktree is removed after landing and would
+`home` file's, never the checkout this runs from: a worktree is removed after launching and would
 leave the link dangling.
 
 Python 3.9, stdlib only.
@@ -186,11 +186,11 @@ def install():
     if not os.path.exists(YABAI):
         sys.exit("no yabai at %s: brew install asmvik/formulae/yabai (the laptop only)" % YABAI)
     link, conf = os.path.join(str(Path.home()), ".yabairc"), rc_source()
-    # the link and yabairc's `tiling apply` resolve in a primary checkout: before this lands
+    # the link and yabairc's `tiling apply` resolve in a primary checkout: before this launches
     # there, yabai would start on a config that fails (review of 2026-10-05)
     if not conf:
         sys.exit("no yabairc yet (the config dir's lighthouse/yabairc, or settings/yabairc in the "
-                 "checkout the regatta home file names): land the branch, then install")
+                 "checkout the regatta home file names): launch the branch, then install")
     if os.path.islink(link) or not os.path.exists(link):
         if os.path.islink(link):
             os.remove(link)
