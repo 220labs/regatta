@@ -11,6 +11,11 @@
       "description": "The core every module builds on: shared library, model gate, cost, secrets, the regatta CLI."
     },
     {
+      "name": "atlas",
+      "source": "./modules/atlas",
+      "description": "Knowledge with three lifecycles: the bulletin (/share), promotion (/promote), the vault commit, the docs map and routines kept in git."
+    },
+    {
       "name": "helloworld",
       "source": "./modules/helloworld",
       "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."

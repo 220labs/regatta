@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""skill-frontmatter <file>... — does each skill or agent file's frontmatter parse?
+
+Claude Code reads a SKILL.md (and an agents/*.md) by its YAML frontmatter. One that does not
+parse is not an error anywhere a session would see it: the skill just loads without its
+description, or not at all. Two went unnoticed that way until /doctor named them on
+2026-09-29 (new-project's description and routine's argument-hint, both unquoted text that
+YAML reads as syntax). bootstrap.sh --check runs this over every skill and agent file, so the
+next one fails the check that gates a landing instead.
+
+A file passes when it opens with a `---` line, the block closes with another, the block
+parses as a YAML mapping, and `description` is a non-empty string (what the skill list
+shows; without it the skill is invisible to the model). Prints one `bad` line per failure,
+then a count. Exit 0 all good, 1 any bad, 3 PyYAML missing (checked nothing — say so, never
+pass). Stdlib + PyYAML, like the rest.
+"""
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print("skill-frontmatter: PyYAML is not installed for this python3 — nothing checked", file=sys.stderr)
+    sys.exit(3)
+
+
+def problem(path):
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError as e:
+        return f"unreadable ({e.strerror})"
+    if not lines or lines[0].strip() != "---":
+        return "no frontmatter (first line is not ---)"
+    try:
+        end = next(i for i, l in enumerate(lines[1:], 1) if l.strip() == "---")
+    except StopIteration:
+        return "frontmatter never closes (no second ---)"
+    try:
+        data = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f"line {mark.line + 2}: " if mark else ""  # +1 for 0-based, +1 for the opening ---
+        return f"{where}{getattr(e, 'problem', None) or e}"
+    if not isinstance(data, dict):
+        return "frontmatter is not a key: value mapping"
+    d = data.get("description")
+    if not isinstance(d, str) or not d.strip():
+        return "no description (or not a string)"
+    return None
+
+
+def main(paths):
+    if not paths:
+        print("usage: skill-frontmatter <file>...", file=sys.stderr)
+        return 2
+    bad = 0
+    for p in paths:
+        why = problem(p)
+        if why:
+            print(f"bad {p}: {why}")
+            bad += 1
+    print(f"{len(paths) - bad}/{len(paths)} parse")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

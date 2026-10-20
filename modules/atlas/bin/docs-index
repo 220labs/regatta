@@ -1,0 +1,880 @@
+#!/usr/bin/env python3
+"""docs-index — the map of a repo's docs: charts say what is, records say why. Stdlib, 3.9.
+
+    docs-index check [--strict] [--repo PATH]   the map against the files; exit 1 only with --strict
+    docs-index mode [--repo PATH]               the map's `mode:` value (dry | live), `none` without a map
+    docs-index banner RECORD CHART|none [--repo PATH]
+                                                write or rewrite the record's banner (line 3)
+    docs-index reviews [--write] [--repo PATH]  each record's review word (its banner's ` · review: …`, E14)
+                                                as a suffix in its Records cell; without --write, what is stale
+    docs-index move RECORD… [--section] [--also REPO]… [--repo PATH]
+                                                git mv a record to docs/record/ and fix every live
+                                                reference to it in the same working tree
+    docs-index relink [--repo PATH]             re-point live files that still name a moved record by its
+                                                old path (a branch that landed after the move)
+    docs-index skips [--repo PATH]              the skip set: files an unmerged claude/* branch changes
+    docs-index due [--since DATE] [--max N] [--repo PATH]
+                                                the topics a charts run should rewrite, and the skipped ones;
+                                                since defaults to the day of the last `Charts: <day>` on main
+    docs-index reads [--days N | --since DATE] [--until DATE] [--dir TRANSCRIPTS] [--repo PATH]
+                                                what sessions read of docs/, from the archived transcripts
+                                                (transcripts/<repo>/ in the projects folder): the before/after measure
+
+A **chart** is an undated `docs/<topic>.md`: the current state of one component, ≤ 120 lines,
+ending in a `Records:` line. A **record** is a dated `docs/<topic>-<yyyy-mm-dd>.md`: a design,
+its D-list and the owner's answers, kept as it was made. The **map** is `docs/README.md`: a
+`mode:` line and one table, Topic · Chart · Records · Code, every record in exactly one row.
+A record moves to `docs/record/` when it is first mapped; one an unmerged branch edits waits for
+the next run (the design of 2026-10-03, D2 (b)).
+
+`--repo` is the checkout to act on — the charts run passes its worktree. Without it, the git
+checkout of the current directory: the script lives in its module, not in the repo whose docs it
+maps, so "the repo beside this script" (its rule before it moved) names no docs at all.
+
+What `check` holds a map to (errors; `--strict`, which bootstrap.sh --check passes once the map
+says `mode: live`, turns them into exit 1):
+  - every record in docs/record/ has a row, exactly one, and every row's record exists (one
+    still in docs/ without a row is a new design the next run maps: a note);
+  - a moved record's link to another record resolves (a batch move must not strand one);
+  - a chart named in a row exists, and its `Records:` line names exactly the row's records
+    (structurally: file names parsed from both, compared as sets);
+  - a record's banner, when it has one, points at its row's chart (or says "no chart yet");
+  - no live file names a moved record by the path it left (`relink` fixes one).
+Notes, never errors: a mapped record still in docs/ or without a banner — the next charts run
+moves and banners it, unless an unmerged branch edits it (the skip set); a chart over 120 lines
+— the four undated docs predate the shape, and the run that picks their topic rewrites them.
+
+What `move` rewrites, and what it never touches (D2's reply): in every live file of the repo —
+tracked text that is not a record, not log.md and not sextant/ — `docs/<name>` becomes
+`docs/record/<name>`, and a relative Markdown link that resolved to the record is re-pointed;
+in the moved record itself, its own relative links are re-based from docs/ to docs/record/.
+Another record's text is never edited: a record left in docs/ that links to a moved one heals
+when it moves in its turn (its links are resolved against docs/record/ then). The one exception
+is the tool's own earlier edit: a moved record whose link it re-based to `../<name>` gets
+`<name>` back when that record joins it. `--also REPO` rewrites `<this repo>/docs/<name>` and its
+prose forms (also_ref; the name is the primary checkout's folder name) in that
+repo's tracked text too, never its records (`in_place`/`records` of its workflow.json), with no
+git mv there; the caller commits it. `--section` is the weekly run's form: it refuses a record
+that any live file outside docs/, or an `--also` repo, names — the unattended run writes docs/
+and log.md only, so such a move waits for /embark, where it lands reviewed.
+`banner` refuses a record in the skip set (R2: the top lines conflict with that branch) unless
+`--force`.
+"""
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import atlaslib  # noqa: E402
+RECORD_RE = re.compile(r"^(?P<topic>.+)-(?P<date>\d{4}-\d{2}-\d{2})\.md$")
+LINK_RE = re.compile(r"\]\(<?([^)>\s#]+)(#[^)>\s]*)?>?\)")
+MODE_RE = re.compile(r"^mode:\s*(\S+)\s*$", re.M)
+BANNER_HEAD = "> **Record.**"
+CHART_MAX = 120
+NOT_LIVE = ("log.md",)
+# sextant/: dated entries, records of their week. templates/: copies installed elsewhere and
+# byte-compared there (bootstrap.sh --check cmp's the pre-push hooks) — a rewrite would fail the
+# check on both Macs until every copy is reinstalled (review 2026-10-04). bench/design-2026-10-04/:
+# captured evidence, kept as the models wrote it (docs/xhigh-design-test-2026-10-04.md).
+NOT_LIVE_DIRS = ("sextant/", "templates/", "bench/design-2026-10-04/")
+
+
+def git(repo, *args, check=False):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if check and r.returncode:
+        sys.exit(f"docs-index: git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def is_record_path(rel):
+    """docs/<x>-<date>.md or docs/record/<x>-<date>.md, as a repo-relative path."""
+    parts = rel.split("/")
+    if parts[:1] != ["docs"]:
+        return False
+    if len(parts) == 2:
+        return bool(RECORD_RE.match(parts[1]))
+    return len(parts) == 3 and parts[1] == "record" and parts[2].endswith(".md")
+
+
+def records_on_disk(repo):
+    """{name: repo-relative path} for every record in docs/ and docs/record/."""
+    found = {}
+    for sub in ("docs", "docs/record"):
+        d = repo / sub
+        if d.is_dir():
+            for p in sorted(d.iterdir()):
+                if p.is_file() and RECORD_RE.match(p.name):
+                    found.setdefault(p.name, f"{sub}/{p.name}")
+    return found
+
+
+# ---- the map ------------------------------------------------------------------------------
+
+class Row:
+    def __init__(self, topic, chart, records, code, line):
+        self.topic, self.chart, self.records, self.code, self.line = topic, chart, records, code, line
+
+
+def read_map(repo):
+    """(text, mode, [Row]) — the chart and record cells as repo-relative paths, resolved from
+    docs/; the code cell as the backticked paths in it. None when there is no map."""
+    p = repo / "docs" / "README.md"
+    if not p.is_file():
+        return None
+    text = p.read_text(encoding="utf-8")
+    m = MODE_RE.search(text)
+    rows, header = [], False
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.startswith("|"):
+            header = False if not line.strip() else header
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if cells and cells[0].lower() == "topic":
+            header = True
+            continue
+        if not header or set("".join(cells)) <= set("-: "):
+            continue
+        cells += [""] * (4 - len(cells))
+        chart = [norm("docs", t) for t, _ in LINK_RE.findall(cells[1])]
+        recs = [norm("docs", t) for t, _ in LINK_RE.findall(cells[2])]
+        code = re.findall(r"`([^`]+)`", cells[3])
+        rows.append(Row(cells[0], chart[0] if chart else None, recs, code, n))
+    return text, (m.group(1) if m else "dry"), rows
+
+
+def norm(base, target):
+    """A link target, resolved against the repo-relative folder `base`, as a repo-relative path."""
+    return os.path.normpath(os.path.join(base, target)).replace(os.sep, "/")
+
+
+def rel(from_dir, path):
+    return os.path.relpath(path, from_dir).replace(os.sep, "/")
+
+
+# ---- banner -------------------------------------------------------------------------------
+
+# The review status a record landed with (E14 of the autofinish design, 2026-10-02), stamped at the
+# end of its banner by `keel status --stamp` (/finish, `keel stand --apply`): ` · review:
+# unseen → stood`. Every rewrite of the banner keeps it; `reviews` copies it into the map's
+# Records cell as a suffix, so the map says which records the owner never looked at.
+REVIEW_TAIL_RE = re.compile(r"\s·\s+review:\s+(?P<word>.+?)\s*$")
+CELL_REVIEW_RE = re.compile(r"\s+\*(?:unseen|opened|partial|reviewed)[^*]*\*")
+
+
+def review_tail(line):
+    m = REVIEW_TAIL_RE.search(line or "")
+    return m.group("word") if m else None
+
+
+KEEL_ANSWERED_RE = re.compile(r"^[\s>*_-]*status\s*:[*_]*\s*\S.*?(\d+) of (\d+) decisions? answered", re.I)
+
+
+def status_review(lines):
+    """The review word the Keel `Status:` line gives a doc whose banner carries none (entry S5): every
+    decision answered `reviewed`, some `partial`, none `unseen`; None without a count. A line cannot
+    tell the owner's answer from a stood one or a form open from none, so the banner's own word, which
+    `keel status --stamp` writes from git at landing, always wins where it exists."""
+    for l in lines[:15]:
+        m = KEEL_ANSWERED_RE.match(l)
+        if m:
+            n, j = int(m.group(1)), int(m.group(2))
+            return None if not j else "reviewed" if n >= j else "partial" if n else "unseen"
+    return None
+
+
+_KEEL = []
+
+
+def keel_module():
+    """The keel module's `keel` loaded as a module (its `set_of` is the one rule for what a nested
+    set is), or None. An optional peer, found through the core (G19): without keel, or without
+    the core, no set is known and every record needs a row of its own, as before sets existed."""
+    if not _KEEL:
+        try:
+            from importlib.machinery import SourceFileLoader
+            path = atlaslib.tool("keel")
+            _KEEL.append(SourceFileLoader("keel_mod", str(path)).load_module() if path else None)
+        except Exception:
+            _KEEL.append(None)
+    return _KEEL[0]
+
+
+def set_components(repo, names):
+    """{component name: entry name} among the record file names `names` (a dict name → repo-relative
+    path): a nested set is one record row, the entry's (shape section 3, entry S5) — a component is
+    mapped by its entry's row and needs none of its own."""
+    k = keel_module()
+    out = {}
+    for name, rel in names.items():
+        try:
+            s = k and k.set_of(repo / rel)
+        except Exception:
+            s = None
+        if s and s["entry"].name != name and Path(repo / rel).resolve() in s["files"]:
+            out[name] = s["entry"].name
+    return out
+
+
+def banner_text(record_rel, chart_rel):
+    here = os.path.dirname(record_rel)
+    if chart_rel:
+        return (f"{BANNER_HEAD} Current state: [{chart_rel}]({rel(here, chart_rel)}). Below are the "
+                "design and the decisions as they were made; an open item here is stale unless the "
+                "chart says otherwise.")
+    return (f"{BANNER_HEAD} No chart yet — the map [docs/README.md]({rel(here, 'docs/README.md')}) "
+            "says where the newest state is.")
+
+
+def banner_of(lines):
+    """Index of the banner line, or None. It sits on line 3 (after the title and a blank line);
+    any line in the first five that starts with the banner's head counts, so a hand edit above
+    it does not make the next run add a second."""
+    for i, l in enumerate(lines[:5]):
+        if l.startswith(BANNER_HEAD):
+            return i
+    return None
+
+
+def write_banner(repo, record_rel, chart_rel, review=None):
+    """Write or rewrite the banner; the review word it carries survives (`review` sets it)."""
+    p = repo / record_rel
+    text = p.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    new = banner_text(record_rel, chart_rel)
+    i = banner_of(lines)
+    word = review or (review_tail(lines[i]) if i is not None else None)
+    if word:
+        new += f" · review: {word}"
+    if i is not None:
+        if lines[i] == new:
+            return False
+        lines[i] = new
+    else:
+        # after the title and its blank line; a blank line after the banner ends the quote, or
+        # the record's first paragraph would be read as part of it (Markdown's lazy continuation)
+        if lines[0].startswith("#") and len(lines) > 1 and not lines[1].strip():
+            lines[2:2] = [new, ""]
+        elif lines[0].startswith("#"):
+            lines[1:1] = ["", new, ""]  # a title with text right under it: never above the title
+        else:
+            lines[0:0] = [new, ""]
+    p.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
+def banner_target(record_rel, line):
+    """What a banner line points at: the chart's repo-relative path, '' for "no chart yet"."""
+    links = [norm(os.path.dirname(record_rel), t) for t, _ in LINK_RE.findall(line)]
+    return "" if "No chart yet" in line else (links[0] if links else "?")
+
+
+def stamp_review(repo, record_rel, word):
+    """Set the review word on the record's banner — the current banner rewritten, or a new one
+    pointing where its map row does (no chart yet when unmapped: the charts run re-banners it
+    when it maps it, section 3 of skills/aurora/sections/charts.md). In a repo with no map only
+    an existing banner takes the word, its own text kept: nothing asked for a banner there.
+    True when the file changed."""
+    repo = Path(repo)
+    m = read_map(repo)
+    p = repo / record_rel
+    lines = p.read_text(encoding="utf-8").split("\n")
+    i = banner_of(lines)
+    if m is None:
+        if i is None:
+            return False
+        tail = REVIEW_TAIL_RE.search(lines[i])
+        new = (lines[i][:tail.start()] if tail else lines[i].rstrip()) + f" · review: {word}"
+        if new == lines[i]:
+            return False
+        lines[i] = new
+        p.write_text("\n".join(lines), encoding="utf-8")
+        return True
+    target = banner_target(record_rel, lines[i]) if i is not None else "?"
+    if target == "?":  # no banner, or one that points nowhere: the row says where
+        chart = row_chart(m[2], record_rel)
+    else:
+        chart = target or None  # "" is "no chart yet"
+    return write_banner(repo, record_rel, chart, review=word)
+
+
+def row_chart(rows, record_rel):
+    name = os.path.basename(record_rel)
+    return next((r.chart for r in rows if any(os.path.basename(x) == name for x in r.records)), None)
+
+
+def reviews(repo, write=False):
+    """[(record, word)] for every mapped record whose Records cell lacks its banner's review word
+    (or shows another); with `write`, the map is rewritten so each cell shows it as `*word*` after
+    the record's link. The map's only column-free way to say which records nobody looked at."""
+    m = read_map(repo)
+    if m is None:
+        return []
+    text, _, rows = m
+    lines = text.splitlines()  # read_map's own count, so r.line indexes the same line
+    stale = []
+    for r in rows:
+        parts = lines[r.line - 1].split("|")  # "", Topic, Chart, Records, Code, "": only the Records cell
+        if len(parts) < 4:
+            continue
+        new = parts[3]
+        for rec in r.records:
+            p = repo / rec
+            if not p.is_file():
+                continue
+            ls = p.read_text(encoding="utf-8").split("\n")
+            i = banner_of(ls)
+            word = (review_tail(ls[i]) if i is not None else None) or status_review(ls)
+            # the link as the cell writes it, and the suffix that may follow it
+            for t, anchor in LINK_RE.findall(new):
+                if norm("docs", t) != rec:
+                    continue
+                pat = re.compile(r"(\[[^\]]*\]\(<?" + re.escape(t + (anchor or "")) + r">?\))(" + CELL_REVIEW_RE.pattern + r")?")
+                mm = pat.search(new)
+                if not mm:
+                    continue
+                want = mm.group(1) + (f" *{word}*" if word else "")
+                if mm.group(0) != want:
+                    stale.append((rec, word or "(none)"))
+                    new = new[:mm.start()] + want + new[mm.end():]
+                break
+        parts[3] = new
+        lines[r.line - 1] = "|".join(parts)
+    if write and stale:
+        (repo / "docs" / "README.md").write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""),
+                                                 encoding="utf-8")
+    return stale
+
+
+# ---- check --------------------------------------------------------------------------------
+
+def chart_records(text):
+    """The record file names a chart's `Records:` section names (a `Records:` line and the
+    list under it, up to the next blank line or heading)."""
+    out, on = set(), False
+    for line in text.splitlines():
+        if re.match(r"^\s*(\*\*)?Records:?(\*\*)?:?", line) or re.match(r"^#+\s+Records\b", line):
+            on = True
+        elif on and (not line.strip() or line.startswith("#")) and out:
+            break
+        if on:
+            out |= {os.path.basename(t) for t, _ in LINK_RE.findall(line) if RECORD_RE.match(os.path.basename(t))}
+    return out
+
+
+def check(repo):
+    """(errors, notes, summary)."""
+    m = read_map(repo)
+    if m is None:
+        return ["no map: docs/README.md is missing"], [], ""
+    _, mode, rows = m
+    errors, notes, long = [], [], []
+    disk = records_on_disk(repo)
+    comps = set_components(repo, disk)
+    seen = {}
+    for r in rows:
+        for rec in r.records:
+            name = os.path.basename(rec)
+            if name in seen:
+                errors.append(f"{name} is in two rows: {seen[name]} and {r.topic}")
+            seen[name] = r.topic
+            if not (repo / rec).is_file():
+                where = disk.get(name)
+                errors.append(f"{r.topic}: {rec} does not exist" + (f" — it is at {where}" if where else ""))
+        if r.chart:
+            cp = repo / r.chart
+            if not cp.is_file():
+                errors.append(f"{r.topic}: chart {r.chart} does not exist")
+                continue
+            ctext = cp.read_text(encoding="utf-8")
+            n = len(ctext.splitlines())
+            if n > CHART_MAX:  # a note: the four undated docs predate the shape; a run rewrites them
+                long.append(f"{r.chart} ({n})")
+            named, want = chart_records(ctext), {os.path.basename(x) for x in r.records}
+            named -= {c for c, e in comps.items() if e in want}  # a set's components need no line of their own
+            if named != want:
+                if want - named:
+                    errors.append(f"{r.chart}: Records: lacks {', '.join(sorted(want - named))}")
+                if named - want:
+                    errors.append(f"{r.chart}: Records: names {', '.join(sorted(named - want))}, not in its row")
+    for f in stale_refs(repo):
+        errors.append(f"{f} names a record by the path it left (docs-index relink fixes it)")
+    unmapped = sorted(set(disk) - set(seen) - {c for c, e in comps.items() if e in seen})
+    for name in unmapped:  # a new design in docs/ waits for the run; one in docs/record/ was moved unmapped
+        if disk[name].startswith("docs/record/"):
+            errors.append(f"{disk[name]} has no row in docs/README.md")
+    waiting = [n for n in unmapped if not disk[n].startswith("docs/record/")]
+    if waiting:
+        notes.append(f"{len(waiting)} new record(s) not mapped yet (the next charts run maps them): "
+                     f"{', '.join(waiting[:6])}{' …' if len(waiting) > 6 else ''}")
+    unmoved, unbannered = [], []
+    for r in rows:
+        for rec in r.records:
+            p = repo / rec
+            if not p.is_file():
+                continue
+            if rec.count("/") == 1:
+                unmoved.append(os.path.basename(rec))
+            text = p.read_text(encoding="utf-8")
+            lines = text.split("\n")
+            # a moved record's link to a record that resolves nowhere, but would in docs/record/
+            # (one still in docs/ heals when it moves: its links are re-based then)
+            for t, _ in (LINK_RE.findall(text) if rec.startswith("docs/record/") else []):
+                b = os.path.basename(t)
+                if (RECORD_RE.match(b) and not re.match(r"^[a-z]+:|^/|^~", t)
+                        and not (repo / norm(os.path.dirname(rec), t)).exists() and (repo / "docs/record" / b).exists()):
+                    errors.append(f"{rec}: link {t} is broken — {b} is in docs/record/")
+            i = banner_of(lines)
+            if i is None:
+                unbannered.append(os.path.basename(rec))
+                continue
+            got, want = banner_target(rec, lines[i]), (r.chart or "")
+            if got != want:
+                errors.append(f"{rec}: banner points at {got or 'no chart'}, its row at {want or 'no chart'}"
+                              f" (docs-index banner {os.path.basename(rec)} {want or 'none'} fixes it)")
+    if long:
+        notes.append(f"over {CHART_MAX} lines, rewritten to the shape when a run picks the topic: {', '.join(long)}")
+    if unmoved:
+        notes.append(f"{len(unmoved)} mapped record(s) still in docs/ (moved by the next charts run "
+                     f"unless a branch edits them): {', '.join(unmoved[:6])}{' …' if len(unmoved) > 6 else ''}")
+    if unbannered:
+        notes.append(f"{len(unbannered)} record(s) without a banner: {', '.join(unbannered[:6])}"
+                     f"{' …' if len(unbannered) > 6 else ''}")
+    stale = reviews(repo)
+    if stale:
+        notes.append(f"{len(stale)} Records cell(s) lack their record's review word (docs-index reviews --write): "
+                     f"{', '.join(os.path.basename(r) for r, _ in stale[:6])}{' …' if len(stale) > 6 else ''}")
+    charts = sum(1 for r in rows if r.chart)
+    summary = f"{len(seen)} records in {len(rows)} topics, {charts} charts cross-linked, mode {mode}"
+    return errors, notes, summary
+
+
+# ---- skips --------------------------------------------------------------------------------
+
+def skip_set(repo):
+    """{path: [branch, …]}: files an unmerged claude/* branch (local or origin) changes, where
+    the branch's copy was never main's. A branch GitHub rebase-merged keeps its own shas, and
+    one that landed before main edited the file again holds an older copy of main's — neither
+    is a conflict, so both are judged by the blob, not by ancestry."""
+    base_ref = "origin/main" if git(repo, "rev-parse", "-q", "--verify", "origin/main").strip() else "main"
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/heads/claude/", "refs/remotes/origin/claude/").split()
+    own = git(repo, "symbolic-ref", "-q", "--short", "HEAD").strip()  # the run's own branch edits freely
+    names = {}
+    for ref in refs:
+        short = re.sub(r"^refs/(heads|remotes/origin)/", "", ref)
+        if short != own and not short.endswith("-raw"):  # -raw: /finish's pre-curation backup, as hooks/branches.py skips it
+            names.setdefault(short, ref)
+    hist, out = {}, {}
+    for short, ref in sorted(names.items()):
+        base = git(repo, "merge-base", base_ref, ref).strip()
+        if not base:
+            continue
+        for f in git(repo, "-c", "core.quotePath=false", "diff", "--name-only", base, ref).splitlines():
+            if f not in hist:
+                hist[f] = {""} | set(git(repo, "log", "--format=", "--raw", "--no-abbrev", base_ref, "--", f).split())
+            if git(repo, "rev-parse", "-q", "--verify", f"{ref}:{f}").strip() in hist[f]:
+                continue
+            out.setdefault(f, []).append(short)
+    return out
+
+
+# ---- move ---------------------------------------------------------------------------------
+
+def tracked_text(repo):
+    """Tracked and untracked-but-not-ignored text: a map or chart written this run is not
+    committed yet, and its links must move with the records (the first build's map was not)."""
+    for f in git(repo, "-c", "core.quotePath=false", "ls-files", "--cached", "--others", "--exclude-standard").splitlines():
+        p = repo / f
+        if p.is_symlink() or not p.is_file():
+            continue
+        try:
+            yield f, p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+
+
+def live(f):
+    return not (is_record_path(f) or f in NOT_LIVE or f.startswith(NOT_LIVE_DIRS))
+
+
+def rebase_links(text, old_dir, new_dir, repo, moved):
+    """The text's relative Markdown links, re-pointed for a file moving from old_dir to new_dir.
+    A target that was moved (now or by an earlier run) is followed to docs/record/. When the
+    file stays where it is, only such links change: any other link is left exactly as written."""
+    def fix(m):
+        t, frag = m.group(1), m.group(2) or ""
+        if re.match(r"^[a-z]+:|^/|^~", t):
+            return m.group(0)
+        was = norm(old_dir, t)
+        target = moved.get(was, was)
+        if not (repo / target).exists():
+            alt = f"docs/record/{os.path.basename(target)}"
+            if RECORD_RE.match(os.path.basename(target)) and (repo / alt).exists():
+                target = alt
+            else:
+                return m.group(0)
+        if old_dir == new_dir and target == was:
+            return m.group(0)
+        new = rel(new_dir, target)
+        return m.group(0) if new == t else m.group(0).replace(t + frag, new + frag, 1)
+    return LINK_RE.sub(fix, text)
+
+
+def ref_re(src):
+    """`docs/<name>` as a path of its own — not a longer name that starts the same."""
+    return re.compile(r"(?<![\w-])" + re.escape(src) + r"(?![\w-])")
+
+
+def rewrite_live(repo, plan, texts, write=True):
+    """Every live file: `docs/<name>` → `docs/record/<name>`, and relative links re-pointed.
+    The files that changed (or, with write=False, would)."""
+    changed = set()
+    for f, t in texts.items():
+        if not live(f) or f in plan.values():
+            continue
+        n = t
+        for src, dst in plan.items():
+            if os.path.basename(src) in n:
+                n = ref_re(src).sub(dst, n)
+        d = os.path.dirname(f)
+        n = rebase_links(n, d, d, repo, plan)
+        if n != t:
+            if write:
+                (repo / f).write_text(n, encoding="utf-8")
+            changed.add(f)
+    return changed
+
+
+def moved_plan(repo):
+    """{docs/<name>: docs/record/<name>} for every record already in docs/record/."""
+    return {f"docs/{n}": p for n, p in records_on_disk(repo).items() if p.startswith("docs/record/")}
+
+
+def stale_refs(repo):
+    """Live files still naming a moved record by the path it left, as a path or a relative link —
+    written on a branch that landed after the move (the first build raced 37 branches).
+    `relink` fixes them; `check` reports them."""
+    return sorted(rewrite_live(repo, moved_plan(repo), dict(tracked_text(repo)), write=False))
+
+
+def repo_name(repo):
+    """The folder name of the repo's primary checkout — what another repo calls it — also when
+    `repo` is a worktree of it (the charts run's case)."""
+    common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return Path(common).parent.name if common else Path(repo).name
+
+
+def also_ref(src, name):
+    """Another repo naming a record of repo `name`: `<name>/docs/<x>`, and the prose forms
+    "`<name>` docs/<x>", "<name> docs/<x>" and "<name> `docs/<x>`", across a line break too
+    (the vault used three; reviews of 2026-10-04). Group 1 is the prefix up to `docs/`, kept on
+    a rewrite."""
+    return re.compile(r"((?<![\w-])" + re.escape(name) + r"`?(?:/|\s+)`?)" + re.escape(src) + r"(?![\w-])")
+
+
+def records_of(repo):
+    """The paths a repo keeps as records — `in_place` and `records` of its .claude/workflow.json
+    (a vault's memory/, dreams/, log.md, index.md …) — as a tuple for str.startswith."""
+    import json
+    try:
+        w = json.loads((Path(repo) / ".claude" / "workflow.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    return tuple(str(p) for p in (w.get("in_place") or []) + (w.get("records") or []))
+
+
+def move(repo, names, section=False, also=()):
+    skips = skip_set(repo)
+    disk = records_on_disk(repo)
+    plan, refused = {}, []
+    for raw in names:
+        name = os.path.basename(raw)
+        src = disk.get(name)
+        if not src:
+            refused.append(f"{name}: no such record")
+        elif src.startswith("docs/record/"):
+            refused.append(f"{name}: already in docs/record/")
+        elif src in skips:
+            refused.append(f"{name}: skipped — {', '.join(skips[src][:3])} edits it")
+        else:
+            plan[src] = f"docs/record/{name}"
+    texts = dict(tracked_text(repo))
+    elsewhere = {}
+    me = repo_name(repo) if also else None
+    for a in also:
+        kept = records_of(Path(a))
+        for f, t in tracked_text(Path(a)):
+            if is_record_path(f) or f.startswith(kept):  # its records are never rewritten, so never in the way
+                continue
+            for src in plan:
+                if also_ref(src, me).search(t):
+                    elsewhere.setdefault(src, []).append(f"{Path(a).name}/{f}")
+    if section:  # the unattended run writes docs/ and log.md only: any other file naming it waits
+        for src in list(plan):
+            name = os.path.basename(src)
+            who = sorted(f for f, t in texts.items()
+                         if live(f) and not f.startswith("docs/") and name in t) + elsewhere.get(src, [])
+            if who:
+                refused.append(f"{name}: named in {', '.join(who[:4])}{' …' if len(who) > 4 else ''} — "
+                               "moves at /embark (docs-index move, reviewed), not unattended")
+                del plan[src]
+    if not plan:
+        return [], refused
+    (repo / "docs" / "record").mkdir(exist_ok=True)
+    for src, dst in plan.items():
+        git(repo, "mv", src, dst, check=True)
+    changed = set()
+    for src, dst in plan.items():  # the moved records' own links, re-based
+        p = repo / dst
+        t = p.read_text(encoding="utf-8")
+        n = rebase_links(t, "docs", "docs/record", repo, plan)
+        if n != t:
+            p.write_text(n, encoding="utf-8")
+            changed.add(dst)
+    changed |= rewrite_live(repo, plan, texts)
+    # A record moved in an earlier batch had its link to a then-unmoved record re-based to
+    # `../<name>`; now <name> is beside it, so that link — the tool's own edit — is set back.
+    # The one exception to "never another record's text": the link was valid before any move.
+    for name, rec in records_on_disk(repo).items():
+        if not rec.startswith("docs/record/") or rec in plan.values():
+            continue
+        p = repo / rec
+        t = p.read_text(encoding="utf-8")
+        n = t
+        for dst in plan.values():
+            n = n.replace(f"](../{os.path.basename(dst)}", f"]({os.path.basename(dst)}")
+        if n != t:
+            p.write_text(n, encoding="utf-8")
+            changed.add(rec)
+    for a in also:
+        ar = Path(a)
+        kept = records_of(ar)
+        for f, t in tracked_text(ar):
+            if is_record_path(f) or f.startswith(kept):  # that repo's records stay as written (D2)
+                continue
+            n = t
+            for src, dst in plan.items():
+                n = also_ref(src, me).sub(lambda m: m.group(1) + dst, n)
+            if n != t:
+                (ar / f).write_text(n, encoding="utf-8")
+                changed.add(f"{ar.name}/{f}")
+    return [f"moved {src} → {dst}" for src, dst in plan.items()] + \
+           [f"rewrote {f}" for f in sorted(changed)], refused
+
+
+# ---- due ----------------------------------------------------------------------------------
+
+def last_run(repo):
+    """'<day> 00:00' of the last charts run that landed — the day in its `Charts: <day>` subject,
+    the run's own day: a rebase merge sets the committer date to the merge, and a bare date
+    reads as that day at the current time, so either would miss what landed in between
+    (review 2026-10-04). None before the first."""
+    s = git(repo, "log", "main", "-1", "--grep=^Charts: ", "--format=%s").strip()
+    m = re.match(r"^Charts: (\d{4}-\d{2}-\d{2})", s)
+    return f"{m.group(1)} 00:00" if m else None
+
+
+def due(repo, since, cap):
+    """(picked, skipped): topics a charts run rewrites — every topic whose Code or Records cell
+    holds a path changed on main since `since`, newest change first, at most `cap`; plus one
+    beyond the cap, the topic without a chart whose newest record is oldest. A topic is held
+    (skipped, never touched) only when an unmerged branch edits its chart or one of its records:
+    the run never writes code."""
+    m = read_map(repo)
+    if m is None:
+        return [], []
+    _, _, rows = m
+    base_ref = "main"
+    changed = git(repo, "-c", "core.quotePath=false", "log", base_ref, f"--since={since}",
+                  "--format=", "--name-only").splitlines()
+    changed = [c for c in changed if c]
+    skips = skip_set(repo)
+    def touches(r, paths):
+        names = {os.path.basename(x) for x in r.records}
+        for c in paths:
+            if os.path.basename(c) in names or (r.chart and c == r.chart):
+                return True
+            if any(c == k.rstrip("/") or c.startswith(k.rstrip("/") + "/") for k in r.code):
+                return True
+        return False
+    def held(r):  # the run writes the chart and banners the records, never the code
+        names = {os.path.basename(x) for x in r.records}
+        return any(os.path.basename(s) in names or (r.chart and s == r.chart) for s in skips)
+    picked, skipped = [], []
+    for c in changed:  # git log lists newest first: the freshest topics win the cap
+        for r in rows:
+            if r.topic not in picked + skipped and touches(r, [c]):
+                (skipped if held(r) else picked).append(r.topic)
+    waiting = picked[cap:]
+    over = [f"{t} (over the cap of {cap})" for t in waiting]
+    picked = picked[:cap]
+    stale = sorted((r for r in rows if not r.chart and r.records and r.topic not in picked + skipped + waiting),
+                   key=lambda r: max(RECORD_RE.match(os.path.basename(x)).group("date") for x in r.records))
+    for r in stale:  # plus one: the oldest topic with no chart, beyond the cap (design section 1)
+        if not held(r):
+            picked.append(r.topic)
+            break
+    return picked, skipped + over
+
+
+# ---- reads --------------------------------------------------------------------------------
+
+def reads(tdir, since, until=None):
+    """What sessions read of docs/: per kind (record, chart, map, other), the Read calls, the
+    lines they returned and the sessions; plus the sessions that read a record but neither the
+    map nor a chart (R3's trigger for the Read|Grep hook). Archived transcripts are one JSONL per
+    session per day, named <yyyy-mm-dd>-<id8>.jsonl; a Read's lines are counted from its tool
+    result, so an offset/limit read counts what it returned, not the file's length."""
+    import json
+    stats = {k: [0, 0, set()] for k in ("record", "chart", "map", "other")}
+    only_records = set()
+    for p in sorted(Path(tdir).glob("*.jsonl")):
+        day = p.name[:10]
+        if day < since or (until and day > until):
+            continue
+        calls, kinds = {}, set()
+        try:
+            fh = p.open(encoding="utf-8")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"Read"' not in line and '"tool_result"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                for c in (e.get("message") or {}).get("content") or []:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "tool_use" and c.get("name") == "Read":
+                        fp = str((c.get("input") or {}).get("file_path", ""))
+                        m = re.search(r"/docs/(.+\.md)$", fp)
+                        if m:
+                            name = m.group(1)
+                            kind = ("map" if name == "README.md" else
+                                    "record" if RECORD_RE.match(os.path.basename(name)) and not name.startswith("handoff/") else
+                                    "chart" if "/" not in name else "other")
+                            calls[c.get("id")] = kind
+                    elif c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                        kind = calls.pop(c.get("tool_use_id"))
+                        body = c.get("content")
+                        text = body if isinstance(body, str) else " ".join(
+                            str(b.get("text", "")) for b in body or [] if isinstance(b, dict))
+                        s = stats[kind]
+                        s[0] += 1
+                        s[1] += len(text.splitlines())
+                        s[2].add(p.name)
+                        kinds.add(kind)
+        if "record" in kinds and not kinds & {"map", "chart"}:
+            only_records.add(p.name)
+    return stats, only_records
+
+
+# ---- main ---------------------------------------------------------------------------------
+
+def here():
+    """The git checkout of the current directory, else the directory itself (--repo's default)."""
+    r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return Path(r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else os.getcwd()).resolve()
+
+
+def main(argv):
+    args, repo, opts = [], None, {"also": []}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--repo":
+            repo = Path(argv[i + 1]).resolve(); i += 2
+        elif a == "--also":
+            opts["also"].append(argv[i + 1]); i += 2
+        elif a in ("--since", "--max", "--days", "--dir", "--until"):
+            opts[a[2:]] = argv[i + 1]; i += 2
+        elif a.startswith("--"):
+            opts[a[2:]] = True; i += 1
+        else:
+            args.append(a); i += 1
+    repo = repo or here()
+    cmd = args[0] if args else "help"
+    if cmd in ("help", "-h") or opts.get("help"):
+        print(__doc__)
+        return 0
+    if cmd == "mode":
+        m = read_map(repo)
+        print(m[1] if m else "none")
+        return 0
+    if cmd == "check":
+        errors, notes, summary = check(repo)
+        for e in errors:
+            print(f"ERROR {e}")
+        for n in notes:
+            print(f"note  {n}")
+        print(("ok    " if not errors else "BAD   ") + (summary or "no map"))
+        return 1 if errors and opts.get("strict") else 0
+    if cmd == "banner":
+        if len(args) != 3:
+            sys.exit("docs-index: banner RECORD CHART|none")
+        disk = records_on_disk(repo)
+        name = os.path.basename(args[1])
+        rec = disk.get(name)
+        if not rec:
+            sys.exit(f"docs-index: no record {name}")
+        chart = None if args[2] == "none" else norm(".", args[2] if "/" in args[2] else f"docs/{args[2]}")
+        if chart and not (repo / chart).is_file():
+            sys.exit(f"docs-index: no chart {chart}")
+        held = skip_set(repo).get(rec)
+        if held and not opts.get("force"):  # R2: a banner at the top conflicts with that branch's edit
+            print(f"refused {rec}: skipped — {', '.join(held[:3])} edits it (--force to banner anyway)")
+            return 1
+        print(("wrote" if write_banner(repo, rec, chart) else "unchanged") + f" {rec}")
+        return 0
+    if cmd == "reviews":
+        stale = reviews(repo, write=bool(opts.get("write")))
+        for rec, word in stale:
+            print(("wrote" if opts.get("write") else "stale") + f" {rec}: {word}")
+        if not stale:
+            print("ok    every Records cell shows its record's review word")
+        return 0
+    if cmd == "move":
+        done, refused = move(repo, args[1:], section=bool(opts.get("section")), also=opts["also"])
+        for d in done:
+            print(d)
+        for r in refused:
+            print(f"refused {r}")
+        return 0 if done or not refused else 1
+    if cmd == "relink":
+        for f in sorted(rewrite_live(repo, moved_plan(repo), dict(tracked_text(repo)))):
+            print(f"rewrote {f}")
+        return 0
+    if cmd == "skips":
+        for f, bs in sorted(skip_set(repo).items()):
+            print(f"{f}\t{', '.join(bs)}")
+        return 0
+    if cmd == "due":
+        since = opts.get("since") or last_run(repo) or "7 days ago"
+        print(f"since: {since}")
+        picked, skipped = due(repo, since, int(opts.get("max", 3)))
+        print("pick: " + (", ".join(picked) or "none"))
+        print("skip: " + (", ".join(skipped) or "none"))
+        return 0
+    if cmd == "reads":
+        import datetime
+        days = int(opts.get("days", 7))
+        since = opts.get("since") or (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+        # archive_transcript's folder (its CLAUDE_TRANSCRIPT_ARCHIVE too), under the primary's name:
+        # a worktree reads its repo's transcripts
+        archive = Path(os.environ.get("CLAUDE_TRANSCRIPT_ARCHIVE") or Path.home() / "projects" / "transcripts")
+        tdir = opts.get("dir") or str(archive.expanduser() / (repo.parent.parent.parent.name if repo.parent.name == "worktrees" else repo.name))
+        stats, only = reads(tdir, since, opts.get("until"))
+        print(f"docs reads in {tdir} since {since}" + (f" until {opts['until']}" if opts.get("until") else ""))
+        for k, (n, lines, sess) in stats.items():
+            print(f"  {k:7} {n:5} reads {lines:8} lines {len(sess):4} sessions")
+        print(f"  sessions reading a record but no map or chart: {len(only)}")
+        return 0
+    sys.exit(f"docs-index: unknown command {cmd} (docs-index help)")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
