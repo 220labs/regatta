@@ -841,7 +841,10 @@ NW="$T/nowharf"; mkdir -p "$NW/modules" "$T/nothing"
 cp -R "$B/../../regatta" "$NW/modules/regatta"; cp -R "$B/.." "$NW/modules/lighthouse"
 check "$(peer "$T/nothing" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "False None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
   "no wharf, no plumb: the worktree check skipped, no usage column, the window's command printed"
-check "$(peer "$OV" | head -1)" "True None" "  the overlay's worktree_allow.py found through the core"
+# From the same wharf-less copy: from this repo the core finds wharf's own worktree_allow.py
+# before the overlay's, and wharf's open_in_terminal ran osascript on a Mac and exited on Linux.
+check "$(peer "$OV" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "True None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
+  "  the overlay's worktree_allow.py found through the core"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
