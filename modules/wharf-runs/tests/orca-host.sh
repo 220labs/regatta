@@ -267,7 +267,10 @@ check(rc == 1 and "✗ scopes: no `scopes` tool found" in out and "paired with s
 (cfg / "Orca.app").mkdir(); oh.ORCA_APP = cfg / "Orca.app"
 fake = cfg / "bin"; fake.mkdir(); (fake / "orca").write_text("#!/bin/sh\n"); (fake / "orca").chmod(0o755)
 oh.orca_env = lambda: {"PATH": str(fake)}
+# lighthouse sits beside this module in the checkout and holds `account`: hidden for this case
+real_tool = oh.common.tool; oh.common.tool = lambda n: None if n == "account" else real_tool(n)
 rc, out = run(["setup"])
+oh.common.tool = real_tool
 check(rc == 1 and "orca-sync skipped" in out and "orca-host check:" in out,
       "setup without the account tool, scopes failing: the sync skipped, and check still runs")
 (cfg / "legacy").write_text("/nowhere\n")
