@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# health — bring the knowledge checkouts to origin's main, then the overlay's check, unattended.
+#
+# Scheduled on the always-on Mac only (the overlay's bootstrap.sh --schedule; launchd runs the
+# overlay's old path, an exec shim to this file), daily at 20:40: nobody sits there, so nothing
+# else notices when it drifts. On 2026-09-29 that Mac's overlay main was 13 commits behind origin
+# — every session there ran yesterday's rules and hooks — and its check had been failing on two
+# stale pre-push copies since the 22nd, unseen. The laptop runs the same check in the /embark
+# sitting instead (the owner's D1, 2026-09-29). 20:40 is before /aurora (21:00) and /sextant
+# (Monday 02:00), so the night loop reads the latest rules, skills and vault.
+#
+# Safe unattended, by construction: the only writes are (1) a fast-forward of a primary checkout
+# that is on main and clean — sync.py's rule at every session start, never a rebase, reset or
+# stash — (2) the tend below, and (3) one bulletin line, committed and pushed through
+# knowledge-commit, when the check or the tend fails in a way it has not already reported, so the
+# next session on either Mac sees it. It never runs bootstrap --hooks. The tend is sync.py's tend
+# only (`sync.py --tend`): no declared settings, no `secrets check --fix`, which launchd could not
+# read Drive for. No model runs; the log is health.log in LOGDIR below.
+#
+# Then the tend (docs/record/aurora-sequence-2026-10-04.md E2, the owner's D1 = A): wharf's
+# bin/tend runs sync.py's tend (its session-start worktree pass) in every repo cloned here — the
+# always-on Mac's parked worktrees are otherwise tended by nothing, since no session starts there
+# on its own. Its writes are sync.py's, under sync.py's guards (a live session, a fresh lock or a
+# write within 2 h keeps a worktree): a dead dirty worktree committed and pushed to its claude/*
+# branch, a clean landed or empty one removed, its branch archived. On since 2026-10-05, when R5's
+# probe printed clean there (`bin/tend --dry-run` over ssh: 37 worktrees in 12 repos, every line
+# `keep`, the two with a live session among them). Off again is the one-word change of TEND
+# below, landed like any other. A tend that fails (`FAILED tend: <repos>`) is posted like a
+# failing check, under its own state file: logged only, a tend failing daily there showed
+# nowhere but health.log (2026-10-05).
+#
+# Then the privacy survey (docs/tcc-one-identity-2026-10-18.md): `rc-hosts --tcc-survey --health`
+# lists the last day's privacy requests macOS refused to a versioned claude — a claude started
+# without claude-host, whose grants every Claude Code update drops. On the always-on Mac nobody is
+# at the screen to answer a prompt, so a session stops (or, for Full Disk Access, fails without
+# asking) and nothing says so; this posts it like a failing check, under its own state file, and
+# only once the Mac's sitting is done (before it, the list is what the sitting fixes). Read-only:
+# `log show`.
+#
+# Where things are (regatta-modules B9): the core through lib/find_core.py; every peer through
+# `common.tool()` — wharf's `tend` and `sync.py`, wharf-runs' `rc-hosts`, atlas's `bulletin.py` and
+# `knowledge-commit` — and a peer not installed is a logged skip, never a failure of the pass (the
+# design's G16, G17). The checkouts to fast-forward are the config dir's `lighthouse/ff` (one path
+# per line; none without it); the bulletin is committed in the vault repo `lighthouse/vault` names
+# (a knowledge-commit repo name; without it the line is posted, not committed); the check is the
+# overlay's `bootstrap.sh --check` (the core's `legacy` checkout), else `regatta check`.
+#
+# HEALTH_COMMIT replaces knowledge-commit for the suite (it would push the real vault).
+# HEALTH_TEND (on|off) overrides TEND for the suite; HEALTH_TEND_CMD replaces bin/tend there.
+# HEALTH_TCC (on|off) and HEALTH_TCC_CMD do the same for the privacy survey (`log show` is slow and
+# reads the real Mac). HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# A fetch or push stalled on a half-open connection would hold the job, and launchd skips a
+# calendar job's later fires while it is still running: one stall would stop it for good.
+export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+export BOOTSTRAP_UNATTENDED=1  # --check skips what launchd cannot read (Drive's secrets folder)
+BIN="$(cd "$(dirname "$0")" && pwd)"
+LIB="$BIN/../lib"
+# core <python, with sys and common imported> [args…]: one question to the regatta core.
+core() { local code=$1; shift; python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import find_core
+sys.path.insert(0, find_core.hooks()); import common
+$code" "$LIB" "$@"; }
+peer() { core 'print(common.tool(sys.argv[2]) or "")' "$1" 2>/dev/null; }
+LOGDIR="${HEALTH_LOG_DIR:-$HOME/Library/Logs/claude-weekly}"
+mkdir -p "$LOGDIR"
+exec >>"$LOGDIR/health.log" 2>&1
+echo "== $(date '+%Y-%m-%d %H:%M')"
+C=$(core 'print(common.legacy_root() or "")') || { echo "the regatta core would not load (missing, or its config incomplete: the core's bin/regatta check names the keys) — nothing checked"; exit 2; }
+# the ff checkouts, plus the core's own: the moved tools run from it, so it drifts as they did (B9 review)
+FF=$(core 'import os; ff = common.config_lines("lighthouse/ff") or []; r = common.regatta_root()
+seen = {os.path.realpath(os.path.expanduser(x)) for x in ff}
+print("\n".join(ff + ([str(r)] if r and os.path.realpath(str(r)) not in seen else [])))')
+VAULT_REPO=$(core 'print(common.config_line("lighthouse/vault"))')
+COMMIT="${HEALTH_COMMIT:-$(peer knowledge-commit)}"
+BULLETIN="${HEALTH_BULLETIN_CMD:-$(peer bulletin.py)}"
+SYNC=$(peer sync.py)
+TEND="${HEALTH_TEND:-on}"  # on since R5 printed clean on the always-on Mac, 2026-10-05 (header)
+TCC="${HEALTH_TCC:-on}"    # the privacy survey (header)
+state="$LOGDIR/health.last"   # the failure last posted; a repeat posts nothing
+
+# ff <repo>: fast-forward main to origin/main when it is checked out and clean; say why not.
+ff() {
+  local r=$1 n; n=$(basename "$r")
+  [ -d "$r/.git" ] || { echo "ff $n: not a repo"; return; }
+  [ "$(git -C "$r" symbolic-ref --quiet --short HEAD)" = main ] || { echo "ff $n: not on main — left"; return; }
+  # Dirt only under the repo's in_place records does not stop it (sync.py's gated_dirt, D3): git
+  # refuses an overlapping file by itself.
+  # Without wharf's sync.py, any dirt stops it.
+  local gated
+  if [ -n "$SYNC" ]; then
+    gated=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import sync; print(len(sync.gated_dirt(Path(sys.argv[2]))))" "$(dirname "$SYNC")" "$r" 2>/dev/null || echo 1)
+  else
+    gated=$(git -C "$r" status --porcelain 2>/dev/null | grep -c . || true)
+  fi
+  [ "$gated" = 0 ] || { echo "ff $n: uncommitted changes — left"; return; }
+  local m; for m in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do  # sync.py's BUSY
+    [ -e "$r/.git/$m" ] && { echo "ff $n: $m in progress — left"; return; }
+  done
+  git -C "$r" fetch -q origin main 2>/dev/null || { echo "ff $n: fetch failed — left"; return; }
+  local before; before=$(git -C "$r" rev-parse --short HEAD)
+  if git -C "$r" merge -q --ff-only origin/main 2>/dev/null; then
+    [ "$before" = "$(git -C "$r" rev-parse --short HEAD)" ] && echo "ff $n: current" \
+      || echo "ff $n: $before → $(git -C "$r" rev-parse --short HEAD)"
+  else
+    echo "ff $n: could not fast-forward (diverged, or git busy) — left"
+  fi
+}
+host=$(core 'print(common.host_name())' 2>/dev/null || hostname -s)
+
+# post_once <state file> <what fails> <failures>: one bulletin line, committed — unless the same
+# failures were posted less than a week ago. A bulletin line lives 7 days, so a failure that
+# outlasts it is posted again — the week of silence this job exists to end.
+post_once() {
+  local st=$1 what=$2 fails=$3 line
+  if [ -f "$st" ] && [ "$(cat "$st")" = "$fails" ] && [ -n "$(find "$st" -mtime -7)" ]; then
+    echo "$what: failing, already posted"; return
+  fi
+  # bulletin.py never fails a turn, so it exits 0 even when it could not write: only a printed
+  # entry counts as posted.
+  if [ -z "$BULLETIN" ]; then echo "$what: failing — not posted: atlas's bulletin.py not installed"; return; fi
+  line=$(cd "${C:-$HOME}" && CLAUDE_CODE_SESSION_ID="$host-hc" python3 "$BULLETIN" --post \
+    "$what fails on $host, where nobody is watching (bin/health)" \
+    "$fails (details: ${LOGDIR/#$HOME/\~}/health.log on $host)")
+  echo "$line"
+  if [ "${line#- }" != "$line" ]; then
+    printf '%s\n' "$fails" > "$st"
+    if [ -z "$COMMIT" ]; then echo "bulletin line not committed: atlas's knowledge-commit not installed"
+    elif [ -z "$VAULT_REPO" ]; then echo "bulletin line not committed: no lighthouse/vault key"
+    else
+      "$COMMIT" "$VAULT_REPO" -m "Bulletin: $what fails on $host (bin/health)" bulletin.md
+    fi
+  else
+    echo "bulletin post failed — nothing recorded, next run tries again"
+  fi
+}
+
+[ -n "$FF" ] || echo "ff: no lighthouse/ff key — nothing fast-forwarded"
+while IFS= read -r r; do [ -n "$r" ] && ff "${r/#\~/$HOME}"; done <<< "$FF"
+if [ "$TEND" = on ] && [ -z "${HEALTH_TEND_CMD:-}" ] && [ -z "$(peer tend)" ]; then
+  echo "tend: wharf's bin/tend not installed — skipped"
+elif [ "$TEND" = on ]; then
+  # Streamed into the log as it runs (a tend killed mid-way still leaves its lines), kept for the post.
+  echo "tend:"; tfile="$LOGDIR/health.tend.out"
+  ${HEALTH_TEND_CMD:-"$(peer tend)"} 2>&1 | tee "$tfile" | sed -u 's/^/  /'; trc=${PIPESTATUS[0]}
+  if [ "$trc" = 0 ]; then rm -f "$state.tend"
+  else
+    tfails=$(sed -n 's/^FAILED tend: //p' "$tfile" | tail -1 | sed 's/·/-/g')
+    post_once "$state.tend" "bin/tend" "not tended: ${tfails:-exit $trc with no FAILED tend line}"
+  fi
+else
+  echo "tend: off (TEND in bin/health)"
+fi
+
+RCH=$(peer rc-hosts)
+if [ "$TCC" = on ] && [ -z "${HEALTH_TCC_CMD:-}" ] && [ -z "$RCH" ]; then
+  echo "privacy: wharf-runs' rc-hosts not installed — skipped"
+elif [ "$TCC" = on ]; then
+  echo "privacy:"
+  if [ -n "${HEALTH_TCC_CMD:-}" ]; then sv=$("$HEALTH_TCC_CMD" 2>&1); else sv=$(python3 "$RCH" --tcc-survey --health 2>&1); fi
+  svrc=$?
+  printf '%s\n' "$sv" | sed 's/^/  /'
+  if [ "$svrc" = 0 ]; then rm -f "$state.tcc"
+  else
+    # the services only, no counts: the same recurrence tomorrow is the same line, posted once a week
+    svcs=$(printf '%s\n' "$sv" | sed -n 's/^ *[0-9][0-9]* \([A-Za-z]*\) .*/\1/p' | sort -u | paste -sd ',' - | sed 's/,/, /g')
+    post_once "$state.tcc" "a claude without claude-host" "privacy requests refused to a versioned claude: ${svcs:-exit $svrc} — rc-hosts --tcc-survey says which; rc-hosts --agents which job"
+  fi
+else
+  echo "privacy: off (TCC in bin/health)"
+fi
+
+if [ -n "${HEALTH_CHECK_CMD:-}" ]; then what="$HEALTH_CHECK_CMD"; out=$($HEALTH_CHECK_CMD 2>&1); rc=$?
+elif [ -n "$C" ] && [ -x "$C/bootstrap.sh" ]; then what="bootstrap.sh --check"; out=$("$C/bootstrap.sh" --check 2>&1); rc=$?
+else what="regatta check"; out=$(core 'import runpy; sys.argv = ["regatta", "check"]; r = common.regatta_root(); runpy.run_path(str(r / "modules/regatta/bin/regatta") if r else common.tool("regatta"), run_name="__main__")' 2>&1); rc=$?; fi
+printf '%s\n' "$out"
+if [ $rc = 0 ]; then rm -f "$state"; echo "ok"; exit 0; fi
+
+# The ⚠ lines are the failures; `·` is the bulletin's field separator.
+fails=$(printf '%s\n' "$out" | sed -n 's/^⚠ //p' | sed 's/·/-/g' | paste -sd ';' - | sed 's/;/; /g')
+[ -n "$fails" ] || fails="exit $rc with no ⚠ line — read $LOGDIR/health.log"
+post_once "$state" "$what" "$fails"
+exit $rc

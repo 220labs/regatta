@@ -29,6 +29,11 @@
       "name": "sextant",
       "source": "./modules/sextant",
       "description": "Strategy towards your North Star; today its ideas intake, Sparks: voice memos, written notes and Apple Notes in, one note per idea out."
+    },
+    {
+      "name": "lighthouse",
+      "source": "./modules/lighthouse",
+      "description": "Upkeep of the machines: a health pass, declared settings, several logins, shared-drive publishing, folder trust, tiling, and the guards around secrets and logins."
     }
   ]
 }

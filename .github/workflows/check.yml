@@ -44,4 +44,4 @@ jobs:
           git config --global init.defaultBranch main
       - name: check
         run: |
-          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh
+          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh

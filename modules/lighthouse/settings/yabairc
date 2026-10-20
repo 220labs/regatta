@@ -1,0 +1,6 @@
+#!/bin/sh
+# yabai's config is lighthouse's bin/tiling (apply) — one copy of the desktop number and the
+# layout, and why. The home folder's .yabairc links here (`tiling install` makes the link) unless
+# the config dir has its own lighthouse/yabairc. The module is found through the regatta home file.
+home=$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home")
+exec /usr/bin/python3 "$home/modules/lighthouse/bin/tiling" apply

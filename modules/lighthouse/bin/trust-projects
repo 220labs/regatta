@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""trust-projects — Claude Code trusts the projects folder and every git repo under it, on this machine.
+
+The owner, 2026-09-25: "make all the directories inside projects trusted on both hosts — I need
+every session there to be able to reach every repo." The projects folder is the core's
+(`regatta/projects` in the config dir, else `projects` in the home folder).
+
+How Claude Code decides (read from the 2.1.282 binary, 2026-09-25): a directory is trusted when
+the home folder's .claude.json has `projects[<dir>].hasTrustDialogAccepted: true` for it or for a
+parent — but the walk up stops at the directory's git repo root. So an entry for the projects
+folder covers every plain folder under it and no repo at all; each repo root needs its own. A
+worktree resolves to its main checkout and needs none. That is why a parent repo was trusted and
+a repo nested in it still refused.
+Untrusted, a Remote Control host will not start ("Workspace not trusted") and a repo's
+.claude/settings.json entries can be skipped ("Ignoring … this workspace has not been trusted").
+
+  trust-projects           add the missing entries, read them back
+  trust-projects --check   list what is missing; exit 1 if anything is
+  … --no-external-imports  also answer No, ahead, to the external-imports dialog for the home folder and every
+                           project (an employer login's dir; bin/account passes it, below)
+
+Running it is the act of accepting the trust dialog for every repo here. The owner ran it by hand
+until 2026-10-07, when trust became part of starting or adopting a project ("make all these
+settings part of starting/adopting a project"): `bin/repos --clone` runs it in every config dir
+after cloning, and /new-project runs that on both Macs (landed 2026-10-13, rc-slots D4).
+bootstrap.sh --check names a gap. Since 2026-10-13 bin/dispatch runs it too, for the picked
+login, when a run's repo is untrusted — the owner's call ("never headless"), the whole projects
+folder as here.
+
+Writing .claude.json while sessions run: Claude Code saves it read-modify-write under its own
+lock, re-reading `projects` from disk, so an entry added between its saves survives. For the
+narrow race — a save that read before this write and lands after it — the entries are read back
+after a pause and written once more if one is gone; never in a loop.
+"""
+import json
+import os
+import stat
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+HOME = Path.home()
+PROJECTS = common.PROJECTS
+SHOWN = "~" + str(PROJECTS)[len(str(HOME)):] if str(PROJECTS).startswith(str(HOME) + os.sep) else str(PROJECTS)
+# Another account's config dir keeps its .claude.json inside it (bin/account add runs this there).
+CONFIG = (Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser() / ".claude.json"
+          if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json")
+DEPTH = 5   # a production nested four below the projects folder exists; one level of slack
+SETTLE = float(os.environ.get("TRUST_PROJECTS_SETTLE", "2"))
+
+
+def repos(d, depth):
+    """Repo roots under d. Not below a repo (the repo covers it), not into dot-folders
+    (.claude/worktrees are worktrees), never through a symlink."""
+    if (d / ".git").exists():
+        return [d]
+    if depth == 0:
+        return []
+    try:
+        kids = sorted(p for p in d.iterdir()
+                      if p.is_dir() and not p.is_symlink() and not p.name.startswith("."))
+    except OSError:
+        return []
+    return [r for k in kids for r in repos(k, depth - 1)]
+
+
+def load():
+    return json.loads(CONFIG.read_text())
+
+
+TRUST = {"hasTrustDialogAccepted": True}
+# --no-external-imports, for an employer login's dir (bin/account, the owner 2026-10-18: "work files
+# only"): the answer No to Claude Code's "this project's CLAUDE.md imports files outside the
+# current working directory" dialog, given ahead for every project the dir knows and for the home
+# folder. Its CLAUDE.md links the work file, so the default dir's CLAUDE.md is no longer the same
+# file and loads as the home folder's project memory, its private imports held back only by that
+# dialog (2.1.303's memory loader, read in its source by the review of 2026-10-18); one Yes would
+# load them.
+NO_EXTERNAL = {"hasClaudeMdExternalIncludesWarningShown": True, "hasClaudeMdExternalIncludesApproved": False}
+
+
+TRUSTED = set()   # the dirs this run trusts: the projects folder and the repos under it, never home or a known entry elsewhere
+
+
+def wants(entry, d, noext):
+    """The keys entry lacks: trust for the projects folder and its repos only (trust is its own
+    consent, never granted to home or a project found elsewhere), the No for every dir when noext."""
+    out = {k: v for k, v in TRUST.items() if (entry or {}).get(k) is not v} if d in TRUSTED else {}
+    if noext:
+        out.update({k: v for k, v in NO_EXTERNAL.items() if (entry or {}).get(k) is not v})
+    return out
+
+
+def missing(cfg, dirs, noext=False):
+    projects = cfg.get("projects") or {}
+    return [d for d in dirs if wants(projects.get(str(d)), d, noext)]
+
+
+def write(dirs, noext=False):
+    cfg = load()
+    projects = cfg.setdefault("projects", {})
+    for d in dirs:
+        projects[str(d)] = {**(projects.get(str(d)) or {}), **wants(projects.get(str(d)), d, noext)}
+    target = CONFIG.resolve()
+    tmp = target.with_name(f"{target.name}.trust-{os.getpid()}")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
+    json.loads(tmp.read_text())   # never swap in a file Claude Code cannot parse
+    os.replace(tmp, target)
+
+
+def main():
+    check = "--check" in sys.argv[1:]
+    noext = "--no-external-imports" in sys.argv[1:]
+    if not CONFIG.exists():
+        sys.exit(f"trust-projects: {CONFIG} missing — start `claude` once on this machine first")
+    dirs = [PROJECTS] + [r for r in repos(PROJECTS, DEPTH) if r != PROJECTS]
+    TRUSTED.update(dirs)
+    if noext:   # home and every project the dir already knows get the No too, not only the repos here
+        known = [Path(k) for k in (load().get("projects") or {})]
+        dirs += [d for d in [HOME] + known if d not in dirs]
+    todo = missing(load(), dirs, noext)
+    if check:
+        for d in todo:
+            print(f"  untrusted  {d}")
+        print(f"  {len(dirs) - len(todo)}/{len(dirs)} trusted ({SHOWN} and every repo under it)")
+        sys.exit(1 if todo else 0)
+    if not todo:
+        print(f"  ok  all {len(dirs)} trusted ({SHOWN} and every repo under it)")
+        return
+    write(todo, noext)
+    time.sleep(SETTLE)
+    lost = missing(load(), todo, noext)
+    if lost:
+        write(lost, noext)
+        time.sleep(SETTLE)
+        lost = missing(load(), lost, noext)
+    for d in todo:
+        print(f"  {'LOST     ' if d in lost else 'trusted  '}{d}"
+              + (" — a Claude Code save overwrote it twice; run again" if d in lost else ""))
+    print(f"  {len(dirs) - len(lost)}/{len(dirs)} trusted")
+    sys.exit(1 if lost else 0)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,2392 @@
+#!/usr/bin/env python3
+"""account — which login a session runs on: an ordered registry of accounts, walked by one pick.
+
+    account pick [--kind K] [--provider P] [--bound] [--repo PATH] [--ship KEY] [--json]   the first account with room; exit 3 if none
+    account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
+    account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
+    account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once; the default for new ones
+    account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
+    account limits [LABEL | --all [--parked]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too
+    account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list)
+    account which                                               the label of the dir this process runs under
+    account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
+    account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
+    account exhausted --window W --resets-at T [--session S]    record a locked window (bin/statusline calls it)
+    account check                                               per row: login, links, settings, probe age, cooldowns
+    account add LABEL [--no-login]                              make a Claude row's config dir, then its /login
+    account setup [--host PEER] [--no-record]                   build this Mac (or the peer) from the logins file
+    account doctor [--local] [--json]                           both Macs against the logins file, a fix per problem
+
+Design: docs/record/multi-account-design-2026-10-02.md (D1–D7, the owner 2026-10-02); orchestration
+build step 4b. The owner: "We should protect the primary one, and offload what we can to secondary
+accounts. We should have a list, in prioritized order."
+
+Where things are (regatta-modules B9). The registry is the config dir's `lighthouse/accounts.json`
+(an overlay links its own; labels name accounts, so it is personal; nothing secret in it), else
+$ACCOUNTS_FILE. The logins file is `lighthouse/logins.json` (else $ACCOUNT_LOGINS). The owner's
+private vault, the repo a work login is refused and whose refusal marks a row as an employer's, is
+`lighthouse/vault` (a repo key under the projects folder). A peer Mac is a `<host>:<ssh alias>` line
+of `wharf-runs/ssh`. The core comes through lib/find_core.py, and a missing core is an ImportError
+with a traceback, which account_guard takes as no answer and fails closed on. A peer module is
+found through `common.tool()`: wharf's fork_claude_session.py (a Terminal window; without it the
+command is printed) and worktree_allow.py (without it that check is skipped), plumb's usage-report
+(without it no usage column) — the design's G16, G18. The overlay's bootstrap.sh (the core's
+`legacy` checkout) is named where a fix is its; without one the fix says so.
+
+The registry: {"accounts": [{label, provider, home, rules, primary?, enabled?}, …],
+"capabilities": {provider: [kind, …]}}. Order is the walk order for free work; the one row with
+`primary: true` runs account-bound work (Remote Control, connectors, Artifact, Chrome, routines,
+every VS Code panel session). A step is free unless the caller says --bound.
+
+A Claude account is a Claude Code config directory with its own `/login`: CLAUDE_CONFIG_DIR
+isolates the login (keychain entry `Claude Code-credentials-<sha256(dir)[:8]>`), `.claude.json`,
+settings and agent view; `projects/` and `sessions/` are links back to the default dir so
+transcripts, memory and the live registry stay one (D3). The default dir is special in one way: it
+must run with CLAUDE_CONFIG_DIR *unset* — set to the default dir, Claude Code looks for a
+hash-suffixed keychain entry and a .claude.json inside it and finds itself logged out. So its env
+is empty.
+
+Limits are read without switching anything: a headless `claude -p` answering one `get_usage`
+control request — no model call, $0, about 4 s (probed 2026-10-03). It runs with
+`--setting-sources "" --no-session-persistence --strict-mcp-config`, so no user hook fires and
+no transcript is written (R8, checked the same day). Cached 60 s in <home>/usage-probe.json;
+--cached never probes (hooks use it). One retry on a failed probe, then the last reading of any
+age; with none, the row is "unknown" and skipped — except the primary, which pick takes at once
+rather than hand its work to a later row (the Pro fallback has no Fable) or block it. Never a loop.
+
+Exhaustion (D6): <home>/exhaustion.jsonl, one record per locked window. bin/statusline writes it
+when a window's used_percentage reaches 100; a probe writes it when a window reads 100 or carries
+a locked_reason (the design's "severity warning" was dropped: the probe's own `is_active` marks
+the binding window at any level, 68% included, 2026-10-03). Pick skips the account until that
+window resets (cooldown) and asks it for MARGIN more points of 5-hour headroom per record in the
+last MARGIN_DAYS days, up to MARGIN_CAP.
+
+The logins file (work-account design E1, docs/work-account-2026-10-06.md) is what the owner would
+otherwise carry in mind: per label, the e-mail, plan, who pays and which Macs carry a dir — kept
+on a shared drive, never git (it names e-mails, not secrets). {"logins": {label: {email, plan,
+org_type, paid_by, macs, note}}, "share": {"design": [{email, access}]}} — `share` is
+hooks/design_route.py's, kept on every write. An e-mail and plan are read back from a login and
+written here, never typed; `macs: []` records that no Mac carries a dir; `"enabled": false` on a
+row of the registry is what parks it (a work login was parked 2026-10-15 to 2026-10-18; the Pro
+fallback was parked 2026-10-07 and back, after the primary, since 2026-10-16). Only the laptop
+writes it: two Macs writing one Drive file within seconds lose one write (the core's bin/secrets
+header), so the always-on Mac's leg runs with --no-record.
+
+A row may carry `"repos": {"deny": [key, …]}` (work-account D3: a work login denies the vault and
+the CV repo): keys of repos.json — a path under the projects folder — matched against the repo a
+path resolves to through `git rev-parse --git-common-dir` (a worktree of the vault is the vault),
+or by path prefix for a folder that is no repo. `pick --repo` and `limits --repo` skip a row that
+denies the repo; `allowed` is the guard hook's question (E4). A path in no repo — the projects
+folder itself, the home folder — is allowed: the list says where sessions start, it is no data
+boundary (section 2 of the doc) — bar, for `allowed`, a path that holds a denied repo
+(holds_denied, since 2026-10-18): Claude Code loads the default dir's CLAUDE.md as such a folder's
+project memory, imports included.
+
+Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
+on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
+Its usage-probe.json and exhaustion.jsonl are written into that Codex home, beside Codex's own files.
+Known gaps (reviews of 2026-10-17, left on purpose): a probe on the live default Codex home may
+refresh its token beside the desktop app (safe by Codex's guarded re-read, read from the binary,
+never seen); a home re-signed to another account keeps the old login's cache and exhaustion log; a
+managed Codex home is Orca's source path, unseen (a wrong one fails loudly: "no dir");
+wharf-runs' bin/pickup's refusal of a Codex pick has no test (only a seed with `provider: codex`
+reaches it). An Orca login no registry row names gets ORCA_ROW's deny list, the core's
+`regatta/orca-deny`; the other repos an employer login is refused are refused by their registry
+rows (the owner, 2026-10-18). A new employer login added through Orca needs its row in the
+registry first when its deny list is longer than ORCA_ROW's.
+A plan has the windows it has (prolite: the week alone), and a window a plan lacks is no limit.
+`pick --provider codex` answers with a Codex row, but nothing starts Codex yet: `run` and bin/pickup
+start claude only and refuse a Codex pick; the readings feed `limits` and the desktop widget. Orca's Codex logins become rows as its Claude ones do (`orca-sync`, orca_codex_sync).
+Stdlib only, Python 3.9.
+
+A row may say `"via": "orca"` (docs/orca-accounts-2026-10-16.md; the owner, 2026-10-16: "add one
+more account … through Orca instead of our own mechanism"): Orca holds that login — it signs in
+(`orca account add --agent claude`), builds the account's own config dir under its data (syncing
+settings.json, hooks and most links from the default dir itself — Orca's source, review
+2026-10-16), and signs in again from its Accounts UI. Orca's list names no dir (its `summarize`
+returns id, email, auth fields only), so `orca-sync` finds it from ground truth: the dir under
+ORCA_DATA whose `.claude.json` is signed in as that entry's e-mail, read back, never predicted.
+The dir is this Mac's fact, so it lives in ORCA_FILE beside the default dir, never in the shared
+registry; the other Mac has none and walks past the row. Until a sync the row has no home here and
+pick, env and run refuse it ("not in Orca here"). Everything else — the probe, limits, the walk,
+deny lists — is the same for it: a login Orca holds is still a config dir.
+
+A ship stays on one login (same doc): `pick --ship KEY` returns the login KEY was pinned to while
+that row is enabled, here, on its own login and allowed in the repo — waiting (exit 3) rather than
+moving when it has no room, except the primary with unreadable limits, which runs as plain pick
+has it. A ship with no pin gets the walk's pick and is pinned to it; `--no-pin` leaves that to
+the caller (`ships --pin KEY LABEL` once its worker started). Pins live in SHIPS, per Mac, written
+under a lock, and go after PIN_DAYS unused or on `ships --release KEY` (the ship landed).
+"""
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import functools
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+DEFAULT_DIR = HOME / ".claude"
+CONFIG = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+REGISTRY = Path(os.environ.get("ACCOUNTS_FILE") or CONFIG / "lighthouse" / "accounts.json")
+BIN = Path(__file__).resolve().parent
+CACHE_S = 60          # a probe answers for this long (R4: one probe per minute per account)
+PROBE_TIMEOUT = 30    # two tries per row: pickup's 150 s covers two rows (review 2026-10-03)
+SAME_RESET = 300      # seconds: two exhaustion records whose resets are this close are one
+MARGIN = 10           # D6: points of 5-hour headroom an exhaustion asks for…
+MARGIN_DAYS = 7       # …for this long…
+MARGIN_CAP = 30       # …stacking to at most this
+WINDOWS = ("five_hour", "seven_day")
+
+
+def config_lines(name):
+    """The config dir's `<name>`, its non-blank lines ([] when absent or unreadable): read without
+    the core, since the constants below are."""
+    try:
+        return [l.strip() for l in (CONFIG / name).read_text(encoding="utf-8-sig").splitlines() if l.strip()]
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+# the ssh alias per peer Mac, as wharf-runs' bin/pickup and bin/dispatch have it: `<host>:<alias>`
+PEERS = dict(l.split(":", 1) for l in config_lines("wharf-runs/ssh") if ":" in l)
+VAULT = (config_lines("lighthouse/vault") or [""])[0]   # the owner's private vault, a repo key (header)
+SHIPS = DEFAULT_DIR / "account-ships.json"        # {ship key: {label, at}}: the login each ship stays on
+PIN_DAYS = 14         # a pin older than this is no ship any more and goes at the next write
+ORCA_FILE = Path(os.environ.get("ACCOUNT_ORCA_FILE") or DEFAULT_DIR / "account-orca.json")   # orca-sync's read-back, this Mac's: {label: {home, orca_id, email, enabled?}, _default?}; hooks/common.py orca_file()
+ORCA_DATA = Path(os.environ.get("ACCOUNT_ORCA_DATA") or HOME / "Library/Application Support/orca")
+ORCA_APP_CLI = "/Applications/Orca.app/Contents/Resources/bin/orca"
+# What a secondary dir shares with the default dir by link (D3, section 2e). Never .claude.json, the
+# keychain entry, settings.json (rename-writes turn a link into a copy, R1), daemon/ or jobs/.
+LINKS = ("projects", "sessions", "skills", "plugins", "agents", "rules", "CLAUDE.md")
+# CLAUDE.md is linked, not copied: Claude Code never rewrites it, and a copy drifts silently from
+# the one the owner edits (code review 2026-10-03).
+# An employer login's CLAUDE.md links the work file instead (the owner, 2026-10-18, answering
+# docs/orca-hosts-2026-10-17.md F5: "work files only"): the owner's working-style files, never the
+# private ones. "Employer" is any row refused the vault — a work login by its own deny list, an
+# Orca login by ORCA_ROW's — so the rule follows the deny lists, never a list of names.
+# The overlay's bootstrap.sh writes the work file. Orca rewrites a profile's CLAUDE.md from its own one-line stub
+# at each setup but leaves a symlink alone ("user-owned", claude-profile-sharing.ts), so a link is
+# what survives there.
+WORK_MEMORY = "CLAUDE-work.md"
+ORCA_MEMORY_STUB = "@~/.claude/CLAUDE.md\n"   # what Orca 1.4.2xx writes into a profile's CLAUDE.md
+
+
+def overlay_key_missing(rel, env=None):
+    """ImportError when the overlay is installed (the config dir's `legacy`) and its key `rel` is
+    not written, nor named by `env`: a guard reading an absent key as "nothing to deny" fails open,
+    so this one fails closed, as the core does for its own keys (B2b; B9 review)."""
+    if (CONFIG / "legacy").exists() and not (env and os.environ.get(env)) and not (CONFIG / rel).exists():
+        raise ImportError(f"{rel} missing in {CONFIG} — write it with the overlay's bootstrap.sh --config")
+
+
+def employer(a):
+    """True when the row is refused the vault (`lighthouse/vault`): its CLAUDE.md gets the work file.
+    No vault named, no employer row — bar where the overlay is installed: there it is an error."""
+    if not VAULT:
+        overlay_key_missing("lighthouse/vault")
+    return bool(VAULT) and bool(denied(a, projects_dir() / VAULT))
+
+
+def projects_dir():
+    """The core's projects folder (`regatta/projects`, else `projects` in the home folder)."""
+    try:
+        return core().PROJECTS
+    except ImportError:
+        return HOME / "projects"
+
+
+def core_hooks():
+    """The regatta core's hooks dir, in lib/find_core.py's order; ImportError without one — a
+    traceback, which account_guard reads as no answer and fails closed on (header). Never "": on
+    sys.path that is the cwd, and a common.py there would answer for the core (B9 review)."""
+    sys.path.insert(0, str(BIN.parent / "lib"))
+    import find_core
+    found = next((str(c) for c in find_core.candidates() if (c / "common.py").is_file()), None)
+    if not found:
+        raise ImportError("no regatta core in any of lib/find_core.py's places")
+    return found
+
+
+@functools.lru_cache(maxsize=None)
+def core():
+    """The core's `common` (ImportError when there is none); found once per run."""
+    sys.path.insert(0, core_hooks())
+    import common
+    return common
+
+
+def overlay(*rel):
+    """A path in the overlay's checkout (the core's `legacy`), or None without one."""
+    try:
+        old = core().legacy_root()
+    except ImportError:
+        return None
+    return old.joinpath(*rel) if old else None
+
+
+def bootstrap_cmd():
+    """The overlay's bootstrap.sh by path, for a fix line; a placeholder without an overlay."""
+    b = overlay("bootstrap.sh")
+    return str(b) if b and b.is_file() else BOOTSTRAP_PLACEHOLDER
+
+
+BOOTSTRAP_PLACEHOLDER = "<your overlay's bootstrap.sh>"
+
+
+def remote_account():
+    """This tool as the peer runs it: the path sessions know (the overlay's while it holds a shim
+    there, else this file), written from the home folder so the peer's own home applies."""
+    old = overlay("bin", "account")
+    mine = old if old and old.is_file() else Path(__file__).resolve()
+    try:
+        return "$HOME/" + str(mine.relative_to(HOME))
+    except ValueError:
+        return str(mine)
+
+
+def trust_argv(a, *extra):
+    """bin/trust-projects for the row's dir: an employer row's also answers No, ahead, to the
+    external-imports dialog, the one way the default dir's CLAUDE.md private imports could still
+    load there (its CLAUDE.md links the work file, so that file loads as the home folder's project
+    memory, its imports behind that dialog — review 2026-10-18)."""
+    return [str(BIN / "trust-projects"), *extra] + (["--no-external-imports"] if employer(a) else [])
+
+
+def link_target(a, n):
+    """What the row's dir links `n` to: DEFAULT_DIR's own, bar CLAUDE.md on an employer row."""
+    return DEFAULT_DIR / (WORK_MEMORY if n == "CLAUDE.md" and employer(a) else n)
+
+
+def point_memory(a, home):
+    """Points home/CLAUDE.md where link_target says, replacing only a link of ours or Orca's stub
+    (never a file someone wrote); → the line to print, or None when it already points there."""
+    p, target = Path(home) / "CLAUDE.md", link_target(a, "CLAUDE.md")
+    if not target.is_file():   # never a link to nothing: such a session would load no me/ file at all
+        return f"  ⚠ fail  {p}: {target} does not exist — a plain {bootstrap_cmd()} run writes it"
+    if p.is_symlink() and os.readlink(p) == str(target):
+        return None
+    ours = p.is_symlink() and os.readlink(p) in (str(DEFAULT_DIR / "CLAUDE.md"), str(DEFAULT_DIR / WORK_MEMORY))
+    try:
+        stub = not p.is_symlink() and p.is_file() and p.read_text() == ORCA_MEMORY_STUB
+    except OSError:
+        stub = False
+    try:
+        if p.exists() or p.is_symlink():
+            if not (ours or stub):
+                return f"  ⚠ left  {p}: not a link of ours nor Orca's stub — point it at {target} by hand"
+            tmp = p.with_name(f".CLAUDE.md.{os.getpid()}.relink")   # per process: two runs never share it
+            if tmp.is_symlink() or tmp.exists():
+                tmp.unlink()
+            tmp.symlink_to(target)
+            os.replace(tmp, p)   # one rename: never a moment without the file
+        else:
+            p.symlink_to(target)
+    except OSError as e:
+        return f"  ⚠ fail  {p}: {e}"
+    return f"  linked  {p} → {target}"
+
+
+def home_memory_excluded(a, home, fix=True):
+    """An employer dir's own settings.json excludes the default dir's CLAUDE.md from its memory →
+    None, or the line to print. Its CLAUDE.md links the work file, so the default dir's CLAUDE.md is
+    no longer the same file: Claude Code loads it as the home folder's project memory, and its
+    private imports raise "Allow external CLAUDE.md file imports?" in every new worktree — where an
+    unattended run sat until it timed out (2026-10-18 afternoon, both Macs; the fix proved on the
+    always-on Mac's work login by another session, through the bulletin). claudeMdExcludes in this
+    dir's own settings.json, never the default dir's: the CLI applies it to user memory too. Orca
+    re-copies the default dir's settings.json over a profile's at each setup, so orca-sync re-applies it."""
+    if not employer(a):
+        return None
+    p, want = Path(home) / "settings.json", str(DEFAULT_DIR / "CLAUDE.md")
+    try:
+        cfg = json.loads(p.read_text()) if p.exists() else {}
+    except (OSError, ValueError) as e:
+        return f"  ⚠ fail  {p}: {e}"
+    have = cfg.get("claudeMdExcludes") if isinstance(cfg.get("claudeMdExcludes"), list) else []
+    if want in have:
+        return None
+    if not fix:
+        return f"  ⚠       {p}: no claudeMdExcludes for {want}"
+    if p.is_symlink():   # never through a link: in the default dir's settings.json it would drop the primary's own memory
+        return f"  ⚠ left  {p}: a link ({os.readlink(p)}) — give the dir its own settings.json first"
+    try:
+        write_json(p, {**cfg, "claudeMdExcludes": have + [want]})
+    except OSError as e:
+        return f"  ⚠ fail  {p}: {e}"
+    return f"  excluded {want} in {p}"
+
+
+class Short(Exception):
+    """No account may run the step; args[0] lists (label, why)."""
+
+
+def now():
+    return float(os.environ.get("ACCOUNT_NOW") or time.time())
+
+
+def claude_bin():
+    return os.environ.get("ACCOUNT_CLAUDE") or shutil.which("claude") or "claude"
+
+
+def logins_path():
+    """The logins file: ACCOUNT_LOGINS, else the config dir's lighthouse/logins.json (an overlay
+    links it into a shared drive), else None when neither exists."""
+    if os.environ.get("ACCOUNT_LOGINS"):
+        return Path(os.environ["ACCOUNT_LOGINS"])
+    p = CONFIG / "lighthouse" / "logins.json"
+    return p if p.exists() or p.is_symlink() else None
+
+
+def load_logins():
+    """→ (path or None, {label: entry}). An absent file is an empty dict; an unreadable one exits."""
+    p = logins_path()
+    if not p or not p.is_file():
+        return p, {}
+    try:
+        return p, json.loads(p.read_text()).get("logins") or {}
+    except (OSError, ValueError) as e:
+        sys.exit(f"account: {p} is not readable JSON: {e}")
+
+
+def save_logins(p, logins):
+    """Writes `logins` back; every other top-level key is kept as it was (`share`, which
+    hooks/design_route.py reads: who a new design artifact is shared with, 2026-10-10)."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        doc = json.loads(p.read_text()) if p.is_file() else {}
+    except OSError as e:  # a write that cannot read what it would overwrite would drop `share`
+        sys.exit(f"account: {p} is not readable now ({e}); nothing written")
+    except ValueError:
+        doc = {}
+    doc = doc if isinstance(doc, dict) else {}
+    doc["logins"] = logins
+    # Through the link: the config key is a link into the shared drive, and os.replace() on the
+    # link itself would swap it for a local file the other Mac never sees (B9 review).
+    real = p.resolve()
+    tmp = real.with_name(real.name + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, real)
+
+
+def this_mac():
+    if os.environ.get("ACCOUNT_HOST"):
+        return os.environ["ACCOUNT_HOST"]
+    return core().host_name()
+
+
+# ---------------------------------------------------------------------------- registry
+
+def load_registry():
+    try:
+        reg = json.loads(REGISTRY.read_text())
+    except OSError:
+        overlay_key_missing("lighthouse/accounts.json", "ACCOUNTS_FILE")
+        return {"accounts": [], "capabilities": {}}
+    except ValueError as e:
+        sys.exit(f"account: {REGISTRY} is not valid JSON: {e}")
+    synced = read_json(ORCA_FILE, {})
+    sys.path.insert(0, core_hooks())
+    from common import account_rows  # the registry plus Orca's logins, on by default (one rule for the hooks too)
+    # parked = `enabled: false` in the registry itself, read before account_rows folds in Orca's
+    # `orca off` switches: only these does `limits --all --parked` bring back (review 2026-10-18)
+    parked = {a.get("label") for a in reg.get("accounts") or [] if isinstance(a, dict) and a.get("enabled") is False}
+    reg["accounts"] = account_rows(reg.get("accounts"), HOME)
+    for a in reg.get("accounts") or []:
+        if a.get("via") == "orca":  # Orca's dir, read back by orca-sync on this Mac; unsynced, nowhere
+            got = (synced.get(a.get("label")) or {}).get("home")
+            a["home"] = Path(got).absolute() if got else (HOME / ".orca-unsynced" / str(a.get("label"))).absolute()
+            a["synced"] = bool(got)
+        elif a.get("home"):
+            a["home"] = Path(os.path.expanduser(a["home"])).absolute()
+        else:  # a row with no home is nowhere — never the cwd, which `which` and `allowed` would match
+            a["home"] = (HOME / ".no-home" / str(a.get("label"))).absolute()
+        a.setdefault("provider", "claude")
+        a.setdefault("enabled", True)
+        a["parked"] = a.get("label") in parked
+        a.setdefault("rules", {})
+    mark_same_logins(reg)
+    return reg
+
+
+def read_json(p, default):
+    try:
+        v = json.loads(Path(p).read_text())
+        return v if isinstance(v, type(default)) else default
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(p, v):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")  # two writers never share a temp file
+    tmp.write_text(json.dumps(v, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, p)
+
+
+def via_orca(a):
+    return a.get("via") == "orca"
+
+
+def row(reg, label):
+    for a in reg["accounts"]:
+        if a["label"] == label:
+            return a
+    sys.exit(f"account: no account {label!r} in {REGISTRY}")
+
+
+def is_default(a):
+    return a["provider"] == "claude" and a["home"] == DEFAULT_DIR.absolute()
+
+
+def env_of(a):
+    """What a start on this account sets. Empty for the default dir (see the header)."""
+    if a["provider"] == "codex":
+        return {"CODEX_HOME": str(a["home"])}
+    return {} if is_default(a) else {"CLAUDE_CONFIG_DIR": str(a["home"])}
+
+
+def start_env(a):
+    e = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+    e.update(env_of(a))
+    return e
+
+
+def claude_json(a):
+    return HOME / ".claude.json" if is_default(a) else a["home"] / ".claude.json"
+
+
+def login_of(a):
+    """→ ((accountUuid, organizationUuid), email) of the dir's stored login, from its .claude.json;
+    (None, None) if unknown. Limits belong to the seat, so one account in two orgs is two keys.
+    The file, not `claude auth status`: that has no uuid and costs ~1 s a row, too dear for hooks."""
+    try:
+        d = json.loads(claude_json(a).read_text())
+    except (OSError, ValueError):
+        return None, None
+    o = d.get("oauthAccount") if isinstance(d, dict) else None
+    if not isinstance(o, dict) or not o.get("accountUuid"):
+        return None, None
+    return (o["accountUuid"], o.get("organizationUuid")), o.get("emailAddress")
+
+
+def mark_same_logins(reg):
+    """A second dir signed in to a login another row already has is no second account: its limits
+    are that account's, so spilling to it spends the same week. Mark it `same_as` (the primary
+    keeps the login; otherwise the earlier row) — `judge` refuses it and `check` flags it. Found
+    2026-10-05: the Pro fallback's dir had been logged in as the primary's address, and pick read
+    the primary's 57% as the fallback's. A parked row is judged too, after every enabled one, so it never takes a login from
+    one — else `limits --all --parked` draws one week as two cards (review 2026-10-18)."""
+    seen = {}
+    rows = sorted((a for a in reg["accounts"] if (a["enabled"] or a.get("parked")) and a["provider"] == "claude" and a["home"].is_dir()),
+                  key=lambda a: (not a["enabled"], not a.get("primary")))
+    for a in rows:
+        uid, email = login_of(a)
+        if not uid:
+            continue
+        if uid in seen:
+            a["same_as"] = (seen[uid]["label"], email)
+        else:
+            seen[uid] = a
+
+
+def seat_of(a):
+    """organizationType from the dir's .claude.json (claude_max, claude_pro, …) — the seat type
+    the work-account design records and never routes on (limit 6)."""
+    try:
+        return (json.loads(claude_json(a).read_text()).get("oauthAccount") or {}).get("organizationType")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def login_line(a, peer=None):
+    """The command that signs this dir in. For a peer it is the `ssh -t` form: a plain ssh has no
+    TTY for the code paste, `claude` is not on a non-login ssh PATH, and the keychain is locked to
+    ssh there, so the login lands in <dir>/.credentials.json (work-account P1)."""
+    if via_orca(a):
+        return orca_login_line(a)
+    env ="".join(f"{k}={shlex.quote(v)} " for k, v in env_of(a).items())
+    if peer:
+        return f"ssh -t {peer} {shlex.quote(env + claude_bin() + ' auth login')}"
+    return f"{env}claude auth login"
+
+
+def relogin_line(a):
+    # the browser authorizes whichever claude.ai account it is signed in to — likely how the
+    # duplicate arose — so the line says which one to be in
+    if via_orca(a):
+        return orca_login_line(a)
+    env = "".join(f"{k}={shlex.quote(v)} " for k, v in env_of(a).items())
+    return f"{env}claude auth login, in a browser signed in as {a['label']}'s account (a private window)"
+
+
+def orca_login_line(a):
+    if a.get("provider") == "codex":
+        return (f"sign {a['label']} in again in Orca's Accounts screen (Codex), or `CODEX_HOME={shlex.quote(str(a['home']))} codex login`; "
+                f"then {BIN / 'account'} orca-sync")
+    return (f"sign {a['label']} in again in Orca's Accounts screen, or `orca account add --agent claude` in a "
+            f"browser signed in as {a['label']}'s account (a private window); then {BIN / 'account'} orca-sync")
+
+
+@functools.lru_cache(maxsize=256)  # one git call per path, not one per row (review 2026-10-06)
+def repo_of(path):
+    """The repo key a path belongs to: its main checkout relative to the projects folder ("notes",
+    "studio/pipeline"), through git-common-dir so a worktree is its repo; None outside the projects
+    folder or outside git."""
+    p = Path(path).expanduser().absolute()
+    projects = projects_dir().resolve()
+    try:
+        r = subprocess.run(["git", "-C", str(p), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+        common = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.TimeoutExpired):
+        common = None
+    if common is None:
+        return None
+    top = common.parent if common.name == ".git" else common
+    try:
+        return str(top.resolve().relative_to(projects))
+    except ValueError:
+        return None
+
+
+def denied(a, path):
+    """→ the repo key if this row's deny list names the repo at path, else None."""
+    deny = ((a.get("repos") or {}).get("deny")) or []
+    if not deny or not path:
+        return None
+    key = repo_of(path)
+    if key in deny:
+        return key
+    p = Path(path).expanduser().absolute().resolve()
+    for d in deny:  # a folder that is no git repo (the CV folder, P6) still is its path
+        root = (projects_dir() / d).resolve()
+        if p == root or root in p.parents:
+            return d
+    return None
+
+
+def holds_denied(a, path):
+    """→ the key of a denied repo that lies inside `path` (path is the home or the projects folder,
+    say), else None. Claude Code reads every ancestor's .claude/CLAUDE.md — the default dir's is the
+    home folder's — and follows its imports when they sit inside the cwd (2.1.302's memory loader,
+    read in its source 2026-10-18), so a session started there on an employer login would load the
+    private imports after all."""
+    deny = ((a.get("repos") or {}).get("deny")) or []
+    if not deny or not path:
+        return None
+    p = Path(path).expanduser().absolute().resolve()
+    for d in deny:
+        root = (projects_dir() / d).absolute()
+        if p in root.parents or p in root.resolve().parents:
+            return d
+    return None
+
+
+def current_home():
+    """The config dir this process runs under — what statusline and tier_check are part of."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or DEFAULT_DIR).expanduser().absolute()
+
+
+# ---------------------------------------------------------------------------- limits
+
+def epoch(v):
+    if v is None or isinstance(v, (int, float)):
+        return v
+    try:
+        return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def probe(a):
+    """One get_usage control request on this account's login → the limits dict, or None."""
+    if a["provider"] == "codex":
+        return probe_codex(a)
+    if a["provider"] != "claude":
+        return None
+    req = {"type": "control_request", "request_id": "u1",
+           "request": {"subtype": "get_usage", "skip_behaviors": True}}
+    argv = [claude_bin(), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+            "--verbose", "--model", "haiku", "--setting-sources", "", "--no-session-persistence",
+            "--strict-mcp-config"]
+    env = start_env(a)
+    for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID"):
+        env.pop(k, None)  # a probe from inside a session is still its own process
+    for _ in range(2):  # one retry, never a loop
+        try:
+            r = subprocess.run(argv, input=json.dumps(req) + "\n", capture_output=True, text=True,
+                               timeout=PROBE_TIMEOUT, env=env, cwd=str(a["home"] if a["home"].is_dir() else HOME))
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for line in r.stdout.splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            resp = (m.get("response") or {}) if m.get("type") == "control_response" else {}
+            if resp.get("subtype") == "success" and resp.get("request_id") == "u1":
+                return parse_usage(resp.get("response") or {})
+    return None
+
+
+def codex_bin():
+    return os.environ.get("ACCOUNT_CODEX") or shutil.which("codex") or "codex"
+
+
+def codex_rpc(home, calls, timeout=15):
+    """{id: result} from Codex's JSON-RPC app-server on CODEX_HOME=home: initialize, then each
+    (method, params) in calls as ids 2, 3, …; whatever answered within the timeout. An error reply
+    counts as answered (as {"error": …}), so a signed-out home costs no timeout. The server exits on
+    stdin's end without answering, so stdin stays open until every call answered; then it is closed
+    and the server let go by itself (it holds sqlite files in the home), killed only if it lingers.
+    The pipe is read raw into a line buffer of our own: select() on a buffered readline misses a
+    second reply that came in the same read (review 2026-10-16). A probe on a live home (the default
+    Codex home, beside the desktop app) may refresh its token: Codex re-reads auth.json under a guard before any
+    refresh ("Skipping token refresh because auth changed after guarded reload", codex-cli 0.162.1's
+    strings, 2026-10-16), so a running Codex takes the new token rather than reuse the spent one —
+    read from the binary, never seen happen."""
+    import select
+    env = {**os.environ, "CODEX_HOME": str(home)}
+    try:
+        # --disable plugins: closing stdin early aborts Codex's plugin sync, which leaves an empty
+        # .tmp/git-* dir in the home on every probe (review 2026-10-16: three a run, never cleaned)
+        p = subprocess.Popen([codex_bin(), "app-server", "--disable", "plugins"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, bufsize=0, env=env, cwd=str(home))
+    except OSError:
+        return {}
+    got, want, buf = {}, set(range(2, 2 + len(calls))), b""
+    try:
+        msgs = [{"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "account", "version": "1"}}},
+                {"method": "initialized"}]
+        msgs += [dict({"id": n, "method": m}, **({"params": pr} if pr is not None else {}))
+                 for n, (m, pr) in enumerate(calls, 2)]
+        p.stdin.write("".join(json.dumps(m) + "\n" for m in msgs).encode())
+        end = time.time() + timeout
+        fd = p.stdout.fileno()
+        while want - set(got) and time.time() < end:
+            if not select.select([fd], [], [], max(0.0, end - time.time()))[0]:
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            *lines, buf = (buf + chunk).split(b"\n")
+            for line in lines:
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                # a reply carries result or error; a message with a method is the server's own request
+                if isinstance(m, dict) and m.get("id") in want and ("result" in m or "error" in m):
+                    got[m["id"]] = m["result"] if "result" in m else {"error": m.get("error")}
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            p.stdin.close()
+            p.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            p.kill()
+            p.wait()
+    return got
+
+
+def parse_codex(rl, acct=None):
+    """account/rateLimits/read → the limits dict probe() gives for Claude. A window is named by
+    its length (≤ a day → five_hour, else seven_day), not by primary/secondary: prolite's primary
+    is its week (2026-10-16)."""
+    r = (rl or {}).get("rateLimits") or {}
+    who = (acct or {}).get("account") or {}
+    out = {"plan": r.get("planType") or who.get("planType"), "locked": [], "fable": None, "kinds": [],
+           "fable_week": None, "fable_week_resets": None, "email": who.get("email")}
+    for w in WINDOWS:
+        out[w], out[w + "_resets"] = None, None
+    # The login's own bucket: `rateLimits` and the multi-bucket view's `codex` entry. Another limit id
+    # is a per-model quota alias (the schema's normalModelSlug), which parks that model, not the login
+    # — as Fable's week does for Claude — so it feeds no window; spend control anywhere is the
+    # account's and locks it (reviews 2026-10-17)
+    by_id = {k: b for k, b in ((rl or {}).get("rateLimitsByLimitId") or {}).items() if isinstance(b, dict)}
+    buckets = [r] + ([by_id["codex"]] if "codex" in by_id else [])
+    for x in [b.get(k) for b in buckets for k in ("primary", "secondary")]:
+        # the schema lets windowDurationMins be null: a window of unknown length is named nothing
+        if not isinstance(x, dict) or x.get("usedPercent") is None or not x.get("windowDurationMins"):
+            continue
+        w = "five_hour" if x["windowDurationMins"] <= 24 * 60 else "seven_day"
+        if out[w] is not None and out[w] >= x["usedPercent"]:
+            continue  # two windows of one class: the fuller one binds
+        out[w], out[w + "_resets"] = x["usedPercent"], epoch(x.get("resetsAt"))
+        if w not in out["kinds"]:
+            out["kinds"].append(w)
+        if x["usedPercent"] >= 100 and w not in out["locked"]:
+            out["locked"].append(w)
+    # "clients must not infer recovery from percentages" (the app-server's schema): a limit the
+    # server says is reached, in any bucket, or spend control, locks every window the plan has
+    if (any(b.get("rateLimitReachedType") for b in buckets)
+            or any(b.get("spendControlReached") for b in [r] + list(by_id.values()))
+            or (rl or {}).get("ordinaryUsageAllowed") is False):
+        out["locked"] = sorted(set(out["locked"]) | {w for w in WINDOWS if out[w] is not None})
+    return out
+
+
+def probe_codex(a):
+    """One account/rateLimits/read on this row's CODEX_HOME → the limits dict, or None. One retry,
+    but not after an error reply: a signed-out home says so at once and again."""
+    for _ in range(2):
+        got = codex_rpc(a["home"], [("account/rateLimits/read", None), ("account/read", {})])
+        if "error" in (got.get(2) or {}):
+            return None
+        if 2 in got:
+            return parse_codex(got[2], got.get(3))
+    return None
+
+
+def fable_of(u):
+    """True when the usage answer carries a weekly window scoped to Fable (the seat can run it),
+    False when it carries `limits[]` without one, None when there is no `limits[]` to read
+    (work-account E2; the primary's answer has it, P11)."""
+    lims = limits_list(u)
+    if not isinstance(lims, list):
+        return None
+    return fable_window(lims) is not None
+
+
+def limits_list(u):
+    """The `limits[]` list of a usage answer, wherever this shape keeps it, or None."""
+    # rate_limits.limits in the get_usage answer (probed 2026-10-06); the /usage cache in
+    # .claude.json keeps the same list under utilization.limits (P11)
+    lims = (u.get("rate_limits") or {}).get("limits")
+    if lims is None:
+        lims = (u.get("utilization") or {}).get("limits") if isinstance(u.get("utilization"), dict) else None
+    return lims
+
+
+def fable_window(lims):
+    """The weekly window scoped to Fable in a `limits[]` list, or None. It carries `percent` and
+    `resets_at` like the others (probed 2026-10-07); the desktop widget draws it."""
+    for x in lims if isinstance(lims, list) else []:
+        model = ((x or {}).get("scope") or {}).get("model") or {}
+        if (x or {}).get("kind") == "weekly_scoped" and str(model.get("display_name") or "").lower() == "fable":
+            return x
+    return None
+
+
+def parse_usage(u):
+    rl = u.get("rate_limits") or {}
+    out = {"plan": u.get("subscription_type"), "locked": [], "fable": fable_of(u),
+           "kinds": [x.get("kind") for x in (rl.get("limits") or []) if isinstance(x, dict)]}
+    for w in WINDOWS:
+        x = rl.get(w) or {}
+        out[w] = x.get("utilization")
+        out[w + "_resets"] = epoch(x.get("resets_at"))
+        if x.get("locked_reason") or (x.get("utilization") or 0) >= 100:
+            out["locked"].append(w)
+    # Fable's own week, reported only: a full one parks Fable, not the login, so it stays out of
+    # `locked` and out of pick's judgement.
+    fw = fable_window(limits_list(u)) or {}
+    out["fable_week"] = fw.get("percent")
+    out["fable_week_resets"] = epoch(fw.get("resets_at"))
+    return out
+
+
+def cache_path(a):
+    return a["home"] / "usage-probe.json"
+
+
+def rolled(lim, t=None):
+    """A cached reading with each window whose reset time has passed read as 0 %: nothing probes
+    on an unattended night, so a 5h 90 % from the evening would otherwise block the row until
+    something else happened to probe it (review of the autofinish pool, 2026-10-08)."""
+    if not lim:
+        return lim
+    t = now() if t is None else t
+    out = dict(lim)
+    # Fable's own week rolls too, though it is no window of WINDOWS: that tuple is also pick's
+    # locked set and `exhausted --window`'s choices, and a full Fable week parks only Fable.
+    for w in WINDOWS + ("fable_week",):
+        r = out.get(w + "_resets")
+        if r and r <= t and out.get(w) is not None:
+            out[w] = 0
+            out[w + "_resets"] = None
+            out["locked"] = [x for x in (out.get("locked") or []) if x != w]
+    return out
+
+
+def limits(a, cached=False):
+    """→ (limits dict or None, sampled epoch or None). Probes only when the cache is older than
+    CACHE_S and --cached was not asked for. A cached window past its reset reads 0 (rolled)."""
+    if not a["home"].is_dir():
+        return None, None
+    try:
+        c = json.loads(cache_path(a).read_text())
+    except (OSError, ValueError):
+        c = None
+    if c and (cached or now() - c.get("at", 0) < CACHE_S):
+        return rolled(c.get("limits")), c.get("at")
+    if cached:
+        return None, None
+    lim = probe(a)
+    if lim is None:  # a stale reading beats a guess (code review 2026-10-03)
+        return (rolled(c.get("limits")), c.get("at")) if c else (None, None)
+    try:
+        # Written aside and renamed: the widget probes every 10 min while the tier check reads
+        # --cached at every prompt, and a half-written file reads as "no probe yet".
+        tmp = cache_path(a).with_name(cache_path(a).name + f".{os.getpid()}.tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"at": now(), "limits": lim}))
+        os.replace(tmp, cache_path(a))
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    for w in lim["locked"]:  # R11: the probe is the second writer of an exhaustion
+        if a["provider"] == "codex" and (lim.get(w) or 0) < 100:
+            continue  # a lock the Codex server reports, not a full window: judge refuses it; no week-long cooldown (review 2026-10-17)
+        record_exhaustion(a["home"], w, lim.get(w + "_resets"), lim.get(w), "probe")
+    return lim, now()
+
+
+# ---------------------------------------------------------------------------- exhaustion
+
+def exhaustion_log(home):
+    return Path(home) / "exhaustion.jsonl"
+
+
+def read_exhaustion(home):
+    out = []
+    try:
+        for line in exhaustion_log(home).read_text().splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return out
+
+
+def account_id(home):
+    """The login's account id prefix (usage-report names logins by it, never by e-mail)."""
+    p = HOME / ".claude.json" if Path(home) == DEFAULT_DIR.absolute() else Path(home) / ".claude.json"
+    try:
+        return ((json.loads(p.read_text()).get("oauthAccount") or {}).get("accountUuid") or "")[:8] or None
+    except (OSError, ValueError):
+        return None
+
+
+def record_exhaustion(home, window, resets_at, used, session):
+    """Append once per window and reset, whoever writes it. The probe's resets_at carries
+    microseconds that differ per fetch and the status line's is whole seconds (review
+    2026-10-03: three probes of one lock wrote three records, 30 points of margin), so the reset
+    is rounded to the minute and anything within SAME_RESET of a recorded one is that one."""
+    resets_at = epoch(resets_at)
+    resets_at = round(resets_at / 60) * 60 if resets_at else resets_at
+    for r in read_exhaustion(home):
+        if r.get("window") == window and abs((r.get("resets_at") or 0) - (resets_at or 0)) < SAME_RESET:
+            return False
+    rec = {"at": now(), "window": window, "used": used, "resets_at": resets_at,
+           "session": session, "account": account_id(home)}
+    Path(home).mkdir(parents=True, exist_ok=True)
+    with exhaustion_log(home).open("a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return True
+
+
+def cooldown(a, t):
+    """The latest reset among windows still locked, or None."""
+    ends = [r["resets_at"] for r in read_exhaustion(a["home"]) if (r.get("resets_at") or 0) > t]
+    return max(ends) if ends else None
+
+
+def margin(a, t):
+    n = sum(1 for r in read_exhaustion(a["home"]) if t - (r.get("at") or 0) < MARGIN_DAYS * 86400)
+    return min(MARGIN * n, MARGIN_CAP)
+
+
+# ---------------------------------------------------------------------------- pick
+
+def when(t):
+    return dt.datetime.fromtimestamp(t).strftime("%a %H:%M") if t else "?"
+
+
+def ceiling(a, lim, t):
+    """The week ceiling now, and why. `reserve.day` (D2: Saturday) is a local weekday;
+    `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets."""
+    rules = a["rules"]
+    res = rules.get("reserve") or {}
+    if res.get("day") and dt.datetime.fromtimestamp(t).strftime("%A").lower() == res["day"].lower():
+        return res.get("week_max", 100), f"{res['day']} reserve"
+    end = lim.get("seven_day_resets") if lim else None
+    if res.get("last_hours") and end and 0 <= end - t <= res["last_hours"] * 3600:
+        return res.get("week_max", 100), f"last {res['last_hours']} h of the week"
+    return rules.get("week_max", 100), "week ceiling"
+
+
+def judge(a, lim, t):
+    """→ (eligible, reason) for one row with known limits."""
+    if a.get("same_as"):
+        other, email = a["same_as"]
+        return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
+    cd = cooldown(a, t)
+    if cd:
+        return False, f"cooling down until {when(cd)} (a window locked)"
+    if lim is None:
+        return False, "limits unknown (no probe answered, none cached)"
+    week_max, why = ceiling(a, lim, t)
+    m = margin(a, t)
+    win_max = a["rules"].get("window_max", 100) - m
+    wk, fh = lim.get("seven_day"), lim.get("five_hour")
+    if a["provider"] == "codex" and lim.get("locked"):
+        # the server said the limit is reached; with no reset time no cooldown was written to stop it
+        return False, f"locked by Codex ({', '.join(lim['locked'])}); resets {when(lim.get('seven_day_resets') or lim.get('five_hour_resets'))}"
+    if a["provider"] == "codex" and (wk is None) != (fh is None):
+        # a window the plan does not have is no limit (prolite: the week alone)
+        if fh is None:
+            return (wk < week_max, f"week {wk}% {'<' if wk < week_max else '≥'} {week_max}% ({why}); no 5-hour window")
+        wk = 0
+    if wk is None or fh is None:
+        return False, "limits unknown (no window figures)"
+    if wk >= week_max:
+        return False, f"week {wk}% ≥ {week_max}% ({why}); resets {when(lim.get('seven_day_resets'))}"
+    if fh > win_max:
+        extra = f", {m} points of margin after an exhaustion" if m else ""
+        return False, f"5h {fh}% > {win_max}%{extra}; resets {when(lim.get('five_hour_resets'))}"
+    return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% ≤ {win_max}%"
+
+
+def provider_for(reg, kind, provider):
+    if provider:
+        return provider
+    for p, kinds in (reg.get("capabilities") or {}).items():
+        if kind and kind in (kinds or []):
+            return p
+    return "claude"
+
+
+def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
+    """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
+    repo: the path the step runs in; a row whose deny list names its repo is skipped unprobed."""
+    t = now()
+    prov = provider_for(reg, kind, provider)
+    rows = [a for a in reg["accounts"] if a["enabled"] and a["provider"] == prov]
+    if bound:
+        rows = [a for a in rows if a.get("primary")]
+    if not rows:
+        raise Short([(prov, f"no enabled {prov} account{' marked primary' if bound else ''} in {REGISTRY}")])
+    skipped = []
+    for a in rows:
+        d = denied(a, repo)
+        if d:
+            skipped.append((a["label"], f"{d} is on its deny list"))
+            continue
+        if not a["home"].is_dir():  # one registry for both Macs; the always-on Mac has the primary only
+            skipped.append((a["label"], "its login is not in Orca here (no orca-sync has found it)" if via_orca(a)
+                            else f"not set up on this machine ({a['home']} missing)"))
+            continue
+        if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
+            skipped.append((a["label"], judge(a, None, t)[1]))
+            continue
+        lim, _ = limits(a, cached=cached)
+        ok, why = judge(a, lim, t)
+        if ok:
+            return a, why, skipped
+        if a.get("primary") and (lim is None or why.startswith("limits unknown")):
+            # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
+            # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
+            # and a blocked start costs more than a guess (review 2026-10-03). A row after the
+            # primary (the Pro fallback, the owner's last resort since 2026-10-16) is for a primary with no room,
+            # never one whose room is unknown.
+            return a, "limits unknown — the primary runs it rather than nothing", skipped
+        skipped.append((a["label"], why))
+    raise Short(skipped)
+
+
+# ---------------------------------------------------------------------------- check / add
+
+def auth_status(a):
+    if a["provider"] != "claude":
+        return None
+    try:
+        r = subprocess.run([claude_bin(), "auth", "status", "--json"], capture_output=True, text=True,
+                           timeout=30, env=start_env(a))
+        return json.loads(r.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def link_problems(a):
+    if is_default(a) or a["provider"] != "claude":
+        return []
+    bad = []
+    for n in LINKS:
+        p, target = a["home"] / n, link_target(a, n)
+        if not p.is_symlink():
+            bad.append(f"{n} is {'a real ' + ('directory' if p.is_dir() else 'file') if p.exists() else 'missing'}")
+        elif os.readlink(p) != str(target):
+            bad.append(f"{n} → {os.readlink(p)}, not {target}")
+        elif n == "CLAUDE.md" and not target.exists():   # a session there would load no me/ file at all
+            bad.append(f"{n} → {target}, which does not exist")
+    ex = home_memory_excluded(a, a["home"], fix=False)
+    if ex:
+        bad.append(f"settings.json does not exclude {DEFAULT_DIR / 'CLAUDE.md'} (claudeMdExcludes)")
+    return bad
+
+
+def settings_line(a):
+    if a["provider"] != "claude":
+        return None
+    r = subprocess.run([str(BIN / "claude-settings"), "check"], capture_output=True, text=True,
+                       env={**start_env(a), "CLAUDE_CONFIG_DIR": str(a["home"])})
+    return (r.stdout.strip().splitlines() or [r.stderr.strip()])[0]
+
+
+def guard_state(a):
+    """`wired` / `missing` for a secondary Claude dir: hooks/account_guard.py (E4) on its
+    UserPromptSubmit; None for the default dir and Codex rows (nothing to guard)."""
+    if is_default(a) or a["provider"] != "claude":
+        return None
+    try:
+        hooks = (json.loads((a["home"] / "settings.json").read_text()).get("hooks") or {}).get("UserPromptSubmit") or []
+    except (OSError, ValueError, AttributeError):
+        return "missing"
+    wired = any("account_guard.py" in (h.get("command") or "") for g in hooks for h in (g.get("hooks") or []))
+    return "wired" if wired else "missing"
+
+
+def worktree_allow_present():
+    """wharf's hooks/worktree_allow.py is installed here (G16: without it, its check is skipped)."""
+    try:
+        return bool(core().tool("worktree_allow.py"))
+    except ImportError:
+        return False
+
+
+def worktree_hook(a):
+    """True when hooks/worktree_allow.py answers PermissionRequest for both worktree tools in this
+    dir (the owner, 2026-10-06: EnterWorktree never asks, on any account)."""
+    try:
+        groups = (json.loads((a["home"] / "settings.json").read_text()).get("hooks") or {}).get("PermissionRequest") or []
+        return any(isinstance(g, dict) and set((g.get("matcher") or "").split("|")) >= {"EnterWorktree", "ExitWorktree"}
+                   and any(isinstance(h, dict) and "worktree_allow.py" in (h.get("command") or "")
+                           for h in (g.get("hooks") or []))
+                   for g in groups)
+    except Exception:
+        return False
+
+
+def cmd_check(reg):
+    if not reg["accounts"]:
+        print(f"account: no registry at {REGISTRY}")
+        return 0
+    bad = 0
+    t = now()
+    for a in reg["accounts"]:
+        if not a["enabled"]:
+            print(f"  --  {a['label']} ({a['provider']}): disabled")
+            continue
+        if not a["home"].is_dir():
+            print(f"  --  {a['label']}: " + ("its login is not in Orca here — " + orca_login_line(a) if via_orca(a)
+                                             else "not on this machine"))
+            continue
+        notes = []
+        if a["provider"] == "codex":  # no Claude dir: trust, settings and the guard are not its; the reading is
+            lim, at = limits(a, cached=True)
+            notes.append(f"Codex, {(lim or {}).get('plan') or 'plan ?'}; " + (f"probe {int((t - at) / 60)} min old" if at else "never probed"))
+            print(f"  {'ok' if at else '⚠ '}  {a['label']}: " + "; ".join(notes))
+            continue
+        st = auth_status(a)
+        if not st or not st.get("loggedIn"):
+            bad += 1
+            cmd = f"{BIN / 'account'} add {a['label']}"
+            notes.append("NOT logged in — " + orca_login_line(a) if via_orca(a) else
+                         f"NOT logged in — run {cmd}" + ("" if is_default(a) else " (it opens the /login)"))
+        else:
+            notes.append(f"{st.get('email') or st.get('emailAddress') or '?'} ({st.get('subscriptionType') or '?'}"
+                         f"{' / ' + seat_of(a) if seat_of(a) else ''})")
+        lp = link_problems(a)
+        if lp:
+            bad += 1
+            notes.append("links: " + "; ".join(lp))
+        if not is_default(a):
+            tr = subprocess.run(trust_argv(a, "--check"), capture_output=True, text=True,
+                                env={**os.environ, "CLAUDE_CONFIG_DIR": str(a["home"])})
+            if tr.returncode:
+                notes.append(f"{tr.stdout.strip().splitlines()[-1].strip() if tr.stdout.strip() else 'trust unknown'}"
+                             f" — CLAUDE_CONFIG_DIR={a['home']} {BIN / 'trust-projects'}")
+        sl = settings_line(a)
+        if sl and not sl.endswith(", 0 missing, 0 undeclared"):
+            notes.append(sl)
+        g = guard_state(a)
+        if g:
+            notes.append(f"guard: {g}")
+        if a.get("same_as"):
+            bad += 1
+            notes.append(judge(a, None, t)[1])
+        lim, at = limits(a, cached=True)
+        notes.append(f"probe {int((t - at) / 60)} min old" if at else "never probed")
+        cd = cooldown(a, t)
+        if cd:
+            notes.append(f"cooling down until {when(cd)}")
+        mark = "ok" if not lp and not a.get("same_as") and (st or {}).get("loggedIn") else "⚠ "
+        print(f"  {mark}  {a['label']}{' (primary)' if a.get('primary') else ''}: " + "; ".join(notes))
+    return 1 if bad else 0
+
+
+def open_in_terminal(argv, env):
+    """A new Terminal window running argv with env (wharf's fork_claude_session, with the env
+    prefix); without wharf, the command to type, printed (G16)."""
+    try:
+        fcs = core().tool("fork_claude_session.py")
+    except ImportError:
+        fcs = None
+    if not fcs:
+        print("  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) "
+              + " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + " " + shlex.join(argv))
+        return
+    sys.path.insert(0, str(fcs.parent))
+    from fork_claude_session import open_in_terminal as oit
+    oit(HOME, argv, env=env)
+
+
+def cmd_add(reg, label, login, say_login=True):
+    a = row(reg, label)
+    if a["provider"] != "claude":
+        sys.exit(f"account: adding a {a['provider']} account is not built — sign its home in yourself "
+                 f"(`CODEX_HOME={shlex.quote(str(a['home']))} codex login`), then `account limits {label}`; orca-sync makes rows of its own, never fills this one")
+    if is_default(a):
+        print(f"{label} is the default dir {DEFAULT_DIR}; nothing to make — /login there if it is logged out")
+        return 0
+    if via_orca(a):
+        # Orca builds and wires that dir and holds its login: never a mkdir, link set or login of ours
+        print(f"account: {label}'s login is Orca's — {orca_login_line(a)}", file=sys.stderr)
+        return 1
+    home = a["home"]
+    home.mkdir(parents=True, exist_ok=True)
+    memory_bad = False
+    for n in LINKS:
+        p, target = home / n, link_target(a, n)
+        if n == "CLAUDE.md":   # an employer row's points at the work file, an older link re-pointed
+            line = point_memory(a, home)
+            print(line or f"  ok      {p}")
+            ex = home_memory_excluded(a, home)
+            if ex:
+                print(ex)
+            memory_bad = bool((line and "⚠" in line) or (ex and "⚠" in ex))   # setup did not finish
+            continue
+        if p.is_symlink() or p.exists():
+            print(f"  {'ok    ' if p.is_symlink() and os.readlink(p) == str(target) else '⚠ left'}  {p}")
+            continue
+        p.symlink_to(target)
+        print(f"  linked  {p} → {target}")
+    # trust-projects needs a .claude.json to write into, and the login has not made one yet; an
+    # empty one is what Claude Code starts from (code review 2026-10-03: without it, trust failed
+    # and nothing ran it again)
+    if not (home / ".claude.json").exists():
+        (home / ".claude.json").write_text("{}\n")
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(home)}
+    for argv in ([bootstrap_cmd(), "--hooks"], trust_argv(a)):
+        if argv[0] == BOOTSTRAP_PLACEHOLDER:   # no overlay: nothing wires the hooks but the plugin (README)
+            print(f"  skip    the overlay's bootstrap.sh --hooks for {home}: no overlay here")
+            continue
+        r = subprocess.run(argv, env=env, capture_output=True, text=True)
+        print(f"  {'ran   ' if r.returncode == 0 else '⚠ fail'}  {Path(argv[0]).name} {' '.join(argv[1:])} for {home}"
+              + ("" if r.returncode == 0 else f": {(r.stderr or r.stdout).strip()[:200]}"))
+    key = hashlib.sha256(str(home).encode()).hexdigest()[:8]
+    if login:
+        open_in_terminal([claude_bin(), "auth", "login"], {"CLAUDE_CONFIG_DIR": str(home)})
+        print(f"  → a Terminal window runs `claude auth login` for {home} — sign in there as {label}"
+              f" (keychain entry: Claude Code-credentials-{key})")
+    elif say_login:  # setup prints its own line, in the ssh -t form on a peer
+        print(f"  login: CLAUDE_CONFIG_DIR={shlex.quote(str(home))} claude auth login")
+    return 1 if memory_bad else 0
+
+
+def cmd_setup(reg, record=True, peer=None):
+    """Build this Mac from the logins file: a dir for every Claude row the file lists for this Mac,
+    the login line for every dir not signed in as the file says, and the e-mail and plan of a login
+    the file lacks written there. Idempotent: a second run prints `ok` per row. → exit 1 when a
+    login is owed."""
+    path, logins = load_logins()
+    if path is None:
+        print("account: no logins file on this Mac (the config dir's lighthouse/logins.json; Drive not mounted?) — nothing to build from")
+        return 1
+    if not logins:
+        print(f"account: no logins file at {path}")
+        return 1
+    mac, owed, changed = this_mac(), 0, False
+    for a in reg["accounts"]:
+        if a["provider"] != "claude":
+            continue
+        e = logins.get(a["label"])
+        if e is None:
+            print(f"  --  {a['label']}: not in the logins file {path}")
+            continue
+        macs = e.get("macs") or []
+        if mac not in macs:
+            print(f"  --  {a['label']}: not listed for {mac}" + (f" ({e['note']})" if e.get("note") else ""))
+            continue
+        if not a["home"].is_dir() and via_orca(a):
+            owed += 1
+            print(f"  ⚠   {a['label']}: its login is not in Orca on {mac} — {orca_login_line(a)}")
+            continue
+        if not a["home"].is_dir():
+            print(f"  add {a['label']}: {a['home']} missing on {mac}")
+            cmd_add(reg, a["label"], False, say_login=False)
+        _, email = login_of(a)
+        want = e.get("email")
+        if not email:
+            owed += 1
+            print(f"  ⚠   {a['label']}: not signed in on {mac} — sign in as {want or 'its own account'}:\n      {login_line(a, peer)}")
+        elif not want:
+            if record:
+                st = auth_status(a) or {}
+                e.update({"email": email, "plan": st.get("subscriptionType"), "org_type": seat_of(a)})
+                changed = True
+                print(f"  rec {a['label']}: {email} ({e['plan'] or '?'}) recorded in {path}")
+            else:
+                print(f"  ok  {a['label']}: {email} (the laptop records it in the logins file)")
+        elif email.lower() != want.lower():
+            owed += 1
+            print(f"  ⚠   {a['label']}: signed in as {email} on {mac}, the logins file says {want}:\n      {login_line(a, peer)}")
+        else:
+            print(f"  ok  {a['label']}: {email}" + (f" ({e['plan']})" if e.get("plan") else ""))
+    if changed:
+        save_logins(path, logins)
+    return 1 if owed else 0
+
+
+# ---------------------------------------------------------------------------- Orca's logins, ships
+
+def orca_bin():
+    return os.environ.get("ACCOUNT_ORCA") or shutil.which("orca") or (ORCA_APP_CLI if os.path.exists(ORCA_APP_CLI) else None)
+
+
+def orca_claude_accounts():
+    """→ Orca's managed Claude accounts as `orca account list --json` prints them, or exits."""
+    accts = (orca_list().get("claude") or {}).get("accounts") or []
+    return [x for x in accts if isinstance(x, dict)]
+
+
+@functools.lru_cache(maxsize=1)  # orca-sync's two halves read one snapshot, one Electron start (review 2026-10-16)
+def orca_list():
+    """→ the `result` of `orca account list --json` (every agent's accounts), or exits.
+    ELECTRON_RUN_AS_NODE is cleared: VS Code's terminals set it and the app's CLI then runs as
+    bare node (lessons/claude-code.md)."""
+    o = orca_bin()
+    if not o:
+        sys.exit("account: no orca CLI here (install the Orca app)")
+    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
+    try:
+        r = subprocess.run([o, "account", "list", "--json"], capture_output=True, text=True, timeout=30, env=env)
+        d = json.loads(r.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"account: `orca account list` gave nothing readable ({e}) — is the app running?")
+    if not d.get("ok"):
+        sys.exit(f"account: `orca account list` refused: {json.dumps(d.get('error'))[:300]}")
+    return d.get("result") or {}
+
+
+def orca_codex_sync(reg, off=False):
+    """Every Codex login Orca uses → a row (the owner, 2026-10-16: the widget shows "all accounts
+    registered in Orca, including Codex/ChatGPT"): its system default, .codex in the home folder, and each managed
+    account, whose home is ORCA_DATA/codex-accounts/<id>/home (Orca's source, app.asar, read
+    2026-10-16; no managed Codex account existed to see one). Recorded in ORCA_FILE with
+    `"provider": "codex"` only once Codex itself, asked in that home (account/read), is signed in
+    as the e-mail Orca names; an entry Orca no longer lists goes. Labels are `codex-<local part>`,
+    kept across syncs by Orca's id. --off and `orca default off` leave Codex logins alone (the walk
+never takes one; `off` stays in the signature for the caller), `orca off LABEL` still hides one.
+    → 1 if a login Orca names could not be recorded."""
+    res = orca_list()
+    cx = res.get("codex") or {}
+    found = []  # (orca id, e-mail, home)
+    sd = cx.get("systemDefault") or {}
+    if sd.get("hasAuth") and sd.get("email"):
+        # the home folder's .codex, not the caller's $CODEX_HOME: Orca's systemDefault is read in Orca's
+        # own process (app.asar: process.env.CODEX_HOME there, else that .codex), and a sync run from a Codex worker's
+        # shell would look in its home instead (review 2026-10-17)
+        found.append(("system-default", sd["email"], HOME / ".codex"))
+    for x in cx.get("accounts") or []:
+        if isinstance(x, dict) and x.get("id"):
+            found.append((str(x["id"]), x.get("email") or "", ORCA_DATA / "codex-accounts" / str(x["id"]) / "home"))
+    synced = read_json(ORCA_FILE, {})
+    mine = {k: v for k, v in synced.items() if isinstance(v, dict) and v.get("provider") == "codex"}
+    by_id = {v.get("orca_id"): k for k, v in mine.items()}
+    # gone: only an entry a Codex sync recorded (it has Orca's id), and only when Orca's list has a
+    # Codex section to judge by — a list without one, or an entry written by hand, says nothing; and
+    # an empty section is Orca not ready, never every login gone, as for Claude (review 2026-10-16)
+    if "codex" in res and not found and mine:
+        print("  --      Orca lists no Codex login right now — every Codex entry kept as it was")
+    gone = [k for k, v in mine.items() if v.get("orca_id") and v["orca_id"] not in {f[0] for f in found}] if "codex" in res and found else []
+    for label in gone:
+        synced.pop(label)
+        write_json(ORCA_FILE, synced)
+        print(f"  gone    {label}: no longer a Codex login in Orca — out of the rows")
+
+    def drop(label, why):  # an entry that no longer names the login it was recorded for
+        if label and label in synced:
+            synced.pop(label)
+            write_json(ORCA_FILE, synced)
+            print(f"  gone    {label}: {why} — out of the rows")
+    bad = 0
+    named = {r["label"] for r in reg["accounts"] if not r.get("implicit")}  # a registry row's label would shadow it
+    for oid, email, home in found:
+        label = by_id.get(oid)
+        if label and (synced[label].get("email") or "").lower() != email.lower():
+            # a home signed in to another account is another login: a new label, not the old one's
+            # switch, exhaustion and cooldown history
+            drop(label, f"Orca's {oid} is {email or 'nobody'} now, not {synced[label].get('email')}")
+            label = None
+        other = next((k for k, v in synced.items() if isinstance(v, dict) and v.get("provider") == "codex"
+                      and v.get("orca_id") != oid and (v.get("email") or "").lower() == email.lower()), None)
+        if other:  # Orca's system default and a managed account on one e-mail are one quota, never two rows
+            print(f"  --      Orca's Codex {email} ({oid}) is {other}'s login already — not a row of its own")
+            drop(label, f"its login is {other}'s")
+            continue
+        if not label:
+            label = orca_label({"email": email, "id": oid}, set(synced) | named, "codex-")
+        if not home.is_dir():
+            bad += 1
+            print(f"  ⚠   {label}: Orca names Codex login {email or oid}, but {home} is no dir — nothing recorded")
+            continue
+        ans = codex_rpc(home, [("account/read", {})]).get(2)
+        if not isinstance(ans, dict) or "error" in ans:
+            # no answer (no codex binary, a timeout, an error reply) says nothing about the sign-in:
+            # the entry and its switch stay, as for an empty Orca list (code review 2026-10-17)
+            bad += 1
+            print(f"  ⚠   {label}: Codex in {home} gave no answer to account/read — entry kept as it was")
+            continue
+        who = ans.get("account") or {}
+        seen = who.get("email") or ""
+        if not email or seen.lower() != email.lower():
+            bad += 1
+            print(f"  ⚠   {label}: Codex in {home} is signed in as {seen or 'nobody'}, Orca says {email or '?'} — nothing recorded")
+            drop(label if label in mine else None, "its home is not the login Orca names")
+            continue
+        had = synced.get(label) or {}
+        entry = {"provider": "codex", "home": str(home), "orca_id": oid, "email": email}
+        if isinstance(had.get("enabled"), bool):
+            entry["enabled"] = had["enabled"]   # a switch made earlier stays
+        # --off and `orca default off` are about the walk, which never takes a Codex row; applied
+        # here they would only hide the login from the widget (review 2026-10-17). `orca off` still can.
+        synced[label] = entry
+        write_json(ORCA_FILE, synced)
+        print(f"  {'ok ' if had.get('home') == str(home) else 'new'} {label}: {home} — Codex, signed in as {seen} "
+              f"({who.get('planType') or '?'})" + ("" if entry.get("enabled") is not False else f"; off — `account orca on {label}`"))
+    return 1 if bad else 0
+
+
+def signed_in_as(d):
+    """The e-mail a config dir's .claude.json is signed in as (login_of's read), or None."""
+    try:
+        o = json.loads((Path(d) / ".claude.json").read_text()).get("oauthAccount") or {}
+        return o.get("emailAddress") if isinstance(o, dict) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def orca_home_of(x):
+    """→ (dir or None, why). Orca's list names no dir in 1.4.225, so the dir is the one under
+    ORCA_DATA (four levels at most) whose .claude.json is signed in as the entry's e-mail —
+    one with the entry's id in its path first. Two or none: None, said, never guessed."""
+    email = (x.get("email") or "").lower()
+    if not email:
+        return None, f"Orca's entry {x.get('id')} carries no e-mail to find its dir by"
+    found = []
+    base = str(ORCA_DATA)
+    for root, dirs, files in os.walk(base):
+        if root[len(base):].count(os.sep) >= 4:
+            dirs[:] = []
+        dirs[:] = [d for d in dirs if d not in ("Cache", "Code Cache", "GPUCache", "logs", "Crashpad", "projects", "sessions")]
+        if ".claude.json" in files and (signed_in_as(root) or "").lower() == email:
+            found.append(root)
+    by_id = [f for f in found if x.get("id") and str(x["id"]) in f]
+    pick = by_id if len(by_id) == 1 else found
+    if len(pick) == 1:
+        return pick[0], None
+    return None, (f"{len(found)} dirs under {ORCA_DATA} are signed in as {email}" if found
+                  else f"no dir under {ORCA_DATA} is signed in as {email} yet")
+
+
+def orca_label(x, taken, prefix="orca-"):
+    """A label for an Orca login no row names: `orca-<the e-mail's local part>`, made unique."""
+    base = prefix + (re.sub(r"[^a-z0-9]+", "-", (x.get("email") or str(x.get("id")))[:40].split("@")[0].lower()).strip("-") or "account")
+    label, n = base, 2
+    while label in taken:
+        label, n = f"{base}-{n}", n + 1
+    return label
+
+
+def cmd_orca_sync(reg, off=False):
+    """Every Claude login in Orca → a row the walk can pick (the owner, 2026-10-16: "auto-picker gets all
+    Orca accounts enabled by default, but there's a way to override during set up, or change it later
+    at any point"). Registry rows of Orca's claim first: the id an earlier sync recorded, else the
+    logins file's e-mail for the label, else — only when that file has none — the one account nobody
+    claimed; a registry row's claim takes an account back from an implicit row that held it. Every
+    account left over becomes a row of its own (orca_label; hooks/common.py account_rows), in the walk —
+    or recorded off with --off or while `orca default off` stands — unless its e-mail is another row's
+    login, which that row decides. An implicit login gone from Orca leaves the walk. Its dir is found by
+    e-mail (orca_home_of), Claude Code must read that login there, and only then is it recorded in
+    ORCA_FILE. The wiring is Orca's; ours is the two links Orca leaves out (`projects`, `sessions`: one
+    transcript store), trust, and — for a login synced for the first time — its VS Code profile.
+    → exit 1 if a login stays unsynced, or a dir's CLAUDE.md was left or failed (point_memory)."""
+    sys.path.insert(0, core_hooks())
+    from common import orca_row
+    accts = orca_claude_accounts()
+    ids = {x.get("id") for x in accts}
+    _, logins = load_logins()
+    synced = read_json(ORCA_FILE, {})
+    entries = {k: v for k, v in synced.items() if not k.startswith("_") and isinstance(v, dict)}
+    implicit = {a["label"] for a in reg["accounts"] if a.get("implicit") and a["provider"] == "claude"}  # a Codex entry is never pruned from Claude's list
+    work = []  # (row, the Orca account or None, the logins file's e-mail for the row)
+    claimed = set()
+    for a in [a for a in reg["accounts"] if via_orca(a) and not a.get("implicit") and a["provider"] == "claude"]:
+        had = entries.get(a["label"]) or {}
+        want = ((logins.get(a["label"]) or {}).get("email") or "").lower()
+        match = [x for x in accts if had.get("orca_id") and x.get("id") == had["orca_id"]]
+        match = match or [x for x in accts if want and (x.get("email") or "").lower() == want]
+        if not match and not want:
+            held = {(entries.get(r) or {}).get("orca_id") for r in implicit}
+            free = [x for x in accts if x.get("id") not in claimed and x.get("id") not in held]
+            match = free if len(free) == 1 else []
+        if match:
+            claimed.add(match[0].get("id"))
+        work.append((a, match[0] if match else None, want))
+    for label in sorted(implicit):  # an implicit login: kept while Orca has it and no registry row took it
+        oid = (entries.get(label) or {}).get("orca_id")
+        if oid not in ids and not accts:  # an empty list is Orca not ready, never every login gone: keep its switch
+            print(f"  --      {label}: Orca lists no Claude account right now — kept as it was")
+            continue
+        if oid not in ids or oid in claimed:
+            synced.pop(label, None)
+            write_json(ORCA_FILE, synced)
+            reg["accounts"] = [r for r in reg["accounts"] if r["label"] != label]
+            print(f"  gone    {label}: " + ("no longer in Orca — out of the walk" if oid not in ids else "its login is a registry row's now"))
+            continue
+        a = next(r for r in reg["accounts"] if r["label"] == label)
+        work.append((a, next(x for x in accts if x.get("id") == oid), ""))
+        claimed.add(oid)
+    others = {(e.get("email") or "").lower(): lab for lab, e in logins.items() if isinstance(e, dict) and e.get("email")}
+    for r in reg["accounts"]:
+        if not via_orca(r) and r["provider"] == "claude" and r["home"].is_dir():
+            others.setdefault((login_of(r)[1] or "").lower(), r["label"])
+    others.pop("", None)
+    taken = {a["label"] for a in reg["accounts"]} | set(synced)
+    early_bad = 0
+    for x in accts:
+        if x.get("id") in claimed:
+            continue
+        owner = others.get((x.get("email") or "").lower())
+        if owner:
+            print(f"  --      Orca's {x.get('email')} is {owner}'s login — that row decides; not a row of its own")
+            # what its sessions load is still that row's call: an employer row's gets the work file
+            row_of = next((r for r in reg["accounts"] if r["label"] == owner), None)
+            home, _ = orca_home_of(x)
+            if row_of is not None and home:
+                line = point_memory(row_of, home)
+                if line:
+                    print(line)
+                    early_bad += "⚠" in line
+            continue
+        label = orca_label(x, taken)
+        taken.add(label)
+        a = dict(orca_row(label), home=HOME / ".orca-unsynced" / label)
+        reg["accounts"].append(a)
+        work.append((a, x, ""))
+        claimed.add(x.get("id"))
+    if not work:
+        print("account: Orca holds no Claude login of its own, and no row says \"via\": \"orca\"")
+        return 1 if early_bad else 0
+    bad = early_bad
+    for a, x, want in work:
+        label, had = a["label"], entries.get(a["label"]) or {}
+        if x is None:
+            bad += 1
+            print(f"  ⚠   {label}: no Orca Claude account is it ({len(accts)} in Orca"
+                  f"{', none signed in as ' + want if want else ''}) — {orca_login_line(a)}")
+            continue
+        if want and (x.get("email") or "").lower() != want:
+            bad += 1
+            print(f"  ⚠   {label}: Orca's account {x.get('id')} is {x.get('email')}, the logins file says {want} — "
+                  f"{orca_login_line(a)}")
+            continue
+        home, why = orca_home_of(x)
+        if not home:
+            bad += 1
+            print(f"  ⚠   {label}: {why} — nothing recorded (Orca account {x.get('id')})")
+            continue
+        a["home"] = Path(home).absolute()
+        # before the login read: over ssh the keychain is shut and every Orca login reads logged out
+        # (lessons/claude-code.md), and what an employer session loads must not wait on that
+        for line in (point_memory(a, a["home"]), home_memory_excluded(a, a["home"])):
+            if line:
+                print(line)
+                bad += "⚠" in line   # a link left or failed, an exclusion not made: the sync did not do its job
+        st = auth_status(a) or {}
+        if not st.get("loggedIn"):
+            bad += 1
+            print(f"  ⚠   {label}: Claude Code reads no login in {home} — nothing recorded; {orca_login_line(a)}")
+            continue
+        for n in ("projects", "sessions"):
+            p = a["home"] / n
+            if not p.exists() and not p.is_symlink():
+                p.symlink_to(DEFAULT_DIR / n)
+                print(f"  linked  {p} → {DEFAULT_DIR / n}")
+            elif not (p.is_symlink() and os.readlink(p) == str(DEFAULT_DIR / n)):
+                print(f"  ⚠ left  {p}: Orca's own — its transcripts stay there")
+        r = subprocess.run(trust_argv(a), capture_output=True, text=True,   # re-applied each sync: Orca
+                           env={**os.environ, "CLAUDE_CONFIG_DIR": home})   # copies the home .claude.json's projects over
+        if r.returncode:
+            print(f"  ⚠ fail  trust-projects for {home}: {(r.stderr or r.stdout).strip()[:200]}")
+        new = not had
+        same = had.get("home") == home and had.get("orca_id") == x.get("id")
+        entry = {"home": home, "orca_id": x.get("id"), "email": x.get("email")}
+        if isinstance(had.get("enabled"), bool):
+            entry["enabled"] = had["enabled"]   # a switch made earlier stays
+        elif new and a.get("implicit") and (off or synced.get("_default") == "off"):
+            entry["enabled"] = False            # --off or `orca default off`: a new login is recorded off
+        synced[label] = entry
+        write_json(ORCA_FILE, synced)
+        a["enabled"] = a.get("enabled", True) and entry.get("enabled") is not False
+        a.pop("same_as", None)
+        mark_same_logins(reg)  # a new login that is another row's is no second account, nor a profile
+        print(f"  {'ok ' if same else 'new'} {label}: {home} — Orca account {x.get('id')}, signed in as "
+              f"{st.get('email') or st.get('emailAddress') or x.get('email')} ({st.get('subscriptionType') or '?'}); "
+              + (f"same login as {a['same_as'][0]} — never picked" if a.get("same_as") else
+                 "in the walk" if a["enabled"] else f"off — `account orca on {label}` puts it in the walk"))
+        # its VS Code profile (orca-accounts D2), once, when first synced, in a GUI session here — never
+        # over ssh, and never again after the owner deletes it (`account vscode LABEL` makes it again); a
+        # failure is said, and the login stays synced: exit 1 means a login unsynced or a memory link not made, nothing else
+        if (new and a["enabled"] and not a.get("same_as") and not os.environ.get("SSH_CONNECTION")
+                and vscode_state()[0] is not None and os.path.exists(CODE_CLI)):
+            if cmd_vscode(reg, label):
+                print(f"  ⚠       {label}: synced, but its VS Code profile is not set — `account vscode {label}` says why")
+    return 1 if bad else 0
+
+
+def cmd_orca_switch(reg, what, label=None):
+    """`orca on|off LABEL`: one Orca login in or out of the walk, on this Mac, at once — no commit
+    (the owner: "We'll switch it off later, make it easy"); `on` never overrides a registry row's own
+    `enabled: false`. `orca default on|off`: whether a login orca-sync finds from now on starts in the
+    walk (the switch made "during set up"; `orca-sync --off` does it for one run); a login already
+    synced keeps its place."""
+    synced = read_json(ORCA_FILE, {})
+    if label is None:
+        print("account: orca on|off LABEL, or orca default on|off", file=sys.stderr)
+        return 2
+    if what == "default":
+        if label not in ("on", "off"):
+            print("account: orca default takes on or off", file=sys.stderr)
+            return 2
+        synced["_default"] = label
+        write_json(ORCA_FILE, synced)
+        print(f"Orca logins orca-sync finds from now on start {'in' if label == 'on' else 'out of'} the walk"
+              f" (those already synced keep their place)")
+        return 0
+    e = synced.get(label)
+    if not isinstance(e, dict) or label.startswith("_"):
+        print(f"account: {label} is no Orca login synced on this Mac ({ORCA_FILE}) — account orca-sync first", file=sys.stderr)
+        return 1
+    e["enabled"] = what == "on"
+    write_json(ORCA_FILE, synced)
+    parked = what == "on" and any(r["label"] == label and not r.get("implicit") and r.get("enabled") is False
+                                  for r in json.loads(REGISTRY.read_text()).get("accounts") or [] if isinstance(r, dict)) \
+        if REGISTRY.is_file() else False
+    print(f"{label}: " + ("still out: accounts.json parks it (enabled: false)" if parked else
+                          "in the walk" if what == "on" else "out of the walk") + " on this Mac from now on")
+    return 0
+
+
+@contextlib.contextmanager
+def ships_lock():
+    """SHIPS is read-modify-write: concurrent `pick --ship` calls (a fan-out of ships) take turns."""
+    SHIPS.parent.mkdir(parents=True, exist_ok=True)
+    with open(SHIPS.with_name(SHIPS.name + ".lock"), "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def load_ships():
+    t = now()
+    return {k: v for k, v in read_json(SHIPS, {}).items()
+            if isinstance(v, dict) and t - float(v.get("at") or 0) < PIN_DAYS * 86400}
+
+
+def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True):
+    """pick, but a ship stays on its login (module docstring). → (row, reason, skipped); Short as pick."""
+    with ships_lock():
+        ships = load_ships()
+        pinned = ships.get(key)
+        prov = provider_for(reg, kind, provider)
+        a = next((r for r in reg["accounts"] if pinned and r["label"] == pinned.get("label")), None)
+        moved = None
+        if a is not None:
+            d = denied(a, repo)
+            gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
+                or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
+                or (d and f"denied for {d}")
+            if not gone:
+                t = now()
+                lim = None if cooldown(a, t) else limits(a, cached=cached)[0]
+                ok, why = judge(a, lim, t)
+                if not ok and lim is None and a.get("primary") and not cooldown(a, t):
+                    ok, why = True, "limits unknown — the primary runs it rather than nothing"
+                if ok:
+                    if pin:  # a pin lasts PIN_DAYS from its last use, so a long ship keeps it
+                        ships[key]["at"] = int(now())
+                        write_json(SHIPS, ships)
+                    return a, f"ship {key} stays on it: {why}", []
+                raise Short([(a["label"], f"ship {key} stays on {a['label']} and waits: {why}")])
+            moved = f"{pinned['label']} is {gone}"
+        elif pinned:
+            moved = f"{pinned.get('label')} is no row any more"
+        a, why, skipped = pick(reg, kind, provider, False, cached, repo)
+        if pin:
+            ships[key] = {"label": a["label"], "at": int(now())}
+            write_json(SHIPS, ships)
+        return a, f"ship {key} {'moved: ' + moved + '; ' if moved else 'pinned: ' if pin else 'unpinned: '}{why}", skipped
+
+
+# ---------------------------------------------------------------------------- doctor (E3)
+
+VSCODE_USER = Path(os.environ.get("ACCOUNT_VSCODE_USER") or HOME / "Library/Application Support/Code/User")
+EXPIRY_WARN_S = 3 * 86400
+
+
+def wrap_peer(cmd, peer, tty=False):
+    """A fix line typed on the laptop for the peer: the command over ssh, quoted once."""
+    return f"ssh {'-t ' if tty else ''}{peer} {shlex.quote(cmd)}" if peer else cmd
+
+
+def vscode_state():
+    """→ (profiles {name: location}, associations {uri: profile location}) from VS Code's
+    storage.json (work-account P8); ({}, {}) when VS Code is not on this Mac."""
+    try:
+        d = json.loads((VSCODE_USER / "globalStorage/storage.json").read_text())
+    except (OSError, ValueError):
+        return None, {}
+    profiles = {x.get("name"): x.get("location") for x in d.get("userDataProfiles") or [] if isinstance(x, dict)}
+    return profiles, ((d.get("profileAssociations") or {}).get("workspaces") or {})
+
+
+def profile_entry(location):
+    """CLAUDE_CONFIG_DIR in that profile's claudeCode.environmentVariables, or None."""
+    try:
+        cfg = json.loads((VSCODE_USER / "profiles" / location / "settings.json").read_text())
+    except (OSError, ValueError):
+        return None
+    for e in cfg.get("claudeCode.environmentVariables") or []:
+        if isinstance(e, dict) and e.get("name") == "CLAUDE_CONFIG_DIR":
+            return e.get("value")
+    return None
+
+
+CODE_CLI = os.environ.get("ACCOUNT_CODE") or "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+
+
+def code(*args, timeout=120):
+    """(rc, output) of VS Code's CLI. The env goes without CLAUDE*: VS Code hands a CLI caller's
+    environment to the window it opens (mainImpl.js `userEnv`, review 2026-10-16), and a session's
+    CLAUDECODE or CLAUDE_CONFIG_DIR has no place in the owner's window."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+    try:
+        r = subprocess.run([CODE_CLI] + list(args), capture_output=True, text=True, timeout=timeout, env=env)
+        return r.returncode, (r.stdout if r.returncode == 0 else (r.stderr or r.stdout))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def cmd_vscode(reg, label):
+    """A VS Code profile named LABEL whose Claude Code panel runs on that login (the owner, 2026-10-16,
+    orca-accounts D2: "add it to VScode profiles right now, so I can pick it manually when coding.
+    Just don't break the open sessions please"). The work-account E7 route, built:
+    - a missing profile is made by `code --profile LABEL --new-window` (VS Code has no other way):
+      one new empty window, no folder — a folder given would be tied to LABEL for good;
+    - CLAUDE_CONFIG_DIR goes into that profile's own settings.json at once, before any extension,
+      so its panel never starts on the default login; `claudeCode.environmentVariables` is
+      machine-scoped, so it lives per profile (work-account P8). Never the default profile's file;
+    - the default profile's extensions are copied in (a snapshot: a profile's sections cannot be
+      shared from the CLI); later additions to the default do not follow.
+    Idempotent; a backup before each settings write. Undo: delete the profile in VS Code."""
+    a = row(reg, label)
+    if a["provider"] != "claude":
+        print(f"account: {label} is a {a['provider']} row — VS Code profiles are for Claude logins", file=sys.stderr)
+        return 1
+    if is_default(a):
+        print(f"account: {label} is the default dir — the default profile already runs on it", file=sys.stderr)
+        return 1
+    if not a["enabled"] or a.get("same_as"):
+        print(f"account: {label} is {'disabled' if not a['enabled'] else 'on another row’s login'} — no profile for it", file=sys.stderr)
+        return 1
+    if not a["home"].is_dir():
+        print(f"account: {label} has no dir here yet" + (f" — {orca_login_line(a)}" if via_orca(a) else ""), file=sys.stderr)
+        return 1
+    if not os.path.exists(CODE_CLI):
+        print(f"account: no VS Code CLI at {CODE_CLI}", file=sys.stderr)
+        return 1
+    profiles, _ = vscode_state()
+    if profiles is None:
+        print(f"account: no VS Code state at {VSCODE_USER}", file=sys.stderr)
+        return 1
+    made = False
+    if label not in profiles:
+        code("--profile", label, "--new-window")
+        for _ in range(30):  # poll storage.json for the profile VS Code just made; never re-run the command
+            profiles, _ = vscode_state()
+            if label in (profiles or {}):
+                break
+            time.sleep(1)
+        if label not in (profiles or {}):
+            print(f"account: VS Code made no profile {label} within 30 s (storage.json)", file=sys.stderr)
+            return 1
+        made = True
+        print(f"  made    VS Code profile {label} (one new, empty window)")
+    try:
+        flags = next((x.get("useDefaultFlags") or {} for x in json.loads((VSCODE_USER / "globalStorage/storage.json").read_text())
+                      .get("userDataProfiles") or [] if isinstance(x, dict) and x.get("name") == label), {})
+    except (OSError, ValueError):
+        flags = {}
+    if flags.get("settings"):
+        print(f"account: profile {label} shares the default profile's settings — its panel would read the default's; "
+              f"set its Settings to New in VS Code's Profiles editor, then run this again", file=sys.stderr)
+        return 1
+    p = VSCODE_USER / "profiles" / profiles[label] / "settings.json"
+    try:
+        text = p.read_text() if p.exists() else ""
+        cfg = json.loads(text) if text.strip() else {}
+        if not isinstance(cfg, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError) as e:
+        print(f"account: {p} is not plain JSON ({e}) — not edited; add CLAUDE_CONFIG_DIR={a['home']} to "
+              f"claudeCode.environmentVariables there by hand", file=sys.stderr)
+        return 1
+    env = [e for e in cfg.get("claudeCode.environmentVariables") or [] if not (isinstance(e, dict) and e.get("name") == "CLAUDE_CONFIG_DIR")]
+    want_env = env + [{"name": "CLAUDE_CONFIG_DIR", "value": str(a["home"])}]
+    if cfg.get("claudeCode.environmentVariables") != want_env:
+        if p.exists():
+            shutil.copy2(p, p.with_name(f"settings.json.bak-{int(now())}"))
+        cfg["claudeCode.environmentVariables"] = want_env
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"settings.json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, p)
+        print(f"  set     {p}: CLAUDE_CONFIG_DIR={a['home']}")
+    else:
+        print(f"  ok      VS Code profile {label}: CLAUDE_CONFIG_DIR={a['home']}")
+    rc_w, want = code("--list-extensions")
+    rc_h, have = code("--profile", label, "--list-extensions")
+    if rc_w or rc_h:
+        print(f"  ⚠ skip  extensions: `code --list-extensions` failed ({(want if rc_w else have).strip()[:120]}) — "
+              f"run `account vscode {label}` again", file=sys.stderr)
+    else:
+        for ext in sorted(set(want.split()) - set(have.split())):
+            rc, out = code("--profile", label, "--install-extension", ext, timeout=300)
+            print(f"  {'added ' if rc == 0 else '⚠ fail'}  extension {ext}" + ("" if rc == 0 else f": {out.strip()[:120]}"))
+    print(f"  expect  a window in profile {label} (VS Code's Profiles menu): its Claude Code panel's first tier line "
+          f"ends `— {label}`; every other window is unchanged" + ("; reload that new window once (extensions went in after it opened)" if made else ""))
+    return 0
+
+
+def workspace_folders(ws):
+    """The folder paths of a .code-workspace (JSONC: comments and trailing commas tolerated by
+    reading the "path" values, not the document)."""
+    import re
+    try:
+        text = ws.read_text()
+    except OSError:
+        return []
+    return [(ws.parent / m).resolve() for m in re.findall(r'"path"\s*:\s*"([^"]+)"', text)]
+
+
+def denied_workspaces(rows):
+    """→ [(workspace, [denied keys], profile name)] for every .code-workspace under the projects folder
+    (three levels) with a folder a row's deny list names."""
+    profiles, assoc = vscode_state()
+    by_loc = {v: k for k, v in (profiles or {}).items()}
+    out = []
+    projects = projects_dir()
+    for pattern in ("*.code-workspace", "*/*.code-workspace", "*/*/*.code-workspace"):
+        for ws in sorted(projects.glob(pattern)):
+            if ".claude" in ws.parts:
+                continue
+            keys = sorted({d for f in workspace_folders(ws) for a in rows for d in [denied(a, f)] if d})
+            if keys:
+                loc = assoc.get(ws.resolve().as_uri())
+                out.append((ws, keys, "default" if loc in (None, "__default__profile__") else by_loc.get(loc, loc)))
+    return out
+
+
+def attribution(label, days=7):
+    """→ sessions usage-report attributed to label on this host in the last days (E6), or None
+    when the attribution file does not exist yet."""
+    try:
+        from importlib.machinery import SourceFileLoader
+        ur = SourceFileLoader("usage_report", str(core().tool("usage-report"))).load_module()   # plumb's; absent: None below (G18)
+        f = ur.data_dir() / ur.this_host() / "accounts.jsonl"
+    except Exception:
+        return None
+    if not f.is_file():
+        return None
+    n, t = 0, now()
+    for line in f.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("account") == label and t - (r.get("t") or 0) < days * 86400:
+            n += 1
+    return n
+
+
+def credential_expiry(a):
+    """→ expiresAt (epoch s) of the dir's .credentials.json (the always-on Mac's plaintext fallback, P1),
+    or None where the login is in the keychain (the laptop — not read: it would prompt)."""
+    f = (DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json"
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return None
+    for v in d.values() if isinstance(d, dict) else []:
+        if isinstance(v, dict) and v.get("expiresAt"):
+            x = v["expiresAt"]
+            return x / 1000 if x > 1e11 else x
+    return None
+
+
+def doctor_local(reg, logins, peer=None, record=True):
+    """→ findings on this Mac: [{"mac", "label", "level": ok|fix|info, "text", "fix"?, "record"?}].
+    peer: the ssh alias the laptop reaches this Mac by — fix lines come out in the ssh form."""
+    mac, t, out = this_mac(), now(), []
+
+    def f(label, level, text, fix=None, **kw):
+        out.append(dict({"mac": mac, "label": label, "level": level, "text": text, "fix": fix}, **kw))
+
+    claude_rows = [a for a in reg["accounts"] if a["provider"] == "claude"]
+    for a in claude_rows:
+        e = logins.get(a["label"])
+        lab = a["label"]
+        if e is None:
+            f(lab, "fix" if a["enabled"] else "info", f"not in the logins file — add a row for {lab} to it")
+            continue
+        listed = mac in (e.get("macs") or [])
+        if not listed:
+            if a["home"].is_dir() and not is_default(a):
+                f(lab, "info", f"{a['home']} exists but the logins file lists {lab} for {', '.join(e.get('macs') or []) or 'no Mac'}"
+                  + (f" ({e['note']})" if e.get("note") else ""))
+            continue
+        if not a["home"].is_dir():
+            f(lab, "fix", f"{a['home']} missing", wrap_peer(f"{BIN / 'account'} setup", peer))
+            continue
+        problems = 0
+        _, email = login_of(a)  # the e-mail .claude.json remembers, not proof the login still works
+        # Over ssh the peer's keychain is locked (work-account P1): a login held there, as Orca's GUI
+        # sign-in is, reads logged out to every check here though its sessions run (an Orca work login, 2026-10-18)
+        # SSH_CONNECTION too: the fix line for a failed peer leg runs `doctor --local` over ssh, no --peer
+        blind = bool((peer or os.environ.get("SSH_CONNECTION")) and email and not ((DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json").is_file())
+        raw = auth_status(a) if email and not blind else None
+        st = raw or {}
+        if blind:
+            f(lab, "info", "its login is in the keychain, which ssh cannot read — auth status and the live call not checked here")
+        want = e.get("email")
+        if not email:
+            problems += 1
+            f(lab, "fix", f"not signed in — sign in as {want or 'its own account'}", login_line(a, peer))
+        elif not want:
+            f(lab, "info", f"{email} recorded in the logins file" if record else f"{email}: the laptop records it",
+              record={"email": email, "plan": st.get("subscriptionType"), "org_type": seat_of(a)})
+        elif email.lower() != want.lower():
+            problems += 1
+            f(lab, "fix", f"signed in as {email}, the logins file says {want}", login_line(a, peer))
+        if email and not blind and raw is None:   # a timeout or no JSON: no answer, not "logged out"
+            problems += 1
+            f(lab, "fix", "`claude auth status` gave no answer (a timeout, or not JSON)")
+        elif email and not blind and not st.get("loggedIn"):
+            problems += 1
+            f(lab, "fix", f"{email} in {claude_json(a)}, but `claude auth status` says logged out", login_line(a, peer))
+        if a.get("same_as"):
+            problems += 1
+            f(lab, "fix", f"same login as {a['same_as'][0]} ({a['same_as'][1]})", login_line(a, peer))
+        lp = link_problems(a)
+        if lp:
+            problems += 1
+            fix = (bootstrap_cmd() if any("does not exist" in x for x in lp)   # only it writes the file
+                   else f"{BIN / 'account'} orca-sync" if via_orca(a) else f"{BIN / 'account'} add {lab} --no-login")
+            f(lab, "fix", "links: " + "; ".join(lp), wrap_peer(fix, peer))   # `add` refuses an Orca row
+        if not is_default(a):
+            tr = subprocess.run(trust_argv(a, "--check"), capture_output=True, text=True,
+                                env={**os.environ, "CLAUDE_CONFIG_DIR": str(a["home"])})
+            if tr.returncode:
+                problems += 1
+                last = tr.stdout.strip().splitlines()[-1].strip() if tr.stdout.strip() else "trust unknown"
+                f(lab, "fix", f"trust: {last}", wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} {shlex.join(trust_argv(a))}", peer))
+            if guard_state(a) != "wired":
+                problems += 1
+                f(lab, "fix", "guard: missing (hooks/account_guard.py, E4)",
+                  wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} {bootstrap_cmd()} --hooks", peer))
+        # only where the script exists (wharf's; G16): wired before that, the command points at no file
+        if (a["provider"] == "claude" and worktree_allow_present()
+                and not worktree_hook(a)):
+            problems += 1
+            f(lab, "fix", "worktree hook: missing (hooks/worktree_allow.py), EnterWorktree can ask",
+              # the dir spelled out, the default's too, so the run that wires every account dir
+              # also gives that one its working directories and declared settings (review 2026-10-10)
+              wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} {bootstrap_cmd()} --hooks", peer))
+        sl = settings_line(a)
+        if sl and not sl.endswith(", 0 missing, 0 undeclared"):
+            f(lab, "info", sl + f" — {BIN / 'claude-settings'} check lists each")
+        # a blind row is not probed: over ssh get_usage answers its null "success", which limits()
+        # would cache for every hook that reads --cached
+        if a["enabled"] and email and not a.get("same_as") and not blind:
+            lim, at = limits(a)
+            # `auth status` reads the stored credential, never the server: on the always-on Mac it said
+            # the primary ok over a dead token and a landing died on it (TODO, 2026-10-18). limits()
+            # just probed unless its cache was fresh, so an old or missing reading is a failed live
+            # call; and so is one with neither plan nor window, which get_usage answers "success"
+            # with when no login reaches the server (an Orca work login there, 2026-10-18)
+            answered = lim and (lim.get("plan") or any(lim.get(w) is not None for w in WINDOWS))
+            # now(), not the doctor's start t: a probe that failed late falls back to a cache young against t
+            if st.get("loggedIn") and (at is None or now() - at >= CACHE_S or not answered):
+                problems += 1
+                f(lab, "fix", "no answer to a live call (get_usage, two tries): the login is dead, or the network is down"
+                  + (f"; last answer {when(at)}" if at else ""), login_line(a, peer))
+            fb = (lim or {}).get("fable")
+            prim = next((n for n, r in enumerate(reg["accounts"]) if r.get("primary")), None)
+            if fb is False and prim is not None and reg["accounts"].index(a) > prim:
+                # the owner, 2026-10-16: the Pro fallback back in the walk "after [the primary] — as the last resort"
+                f(lab, "info", "fable: no — walked only after the primary, as the last resort")
+            elif fb is False:
+                problems += 1
+                f(lab, "fix", "fable: no — not safe for main sessions (every one may spawn an architect)",
+                  f"set \"enabled\": false on {lab} in {REGISTRY}, or build the fable-less rule (work-account section 2)")
+            elif fb is None:
+                f(lab, "info", "fable: unknown (no probe answer with limits[])")
+        exp = credential_expiry(a)
+        if exp is not None:
+            left = exp - t
+            if left < 0:
+                f(lab, "info", f"access token past {when(exp)} — refreshed on the next call; the live call above says if the login is gone")
+            elif left < EXPIRY_WARN_S:
+                f(lab, "info", f"access token expires {when(exp)}")
+        elif not is_default(a) or peer is None:
+            pass  # the laptop keeps logins in the keychain: not read (it would prompt), said once below
+        for rs in sorted(a["home"].glob("remote-settings*")) if not is_default(a) else sorted(DEFAULT_DIR.glob("remote-settings*")):
+            f(lab, "info", f"{rs} exists — managed settings reached this dir (work-account P5); read it")
+        if a["enabled"] and not is_default(a):
+            n = attribution(lab)
+            if n is None:
+                f(lab, "info", "no usage attribution on this host yet (E6: sync.py writes it at session start)")
+            else:
+                f(lab, "info", f"{n} session(s) attributed in usage-report, last 7 days")
+        if not problems:
+            f(lab, "ok", f"{email or '?'}" + (f" ({e.get('plan')})" if e.get("plan") else "")
+              + ("" if is_default(a) else f"; guard {guard_state(a)}"))
+    # the VS Code profile per enabled secondary (D2-C), on a Mac with VS Code
+    profiles, _ = vscode_state()
+    # A dir signed in to another row's account is a second way into that seat which its deny list
+    # and the guard do not cover: the Pro fallback's dir, parked, signed in to a work seat while
+    # pickup still started sessions on it (review 2026-10-06). Every dir that exists, enabled or not.
+    owner = {(e.get("email") or "").lower(): lab for lab, e in logins.items() if e and e.get("email")}
+    for a in claude_rows:  # an enabled row's own login, until the logins file records it
+        if a["enabled"] and a["home"].is_dir():
+            owner.setdefault((login_of(a)[1] or "").lower(), a["label"])
+    owner.pop("", None)
+    for a in claude_rows:
+        if not a["home"].is_dir():
+            continue
+        _, email = login_of(a)
+        other = owner.get((email or "").lower())
+        denies = any((r.get("repos") or {}).get("deny") for r in claude_rows if r["label"] == other)
+        if email and other and other != a["label"] and denies:  # the primary's seat has no deny list to bypass
+            f(a["label"], "fix", f"{a['home']} is signed in as {email}, which the logins file gives to {other} — "
+              f"a second way into {other}'s seat that its deny list does not cover",
+              wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} claude auth logout   (after its sessions end)", peer)
+              if not is_default(a) else "sign the default dir back in as its own account")
+    if profiles is not None:
+        for a in claude_rows:
+            if not a["enabled"] or is_default(a) or mac not in ((logins.get(a["label"]) or {}).get("macs") or []):
+                continue
+            loc = profiles.get(a["label"])
+            if not loc:
+                # info, not fix: doctor must be able to reach "every row ok" (review 2026-10-06)
+                f(a["label"], "info", f"no VS Code profile {a['label']} (work-account D2-C)", f"{BIN / 'account'} vscode {a['label']}")
+            elif profile_entry(loc) != str(a["home"]):
+                f(a["label"], "info", f"profile {a['label']} has no CLAUDE_CONFIG_DIR={a['home']}", f"{BIN / 'account'} vscode {a['label']}")
+            else:
+                f(a["label"], "ok", f"VS Code profile {a['label']} runs its panel on {a['home']}")
+        deny_rows = [a for a in claude_rows if a["enabled"] and (a.get("repos") or {}).get("deny")]
+        for ws, keys, prof in denied_workspaces(deny_rows):
+            on = [a["label"] for a in deny_rows if a["label"] == prof]
+            f(on[0] if on else "-", "fix" if on else "info",
+              f"{ws} opens {', '.join(keys)} — profile {prof}" + (": a denied repo on that account" if on else ""),
+              "open it with the default profile" if on else None)
+    if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
+        f("-", "info", "credential expiry: the keychain is not read here (it would prompt)")
+    known = {a["home"] for a in reg["accounts"]}
+    for d in sorted(HOME.glob(".claude-*")):
+        if d.is_dir() and d.absolute() not in known:
+            f("-", "info", f"{d} is in no registry row")
+    return out
+
+
+def cmd_doctor(reg, local=False, as_json=False, peer=None):
+    path, logins = load_logins()
+    if not logins:
+        print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
+        return 1
+    found = doctor_local(reg, logins, peer=peer, record=not local)
+    if not local:
+        for host, alias in sorted(PEERS.items()):
+            if host == this_mac():
+                continue
+            r = run_on_peer(host, ["doctor", "--local", "--json", "--peer", alias])
+            try:
+                peer_found = json.loads(r.stdout)
+            except ValueError:
+                peer_found = None
+            if peer_found is None and r.returncode == 255:  # ssh's own failure, not the peer's doctor
+                found.append({"mac": host, "label": "-", "level": "fix",
+                              "text": f"unreachable over ssh ({(r.stderr or '').strip()[:120]})",
+                              "fix": "off the LAN? /move --to-home, then run this again"})
+            elif peer_found is None:  # reached, but its doctor said something else (no logins file there…)
+                found.append({"mac": host, "label": "-", "level": "fix",
+                              "text": f"its doctor answered: {(r.stdout or r.stderr or '').strip()[:300]}",
+                              "fix": wrap_peer(f"PATH=$HOME/.local/bin:$PATH python3 {remote_account()} doctor --local", alias)})
+            else:
+                for x in peer_found:  # a missing dir there is built from here: the laptop's own path
+                    if x.get("level") == "fix" and x.get("text", "").endswith(" missing"):
+                        x["fix"] = f"{BIN / 'account'} setup --host {host}"
+                found += peer_found
+        recs = [x for x in found if x.get("record") and logins.get(x["label"]) is not None and not logins[x["label"]].get("email")]
+        for x in recs:
+            logins[x["label"]].update({k: v for k, v in x["record"].items() if v})
+        if recs:
+            save_logins(path, logins)
+    if as_json:
+        print(json.dumps(found, ensure_ascii=False))
+        return 1 if any(x["level"] == "fix" for x in found) else 0
+    mark = {"ok": "ok ", "fix": "⚠  ", "info": "-- "}
+    for mac in dict.fromkeys(x["mac"] for x in found):
+        print(f"{mac}:")
+        for x in found:
+            if x["mac"] != mac:
+                continue
+            print(f"  {mark[x['level']]} {x['label']}: {x['text']}")
+            if x.get("fix"):
+                print(f"      {x['fix']}")
+    n = sum(1 for x in found if x["level"] == "fix")
+    print(f"{n} to fix" if n else "every row ok")
+    return 1 if n else 0
+
+
+def run_on_peer(host, argv):
+    """argv of bin/account run on the peer over ssh (ACCOUNT_SSH overrides the ssh command for
+    tests) → CompletedProcess. The peer's own checkout runs it, at this tool's path from the home
+    folder (remote_account)."""
+    ssh = shlex.split(os.environ.get("ACCOUNT_SSH") or f"ssh -o ConnectTimeout=10 {PEERS[host]}")
+    remote = f"PATH=$HOME/.local/bin:$PATH python3 {remote_account()} " + " ".join(shlex.quote(x) for x in argv)
+    try:
+        return subprocess.run(ssh + [remote], capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(ssh, 255, "", str(e))
+
+
+# ---------------------------------------------------------------------------- main
+
+def fable_word(lim):
+    f = (lim or {}).get("fable")
+    if f and (lim or {}).get("fable_week") is not None:
+        return f"yes, its week {lim['fable_week']}%"
+    return "yes" if f else ("no" if f is False else "unknown")
+
+
+def limits_json(a, lim, at, t, repo=None):
+    ok, why = judge(a, lim, t)
+    d = denied(a, repo)
+    if d:
+        ok, why = False, f"{d} is on its deny list"
+    if not a["enabled"]:  # only `limits --all --parked` lists one; never a pick. judge's reason kept: why no figures
+        ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
+    return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
+            "here": a["home"].is_dir(), "home": str(a["home"]), "env": env_of(a), "limits": lim, "sampled": at, "eligible": ok, "why": why,
+            "denied": d or None,  # --force never crosses a deny list (review 2026-10-06)
+            "same_as": a["same_as"][0] if a.get("same_as") else None}
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="account", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("pick")
+    p.add_argument("--kind")
+    p.add_argument("--provider")
+    p.add_argument("--bound", action="store_true")
+    p.add_argument("--repo")
+    p.add_argument("--ship")
+    p.add_argument("--no-pin", action="store_true")
+    p.add_argument("--cached", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("ships")
+    p.add_argument("--release")
+    p.add_argument("--pin", nargs=2, metavar=("KEY", "LABEL"))
+    p = sub.add_parser("orca-sync")
+    p.add_argument("--off", action="store_true")
+    p = sub.add_parser("orca")
+    p.add_argument("what", choices=("on", "off", "default"))
+    p.add_argument("label", nargs="?")
+    p = sub.add_parser("vscode")
+    p.add_argument("label")
+    p = sub.add_parser("limits")
+    p.add_argument("label", nargs="?")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--parked", action="store_true", help="with --all: the rows accounts.json parks too, never an `orca off` one (the widget)")
+    p.add_argument("--repo")
+    p.add_argument("--cached", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("env")
+    p.add_argument("label")
+    p = sub.add_parser("run")
+    p.add_argument("label")
+    p.add_argument("claude_args", nargs=argparse.REMAINDER)
+    p = sub.add_parser("exhausted")
+    p.add_argument("--window", required=True, choices=WINDOWS)
+    p.add_argument("--resets-at", required=True)
+    p.add_argument("--used", type=float)
+    p.add_argument("--session")
+    sub.add_parser("check")
+    sub.add_parser("which")
+    p = sub.add_parser("allowed")
+    p.add_argument("path")
+    p = sub.add_parser("add")
+    p.add_argument("label")
+    p.add_argument("--no-login", action="store_true")
+    p = sub.add_parser("setup")
+    p.add_argument("--host", choices=sorted(PEERS))
+    p.add_argument("--no-record", action="store_true")
+    p.add_argument("--peer", help=argparse.SUPPRESS)  # set by --host: login lines in the ssh -t form
+    p = sub.add_parser("doctor")
+    p.add_argument("--local", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--peer", help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
+        ra = args.resets_at
+        record_exhaustion(current_home(), args.window, float(ra) if ra.replace(".", "", 1).isdigit() else ra,
+                          args.used, args.session)
+        return 0
+    reg = load_registry()
+    if args.cmd in ("env", "run") and via_orca(row(reg, args.label)) and not row(reg, args.label).get("synced"):
+        print(f"account: {args.label}'s login is not in Orca here — {orca_login_line(row(reg, args.label))}", file=sys.stderr)
+        return 1
+    if args.cmd == "env":
+        for k, v in env_of(row(reg, args.label)).items():
+            print(f"{k}={shlex.quote(v)}")
+        return 0
+    if args.cmd == "run":  # `cc i` (shell/cc.zsh): a hand-picked login, replacing `cswap switch`
+        a = row(reg, args.label)
+        if not a["enabled"]:
+            print(f"account: {a['label']} is disabled in {REGISTRY}", file=sys.stderr)
+            return 1
+        if a["provider"] != "claude":  # it would exec claude on the default login with only CODEX_HOME set
+            print(f"account: {a['label']} is a {a['provider']} login — run starts claude only", file=sys.stderr)
+            return 1
+        d = None if is_default(a) else (denied(a, os.getcwd()) or holds_denied(a, os.getcwd()))
+        if d:
+            print(f"account: {d} is off {a['label']} (accounts.json deny list)", file=sys.stderr)
+            return 1
+        # An inherited token outranks the config dir's login (autofinish-run's KEEP_CLAUDE), so a
+        # session started from inside another would silently spend that token's seat.
+        e = {k: v for k, v in start_env(a).items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+        try:
+            os.execvpe("claude", ["claude"] + args.claude_args, e)
+        except OSError as err:
+            print(f"account: cannot start claude: {err}", file=sys.stderr)
+            return 1
+    if args.cmd == "check":
+        return cmd_check(reg)
+    if args.cmd == "which":  # the label of the dir this process runs under (dispatch --next inherits it)
+        # Only an enabled secondary: a default-dir session's next step stays `auto`, which keeps
+        # pick's "the primary runs it rather than nothing"; a named primary would turn a full or
+        # unprobed window into FAILED, and a parked row into "disabled" (review 2026-10-06).
+        for a in reg["accounts"]:
+            if (a["provider"] == "claude" and a["home"] == current_home() and not is_default(a)
+                    and a.get("enabled", True)):
+                print(a["label"])
+                return 0
+        return 1
+    if args.cmd == "allowed":  # the guard's question: this process's dir, the path's repo
+        here = current_home()
+        for a in reg["accounts"]:
+            if a["provider"] == "claude" and a["home"] == here and not is_default(a):
+                d = denied(a, args.path)
+                whose = "ORCA_ROW's deny list" if a.get("implicit") else "accounts.json deny list"
+                if d:
+                    print(f"{d} is off {a['label']} ({whose})")
+                    return 1
+                h = holds_denied(a, args.path)
+                if h:   # a folder holding a denied repo: its sessions would load what the list keeps out
+                    print(f"{args.path} is off {a['label']}: it holds {h} ({whose}); start the session inside a repo")
+                    return 1
+        if any(a["provider"] == "claude" and a["home"] == here for a in reg["accounts"]):
+            return 0
+        # A login dir under Orca's data that no row names (the owner, 2026-10-17: "don't expose them to
+        # employer login … [the primary and the Pro fallback] only"; reviews of docs/orca-hosts-2026-10-17.md).
+        # Two kinds, told apart by the e-mail its .claude.json is signed in as, the way orca-sync
+        # tells them: a registry row's own login added to Orca (orca-sync never records it — "that
+        # row decides"), which gets that row's deny list; and anything else — a fresh `orca account
+        # add`, a sync that failed — which gets ORCA_ROW's, as a synced Orca login does, so an
+        # employer seat never reaches the vault through a missed sync. The whole of ORCA_DATA,
+        # since orca_home_of looks there, not only today's claude-profiles/ layout.
+        try:
+            here.resolve().relative_to(ORCA_DATA.resolve())
+        except (ValueError, OSError):
+            return 0
+        email = (signed_in_as(here) or "").lower()
+        owner = None
+        if email:
+            try:
+                _, logins = load_logins()
+            except SystemExit:  # an unreadable logins file: the rows' own logins still answer
+                logins = {}
+            by_label = {a["label"]: a for a in reg["accounts"]}
+            for lab, e in logins.items():   # the first Claude row the logins file gives this e-mail
+                if owner is None and isinstance(e, dict) and (e.get("email") or "").lower() == email \
+                        and lab in by_label and by_label[lab]["provider"] == "claude":
+                    owner = by_label[lab]
+            for a in reg["accounts"]:
+                if owner is None and not via_orca(a) and a["provider"] == "claude" and a["home"] != here \
+                        and a["home"].is_dir() and (login_of(a)[1] or "").lower() == email:
+                    owner = a
+        if owner is not None:
+            d, h = denied(owner, args.path), holds_denied(owner, args.path)
+            if d:
+                print(f"{d} is off {owner['label']}, whose login this Orca dir is (accounts.json deny list)")
+                return 1
+            if h:
+                print(f"{args.path} is off {owner['label']}, whose login this Orca dir is: it holds {h}; "
+                      f"start the session inside a repo")
+                return 1
+            return 0
+        common = core()
+        unsynced = common.orca_row("unsynced")
+        d = denied(unsynced, args.path) or holds_denied(unsynced, args.path)
+        if d:
+            print(f"{d} is off this Orca login, which no row names yet (ORCA_ROW's deny list; "
+                  f"`account orca-sync` records it)")
+            return 1
+        return 0
+    if args.cmd == "add":
+        return cmd_add(reg, args.label, not args.no_login)
+    if args.cmd == "vscode":
+        return cmd_vscode(reg, args.label)
+    if args.cmd == "orca-sync":
+        rc = cmd_orca_sync(reg, args.off)
+        return orca_codex_sync(reg, args.off) or rc
+    if args.cmd == "orca":
+        return cmd_orca_switch(reg, args.what, args.label)
+    if args.cmd == "ships":
+        if args.pin:
+            row(reg, args.pin[1])  # exits on an unknown label
+            with ships_lock():
+                ships = load_ships()
+                ships[args.pin[0]] = {"label": args.pin[1], "at": int(now())}
+                write_json(SHIPS, ships)
+            print(f"{args.pin[0]}: pinned to {args.pin[1]}")
+            return 0
+        if args.release:
+            with ships_lock():
+                ships = load_ships()
+                gone = ships.pop(args.release, None)
+                write_json(SHIPS, ships)
+            print(f"{args.release}: {'released from ' + gone['label'] if gone else 'had no pin'}")
+            return 0
+        ships = load_ships()
+        for k, v in sorted(ships.items()):
+            print(f"{k}: {v['label']} (last used {when(v['at'])})")
+        return 0
+    if args.cmd == "doctor":
+        return cmd_doctor(reg, args.local, args.json, args.peer)
+    if args.cmd == "setup":
+        if args.host:
+            r = run_on_peer(args.host, ["setup", "--no-record", "--peer", PEERS[args.host]])
+            if r.returncode == 255:
+                print(f"account: {args.host} unreachable over ssh ({(r.stderr or '').strip()[:120]}) — off the LAN? /move --to-home")
+                return 1
+            sys.stdout.write(r.stdout)
+            sys.stderr.write(r.stderr)
+            return r.returncode
+        return cmd_setup(reg, record=not args.no_record, peer=args.peer)
+    if args.cmd == "limits":
+        rows = reg["accounts"] if args.all or not args.label else [row(reg, args.label)]
+        if args.label and not args.all and not rows[0]["enabled"]:
+            sys.exit(f"account: {args.label} is disabled in {REGISTRY}")
+        # --parked keeps the rows accounts.json parks (`enabled: false`): the desktop widget draws
+        # them — a login the owner runs by hand still spends its week (a work login, 2026-10-18). An `orca off`
+        # login stays hidden: that is how a login leaves the widget. The walk, the tier check and
+        # usage-report read `--all` alone and never see either.
+        rows = [a for a in rows if a["enabled"] or (args.parked and a["parked"])]
+        t = now()
+        out = []
+        for a in rows:
+            lim, at = limits(a, cached=args.cached)
+            out.append(limits_json(a, lim, at, t, args.repo))
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False))
+            return 0
+        for o in out:
+            lim = o["limits"]
+            if not lim:
+                print(f"{o['label']}: {'no cached probe' if args.cached else 'probe failed'}")
+                continue
+            # R5: the probe's plan string beside the dir's own, until the lesson says which to trust
+            try:
+                org = (json.loads(claude_json(row(reg, o["label"])).read_text()).get("oauthAccount") or {}).get("organizationType")
+            except (OSError, ValueError):
+                org = None
+            print(f"{o['label']}: "
+                  + (f"5h {lim['five_hour']}% (resets {when(lim['five_hour_resets'])}), " if lim.get("five_hour") is not None else "no 5-hour window, ")
+                  + (f"week {lim['seven_day']}% (resets {when(lim['seven_day_resets'])})" if lim.get("seven_day") is not None else "no week window")
+                  + f"; plan {lim.get('plan')} / {org}; "
+                  f"fable: {fable_word(lim)}; "
+                  f"{'eligible' if o['eligible'] else 'not eligible'}: {o['why']}")
+        return 0
+    if not REGISTRY.is_file():  # exit 4: no registry on this machine — callers start as before
+        print(f"account: no registry at {REGISTRY}", file=sys.stderr)
+        return 4
+    try:
+        if args.ship and args.bound:
+            sys.exit("account: --ship and --bound do not go together (bound work is the primary's, pinned already)")
+        if args.ship:
+            a, why, skipped = pick_for_ship(reg, args.ship, args.kind, args.provider, args.cached, args.repo,
+                                            pin=not (args.cached or args.no_pin))
+        else:
+            a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo)
+    except Short as s:
+        if args.json:
+            print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))
+        else:
+            print("account: no account may run this now —", file=sys.stderr)
+            for label, w in s.args[0]:
+                print(f"  {label}: {w}", file=sys.stderr)
+        return 3
+    if args.json:
+        print(json.dumps({"account": a["label"], "primary": bool(a.get("primary")), "provider": a["provider"],
+                          "env": env_of(a), "reason": why, "skipped": skipped}, ensure_ascii=False))
+    else:
+        print(f"{a['label']}: {why}")
+        for label, w in skipped:
+            print(f"  skipped {label}: {w}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

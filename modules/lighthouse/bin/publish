@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""Copy files from the projects folder to a NAS and Google Drive, both at once. A destination
+that fails is queued and tried again later.
+
+    publish --data  <file|pattern>… [--list F]… [--delete] [--strict] [--dry-run] [--dest nas|drive]
+    publish --vault <file|pattern>… [--list F]… [--delete] [--strict] [--dry-run] [--dest nas|drive]
+    publish --retry        # try everything still queued (a daily launchd job, and every call)
+    publish --status       # what is still queued, and whether each destination is reachable
+
+Design: the home repo's docs/history-2026-09-23.md, D15, D17 and D18. Documentation and the rules
+for a background job: the overlay's docs/drive-share.md.
+
+Two scopes. The scope is required on every call, so nothing private reaches a collaborator
+because someone left out a flag:
+  --data   the data share    collaborators may read it
+  --vault  the vault share   the owner alone
+Each scope has up to two destinations with the same layout, the NAS share and the Drive shared drive:
+  <nas>/<share>/<repo>/<path in the repo>
+  <drive>/<share>/<repo>/<path in the repo>
+Where they are, from the config dir (README, "Private values"): `lighthouse/shares` names each
+scope's share, `data:<name>` and `vault:<name>` (else `data` and `vault`); `lighthouse/nas` is the
+NAS mount and `lighthouse/drive` the Drive's folder of shared drives (a destination with neither
+the key nor its PUBLISH_ variable is no destination; with none at all the call refuses). The
+destination path comes from where the file sits under the projects folder (the core's
+`regatta/projects`, else `projects` in the home folder). A file in a worktree
+(<repo>/.claude/worktrees/<name>/…, the repo at any depth, e.g. studio/pipeline) goes where the
+same file in the main checkout would go.
+
+Arguments are files or patterns (`*`, `?`, `[…]`, and `**` for any number of folders). The tool
+expands a pattern itself when it is quoted. `--list F` reads more of them from F, one per line,
+relative to F's own folder; blank lines and `#` lines are skipped. A pattern that matches
+nothing is reported, never skipped silently. A folder, a file outside the projects folder, or an `.env`
+file stops the call before anything is copied.
+
+Each destination is tried on its own. A write goes to a hidden temp name, is renamed into
+place, and is read back and compared with the source, so a reader never sees half a file and
+"copied" means the bytes are there. A destination that fails goes into the queue
+(.local/state/publish/queue in the home folder, one file per waiting copy). Every call and `--retry` try the
+queue again and copy the source as it is at that moment. An entry whose source is gone is
+dropped, with a line saying so.
+
+Exit 0 when every file reached at least one destination. With `--strict`, every file must
+reach both. Exit 1 when a file reached neither, a pattern matched nothing, or `--strict` was
+not met. Exit 2 for a usage error, and then nothing is copied. `--retry` and `--status` exit 1
+while anything is still queued. Each miss prints one line on stderr. Each copy prints one line
+on stdout.
+
+`--delete` makes the call a move: it deletes the LOCAL source file, never anything on a share.
+Nothing in this tool removes a file from a share; a stray copy there is deleted by hand. The
+local file goes only after both destinations hold it, as the read-back proves. If either
+destination failed, the file stays because the retry needs it. The tool never commits, so a
+deleted file that git tracks shows as a deletion to commit, and an uncommitted one (a worktree's
+new file, say) then exists only on the shares.
+
+Rules for a launchd job (drive-share.md, probed 2026-09-22 and 2026-09-23): write and read Drive
+by exact path only, and never list a Drive folder. Drive refuses a job's rewrite of a file another
+process created, so one file has one publisher; the copy is queued and the line names the file.
+The NAS refuses a job until python3 is granted network-volume access. The tool never creates a share's
+root: a missing share folder means the NAS is not mounted or Drive is not running, and
+creating the folder would create an ordinary folder in its place.
+
+Environment (the tests use it): PUBLISH_PROJECTS, PUBLISH_NAS, PUBLISH_DRIVE, PUBLISH_STATE.
+Stdlib only, Python 3.9.
+"""
+import argparse
+import datetime as dt
+import errno
+import glob
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+
+
+def config_lines(name):
+    """The config dir's `<name>`, its non-blank lines ([] when absent or unreadable)."""
+    try:
+        return [l.strip() for l in (CONFIG / name).read_text(encoding="utf-8-sig").splitlines() if l.strip()]
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def config_path(name):
+    """A path key: a link to the folder itself (a path with spaces, as Drive's is), else a file whose
+    first line is the path; None when there is neither. A link counts while it dangles (Drive not
+    running): the destination stays configured and its copies queue, never silently dropped (B9 review)."""
+    p = CONFIG / name
+    try:
+        if p.is_dir() or (p.is_symlink() and not p.is_file()):
+            return p.resolve()
+    except OSError:   # privacy controls refusing the stat: still the configured folder
+        return Path(os.path.realpath(p))
+    v = (config_lines(name) or [""])[0]
+    return Path(v).expanduser() if v else None
+
+
+PROJECTS = Path(os.environ.get("PUBLISH_PROJECTS") or config_path("regatta/projects") or HOME / "projects")
+# The share names are the same on both sides (D17, 2026-09-23).
+SHARES = {"data": "data", "vault": "vault", **dict(l.split(":", 1) for l in config_lines("lighthouse/shares") if ":" in l)}
+# The NAS: an autofs mount point, the same on both Macs. The Drive: its folder of shared drives,
+# which names the signed-in account, so it is configured, never globbed.
+DESTS = {k: v for k, v in (("nas", Path(os.environ["PUBLISH_NAS"]) if os.environ.get("PUBLISH_NAS") else config_path("lighthouse/nas")),
+                           ("drive", Path(os.environ["PUBLISH_DRIVE"]) if os.environ.get("PUBLISH_DRIVE") else config_path("lighthouse/drive")))
+         if v}
+STATE = Path(os.environ.get("PUBLISH_STATE") or HOME / ".local" / "state" / "publish")
+QUEUE = STATE / "queue"
+GLOB_CHARS = set("*?[")
+# errnos that mean "this destination is gone for now". After one of these, the rest of the
+# call skips that destination: a soft NFS mount takes ~30 s to time out, once is enough.
+DOWN = {errno.ETIMEDOUT, errno.EIO, errno.ENOTCONN, errno.EHOSTDOWN, errno.EHOSTUNREACH,
+        errno.ESTALE, errno.ENETDOWN, errno.ENETUNREACH}
+
+
+class Miss(Exception):
+    """A destination did not take a file. `down` says the whole destination is unavailable."""
+    def __init__(self, reason, down=False):
+        super().__init__(reason)
+        self.down = down
+
+
+def now():
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+# ----------------------------------------------------------------------------- sources
+
+def expand(args, lists):
+    """(files, problems, unmatched). A file is (source Path, repo-relative dest str).
+    `problems` stop the call; `unmatched` are reported and the rest goes ahead."""
+    items = [(a, Path.cwd()) for a in args]
+    problems, unmatched = [], []
+    for lf in lists:
+        p = Path(lf)
+        try:
+            lines = p.read_text().splitlines()
+        except OSError as e:
+            problems.append(f"--list {lf}: {e.strerror or e}")
+            continue
+        base = p.resolve().parent
+        items += [(ln.strip(), base) for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+    found = []
+    for raw, base in items:
+        pat = os.path.expanduser(raw)
+        pat = pat if os.path.isabs(pat) else str(base / pat)
+        if os.path.lexists(pat) or not (GLOB_CHARS & set(raw)):
+            hits = [pat] if os.path.lexists(pat) else []
+        else:
+            hits = sorted(h for h in glob.glob(pat, recursive=True) if os.path.isfile(h))
+        if not hits:
+            unmatched.append(f"no match for {raw}" if GLOB_CHARS & set(raw) else f"no such file: {raw}")
+        for h in hits:
+            if os.path.isdir(h):
+                problems.append(f"{raw}: a folder; name the files, or use '{raw.rstrip('/')}/**'")
+            else:
+                found.append(Path(h))
+    files, seen = [], {}
+    for src in found:
+        try:
+            rel = dest_rel(src)
+        except ValueError as e:
+            problems.append(str(e))
+            continue
+        if rel not in seen:
+            seen[rel] = src.resolve()
+            files.append((src, rel))
+        elif seen[rel] != src.resolve():
+            # a worktree's copy and the main checkout's copy of one file: which one is meant?
+            problems.append(f"{src} and {seen[rel]} both go to {rel}; name one")
+    return files, problems, unmatched
+
+
+def dest_rel(src):
+    """Where a file goes, relative to a share: its path under the projects folder, with a worktree's
+    `<repo>/.claude/worktrees/<name>/` collapsed to `<repo>/`."""
+    real = src.resolve()
+    try:
+        parts = real.relative_to(PROJECTS.resolve()).parts
+    except ValueError:
+        raise ValueError(f"{src}: not under {PROJECTS}, so it has no place in a share")
+    # At any depth: a repo may sit in a group folder (studio/pipeline), and parts[1:3] alone once sent
+    # a worktree's files to <share>/studio/pipeline/.claude/worktrees/… (2026-09-25).
+    for i in range(1, len(parts) - 3):
+        if parts[i:i + 2] == (".claude", "worktrees"):
+            parts = parts[:i] + parts[i + 3:]
+            break
+    if ".git" in parts:
+        raise ValueError(f"{src}: inside .git")
+    for n in (src.name, real.name):
+        if n == ".env" or n.startswith(".env."):
+            raise ValueError(f"{src}: an .env file; credentials never go to a share")
+    return "/".join(parts)
+
+
+# ----------------------------------------------------------------------------- one copy
+
+def root_of(scope, dest):
+    return DESTS[dest] / SHARES[scope]
+
+
+def put(data, root, rel, dest_name):
+    """Write `data` to root/rel by exact path, then read it back. Raises Miss."""
+    try:
+        present = root.is_dir()
+    except OSError as e:
+        raise Miss(f"{root}: {e.strerror or e}", down=True)
+    if not present:
+        raise Miss(f"{root} is not there (not mounted, or not running)", down=True)
+    dest = root / rel
+    tmp = dest.with_name(f".{dest.name}.publish-{os.getpid()}.tmp")
+    existed = False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        existed = dest.exists()
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, dest)
+        back = dest.read_bytes()
+    except OSError as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        detail = f"{e.strerror or e}" + (f" ({e.filename})" if getattr(e, "filename", None) else "")
+        if isinstance(e, PermissionError) and dest_name == "drive" and existed:
+            # Drive for Desktop refuses a launchd job's rewrite of a file another process created,
+            # a shared drive's files included (the always-on Mac, 2026-09-23; drive-share.md).
+            raise Miss(f"Drive refused rewriting {rel}, which another process created; delete it in Drive "
+                       "and the retry recreates it")
+        if isinstance(e, PermissionError) and dest_name == "nas":
+            # macOS keeps a launchd-run python3 off network volumes until it has been granted
+            # Network Volumes access by hand. Every write fails the same way, so the NAS counts as down.
+            raise Miss(f"{detail}: under launchd, python3 needs macOS's Network Volumes access", down=True)
+        raise Miss(detail, down=e.errno in DOWN)
+    if hashlib.sha256(back).digest() != hashlib.sha256(data).digest():
+        raise Miss(f"read-back differs from the source ({len(back)} of {len(data)} bytes)")
+
+
+# ----------------------------------------------------------------------------- queue
+
+def qkey(scope, dest, rel):
+    return hashlib.sha1(f"{scope}\0{dest}\0{rel}".encode()).hexdigest()[:20]
+
+
+def qfile(scope, dest, rel):
+    return QUEUE / f"{qkey(scope, dest, rel)}.json"
+
+
+def enqueue(scope, dest, rel, src, reason):
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    f = qfile(scope, dest, rel)
+    old = {}
+    try:
+        old = json.loads(f.read_text())
+    except (OSError, ValueError):
+        pass
+    entry = {"scope": scope, "dest": dest, "rel": rel, "source": str(src.resolve()), "reason": reason,
+             "since": old.get("since", now()), "last": now(), "tries": old.get("tries", 0) + 1}
+    tmp = f.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(entry, ensure_ascii=False, indent=1) + "\n")
+    os.replace(tmp, f)
+
+
+def dequeue(scope, dest, rel):
+    qfile(scope, dest, rel).unlink(missing_ok=True)
+
+
+def queued():
+    out = []
+    if QUEUE.is_dir():
+        for f in sorted(QUEUE.glob("*.json")):
+            try:
+                out.append((f, json.loads(f.read_text())))
+            except (OSError, ValueError) as e:
+                print(f"publish: unreadable queue entry {f}: {e}", file=sys.stderr)
+    return out
+
+
+# ----------------------------------------------------------------------------- publishing
+
+class Run:
+    """One call. Remembers which destinations went down, so the call waits on each one at most once."""
+    def __init__(self):
+        self.down = {}
+
+    def copy(self, scope, src, rel, dests=tuple(DESTS)):
+        """Copy one file to the destinations of its scope (both, unless --dest named one). Returns
+        {dest: None | reason}."""
+        try:
+            data = src.read_bytes()
+        except OSError as e:
+            return {d: f"source unreadable: {e.strerror or e}" for d in dests}
+        result = {}
+        for dest in dests:
+            root = root_of(scope, dest)
+            reason = self.down.get(root)
+            if reason is None:
+                try:
+                    put(data, root, rel, dest)
+                except Miss as m:
+                    reason = str(m)
+                    if m.down:
+                        self.down[root] = reason
+            result[dest] = reason
+            if reason is None:
+                dequeue(scope, dest, rel)
+            else:
+                enqueue(scope, dest, rel, src, reason)
+        return result
+
+
+def report(scope, rel, result):
+    got = [d for d, r in result.items() if r is None]
+    for d, r in result.items():
+        if r is not None:
+            print(f"publish: {SHARES[scope]}/{rel} → {d} queued: {r}", file=sys.stderr)
+    if got:
+        print(f"published {SHARES[scope]}/{rel} → {', '.join(got)}")
+    return got
+
+
+def retry(run, skip=()):
+    """Try every queued copy again. `skip`: (scope, rel) pairs this call is about to copy anyway."""
+    tried = done = drop = 0
+    for f, e in queued():
+        if (e.get("scope"), e.get("rel")) in skip:
+            continue
+        if e.get("dest") not in DESTS:   # a destination since unconfigured: kept, never a KeyError
+            print(f"publish: left {SHARES.get(e['scope'], e['scope'])}/{e['rel']} → {e.get('dest')} queued: "
+                  f"lighthouse/{e.get('dest')} is not configured", file=sys.stderr)
+            continue
+        tried += 1
+        src = Path(e["source"])
+        if not src.is_file():
+            f.unlink(missing_ok=True)
+            drop += 1
+            print(f"publish: dropped {SHARES.get(e['scope'], e['scope'])}/{e['rel']} → {e['dest']}: "
+                  f"the source {src} is gone", file=sys.stderr)
+            continue
+        root = root_of(e["scope"], e["dest"])
+        reason = run.down.get(root)
+        if reason is None:
+            try:
+                put(src.read_bytes(), root, e["rel"], e["dest"])
+            except Miss as m:
+                reason = str(m)
+                if m.down:
+                    run.down[root] = reason
+            except OSError as err:
+                reason = f"source unreadable: {err.strerror or err}"
+        if reason is None:
+            f.unlink(missing_ok=True)
+            done += 1
+            print(f"published {SHARES[e['scope']]}/{e['rel']} → {e['dest']} (queued since {e['since']})")
+        else:
+            enqueue(e["scope"], e["dest"], e["rel"], src, reason)
+    waiting = len(queued())
+    if tried:
+        print(f"retry: {done} delivered, {drop} dropped, {tried - done - drop} still waiting")
+    return waiting
+
+
+def cmd_publish(a):
+    scope = "data" if a.data else "vault"
+    files, problems, unmatched = expand(a.paths, a.list)
+    for p in problems:
+        print(f"publish: {p}", file=sys.stderr)
+    if problems:
+        print("publish: nothing copied", file=sys.stderr)
+        return 2
+    for u in unmatched:
+        print(f"publish: {u}", file=sys.stderr)
+    if not files and not unmatched:
+        print("publish: no files named", file=sys.stderr)
+        return 2
+    dests = (a.dest,) if a.dest else tuple(DESTS)
+    if a.dry_run:
+        for src, rel in files:
+            for dest in dests:
+                print(f"{src} → {root_of(scope, dest) / rel}")
+        return 1 if unmatched else 0
+    run = Run()
+    retry(run, skip={(scope, rel) for _, rel in files})
+    rc = 1 if unmatched else 0
+    for src, rel in files:
+        # a copy queued for the destination this call leaves out is no longer wanted: dropped,
+        # or it would wait forever (usage-report's NAS copies under launchd, 2026-10-19)
+        for d in DESTS:
+            if d not in dests and qfile(scope, d, rel).exists():
+                dequeue(scope, d, rel)
+                print(f"publish: dropped the queued {SHARES[scope]}/{rel} → {d}: --dest {a.dest}", file=sys.stderr)
+        got = report(scope, rel, run.copy(scope, src, rel, dests))
+        if not got or (a.strict and len(got) < len(dests)):
+            rc = 1
+        if a.delete:
+            if len(got) == len(dests):
+                src.unlink()
+                print(f"deleted {src}")
+            else:
+                print(f"publish: kept {src}: not every destination holds it yet", file=sys.stderr)
+    return rc
+
+
+def cmd_status():
+    for scope in SHARES:
+        for dest in DESTS:
+            root = root_of(scope, dest)
+            try:
+                ok = root.is_dir()
+            except OSError:
+                ok = False
+            print(f"{scope:5} {dest:5} {'ok     ' if ok else 'MISSING'} {root}")
+    entries = queued()
+    if not entries:
+        print("nothing waiting")
+        return 0
+    for _, e in entries:
+        print(f"waiting {SHARES.get(e['scope'], e['scope'])}/{e['rel']} → {e['dest']}, since {e['since']}, "
+              f"{e['tries']} tries: {e['reason']}")
+    return 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="publish", description=__doc__.split("\n")[0])
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--data", action="store_true", help="the data share: collaborators may read it")
+    mode.add_argument("--vault", action="store_true", help="the vault share: the owner alone")
+    mode.add_argument("--retry", action="store_true", help="try everything still queued")
+    mode.add_argument("--status", action="store_true", help="what is still queued")
+    ap.add_argument("paths", nargs="*", help="files and patterns")
+    ap.add_argument("--list", action="append", default=[], metavar="FILE", help="a file of paths and patterns")
+    ap.add_argument("--delete", action="store_true",
+                    help="a move: after a verified copy to both, delete the LOCAL source; never removes anything from a share")
+    ap.add_argument("--strict", action="store_true", help="fail unless both destinations took every file")
+    ap.add_argument("--dry-run", action="store_true", help="print where each file would go; copy nothing")
+    ap.add_argument("--dest", choices=tuple(DESTS),
+                    help="only this destination (default: both, the home repo's D15/D17); drops this call's files' queued copies to the other")
+    a = ap.parse_args(argv)
+    if not DESTS:
+        print("publish: no destination — set lighthouse/nas or lighthouse/drive in the regatta config dir", file=sys.stderr)
+        return 2
+    if a.retry or a.status:
+        if a.paths or a.list or a.delete or a.strict or a.dry_run or a.dest:
+            ap.error("--retry and --status take no files or other flags")
+        return cmd_status() if a.status else (1 if retry(Run()) else 0)
+    if a.delete and a.dest:
+        # a move keeps the file in two places (the home repo's D15/D17); one destination would be one
+        ap.error("--delete needs both destinations: drop --dest, or copy without --delete")
+    if (a.delete or a.strict) and len(DESTS) < 2:
+        # with one key written, "both" would be that one (B9 review)
+        ap.error("--delete and --strict need both lighthouse/nas and lighthouse/drive configured")
+    return cmd_publish(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
