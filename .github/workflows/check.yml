@@ -29,7 +29,9 @@ jobs:
     # check, so a merge waits for a run on this head that is not skipped.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25   # wharf's test_checkpoint alone is about 4 min on a Mac (B5)
+    # wharf is private until its scrub: the public twin gets this file but not the module, so its
+    # step runs only where the module is (B5 review).
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,4 +46,4 @@ jobs:
           git config --global init.defaultBranch main
       - name: check
         run: |
-          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh
+          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && { [ ! -d modules/wharf ] || bash modules/wharf/tests/check.sh; }

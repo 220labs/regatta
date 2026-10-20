@@ -834,9 +834,12 @@ echo "peers absent: wharf's window and worktree hook, plumb's usage column (G16,
 peer() { REGATTA_LEGACY="$1" python3 -c 'import sys, importlib.machinery as m, importlib.util as u
 sp = u.spec_from_loader("acct", m.SourceFileLoader("acct", sys.argv[1])); a = u.module_from_spec(sp); sp.loader.exec_module(a)
 print(a.worktree_allow_present(), a.attribution("main"))
-a.open_in_terminal(["claude", "auth", "login"], {"CLAUDE_CONFIG_DIR": "/x"})' "$B/account" 2>&1; }
-mkdir -p "$T/nothing"
-check "$(peer "$T/nothing" | tr '\n' '|')" "False None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
+a.open_in_terminal(["claude", "auth", "login"], {"CLAUDE_CONFIG_DIR": "/x"})' "${2:-$B/account}" 2>&1; }
+# wharf is in this repo since B5, so the absent case runs from a copy of the core and lighthouse
+# without it: hiding the legacy checkout alone finds wharf's real worktree_allow.py.
+NW="$T/nowharf"; mkdir -p "$NW/modules" "$T/nothing"
+cp -R "$B/../../regatta" "$NW/modules/regatta"; cp -R "$B/.." "$NW/modules/lighthouse"
+check "$(peer "$T/nothing" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "False None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
   "no wharf, no plumb: the worktree check skipped, no usage column, the window's command printed"
 check "$(peer "$OV" | head -1)" "True None" "  the overlay's worktree_allow.py found through the core"
 
