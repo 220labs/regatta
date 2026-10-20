@@ -32,7 +32,8 @@ hook (`templates/code/git-hooks/pre-push`, found through the core); without whar
 | --- | --- | --- |
 | `check <repo> [--ref R]` | any session | nothing: build, scan, diff-stat against the public main, and the dry replay |
 | `publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT] [--squash]` | an agent (the usual route) | a `claude/publish/<date>-<topic>` branch and a PR, the replayed commits on it; **the owner's merge is the publish**; auto-merge off |
-| `check-message --subject S [--body-file F]`, `--message-file F` | any session, at the private commit's making (`/finish`) | nothing: one message scanned as the replay would scan it; exit 1 when the replay would refuse its subject or drop its body |
+| `check-message --subject S [--body-file F]`, `--message-file F` | any session, at the private commit's making | nothing: one message scanned as the replay would scan it; exit 1 when the replay would refuse its subject or drop its body |
+| `check-message --range A..B [--repo R]` | wharf's `/finish`, on the curated branch before its push | nothing: every commit of the range scanned so, checkpoints and commits changing no published file skipped (as the replay skips them), each finding under its commit; nothing to scan without `.helloworld/` |
 | `publish <repo>` | the owner, in their own terminal (refuses `CLAUDECODE` and a non-terminal stdin) | the public `main`, after the repo's name is typed back; the first publish, and any later one the owner prefers |
 
 **The replay** (2026-10-19; the design's D1-B, the owner: "I want the 2 repos to be as similar as
@@ -49,7 +50,9 @@ answer to D2 of the S2 digest): a sha-like token (7-40 hex, word-bounded: a reve
 commit …" too), a cross-repo ref (`owner/repo#N`, `repo#N`, `a/b/c#N`, any GitHub link into a repo; a bare
 `#N` passes, though on the twin it links to the twin's own number) and a session id (a uuid, `session_<id>`). The owner wants a repo with a
 public twin to meet these rules when the private commit is made, not at publish: `check-message`
-is that scan on one message (a commit-msg hook's file too: git's `#` comment block is cut first), for `/finish` to call; the replay still runs it. No base — a change merged on GitHub — squashes as before, and the PR body says so; `--squash`
+is that scan on one message (a commit-msg hook's file too: git's `#` comment block is cut first), and `--range` on every commit of a curated branch, which wharf's
+`/finish` runs before the push (S7); the replay still runs it. Without a word list on the Mac the
+patterns run alone, said in one line. No base — a change merged on GitHub — squashes as before, and the PR body says so; `--squash`
 asks for it. `check` prints the plan; its refusals there are printed, not counted, so a work
 branch's checkpoints never turn a check line red.
 
