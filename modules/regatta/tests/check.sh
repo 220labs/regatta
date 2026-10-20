@@ -170,6 +170,10 @@ out=$("$RG" check); check "$?" 1 "  an overlay without a module's keys: exit 1"
 check "$(echo "$out" | grep -c -- '^  --  wharf-runs/\(orca-pairs\|ssh\) missing')" 2 "  each missing key named"
 check "$(py 'print(common.CONFIG_PROBLEMS)')" "[]" "  and the core still loads: a module's key is not the core's"
 printf 'a:b\n' > "$T/config/wharf-runs/orca-pairs"; printf 'b:c\n' > "$T/config/wharf-runs/ssh"
+# every other module's listed keys too (lighthouse's since B9): this case is about wharf-runs'
+for k in $(cat "$ROOT"/modules/*/config-keys 2>/dev/null | grep -v '^#'); do
+  [ -e "$T/config/$k" ] || { mkdir -p "$(dirname "$T/config/$k")"; echo x > "$T/config/$k"; }
+done
 out=$("$RG" check); check "$?" 0 "  with them written: exit 0"
 rm -r "$T/config/wharf-runs" "$T/config/legacy"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
 
