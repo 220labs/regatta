@@ -19,7 +19,7 @@ night (DESIGN section 8); safe to run by hand any time.
 <regatta> knowledge-numbers                       # the numbers (plumb)
 <regatta> interruptions --days 7 --list all       # every question put to the owner this week, and the answer
 <regatta> bulletin.py --list                      # live bulletin entries
-<regatta> repos --branches --fetch                # every repo's idle claude/* branches: landed (archived at session start), probably landed (review line), not on main, and the live archives
+<regatta> repos --branches --fetch                # every repo's idle claude/* branches: launched (archived at session start), probably launched (review line), not on main, and the live archives
 <regatta> repos --github                          # every repo rebase-only with delete-on-merge; a DIFFERS line becomes a P-item
 ```
 
@@ -68,7 +68,7 @@ Then read:
    and whether a model or effort choice would have spread the load.
    Then the interruptions (number 6, the owner 2026-10-10: "continuously think how we can minimize
    unnecessary interruptions — where the outcome could have been predicted"). From the
-   `interruptions --list all` rows, group the `recommended` ones by what was asked (a landing,
+   `interruptions --list all` rows, group the `recommended` ones by what was asked (a launch,
    a model switch, a merge of carried work, a naming pick…) and read the `free-text` answers for
    "don't ask" and for an answer that was the same last time. For the two or three biggest
    clusters, propose the mechanism that answers them without the owner — a default in a skill, a
@@ -95,17 +95,17 @@ recommendation — leave it to accept, overwrite it to change. Open feedback at 
 Every file mentioned is a markdown link (with line numbers where useful).
 
 ## Do this now
-<anything the owner must run or paste — usually empty. Never a branch deletion: landed branches are
+<anything the owner must run or paste — usually empty. Never a branch deletion: launched branches are
 archived by the session-start hook (coding-on-workflow D4–D6, 2026-09-26)>
 
 ## Numbers
 <knowledge-numbers table> · corrections repeated this week: <n>
 
 ## Branches
-<per repo, from `repos --branches`: landed — count and the proof each rests on; **landed but
+<per repo, from `repos --branches`: launched — count and the proof each rests on; **launched but
 not finished** — its own list: each branch whose docs on main still hold open items (the
 "open items: docs/x.md (N)" suffix), with the files, so the owner decides whether the work is done
-or only merged; probably landed — the hint each rests on, with its `pickup review` line: the owner's
+or only merged; probably launched — the hint each rests on, with its `pickup review` line: the owner's
 call, pick up or `pickup archive --confirmed`, which no agent runs; not on main — the count and
 a link to the branches section's file (question 5 says which), where each has its verdict; archived — what the hook and
 the classifier archived this week>

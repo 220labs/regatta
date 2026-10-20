@@ -1,7 +1,7 @@
 # Charts — Aurora's weekly section (Sunday night, before dream)
 
 Keep the layer's docs current: rewrite the charts of the topics that changed this week, map and
-move the records that landed, and leave one pull request. A **chart** (`docs/<topic>.md`) says
+move the records that launched, and leave one pull request. A **chart** (`docs/<topic>.md`) says
 what exists now; a **record** (`docs/record/<topic>-<date>.md`) is a design with the owner's
 answers, kept as it was made; the **map** (`docs/README.md`) lists both per topic. Design and
 answers: the layer's docs/record/aurora-docs-current-2026-10-03.md (D1 the name, D2 (b) the
@@ -22,7 +22,7 @@ record by hand.
 <regatta> knowledge-commit <layer-name> --open charts-<yyyy-mm-dd>   # today's date, written out; prints <wt>
 ```
 
-The slug must be `charts-<today>`: `bin/weekly-run` finds the worktree by that name to land a
+The slug must be `charts-<today>`: `bin/weekly-run` finds the worktree by that name to launch a
 dry run.
 
 Then `EnterWorktree` with that path (as /sextant does; probed under `claude -p` on 2026-09-26,
@@ -43,7 +43,7 @@ bin/weekly-run's header). Every path below is under `<wt>`; never write to `<lay
 - `charts feedback:` lines in `<wt>/log.md` dated on or after `since` — the owner's reason for
   closing or correcting the last PR (the embark skill). Read them first; each one binds this run.
 - `<regatta> docs-index skips --repo <wt>` — the skip set itself, for section 3.
-- `git -C <wt> log main --since=<since> --name-only --format='%h %s'` — what landed.
+- `git -C <wt> log main --since=<since> --name-only --format='%h %s'` — what launched.
 
 ## 3. Map and move the new records
 
@@ -53,7 +53,7 @@ bin/weekly-run's header). Every path below is under `<wt>`; never write to `<lay
 2. Move them, and any mapped record a branch held last week, in one call:
    `<regatta> docs-index move <name>… --section --also <vault> --repo <wt>`.
    It refuses a record a branch edits, and one that any file outside `docs/` or the vault
-   names (those references are code, rules or skills: the move lands reviewed at /embark). List
+   names (those references are code, rules or skills: the move launches reviewed at /embark). List
    each refusal under "Moves waiting" in the PR body, with the files that name it.
 3. Banner every record that has none, and re-banner every one `check` says points elsewhere than
    its row (a record `/finish` stamped "no chart yet" before step 2 mapped it, E14):
@@ -102,10 +102,10 @@ For each picked topic, in `due`'s order:
 
 Then `<regatta> docs-index check --repo <wt>` must print `ok`; fix what is in `docs/` until it
 does. One error is not this run's to fix: "names a record by the path it left" for a file
-outside `docs/` (a branch landed an old path) — `relink` would write code, so it is a P-item
-("relink at /embark") and the run lands with it.
+outside `docs/` (a branch launched an old path) — `relink` would write code, so it is a P-item
+("relink at /embark") and the run launches with it.
 
-## 5. Record and land
+## 5. Record and launch
 
 The run's line: `- <date> charts: <n> topics (<list>), <m> records mapped, <k> moved, mode
 <dry|live>, skipped <list>`. Live: append it to `<wt>/log.md`. Dry: put it at the top of the PR

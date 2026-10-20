@@ -40,18 +40,18 @@ goes on without it (charts is never due without one).
 | Section | Cadence | File | Writes |
 | --- | --- | --- | --- |
 | branches | weekly, Sunday night, first (`bin/weekly-run`'s `due`); `bin/weekly-run` runs the classifier and its `--reap` before any session | `sections/branches.md` | `<vault>/dreams/<date>-branches.md` when a branch waits — one verdict per C3–C6 branch and "B would have archived"; always its `log.md` line |
-| charts | weekly, Sunday night, before dream; only in a repo whose `docs/README.md` holds the map (`bin/weekly-run`'s `due`) | `sections/charts.md` | the layer's `docs/` in its own worktree — a dry-run PR `/embark` merges or closes; in mode live also its `log.md` line, landed reviewed |
+| charts | weekly, Sunday night, before dream; only in a repo whose `docs/README.md` holds the map (`bin/weekly-run`'s `due`) | `sections/charts.md` | the layer's `docs/` in its own worktree — a dry-run PR `/embark` merges or closes; in mode live also its `log.md` line, launched reviewed |
 | dream | weekly, Sunday night; a missed one runs at the next wake (`bin/weekly-run`'s `due` is the one home for when) | `sections/dream.md` | `<vault>/dreams/<date>.md` — the proposal `/embark` reviews |
 
 **The order of a night is fixed: tend, classify, `branches`, `charts`, review, `dream`** —
 mechanical and cheap first, the Fable judgement last, so the dream reads what the others left
 (the layer's docs/record/aurora-sequence-2026-10-04.md). The tend (wharf's `tend`: every repo's
-dead worktrees committed and pushed, landed and empty ones removed) and the classify (wharf's
+dead worktrees committed and pushed, launched and empty ones removed) and the classify (wharf's
 `repos --branches --classify --reap`: superseded branches archived) are `bin/weekly-run`'s own
 zero-token steps before any session; `charts` then reads the unmerged set that is left, and
 `dream` lists what truly waits, the charts PR and the branches file among it. `bin/weekly-run
 aurora <cwd> --dry-run` prints tonight's order. Planned (not built): a review of changes that
-landed under-reviewed, between charts and dream, and the dailies. A new section is one file
+launched under-reviewed, between charts and dream, and the dailies. A new section is one file
 here, one row above, its place in `bin/weekly-run`'s `ORDER` and its cadence in `due`; no new
 skill, no new launchd job.
 

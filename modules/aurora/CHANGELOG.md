@@ -1,5 +1,12 @@
 # Changelog — aurora
 
+## Unreleased
+
+- The wharf rename's S6 (2026-10-20): the launch word in `/aurora`'s sections and `/embark`.
+- Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `weekly-run`
+  (`launched_entry`, `charts_launch`, its log and bulletin lines); `quiet_week` reads only the
+  `probably launched` group (M22).
+
 ## 0.1.0 — 2026-10-19
 
 - First cut, moved in from the overlay: `bin/weekly-run`, `bin/week-digest`, `/aurora` with its
