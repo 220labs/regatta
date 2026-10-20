@@ -16,6 +16,8 @@
   only, and removes only its own build dir; secrets reach wrangler on stdin.
 - lighthouse depends on `helloworld` too (beacon's build scans with its word list); `tests/check.sh`
   skips beacon's opt-in `dev.sh` and runs its Node suite where it is present.
+- Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `claude-settings`
+  and `tiling`'s prose and messages.
 
 ## 0.1.0 — 2026-10-19
 

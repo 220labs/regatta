@@ -25,7 +25,7 @@ config dir's `lighthouse/env-keys.json` ({name: [the values it may take]}). Neve
 2026-10-04: "[the always-on Mac] should be AT LEAST as unattended as [laptop] sessions"):
 `permissions.defaultMode` and `permissions.allow` were per machine until then, and the always-on
 Mac ran with no mode at all while the laptop ran `auto`, so its sessions asked for what the
-laptop's never did. A Mac's own allow click still lands in its live file; `check` then names it as
+laptop's never did. A Mac's own allow click still goes into its live file; `check` then names it as
 undeclared, and declaring it in `shared` is how every Mac gets it. `model` and `theme` stay per
 machine: the one is chosen per session, the other is cosmetic.
 
@@ -46,7 +46,7 @@ Hooks, the status line and working directories stay with the overlay's `bootstra
 (add-only, bar its RETIRED list): moving them here was the design's E3, left out of the first cut
 so the session-start path changes as little as possible. `--hooks` calls `apply` after its own merge.
 
-Every settings change is reviewed before it lands (the owner, 2026-09-29, D3: "we still need a
+Every settings change is reviewed before it launches (the owner, 2026-09-29, D3: "we still need a
 review, in case we switch off something important"). So `declare` edits the declaration in a
 worktree of the repo that holds it and stops at atlas's knowledge-commit review gate, printing the
 two commands that finish it: the reviewer agent on the diff, then `knowledge-commit … --review` and
@@ -54,7 +54,7 @@ two commands that finish it: the reviewer agent on the diff, then `knowledge-com
 
 Paths: $CLAUDE_CONFIG_DIR (else the default config dir) for the live file; for the declaration
 $CLAUDE_SETTINGS_DECLARED, else the config dir's `lighthouse/user.json` (a link to the primary
-checkout's file, i.e. what has landed); $CLAUDE_SETTINGS_HOST overrides the host name (tests). No
+checkout's file, i.e. what has launched); $CLAUDE_SETTINGS_HOST overrides the host name (tests). No
 declaration: every verb is a silent no-op, which is what keeps the test suites off the real file
 (a suite that keeps the real config dir sets CLAUDE_SETTINGS_DECLARED to a missing file).
 Tests: tests/hooks.sh, "claude-settings".
@@ -564,7 +564,7 @@ def declare(args):
     kc = str(common.tool("knowledge-commit") or "")
     if not kc:
         raise Refused(f"atlas's knowledge-commit is not installed: edit {tilde(declared_path())} by hand, "
-                      "have the diff reviewed, land it, then apply (G17)")
+                      "have the diff reviewed, launch it, then apply (G17)")
     top, rel = declaration_repo()
     if not top:
         raise Refused(f"the declaration {tilde(declared_path())} is in no git repo: declare edits it through a review")
@@ -603,7 +603,7 @@ def declare(args):
     where = f"hosts.{h}" if h else "shared"
     what = f"{'remove from' if remove else 'add to'} {where} {key}: {json.dumps(value, ensure_ascii=False)}"
     print(f"declared in {path}: {what}")
-    print("Every settings change is reviewed before it lands (D3). Next, in this session:")
+    print("Every settings change is reviewed before it launches (D3). Next, in this session:")
     q, msg = shlex.quote, shlex.quote(f"Settings: {what}")
     print(f"  1. {q(kc)} {q(top.name)} --in {q(str(wt))} -m {msg}   (stops at the review gate, prints the diff)")
     print("  2. the reviewer agent on that diff: does this switch off anything a session needs?")
