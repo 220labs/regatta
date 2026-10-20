@@ -1,5 +1,11 @@
 # Changelog — atlas
 
+## Unreleased
+
+- The wharf rename's S6 (2026-10-20): the launch word in `/promote` and `/routine`.
+- Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `knowledge-commit`
+  (its exit helper is `launched`), `docs-index` and `tests/docs-index.sh`.
+
 ## 0.1.0 — 2026-10-19
 
 - First cut, moved in from the overlay: `hooks/bulletin.py`, `vault_commit.py`,

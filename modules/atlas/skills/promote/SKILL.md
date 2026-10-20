@@ -27,7 +27,7 @@ there with `<!-- promote: coding -->` so Aurora's weekly dream reconsiders it.
 
 | Destination | File |
 | --- | --- |
-| how sessions talk, decide, pick a model, fan out; git, worktrees, landing; verification and where learnings go | the matching file in the layer's `rules/` (list them: one file per area) |
+| how sessions talk, decide, pick a model, fan out; git, worktrees, launching; verification and where learnings go | the matching file in the layer's `rules/` (list them: one file per area) |
 | a Claude Code / agent finding needed only sometimes | the layer's `lessons/claude-code.md` (or a new topic file) |
 | the owner as a collaborator | the vault's `me/about.md` (`core.md` only if it belongs in its 15 lines) |
 | the household | the vault's `me/household.md` |
@@ -61,7 +61,7 @@ source (pointer, delete, keep). Ask with `AskUserQuestion` — *promote as shown
 
 ## 5. Write and commit
 
-**The layer (rules/, lessons/) lands through a branch** — nothing there is live until it
+**The layer (rules/, lessons/) launches through a branch** — nothing there is live until it
 merges. From wherever this session is:
 
 ```bash
@@ -69,16 +69,16 @@ knowledge-commit layer --open promote-<slug>
 ```
 
 prints a worktree path. Apply the diff to the files **under that path**, never to the layer's
-primary checkout, append the `log.md` line there, then land it — the check, the pull request and
+primary checkout, append the `log.md` line there, then launch it — the check, the pull request and
 the merge in one call, the path written out in full:
 
 ```bash
 knowledge-commit layer --in <that path> [--review <report>] -m "Promote: <slug> (from <project>)"
 ```
 
-Anything but a record (`docs/`, `lessons/`, `sextant/`, `log.md`, `README.md`, `TODO.md`) lands only reviewed (the owner's rule of 2026-09-29). Run it without `--review` first: `NOT launched — unreviewed` (`NOT landed` in older versions) names a diff file. Spawn the `reviewer` agent (`model: "opus"`) on that file, briefed as the refusal says — from another repo the name resolves to that repo's reviewer — fix its WRONGs, save its report to a scratch file, and run the same line again with `--review <report>` after the path. If fixing a WRONG changes the text the owner approved in step 4, show the new diff and ask again before landing.
+Anything but a record (`docs/`, `lessons/`, `sextant/`, `log.md`, `README.md`, `TODO.md`) launches only reviewed (the owner's rule of 2026-09-29). Run it without `--review` first: `NOT launched — unreviewed` (`NOT landed` in older versions) names a diff file. Spawn the `reviewer` agent (`model: "opus"`) on that file, briefed as the refusal says — from another repo the name resolves to that repo's reviewer — fix its WRONGs, save its report to a scratch file, and run the same line again with `--review <report>` after the path. If fixing a WRONG changes the text the owner approved in step 4, show the new diff and ask again before launching.
 
-A `NOT launched` (or `NOT landed`) line means nothing merged: say so and why. **The vault (me/) lands the same
+A `NOT launched` (or `NOT landed`) line means nothing merged: say so and why. **The vault (me/) launches the same
 way** (the owner changes `me/` only through PRs):
 
 ```bash
@@ -90,7 +90,7 @@ knowledge-commit vault --in <that path> [--review <report>] -m "Promote: <slug> 
 `--review` rerun always follow.
 
 The `log.md` line (`- yyyy-mm-dd promote: <slug> → <file> (from <project>)`): in the layer,
-under the worktree path before `--in`. In the vault, on the primary **after** the landing —
+under the worktree path before `--in`. In the vault, on the primary **after** the launch —
 its `log.md` is written in place, and `--in` refuses a branch that carries it:
 `knowledge-commit vault -m "Promote: <slug> (log)" log.md`. Shrink or delete the source as
 agreed; a project file edit rides the project's own checkpoint. A promoted memory file is
