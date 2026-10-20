@@ -14,6 +14,9 @@
 - The land→launch rename's readers take both words: `DECLARED_LINES`, `RUN_LAUNCHED` (with
   `RUN_LANDED` kept as its old name: launched and landed lines alike), `LAUNCHED_OUTCOMES`,
   `REFUSED`, `NOT_LAUNCHED`, `REFUSED_GATES`. No writer or message changes (landed stays, launched waits).
+- The rename's messages: `autofinish_outcome` and `autofinished_phrase` say "launched as #N" for
+  either outcome word, and the prose says launch and skipper. `HOLD_NOTE` keeps its text: open PRs
+  carry it and are matched as exact text inside the body. No writer changes (`RUN_END`'s outcome is the caller's).
 
 ## 0.1.0 — 2026-10-17
 

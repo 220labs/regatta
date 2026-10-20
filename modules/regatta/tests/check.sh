@@ -138,10 +138,10 @@ echo "the rename's readers (both words count)"
 old='2026-10-18T10:00:00-07:00 run r claude/x landed pr=#3 session=s tip=t rule=C by=sweep — ok'  # the old word, kept beside launched: the map keeps a line holding both
 new='2026-10-18T10:00:00-07:00 run r claude/x launched pr=#3 session=s tip=t rule=C by=sweep account=a — ok'
 check "$(py "print(bool(common.RUN_LAUNCHED.match('$old')), bool(common.RUN_LAUNCHED.match('$new')), common.RUN_LANDED is common.RUN_LAUNCHED)")" "True True True" "RUN_LAUNCHED reads an old and a new run line; RUN_LANDED is its old name"
-check "$(py 'print(common.autofinish_outcome({"outcome": "landed", "pr": 3})); print(common.autofinish_outcome({"outcome": "launched", "pr": 4}))')" "this branch landed as #3
-this branch landed as #4" "autofinish_outcome: both words merged the branch (the message is unchanged)"
+check "$(py 'print(common.autofinish_outcome({"outcome": "landed", "pr": 3})); print(common.autofinish_outcome({"outcome": "launched", "pr": 4}))')" "this branch launched as #3
+this branch launched as #4" "autofinish_outcome: both words merged the branch, said in the new word (rename S3)"
 mkdir -p "$T/cd/claude"; printf '2026-10-18T10:00 landed claude/a #1\n2026-10-18T11:00 launched claude/b #2\n' > "$T/cd/claude/autofinished"
-check "$(py 'print([(e["outcome"], common.autofinished_phrase(e)) for e in common.autofinished("'"$T/cd"'")])')" "[('landed', 'claude/a landed as #1'), ('launched', 'claude/b landed as #2')]" "  autofinished and its phrase take both"
+check "$(py 'print([(e["outcome"], common.autofinished_phrase(e)) for e in common.autofinished("'"$T/cd"'")])')" "[('landed', 'claude/a launched as #1'), ('launched', 'claude/b launched as #2')]" "  autofinished takes both; its phrase says launched for each"
 check "$(py 'print(common.REFUSED_GATES)')" "('refused', 'not-launched')" "REFUSED_GATES: the gate word and its old one"
 
 echo "the CLI"

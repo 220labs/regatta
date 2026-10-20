@@ -138,7 +138,7 @@ def _installed_roots():
         return []
     try:
         cwd = os.path.realpath(os.getcwd())
-    except OSError:   # the cwd was removed under us (a worktree just landed): user rows only
+    except OSError:   # the cwd was removed under us (a worktree removed after its merge): user rows only
         cwd = None
     out = []
     for key, rows in plugins.items():
@@ -420,7 +420,7 @@ def find_pr(slug, branch, tok=None):
 
 def merged_pr(slug, branch, sha, tok=None):
     """The merged pull request whose head was this branch at exactly `sha`, or None: GitHub's
-    word that this tip landed, whatever main has done to its files since — the proof sync.py's
+    word that this tip launched, whatever main has done to its files since — the proof sync.py's
     worktree pass falls back on when the files have moved on (D4, 2026-09-25)."""
     owner = slug.split("/")[0]
     st, prs = api("GET", f"/repos/{slug}/pulls?state=closed&per_page=10&head="
@@ -431,7 +431,9 @@ def merged_pr(slug, branch, sha, tok=None):
 
 
 # The line open_pr puts in the body of a PR it had to open as a non-draft, and ready_pr's cue
-# that the `hold` beside it is open_pr's own and not the owner's brake.
+# that the `hold` beside it is open_pr's own and not the owner's brake. Its "land" stays through
+# the rename (the overlay's wharf-rename design): open PRs on GitHub carry this text and ready_pr
+# and the overlay's `pr` find it as exact text inside the body, so a new word needs a reader of both first.
 HOLD_NOTE = ("GitHub refused this pull request as a draft (HTTP 422), so it was opened ready and "
              "labelled `hold` instead: automerge must not land a branch nobody curated. "
              "`bin/pr ready` takes the label off.")
@@ -445,10 +447,10 @@ def open_pr(slug, branch, base, title, body, tok=None):
 
     A non-draft PR from a `claude/*` branch is what automerge.yml arms in a repo that has it
     (docs/ci-automerge-rollout-2026-10-06.md), so the fallback labels it `hold`, says so in its
-    body (HOLD_NOTE) and marks the dict `_held`: such a PR never lands itself, and ready_pr —
+    body (HOLD_NOTE) and marks the dict `_held`: such a PR never launches itself, and ready_pr —
     the curation step — takes the label off again. The label is made first (POST
     /repos/{slug}/labels; 422 is "already exists"), not left to the issues endpoint. Best
-    effort: a label that could not be added leaves the PR as GitHub made it. And it lands a
+    effort: a label that could not be added leaves the PR as GitHub made it. And it arrives a
     moment after `opened`, so the workflow may arm first and disarm on `labeled` — safe only
     while main requires a check, which holds the armed PR until that run has disarmed it."""
     for draft in (True, False):
@@ -516,7 +518,7 @@ def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAI
     """merge_pr, with a refusal read back before it counts — bin/pr merge's and sparks'.
 
     A repo with automerge.yml and a required `check`: a token that is no admin (a machine account's) is
-    refused while the check runs, and automerge lands the PR when it passes, about a minute
+    refused while the check runs, and automerge launches the PR when it passes, about a minute
     later (docs/ci-automerge-rollout-2026-10-06.md). So on a refusal this polls the PR every
     `poll` s, up to `wait` s, while GitHub says auto-merge is armed, and a merge it finds is the
     answer. With `automerge` (the caller read automerge.yml on the base) it also waits up to
@@ -617,7 +619,7 @@ def ci_settings(slug, read, tok=None, apply=False, knowledge=False, repo=None):
       - no protection without check.yml on main, nor one naming a context no job in check.yml
         has (job key or `name:`): a required check nothing reports holds every PR forever;
       - no protection from a main-protection.json that is unreadable or requires no check, and
-        no allow_auto_merge then: automerge with no required check lands a ready PR at once,
+        no allow_auto_merge then: automerge with no required check launches a ready PR at once,
         unchecked (gh's isImmediatelyMergeable). The `hold` label, the brake, is still made;
       - allow_auto_merge only once protection reads back right;
       - main requiring no check while automerge.yml is there is its own HAZARD in the text, and
@@ -660,7 +662,7 @@ def ci_settings(slug, read, tok=None, apply=False, knowledge=False, repo=None):
     repo_off = {k: v for k, v in (want_repo or {}).items() if repo.get(k) != v}
     # Anything that makes the protection in the file unsafe to apply. Each would leave main
     # requiring a check nothing reports (every PR held forever) or requiring none (automerge
-    # lands a ready PR unchecked), so neither protection nor allow_auto_merge goes on.
+    # launches a ready PR unchecked), so neither protection nor allow_auto_merge goes on.
     block = ("no check.yml on main" if not has_check else
              f"no readable {Path(MAIN_PROTECTION).name}" if want_prot is None else
              f"{Path(MAIN_PROTECTION).name} requires no check" if not want_ctx else
@@ -683,7 +685,7 @@ def ci_settings(slug, read, tok=None, apply=False, knowledge=False, repo=None):
         else:
             (failed if apply else off).append(why)
 
-    # The live hazard: automerge.yml on main and no required check — a ready claude/* PR lands at
+    # The live hazard: automerge.yml on main and no required check — a ready claude/* PR launches at
     # once, unchecked. allow_auto_merge off narrows it (no armed auto-merge), but gh merges a
     # PR it finds already mergeable directly, so the real brakes are protection and `hold`.
     hazard = []
@@ -697,7 +699,7 @@ def ci_settings(slug, read, tok=None, apply=False, knowledge=False, repo=None):
                 failed.append(f"allow_auto_merge left on (HTTP {st})")
         hazard.append(f"{branch} requires no check while automerge.yml is on main"
                       + (" and allow_auto_merge is on" if repo.get("allow_auto_merge") else "")
-                      + " — a ready claude/* PR lands unchecked; label open ones `hold`")
+                      + " — a ready claude/* PR launches unchecked; label open ones `hold`")
         repo_off = {k: v for k, v in (want_repo or {}).items() if repo.get(k) != v}
     if repo_off and apply and prot_ok and want_repo is not None:
         st, res = api("PATCH", f"/repos/{slug}", want_repo, tok=tok)
@@ -905,7 +907,7 @@ def handoff(sid):
 # The fixed upper-case last lines that tell the owner — and code (bin/session_status.py for pickup and bench/sessions, the
 # board) — how a session ended without anyone reading the reply. Each skill states its own
 # line; this table is what `bin/paste-paths --stop-hook` holds a reply to (`ending`), so a new
-# line lands here and in its skill in the same change. `done`: the session's job is over. `waiting`: only the owner can move
+# line goes here and in its skill in the same change. `done`: the session's job is over. `waiting`: only the owner can move
 # it on, and the line says what (the house rules, "How to talk").
 # Each line opens by addressing the owner (OWNER_NAME upper-cased, then ", "), or on its first word
 # with no owner configured; a skill states its line in the addressed form, so every pattern
@@ -915,7 +917,7 @@ _TO = re.escape(ADDRESS)
 FINISH_LINES = (ADDRESS + "IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING.",
                 ADDRESS + "THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.")
 WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
-# /autofinish (autofinish design E6, D7): the session is done and the lander takes the branch.
+# /autofinish (autofinish design E6, D7): the session is done and the launcher takes the branch.
 # Allowed only when the session's own dry run says `start` — checkpoint.py's Stop checks it
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
 # 40 idle minutes.
@@ -939,7 +941,7 @@ CLOSING = (
     ("done", _TO + r"THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — .+"),
     ("waiting", _TO + r"THIS SESSION WAITS TO MOVE TO \S+ — .+"),                   # /move, peer away
     ("waiting", re.escape(WAITING_PREFIX) + r"\S.*"),                               # A1: any ask
-    # session-asks R4: a dispatched run that relayed its ask waits on its manager, not on the owner
+    # session-asks R4: a dispatched run that relayed its ask waits on its skipper, not on the owner
     ("relayed", r"RELAYED TO \S.* — \S.*"),
 )
 _CLOSING_RE = [(kind, re.compile(f"(?:{rx})$")) for kind, rx in CLOSING]
@@ -1033,10 +1035,10 @@ def ending(text):
 
 
 # session-asks R2 (docs/session-asks-2026-10-09.md): what a managed run hands the owner past its
-# manager. Every WAITING line counts, bar dispatch's own refusals, which tell a run to end on one
+# skipper. Every WAITING line counts, bar dispatch's own refusals, which tell a run to end on one
 # (bin/dispatch: the chain's depth, the run cap, an account with no room) and say a fact for the
 # board, not an ask — and "nothing to do", which asks nothing. A first cut (finding 7 of the
-# landing review) counted only lines naming a D-item or a manual step: against 1,015 real WAITING
+# launch review) counted only lines naming a D-item or a manual step: against 1,015 real WAITING
 # lines it caught 374 and let through "the worktree switch needs your approval", "pick option A
 # or B", "say go to start the four fixes" (second review, 2026-10-11). So the default flipped;
 # the regexes below stay as signals that beat an exemption ("nothing to do but approve D1").
@@ -1131,21 +1133,21 @@ def _json_object(path):
 
 
 def autofinish_armed():
-    """{"by", "ts"} when this Mac's lander may start runners, else None (disarmed: the default)."""
+    """{"by", "ts"} when this Mac's launcher may start runners, else None (disarmed: the default)."""
     return _json_object(autofinish_state_dir() / "armed")
 
 
 # bin/autofinish-run's end line, one per ended run in the dated autofinish log, and the reader
-# bin/autofinish's landing door counts with: one home for both, so neither re-parses the other's
+# bin/autofinish's launch door counts with: one home for both, so neither re-parses the other's
 # prose (widen review, 2026-10-07). Fields: iso, repo, branch, outcome, " gate=<g>" or "",
 # " pr=#<n>" or "", session, tip, rule, by, the first line kept, "; <notes>" or "".
 RUN_END = "%s run %s %s %s%s%s session=%s tip=%s rule=%s by=%s account=%s — %s%s"
 # account= since the account pool (2026-10-08): optional, so the lines before it still count.
-# `landed` until the rename switches the writer to `launched`; both forever: the landing door
+# `landed` until the rename switches the writer to `launched`; both forever: the launch door
 # counts the week's old lines beside the new (the wharf-rename design, M8, risk R2).
 RUN_LAUNCHED = re.compile(r"^(\S+) run (\S+) (\S+) (?:landed|launched)(?: gate=\S+)?(?: pr=#\S+)? session=(\S+) tip=\S+ rule=\S+ by=(\S+)(?: account=\S+)? —")
 # The old name, for an overlay whose callers still say RUN_LANDED (not RUN_LAUNCHED): the core
-# lands first (the overlay's main imports it before its reader step says RUN_LAUNCHED). It goes
+# launches first (the overlay's main imports it before its reader step says RUN_LAUNCHED). It goes
 # once no overlay caller says RUN_LANDED instead of RUN_LAUNCHED (S8).
 RUN_LANDED = RUN_LAUNCHED
 # An ended run's outcome that merged its branch (autofinish.json's `outcome`, the `autofinished`
@@ -1154,7 +1156,7 @@ RUN_LANDED = RUN_LAUNCHED
 LAUNCHED_OUTCOMES = ("launched", "landed")
 # The runner's gate for a start refused before any session: nothing ran. `not-launched` until the
 # start word changed (2026-10-17); read both forever — old run records and dated logs keep the old
-# word. One home for the lander, its runner and the stall reader.
+# word. One home for the launcher, its runner and the stall reader.
 REFUSED = "refused"
 NOT_LAUNCHED = "not-launched"
 REFUSED_GATES = (REFUSED, NOT_LAUNCHED)
@@ -1164,12 +1166,12 @@ REFUSED_GATES = (REFUSED, NOT_LAUNCHED)
 # whose `Deployed:` line says something went live. The line is free text (`yes`, `no`, `<what>`),
 # so the values that say nothing is live yet are read as not deployed — no, none, n/a, a dash, and
 # the future ones (`on merge`, `after the merge`, `once …`, `when …`, `later`): those were all in
-# the repos' history when L was built, and each would have started a landing (review at /finish).
+# the repos' history when L was built, and each would have started a launch (review at /finish).
 # One home for bin/autofinish and checkpoint.py's Stop, so the two never disagree.
 DEPLOYED_LINE = re.compile(r"^Deployed:[ \t]*(.*)$", re.M)
 NOT_DEPLOYED = re.compile(r"^[`'\"*_( ]*(?:no|none|nothing|n/?a|not|never|pending|later|tbd|on merge|"
                           r"at merge|after|once|when|will|until)\b|^[`'\"*_ \-—–.]*$", re.I)
-L_SINCE = 1791961200  # 2026-10-14 00:00 PDT: rule L lands deploys committed from here on
+L_SINCE = 1791961200  # 2026-10-14 00:00 PDT: rule L launches deploys committed from here on
 
 
 def deployed(message):
@@ -1228,7 +1230,7 @@ def autofinish_outcome(rec):
     """What an ended run came to, in the words the prompt note uses, or None while it runs."""
     outcome = rec.get("outcome")
     if outcome in LAUNCHED_OUTCOMES:
-        return f"this branch landed as #{rec.get('pr') or '?'}"
+        return f"this branch launched as #{rec.get('pr') or '?'}"
     if outcome == "stopped":
         return f"autofinish stopped here at {rec.get('gate') or '?'}"
     if outcome == "never-started":
@@ -1256,10 +1258,10 @@ def autofinished(common_dir):
 
 
 def autofinished_phrase(e):
-    """One ended run as a line for the owner: `claude/x landed as #12` / `claude/y stopped at G4: …` /
+    """One ended run as a line for the owner: `claude/x launched as #12` / `claude/y stopped at G4: …` /
     `claude/z died before an outcome at 1a2b3c4: …`."""
     if e["outcome"] in LAUNCHED_OUTCOMES:
-        return f"{e['branch']} landed as {e['detail'] or '#?'}"
+        return f"{e['branch']} launched as {e['detail'] or '#?'}"
     if e["outcome"] == "stopped":
         return f"{e['branch']} stopped at {e['detail'] or '?'}"
     if e["outcome"] == "died":  # detail: `<tip7> <its dispatch log's last line>`
