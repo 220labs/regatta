@@ -280,6 +280,20 @@ pull() { jq -nc --arg c "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",too
   | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_deny.py" 2>/dev/null; }
 check "$(pull "git -C $T/root pull --ff-only"; echo "rc=$?")" "rc=0" "  no core: a plain pull --ff-only of a checkout passes, the repair"
 check "$(pull 'git -C /x pull --ff-only; rm -rf /x' | grep -c '"deny"')" "1" "  …but not one with a shell operator after it"
+check "$(pull 'git -C /x fetch --upload-pack /tmp/e.sh /x' | grep -c '"deny"')" "1" "  …nor one carrying an option that runs a program (B9 review)"
+check "$(pull 'git -C /x fetch -u /tmp/e.sh /x' | grep -c '"deny"')" "1" "  …in its short form either"
+check "$(pull "git -C $T/root fetch --all --prune"; echo "rc=$?")" "rc=0" "  a fetch --all --prune passes, a usual repair"
+prompt() { echo '{"hook_event_name":"UserPromptSubmit"}' | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" "$@" 2>/dev/null; echo "rc=$?"; }
+check "$(prompt env CLAUDE_CONFIG_DIR=/x python3 "$T/old/hooks/probe_deny.py")" "rc=0" "  --deny, no core, a prompt in a secondary login dir: passes (checkpoint's B5 choice)"
+# A prompt guard's shim (`--deny-prompt`, B9 review): DENY_TAIL, and a prompt in a secondary
+# login dir is blocked with no core, as account_guard blocks when bin/account cannot run.
+"$T/root/modules/regatta/bin/regatta" shim --deny-prompt modules/regatta/hooks/probe_deny.py > "$T/old/hooks/probe_prompt.py"; check $? 0 "regatta shim --deny-prompt writes a prompt guard's shim"
+check "$(echo '{}' | REGATTA_HOME="$T/root" python3 "$T/old/hooks/probe_prompt.py")" "module $T/root/modules/regatta/hooks/probe_deny.py" "  with a core: the module runs"
+out=$(prompt env CLAUDE_CONFIG_DIR=/x python3 "$T/old/hooks/probe_prompt.py")
+check "$(echo "$out" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])') $(echo "$out" | tail -1)" "block rc=0" "  no core, a prompt in a secondary login dir: blocked, exit 0"
+check "$(prompt env -u CLAUDE_CONFIG_DIR python3 "$T/old/hooks/probe_prompt.py")" "rc=0" "  no core, a prompt in the default login: passes, the repair stays reachable"
+check "$(echo '{"hook_event_name":"Stop"}' | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" CLAUDE_CONFIG_DIR=/x python3 "$T/old/hooks/probe_prompt.py" 2>/dev/null; echo "rc=$?")" "rc=0" "  no core, any other event: nothing, exit 0"
+check "$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_prompt.py" 2>/dev/null | grep -c '"deny"')" "1" "  no core, PreToolUse: denied, as --deny"
 # A broken module, not a missing one (B5 review): a conflicted pull's SyntaxError still denies.
 cp "$T/root/modules/regatta/hooks/probe_deny.py" "$T/probe_deny.ok"; printf '<<<<<<< ours\n' >> "$T/root/modules/regatta/hooks/probe_deny.py"
 out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' \
