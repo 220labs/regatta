@@ -17,6 +17,7 @@ own. Every module needs the core.
 | [`helloworld`](modules/helloworld/README.md) | the public door: name a project (`name-check`, `/name`), then publish it through a privacy scan (`helloworld`) |
 | [`plumb`](modules/plumb/README.md) | measure: `crew-report`, the owner's own time per project each week, beside the model cost |
 | [`wharf-runs`](modules/wharf-runs/README.md) | runs across a fleet of Macs: `orca-host` keeps Orca on each Mac to the registry's scopes and pairs the Macs |
+| [`aurora`](modules/aurora/README.md) | Aurora Borealis, the night job: the weekly loop's sections (branches, charts, dream) run while the owner sleeps, and `/embark`, the Monday sitting |
 
 ## Install
 

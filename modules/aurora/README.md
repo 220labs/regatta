@@ -1,0 +1,62 @@
+# aurora — Aurora Borealis, the night job
+
+Aurora Borealis is the work that happens while the owner sleeps: the weekly loop that reads the
+week back and leaves proposals for the morning. Each job is a **section** with its own cadence;
+a night runs the ones that are due, mechanical and cheap first, the judgement last. **Embark**
+is the Monday sitting that walks the owner through what the night left and applies what they
+approve.
+
+| File | What it is |
+| --- | --- |
+| `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend and the classify (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, and checks each section's proof; `--dry-run` prints tonight's order; `weekly-run where` prints where things are |
+| `bin/week-digest` | what the owner typed this week, per project and session — the raw material the dream reads; read-only |
+| `skills/aurora/` | `/aurora`, and its `sections/`: `branches` (a verdict per idle branch code could not settle), `charts` (the layer's docs map and charts kept current, one PR), `dream` (one reviewed proposal for the always-loaded layer) |
+| `skills/embark/` | `/embark`, the Monday sitting |
+| `install.sh` | `--check` what aurora finds; `--schedule` the nightly launchd job (21:00); `--remove` it |
+
+## Where things are
+
+Nothing in the module names a path of the owner's. `weekly-run` finds, and `weekly-run where`
+prints for the skills:
+
+| Name | What | From |
+| --- | --- | --- |
+| `module` | this module | the script's own path |
+| `regatta` | the core's CLI; `regatta <tool> …` runs any module's tool | `modules/regatta` beside this module, else `$REGATTA_HOME`, else the config dir's `home` file |
+| `layer`, `layer-name` | the knowledge layer every session loads (rules, skills, docs) | atlas's `atlas/layer` key in the config dir (`$REGATTA_CONFIG`, else `.config/regatta` in the home folder); `$ATLAS_LAYER` overrides |
+| `vault`, `vault-name` | the vault of records written in place (bulletin, memory, dreams, `log.md`) | atlas's `atlas/vault` key; `$ATLAS_VAULT` overrides; without an overlay, atlas's default |
+| `logs` | the night's logs | `$WEEKLY_LOG_DIR`, else `Library/Logs/claude-weekly` in the home folder |
+| `projects` | the projects folder | the core's `regatta/projects`, else `projects` in the home folder |
+
+Config of its own (listed in `config-keys`, so `regatta check` reports it): `aurora/skip-hosts`, the host names (the core's `host_name()`) the loop never
+runs on, one per line — two Macs each writing the week's dream in place conflict on push. Where
+an overlay is installed (the config dir's `legacy` file) and the key is absent, the run refuses.
+
+## Peers
+
+| Peer | Used for | Without it |
+| --- | --- | --- |
+| the core (`regatta`) | the CLI, `host_name()` | nothing runs: the run refuses in one line |
+| atlas | the bulletin, `knowledge-commit`, `docs-index` (charts) | no bulletin lines (the log still says it); the quiet week's line and the dream's commit fail their step; charts is never due |
+| wharf | `tend`, `repos` (classify), `pr` (the charts PR), `branches.py` | that step fails with one line; the branches section gathers for itself |
+| wharf-runs | `rc-hosts --launcher` (a stable launcher for `claude`) | `claude` runs directly |
+| plumb | `knowledge-numbers`, `interruptions` (the dream's numbers) | the dream says the numbers are missing |
+| sextant | `weekly-run sextant <cwd>` runs `/sextant` until the sextant module ships its own runner | — |
+
+A peer is found through `regatta which <tool>` (the core's `common.tool()`): a module of the
+same checkout, an installed plugin, else an overlay's old path.
+
+## Install
+
+`claude plugin install aurora@regatta` for the skills. For the night: `sh install.sh
+--schedule` writes and loads `dev.regatta.aurora` (`AURORA_LABEL` overrides), nightly at 21:00,
+running `bin/weekly-run aurora <vault>`; a night with nothing due ends before `claude` starts.
+An install with an overlay of its own (the config dir's `legacy` file) schedules the night
+itself, so `--schedule` refuses there. On other harnesses the skills' text and `bin/` work; the
+schedule is launchd's (macOS).
+
+## Check
+
+`bash tests/check.sh` — tonight's plan, the refusals, the peers missing, the skills' commands
+held to the allowlist, `--schedule` against a scratch launchd. Scratch paths only; no network,
+no `claude`.

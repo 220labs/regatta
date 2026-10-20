@@ -1,0 +1,3 @@
+# aurora's private values (README, "Config of its own"): `regatta check` reports each one missing
+# where an overlay is installed, or unreadable.
+aurora/skip-hosts
