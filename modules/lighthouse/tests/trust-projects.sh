@@ -41,7 +41,7 @@ check "$(has "$P/.hidden/x")" False "no dot-folders"
 check "$(has "$P/books-link")" False "no symlinks"
 check "$(python3 -c "import json;c=json.load(open('$T/.claude.json'));print(c['numStartups'], c['oauthAccount']['emailAddress'], c['projects']['$P/app']['allowedTools'])")" \
       "7 x ['Bash']" "every other key survives"
-check "$(stat -f '%Lp' "$T/.claude.json" 2>/dev/null || stat -c '%a' "$T/.claude.json")" 600 "the file stays mode 600"
+check "$(stat -c '%a' "$T/.claude.json" 2>/dev/null || stat -f '%Lp' "$T/.claude.json")" 600 "the file stays mode 600"
 check "$(ls "$T" | grep -c trust-)" 0 "no temp file left behind"
 
 run --check > /dev/null; check "$?" 0 "--check exits 0 afterwards"
