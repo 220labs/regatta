@@ -11,7 +11,7 @@
                                                 git mv a record to docs/record/ and fix every live
                                                 reference to it in the same working tree
     docs-index relink [--repo PATH]             re-point live files that still name a moved record by its
-                                                old path (a branch that landed after the move)
+                                                old path (a branch that launched after the move)
     docs-index skips [--repo PATH]              the skip set: files an unmerged claude/* branch changes
     docs-index due [--since DATE] [--max N] [--repo PATH]
                                                 the topics a charts run should rewrite, and the skipped ones;
@@ -56,7 +56,7 @@ prose forms (also_ref; the name is the primary checkout's folder name) in that
 repo's tracked text too, never its records (`in_place`/`records` of its workflow.json), with no
 git mv there; the caller commits it. `--section` is the weekly run's form: it refuses a record
 that any live file outside docs/, or an `--also` repo, names — the unattended run writes docs/
-and log.md only, so such a move waits for /embark, where it lands reviewed.
+and log.md only, so such a move waits for /embark, where it launches reviewed.
 `banner` refuses a record in the skip set (R2: the top lines conflict with that branch) unless
 `--force`.
 """
@@ -155,7 +155,7 @@ def rel(from_dir, path):
 
 # ---- banner -------------------------------------------------------------------------------
 
-# The review status a record landed with (E14 of the autofinish design, 2026-10-02), stamped at the
+# The review status a record launched with (E14 of the autofinish design, 2026-10-02), stamped at the
 # end of its banner by `keel status --stamp` (/finish, `keel stand --apply`): ` · review:
 # unseen → stood`. Every rewrite of the banner keeps it; `reviews` copies it into the map's
 # Records cell as a suffix, so the map says which records the owner never looked at.
@@ -175,7 +175,7 @@ def status_review(lines):
     """The review word the Keel `Status:` line gives a doc whose banner carries none (entry S5): every
     decision answered `reviewed`, some `partial`, none `unseen`; None without a count. A line cannot
     tell the owner's answer from a stood one or a form open from none, so the banner's own word, which
-    `keel status --stamp` writes from git at landing, always wins where it exists."""
+    `keel status --stamp` writes from git at launch, always wins where it exists."""
     for l in lines[:15]:
         m = KEEL_ANSWERED_RE.match(l)
         if m:
@@ -455,7 +455,7 @@ def check(repo):
 def skip_set(repo):
     """{path: [branch, …]}: files an unmerged claude/* branch (local or origin) changes, where
     the branch's copy was never main's. A branch GitHub rebase-merged keeps its own shas, and
-    one that landed before main edited the file again holds an older copy of main's — neither
+    one that launched before main edited the file again holds an older copy of main's — neither
     is a conflict, so both are judged by the blob, not by ancestry."""
     base_ref = "origin/main" if git(repo, "rev-parse", "-q", "--verify", "origin/main").strip() else "main"
     refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/heads/claude/", "refs/remotes/origin/claude/").split()
@@ -553,7 +553,7 @@ def moved_plan(repo):
 
 def stale_refs(repo):
     """Live files still naming a moved record by the path it left, as a path or a relative link —
-    written on a branch that landed after the move (the first build raced 37 branches).
+    written on a branch that launched after the move (the first build raced 37 branches).
     `relink` fixes them; `check` reports them."""
     return sorted(rewrite_live(repo, moved_plan(repo), dict(tracked_text(repo)), write=False))
 
@@ -666,9 +666,9 @@ def move(repo, names, section=False, also=()):
 # ---- due ----------------------------------------------------------------------------------
 
 def last_run(repo):
-    """'<day> 00:00' of the last charts run that landed — the day in its `Charts: <day>` subject,
+    """'<day> 00:00' of the last charts run that launched — the day in its `Charts: <day>` subject,
     the run's own day: a rebase merge sets the committer date to the merge, and a bare date
-    reads as that day at the current time, so either would miss what landed in between
+    reads as that day at the current time, so either would miss what launched in between
     (review 2026-10-04). None before the first."""
     s = git(repo, "log", "main", "-1", "--grep=^Charts: ", "--format=%s").strip()
     m = re.match(r"^Charts: (\d{4}-\d{2}-\d{2})", s)

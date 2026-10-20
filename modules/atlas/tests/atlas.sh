@@ -4,7 +4,7 @@
 # keel for the bulletin's Open line and docs-index's sets (G19), wharf's `pr` and `carried.py` for
 # knowledge-commit --in (G20) — each with the peer present and absent.
 # A scratch copy of the core and this module stands in for the checkout, so a sibling module
-# landed beside them never decides a case; HOME and the config dir are scratch too. No network:
+# put beside them never decides a case; HOME and the config dir are scratch too. No network:
 # "origin" is a bare repo in the scratch folder.
 #   bash modules/atlas/tests/atlas.sh
 set -u
@@ -109,8 +109,8 @@ echo "G20: knowledge-commit --in without wharf, then with it"
 git clone -q --bare "$L" "$T/origin.git"; git -C "$L" remote add origin "$T/origin.git"; git -C "$L" fetch -q origin
 echo b > "$wt/docs/b.md"; : > "$RAN"
 out=$("$KC" mylayer --in "$wt" -m "Docs: b" 2>&1); rc=$?
-check "$rc" 0 "online, no wharf: it lands"
-echo "$out" | grep -q "wharf is not installed (no pr) — landing on main locally"; check $? 0 "  and says why there is no pull request"
+check "$rc" 0 "online, no wharf: it launches"
+echo "$out" | grep -q "wharf is not installed (no pr) — launching on main locally"; check $? 0 "  and says why there is no pull request"
 check "$(git -C "$L" show main:docs/b.md 2>/dev/null)" b "  the primary's main has it"
 echo "$out" | grep -q "main is ahead of origin"; check $? 0 "  ahead of origin, said so"
 check "$(tr '\n' ' ' < "$RAN")" "bootstrap.sh " "  after the layer's prose check"
@@ -123,11 +123,11 @@ open("$RAN", "a").write("carried " + " ".join(sys.argv[1:]) + "\\n")
 PY
 wt2=$("$KC" mylayer --open second 2>/dev/null); echo c > "$wt2/docs/c.md"; : > "$RAN"
 out=$("$KC" mylayer --in "$wt2" -m "Docs: c" 2>&1); rc=$?
-check "$rc" 0 "wharf present: --in lands through it"
+check "$rc" 0 "wharf present: --in launches through it"
 grep -q "^pr ready" "$RAN" && grep -q "^pr merge" "$RAN"; check $? 0 "  pr ready, then pr merge, found by common.tool"
 grep -q "^carried $L --pull" "$RAN"; check $? 0 "  then carried.py --pull on the primary"
 git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$(git -C "$wt2" symbolic-ref --short HEAD)" >/dev/null; check $? 0 "  the branch was pushed to origin"
-echo "$out" | grep -q "wharf is not installed"; check $? 1 "  and no word of a local landing"
+echo "$out" | grep -q "wharf is not installed"; check $? 1 "  and no word of a local launch"
 
 echo "the vault commit on the configured vault"
 V="$T/vault"; git -C "$V" init -q -b main 2>/dev/null; echo m > "$V/memo.md"

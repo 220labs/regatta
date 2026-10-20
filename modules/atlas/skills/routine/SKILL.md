@@ -21,21 +21,21 @@ For each definition file (`$ARGUMENTS` names one; default: all of them):
    `HTTP 200` line, to a scratch file `<name>.live.json`. It runs to about 180 KB.
 2. `routine status <file> --live <name>.live.json`:
    - **0, in sync**: nothing to do.
-   `routines/` is gated in the vault (not in its `in_place`): every change to a file lands
+   `routines/` is gated in the vault (not in its `in_place`): every change to a file launches
    through `knowledge-commit vault --open routine-<name>` and `--in <that path> -m …`.
    - **4, live ahead** (the routine edited itself): `routine pull` on the file **under the
      `--open` path**, then `--in` with `-m "Routine <name>: pull the routine's own edit — <what
      changed>"`. It is refused unreviewed; the reviewer reads what the routine did to itself,
-     which is already live, then `--in --review` lands it.
-   - **3, file ahead** (a session edited the file): land the edit reviewed first (`--open`,
-     edit there, `--in`, review, `--in --review`), then deploy what landed, from the primary:
+     which is already live, then `--in --review` launches it.
+   - **3, file ahead** (a session edited the file): launch the edit reviewed first (`--open`,
+     edit there, `--in`, review, `--in --review`), then deploy what launched, from the primary:
      1. Send `RemoteTrigger update` with the body from `routine body <the vault>/routines/<name>.md`,
         which is the whole of it: `{"prompt": …}`. Never send `job_config` or `session_request`.
         They hold the Cowork system prompt and the connectors, and an update replaces a whole field.
      2. Run `get` again, save it, then `--open routine-<name>-synced` and run `routine synced
         <the file under that path> --live …`. This checks the deploy against what the service
         now holds.
-     3. `--in` that path: a diff that only moves the `synced:` line lands without a review.
+     3. `--in` that path: a diff that only moves the `synced:` line launches without a review.
    - **5, both changed**: show the owner the diff and ask which parts to keep. Never force either way.
 3. If `status` reports a changed name or cron, the file records it but can't change it. Say so
    and name the setting in the Claude app.
