@@ -741,7 +741,7 @@ check "$(git -C "$PUB" rev-parse main)" "$P3" "  the public main is untouched"
 check "$(git -C "$PUB" for-each-ref --format='%(refname)' | sort | tr '\n' ' ')" "refs/heads/$BR refs/heads/main " "  one new ref, the claude/publish branch"
 check "$(git -C "$PUB" rev-parse "$SHA^")" "$P3" "  a child of the public main, so the PR is one commit"
 check "$(git -C "$PUB" diff --name-only "$P3" "$SHA")" "README.md" "  carrying only what changed"
-check "$(git -C "$PUB" log -1 --format=%B "$SHA" | head -1)" "Publish $(TZ=UTC date +%F)" "  with the default title as its message, its date the UTC one"
+check "$(git -C "$PUB" log -1 --format=%B "$SHA" | head -1)" "a new line" "  replayed: the private commit's own subject (the replay section below goes further)"
 check "$(git -C "$PUB" log -1 --format='%ai|%ci' "$SHA" | grep -c '+0000|.*+0000')" 1 "  both dates in UTC, as publish's: no time zone goes public"
 check "$(gaterefs)" 0 "  the ref it fetched by is gone again"
 check "$(signoff "$PUB" "$SHA")" "$(git -C "$PUB" log -1 --format='%an <%ae>' "$SHA")" "  exactly one Signed-off-by, equal to the commit's author (the DCO check)"
@@ -864,6 +864,224 @@ echo "One more." >> "$R/README.md"; git -C "$R" commit -qam "one more"; git -C "
 check "$(prun)" 2 "a workflow on the public main that merges PRs: refused"
 has "$T/out" "the public main has .github/workflows/land.yml — a PR would merge itself" "  and named"
 check "$(gaterefs)" 0 "after every PR run, no ref of the gate's own in the private repo"
+
+echo "the replay: the curated commits since the public main's tree, one by one (D1-B)"
+# A second scratch pair: a private repo published once, then six commits of every kind. The
+# agent trailers are assembled at run time, so this file carries no address or session link.
+R2="$T/rp"; PUB2="$T/rp-public.git"
+git init -q --bare -b main "$T/rp-origin.git"; git init -q --bare -b main "$PUB2"
+git init -q -b main "$R2"; git -C "$R2" config user.name "Film Maker"; git -C "$R2" config user.email maker@example.org
+git -C "$R2" config commit.gpgsign false; git -C "$R2" remote add origin "$T/rp-origin.git"
+printf '[url "%s"]\n\tinsteadOf = https://github.com/acme/tool.git\n' "$PUB2" >> "$T/gitconfig"
+mkdir -p "$R2/.helloworld"; printf '# Tool\n' > "$R2/README.md"; printf 'print(1)\n' > "$R2/tool.py"; printf 'a\n' > "$R2/notes.md"
+printf 'README.md\ntool.py\n' > "$R2/.helloworld/allowlist.txt"; echo https://github.com/acme/tool.git > "$R2/.helloworld/remote"
+# rc <subject> [body]: commit everything; up: send main to the scratch origin.
+rc() { git -C "$R2" add -A; git -C "$R2" commit -q -m "$1" ${2:+-m "$2"}; }
+up() { git -C "$R2" push -q origin main; }
+rc "Docs: the first README"; up
+python3 "$T/answer.py" acme/tool env -u CLAUDECODE GIT_CONFIG_GLOBAL="$T/gitconfig" python3 "$B/helloworld" publish "$R2" > "$T/out" 2>&1
+check "$?" 0 "the first publish of a second twin (one commit, as ever)"
+P0=$(git -C "$PUB2" rev-parse main)
+CA1="Co-Authored-By: Claude Opus 5.5 <noreply@""anthropic.com>"
+CA2="Co-authored-by: Claude Opus 4.6 (1M context) <noreply@""anthropic.com>"
+CS="Claude-""Session: https://claude.ai/code/""sess""ion_01ABCDEFGHIJKLMN"
+printf 'print(2)\n' > "$R2/tool.py"; rc "Tool: prints two" "Why: one was not enough.
+
+$CA1
+$CA2
+$CS
+Signed-off-by: Film Maker <maker@example.org>"
+C1=$(git -C "$R2" rev-parse HEAD)
+printf '# Tool, half\n' > "$R2/README.md"; rc "wip: changes between turns"
+printf 'print(2)  # Harbourview\n' > "$R2/tool.py"; rc "Tool: a leak"
+printf 'print(3)\n' > "$R2/tool.py"; rc "Tool: the leak taken back"
+printf 'b\n' >> "$R2/notes.md"; rc "Project: notes"
+printf '# Tool\nRun it.\n' > "$R2/README.md"; rc "Docs: the README says how to run it" "Written at the Harbourview house."
+C6=$(git -C "$R2" rev-parse HEAD)
+up
+chk2() { GIT_CONFIG_GLOBAL="$T/gitconfig" env -u CLAUDECODE python3 "$B/helloworld" check "$R2" "$@" > "$T/out" 2>&1; echo $?; }
+prun2() { GIT_CONFIG_GLOBAL="$T/gitconfig" PATH="$T/fakebin:$PATH" CLAUDECODE=1 TZ=America/Los_Angeles python3 "$B/helloworld" publish --pr "$R2" "$@" < /dev/null > "$T/out" 2>&1; echo $?; }
+pub2refs() { git -C "$PUB2" for-each-ref --format='%(refname) %(objectname)' | sort; }
+check "$(chk2)" 0 "check: the dry replay, nothing pushed"
+has "$T/out" "replay: base $(git -C "$R2" rev-parse --short=7 main~6)" "  the base found by tree: the commit the first publish was made from"
+has "$T/out" "3 commit(s) would go up, 2 folded, 1 private only" "  three commits, two folds, one private"
+has "$T/out" "$(git -C "$R2" rev-parse --short=7 main~4)   fold: a checkpoint" "  a wip: commit folds"
+has "$T/out" "$(git -C "$R2" rev-parse --short=7 main~3)   fold: its tree has 1 finding(s)" "  a leak planted in a middle commit folds"
+has "$T/out" "→ Tool: the leak taken back [carries 2 folded]" "  into the next commit that passes"
+has "$T/out" "private: no published file changed" "  a commit that changes no published file stays private"
+has "$T/out" "→ Docs: the README says how to run it [its body has findings: the subject goes alone]" "  a body that fails: the subject alone"
+check "$(pub2refs)" "refs/heads/main $P0" "  check pushed nothing"
+check "$(prun2 --squash)" 0 "--squash: one commit, as before the replay"
+BR2="claude/publish/$(TZ=UTC date +%F)-publish"
+check "$(git -C "$PUB2" rev-list --count "$P0..$BR2")" 1 "  one commit on the public main"
+has "$T/gh.body" "as one commit on main (squashed: on request)" "  the body says why"
+git -C "$PUB2" update-ref -d "refs/heads/$BR2"
+check "$(prun2)" 0 "publish --pr: the replay"
+TIP=$(git -C "$PUB2" rev-parse "$BR2")
+check "$(git -C "$PUB2" log --reverse --format=%s "$P0..$TIP" | tr '\n' '|')" \
+      "Tool: prints two|Tool: the leak taken back|Docs: the README says how to run it|" "  three public commits, the curated subjects, in order"
+leaked=0; for c in $(git -C "$PUB2" rev-list "$P0..$TIP"); do git -C "$PUB2" grep -q Harbourview "$c" && leaked=1; done
+check "$leaked" 0 "  the planted leak is in no public tree"
+check "$(git -C "$PUB2" log -1 --format=%B "$TIP~2" | sed '/^$/d' | tr '\n' '|')" \
+      "Tool: prints two|Why: one was not enough.|Signed-off-by: Film Maker <maker@example.org>|" "  the body kept, every trailer dropped but the gate's Signed-off-by"
+check "$(git -C "$PUB2" log --format=%B "$P0..$TIP" | grep -ciE 'co-authored-by|claude-session|anthropic')" 0 "  both Co-Authored-By spellings and the session link: gone"
+check "$(git -C "$PUB2" log -1 --format=%B "$TIP" | sed '/^$/d' | tr '\n' '|')" \
+      "Docs: the README says how to run it|Signed-off-by: Film Maker <maker@example.org>|" "  the failing body dropped, the subject alone"
+check "$(git -C "$PUB2" log -1 --format='%at %ct' "$TIP~2")" "$(git -C "$R2" log -1 --format='%at %ct' "$C1")" "  each commit keeps its private dates"
+check "$(git -C "$PUB2" log --format='%ai|%ci' "$P0..$TIP" | grep -c '+0000|.*+0000')" 3 "  in UTC"
+check "$(git -C "$PUB2" log --format='%an <%ae>' "$P0..$TIP" | sort -u)" "Film Maker <maker@example.org>" "  under the publishing identity"
+check "$(git -C "$PUB2" ls-tree -r "$TIP")" "$(git -C "$R2" ls-tree -r "$C6" README.md tool.py)" "  ending on origin/main's published files"
+has "$T/gh.body" "as 3 commits replayed from the private history one by one, each scanned on its own, 2 folded into the commit after them, 1 with the subject alone" "  the body counts them"
+lacks "$T/gh.body" "Harbourview" "  and names no fold's reason"
+lacks "$T/gh.body" "$(git -C "$R2" rev-parse --short=7 "$C1")" "  nor a private sha"
+git -C "$PUB2" update-ref -d "refs/heads/$BR2"
+check "$(prun2)" 0 "the same span again, its branch gone"
+check "$(git -C "$PUB2" rev-parse "$BR2")" "$TIP" "  the same shas: the dates are the private ones"
+check "$(prun2)" 0 "  and with the branch there, nothing proposed twice"
+has "$T/out" "branch $BR2 already has exactly this tree" "  (a replay of three counts as on top of the public main)"
+
+printf 'print(4)\n' > "$R2/tool.py"; rc "Tool: tuned on MyLaptop"; C7=$(git -C "$R2" rev-parse HEAD); up
+before=$(pub2refs)
+check "$(chk2)" 0 "check: a subject the scan refuses is printed, not counted (a work branch's checkpoints)"
+has "$T/out" "replay REFUSED: ${C7:0:7}'s subject has a private word — MyLaptop" "  as the replay's refusal"
+has "$T/out" ".helloworld/messages: ${C7:0:12} <a public subject>" "  naming the fix"
+check "$(prun2)" 1 "publish --pr: a private word in a replayed subject: refused"
+has "$T/out" "replay ${C7:0:12} subject: private word — My…" "  as that commit's subject, masked"
+has "$T/out" "in .helloworld/messages" "  with the override line to add"
+check "$(pub2refs)" "$before" "  nothing pushed"
+printf '# reviewed\n%s Tool: tuned\n' "${C7:0:12}" > "$R2/.helloworld/messages"; rc "Project: a public subject for the tuning commit"; up
+check "$(prun2)" 0 "with its line in .helloworld/messages: the run goes on"
+check "$(git -C "$PUB2" log -1 --format=%s "$BR2-2")" "Tool: tuned" "  the commit goes up under the reviewed subject"
+check "$(git -C "$PUB2" rev-list --count "$P0..$BR2-2")" 4 "  after the three before it"
+printf '%s nope\n' "zz" > "$R2/.helloworld/messages"; rc "Project: a bad line"; up
+check "$(chk2)" 2 "a messages line that is not <sha> <subject>: refused"
+has "$T/out" "is not <private sha> <public subject>" "  and said"
+git -C "$R2" revert --no-edit HEAD > /dev/null; up
+# The reviewed ref's lists bound every public tree: a file and a credit it took back fold, and a
+# replayed message meets the whole word list, a credit or not (the /finish review, 2026-10-20).
+BEFORE=$(git -C "$R2" rev-parse HEAD)
+printf 'README.md\ntool.py\nnotes.md\nCREDITS.yaml\n' > "$R2/.helloworld/allowlist.txt"; printf 'people:\n  - {name: "Zed Quill"}\n' > "$R2/CREDITS.yaml"
+rc "Project: the notes and a credit go public"; CX=$(git -C "$R2" rev-parse HEAD)
+printf 'README.md\ntool.py\n' > "$R2/.helloworld/allowlist.txt"; rm "$R2/CREDITS.yaml"; printf 'print(5)\n' > "$R2/tool.py"; rc "Tool: five"; up
+check "$(chk2)" 0 "a file and a credit allowlisted, then taken back: check passes"
+has "$T/out" "${CX:0:7}   fold: its lists hold 3 entr(ies) origin/main took back" "  the commit that listed them folds"
+check "$(prun2)" 0 "  publish --pr: the replay goes up"
+leaked=0; for c in $(git -C "$PUB2" rev-list --all); do git -C "$PUB2" cat-file -e "$c:notes.md" 2>/dev/null && leaked=1; done
+check "$leaked" 0 "  the taken-back file is in no public tree"
+printf 'README.md\ntool.py\nCREDITS.yaml\n' > "$R2/.helloworld/allowlist.txt"; printf 'people:\n  - {name: "Zed Quill"}\n' > "$R2/CREDITS.yaml"; rc "Project: the credits go public"
+printf 'print(6)\n' > "$R2/tool.py"; rc "Tool: six, reviewed by Zed Quill"; CQ=$(git -C "$R2" rev-parse HEAD); up
+check "$(chk2)" 0 "a credited name in a replayed subject: printed, not counted"
+has "$T/out" "replay REFUSED: ${CQ:0:7}'s subject has a private word" "  refused all the same: a credit is consent for the tree, not the message"
+git -C "$R2" diff --binary HEAD "$BEFORE" | git -C "$R2" apply; rc "Project: back as it was"; up
+
+# A message's own patterns (D2 of the S2 digest, the owner's A, 2026-10-20): a sha, a cross-repo
+# ref, a session id. Made up, the session id assembled at run time like the trailers above.
+P_SHA="1a2b3c4d"; P_REF="acme/tool#12"; P_REPO="tool#3"; P_URL="github.com/acme/tool/pull/12"
+P_UUID="12345678-90ab-cdef-1234-567890abcdef"; P_SID="sess""ion_9XYZ12345"
+printf '%s Tool: six\n' "${CQ:0:12}" >> "$R2/.helloworld/messages"; rc "Project: a public subject for the credited commit"
+n=7; BODIES=""
+for v in "$P_SHA" "$P_REF" "$P_REPO" "$P_URL" "$P_UUID" "$P_SID"; do
+  printf 'print(%s)\n' "$n" > "$R2/tool.py"; rc "Tool: $n" "Why: as $v said."; BODIES="$BODIES|Tool: $n"; n=$((n+1))
+done
+up
+check "$(chk2)" 0 "a body with a sha, a cross-repo ref or a session id: check passes"
+for k in 7 8 9 10 11 12; do
+  has "$T/out" "→ Tool: $k [its body has findings: the subject goes alone]" "  Tool: $k's body is dropped"
+done
+lacks "$T/out" "replay REFUSED" "  and no subject is refused"
+check "$(prun2 -m "Publish after $P_SHA")" 1 "publish --pr: a sha in the PR title (a squash's or a tail's message): refused"
+has "$T/out" "PR title: commit sha — $P_SHA" "  and named"
+check "$(prun2 -m "Publish for $P_REF")" 1 "publish --pr: a cross-repo ref in the PR title: refused"
+check "$(prun2)" 0 "publish --pr: the replay goes up without those bodies"
+TIPD=$(git -C "$PUB2" for-each-ref --sort=-creatordate --format='%(objectname)' refs/heads/claude/publish | head -1)
+check "$(git -C "$PUB2" log --format=%B "$P0..$TIPD" | grep -cE "$P_SHA|tool#|acme/tool/pull|$P_UUID|$P_SID")" 0 "  no public commit carries any of them"
+check "$(git -C "$PUB2" log -1 --format=%B "$TIPD" | sed '/^$/d' | tr '\n' '|')" \
+      "Tool: 12|Signed-off-by: Film Maker <maker@example.org>|" "  the subject alone, then the gate's trailer"
+BEFORE=$(git -C "$R2" rev-parse HEAD)
+for v in "$P_SHA" "$P_REF" "$P_REPO" "$P_URL" "$P_UUID" "$P_SID"; do
+  printf 'print(%s)\n' "$n" > "$R2/tool.py"; rc "Tool: after $v"; n=$((n+1))
+done
+SUBJ=$(git -C "$R2" rev-list --reverse "$BEFORE..HEAD" | tr '\n' ' '); up
+check "$(chk2)" 0 "a subject with a sha, a cross-repo ref or a session id: printed, not counted"
+set -- $SUBJ
+has "$T/out" "replay REFUSED: ${1:0:7}'s subject has a commit sha — $P_SHA" "  a sha refuses its subject, the commit named"
+has "$T/out" "replay REFUSED: ${2:0:7}'s subject has a cross-repo ref — $P_REF" "  owner/repo#N refuses"
+has "$T/out" "replay REFUSED: ${3:0:7}'s subject has a cross-repo ref — $P_REPO" "  repo#N refuses"
+has "$T/out" "replay REFUSED: ${4:0:7}'s subject has a cross-repo ref — $P_URL" "  a link to a pull refuses"
+has "$T/out" "replay REFUSED: ${5:0:7}'s subject has a session id — $P_UUID" "  a uuid refuses"
+has "$T/out" "replay REFUSED: ${6:0:7}'s subject has a session id — $P_SID" "  session_<id> refuses"
+lacks "$T/out" "replay REFUSED: ${5:0:7}'s subject has a commit sha" "  a uuid's hex blocks are not a sha too"
+before=$(pub2refs)
+check "$(prun2)" 1 "  publish --pr refuses them"
+check "$(pub2refs)" "$before" "  nothing pushed"
+set --
+git -C "$R2" diff --binary HEAD "$BEFORE" | git -C "$R2" apply; rc "Project: back as it was, again"; up
+
+# An open replay branch vouches only for trees this run scans (review 2026-10-20): a word added
+# to the list since must not ride in on an earlier commit's tree when that branch is merged.
+for c in $SUBJ; do printf '%s Tool: after a reference\n' "${c:0:12}" >> "$R2/.helloworld/messages"; done
+rc "Project: public subjects for the six refused above"
+BEFORE=$(git -C "$R2" rev-parse HEAD)
+printf 'print(50)  # Gizmoworks\n' > "$R2/tool.py"; rc "Tool: fifty"
+printf 'print(51)\n' > "$R2/tool.py"; rc "Tool: fifty-one"; up
+check "$(prun2 --topic vouch)" 0 "two commits go up as a replay branch"
+check "$(prun2 --topic vouch)" 0 "  run again: that open branch is enough"
+has "$T/out" "nothing to propose — branch" "  and named"
+cp "$HELLOWORLD_WORDLIST" "$T/words.bak"; echo Gizmoworks >> "$HELLOWORLD_WORDLIST"
+before=$(pub2refs)
+check "$(prun2 --topic vouch)" 0 "the first commit's word now listed: the open branch is not enough"
+lacks "$T/out" "nothing to propose" "  it pushes the replay as it stands"
+check "$([ "$(pub2refs)" != "$before" ] && echo pushed)" pushed "  a new branch went up"
+mv "$T/words.bak" "$HELLOWORLD_WORDLIST"
+git -C "$R2" diff --binary HEAD "$BEFORE" | git -C "$R2" apply; rc "Project: back as it was, a third time"; up
+
+echo "check-message: one message as the replay would scan it, when the private commit is made (D2)"
+cm() { env -u CLAUDECODE python3 "$B/helloworld" check-message "$@" > "$T/out" 2>&1; echo $?; }
+printf 'Why: it was slow.\n' > "$T/body"
+check "$(cm --subject 'Tool: faster' --body-file "$T/body")" 0 "a clean subject and body pass"
+has "$T/out" "clean: the subject and body would go public as written" "  and said"
+check "$(cm --subject 'Wharf: the Gizmo host takes the runs')" 0 "a product name off the list passes (the owner's answer to D2)"
+check "$(cm --subject 'Core: read session_id from the hook, as #12 said')" 0 "session_id is a word, a bare #12 this repo's own"
+i=0
+for v in "$P_SHA" "$P_REF" "$P_REPO" "$P_URL" "$P_UUID" "$P_SID"; do
+  i=$((i+1)); case $i in 1) cat="commit sha";; 2|3|4) cat="cross-repo ref";; *) cat="session id";; esac
+  printf 'After %s.\n' "$v" > "$T/body"
+  check "$(cm --subject 'Tool: x' --body-file "$T/body")" 1 "a body with a $cat ($v): a finding"
+  has "$T/out" "body:1: $cat — $v (the replay drops this body)" "  the replay would drop it"
+  check "$(cm --subject "Tool: after $v")" 1 "a subject with a $cat: a finding"
+  has "$T/out" "subject: $cat — $v (the replay refuses this subject)" "  the replay would refuse it"
+done
+printf 'Tool: faster\n\nWhy: it was slow.\n\n%s\n%s\n' "$CA1" "$CS" > "$T/msg"
+check "$(cm --message-file "$T/msg")" 0 "--message-file: the trailers are dropped first, as the replay drops them"
+check "$(printf 'Tool: on MyLaptop\n' | CLAUDECODE=1 python3 "$B/helloworld" check-message --message-file - 2>&1 > "$T/out"; echo $?)" 1 \
+      "a private word in the subject, from stdin: a finding"
+has "$T/out" "subject: private word — My…" "  masked in an agent's shell"
+check "$(cm --body-file "$T/body")" 2 "no subject: a usage error"
+for v in github.com/acme/tool/issues/4 github.com/acme/tool/commit/abc github.com/acme/tool/blob/main/x.py \
+         https://github.com/acme/tool a/b/c#5; do
+  check "$(cm --subject "Tool: see $v")" 1 "a subject with $v: a cross-repo ref"
+done
+printf 'Tool: faster\n\nWhy: it was slow.\n\n# On branch claude/MyLaptop/x\n# ------------------------ >8 ------------------------\nOZ diff\n' > "$T/msg"
+check "$(cm --message-file "$T/msg")" 0 "a commit-msg hook's file: git's comment block and the diff below the scissors are cut"
+printf 'Tool: faster\n\nDeployed: on MyLaptop\nStood-By: autofinish\n' > "$T/msg"
+check "$(cm --message-file "$T/msg")" 0 "Deployed: and Stood-By: are dropped with the trailers"
+check "$(cm --message-file "$T/nothing-here")" 2 "a file it cannot read: exit 2, not a finding"
+check "$(cm --subject 'Tool: x' --message-file "$T/msg")" 2 "--subject with --message-file: refused, not one ignored"
+
+git clone -q "$PUB2" "$T/gh2"; git -C "$T/gh2" config user.name gh; git -C "$T/gh2" config user.email 7+gh@users.noreply.github.com
+printf 'people:\n  - {name: "New Person"}\n' > "$T/gh2/CREDITS.yaml"; git -C "$T/gh2" add -A; git -C "$T/gh2" commit -qm "A credit"
+git -C "$T/gh2" push -q origin main
+P9=$(git -C "$PUB2" rev-parse main)
+check "$(chk2)" 0 "a credit merged on GitHub: check passes"
+has "$T/out" "no commit on origin/main's line has the public main's tree" "  and says the replay has no base"
+has "$T/out" "publish --pr squashes, one commit" "  so a publish squashes"
+check "$(prun2)" 0 "publish --pr after a credit merged on GitHub: the span squashes"
+SQ=$(git -C "$PUB2" for-each-ref --sort=-creatordate --format='%(refname)' refs/heads/claude/publish | head -1)
+check "$(git -C "$PUB2" rev-list --count "$P9..$SQ")" 1 "  one commit on the new public main"
+check "$(git -C "$PUB2" log -1 --format=%s "$SQ")" "Publish $(TZ=UTC date +%F)" "  under the run's title"
+has "$T/gh.body" "squashed: no private commit has the public main's tree" "  the body says why"
+python3 "$B/helloworld" publish "$R2" --squash > "$T/out" 2>&1
+check "$?" 2 "--squash without --pr: a usage error"
 
 echo
 [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }

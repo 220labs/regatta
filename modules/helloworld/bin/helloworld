@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""helloworld — publish an allowlisted squash of a private repo to its public twin, the privacy
-scan as the gate.
+"""helloworld — publish the allowlisted files of a private repo to its public twin, its curated
+commits replayed one by one, the privacy scan as the gate.
 
-    helloworld check   <repo> [--ref REF]   build the public tree, scan it, print; never pushes
+    helloworld check   <repo> [--ref REF]   build the public tree, scan it, print what a replay
+                                            would push (the dry run); never pushes
+    helloworld check-message --subject S [--body-file F] | --message-file F
+                                            one commit message as the replay would scan it, at
+                                            the private commit's making; reads no repo
     helloworld publish <repo> [-m MSG]      the same at origin/main, then the repo's name typed
                                             back, one commit, one push; the owner's terminal only
-    helloworld publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT]
-                                            the same tree as a pull request on the public repo,
-                                            from a claude/publish/* branch; the agent's verb;
-                                            the owner's merge is the publish
+    helloworld publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT] [--squash]
+                                            the commits since the public main's tree, replayed,
+                                            as a pull request on the public repo from a
+                                            claude/publish/* branch; the agent's verb; the
+                                            owner's merge is the publish
 
 Was `opensource` until 2026-10-18; the old names still read (below). The design ("don't make it
 too complex to update"), what the gate cannot see, and the post-mortem a hard push on a public
@@ -22,6 +27,8 @@ used), never from the working tree:
   .helloworld/remote          the public repo's URL
   .helloworld/identities      the addresses that may stand in the public history, one per line
                               (optional: the machine's git identity stands in, with a warning)
+  .helloworld/messages        `<private sha> <public subject>` per line (optional): the reviewed
+                              fix for a replayed subject the scan refuses
 `#` lines and blank lines are skipped in both lists. Nothing under `.helloworld/` is ever published.
 A ref without `.helloworld/` but with the old `.opensource/` is read from there, with a printed
 note to `git mv` it; neither folder is ever published.
@@ -81,9 +88,9 @@ outside the working tree (not .helloworld/: a file there would leave the primary
 every publish and need its own pull request); the next run's diff base is the public repo itself, which is the ground truth.
 
 `publish --pr` is the route that needs no typed name (the owner, 2026-10-09: "publishing through a
-PR is the right way"; auto-merge stays off): the same tree, built and scanned at origin/main, becomes
-one commit on top of the public main, dated in UTC like publish's, and goes up as a branch with a
-pull request against main. The owner's merge on GitHub is the publish, so an agent may run it, and
+PR is the right way"; auto-merge stays off): the same tree, built and scanned at origin/main, goes
+up as the replay below (or one commit on top of the public main, dated in UTC like publish's) on a
+branch with a pull request against main. The owner's merge on GitHub is the publish, so an agent may run it, and
 nothing here ever writes the public main. Everything a PR shows is public the moment it is
 pushed, drafts included, so the title (the commit's message too), the body, the branch name, the
 commit's identities and the gh login that opens the PR are scanned with the files, against the
@@ -109,6 +116,28 @@ the house shapes, not of GitHub's own settings, since a ready claude/* PR would 
 claude/publish/* branch is not proposed twice while that branch's PR is open; without an open PR
 the run exits 2 with the command to open one. A first publish has no main to be a pull request
 against, so it stays `publish`.
+
+The replay (the design's D1-B, the owner: "I want the 2 repos to be as similar as possible. We'll
+squash as a fallback, but will try to avoid it."): the base is the newest commit on origin/main's
+first-parent line whose allowlisted tree, built with that commit's own lists, is the public
+main's; every commit after it becomes one public commit — its allowlisted tree, its subject and
+body with every Co-Authored-By, Signed-off-by and Claude-Session line dropped by key (any case,
+any value), the publishing identity, its own author and committer dates at +0000, and the gate's
+Signed-off-by. Each is scanned as a publish of that commit alone would be, message included. A
+commit whose published files did not change stays private; a `wip:` or fixup checkpoint, or one
+whose tree fails, folds: the next that passes carries its changes, and a tail of folds goes up as
+one commit under the PR's title. A body that fails is dropped and the subject goes alone; a
+subject that fails refuses the run, and the fix is one reviewed line in .helloworld/messages. A
+message meets the whole word list and the tree's patterns, and its own (D2 of the S2 digest, the
+owner's A, 2026-10-20): a sha-like token (7-40 hex, word-bounded), a cross-repo ref (owner/repo#N,
+repo#N, a/b/c#N, any GitHub link into a repo) and a session id (a uuid, session_<id>);
+`check-message` runs that scan on one message when the private commit is made, so a finding meets
+its writer, and the replay still runs it at publish. No
+base (a credit merged on GitHub changed the public tree) squashes as before, and the PR body says
+so; --squash asks for it. The same span makes the same shas again, the dates being the private
+ones. `check` prints the plan, private shas and fold reasons included, which never go public; its
+refusals are printed there, not counted, so the check line stays the tree's verdict. Plain
+`publish` stays one commit: the first publish has no main to replay onto.
 
 The public repo's history is scanned too (the 220-film incident, 2026-10-10: GitHub authored a
 squash commit with the merging account's private address, and the gate saw only the tree and its own
@@ -210,6 +239,20 @@ EDL_KEY = re.compile(r"^\s*(?:-\s+)*[\"']?(?:lines|fix)[\"']?\s*:|[{,\[]\s*[\"']
 # "IMG_5814@496.json" is a transcript's file name, not an address (P2 of the design counted one):
 # digits after the @ and a file suffix. company.sh and example.md stay addresses.
 FILE_NAME_AT = re.compile(r"@\d+\.(?:json|ya?ml|md|txt|csv|tsv|srt|vtt|mp4|mov|m4a|wav|mp3|jpe?g|png|heic|pdf)$", re.I)
+# What a commit message carries and a file's text has every right to (D2 of the S2 digest, the
+# owner's A, 2026-10-20): a private commit's sha (a revert's "This reverts commit …" too), a
+# reference into another repo, a session's id. Scanned in replayed messages, the PR title and by
+# check-message only. A digit-only run of 7+ is a sha to this pattern: a false finding is the safe side.
+MESSAGE_PATTERNS = [
+    ("commit sha", re.compile(r"(?<![0-9A-Za-z_])[0-9a-f]{7,40}(?![0-9A-Za-z_])")),
+    # owner/repo#N, repo#N or a/b/c#N, never a bare #N (this repo's own PR); any link into a
+    # GitHub repo (a pull, an issue, a commit, a file, the repo itself): each names one
+    ("cross-repo ref", re.compile(r"(?<![\w.-])(?:[\w.-]+/)*[\w.-]+#\d+(?!\w)|"
+                                  r"github\.com/[\w.-]+/[\w.-]+(?:/[\w./#-]*[\w/#-])?", re.I)),
+    # A uuid (a session's, a plan's), or session_ and an id with a digit in it: `session_id` is a word
+    ("session id", re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9A-Za-z])|"
+                              r"session_(?=[0-9A-Za-z]*\d)[0-9A-Za-z]{8,}", re.I)),
+]
 CREDIT_NAME = re.compile(r"(?:^|[{,\s])name:\s*(?:\"([^\"]+)\"|'([^']+)'|([^,}\n#]+?))\s*(?:[,}#]|$)")
 MASK_IN_AGENT = {"private word", "e-mail address"}
 # A workflow that lands a PR by itself, by its name or by what it runs (review 2026-10-09:
@@ -405,6 +448,22 @@ def text_hits(text, words_rx, skip=(), only=None):
 
 def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
+
+
+def message_hits(text):
+    """MESSAGE_PATTERNS' findings in text, as text_hits gives them."""
+    return [(m.start(), m.end(), cat, m.group()) for cat, rx in MESSAGE_PATTERNS for m in rx.finditer(text)]
+
+
+def message_scan(msg, words_rx):
+    """A commit message's findings as (line, category, shown): the tree's patterns and the words
+    given, then the message's own. A hit on the same span as an earlier one, or inside a longer
+    one (a uuid's first block is sha-like), is not repeated."""
+    found = {}
+    for a, b, cat, txt in text_hits(msg, words_rx) + message_hits(msg):
+        found.setdefault((a, b), (cat, txt))
+    keep = [(a, b) for a, b in found if not any(c <= a and b <= d and d - c > b - a for c, d in found)]
+    return [(line_of(msg, a), *found[(a, b)]) for a, b in sorted(keep)]
 
 
 def scan(repo, paths, files, ex, words, message=None, idents=(), meta=()):
@@ -753,6 +812,200 @@ def diffstat(b, tree, parent):
     return True
 
 
+# The replay (the design's D1-B): the private commits since the base go public one by one.
+# A checkpoint the curation would have rewritten away never speaks for itself: it folds.
+FOLDS = re.compile(r"(?:wip\b|fixup!|squash!|amend!)", re.I)
+# Dropped by key, in any case and whatever the value (`Co-authored-by`, `… (1M context) <…>`);
+# the gate's own Signed-off-by is added back after. `Deployed:` and `Stood-By:` are the
+# workflow's own lines: what went live on which machine, which run stood by a doc.
+DROPPED = re.compile(r"^[ \t]*(?:co-authored-by|signed-off-by|claude-session|deployed|stood-by)[ \t]*:.*(?:\n|$)",
+                     re.I | re.M)
+
+
+def public_message(raw):
+    """A private message as (subject, body) for the public commit: the agent trailers and every
+    Signed-off-by dropped, blank lines at either end trimmed."""
+    lines = DROPPED.sub("", raw).strip("\n").split("\n")
+    return lines[0].strip(), "\n".join(lines[1:]).strip("\n")
+
+
+def public_tree_at(repo, commit, cache):
+    """The allowlisted tree of one private commit, read with that commit's own lists, as a dict
+    (tree, files, paths, bad_allow, conf), or None when the commit has no lists (before the repo
+    opted in). Trees are cached by their entries: most commits leave the published files alone."""
+    files = entries(repo, commit)
+    conf = conf_dir(files)
+    if f"{conf}/allowlist.txt" not in files:
+        return None
+    paths, bad = allowlist(blob(repo, files[f"{conf}/allowlist.txt"][2]).decode(errors="replace"), files)
+    key = tuple((p, files[p][0], files[p][2]) for p in sorted(paths))
+    if key not in cache:
+        cache[key] = write_tree(repo, paths, files) if paths else None
+    return dict(tree=cache[key], files=files, paths=paths, bad_allow=bad, conf=conf)
+
+
+def overrides(b):
+    """.helloworld/messages at the ref: `<private sha, 7+ hex> <public subject>` per line, the
+    reviewed fix for a subject the scan refuses. {sha prefix: subject}."""
+    path = f"{conf_dir(b['files'])}/messages"
+    if path not in b["files"]:
+        return {}
+    out = {}
+    for l in lines_of(blob(b["repo"], b["files"][path][2]).decode()):
+        sha, _, subject = l.strip().partition(" ")
+        if not re.fullmatch(r"[0-9a-f]{7,40}", sha) or not subject.strip():
+            raise Refused(f"{path}: '{l.strip()}' is not <private sha> <public subject>")
+        out[sha] = subject.strip()
+    return out
+
+
+def replay_plan(b, parent):
+    """What `publish --pr` would push on top of the public main `parent`, decided commit by
+    commit and written nowhere. The base is the newest commit on the ref's first-parent line whose
+    allowlisted tree is the public main's (the design: matched 6 of 7 on 220-film); without one —
+    a change merged on GitHub, or a ref that never had that tree — the plan says squash.
+
+    Each commit after the base, oldest first, is one step:
+      private  its published files equal the last public commit's: nothing to show, it stays here
+      fold     a `wip:`/fixup checkpoint, its lists hold a file, exemption or credit the reviewed
+               ref took back, or its tree fails the scan (with its own lists, as a publish of that
+               commit would): the next commit that passes carries its changes
+      commit   one public commit: that tree, the message with the trailers dropped, its dates.
+               A body that fails (message_scan: a private word, a pattern, a sha, a cross-repo
+               ref, a session id) is dropped and the subject goes alone; a subject that fails
+               refuses the run unless .helloworld/messages gives the commit another
+    A tail of folds with no passing commit after it goes up as one commit under the run's title.
+    Returns dict(base, steps, refusals, unused); a step is a dict(sha, kind, why, tree, subject,
+    body, dates, folded)."""
+    repo = b["repo"]
+    target = git(repo, "rev-parse", f"{parent}^{{tree}}").stdout.strip()
+    line = git(repo, "rev-list", "--first-parent", b["head"]).stdout.split()
+    cache, trees, base = {}, {}, None
+    for c in line:  # newest first; stops at the base or where the lists begin
+        t = public_tree_at(repo, c, cache)
+        if t is None:
+            break
+        trees[c] = t
+        if t["tree"] == target:
+            base = c
+            break
+    plan = dict(base=base, steps=[], refusals=[], unused=[])
+    if base is None:
+        return plan
+    span = line[:line.index(base)][::-1]
+    fixes, used_fix = overrides(b), set()
+    objs = read_objects(repo, span)
+    # The reviewed ref's lists bound every public tree: a file, exemption or credit it took back
+    # never goes up in an earlier commit (the squash it replaces could not publish one either).
+    head_credits = set(credits(blob(repo, b["files"]["CREDITS.yaml"][2]).decode(errors="replace"))
+                       if "CREDITS.yaml" in b["paths"] else [])
+    head_paths, head_ex = set(b["paths"]), set(b["ex"])
+    every_word = words_regex(b["words"])
+    last, pending = target, []
+    for c in span:
+        headers, raw = split_object(objs[c][1])
+        dates = {k: v.rsplit(" ", 2)[1] for k, v in headers if k in ("author", "committer")}
+        subject, body = public_message(raw)
+        t = trees[c]
+        step = dict(sha=c, kind="", why="", tree=t["tree"], subject=subject, body=body, dates=dates, folded=[])
+        plan["steps"].append(step)
+        if t["tree"] == last:  # folds before it, if any, were undone: nothing of theirs goes up
+            step.update(kind="private", why="no published file changed")
+            pending = []
+            continue
+        if FOLDS.match(subject):
+            step.update(kind="fold", why="a checkpoint")
+            pending.append(step)
+            continue
+        ex = []
+        try:
+            if f"{t['conf']}/exemptions.txt" in t["files"]:
+                ex = exemptions(blob(repo, t["files"][f"{t['conf']}/exemptions.txt"][2]).decode())
+        except (Refused, UnicodeDecodeError):
+            t["bad_allow"] = t["bad_allow"] + ["its exemptions do not read"]
+        own_credits = set(credits(blob(repo, t["files"]["CREDITS.yaml"][2]).decode(errors="replace"))
+                          if "CREDITS.yaml" in t["paths"] else [])
+        wider = len(set(t["paths"]) - head_paths) + len(set(ex) - head_ex) + len(own_credits - head_credits)
+        if wider:
+            step.update(kind="fold", why=f"its lists hold {wider} entr(ies) {b['ref']} took back")
+            pending.append(step)
+            continue
+        fix = next((v for k, v in fixes.items() if c.startswith(k)), None)
+        if fix:
+            used_fix.update(k for k in fixes if c.startswith(k))
+            subject = step["subject"] = fix
+        msg = subject + ("\n\n" + body if body else "")
+        hits, _used, bad_ex = scan(repo, t["paths"], t["files"], ex, b["words"])
+        tree_bad = len(t["bad_allow"]) + len(bad_ex) + (not t["paths"]) + len(hits)
+        if tree_bad:
+            step.update(kind="fold", why=f"its tree has {tree_bad} finding(s)")
+            pending.append(step)
+            continue
+        # The whole word list, a credit or not; and the message's own patterns (D2): a sha, a
+        # cross-repo ref or a session id refuses a subject and drops a body, as a private word does.
+        msg_hits = message_scan(msg, every_word)
+        for n, cat, txt in msg_hits:
+            if n == 1:
+                plan["refusals"].append((c, cat, txt))
+        if any(n > 1 for n, _, _ in msg_hits):
+            step.update(body="", why="its body has findings: the subject goes alone")
+        step.update(kind="commit", folded=pending)
+        last, pending = t["tree"], []
+    if pending and pending[-1]["tree"] != last:  # a tail of folds: one commit under the run's title
+        tail = pending[-1]
+        plan["steps"].append(dict(sha=tail["sha"], kind="tail", why="the folds at the end", tree=tail["tree"],
+                                  subject=None, body="", dates=tail["dates"], folded=pending[:-1]))
+    plan["unused"] = [k for k in fixes if k not in used_fix]
+    return plan
+
+
+def replay_counts(plan):
+    kinds = [s["kind"] for s in plan["steps"]]
+    return dict(commits=kinds.count("commit") + kinds.count("tail"), folded=kinds.count("fold"),
+                private=kinds.count("private"), tail=kinds.count("tail"),
+                bodies=sum(1 for s in plan["steps"] if s["kind"] == "commit" and s["why"]))
+
+
+def print_replay(b, plan, parent):
+    """The plan as the owner reads it, here only (private shas and fold reasons never go public)."""
+    rxs = words_regex(b["words"])
+    if plan["base"] is None:
+        print(f"  replay: no commit on {b['ref']}'s line has the public main's tree ({parent[:7]}) — "
+              "a change merged on GitHub, or a ref that never had it: publish --pr squashes, one commit")
+        return
+    n = replay_counts(plan)
+    print(f"  replay: base {plan['base'][:7]} (its published files are the public main's, {parent[:7]}); "
+          f"{n['commits']} commit(s) would go up, {n['folded']} folded, {n['private']} private only:")
+    for s in plan["steps"]:
+        if s["kind"] in ("commit", "tail"):
+            said = s["subject"] if s["kind"] == "commit" else "(the run's title)"
+            extra = f" [{s['why']}]" if s["why"] and s["kind"] == "commit" else ""
+            extra += f" [carries {len(s['folded'])} folded]" if s["folded"] else ""
+            print(mask_words(f"    {s['sha'][:7]} → {said}{extra}", rxs))
+        else:
+            print(mask_words(f"    {s['sha'][:7]}   {s['kind']}: {s['why']}", rxs))
+    for c, cat, txt in plan["refusals"]:
+        print(mask_words(f"  replay REFUSED: {c[:7]}'s subject has a {cat} — {txt}; the fix is one reviewed line in "
+                         f".helloworld/messages: {c[:12]} <a public subject>", rxs))
+    for k in plan["unused"]:
+        print(f"  replay note: .helloworld/messages line {k} names no commit of this span — public already, or "
+              "not on this ref; it can go")
+
+
+def replay_chain(b, plan, parent, title):
+    """The plan's public commits, made with commit-tree (objects only, no ref), each a child of the
+    last: the publishing identity, the private dates at +0000 — so the same span makes the same
+    shas again — and the gate's Signed-off-by. The tip."""
+    tip = parent
+    for s in plan["steps"]:
+        if s["kind"] not in ("commit", "tail"):
+            continue
+        msg = (s["subject"] + ("\n\n" + s["body"] if s["body"] else "")) if s["kind"] == "commit" else title
+        env = {"GIT_AUTHOR_DATE": f"{s['dates']['author']} +0000", "GIT_COMMITTER_DATE": f"{s['dates']['committer']} +0000"}
+        tip = git(b["repo"], "commit-tree", s["tree"], "-p", tip, "-m", signed_off(msg, b["idents"]), env=env).stdout.strip()
+    return tip
+
+
 def identities(repo):
     """The two identities a commit made here would carry, without the timestamp."""
     out = []
@@ -807,9 +1060,55 @@ def cmd_check(args):
         return 1 if not clean else 2
     if clean:
         tree = write_tree(b["repo"], b["paths"], b["files"])
-        diffstat(b, tree, parent)
+        if diffstat(b, tree, parent) and parent:
+            # The dry replay: what publish --pr would push. Its refusals are printed, not counted:
+            # the exit code stays the tree's and the history's, so a work branch's checkpoint
+            # subjects, which /finish rewrites, never turn a check line red.
+            print_replay(b, replay_plan(b, parent), parent)
         print(f"  clean: {len(b['paths'])} files, tree {tree[:7]}. Nothing was pushed.")
     return 0 if clean else 1
+
+
+def cmd_check_message(args):
+    """One commit message as the replay would treat it, at the moment the private commit is made
+    (the owner, D2 of the S2 digest: "any repo that has a public twin applies these rules at
+    private commit creation before PR merge … publishing should still check"). The trailers are
+    dropped first, as the replay drops them; then the subject meets message_scan (a finding: the
+    replay refuses it) and the body too (a finding: the replay drops it). The whole word list, no
+    credit and no exemption. Exit 0 clean, 1 a finding either way, 2 no word list or no message."""
+    def read(f):
+        try:
+            return sys.stdin.read() if f == "-" else Path(f).read_text()
+        except (OSError, UnicodeDecodeError) as e:  # exit 2, never a traceback's 1 (a finding)
+            raise Refused(f"cannot read {f}: {e}")
+    if args.message_file and (args.subject is not None or args.body_file):
+        raise Refused("give --subject [--body-file F] or --message-file F, not both")
+    if args.message_file:
+        # The file a commit-msg hook gets still holds git's comment block ("# On branch …"),
+        # which git strips after the hook: cut at the scissors line, then drop the comments.
+        raw = read(args.message_file).split("# ------------------------ >8 ------------------------")[0]
+        raw = "\n".join(l for l in raw.split("\n") if not l.startswith("#"))
+    elif args.subject is not None:
+        body = read(args.body_file) if args.body_file else ""
+        raw = args.subject + ("\n\n" + body if body.strip() else "")
+    else:
+        raise Refused("give --subject [--body-file F] or --message-file F")
+    subject, body = public_message(raw)
+    if not subject:
+        raise Refused("the message has no subject")
+    _p, words = wordlist()
+    rx = words_regex(words)
+    msg = subject + ("\n\n" + body if body else "")
+    hits = message_scan(msg, rx)
+    for n, cat, txt in hits:
+        where = "subject" if n == 1 else f"body:{n - 2}"
+        said = "the replay refuses this subject" if n == 1 else "the replay drops this body"
+        print(mask_words(f"  {where}: {cat} — {txt} ({said})", rx))
+    if hits:
+        print("  rewrite it before the commit lands: a public twin replays the subject and body as written")
+        return 1
+    print(f"  clean: the subject{' and body' if body else ''} would go public as written")
+    return 0
 
 
 def cmd_publish(args):
@@ -924,17 +1223,26 @@ def gh(*args, cwd=None):
         return subprocess.CompletedProcess(["gh"], 127, "", "gh is not installed")
 
 
-def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=False):
-    """What the PR says, built from the scan's verdict alone: everything in it is public."""
+def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=False, shape=None):
+    """What the PR says, built from the scan's verdict alone: everything in it is public. `shape`
+    is how the files go up: replay counts (replay_counts), or the reason for a squash."""
     per_file = {}
     for f, _s, c in used:
         per_file[f] = per_file.get(f, 0) + c
-    out = [f"Publishes {n_files} allowlisted files from the private workshop as one commit on main "
+    if isinstance(shape, dict):
+        how = (f"as {shape['commits']} commit{'s' if shape['commits'] != 1 else ''} replayed from the private history "
+               "one by one, each scanned on its own")
+        how += f", {shape['folded']} folded into the commit after {'them' if shape['folded'] != 1 else 'it'}" if shape["folded"] else ""
+        how += f", {shape['bodies']} with the subject alone" if shape["bodies"] else ""
+    else:
+        how = "as one commit on main" + (f" (squashed: {shape})" if shape else "")
+    out = [f"Publishes {n_files} allowlisted files from the private workshop {how} "
            f"(tree {tree[:7]}). Merging this pull request is the publish; nothing has reached main yet.", ""]
     if note:
         out += [note.strip(), ""]
-    out.append(f"Privacy scan (`helloworld`, {dt.datetime.now(dt.timezone.utc).date().isoformat()}): {n_files} files, the title, this "
-               "body, the branch name, the commit identities"
+    out.append(f"Privacy scan (`helloworld`, {dt.datetime.now(dt.timezone.utc).date().isoformat()}): {n_files} files, "
+               + ("each commit's tree and message, " if isinstance(shape, dict) else "")
+               + "the title, this body, the branch name, the commit identities"
                + (" (the PR's author is already public in this org)" if author_public else " and the PR's author")
                + "; 0 findings.")
     if per_file:
@@ -977,9 +1285,19 @@ def cmd_publish_pr(args):
     branches = [l.split() for l in git(clone, "for-each-ref", "--format=%(refname:lstrip=3) %(tree) %(objectname)",
                                         f"refs/remotes/origin/{PR_PREFIX.rstrip('/')}").stdout.splitlines() if l]
     # A proposal of this tree counts only on top of the current public main: a merged branch
-    # nobody deleted must not block a take-back to its tree (review 2026-10-09).
+    # nobody deleted must not block a take-back to its tree (review 2026-10-09). On top: the main
+    # is an ancestor, so a replay of several commits counts as a squash of one does; a branch
+    # GitHub rebased onto main is not, its shas being new.
+    # Every tree on such a branch goes public on merge, so it counts only when its trees are the
+    # ones this run would push, each scanned now: a word added to the list since it was pushed
+    # must not ride in on an earlier commit's tree (review 2026-10-20).
+    plan = None if args.squash else replay_plan(b, parent)
+    pushed = ([s["tree"] for s in plan["steps"] if s["kind"] in ("commit", "tail")]
+              if plan and plan["base"] is not None else [tree])
     same = [n for n, t, c in branches
-            if t == tree and git(clone, "rev-parse", "-q", "--verify", f"{c}^", check=False).stdout.strip() == parent
+            if t == tree and c != parent
+            and not git(clone, "merge-base", "--is-ancestor", parent, c, check=False).returncode
+            and git(clone, "log", "--first-parent", "--reverse", "--format=%T", f"{parent}..{c}").stdout.split() == pushed
             # and only a signed one: a proposal the gate pushed before it signed fails the DCO check
             # for good, so a run replaces it rather than pointing at it (review 2026-10-10).
             and author_trailer(b["idents"]) in git(clone, "log", "-1", "--format=%B", c).stdout.splitlines()]
@@ -1004,6 +1322,16 @@ def cmd_publish_pr(args):
         print(f"  branch {same[0]} already has exactly this tree but {why}. Nothing was pushed.\n"
               f"  open it with: gh pr create --repo {slug} --base main --head {same[0]}")
         return 2
+    # The replay (D1-B), or a squash: on request (--squash), or when no private commit has the
+    # public main's tree. A subject the scan refuses is a finding like any other: nothing goes up.
+    if plan and plan["base"] is None:
+        shape, plan = "no private commit has the public main's tree, so the history since cannot be replayed", None
+    elif plan:
+        shape = replay_counts(plan)
+        hits += [(f"replay {c[:12]} subject", cat, f"{txt} (the fix: a line `{c[:12]} <a public subject>` "
+                  "in .helloworld/messages)") for c, cat, txt in plan["refusals"]]
+    else:
+        shape = "on request"
     taken = {n for n, _t, _c in branches}
     branch, k = f"{PR_PREFIX}{today}-{topic}", 2
     while branch in taken:
@@ -1041,10 +1369,13 @@ def cmd_publish_pr(args):
         if r.returncode:
             print(f"  PR author: the search for a public merged PR failed, so the login is scanned "
                   f"({(r.stderr or 'no answer').strip()[:200]})")
-    body = pr_body(len(b["paths"]), tree, parent, body_stat, removed, used, args.note, bool(public_as))
+    body = pr_body(len(b["paths"]), tree, parent, body_stat, removed, used, args.note, bool(public_as), shape)
     # The identities' address is the one the owner chose to publish (as publish's): the address
     # shape is not a finding there, a private word (a machine, an account) is.
     meta = [("PR title", title, ()), ("PR body", body, ()), ("PR branch", branch, ())]
+    # The title is a commit's message too (a squash's, a tail of folds'): the message patterns as well.
+    hits += [("PR title", cat, txt) for _a, _b, cat, txt in message_hits(title)]
+    hits += [("PR note", cat, txt) for _a, _b, cat, txt in message_hits(args.note or "")]
     meta += [(f"commit {k}", who, {"e-mail address"}) for k, who in idents]
     # The commit's Signed-off-by trailer repeats the author identity (the address is the owner's
     # chosen one, as above); scanned as written so the message that goes public is covered whole.
@@ -1070,13 +1401,22 @@ def cmd_publish_pr(args):
         return 1
     print(f"  diff against the public main ({parent[:7]}):")
     print("\n".join(mask_words("    " + l, words_regex(b["words"])) for l in stat))
-    print(f"  commit: \"{title}\", a child of {parent[:7]}, dated in UTC")
+    if plan:
+        print_replay(b, plan, parent)
+        print(f"  commits: each a child of the last from {parent[:7]}, its private dates in UTC")
+    else:
+        print(f"  commit: \"{title}\", a child of {parent[:7]}, dated in UTC (squashed: {shape})")
     for k, who in idents:
         print(f"    {k}: {who}")
     print(f"    trailer: {author_trailer(idents) or 'none — git has no author identity, so the commit will fail'}")
-    utc = f"{int(time.time())} +0000"
-    sha = git(b["repo"], "commit-tree", tree, "-p", parent, "-m", signed_off(title, idents),
-              env={"GIT_AUTHOR_DATE": utc, "GIT_COMMITTER_DATE": utc}).stdout.strip()
+    if plan:
+        sha = replay_chain(b, plan, parent, title)
+    else:
+        utc = f"{int(time.time())} +0000"
+        sha = git(b["repo"], "commit-tree", tree, "-p", parent, "-m", signed_off(title, idents),
+                  env={"GIT_AUTHOR_DATE": utc, "GIT_COMMITTER_DATE": utc}).stdout.strip()
+    if git(b["repo"], "rev-parse", f"{sha}^{{tree}}").stdout.strip() != tree:
+        raise Refused(f"the replay ends on another tree than {b['ref']}'s — nothing was pushed")
     # The clone fetches the commit by a ref of the gate's own, which lives for this fetch only.
     git(b["repo"], "update-ref", PR_REF, sha)
     try:
@@ -1123,20 +1463,28 @@ def main(argv=None):
     c = sub.add_parser("check", help="build and scan; never pushes")
     c.add_argument("repo")
     c.add_argument("--ref", default="origin/main", help="the commit to build from (default: origin/main, fetched)")
+    m = sub.add_parser("check-message", help="scan one commit message as the replay would; never reads a repo")
+    m.add_argument("--subject", help="the subject line")
+    m.add_argument("--body-file", help="the body, from a file (- for stdin)")
+    m.add_argument("--message-file", help="the whole message, subject first (- for stdin; git log -1 --format=%%B)")
     p = sub.add_parser("publish", help="check origin/main, then commit and push (the owner's terminal only); "
                                        "--pr: a pull request instead (an agent may run it)")
     p.add_argument("repo")
     p.add_argument("--pr", action="store_true", help="push a claude/publish/* branch and open a PR; never main")
-    p.add_argument("-m", "--message", help="the public commit's message, and with --pr the PR's title "
-                                           "(default: Published <date>; with --pr, Publish <date>)")
+    p.add_argument("-m", "--message", help="the public commit's message; with --pr the PR's title, and the message "
+                                           "of a squash or a tail of folds (default: Published <date>; with --pr, "
+                                           "Publish <date>)")
     p.add_argument("--topic", help="--pr: the branch's topic (default: publish); scanned")
     p.add_argument("--note", help="--pr: a paragraph for the PR body — what this publish carries; scanned")
+    p.add_argument("--squash", action="store_true", help="--pr: one commit, as before the replay (D1-A)")
     args = ap.parse_args(argv)
-    if args.verb == "publish" and not args.pr and (args.topic or args.note):
-        ap.error("--topic and --note go with --pr")
+    if args.verb == "publish" and not args.pr and (args.topic or args.note or args.squash):
+        ap.error("--topic, --note and --squash go with --pr")
     try:
         if args.verb == "check":
             return cmd_check(args)
+        if args.verb == "check-message":
+            return cmd_check_message(args)
         return cmd_publish_pr(args) if args.pr else cmd_publish(args)
     except Refused as e:
         print(f"helloworld {args.verb}: {e}", file=sys.stderr)

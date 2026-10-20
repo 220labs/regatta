@@ -16,8 +16,8 @@ whether the core, the word list and the pre-push guard are found.
 
 ## The publish gate
 
-`helloworld` puts a private repo's allowlisted files on its public twin as one squash commit,
-with a privacy scan as the gate. A repo opts in with `.helloworld/allowlist.txt`, `exemptions.txt`,
+`helloworld` puts a private repo's allowlisted files on its public twin, its curated commits
+replayed one by one (one squash commit only as the fallback), with a privacy scan as the gate. A repo opts in with `.helloworld/allowlist.txt`, `exemptions.txt`,
 `remote` and `identities` (the old `.opensource/` is still read, with a note to rename it); the
 private word list lives outside every repo: `$HELLOWORLD_WORDLIST`, else `$OPENSOURCE_WORDLIST`,
 else `helloworld/wordlist.txt` in the regatta config dir (`$REGATTA_CONFIG`, else `.config/regatta`
@@ -26,13 +26,32 @@ How the scan works, line by line: the tool's header. Every pattern has a planted
 `tests/helloworld.sh`. `publish --pr` pushes from a clone guarded by the wharf module's pre-push
 hook (`templates/code/git-hooks/pre-push`, found through the core); without wharf it refuses.
 
-## The three verbs
+## The verbs
 
 | Verb | Who | What reaches the public repo |
 | --- | --- | --- |
-| `check <repo> [--ref R]` | any session | nothing: build, scan, diff-stat against the public main |
-| `publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT]` | an agent (the usual route) | a `claude/publish/<date>-<topic>` branch and a PR; **the owner's merge is the publish**; auto-merge off |
+| `check <repo> [--ref R]` | any session | nothing: build, scan, diff-stat against the public main, and the dry replay |
+| `publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT] [--squash]` | an agent (the usual route) | a `claude/publish/<date>-<topic>` branch and a PR, the replayed commits on it; **the owner's merge is the publish**; auto-merge off |
+| `check-message --subject S [--body-file F]`, `--message-file F` | any session, at the private commit's making (`/finish`) | nothing: one message scanned as the replay would scan it; exit 1 when the replay would refuse its subject or drop its body |
 | `publish <repo>` | the owner, in their own terminal (refuses `CLAUDECODE` and a non-terminal stdin) | the public `main`, after the repo's name is typed back; the first publish, and any later one the owner prefers |
+
+**The replay** (2026-10-19; the design's D1-B, the owner: "I want the 2 repos to be as similar as
+possible. We'll squash as a fallback, but will try to avoid it."). The base is the newest private
+commit whose allowlisted tree is the public main's. Each commit after it goes up as one public
+commit: its allowlisted tree, its subject and body less every `Co-Authored-By`, `Signed-off-by` and
+`Claude-Session` line and the workflow's `Deployed:` and `Stood-By:` (by key, any case or value), the publishing identity, its own dates at
+`+0000`, the gate's `Signed-off-by`. Each is scanned on its own. A commit that changes no published
+file stays private; a `wip:` checkpoint, a commit whose tree fails, or one whose lists hold a file,
+exemption or credit the reviewed ref took back folds into the next that passes; a body that fails is dropped and the subject goes alone; a subject that fails refuses the
+run until `.helloworld/messages` gives that commit a reviewed subject (`<private sha> <subject>`).
+A message meets the whole word list and the tree's patterns, and its own (2026-10-20, the owner's
+answer to D2 of the S2 digest): a sha-like token (7-40 hex, word-bounded: a revert's "This reverts
+commit …" too), a cross-repo ref (`owner/repo#N`, `repo#N`, `a/b/c#N`, any GitHub link into a repo; a bare
+`#N` passes, though on the twin it links to the twin's own number) and a session id (a uuid, `session_<id>`). The owner wants a repo with a
+public twin to meet these rules when the private commit is made, not at publish: `check-message`
+is that scan on one message (a commit-msg hook's file too: git's `#` comment block is cut first), for `/finish` to call; the replay still runs it. No base — a change merged on GitHub — squashes as before, and the PR body says so; `--squash`
+asks for it. `check` prints the plan; its refusals there are printed, not counted, so a work
+branch's checkpoints never turn a check line red.
 
 Publishing goes through a PR (the owner, 2026-10-09: "publishing through a PR is the right way, PRs
 from myself can eventually auto-merge after checks, but we can keep it off for now"). Everything a PR
