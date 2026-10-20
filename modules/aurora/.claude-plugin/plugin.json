@@ -1,0 +1,7 @@
+{
+  "name": "aurora",
+  "version": "0.1.0",
+  "description": "Aurora Borealis, the night job: the weekly loop's sections (branches, charts, dream) run unattended while the owner sleeps, and /embark, the Monday sitting that applies what they propose.",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

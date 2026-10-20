@@ -34,6 +34,11 @@
       "name": "lighthouse",
       "source": "./modules/lighthouse",
       "description": "Upkeep of the machines: a health pass, declared settings, several logins, shared-drive publishing, folder trust, tiling, and the guards around secrets and logins."
+    },
+    {
+      "name": "aurora",
+      "source": "./modules/aurora",
+      "description": "Aurora Borealis, the night job: the weekly loop's branches, charts and dream sections, and /embark, the Monday sitting."
     }
   ]
 }

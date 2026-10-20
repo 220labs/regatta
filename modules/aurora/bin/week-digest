@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""What the owner actually typed this week, per project — the raw material the dream (Aurora) reads.
+
+    week-digest [--days 7] [--max-chars 400]
+
+A week of transcripts is hundreds of megabytes of tool output; the signal the dream needs is
+the human side: requests, corrections, preferences, "remember this", "never do that again".
+This prints only human-typed prompts (origin kind "human", IDE context blocks stripped),
+grouped by project and session, oldest first, each cut to --max-chars. It reads the archive
+(~/projects/transcripts, kept past Claude Code's 30-day sweep) and the live transcript
+directory, de-duplicated by session id. A fork's prompts at or before its `forked-from` cutoff
+are its source's and are skipped (bin/fork_claude_session.py; teleport design E1). Read-only.
+
+Lines that look like corrections are marked `✱` so the dream can count repeats: they contain
+"again", "still", "I told you", "don't", "never", "stop", "wrong", "remember", "always".
+"""
+import datetime as dt
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+SOURCES = [HOME / "projects" / "transcripts", HOME / ".claude" / "projects"]
+IDE_BLOCK = re.compile(r"<(ide_\w+)>.*?</\1>", re.S)
+COMMAND = re.compile(r"<command-message>.*?</command-message>\s*<command-name>(.*?)</command-name>"
+                     r"(?:\s*<command-args>(.*?)</command-args>)?", re.S)
+CORRECTION = re.compile(r"\b(again|still|i told you|don'?t|never|stop|wrong|remember|always)\b", re.I)
+
+
+def arg(name, default):
+    return type(default)(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
+
+
+def prompts(path):
+    sid = title = cut = None
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            sid = sid or r.get("sessionId")
+            if r.get("type") == "forked-from":
+                cut = r.get("cutoff")
+                continue
+            if r.get("type") == "summary" and r.get("summary"):
+                title = r["summary"]
+            if r.get("type") != "user" or (r.get("origin") or {}).get("kind") != "human":
+                continue
+            c = (r.get("message") or {}).get("content")
+            text = c if isinstance(c, str) else " ".join(
+                b.get("text", "") for b in (c or []) if isinstance(b, dict) and b.get("type") == "text")
+            text = IDE_BLOCK.sub("", text)
+            text = COMMAND.sub(lambda m: f"{m.group(1)} {m.group(2) or ''}".strip(), text).strip()
+            if text:
+                out.append((r.get("timestamp") or "", text))
+    if cut:  # the record follows what it describes, so the skip waits for the whole file
+        out = [(ts, text) for ts, text in out if ts > cut]
+    return sid, title, out
+
+
+def project_of(path):
+    """Archive: transcripts/<repo>/…; live: projects/<slug>/… — the slug's last segment,
+    with a worktree suffix folded back into its repo."""
+    if path.parts[-3] == "transcripts":
+        return path.parent.name
+    slug = path.parent.name
+    slug = slug.split("--claude-worktrees-")[0]
+    return slug.rsplit("-projects-", 1)[-1] if "-projects-" in slug else slug
+
+
+def main():
+    days = arg("--days", 7)
+    limit = arg("--max-chars", 400)
+    cutoff = time.time() - days * 86400
+    seen, by_project = set(), {}
+    for root in SOURCES:
+        for f in sorted(root.glob("*/*.jsonl")):
+            if f.stat().st_mtime < cutoff:
+                continue
+            sid, title, ps = prompts(f)
+            key = sid or f.stem
+            if key in seen or not ps:
+                continue
+            seen.add(key)
+            by_project.setdefault(project_of(f), []).append((ps[0][0], key, title, ps))
+    total = sum(len(s[3]) for v in by_project.values() for s in v)
+    marked = 0
+    print(f"# Week digest — last {days} days, {len(seen)} sessions, {total} prompts "
+          f"({dt.date.today().isoformat()})\n")
+    for project in sorted(by_project):
+        print(f"## {project}\n")
+        for start, key, title, ps in sorted(by_project[project]):
+            print(f"### {start[:16].replace('T', ' ')} · {key[:8]}" + (f" · {title}" if title else ""))
+            for ts, text in ps:
+                flat = " ".join(text.split())
+                mark = "✱ " if CORRECTION.search(flat) else "- "
+                marked += mark == "✱ "
+                print(f"{mark}{flat[:limit]}{' […]' if len(flat) > limit else ''}")
+            print()
+    print(f"_{marked} prompts marked ✱ as possible corrections — read them, don't count them blindly._")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,610 @@
+#!/usr/bin/env bash
+# weekly-run <aurora|sextant> <cwd> — what launchd runs for the night loop (bootstrap.sh --schedule).
+#
+# aurora runs nightly; `due` below names tonight's sections and a night with none due ends here,
+# before `claude` starts, so a quiet night costs nothing. AURORA_SECTIONS overrides the list
+# (the suite, a hand run). `dream` is the old job name: a plist written before 2026-10-03 still
+# says it, and it runs Aurora's dream section (docs/record/regatta-2026-10-03.md).
+#
+# Unattended, in `auto` mode, as dispatch (docs/record/run-seed-permissions-2026-10-04.md says why):
+# the classifier and checkpoint.py decide; the allowlist names the scripts the skills
+# call so the classifier is not asked about them, and test_hooks.sh pins the mode. No push by the
+# run (this script pushes the charts dry run's branch afterwards, charts_land below), no
+# deploy, nothing outside the two knowledge repos written by intent — Aurora's dream section only
+# writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
+# then EnterWorktree: the same way every session reaches one — coding-on-workflow 3c, probed
+# under claude -p on 2026-09-26) and lands them with knowledge-commit --in.
+#
+# Then this script checks the landing itself (DESIGN D19 (a)): the entry must be on main.
+# Sextant's backstop: a run that wrote its entry but never launched it (killed, slept, out of
+# turns) leaves the worktree sextant-<date>; it is launched here with --in. The log ends in
+# `LAUNCHED <sha>` or `FAILED <why>`, and a failure posts one bulletin line, so a Monday with no
+# entry is said rather than discovered. Then, for sextant, `UNLAUNCHED <worktree>` when what it
+# adopted (the -changes worktree, launched only reviewed) is still not on main. `caffeinate -i` keeps idle sleep from pausing a run
+# (it cannot stop a closed lid on battery — a physical limit). WEEKLY_CLAUDE replaces the
+# `claude` command for the suite's rehearsals.
+#
+# The order of Aurora's night (docs/record/aurora-sequence-2026-10-04.md): mechanical and cheap
+# first, the Fable judgement last, so the dream reads what the others left. 1 tend — bin/tend,
+# every repo cloned here, zero tokens: what a session start does, for the repos no session
+# opens (E1). 2 classify — `bin/repos --branches --fetch --classify --reap`, the week's one
+# archive of superseded branches, its report kept for the branches section. 3 branches — the
+# section's judgement of what classify left — skipped on a quiet week, when the report has no
+# C3–C6 and no probably-landed line: this script writes the section's log.md line itself, and
+# no Fable session starts. 4 charts. 5 review (planned). 6 dream — each section a `claude -p` of
+# its own, so one that exits costs only itself, and one that hangs is killed at WEEKLY_CAP
+# seconds (aurora 3600 per section, 3× the longest dream; sextant 10800, its 68 min ×2.6) —
+# macOS has no `timeout`, so `capped` is a Python process-group kill (bin/tend's way). Each step
+# that fails logs `FAILED …`, posts one bulletin line and the next still runs; a run past
+# midnight accepts what a section dated its own day. `weekly-run aurora <cwd> --dry-run` prints
+# tonight's order and runs nothing (AURORA_TODAY / AURORA_HOUR pick another night). WEEKLY_TEND
+# and WEEKLY_CLASSIFY replace steps 1–2 for the suite: the real ones push and archive real
+# repos; WEEKLY_COMMIT replaces knowledge-commit (the quiet week's log.md line would push the vault).
+set -uo pipefail
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Where things are (regatta B10: this file is the aurora module's bin/weekly-run; launchd and the
+# overlay reach it through an exec shim at its old path, so $0 is this file). Nothing here is a
+# literal path or name of the owner's: the core, every peer and the two knowledge repos are found.
+# - MOD: this module, physically, so the shim's exec and a linked skill land the same.
+# - REG: the core's CLI — the checkout this module sits in (modules/regatta beside it), else
+#   REGATTA_HOME's, else the config dir's `home` file's (the core's find order, C2). launchd's PATH
+#   has no plugin bin/, so never PATH. Missing: nothing runs (below), as the core fails closed.
+# - tool <name>: a peer's file through `regatta which` (common.tool(): a module of the checkout,
+#   an installed plugin, else the overlay's old path), or nothing — each caller names its fallback.
+# - C, P: atlas's layer and vault, read as atlas reads them (its lib/atlaslib.py): ATLAS_LAYER /
+#   ATLAS_VAULT, else the variable the key's third line names, else the path on its second line;
+#   the first line is the name knowledge-commit takes. Without the overlay the vault defaults to
+#   atlas's (XDG data); the layer has none, and a job that needs one refuses.
+MOD="$(cd "$(dirname "$0")/.." && pwd -P)"
+RCFG="${REGATTA_CONFIG:-$HOME/.config/regatta}"; RCFG="${RCFG/#\~/$HOME}"
+REG=""
+for h in "$MOD/../regatta" "${REGATTA_HOME:+${REGATTA_HOME/#\~/$HOME}/modules/regatta}" \
+         "$(h=$(head -1 "$RCFG/home" 2>/dev/null); [ -n "$h" ] && echo "${h/#\~/$HOME}/modules/regatta")"; do
+  [ -n "$h" ] && [ -f "$h/bin/regatta" ] && [ -f "$h/hooks/common.py" ] && { REG="$(cd "$h" && pwd -P)/bin/regatta"; break; }
+done
+# (`regatta which` prints "<name> not installed" on stdout when it finds none: the exit code decides.)
+tool() { local p; [ -n "$REG" ] && p=$(python3 "$REG" which "$1" 2>/dev/null) && printf '%s\n' "$p"; }
+atlas_line() {  # $1 layer|vault, $2 the line: 1 name, 2 path, 3 the override's variable
+  grep -v '^[[:space:]]*$' "$RCFG/atlas/$1" 2>/dev/null | sed -n "$2p" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+atlas_repo() {
+  local v p="" up; up=ATLAS_$(printf %s "$1" | tr a-z A-Z); p=${!up:-}
+  v=$(atlas_line "$1" 3); [ -z "$p" ] && [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && p=${!v:-}
+  [ -z "$p" ] && { p=$(atlas_line "$1" 2); [[ "$p" == /* || "$p" == "~"* ]] || p=""; }
+  [ -z "$p" ] && [ "$1" = vault ] && [ ! -e "$RCFG/legacy" ] && p="${XDG_DATA_HOME:-$HOME/.local/share}/atlas"
+  printf '%s\n' "${p/#\~/$HOME}"
+}
+C=$(atlas_repo layer); P=$(atlas_repo vault)
+LAYER_NAME=$(atlas_line layer 1); LAYER_NAME=${LAYER_NAME:-layer}   # knowledge-commit's word for it
+VAULT_NAME=$(atlas_line vault 1); VAULT_NAME=${VAULT_NAME:-vault}
+LOGS="${WEEKLY_LOG_DIR:-$HOME/Library/Logs/claude-weekly}"
+# `weekly-run where`: what the skills call `<module>`, `<regatta>`, `<layer>`, `<vault>`, `<logs>`,
+# `<projects>`, `<owner>` (skills/aurora/SKILL.md, "Where things are"), one per line; exit 1 when
+# the core or the vault is missing. <projects> is the core's `regatta/projects` value, else
+# ~/projects; <owner> the core's `regatta/owner`, else "the owner" — the name in a report's
+# "## Feedback from <owner>" heading, which atlas's bulletin and keel read back.
+if [ "${1:-}" = where ]; then
+  pj=$(head -1 "$RCFG/regatta/projects" 2>/dev/null); pj=${pj:-$HOME/projects}
+  ow=$(head -1 "$RCFG/regatta/owner" 2>/dev/null); ow=${ow:-the owner}
+  printf 'module %s\nregatta %s\nlayer %s\nlayer-name %s\nvault %s\nvault-name %s\nlogs %s\nprojects %s\nowner %s\n' \
+    "$MOD" "${REG:-MISSING}" "${C:-MISSING}" "$LAYER_NAME" "${P:-MISSING}" "$VAULT_NAME" "$LOGS" "${pj/#\~/$HOME}" "$ow"
+  [ -n "$REG" ] && [ -n "$P" ]; exit
+fi
+
+job="${1:?aurora|sextant}"; cwd="${2:?cwd}"
+dry=""; [ "${3:-}" = --dry-run ] && dry=1
+sections=""
+if [ "$job" = dream ]; then job=aurora; sections="${AURORA_SECTIONS:-dream}"; fi  # the old plist (renamed 2026-10-03)
+[ "$job" = horizon ] && job=sextant  # the old launchd plist, until bootstrap.sh --schedule is re-run (renamed 2026-10-02)
+day=$(date +%Y-%m-%d)
+log="$LOGS/$day-$job.log"
+mkdir -p "$(dirname "$log")"
+say() { if [ -n "$dry" ]; then echo "$1"; else echo "$1" >> "$log"; fi; }
+# The core and the repos the job writes are required; their absence is one line, never a guess.
+if [ -z "$REG" ]; then
+  say "$(date '+%H:%M') refused: the regatta core is missing (no modules/regatta beside $MOD, no REGATTA_HOME, no $RCFG/home)"; exit 1
+fi
+# Present is not loaded: beside an overlay the core raises at import when a key is missing, and then
+# every `tool` lookup and the host name come back empty — a night with no peers, on a host it may be
+# told to skip (the B10 review reproduced both). Refuse instead, in the log only: the bulletin is
+# reached through the core too.
+HOOKS="$(dirname "$REG")/../hooks"
+if ! why=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common" "$HOOKS" 2>&1); then
+  say "$(date '+%H:%M') refused: the regatta core does not load — ${why##*$'\n'} (regatta check)"; exit 1
+fi
+# The peers, each optional to the night as a whole: a missing one fails its own step, said in the
+# log (a `<name>-missing` command where no step checks first), and the next step still runs.
+DOCS_INDEX=$(tool docs-index); BULLETIN=$(tool bulletin.py); KC=$(tool knowledge-commit)   # atlas
+TEND=$(tool tend); REPOS=$(tool repos); PR=$(tool pr)                                      # wharf
+post() {  # post <why> <text>: one bulletin line through atlas; without atlas, the log line alone says it
+  [ -n "$BULLETIN" ] && python3 "$BULLETIN" --post "$1" "$2" >/dev/null 2>&1; true
+}
+# Hosts the loop never runs on (`aurora/skip-hosts` in the config dir, one per line; the owner's
+# overlay names the second Mac: two Macs each writing dreams/<date>.md in place conflict on push,
+# gap review item 6, 2026-10-02). The installer's --schedule refuses there; this covers a job
+# loaded before. Where the overlay is installed and the key is absent the run refuses: a guess
+# either way is a lost or a doubled dream. Without the overlay, no host is skipped.
+if [ -z "${WEEKLY_ANY_HOST:-}" ]; then
+  if [ ! -f "$RCFG/aurora/skip-hosts" ] && [ -e "$RCFG/legacy" ]; then
+    say "$(date '+%H:%M') refused: no $RCFG/aurora/skip-hosts (your overlay's bootstrap.sh --config)"
+    [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: no aurora/skip-hosts in $RCFG — bootstrap.sh --config writes it. Log: $log"
+    exit 1
+  fi
+  # Each line stripped as the core's config_read strips one (a BOM, CR, edge spaces, blank lines).
+  skips=$(tr -d '\r' 2>/dev/null < "$RCFG/aurora/skip-hosts" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$')
+  skips=${skips#$'\xEF\xBB\xBF'}
+  if [ -n "$skips" ]; then
+    host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$HOOKS" 2>/dev/null)
+    if [ -z "$host" ]; then
+      say "$(date '+%H:%M') refused: this host's name is unknown, and aurora/skip-hosts lists hosts to skip"
+      [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: the core gave no host name to match aurora/skip-hosts. Log: $log"
+      exit 1
+    fi
+    if grep -qixF "$host" <<<"$skips"; then
+      say "$(date '+%H:%M') skipped: $job does not run on $host (aurora/skip-hosts; the installer's --schedule refuses here, --remove unloads a job loaded before)"
+      exit 0
+    fi
+  fi
+fi
+# Then the repos (after the skip: a Mac that never runs the loop need not be configured for it).
+# Without the vault the bulletin line may not land either (atlas's bulletin.py finds the bulletin
+# through the same key): the log line is the one sure record.
+if [ -z "$P" ] || { [ "$job" = sextant ] && [ -z "$C" ]; }; then
+  say "$(date '+%H:%M') refused: atlas's $([ -z "$P" ] && echo vault || echo layer) is not configured ($RCFG/atlas/: your overlay's bootstrap.sh --config)"
+  [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: atlas's layer or vault is not configured in $RCFG/atlas/. Log: $log"
+  exit 1
+fi
+# Each script twice: an overlay skill (/sextant) calls them as ~/<the layer's path>/…, and a
+# permission pattern is matched against the command text as written — the absolute form alone
+# matched nothing, so the first /dream (2026-09-16) ran with every Bash call denied. The second
+# form is the layer's path with $HOME as `~`, derived, never written out.
+tools=(Read Write Edit Glob Grep Agent)  # Agent: /sextant's reviewer before a gated landing (D1, 2026-09-29)
+# This module's skills call the core's CLI and this module's own tools by the paths `where` prints.
+# `where` also as the skill writes it, from its base directory (a linked skill's, whatever it is);
+# it only reads.
+# Pinned to those base directories (the module's, the config dir's links), never `*/…`: a planted
+# weekly-run under any x/y/../../bin would match a wildcard and run unclassified (B10 review).
+tools+=("Bash($MOD/bin/weekly-run where)" "Bash($MOD/bin/week-digest:*)")
+for sk in aurora embark; do
+  for sb in "$MOD/skills/$sk" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$sk"; do
+    tools+=("Bash($sb/../../bin/weekly-run where)")
+  done
+done
+for t in knowledge-numbers interruptions knowledge-commit bulletin.py repos docs-index "keel step" "keel parse" "pickup show"; do
+  tools+=("Bash($REG $t:*)")
+done
+bases=(); [ -n "$C" ] && bases=("$C"); [ -n "$C" ] && [[ "$C" == "$HOME"/* ]] && bases+=("~${C#"$HOME"}")
+for base in ${bases[@]+"${bases[@]}"}; do
+  tools+=("Bash($base/bin/week-digest:*)" "Bash($base/bin/knowledge-numbers:*)" "Bash($base/bin/interruptions:*)"
+          "Bash($base/bin/knowledge-commit:*)" "Bash(python3 $base/hooks/bulletin.py:*)"
+          "Bash($base/bin/repos:*)" "Bash($base/bootstrap.sh --check)"
+          "Bash($base/bin/docs-index:*)" "Bash(python3 $base/bin/docs-index:*)"  # Aurora's charts section
+          "Bash($base/bin/keel step:*)" "Bash($base/bin/keel parse:*)"  # …its `superseded` steps (entry S7)
+          "Bash($base/bin/pickup show:*)")  # the branches section's last prompts; `show` only: pickup's other verbs write
+  # bin/repos: the dream's gather step calls it; the 2026-09-27 run was denied both calls and
+  # hand-made its Branches section (dream P4). test_hooks.sh now fails when a skill the loop
+  # runs calls a bin/ script this list does not allow.
+done
+tools+=("Bash(ls:*)" "Bash(grep:*)" "Bash(date:*)" "Bash(wc:*)"
+        "Bash(git log:*)" "Bash(git diff:*)" "Bash(git -C:*)" "Bash(git rev-list:*)" "Bash(git branch:*)")
+[ "$job" = sextant ] && tools+=(WebSearch WebFetch EnterWorktree)
+[ "$job" = aurora ] && tools+=(EnterWorktree)  # the charts section works in its own layer worktree
+# dispatch's deny list bar deploy: neither skill calls these, and under auto nothing else refuses
+# them by name (knowledge-commit --in runs bin/pr as its own subprocess, which no rule sees)
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)"
+        "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)")  # the skills' `<regatta> pr …` form
+cd "$cwd" || exit 1
+
+# Aurora's sections and their cadence; a new section is one line here (skills/aurora/SKILL.md)
+due() {
+  # dream: once a week, for the week that ends on Sunday night. Due from Sunday 20:00 until a
+  # dream for this week exists or one was tried: a Mac asleep through Sunday 21:00 fires this job
+  # on wake, any day, and the week's dream must not be lost without a word (D19); a missed
+  # Saturday firing that wakes on Sunday morning waits for the evening (it would dream a week
+  # without its Sunday, then again at 21:00); and a dream that fails is tried once a week, never
+  # nightly on Fable (review 2026-10-04). Dates compare as strings: no arithmetic to abort on.
+  local today hour dow sunday newest tried
+  today="${AURORA_TODAY:-$(date +%F)}"; hour="${AURORA_HOUR:-$(date +%H)}"  # overrides: the suite
+  # The flavour is picked once, not by falling back on error: on the Macs (BSD date) a bad
+  # $today must still fail loudly here, not as GNU date's unrelated usage error. GNU: CI's ubuntu.
+  if date -j -f %F 2000-01-01 +%u >/dev/null 2>&1; then
+    dow=$(date -j -f %F "$today" +%u)                                      # 1 = Monday … 7 = Sunday
+    sunday=$(date -j -v-"$(( dow % 7 ))"d -f %F "$today" +%F)              # this week's Sunday
+  else
+    dow=$(date -d "$today" +%u)
+    sunday=$(date -d "$today -$(( dow % 7 )) day" +%F)
+  fi
+  newest=$(ls "$P/dreams" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$' | tail -1)
+  tried=$(cat "$tried_file" 2>/dev/null)
+  # charts: the same week, tried once, and only where the layer's docs/README.md holds the map
+  # (docs/record/aurora-docs-current-2026-10-03.md E6). Before dream, so dream's Branches
+  # section sees its PR. Its proof is the PR (or, live, the landing), so "tried" is the whole gate.
+  # branches: the same week, tried once (docs/record/branch-reaping-2026-10-04.md E10). A week
+  # with nothing to judge writes no file, so its proof is the log.md line (branches_check).
+  local ctried btried
+  ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null)
+  if [ "$dow" = 7 ] && [ "$hour" -lt 20 ]; then :
+  else
+    if [[ "$btried" < "$sunday" ]]; then echo branches; fi
+    if [[ "$ctried" < "$sunday" ]] && [ -n "$C" ] && [ -n "$DOCS_INDEX" ] && [ "$(python3 "$DOCS_INDEX" mode --repo "$C" 2>/dev/null)" != none ]; then echo charts; fi
+    if [[ "${newest%.md}" < "$sunday" ]] && [[ "$tried" < "$sunday" ]]; then echo dream; fi
+  fi
+  true
+}
+tried_file="$(dirname "$log")/aurora-dream-tried"  # the date of the last dream attempt
+charts_tried="$(dirname "$log")/aurora-charts-tried"
+branches_tried="$(dirname "$log")/aurora-branches-tried"
+classified="$(dirname "$log")/$day-branches.txt"  # step 2's report, which the branches section reads
+ORDER="branches charts review dream"  # the night's order (skills/aurora/SKILL.md); review is planned
+# The night's order, whatever order the sections were named in; an unknown one runs last.
+in_order() {
+  local s out=""
+  for s in $ORDER; do [[ " $1 " == *" $s "* ]] && out="$out $s"; done
+  for s in $1; do [[ " $ORDER " == *" $s "* ]] || out="$out $s"; done
+  echo $out
+}
+# --dry-run: tonight's steps in order, each due or not; runs and records nothing.
+plan() {
+  local n=0 s step what
+  echo "aurora ${AURORA_TODAY:-$day} ${AURORA_HOUR:-$(date +%H)}h — the night's order (dry run: nothing runs, nothing is recorded)"
+  [ -z "$sections" ] && echo "  nothing due tonight: no step runs, the tend neither"
+  for step in tend classify charts review dream; do
+    n=$((n + 1)); s=$step; [ "$step" = classify ] && s=branches; [ "$step" = tend ] && s=""
+    case "$step" in
+      tend)     what="bin/tend — sync.py's tend in every repo of repos.json cloned here ($(t=$(tool tend) || { echo "wharf not installed"; exit; }; "$t" --list 2>/dev/null | grep -c .; true))" ;;  # --list reads only
+      classify) what="bin/repos --branches --fetch --classify --reap > $classified, then claude -p \"/aurora branches\" from $cwd (a quiet week: its log.md line only)" ;;
+      charts)   what="claude -p \"/aurora charts\" from $C, then its PR" ;;
+      review)   what="not built (skills/aurora/SKILL.md: planned)" ;;
+      dream)    what="claude -p \"/aurora dream\" from $cwd, then dreams/<day>.md must be on $VAULT_NAME main" ;;
+    esac
+    if [ "$step" = review ]; then printf '  %d %-8s %s\n' "$n" "$step" "$what"; continue; fi
+    if [ -z "$s" ]; then [ -n "$sections" ] && st=due || st="not due"
+    elif [[ " $sections " == *" $s "* ]]; then st=due; else st="not due"; fi
+    printf '  %d %-8s %-7s %s\n' "$n" "$step" "$st" "$what"
+  done
+}
+if [ "$job" = aurora ]; then
+  sections="${sections:-${AURORA_SECTIONS:-$(due | tr '\n' ' ')}}"
+  sections="$(set -f; in_order "$sections")"  # squeeze spaces; set -f: a `*` must not glob the cwd
+  if [ -n "$dry" ]; then plan; exit 0; fi
+  if [ -z "$sections" ]; then
+    echo "$(date '+%H:%M') aurora: no section due tonight" >> "$log"
+    exit 0
+  fi
+  case " $sections " in *" dream "*) echo "$day" > "$tried_file" ;; esac
+  case " $sections " in *" charts "*) echo "$day" > "$charts_tried" ;; esac
+  case " $sections " in *" branches "*) echo "$day" > "$branches_tried" ;; esac
+elif [ -n "$dry" ]; then
+  echo "$job: no steps but its one session (--dry-run plans Aurora's night)"; exit 0
+fi
+
+case "$job" in
+  sextant) repo="$C"; entry="sextant/$day.md" ;;
+  aurora)  repo=""; entry=""
+           # the dream's proposal is the entry that must land; a night without it checks nothing
+           case " $sections " in *" dream "*) repo="$P"; entry="dreams/$day.md" ;; esac ;;
+  *)       repo=""; entry="" ;;
+esac
+# The days a check accepts: the run's start day, and today when the run crossed midnight — a
+# section dates what it writes by its own clock (a missed fire run late; open feedback 2026-10-05).
+# WEEKLY_NOW stands in for the clock in the suite.
+run_days() { local now; now="${WEEKLY_NOW:-$(date +%F)}"; echo "$day"; [ "$now" = "$day" ] || echo "$now"; }
+# The entry as it is on main, under either day; nothing when it is not there.
+landed_entry() {
+  local d e
+  [ -n "$repo" ] || return 1
+  for d in $(run_days); do
+    e="${entry/$day/$d}"
+    git -C "$repo" cat-file -e "main:$e" 2>/dev/null && { echo "$e"; return 0; }
+  done
+  return 1
+}
+
+# Each session runs under a cap: one that hangs would hold every later section, and launchd
+# skips a job's later fires while it still runs. Seconds per session; see the header.
+CAP="${WEEKLY_CAP:-$([ "$job" = sextant ] && echo 10800 || echo 3600)}"
+[[ "$CAP" =~ ^[0-9]+$ ]] || CAP=3600  # whole seconds: the log's minutes are bash arithmetic
+killed=""  # the sessions the cap killed tonight; their checks say so
+capmark="$(dirname "$log")/.capped-$$"  # written by capped on a kill: exit 124 alone could be the session's own
+# capped <cmd…>: in a process group of its own, killed whole (caffeinate, claude, its tools) at
+# $CAP seconds — SIGTERM to the group, then SIGKILL to whatever of it is left 30 s later (the
+# group, not the leader: a tool child that ignores TERM outlives caffeinate) — exit 124 and
+# $capmark. Its own group is not launchd's, so a TERM, INT or HUP to the wrapper (a bootout, a
+# Ctrl-C) is passed to the group with 15 s of grace (launchd's ExitTimeOut is 20) and then
+# re-raised, so bash stops the night as it would have. A child a signal ended exits 128+n, as a
+# shell reports it (review 2026-10-05).
+capped() {
+  WEEKLY_CAP_MARK="$capmark" python3 -c '
+import os, signal, subprocess, sys, time
+def end(grace):
+    try:
+        os.killpg(pg, signal.SIGTERM)
+        until = time.monotonic() + grace
+        while time.monotonic() < until:
+            try:  # reap the leader ourselves: a zombie still counts as the group
+                os.waitpid(pg, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            os.killpg(pg, 0)  # ProcessLookupError once the whole group is gone
+            time.sleep(0.2)
+        os.killpg(pg, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+def passed(sig, _frame):
+    end(15)
+    signal.signal(sig, signal.SIG_DFL)
+    os.kill(os.getpid(), sig)
+p = subprocess.Popen(sys.argv[2:], start_new_session=True)
+pg = p.pid
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, passed)
+try:
+    rc = p.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    open(os.environ["WEEKLY_CAP_MARK"], "w").close()
+    end(float(os.environ.get("WEEKLY_CAP_GRACE") or 30))
+    sys.exit(124)
+sys.exit(128 - rc if rc < 0 else rc)
+' "$CAP" "$@"
+}
+cap_note() { [[ " $killed " == *" $1 "* ]] && echo " — its session was killed at the $((CAP / 60))-min cap"; true; }
+
+# Aurora's charts section, after the run (docs/record/aurora-docs-current-2026-10-03.md E6, R4).
+# Dry (the map's `mode:`, D4): the section stops at its worktree charts-<day>; this script
+# commits what is dirty there, pushes the branch and readies the PR "Aurora charts <day> — dry
+# run" with the body the section wrote, logs `DRY <url>` and posts one bulletin line — the
+# checkpoint hook's push under claude -p is not relied on. It runs outside Claude's worktree
+# guard, as the sextant backstop does; the repo's pre-push allows claude/*. Live: the section
+# lands itself reviewed, and this checks for the "Charts: <day>" commit on main. Either way a
+# miss is `FAILED charts …` plus a bulletin line. WEEKLY_PR replaces bin/pr for the suite.
+charts_land() {
+  local cwt="$C/.claude/worktrees/charts-$day" mode br body url why="" d cday="$day" sha
+  mode=$([ -n "$DOCS_INDEX" ] && python3 "$DOCS_INDEX" mode --repo "$C" 2>/dev/null)
+  # Past midnight the section names its worktree, commit and PR body by its own day (review 2026-10-05).
+  for d in $(run_days); do
+    [ -d "$C/.claude/worktrees/charts-$d" ] && { cwt="$C/.claude/worktrees/charts-$d"; cday=$d; break; }
+  done
+  if [ "$mode" = live ]; then
+    for d in $(run_days); do
+      sha=$(git -C "$C" log -1 --format=%h --grep="^Charts: $d" main)
+      [ -n "$sha" ] && { echo "LAUNCHED $sha charts $d"; return; }
+    done
+    why="no \"Charts: $day\" commit on $LAYER_NAME main$(cap_note charts)"
+  elif [ ! -d "$cwt" ]; then
+    why="the run left no worktree $cwt$(cap_note charts)"
+  else
+    git -C "$cwt" add -A && { git -C "$cwt" diff --cached --quiet || git -C "$cwt" commit -qm "Charts: $cday — dry run"; }
+    br=$(git -C "$cwt" symbolic-ref -q --short HEAD)
+    if [ -z "$(git -C "$cwt" rev-list "main..HEAD" 2>/dev/null)" ]; then
+      if [ -z "$(cap_note charts)" ]; then echo "DRY none — charts $day changed nothing"; return; fi
+      why="the session changed nothing before it ended$(cap_note charts)"  # killed early is not a quiet week
+      echo "FAILED charts $day: $why"
+      post "the unattended charts run did not reach a PR" \
+        "weekly-run aurora charts $day: $why. Log: $log"
+      return
+    fi
+    body="$(dirname "$log")/charts-$cday.md"
+    [ -s "$body" ] || printf 'Aurora charts %s — the run wrote no PR body; see %s\n' "$day" "$log" > "$body"
+    # A session the cap killed left half a run: the PR still opens (what it did is reviewable),
+    # but its title, body, DRY line and bulletin say so (review 2026-10-05).
+    local cut; cut=$(cap_note charts)
+    [ -n "$cut" ] && printf '\n**Unfinished**%s; what it left is below.\n' "$cut" >> "$body"
+    if [ -z "${WEEKLY_PR:-$PR}" ]; then
+      why="wharf's pr is not installed: $br stays unpushed in $cwt$cut"  # a pushed branch with no PR is worse
+    elif ! git -C "$cwt" push -q -u origin "$br" 2>&1; then
+      why="the push of $br failed$cut"
+    elif url=$(cd "$cwt" && ${WEEKLY_PR:-"${PR:-pr-missing}"} ready --title "Aurora charts $day — dry run${cut:+ (unfinished: killed at the cap)}" --body-file "$body" 2>&1 | tail -1) \
+         && [[ "$url" == http* ]]; then
+      echo "DRY $url$cut"
+      post "Aurora's charts dry run waits for /embark" \
+        "Aurora charts $day — dry run${cut:+ (unfinished, killed at the cap)}: $url (merge or close it at /embark)"
+      return
+    else
+      why="bin/pr ready did not open the PR ($url)"
+    fi
+  fi
+  echo "FAILED charts $day: $why"
+  post "the unattended charts run did not reach a PR" \
+    "weekly-run aurora charts $day: $why. Log: $log"
+}
+
+run_claude() {  # $1: the sections for this session (WEEKLY_CLAUDE sees them as $sections)
+  local sections="$1"
+  if [ -n "${WEEKLY_CLAUDE:-}" ]; then
+    ( export sections; capped bash -c "$WEEKLY_CLAUDE" )
+  else
+    # through claude-host once this Mac's sitting is done (docs/tcc-one-identity-2026-10-18.md):
+    # under a bash job, claude is charged to its own versioned path, which every update replaces
+    local cl=(claude) hl
+    hl=$(rc=$(tool rc-hosts) && python3 "$rc" --launcher claude 2>/dev/null) && cl=("$hl" claude)
+    capped caffeinate -i "${cl[@]}" -p "/$job${sections:+ $sections}" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text
+  fi
+}
+
+# A network miss gets one retry inside the same run (rules/engineering: verify, then retry once —
+# never in a loop). The 2026-10-04 dream died in four minutes on "Can't reach the API server
+# (ENOTFOUND)" and the week had no dream; the sextant five hours later ran fine (sextant
+# 2026-10-05 I1, landed 2026-10-12). Succeeds — after the wait — only when a retry is due. The
+# dream's cadence is untouched: aurora-dream-tried is written before the loop, once a night.
+api_retry() {  # $1: the session's exit code
+  [ "$1" -ne 0 ] && tail -n 5 "$log" | grep -q "Can't reach the API server" || return 1
+  local wait="${WEEKLY_RETRY_WAIT:-600}"
+  echo "== the API was unreachable; one retry after ${wait}s"
+  if command -v caffeinate >/dev/null; then caffeinate -i sleep "$wait"; else sleep "$wait"; fi
+  return 0
+}
+
+# After a session: its exit, and a KILLED line when the cap ended it.
+ran() {  # $1: the session's name (a section, or the job), $2: its exit code
+  echo "== exit $2 at $(date)"
+  if [ -e "$capmark" ]; then
+    rm -f "$capmark"; killed="$killed $1"; echo "KILLED $1 $day after $((CAP / 60)) min (WEEKLY_CAP)"
+  fi
+}
+
+# A step that failed: one log line and one bulletin line; the night goes on (E3).
+step_failed() {  # $1: the step, $2: why
+  echo "FAILED $1 $day: $2"
+  post "Aurora's $1 step failed; the rest of the night ran" \
+    "weekly-run aurora $1 $day: $2. Log: $log"
+}
+
+# Step 1: the tend (E1). Zero tokens; never fatal.
+tend_step() {
+  local out rc which
+  echo "== tend at $(date)"
+  if [ -z "${WEEKLY_TEND:-}${TEND}" ]; then step_failed tend "wharf's tend is not installed (regatta which tend)"; return; fi
+  out=$(${WEEKLY_TEND:-"${TEND:-tend-missing}"} 2>&1); rc=$?
+  printf '%s\n' "$out"
+  which=$(printf '%s\n' "$out" | sed -n 's/^FAILED tend: //p' | tail -1)
+  [ $rc = 0 ] || step_failed tend "bin/tend exit $rc${which:+ — not tended: $which}"
+}
+
+# Step 2: classify — the week's archive of superseded branches, before charts reads the
+# unmerged set and the dream lists what waits. The report goes to $classified for the branches
+# section; without it the section gathers for itself.
+classify_step() {
+  local rc
+  echo "== classify at $(date)"
+  rm -f "$classified"
+  if [ -z "${WEEKLY_CLASSIFY:-}${REPOS}" ]; then step_failed classify "wharf's repos is not installed (regatta which repos); the branches section gathers for itself"; return; fi
+  ${WEEKLY_CLASSIFY:-"${REPOS:-repos-missing}" --branches --fetch --classify --reap} > "$classified" 2>&1; rc=$?
+  echo "$(wc -l < "$classified" | tr -d ' ') lines → $classified; archived: $(grep -c ' — archived: ' "$classified")"
+  if [ $rc != 0 ] || [ ! -s "$classified" ]; then
+    tail -20 "$classified"  # into this log; a half report must not pass for the week's,
+    mv -f "$classified" "$classified.failed"  # but what --reap archived before it failed stays readable
+    step_failed classify "bin/repos --branches --classify --reap exit $rc (report: $classified.failed); the branches section gathers for itself"
+  fi
+}
+
+# A quiet week (open feedback 2026-10-05): classify's report has no C3–C6 line and no
+# probably-landed group — nothing to judge, no "B would have archived" line, so the section would
+# write no file — and this script appends the section's log.md line and commits it instead of
+# starting a Fable session. A missing or failed report is never quiet: the section gathers for itself.
+quiet_week() {
+  local a
+  [ -s "$classified" ] || return 1
+  grep -qE '^    C[3-6] |^  probably (landed|launched) \(' "$classified" && return 1   # both: S3 switched the writer; S5 drops the old word
+  a=$(grep -c ' — archived: ' "$classified")
+  echo "== branches: a quiet week (no C3–C6, nothing probably launched) — its log.md line, no session"
+  printf -- '- %s branches: %s archived by code, 0 judged (0 drop, 0 pick up, 0 wait), 0 would be archived under B — a quiet week, written by weekly-run\n' "$day" "$a" >> "$P/log.md"
+  if ${WEEKLY_COMMIT:-"${KC:-knowledge-commit-missing}"} "$VAULT_NAME" -m "Branches: $day (a quiet week, no session)" log.md 2>&1; then
+    branches_check
+  else  # the line is in log.md, not on main: say that, not "no line" (review 2026-10-05)
+    step_failed branches "a quiet week: its log.md line is written but knowledge-commit $VAULT_NAME failed — the next records commit lands it"
+  fi
+  return 0
+}
+
+# The bulletin as it stood before a section ran (snapshot), and whether the section has since
+# posted a line whose why matches $1 — an extended regex, case-blind, so a reworded apostrophe
+# still counts, and only this session's lines (review 2026-10-05: an earlier hand run's must not).
+bulletin_now() { [ -n "$BULLETIN" ] && python3 "$BULLETIN" --list 2>/dev/null | sort; }
+before=""
+snapshot() { before=$(bulletin_now); }
+posted() {  # $1: a regex for the why
+  comm -13 <(printf '%s\n' "$before") <(bulletin_now) | grep -qiE "why: $1"
+}
+
+# The branches section writes its file only when something waits (R9), and always its log.md
+# line: that line on the vault's main is the proof it ran. A section that failed posts its own
+# bulletin line (sections/branches.md section 4); then this only logs, so one failure is one line.
+branches_check() {
+  local d why
+  for d in $(run_days); do
+    if git -C "$P" show main:log.md 2>/dev/null | grep -q "^- $d branches:"; then
+      echo "LAUNCHED branches $d (log.md)"; return
+    fi
+  done
+  why="no \"- $day branches:\" line in $VAULT_NAME log.md on main$(cap_note branches)"
+  if posted "aurora.{1,3}s branches section failed"; then  # {1,3}: a curly apostrophe is 3 bytes in the C locale
+    echo "FAILED branches $day: $why (the section posted its own bulletin line)"
+  else
+    step_failed branches "$why"
+  fi
+}
+
+{
+  echo "== $(date) $job in $cwd"
+  if [ "$job" = aurora ]; then
+    tend_step
+    [[ " $sections " == *" branches "* ]] && classify_step
+    # Each section is a session of its own, in the night's order: one that dies costs only
+    # itself, and dream starts with a clean context. charts runs from the layer: EnterWorktree
+    # allows only a worktree under the cwd's own repo (2.1.289: anything else is a safety-check
+    # ask no classifier can approve, and launchd's cwd is the vault; review 2026-10-04).
+    set -f  # a `*` in AURORA_SECTIONS must not become one session per file in the cwd
+    for s in $sections; do
+      if [ "$s" = branches ] && quiet_week; then continue; fi
+      snapshot
+      if [ "$s" = charts ]; then
+        echo "== charts in $C"
+        ( cd "$C" && run_claude charts ); rc=$?
+      else
+        echo "== $s in $cwd"
+        run_claude "$s"; rc=$?
+        if [ "$s" = dream ] && api_retry "$rc"; then
+          ran "$s" "$rc"; run_claude "$s"; rc=$?
+        fi
+      fi
+      ran "$s" "$rc"
+      case "$s" in
+        charts) charts_land ;; branches) branches_check ;;
+        dream) ;;  # its entry is checked below
+        *) [ -n "$(cap_note "$s")" ] && step_failed "$s" "killed at the $((CAP / 60))-min cap" ;;
+      esac
+    done
+    set +f
+  else
+    run_claude "$sections"; rc=$?
+    ran "$job" $rc
+    if api_retry "$rc"; then
+      run_claude "$sections"
+      ran "$job" $?
+    fi
+  fi
+  if [ -z "$repo" ]; then
+    exit 0
+  fi
+  wt="$C/.claude/worktrees/sextant-$day"
+  for d in $(run_days); do  # past midnight the run may have opened its worktree under today
+    [ -d "$C/.claude/worktrees/sextant-$d" ] && { wt="$C/.claude/worktrees/sextant-$d"; break; }
+  done
+  if ! landed_entry >/dev/null && [ "$job" = sextant ] && [ -d "$wt" ]; then
+    echo "== the run left $entry unlanded in $wt — landing it"
+    "${KC:-knowledge-commit-missing}" "$LAYER_NAME" --in "$wt" -m "Sextant: $day (landed by weekly-run after the run stopped)" 2>&1
+  fi
+  if e=$(landed_entry); then
+    echo "LAUNCHED $(git -C "$repo" log -1 --format=%h main -- "$e") $e"
+  else
+    why="$entry is not on $(basename "$repo") main$(cap_note "${job/aurora/dream}")"
+    [ "$job" = sextant ] && [ -d "$wt" ] && why="$why; its worktree $wt holds what the run left — /finish or knowledge-commit --in lands it"
+    echo "FAILED $why"
+    post "the unattended $job did not land" \
+      "weekly-run $job $day: $why. Log: $log"
+  fi
+  # What the run adopted lands only reviewed (D1, 2026-09-29), so it may be left behind on
+  # purpose; it is named, never landed from here. A worktree already merged is not.
+  # Landed is proved by files, not by ancestry alone: GitHub's rebase merge rewrites every sha
+  # (hooks/branches.py holds the proof; review of #33, 2026-09-29).
+  ch="$wt-changes"
+  bp=""; [ "$job" = sextant ] && [ -d "$ch" ] && { bp=$(tool branches.py) || echo "FAILED proof of $ch: wharf's branches.py is not installed"; }
+  if [ -n "$bp" ] && { [ -n "$(git -C "$ch" status --porcelain 2>/dev/null)" ] \
+       || ! python3 - "$(dirname "$bp")" "$HOOKS" "$C" "$ch" <<'PY'
+import sys
+sys.path[:0] = sys.argv[1:3]  # wharf's branches.py, and the core it imports
+import branches
+repo, ch = sys.argv[3], sys.argv[4]
+tip = branches.out(ch, "rev-parse", "HEAD")
+m = branches.main_branch(repo)
+# origin's main after a GitHub merge, the local one after an offline landing
+tgts = {t for t in (branches.target(repo, m), m) if t}
+sys.exit(0 if tip and any(branches.is_ancestor(repo, tip, t) or branches.files_identical(repo, tip, t) for t in tgts) else 1)
+PY
+     }; then
+    echo "UNLAUNCHED $ch — what the run adopted waits for a reviewed knowledge-commit --in or /finish"
+    post "the unattended sextant left adopted changes unlanded" \
+      "weekly-run sextant $day: $ch holds them; they land reviewed (--in … --review) or with /finish."
+  fi
+} >> "$log" 2>&1
