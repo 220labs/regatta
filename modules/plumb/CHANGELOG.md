@@ -1,5 +1,15 @@
 # Changelog — plumb
 
+## Unreleased
+
+- The wharf rename's S6 (2026-10-20): `bench/`'s prose says launch for a merge, and "come in" for a run's
+  result arriving.
+- Carried from the overlay (the wharf rename's S5, 2026-10-20): `knowledge-numbers`' G4 list follows
+  helm's files to their new names (`bin/helm`, `helmlib.py`, `helm_render.py`, `test_helm.sh`,
+  `test_wharf.sh`; `bin/plan`, now a shim, printed beside); `interruptions` says launcher. A checkout
+  from before S5 (no `bin/helm`, a `planlib.py`) counts the old names instead, so an overlay whose S5 has
+  not landed keeps a comparable G4.
+
 ## 0.4.2 — 2026-10-19
 
 - `reports` defaults to `~/.local/state/regatta/crew-report` (was a folder under the projects
