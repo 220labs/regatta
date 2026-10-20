@@ -1,5 +1,11 @@
 # Changelog — sextant
 
+## Unreleased
+
+- Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `sparks` and
+  `tests/sparks.sh` — `launch_git`, `CFG["launch"]` (the config's `land` key and `SPARKS_LAND` still
+  read), a note that "goes to" the inbox rather than lands there.
+
 ## 0.1.0 — 2026-10-19
 
 - First cut: Sparks, the ideas intake, moved in from the overlay's `bin/sparks`, `bin/redactions`,

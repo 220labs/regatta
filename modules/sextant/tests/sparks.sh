@@ -233,7 +233,7 @@ git -C "$P/film" add -A
 git -C "$P/film" commit -qm init
 git -C "$P/film" remote add origin "$T/remote.git"
 git -C "$P/film" push -q origin main 2>/dev/null
-# The vault is a real repo: landing there asks git what it tracks and ignores (W2).
+# The vault is a real repo: launching there asks git what it tracks and ignores (W2).
 git init -q -b main "$P/vault"
 mkdir -p "$P/vault/ventures" "$P/vault/outputs" "$P/vault/me"
 echo v > "$P/vault/ventures/a.md"; echo m > "$P/vault/me/core.md"; echo 'outputs/' > "$P/vault/.gitignore"
@@ -249,12 +249,12 @@ git init -q -b main "$P/site"
 git init -q -b main "$P/twin"
 printf '{"repos": {"film": {}, "vault": {"knowledge": true}, "absent": {}, "site": {"published": true, "memos_to": "film"}, "twin": {"twin_of": "film"}}}' > "$T/repos.json"
 # rename S2 (M23): the config key `launch` or the old `land`, the env SPARKS_LAUNCH or SPARKS_LAND —
-# the owner's sparks.json says "land" until S7, and a key read as absent would default to "pr"
+# the owner's sparks.json says "land" until S7 (not "launch"), and a key read as absent would default to "pr"
 cfgland() { printf '%s' "$1" > "$T/land-config.json"; env -u SPARKS_LAND -u SPARKS_LAUNCH ${2:+"$2"} SPARKS_CONFIG="$T/land-config.json" python3 - "$B/sparks" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("sparks", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("sparks", loader)); loader.exec_module(m)
-print(m.CFG["land"])
+print(m.CFG["launch"])
 PY
 }
 check "$(cfgland '{"land": "merge"}') $(cfgland '{"launch": "merge"}') $(cfgland '{}')" "merge merge pr" 'the config key "land" and "launch" both read; neither: pr'
@@ -264,7 +264,7 @@ check "$(cfgland '{}' SPARKS_LAND=merge) $(cfgland '{}' SPARKS_LAUNCH=merge)" "m
 check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys
 l = m.SourceFileLoader("sparks", sys.argv[1]); r = u.module_from_spec(u.spec_from_loader("sparks", l)); l.exec_module(r)
 print(callable(getattr(r, "launch_vault", None)))' "$B/sparks")" "True" "launch_vault is there by that name"
-export SPARKS_ROUTE=1 SPARKS_LAND=merge SPARKS_PROJECTS="$P" SPARKS_REPOS="$T/repos.json" SPARKS_FAKE_MERGE=1 SPARKS_HOST=
+export SPARKS_ROUTE=1 SPARKS_LAUNCH=merge SPARKS_PROJECTS="$P" SPARKS_REPOS="$T/repos.json" SPARKS_FAKE_MERGE=1 SPARKS_HOST=
 printf '{"deny": ["vault/me/"]}' > "$T/route-config.json"; export SPARKS_CONFIG="$T/route-config.json"
 rm -f "$T/in"/*   # the failure cases above leave their audio for a retry, by design
 # memo() runs inside $(…), a subshell, so the counter lives in a file
@@ -329,9 +329,9 @@ out=$(memo vault)
 [ -f "$P/vault/ventures/idea.md" ]; check $? 0 "the vault takes a file directly"
 
 route '{"repo": "film", "path": "notes/feedback-r3.md", "confidence": "high", "why": "cut feedback"}'
-out=$(SPARKS_LAND=pr memo pr)
+out=$(SPARKS_LAUNCH=pr memo pr)
 git -C "$P/film" fetch -q origin main
-git -C "$P/film" cat-file -e origin/main:notes/feedback-r3.md 2>/dev/null && r=0 || r=1; check $r 1 '"land": "pr": main is not touched'
+git -C "$P/film" cat-file -e origin/main:notes/feedback-r3.md 2>/dev/null && r=0 || r=1; check $r 1 '"launch": "pr": main is not touched'
 check "$(branches)" "3" "  the branch is pushed (beside the other session's)"
 f=$(ls -t "$T/out"/*.md | head -1)
 grep -q 'waiting for a merge' "$f"; check $? 0 "  and the inbox note says it waits for a merge"
@@ -339,10 +339,10 @@ grep -q 'waiting for a merge' "$f"; check $? 0 "  and the inbox note says it wai
 table "$HAIKU" '{"kind": "generate", "provider": "off", "when_off": "skip"}'
 n0=$(grep -c 'Read,Glob,Grep' "$T/claude-calls.txt")
 refused '{"repo": "film", "path": "notes/off.md", "confidence": "high", "why": "x"}' 'routing is off in settings/models.json' "routing off + skip in the table"
-check "$(grep -c 'Read,Glob,Grep' "$T/claude-calls.txt")" "$n0" "  no routing call; the note lands unrouted"
+check "$(grep -c 'Read,Glob,Grep' "$T/claude-calls.txt")" "$n0" "  no routing call; the note is filed unrouted"
 table "$HAIKU"
 
-echo "a crash (R2): a landing recorded before a crash is recognised, not filed twice"
+echo "a crash (R2): a launch recorded before a crash is recognised, not filed twice"
 route '{"repo": "film", "path": "notes/elsewhere.md", "confidence": "high", "why": "a different guess"}'
 say -o "$T/in/crashed.aiff" "a memo whose pass crashed after the merge" 2>/dev/null
 k=$(python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()[:16])" "$T/in/crashed.aiff")
