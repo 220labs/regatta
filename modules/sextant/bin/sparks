@@ -9,7 +9,7 @@ how-to, launcher.c.in and install.sh beside it the launcher a stranger builds.
 
     sparks [--dry-run] [--limit N] [--verbose]
     sparks --session-start          runs the pass detached (--background); no hook calls it since 2026-10-03
-    sparks --route <note.md>        where would this note go? prints the decision, lands nothing
+    sparks --route <note.md>        where would this note go? prints the decision, files nothing
     sparks --chain                  this config's pass, then each `also` config's (what a watcher runs)
     sparks --inboxes                the inbox of this config and of each `also` config, one per line
 
@@ -33,7 +33,7 @@ private vault, never in this repo, 2026-09-18). Without a config it says so and 
 whose memos these are. Which model shapes and routes is one row each in `settings/models.json`
 (`sparks.shape`, `sparks.route`), read through `bin/gate` (docs/model-gate-2026-10-04.md);
 a `model` left in a config is ignored. Shaping off fails (the audio waits); routing off skips
-(the note lands in the inbox, unrouted).
+(the note goes to the inbox, unrouted).
 
     {
       "inbox":   "~/…/CloudDocs/VoiceMemos",   // where the Shortcut drops audio
@@ -43,7 +43,7 @@ a `model` left in a config is ignored. Shaping off fails (the audio waits); rout
       "language": "auto", "commit": true,
       "host":    "studio",                     // the one Mac that runs it (iCloud reaches both)
       "route":   true,                         // D18: file into projects, not only the inbox
-      "land":    "merge",                      // "merge" | "pr" — see Landing below
+      "launch":    "merge",                      // "merge" | "pr" — see Launch below
       "route_prompt": "memo-route.md",         // optional; the built-in one is generic
       "deny":    ["vault/me/"],                // never file under these, on top of DENY_*
       "also":    ["ideas.json"]                // more configs; --session-start runs each too
@@ -110,13 +110,13 @@ Routing (D18, 2026-09-29: "full auto-filing"): a second `claude -p`, with Read, 
 Grep only and cwd = ~/projects, reads the candidate repos (repos.json) and answers with one
 line of JSON — repo, path, confidence, why. The runner trusts none of it: the repo must be a
 candidate, the path a new `.md` file in a folder that already exists on the repo's main, no
-dot-folder, and the confidence "high". Anything else lands in the vault inbox as before, with
+dot-folder, and the confidence "high". Anything else goes to the vault inbox as before, with
 the proposed home and the reason on the note — the middle option, as the fallback.
 
-Landing: the vault (`knowledge` in repos.json) takes the file directly and commits it with the
+Launch: the vault (`knowledge` in repos.json) takes the file directly and commits it with the
 rest of the run. Every other repo gets a commit built on origin/main with plumbing — no
 worktree, no checkout touched — pushed as `claude/<host>/<date>-memo-<slug>`, a pull request,
-and with `"land": "merge"` the runner rebase-merges it itself (the rule's one exception,
+and with `"launch": "merge"` the runner rebase-merges it itself (the rule's one exception,
 rules/git-workflow). It only ever adds one new file, so the merge cannot conflict. It then
 fetches and reads the file back from origin/main: a merge is "filed" only once it is there.
 The vault keeps a stub for every filed note (title, summary, the Bin list, the link) so the dream
@@ -125,7 +125,7 @@ still sees it and /embark still gets the Bin proposal; the project copy carries 
 Everything is overridable by environment variable, which is how the test drives it with
 stubs: SPARKS_IN, SPARKS_OUT, SPARKS_ARCHIVE, SPARKS_STATE, WHISPER_BIN, WHISPER_MODEL, CLAUDE_BIN,
 SPARKS_COMMIT (0 to skip the vault
-commit), SPARKS_ROUTE, SPARKS_LAND, SPARKS_PROJECTS, SPARKS_REPOS, SPARKS_HOST, SPARKS_LOG, WHISPER_VAD (a Silero model: whisper skips non-speech, which
+commit), SPARKS_ROUTE, SPARKS_LAUNCH, SPARKS_PROJECTS, SPARKS_REPOS, SPARKS_HOST, SPARKS_LOG, WHISPER_VAD (a Silero model: whisper skips non-speech, which
 otherwise comes back as an invented "Bye." or "you"), SPARKS_FAKE_MERGE (tests: push to the remote's main instead of
 calling GitHub), SPARKS_SPLIT, SPARKS_TRANSCRIPT, SPARKS_PUBLISH, PUBLISH_BIN, OSASCRIPT_BIN, SPARKS_RETRY_WAIT, SPARKS_NOTES (1: ask
 Apple Notes; only sextant-host sets it), SPARKS_VOICEMEMOS (a Voice Memos library folder; set, the
@@ -206,7 +206,7 @@ def load_config():
         "route": os.environ.get("SPARKS_ROUTE", "1" if cfg.get("route") else "0") == "1",
         # `launch` from rename S2 (M23), `land` read forever: sparks.json keeps the old key until S7
         # the key alone on its line: rename-map keeps a both-words line whole, so the key maps with CFG's reads
-        "land": (
+        "launch": (
             os.environ.get("SPARKS_LAUNCH") or os.environ.get("SPARKS_LAND") or cfg.get("launch") or cfg.get("land") or "pr"),
         "host": os.environ.get("SPARKS_HOST", cfg.get("host") or ""),
         "deny": list(cfg.get("deny") or []),
@@ -237,7 +237,7 @@ CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 # Optional peers, found through the core (G21, G34): None → a log line, the note still filed.
 PUBLISH = os.environ.get("PUBLISH_BIN") or common.tool("publish")
 AUDIO = {".m4a", ".mp3", ".wav", ".aiff", ".aifc", ".caf", ".mp4"}
-# Written ideas take the same path minus whisper (2026-10-07): a note lands in an inbox as text
+# Written ideas take the same path minus whisper (2026-10-07): a note goes to an inbox as text
 # (from Apple Notes, `"apple_notes"` below, or any file someone drops there), and its words are
 # the transcript. .rtf and .html go through textutil (part of macOS).
 TEXT = {".txt", ".md", ".rtf", ".html"}
@@ -384,7 +384,7 @@ def stamp_stale():
 
 
 def filed_notes(entry):
-    """The notes an entry filed, or None for nothing, a pending landing, or a copy archived as
+    """The notes an entry filed, or None for nothing, a pending launch, or a copy archived as
     something filed elsewhere — those name another entry's notes, never their own."""
     note = entry.get("note") if isinstance(entry, dict) else None
     return note if note and note != "(empty)" and not note.startswith(("(filed by", "(same as")) else None
@@ -431,7 +431,7 @@ def digest(path):
 
 
 def run(cmd, **kw):
-    """A timed-out call comes back as a failure (124), never as an exception mid-landing."""
+    """A timed-out call comes back as a failure (124), never as an exception mid-launch."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True, **kw)
     except subprocess.TimeoutExpired:
@@ -919,7 +919,7 @@ def route(note, repos):
 
 def check(decision, repos):
     """The runner's own rules over Claude's answer: (repo, path) or (None, reason). The
-    folder-exists and file-is-new checks against the repo's main happen at landing."""
+    folder-exists and file-is-new checks against the repo's main happen at launch."""
     why = str(decision.get("why") or "").strip()
     repo, path = decision.get("repo"), decision.get("path")
     if isinstance(repo, str):   # a router that copied the listing's "(also takes notes about …)"
@@ -1008,7 +1008,7 @@ def launch_vault(meta, path, content, pending=False):
     return {"state": "filed", "url": None}, None
 
 
-def land_git(name, meta, path, content, title, key, pending=False):
+def launch_git(name, meta, path, content, title, key, pending=False):
     """One new file on origin/<main>, by plumbing: nothing checked out, no worktree, no local
     branch. Push as claude/*, PR, merge (or leave the PR), then read it back from origin."""
     repo, main = meta["dir"], meta["main"]
@@ -1018,7 +1018,7 @@ def land_git(name, meta, path, content, title, key, pending=False):
     if not base:
         return None, f"no origin/{main} in {name}"
     if pending and git(repo, "cat-file", "-e", f"{base}:{path}").returncode == 0:
-        return {"state": "merged", "url": None, "branch": None}, None  # an earlier pass landed it
+        return {"state": "merged", "url": None, "branch": None}, None  # an earlier pass launched it
     parent = str(PurePosixPath(path).parent)
     if parent != "." and git(repo, "cat-file", "-t", f"{base}:{parent}").stdout.strip() != "tree":
         return None, f"{parent}/ does not exist on {name}'s {main}"
@@ -1050,7 +1050,7 @@ def land_git(name, meta, path, content, title, key, pending=False):
 
     url, state = None, "pr"
     if os.environ.get("SPARKS_FAKE_MERGE") == "1":  # tests: the bare remote plays GitHub
-        if CFG["land"] == "merge":
+        if CFG["launch"] == "merge":
             git(repo, "push", "-q", "origin", f"{commit}:refs/heads/{main}")
             state = "merged"
     else:
@@ -1064,11 +1064,11 @@ def land_git(name, meta, path, content, title, key, pending=False):
         if not pr:
             return {"state": "branch", "url": None, "branch": branch}, "the PR could not be opened — the branch is pushed"
         url = pr.get("html_url")
-        if CFG["land"] == "merge":
+        if CFG["launch"] == "merge":
             if not common.ready_pr(pr, tok):
                 return {"state": "pr", "url": url, "branch": branch}, "PR open, still a draft"
             # bin/pr merge's wait: one retry 5 s on (GitHub computes mergeability lazily), and
-            # where `base` has automerge.yml, up to 3 min for the automerge that lands it once
+            # where `base` has automerge.yml, up to 3 min for the automerge that launches it once
             # `check` passes — a token that is no admin is refused until then
             has_am = git(repo, "cat-file", "-e", f"{base}:{common.AUTOMERGE_YML}").returncode == 0
             ok, why = common.merge_pr_waiting(slug_, pr["number"], tok, automerge=has_am)
@@ -1079,7 +1079,7 @@ def land_git(name, meta, path, content, title, key, pending=False):
                     return {"state": "pr", "url": url, "branch": branch}, f"PR open, merge refused ({why})"
 
     if state == "pr":
-        return {"state": "pr", "url": url, "branch": branch}, "PR open, waiting for a merge (\"land\": \"pr\")"
+        return {"state": "pr", "url": url, "branch": branch}, "PR open, waiting for a merge (\"launch\": \"pr\")"
     if state == "merged":
         git(repo, "fetch", "-q", "origin", main, timeout=90)
         if git(repo, "cat-file", "-e", f"origin/{main}:{path}").returncode != 0:
@@ -1241,7 +1241,7 @@ def process(path, state):
         archive_copy(path, key)
         state[key] = {"file": path.name, "note": f"(filed by {other[0]}: {other[1]})", "archived": True}
         return f"✓ {path.name} → archived (already filed from the {other[0]} inbox: {other[1]})"
-    # R2: a landing recorded but never finished (a crash or timeout after the push) picks up on
+    # R2: a launch recorded but never finished (a crash or timeout after the push) picks up on
     # the same repo and path, so a merged note is recognised, not filed a second time.
     pending = state.get(key, {}).get("landing")
     when = dt.datetime.fromtimestamp(path.stat().st_mtime)
@@ -1250,7 +1250,7 @@ def process(path, state):
     # 2026-10-03 and -08 with three content hashes, re-saved by Voice Memos or iCloud. Audio is
     # keyed on its decoded samples, before Whisper — they matched bit for bit, while the words
     # drifted with the model and VAD (review 2026-10-10). A written note on its words, 5 or more.
-    # A pending landing (R2) always goes on: it is this file's own record, never a duplicate.
+    # A pending launch (R2) always goes on: it is this file's own record, never a duplicate.
     wav = None
     if written:
         text, err = read_text(path)
@@ -1334,7 +1334,7 @@ def process(path, state):
     verbatim = f"<details><summary>Verbatim transcript</summary>\n\n{shaped_from}\n\n</details>\n"
 
     # D18: where does it belong? Any doubt, any failure → the inbox, with the reason on it.
-    landed, where, reason = None, None, "routing is off" if not CFG["route"] else None
+    launched, where, reason = None, None, "routing is off" if not CFG["route"] else None
     if CFG["split"]:  # ideas never route: they have one home
         outs = file_topics(title, note, when, head) if text.strip() else []
         if red is not None:  # before the state says "filed": a release needs it for every note
@@ -1370,28 +1370,28 @@ def process(path, state):
                 meta = repos[repo]
                 state[key] = {"landing": {"repo": repo, "path": rpath}}
                 save_state(state)
-                landed, reason = (launch_vault(meta, rpath, content, bool(pending)) if meta["knowledge"]
-                                  else land_git(repo, meta, rpath, content, title, key, bool(pending)))
-                if landed and landed["state"] == "filed":
+                launched, reason = (launch_vault(meta, rpath, content, bool(pending)) if meta["knowledge"]
+                                  else launch_git(repo, meta, rpath, content, title, key, bool(pending)))
+                if launched and launched["state"] == "filed":
                     WROTE.append(meta["dir"] / rpath)
             elif decision.get("repo"):
                 where = f"{decision.get('repo')}/{decision.get('path')}"
 
     if CFG["split"]:
         pass
-    elif landed and landed["state"] in ("filed", "merged"):
+    elif launched and launched["state"] in ("filed", "merged"):
         _, binned = split_bin(note)
-        link = f"\npr: {landed['url']}" if landed.get("url") else ""
+        link = f"\npr: {launched['url']}" if launched.get("url") else ""
         out = write_inbox(name, (
             f"---\n{head}filed: {where}{link}\n---\n\n# {title}\n\n"
-            f"Filed to `{where}`{' — ' + landed['url'] if landed.get('url') else ''}. This stub is for "
+            f"Filed to `{where}`{' — ' + launched['url'] if launched.get('url') else ''}. This stub is for "
             f"Aurora's dream and /embark; the note and its transcript live there.\n\n"
             f"## Summary\n{summary_of(note)}\n\n## Bin\n{binned}\n"))
-        result = f"✓ {path.name} → {where}{' (' + landed['url'] + ')' if landed.get('url') else ''}"
+        result = f"✓ {path.name} → {where}{' (' + launched['url'] + ')' if launched.get('url') else ''}"
     else:
         extra = ""
-        if landed:  # a PR or branch that did not merge: the note stays readable in the inbox too
-            extra = f"pr: {landed.get('url') or 'none — branch ' + landed.get('branch', '?')}\n"
+        if launched:  # a PR or branch that did not merge: the note stays readable in the inbox too
+            extra = f"pr: {launched.get('url') or 'none — branch ' + launched.get('branch', '?')}\n"
         route_line = f"route: {where or 'none'} — not filed: {reason}\n" if CFG["route"] else ""
         keep = verbatim if CFG["transcript"] == "note" else ""
         out = write_inbox(name, f"---\n{head}{route_line}{extra}---\n\n# {title}\n\n{note}\n\n{keep}")
@@ -1408,7 +1408,7 @@ def process(path, state):
                       "at": dt.datetime.now().isoformat(timespec="seconds"), "same": same}
         return result
     WROTE.append(out)
-    filed = landed and landed["state"] in ("filed", "merged")
+    filed = launched and launched["state"] in ("filed", "merged")
     state[key] = {"file": path.name, "note": out.name, "filed": where if filed else None,
                   "at": dt.datetime.now().isoformat(timespec="seconds"), "same": same}
     return result
@@ -1913,7 +1913,7 @@ def session_start():
     starts it: Claude Code sets CLAUDE_CODE_SESSION_ATTENDED=1 there and 0 in `claude -p`
     (probed 2026-09-29), so the weekly loop never does. XPC_SERVICE_NAME was the first idea and
     is useless — /usr/bin/python3 sees "0" whatever launchd set. Prints nothing: hook output
-    lands in every session's context."""
+    goes into every session's context."""
     if os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "1":
         return 0
     if not IN and not CFG["also"]:
@@ -1949,7 +1949,7 @@ def chain():
 
 
 def route_only(note_path):
-    """`--route <note.md>`: the decision and the runner's verdict on it, nothing landed."""
+    """`--route <note.md>`: the decision and the runner's verdict on it, nothing filed."""
     note = Path(note_path).read_text()
     repos = candidates()
     decision, reason = route(note, repos)
