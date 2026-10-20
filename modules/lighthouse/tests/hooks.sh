@@ -347,8 +347,12 @@ check "$(echo '{}' | env -i PATH=/usr/bin:/bin CLAUDE_ENV_FILE=/no/such/dir/env.
 
 
 echo "claude-settings without atlas: declare refuses, naming the hand route (G17)"
+# From a scratch checkout of the core and lighthouse alone: atlas sits in this repo since B10, so
+# the checkout's tool() would find its knowledge-commit (the "peer absent" trap, AGENTS.md).
+mkdir -p "$T/rg/.claude-plugin" "$T/rg/modules"; cp "$R/.claude-plugin/marketplace.json" "$T/rg/.claude-plugin/"
+cp -R "$R/modules/regatta" "$R/modules/lighthouse" "$T/rg/modules/"
 printf '%s\n' '{"shared":{}}' > "$CSD/user.json"
-check "$(cs declare deniedMcpServers '{"serverName":"x"}' 2>&1 | grep -c "atlas's knowledge-commit is not installed")" 1 "  no knowledge-commit: a refusal, no traceback"
+check "$(CS="$T/rg/modules/lighthouse/bin/claude-settings" cs declare deniedMcpServers '{"serverName":"x"}' 2>&1 | grep -c "atlas's knowledge-commit is not installed")" 1 "  no knowledge-commit: a refusal, no traceback"
 rm "$CSD/user.json"
 
 echo "design_route with no core: a deny hook fails closed (C4)"
