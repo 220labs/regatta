@@ -14,7 +14,7 @@ drop verdict waits for the owner). `<regatta>`, `<vault>` and the rest: the auro
 Unattended, `bin/weekly-run`'s classify step ran the classifier minutes ago — fetch, survey,
 `--reap` of C1 and C2 — and kept its report: read `<logs>/<today>-branches.txt`, or
 yesterday's when the run started before midnight. A quiet week — no C3–C6 line, nothing
-probably landed — never reaches this section: `weekly-run` writes its log.md line itself.
+probably launched — never reaches this section: `weekly-run` writes its log.md line itself.
 Missing (a hand run, or the step failed — its `FAILED classify` line is in the night's log),
 run it yourself, without `--reap` — this section never archives; C1/C2 wait for next week's
 classify step:
@@ -23,8 +23,8 @@ classify step:
 <regatta> repos --branches --fetch --classify
 ```
 
-Per repo the report has the survey groups (`probably landed`, `not on main`, `archived`) and
-then `classified`: one line per idle branch that is not landed — `empty` (the session start
+Per repo the report has the survey groups (`probably launched`, `not on main`, `archived`) and
+then `classified`: one line per idle branch that is not launched — `empty` (the session start
 reaps it; not this section's), or `C1`–`C6` with the facts, a C1/C2 line ending in
 `— archived: …` or `— not archived: <why>`. C7 (touched within 7 days) is only counted.
 
@@ -33,12 +33,12 @@ reaps it; not this section's), or `C1`–`C6` with the facts, a C1/C2 line endin
 For each, read its last prompts — `<regatta> pickup show <branch> --repo <the repo's checkout>
 --no-fetch` — and nothing heavier (no transcripts). Write one line: what the branch is, why it
 sits in its case (the fact from the report that put it there), and the verdict: **pick up**
-(`/pickup <topic>`), **drop**, or **wait** for `<branch>` to land.
+(`/pickup <topic>`), **drop**, or **wait** for `<branch>` to launch.
 
-- C3 carried or hinted: where its work lives on ("in `<branch>`, open" or "landed, then
+- C3 carried or hinted: where its work lives on ("in `<branch>`, open" or "launched, then
   edited: N % of its lines remain"); default wait or drop.
 - C4 PR closed unmerged: the close date and the share of its lines on `main`; default drop.
-- C5 doc landed elsewhere: read both docs, name the file that carries it; drop or pick up.
+- C5 doc launched elsewhere: read both docs, name the file that carries it; drop or pick up.
 - C6 abandoned real work: what it is, its last prompt, its files; pick up or drop.
 
 ## 3. Write — only when something waits
@@ -64,9 +64,9 @@ P1. <repo> · <branch> — C<n> <case name>: <what it is>; <why this case>
 ...
 
 ## B would have archived
-Aurora D2 (the owner, 2026-10-04): the night stops at landed, empty and proved superseded; these
+Aurora D2 (the owner, 2026-10-04): the night stops at launched, empty and proved superseded; these
 are what option B would also have archived — listed so the line can move on evidence, never
-acted on. One line each: <repo> · <branch> · probably landed: <the hint> | PR closed <date>,
+acted on. One line each: <repo> · <branch> · probably launched: <the hint> | PR closed <date>,
 <share> % of lines on main (P<n>).
 
 ## Feedback from <owner>
