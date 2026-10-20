@@ -1,0 +1,7 @@
+{
+  "name": "atlas",
+  "version": "0.1.0",
+  "description": "Knowledge with three lifecycles: the bulletin (/share), promotion (/promote) and the vault commit, the docs map of charts and records (docs-index), and routines kept in git (/routine).",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

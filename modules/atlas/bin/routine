@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Keep a scheduled routine's prompt in git, and in step with the live routine.
+
+    routine status <def.md> --live <get.json>   which side changed since the last sync, and the diff
+    routine pull   <def.md> --live <get.json>   take the live prompt into the file (the routine edits
+                                                itself when its owner gives it feedback in its chat)
+    routine body   <def.md>                     the update body for RemoteTrigger: {"prompt": …}
+    routine synced <def.md> --live <get.json>   after a deploy: prove live == file, record it
+    routine adopt  --live <get.json> > def.md   a new definition file from a live routine
+
+A routine's prompt has two authors: sessions that change something it depends on (a path, a
+step), and the routine itself, which rewrites its own prompt through the claude-code-remote
+connector when its owner corrects it in its chat (2026-09-23, twice). The definition file holds the
+prompt verbatim, under a header with the routine's id, name, cron and the hash of the prompt
+both sides last agreed on (`synced`). Against that base, `status` tells the four cases apart:
+
+    in sync         exit 0
+    file ahead      exit 3   deploy: RemoteTrigger update with `routine body`, then `routine synced`
+    live ahead      exit 4   `routine pull`, then commit the file
+    both changed    exit 5   neither side wins by itself; the diff is printed, a person merges
+
+Only a session can reach the routine API (the RemoteTrigger tool holds the token in-process),
+so this script never calls it: it reads a saved `RemoteTrigger get` response and prints what to
+send. The procedure is the `routine` skill; the reasoning is docs/routines.md.
+
+Stdlib only, Python 3.9.
+"""
+import argparse
+import difflib
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+HEADER_KEYS = ("id", "name", "cron", "synced")
+
+
+def h(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def load_live(path):
+    """A saved `RemoteTrigger get` (or `list`) response: an optional `HTTP 200` first line, then
+    JSON with the trigger under "trigger" (get) or as the only item of "data" (list)."""
+    raw = Path(path).read_text()
+    if raw.startswith("HTTP "):
+        raw = raw.split("\n", 1)[1]
+    d = json.loads(raw)
+    t = d.get("trigger") or d
+    if "data" in d and not d.get("trigger"):
+        if len(d["data"]) != 1:
+            sys.exit(f"routine: {path} lists {len(d['data'])} routines; save a `get` of one")
+        t = d["data"][0]
+    prompt = t["derived_state"]["prompt"]
+    # The prompt is stored twice more (the job's first user event and the session request).
+    # derived_state is what the service shows; a copy that disagrees is worth knowing about.
+    copies = []
+    for ev in t.get("job_config", {}).get("ccr", {}).get("events", []):
+        c = ev.get("data", {}).get("message", {}).get("content")
+        if isinstance(c, str):
+            copies.append(c)
+    for ev in t.get("session_request", {}).get("events", []):
+        c = ev.get("payload", {}).get("message", {}).get("content")
+        if isinstance(c, str):
+            copies.append(c)
+    return {"id": t["id"], "name": t.get("name", ""), "cron": t.get("cron_expression", ""),
+            "prompt": prompt, "copies_disagree": any(c != prompt for c in copies)}
+
+
+def load_def(path):
+    text = Path(path).read_text()
+    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        sys.exit(f"routine: {path} has no '---' header")
+    head, body = text[4:].split("\n---\n", 1)
+    meta = {}
+    for line in head.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip()
+    missing = [k for k in HEADER_KEYS if k not in meta]
+    if missing:
+        sys.exit(f"routine: {path} header lacks {', '.join(missing)}")
+    # The file ends in one newline that is not part of the prompt.
+    meta["prompt"] = body[:-1] if body.endswith("\n") else body
+    return meta
+
+
+def write_def(path, meta):
+    head = "\n".join(f"{k}: {meta[k]}" for k in HEADER_KEYS)
+    text = f"---\n{head}\n---\n{meta['prompt']}\n"
+    if path == "-":
+        sys.stdout.write(text)
+    else:
+        Path(path).write_text(text)
+
+
+def diff(a, b, name_a, name_b):
+    return "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), name_a, name_b))
+
+
+def state(d, live):
+    f, l, base = h(d["prompt"]), h(live["prompt"]), d["synced"]
+    if f == l:
+        return "in sync", 0
+    if l == base:
+        return "file ahead: deploy it", 3
+    if f == base:
+        return "live ahead: pull it", 4
+    return "both changed since the last sync: merge by hand", 5
+
+
+def cmd_status(a):
+    d, live = load_def(a.def_), load_live(a.live)
+    if d["id"] != live["id"]:
+        sys.exit(f"routine: {a.def_} is {d['id']}, the saved response is {live['id']}")
+    msg, rc = state(d, live)
+    print(f"{live['name']} ({live['id']}): {msg}")
+    for k, lk in (("name", "name"), ("cron", "cron")):
+        if d[k] != live[lk]:
+            print(f"  {k}: file '{d[k]}', live '{live[lk]}' (the file records it; change it in the app)")
+    if live["copies_disagree"]:
+        print("  note: the live routine's stored copies of its prompt disagree with derived_state")
+    if rc:
+        print(diff(live["prompt"], d["prompt"], "live", "file"), end="")
+    return rc
+
+
+def cmd_pull(a):
+    d, live = load_def(a.def_), load_live(a.live)
+    msg, rc = state(d, live)
+    if rc == 5 and not a.force:
+        print(f"routine: {msg}; --force takes live and drops the file's changes", file=sys.stderr)
+        print(diff(live["prompt"], d["prompt"], "live", "file"), end="", file=sys.stderr)
+        return 5
+    if rc == 3 and not a.force:
+        print("routine: the file is ahead of live; pulling would drop its changes (--force to do it)", file=sys.stderr)
+        return 3
+    d.update(prompt=live["prompt"], name=live["name"], cron=live["cron"], synced=h(live["prompt"]))
+    write_def(a.def_, d)
+    print(f"pulled {live['id']} into {a.def_}" if rc else f"{a.def_}: already in sync")
+    return 0
+
+
+def cmd_body(a):
+    print(json.dumps({"prompt": load_def(a.def_)["prompt"]}, ensure_ascii=False))
+    return 0
+
+
+def cmd_synced(a):
+    d, live = load_def(a.def_), load_live(a.live)
+    if h(d["prompt"]) != h(live["prompt"]):
+        print("routine: live does not match the file; the deploy did not land", file=sys.stderr)
+        print(diff(live["prompt"], d["prompt"], "live", "file"), end="", file=sys.stderr)
+        return 1
+    d["synced"] = h(live["prompt"])
+    write_def(a.def_, d)
+    print(f"{live['id']}: live matches {a.def_}; recorded")
+    return 0
+
+
+def cmd_adopt(a):
+    live = load_live(a.live)
+    write_def("-", {"id": live["id"], "name": live["name"], "cron": live["cron"],
+                    "synced": h(live["prompt"]), "prompt": live["prompt"]})
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="routine", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("status", "pull", "synced"):
+        p = sub.add_parser(name)
+        p.add_argument("def_", metavar="def.md")
+        p.add_argument("--live", required=True)
+        if name == "pull":
+            p.add_argument("--force", action="store_true")
+    sub.add_parser("body").add_argument("def_", metavar="def.md")
+    sub.add_parser("adopt").add_argument("--live", required=True)
+    a = ap.parse_args(argv)
+    return {"status": cmd_status, "pull": cmd_pull, "body": cmd_body, "synced": cmd_synced, "adopt": cmd_adopt}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

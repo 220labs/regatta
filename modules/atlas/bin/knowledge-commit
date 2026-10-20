@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# knowledge-commit <name> <message-file | -m "message"> [paths...]
+# knowledge-commit <name> --open <slug>
+# knowledge-commit <name> --in <worktree> [--review <report>] <message-file | -m "message"> [paths...]
+#
+# Commit a deliberate change in one of the two knowledge repos, from any session.
+# Why this exists: Claude Code isolates a session that entered a worktree, and refuses any
+# git command in it that targets a different repository (`git -C …`, `cd … && git …`).
+# /promote, /aurora and /sextant run from inside project worktrees and still have to commit
+# in the layer or the vault. This script is the narrow door: it accepts exactly those two
+# repos by name and refuses anything else.
+#
+# The two repos (lib/atlaslib.py): the **layer** (rules, lessons, skills — what every session
+# loads) and the **vault** (records written in place: memory, the bulletin, inbox notes). Each
+# is named by `<config>/atlas/<role>` in the regatta config dir — the name callers pass on its
+# first line, the primary checkout on its second; `layer` and `vault` are accepted too.
+# ATLAS_LAYER and ATLAS_VAULT (or the variable a key's third line names) override the paths for
+# one shell or a test suite.
+#
+# Both are on the worktree workflow (the layer since 2026-09-26, the vault since 2026-09-29).
+# One rule, read from the repo's .claude/workflow.json — the role decides nothing below but
+# which check runs:
+#
+#   in_place  the records a repo writes ON its main (the vault: memory/, bulletin.md, inbox/,
+#             dreams/, log.md …). The straight form commits those and only those, on main, and
+#             pushes main (a rebase first only when origin moved; the vault's pre-push guard
+#             allows main only as a fast-forward). With no paths it stages only in_place dirt
+#             and names every gated path it left behind. A repo on the workflow with none
+#             (the layer) refuses the straight form outright. A repo still carrying
+#             .claude/no-workflow, or with no .claude/ at all, is unrestricted, as before.
+#   records   paths that land through a branch but need no review (the layer: docs/, lessons/,
+#             sextant/, log.md, README.md, TODO.md). Exempt from review = in_place ∪ records.
+#             Both lists are read from the BASE's workflow.json (git show <base>:…), never the
+#             branch's, so a landing cannot widen its own exemption. An absent key is an empty
+#             list: everything is reviewed.
+#
+# `--open` makes (or reuses) the worktree .claude/worktrees/<slug> on
+# claude/<host>/<date>-<slug> from main and prints its path; the caller edits files under that
+# path. It refuses unless the repo ignores .claude/worktrees/ — an unignored worktree is swept
+# into a `Vault:` commit as a gitlink by vault_commit.py (gap review item 1). `--in` first
+# commits and pushes the primary's in_place dirt by the straight form (a main ahead of origin by
+# its own records cannot fast-forward to the merge, gap review item 3), then commits what is
+# dirty in the worktree, rebases on origin/main, runs the check (the layer: only bootstrap.sh
+# --check when every changed path is prose, all three suites otherwise; the vault:
+# <the vault's variable>=<worktree> bootstrap.sh --check of the live layer, so the vault's budgets are the
+# branch's), pushes the branch, readies and merges its PR with wharf's `pr`, and fast-forwards
+# the primary checkout — live from then on. No token, no origin, CLAUDE_HOOK_NO_GITHUB, or no
+# wharf module (G20: `pr` and `carried.py` are its, found through the core): it fast-forwards
+# the primary locally instead and says main is ahead of origin. A failing check lands nothing
+# and leaves the branch as it is. A diff touching an in_place path is refused: main appends
+# that file all week, and a PR carrying it conflicts (gap review item 4).
+#
+# Reviewed before it lands (the owner, 2026-09-29, as amended): a change to anything but a
+# record lands only with `--review <file>`, the `reviewer`
+# agent's report with its WRONGs fixed, which becomes the PR body. The order is land, refuse,
+# review: without --review, a gated change is committed and rebased, its diff written to
+# <git dir>/claude/review.diff (the path is printed; a pinned session reads it with Read), and
+# nothing lands. `--review` then needs that file, and a report no older than it: a report from an
+# earlier landing is not this one's. Offline there is no PR, so the report is not kept.
+# Two exemptions, each checked to be exactly that: a diff that only adds entries to repos.json
+# (bin/github-repo registering a repo), and one that only moves `synced:` lines under routines/
+# (/routine recording a deploy of a prompt that already landed reviewed, gap review item 8).
+# #25 is why the gate exists: a code change landed on the check alone, and the review afterwards
+# found three bugs.
+set -euo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"   # this module: lib/atlaslib.py finds the repos, the core and its peers
+# atlas <python>: run a snippet with atlaslib imported, the rest of the arguments in sys.argv[1:].
+atlas() { local code=$1; shift; python3 -c "import sys; sys.path.insert(0, sys.argv.pop(1)); import atlaslib
+$code" "$here/lib" "$@"; }
+# The role, the configured name and the checkout, one per line; nothing for a name that is not one
+# of the two. A configured role whose path is missing prints an empty third line.
+resolved=$(atlas '
+for role in ("layer", "vault"):
+    k = atlaslib.key(role)
+    if sys.argv[1] in (role, k[0] if k else None):
+        print(role); print(k[0] if k else role); print(atlaslib.repo(role) or ""); break' "${1:-}")
+if [ -z "$resolved" ] || [[ "${1:-}" == */* ]]; then
+  names=$(atlas 'print("|".join((atlaslib.key(r) or (r,))[0] for r in ("layer", "vault")))')
+  echo "usage: knowledge-commit <$names> <msgfile | -m msg> [paths...]" >&2
+  atlas '[print("  " + atlaslib.missing(r), file=sys.stderr) for r in ("layer", "vault") if not atlaslib.key(r)]'
+  exit 2
+fi
+role=$(sed -n 1p <<< "$resolved"); name=$(sed -n 2p <<< "$resolved"); repo=$(sed -n 3p <<< "$resolved")
+[ -n "$repo" ] || { atlas 'print(atlaslib.missing(sys.argv[1]), file=sys.stderr)' "$role"; exit 1; }
+which=$1
+shift
+[ -d "$repo/.git" ] || { echo "knowledge-commit: $repo is not a git repo (run bootstrap.sh)" >&2; exit 1; }
+# A peer through the core's one lookup (G20): its path, or nothing when wharf or the core is missing.
+peer() { atlas 'print(atlaslib.tool(sys.argv[1]) or "")' "$1"; }
+
+# wf_list <ref> <key>: a list key of the repo's .claude/workflow.json at <ref>, one entry per line.
+# Unreadable, absent or not a list: nothing (an empty list).
+wf_list() {
+  { git -C "$repo" show "$1:.claude/workflow.json" 2>/dev/null || true; } | python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin).get(sys.argv[1])
+except Exception:
+    v = None
+for e in (v if isinstance(v, list) else []):
+    e = e.strip("/") if isinstance(e, str) else ""
+    if e and e not in (".", "..") and "\n" not in e:
+        print(e)' "$2"
+}
+# matches <path> <entry>…: "memory/" is a folder and everything under it, "log.md" one file.
+matches() {
+  local p=$1 e; shift
+  for e in "$@"; do e=${e%/}; if [ "$p" = "$e" ] || [[ "$p" == "$e"/* ]]; then return 0; fi; done
+  return 1
+}
+# On the workflow: a .claude/ folder and no marker. The marker means unrestricted, as before.
+on_workflow() { [ -d "$repo/.claude" ] && [ ! -f "$repo/.claude/no-workflow" ]; }
+
+if [ "${1:-}" = "--open" ]; then
+  slug=${2:-}
+  [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "knowledge-commit: --open needs a slug of a-z, 0-9 and -" >&2; exit 2; }
+  wt="$repo/.claude/worktrees/$slug"
+  if [ -d "$wt" ]; then
+    b=$(git -C "$wt" symbolic-ref --quiet --short HEAD || true)
+    [[ "$b" == claude/* ]] || { echo "knowledge-commit: $wt exists but is on '$b', not a claude/* branch" >&2; exit 1; }
+    echo "$wt"; exit 0
+  fi
+  git -C "$repo" check-ignore -q .claude/worktrees/x \
+    || { echo "knowledge-commit: $which does not ignore .claude/worktrees/ — a worktree there would be committed as a gitlink; add it to its .gitignore first" >&2; exit 1; }
+  host=$(atlas 'c = atlaslib.core(); print(c.host_name() if c else "")')
+  [ -n "$host" ] || { echo "knowledge-commit: --open names its branch by this host, and the regatta core that knows it is missing or refuses to load (regatta check)" >&2; exit 1; }
+  b="claude/$host/$(date +%Y-%m-%d)-$slug"
+  git -C "$repo" worktree add -q "$wt" -b "$b" main >&2
+  echo "$wt"; exit 0
+fi
+
+if [ "${1:-}" = "--in" ]; then
+  wt=${2:-}; shift 2 || true
+  [ -n "$wt" ] && [ -d "$wt" ] || { echo "knowledge-commit: --in needs the worktree --open printed" >&2; exit 2; }
+  wt=$(cd "$wt" && pwd -P)
+  review=
+  if [ "${1:-}" = "--review" ]; then
+    review=${2:-}; shift 2 || true
+    [ -s "$review" ] || { echo "knowledge-commit: --review needs the reviewer's report as a non-empty file" >&2; exit 2; }
+  fi
+  [ "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)" = "$(cd "$repo" && pwd -P)/.git" ] \
+    || { echo "knowledge-commit: $wt is not a worktree of $repo" >&2; exit 1; }
+  # The diff a refusal wrote. Used up by any landing (landed() below): the next gated change must
+  # write, and be reviewed on, a diff of its own.
+  rdiff="$(git -C "$wt" rev-parse --absolute-git-dir)/claude/review.diff"
+  landed() { rm -f "$rdiff"; exit 0; }
+  if [ -n "$review" ]; then
+    [ -f "$rdiff" ] || { echo "knowledge-commit: run --in without --review first — it writes the diff the reviewer reads" >&2; exit 2; }
+    # nanoseconds: bash 3.2's -nt compares whole seconds, and a refusal lands in the same second
+    python3 -c 'import os,sys; sys.exit(os.stat(sys.argv[1]).st_mtime_ns > os.stat(sys.argv[2]).st_mtime_ns)' "$rdiff" "$review" \
+      || { echo "knowledge-commit: $review is older than $rdiff — review the diff this landing wrote" >&2; exit 2; }
+  fi
+  b=$(git -C "$wt" symbolic-ref --quiet --short HEAD || true)
+  [[ "$b" == claude/* ]] || { echo "knowledge-commit: $wt is on '$b', not a claude/* branch" >&2; exit 1; }
+  if [ "${1:-}" = "-m" ]; then msgargs=(-m "$2"); shift 2
+  elif [ -f "${1:-}" ]; then msgargs=(-F "$1"); shift
+  else echo "knowledge-commit: need -m <msg> or a message file" >&2; exit 2; fi
+  for a in "$@"; do  # an option after the message would be taken for a path
+    case "$a" in --*) echo "knowledge-commit: $a goes before -m (--in <path> [--review <report>] -m …)" >&2; exit 2 ;; esac
+  done
+  if [ $# -gt 0 ]; then git -C "$wt" add -- "$@"; else git -C "$wt" add -A; fi
+  git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q "${msgargs[@]}"
+  # The primary's in_place dirt first, committed and pushed by the straight form (item 3).
+  if on_workflow && [ -n "$(wf_list main in_place)" ]; then
+    "$0" "$which" -m "Vault: records written in place, before landing $b" >&2 || true
+  fi
+  online=1
+  { [ -n "${CLAUDE_HOOK_NO_GITHUB:-}" ] || ! git -C "$wt" remote get-url origin >/dev/null 2>&1; } && online=0
+  # G20: the PR is wharf's (`pr ready`, `pr merge`, `carried.py`). Without it the branch lands on
+  # main locally, as offline: the review gate above still holds, only GitHub's part is skipped.
+  pr=$(peer pr); carried=$(peer carried.py)
+  if [ $online = 1 ] && [ -z "$pr" ]; then
+    # Where the overlay is installed a core that does not load is a broken config, not a missing
+    # wharf: refuse rather than land past a protected main (the core's fail-closed rule; review).
+    if [ "$(atlas 'print(int(atlaslib.overlay() and atlaslib.core() is None))')" = 1 ]; then
+      echo "$(basename "$repo"): NOT launched — the regatta core does not load; run: regatta check" >&2; exit 1
+    fi
+    echo "$(basename "$repo"): wharf is not installed (no pr) — landing on main locally, no pull request" >&2; online=0
+  fi
+  base=main
+  if [ $online = 1 ] && git -C "$wt" fetch -q origin main 2>/dev/null; then base=origin/main; else online=0; fi
+  if [ -z "$(git -C "$wt" rev-list "$base..HEAD")" ]; then
+    echo "$(basename "$repo"): nothing to land from $b — it holds nothing $base lacks"; landed
+  fi
+  if ! git -C "$wt" rebase -q "$base" >/dev/null 2>&1; then
+    git -C "$wt" rebase --abort 2>/dev/null || true
+    echo "$(basename "$repo"): NOT launched — $b does not rebase cleanly on $base; resolve in $wt" >&2; exit 1
+  fi
+  # Read from the base, never the branch: a landing cannot widen its own exemption (item 11).
+  inplace=(); while IFS= read -r e; do inplace+=("$e"); done < <(wf_list "$base" in_place)
+  exempt=(${inplace[@]+"${inplace[@]}"}); while IFS= read -r e; do exempt+=("$e"); done < <(wf_list "$base" records)
+  # D1: prose lands on bootstrap's check alone; anything that runs (hooks, bin, templates,
+  # bootstrap, repos.json, .claude) waits for both suites as well. And anything but a record
+  # waits for a review (the header).
+  # --no-renames: a skill moved into docs/ must list the skill it removes; quotePath off: a
+  # non-ASCII record name must still match docs/*.
+  changed=$(git -C "$wt" -c core.quotePath=false diff --name-only --no-renames "$base...HEAD")
+  prose=1; acts=(); racing=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in rules/*|lessons/*|skills/*|agents/*|docs/*|sextant/*|log.md|README.md|DESIGN.md|TODO.md) ;;
+      *) prose=0 ;; esac
+    if [ ${#inplace[@]} -gt 0 ] && matches "$f" "${inplace[@]}"; then racing+=("$f"); continue; fi
+    if [ ${#exempt[@]} -gt 0 ] && matches "$f" "${exempt[@]}"; then continue; fi
+    acts+=("$f")
+  done <<< "$changed"
+  if [ ${#racing[@]} -gt 0 ]; then
+    echo "$(basename "$repo"): NOT launched — $b changes paths written in place on main: ${racing[*]:0:6}" >&2
+    echo "  (in_place in .claude/workflow.json). Main appends them all week, so a PR carrying them conflicts." >&2
+    echo "  Take them out of the branch (git -C $wt checkout $base -- <path>, commit), launch, then write" >&2
+    echo "  them on the primary and commit with: $0 $which -m … <path>" >&2
+    exit 1
+  fi
+  if [ "${acts[*]-}" = repos.json ] && python3 - "$wt" "$base" "$name" <<'PY'
+import json, subprocess, sys
+wt, base = sys.argv[1:3]
+try:
+    old = json.loads(subprocess.run(["git", "-C", wt, "show", f"{base}:repos.json"], capture_output=True, text=True).stdout)
+    new = json.load(open(f"{wt}/repos.json"))
+    added = set(new.get("repos", {})) - set(old.get("repos", {}))
+    same = {k: v for k, v in new.items() if k != "repos"} == {k: v for k, v in old.items() if k != "repos"}
+    ok = same and added and all(new["repos"].get(k) == v for k, v in old["repos"].items())
+    # Only bin/github-repo's own shape, github and hosts: an opt-in (`workflow`) or a host setting
+    # (`rc` — a permission_mode reaches the phone, review 2026-10-07) is reviewed like any change.
+    ok = ok and all(set(new["repos"][k]) <= {"github", "hosts"} for k in added)
+    # ...and hosts a list of machines the registry already names (a mis-merged register() once
+    # could write a scope name there)
+    known = {h for v in old["repos"].values() if isinstance(v.get("hosts"), list) for h in v["hosts"]}
+    ok = ok and all(isinstance(new["repos"][k].get("hosts", []), list)
+                    and set(new["repos"][k].get("hosts", [])) <= known for k in added)
+    # ...under this repo's own owner (github-repo's rule): a new entry gets workspace trust and a
+    # host in auto mode on every machine, with no key of its own (review, 2026-10-14). Not "the
+    # one owner every repo has": an employer org's row (2026-10-18) made that two owners and every
+    # later registration unreviewed. An org row itself is reviewed. A registry without this repo's
+    # own row (the test's) keeps the old rule.
+    owners = {v["github"].split("/")[0] for v in old["repos"].values() if v.get("github") and not v.get("twin_of")}
+    anchor = str((old["repos"].get(sys.argv[3]) or {}).get("github", "")).split("/")[0]
+    owner = anchor or (next(iter(owners)) if len(owners) == 1 else None)
+    ok = ok and bool(owner) and all(str(new["repos"][k].get("github", "")).split("/")[0] == owner for k in added)
+except Exception:  # unreadable, or not shaped like repos.json: not the mechanical case
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+  then acts=(); fi  # only new repos registered (bin/github-repo): mechanical, and checked just now
+  only_routines=1; for f in ${acts[@]+"${acts[@]}"}; do [[ "$f" == routines/* ]] || only_routines=0; done
+  if [ ${#acts[@]} -gt 0 ] && [ $only_routines = 1 ]; then
+    # /routine recorded a deploy (item 8): each file exists on both sides and is the same blob
+    # once its `synced:` lines are dropped. Blobs, not diff text — a prompt line starting with
+    # "-- " looks like a diff header, and a binary diff has no +/- lines (review, finding 3).
+    for f in "${acts[@]}"; do
+      git -C "$wt" cat-file -e "$base:$f" 2>/dev/null && git -C "$wt" cat-file -e "HEAD:$f" 2>/dev/null \
+        && cmp -s <(git -C "$wt" show "$base:$f" | grep -vE '^synced: [0-9a-f]+$') \
+                  <(git -C "$wt" show "HEAD:$f" | grep -vE '^synced: [0-9a-f]+$') \
+        || { only_routines=0; break; }
+    done
+    [ $only_routines = 1 ] && acts=()
+  fi
+  if [ ${#acts[@]} -gt 0 ] && [ -z "$review" ]; then
+    more=""; [ ${#acts[@]} -gt 6 ] && more=" +$(( ${#acts[@]} - 6 ))"
+    diff=$rdiff
+    mkdir -p "$(dirname "$diff")"
+    git -C "$wt" -c core.quotePath=false diff --no-renames "$base...HEAD" > "$diff"
+    echo "$(basename "$repo"): NOT launched — unreviewed: ${acts[*]:0:6}$more" >&2
+    echo "  these change what sessions run or follow. Its diff: $diff" >&2
+    echo "  Give that file to the reviewer agent (model opus), briefed: the project is $repo —" >&2
+    echo "  read its AGENTS.md; no probes of the repo you called from. Fix its WRONGs, save its report, then:" >&2
+    echo "  $0 $which --in $wt --review <report> -m …" >&2
+    exit 1
+  fi
+  # The checks are the layer's own: its bootstrap.sh and two suites (the owner's overlay layout).
+  if [ "$role" = vault ]; then  # the live layer's check, graded on the branch's vault files
+    layer=$(atlas 'print(atlaslib.repo("layer") or "")')
+    [ -n "$layer" ] || { echo "$(basename "$repo"): NOT launched — the vault's check is the layer's, and no layer is configured" >&2; exit 1; }
+    venv=$(atlas 'print(atlaslib.env_name("vault"))')   # the variable the layer's check reads the vault from
+    checks=("$venv=\"$wt\" \"$layer/bootstrap.sh\" --check")
+  elif [ $prose = 1 ]; then checks=("./bootstrap.sh --check"); else
+    checks=("bash hooks/test_checkpoint.sh" "bash hooks/test_hooks.sh" "./bootstrap.sh --check"); fi
+  log=$(mktemp)
+  for c in "${checks[@]}"; do
+    if ! (cd "$wt" && eval "$c") >"$log" 2>&1; then
+      echo "$(basename "$repo"): NOT launched — the check failed: $c" >&2
+      tail -15 "$log" >&2; rm -f "$log"; exit 1
+    fi
+  done
+  rm -f "$log"
+  # The rebase moved the branch; the check above ran on exactly what lands.
+  pre=$(git -C "$wt" rev-parse "$base")
+  if [ $online = 1 ]; then
+    git -C "$wt" push -q --force-with-lease -u origin "$b" 2>&1 >&2 \
+      || { echo "$(basename "$repo"): NOT launched — push of $b refused; rerun the same line (the review still counts)" >&2; exit 1; }
+    body=()
+    if [ -n "$review" ]; then  # the commits, then the review: the PR says it was read before it merged
+      bf=$(mktemp); trap 'rm -f "$bf"' EXIT
+      { git -C "$wt" log --reverse --format='%s%n%n%b' "$base..HEAD"; printf '\n## Review before landing\n\n'; cat "$review"; } > "$bf"
+      body=(--body-file "$bf")
+    fi
+    if (cd "$wt" && "$pr" ready "${body[@]+"${body[@]}"}" >&2) && (cd "$wt" && "$pr" merge); then
+      # Fetch, discard the owner's answers on the primary that this branch carried, fast-forward.
+      # Without wharf's carried.py (G20), a plain fast-forward to what merged.
+      if [ -n "$carried" ]; then python3 "$carried" "$repo" --pull
+      elif [ "$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)" != main ]; then
+        echo "$(basename "$repo"): merged; the primary is not on main, so it was left alone — pull it by hand" >&2
+      else git -C "$repo" pull -q --ff-only origin main || echo "$(basename "$repo"): merged; the primary did not fast-forward — pull it by hand" >&2; fi
+      landed
+    fi
+    echo "$(basename "$repo"): NOT merged — $b is pushed with its PR open; rerun the same line (the review still counts), or /finish" >&2; exit 1
+  fi
+  # Offline: land locally, exactly as /finish --local does — onto the primary's main only.
+  [ "$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)" = main ] \
+    || { echo "$(basename "$repo"): NOT launched — the primary checkout is not on main" >&2; exit 1; }
+  # What the branch carries of the owner's answers on the primary (wharf's carried.py; G20).
+  if [ -n "$carried" ]; then python3 "$carried" "$repo" "$b"; fi
+  if git -C "$repo" merge -q --ff-only "$b" 2>/dev/null; then
+    post=$(git -C "$repo" rev-parse main)
+    echo "$(basename "$repo"): landed $b locally at $(git -C "$repo" rev-parse --short main) — main is ahead of origin until it is pushed"
+    echo "rollback: cd $repo && git revert --no-edit $pre..$post"
+    landed
+  fi
+  echo "$(basename "$repo"): NOT launched — the primary could not fast-forward to $b (not on main, or it moved)" >&2; exit 1
+fi
+
+inplace=()
+if on_workflow; then
+  while IFS= read -r e; do inplace+=("$e"); done < <(wf_list main in_place)
+  [ ${#inplace[@]} -gt 0 ] || {
+    echo "knowledge-commit: $which is on the worktree workflow — use --open <slug>, then --in <path> -m …" >&2; exit 2; }
+fi
+
+branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)
+[ "$branch" = main ] || { echo "knowledge-commit: $repo is on '$branch', not main — refusing" >&2; exit 1; }
+if [ "${1:-}" = "-m" ]; then msgargs=(-m "$2"); shift 2
+elif [ -f "${1:-}" ]; then msgargs=(-F "$1"); shift
+else echo "knowledge-commit: need -m <msg> or a message file" >&2; exit 2; fi
+if [ ${#inplace[@]} -gt 0 ]; then
+  # On the workflow: records only. A path may come absolute (bin/sparks passes them so).
+  real=$(cd "$repo" && pwd -P); paths=(); gated=()
+  for a in "$@"; do
+    r=${a#"$repo"/}; r=${r#"$real"/}
+    # `memory/../me/core.md` matches memory/* as text while git normalizes it to me/core.md:
+    # a dot segment is never a record (review of this change, finding 1).
+    case "/$r/" in */../*|*/./*) gated+=("$r"); continue ;; esac
+    if matches "$r" "${inplace[@]}"; then paths+=("$r"); else gated+=("$r"); fi
+  done
+  if [ ${#gated[@]} -gt 0 ]; then
+    echo "knowledge-commit: ${gated[*]} — not written in place in $which (in_place, .claude/workflow.json)." >&2
+    echo "  Land it reviewed: $0 $which --open <slug>, edit under the path it prints," >&2
+    echo "  then $0 $which --in <that path> -m … (it says what review it needs)." >&2
+    exit 1
+  fi
+  if [ $# -eq 0 ]; then  # every in_place entry that exists or is tracked (a folder may be gone)
+    for e in "${inplace[@]}"; do
+      e=${e%/}
+      if [ -e "$repo/$e" ] || [ -n "$(git -C "$repo" ls-files -- "$e" | head -1)" ]; then paths+=("$e"); fi
+    done
+  fi
+  if [ ${#paths[@]} -gt 0 ]; then git -C "$repo" --literal-pathspecs add -A -- "${paths[@]}"; fi
+  # WRONG 2 of the review: `git commit` takes the whole index. A gated change staged earlier (a
+  # vault_commit that lost the index lock, a stage in VS Code) must not ride along unreviewed.
+  staged_gated=$(git -C "$repo" -c core.quotePath=false diff --cached --name-only | while IFS= read -r f; do
+    matches "$f" "${inplace[@]}" || echo "$f"; done)
+  if [ -n "$staged_gated" ]; then
+    echo "knowledge-commit: gated path(s) already staged on main in $which: $(echo $staged_gated) — nothing committed." >&2
+    echo "  Unstage them (git -C $repo restore --staged <path>) and land them with $0 $which --open/--in." >&2
+    exit 1
+  fi
+  if [ $# -eq 0 ]; then
+    git -C "$repo" -c core.quotePath=false status --porcelain | cut -c4- | sed 's/.* -> //' | while IFS= read -r f; do
+      matches "$f" "${inplace[@]}" || echo "$(basename "$repo"): $f left uncommitted — gated: $0 $which --open/--in; swept unreviewed at session end" >&2
+    done
+  fi
+elif [ $# -gt 0 ]; then git -C "$repo" add -- "$@"; else git -C "$repo" add -A; fi
+if git -C "$repo" diff --cached --quiet; then
+  echo "knowledge-commit: nothing to commit in $repo"
+else
+  git -C "$repo" commit -q "${msgargs[@]}"
+  git -C "$repo" log -1 --format='%h %s' | sed "s|^|$(basename "$repo") |"
+fi
+[ -n "${KNOWLEDGE_NO_PUSH:-}" ] && exit 0
+git -C "$repo" remote get-url origin >/dev/null 2>&1 || exit 0
+git -C "$repo" fetch -q origin main 2>/dev/null || { echo "$(basename "$repo"): NOT pushed — offline" >&2; exit 0; }
+[ -n "$(git -C "$repo" rev-list origin/main..main)" ] || exit 0   # nothing origin lacks
+if [ -n "$(git -C "$repo" rev-list main..origin/main)" ]; then
+  # A rebase refuses outright while any tracked file has uncommitted changes; say that, rather
+  # than "the rebase conflicts" — that message sent a session hunting a divergence that did not
+  # exist (2026-09-22: one uncommitted report file in the vault). Only when origin moved: a main
+  # merely ahead pushes as it is, dirt or not (gap review item 3).
+  dirty=$(git -C "$repo" status --porcelain --untracked-files=no | head -5 | cut -c4- | tr '\n' ' ')
+  if [ -n "$dirty" ]; then
+    echo "$(basename "$repo"): committed, NOT pushed — origin moved and uncommitted changes block the rebase: $dirty" >&2
+    exit 0
+  fi
+  if ! git -C "$repo" rebase -q origin/main 2>/dev/null; then
+    git -C "$repo" rebase --abort 2>/dev/null || true
+    echo "$(basename "$repo"): committed, NOT pushed — main diverged from origin and the rebase conflicts; resolve by hand" >&2
+    exit 0
+  fi
+fi
+if git -C "$repo" push -q origin main 2>/dev/null; then
+  echo "$(basename "$repo"): pushed main"
+else
+  echo "$(basename "$repo"): committed, NOT pushed (offline, or refused by pre-push)" >&2
+fi
