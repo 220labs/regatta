@@ -5,8 +5,15 @@
 # logged skip, never a failed pass (the design's G16, G17). Nothing is pushed anywhere real.
 #   bash modules/lighthouse/tests/health.sh
 set -u
-HB="$(cd "$(dirname "$0")/../bin" && pwd)/health"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+# health runs from a scratch checkout holding only the core and this module: the core's
+# regatta_root() is the checkout above the running file, so in the real one wharf's tend and
+# sync.py (B5, B6) sit beside it and no peer would read as absent.
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+mkdir -p "$T/rg/.claude-plugin" "$T/rg/modules"
+cp "$ROOT/.claude-plugin/marketplace.json" "$T/rg/.claude-plugin/"
+cp -R "$ROOT/modules/regatta" "$ROOT/modules/lighthouse" "$T/rg/modules/"
+HB="$T/rg/modules/lighthouse/bin/health"
 unset REGATTA_HOME REGATTA_LEGACY CLAUDE_CONFIG_DIR
 export HOME="$T/home" REGATTA_CONFIG="$T/config" HEALTH_LOG_DIR="$T/logs" HEALTH_TCC=off
 mkdir -p "$HOME" "$REGATTA_CONFIG/lighthouse" "$T/logs"
