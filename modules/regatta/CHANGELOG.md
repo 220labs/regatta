@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `regatta check` also reports a module's own private values, listed in its `config-keys`:
+  unreadable, or missing where an overlay is installed. The core's import never refuses on them.
 - The private values come from the config dir, one file each, with a neutral default where one
   is absent: `regatta/owner` (the closing lines' address, the say-so the gate and Jev ask for,
   `/autofinish`'s `by`), `regatta/guarded` (`jev.GUARDED`), `regatta/orca-deny` (`ORCA_ROW`'s

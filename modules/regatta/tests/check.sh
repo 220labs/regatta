@@ -160,6 +160,18 @@ echo "$ROOT" > "$T/config/home"; ln -s "$T/gone" "$T/config/regatta/broken"
 out=$("$RG" check); check "$?" 1 "  a dangling link: exit 1"
 echo "$out" | grep -q -- "--  regatta/broken → $T/gone (missing)"; check $? 0 "  it names the link and its target"
 rm "$T/config/regatta/broken"; out=$("$RG" check); check "$?" 0 "  all well: exit 0"
+# a module's own keys (modules/<m>/config-keys): said by the check, never by the core's import
+mkdir -p "$T/config/wharf-runs/ssh"; out=$("$RG" check); check "$?" 1 "  a module's key that cannot be read: exit 1"
+echo "$out" | grep -q -- "--  wharf-runs/ssh unreadable"; check $? 0 "  it names the key"
+rmdir "$T/config/wharf-runs/ssh"
+for k in owner guarded orca-deny; do echo x > "$T/config/regatta/$k"; done
+echo "$T/logs" > "$T/config/regatta/log-dir"; echo "$T/repos" > "$T/config/regatta/projects"; echo "$T" > "$T/config/legacy"
+out=$("$RG" check); check "$?" 1 "  an overlay without a module's keys: exit 1"
+check "$(echo "$out" | grep -c -- '^  --  wharf-runs/\(orca-pairs\|ssh\) missing')" 2 "  each missing key named"
+check "$(py 'print(common.CONFIG_PROBLEMS)')" "[]" "  and the core still loads: a module's key is not the core's"
+printf 'a:b\n' > "$T/config/wharf-runs/orca-pairs"; printf 'b:c\n' > "$T/config/wharf-runs/ssh"
+out=$("$RG" check); check "$?" 0 "  with them written: exit 0"
+rm -r "$T/config/wharf-runs" "$T/config/legacy"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
 
 echo "the gate's table"
 G="$M/bin/gate"
