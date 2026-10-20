@@ -3,7 +3,7 @@
 
 Named sparks since 2026-10-07 — the ship's radio operator, beside sextant — because two things
 were called memo (bin/keel answers D-lists); it was memo-run. Its shim went 2026-10-19, once
-the always-on Mac's launcher ran bin/sparks itself; the old state directory is read once (old_state()).
+the always-on Mac's starter ran bin/sparks itself; the old state directory is read once (old_state()).
 Part of the sextant module since 2026-10-19 (Sextant's ideas intake): the module's README is the
 how-to, launcher.c.in and install.sh beside it the launcher a stranger builds.
 
@@ -980,11 +980,11 @@ def is_in_place(entries, rel):
     return any(rel == e or rel.startswith(e + "/") for e in entries)
 
 
-def land_vault(meta, path, content, pending=False):
+def launch_vault(meta, path, content, pending=False):
     """The vault is the working branch: write the file; the run's commit takes it along. The
     folder must be one git tracks and the path one it would commit — a gitignored folder
     (`Claude outputs/`) would leave the note on this disk only (review 2026-09-29, W2). And,
-    once the vault is on the worktree workflow, one of its in-place records: anything else lands
+    once the vault is on the worktree workflow, one of its in-place records: anything else launches
     only reviewed, so a note filed there could never be committed (gap review, limit 2)."""
     repo, dest = meta["dir"], meta["dir"] / path
     if pending and dest.exists():
@@ -1370,7 +1370,7 @@ def process(path, state):
                 meta = repos[repo]
                 state[key] = {"landing": {"repo": repo, "path": rpath}}
                 save_state(state)
-                landed, reason = (land_vault(meta, rpath, content, bool(pending)) if meta["knowledge"]
+                landed, reason = (launch_vault(meta, rpath, content, bool(pending)) if meta["knowledge"]
                                   else land_git(repo, meta, rpath, content, title, key, bool(pending)))
                 if landed and landed["state"] == "filed":
                     WROTE.append(meta["dir"] / rpath)
