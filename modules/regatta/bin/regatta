@@ -85,6 +85,37 @@ def shim(rel):
     return 0
 
 
+def module_keys():
+    """The private values the modules here declare: each `config-keys` file (one key per line, `#`
+    comments) in a module of the checkout above the core, or of an installed plugin's root."""
+    root = common.regatta_root()
+    dirs = sorted(p for p in (root / "modules").iterdir() if p.is_dir()) if root else []
+    dirs += [base for _plugin, base in common._installed_roots() if base not in dirs]
+    keys = []
+    for d in dirs:
+        try:
+            lines = (d / "config-keys").read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        keys += [k.strip() for k in lines if k.strip() and not k.strip().startswith("#") and k.strip() not in keys]
+    return keys
+
+
+def module_problems():
+    """One line per module key that is unreadable, or missing where an overlay is installed — the
+    module refuses at use (orca-host's config_map), so a key it needs is said here, never by the
+    core's import: a module's key never stops the core loading."""
+    overlay = (common.CONFIG / "legacy").exists()
+    out = []
+    for k in module_keys():
+        lines, why = common.config_read(k)
+        if why:
+            out.append("%s unreadable (%s)" % (k, why))
+        elif lines is None and overlay:
+            out.append("%s missing" % k)
+    return out
+
+
 def check():
     """Each item of the config dir: ok, or what is wrong with it. Exit 1 on any finding."""
     bad = 0
@@ -106,7 +137,8 @@ def check():
     if old:
         print(("  ok  legacy: %s" if old.is_dir() else "  --  legacy: %s is no directory") % old)
         bad += 0 if old.is_dir() else 1
-    refused = {x.split()[0] for x in common.CONFIG_PROBLEMS}   # said once, below, never also `ok`
+    problems = list(common.CONFIG_PROBLEMS) + module_problems()
+    refused = {x.split()[0] for x in problems}   # said once, below, never also `ok`
     if common.CONFIG.is_dir():
         for p in sorted(common.CONFIG.glob("*/*")):
             if str(p.relative_to(common.CONFIG)) in refused:
@@ -118,7 +150,7 @@ def check():
                 bad += 0 if ok else 1
             elif p.is_file():
                 print("  ok  %s" % p.relative_to(common.CONFIG))
-    for problem in common.CONFIG_PROBLEMS:   # the private values (README): each one the core refuses
+    for problem in problems:   # the private values (README): each one the core or its module refuses
         print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
         bad += 1
     print("core: %s" % (root or "not in a checkout"))

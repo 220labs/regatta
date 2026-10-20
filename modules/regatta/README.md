@@ -60,6 +60,9 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   | `regatta/orca-deny` | the repos an Orca login no registry row names may never open (`common.ORCA_ROW`) | none denied |
   | `regatta/log-dir` | where `jev.jsonl` and `gate.jsonl` go; a leading `~` is the home folder of the moment | `.local/state/regatta` in the home folder |
   | `regatta/projects` | the projects folder `secrets` reads repo names under, `~` as above | `projects` in the home folder |
+- **A module's own private values** are listed in its `config-keys` file (one key per line, `#`
+  comments); `regatta check` reports each one that is unreadable, or missing where an overlay is
+  installed. The core's import never refuses on them: the module refuses when it uses one.
 - `gate set` writes the real file behind a config symlink, and refuses one on a `main` checkout.
 
 ## Shims

@@ -1,0 +1,4 @@
+# wharf-runs' private values (README, "What it reads"): `regatta check` reports each one missing
+# where an overlay is installed, or unreadable.
+wharf-runs/orca-pairs
+wharf-runs/ssh
