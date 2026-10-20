@@ -8,6 +8,9 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta check               the config directory: home, legacy, each link with its target, the private values
     regatta shim <path>         the shim an old path keeps for <path> (relative to the root): a
                                 source shim for a Python file, an exec shim for any other
+    regatta shim --hook <path>  a hook's source shim: run with no core, one line and exit 0 (C4)
+    regatta shim --deny <path>  a deny hook's source shim: run as a hook with no core, it refuses a
+                                PreToolUse call instead of dying (C4)
     regatta <name> [args…]      run a tool kept off PATH (C1: `pr`, `helm`) from its module
 
 Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
@@ -35,7 +38,7 @@ SOURCE_SHIM = '''#!/usr/bin/env python3
 # Source shim: this file moved to the regatta checkout, at {rel}.
 # Its source runs here, in this module, with __file__ set to that path, so `import`,
 # load_module, exec_module and a run as a script all behave as the file itself (design P5).
-# Made by `regatta shim {rel}`; regenerate, never edit.
+# Made by `regatta shim {made}`; regenerate, never edit.
 def _regatta_load(rel):
     import os
     home = os.environ.get("REGATTA_HOME")
@@ -58,7 +61,53 @@ def _regatta_load(rel):
     return path, SourceFileLoader("_regatta_core", path).get_code("_regatta_core")
 
 
-__file__, _regatta_code = _regatta_load({rel_py})
+'''
+
+# A deny hook's shim (C4): the same load, but run as a hook with no core to load from, it refuses
+# instead of dying — exit 1 is "no objection" to Claude Code, and the hook's own fail-closed path
+# lives in the module the shim cannot reach. A PreToolUse call is denied whole, in one line that
+# names the fix; any other event gets the line on stderr and exit 0. Imported, it raises as ever.
+# Any load failure, not ImportError alone: a conflicted pull leaves a SyntaxError, a bad mode an
+# OSError, and either would die with exit 1 (B5 review). One call passes: a plain `git -C <dir>
+# fetch` or `pull --ff-only`, no shell operators, so a checkout that predates the module can be
+# fast-forwarded from the session itself, as the hook's own core_missing() allows.
+DENY_TAIL = '''try:
+    __file__, _regatta_code = _regatta_load({rel_py})
+except Exception as _regatta_exc:
+    if __name__ != "__main__":
+        raise
+    import json as _json, sys as _sys
+    _sys.stderr.write("%s (a deny hook: refusing)\\n" % _regatta_exc)
+    try:
+        _event = _json.loads(_sys.stdin.read() or "{{}}")
+    except ValueError:
+        _event = {{}}
+    _cmd = str(((_event.get("tool_input") or {{}}) if isinstance(_event, dict) else {{}}).get("command") or "")
+    import re as _re
+    _repair = bool(_re.fullmatch(r"\\s*git -C [\\w./~-]+ (fetch|pull --ff-only)( [\\w./-]+)*\\s*", _cmd))
+    if isinstance(_event, dict) and _event.get("hook_event_name") == "PreToolUse" and not _repair:
+        print(_json.dumps({{"hookSpecificOutput": {{"hookEventName": "PreToolUse", "permissionDecision": "deny",
+              "permissionDecisionReason": "\\u26d4 %s. This hook cannot judge the call without it, so it refuses it; "
+                                          "run the fix in a terminal, or `git -C <the core\\'s checkout> pull --ff-only`, which it lets through." % _regatta_exc}}}}))
+    _sys.exit(0)
+del _regatta_load
+exec(_regatta_code)
+'''
+# Any other hook's shim (C4: a hook runs to a quiet exit with the core missing): run as a hook
+# with no core, one line on stderr and exit 0 — never exit 1's traceback at every session start,
+# never exit 2, which on UserPromptSubmit erases the prompt. Imported, it raises as ever.
+HOOK_TAIL = '''try:
+    __file__, _regatta_code = _regatta_load({rel_py})
+except Exception as _regatta_exc:
+    if __name__ != "__main__":
+        raise
+    import sys as _sys
+    _sys.stderr.write("%s\\n" % _regatta_exc)
+    _sys.exit(0)
+del _regatta_load
+exec(_regatta_code)
+'''
+SOURCE_TAIL = '''__file__, _regatta_code = _regatta_load({rel_py})
 del _regatta_load
 exec(_regatta_code)
 '''
@@ -73,7 +122,10 @@ exec "$home/"{rel_sh} "$@"
 '''
 
 
-def shim(rel):
+TAILS = {None: SOURCE_TAIL, "--hook": HOOK_TAIL, "--deny": DENY_TAIL}
+
+
+def shim(rel, kind=None):
     root = common.regatta_root()
     target = (root / rel) if root else None
     if not target or not target.is_file():
@@ -81,7 +133,12 @@ def shim(rel):
         return 1
     first = target.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
     python = target.suffix == ".py" or "python" in first
-    sys.stdout.write((SOURCE_SHIM if python else EXEC_SHIM).format(rel=rel, rel_py=repr(rel), rel_sh=shlex.quote(rel)))
+    if kind and not python:
+        print("regatta shim %s: %s is no Python hook" % (kind, rel), file=sys.stderr)
+        return 2
+    text = (SOURCE_SHIM + TAILS[kind]) if python else EXEC_SHIM
+    made = (kind + " " if kind else "") + rel
+    sys.stdout.write(text.format(rel=rel, made=made, rel_py=repr(rel), rel_sh=shlex.quote(rel)))
     return 0
 
 
@@ -179,6 +236,8 @@ def main(argv):
         return check()
     if cmd == "shim" and len(rest) == 1:
         return shim(rest[0])
+    if cmd == "shim" and len(rest) == 2 and rest[0] in ("--hook", "--deny"):
+        return shim(rest[1], rest[0])
     if cmd in ("root", "has", "which", "check", "shim"):
         print("regatta %s: wrong arguments — `regatta help`" % cmd, file=sys.stderr)
         return 2

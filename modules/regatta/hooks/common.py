@@ -141,14 +141,19 @@ def _installed_roots():
     except OSError:   # the cwd was removed under us (a worktree removed after its merge): user rows only
         cwd = None
     out = []
+    # A registry of the wrong shape is no registry: tool() is read at a deny hook's import, where a
+    # raise is exit 1 and an allow (B5 review: a list for "plugins", a number for a path).
+    if not isinstance(plugins, dict):
+        return []
     for key, rows in plugins.items():
-        if not key.endswith("@regatta") or not isinstance(rows, list):
+        if not isinstance(key, str) or not key.endswith("@regatta") or not isinstance(rows, list):
             continue
         for row in rows:
-            if not isinstance(row, dict) or not row.get("installPath"):
+            if not isinstance(row, dict) or not isinstance(row.get("installPath"), str) or not row["installPath"]:
                 continue
             pp = row.get("projectPath")
-            if row.get("scope") == "user" or (cwd and pp and (cwd + os.sep).startswith(os.path.realpath(pp) + os.sep)):
+            if row.get("scope") == "user" or (cwd and isinstance(pp, str) and pp
+                                              and (cwd + os.sep).startswith(os.path.realpath(pp) + os.sep)):
                 out.append((key.split("@")[0], Path(row["installPath"])))
     return out
 

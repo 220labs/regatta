@@ -122,9 +122,10 @@ check "$(python3 -I "$T/own/run.py" 2>&1)" "1 1 O’Hara ('100%',) False" "  jev
 # Clean up: from here on the suite's overlay wrote every key, empty — the neutral values.
 for k in $KEYS; do : > "$T/config/regatta/$k"; done; rm -rf "$T/af" "$H/logs" "$T/help.out" "$T/own"
 
-mkdir -p "$T/legacy/bin"; printf '#!/bin/sh\necho legacy "$@"\n' > "$T/legacy/bin/pr"; chmod +x "$T/legacy/bin/pr"
+# a name no module has (`pr` was this case until wharf took it, B5)
+mkdir -p "$T/legacy/bin"; printf '#!/bin/sh\necho legacy "$@"\n' > "$T/legacy/bin/old-tool"; chmod +x "$T/legacy/bin/old-tool"
 echo "$T/legacy" > "$T/config/legacy"
-check "$(py 'print(common.tool("pr"))')" "$T/legacy/bin/pr" "  the legacy file reaches a file not moved yet"
+check "$(py 'print(common.tool("old-tool"))')" "$T/legacy/bin/old-tool" "  the legacy file reaches a file not moved yet"
 CC="$T/claude"; mkdir -p "$CC/plugins" "$T/cache/wharf/1/bin" "$T/proj/sub"; : > "$T/cache/wharf/1/bin/finish-x"
 printf '{"plugins": {"wharf@regatta": [{"scope": "project", "projectPath": "%s", "installPath": "%s"}]}}\n' "$T/proj" "$T/cache/wharf/1" > "$CC/plugins/installed_plugins.json"
 cp -R "$M" "$T/cache-core"   # a core outside any checkout, as in a plugin cache
@@ -150,7 +151,7 @@ check "$("$RG" root)" "$ROOT" "regatta root"
 check "$("$RG" has regatta)" "$M" "regatta has regatta"
 out=$("$RG" has helm); check "$?:$out" "1:helm not installed" "regatta has helm: not installed, exit 1"
 out=$("$RG" helm board 2>&1); check "$?:$out" "2:regatta: helm not installed" "regatta helm …: one line, exit 2 (G28)"
-check "$("$RG" pr ready 7)" "legacy ready 7" "regatta pr …: runs the tool where it is, args passed"
+check "$("$RG" old-tool ready 7)" "legacy ready 7" "regatta <tool> …: runs the tool where it is, args passed"
 out=$("$RG" which 2>&1); check "$?:$out" "2:regatta which: wrong arguments — \`regatta help\`" "regatta which, no name: a usage error, exit 2"
 rm "$T/config/legacy"
 out=$("$RG" check); check "$?" 1 "regatta check without a home: exit 1"
@@ -264,6 +265,39 @@ printf '#!/usr/bin/env bash\necho "bash $*"\n' > "$T/root/modules/regatta/bin/.p
 "$T/root/modules/regatta/bin/regatta" shim modules/regatta/bin/.probe-sh > "$T/old/bin/probe"; chmod +x "$T/old/bin/probe"
 head -2 "$T/old/bin/probe" | grep -q "Exec shim"; check $? 0 "a bash file gets an exec shim"
 check "$(REGATTA_HOME="$T/root" "$T/old/bin/probe" a b)" "bash a b" "  which runs it, args passed"
+# A deny hook's shim (C4): with no core it refuses a PreToolUse call, exit 0, rather than dying
+# with exit 1 — which Claude Code reads as no objection. With a core it is the plain shim.
+printf 'import sys\nprint("module", __file__)\n' > "$T/root/modules/regatta/hooks/probe_deny.py"
+"$T/root/modules/regatta/bin/regatta" shim --deny modules/regatta/hooks/probe_deny.py > "$T/old/hooks/probe_deny.py"; check $? 0 "regatta shim --deny writes a deny hook's shim"
+grep -q 'Made by `regatta shim --deny modules/regatta/hooks/probe_deny.py`' "$T/old/hooks/probe_deny.py"; check $? 0 "  saying how it was made"
+check "$(echo '{}' | REGATTA_HOME="$T/root" python3 "$T/old/hooks/probe_deny.py")" "module $T/root/modules/regatta/hooks/probe_deny.py" "  with a core: the module runs, its own __file__"
+out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' \
+  | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_deny.py" 2>"$T/deny.err"; echo "rc=$?")
+check "$(echo "$out" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecision"])')" "deny" "  no core, PreToolUse: denied"
+check "$(echo "$out" | tail -1) $(grep -c 'a deny hook: refusing' "$T/deny.err")" "rc=0 1" "  exit 0, one line on stderr"
+check "$(echo '{"hook_event_name":"Stop"}' | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_deny.py" 2>/dev/null; echo "rc=$?")" "rc=0" "  no core, any other event: nothing, exit 0"
+pull() { jq -nc --arg c "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c}}' \
+  | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_deny.py" 2>/dev/null; }
+check "$(pull "git -C $T/root pull --ff-only"; echo "rc=$?")" "rc=0" "  no core: a plain pull --ff-only of a checkout passes, the repair"
+check "$(pull 'git -C /x pull --ff-only; rm -rf /x' | grep -c '"deny"')" "1" "  …but not one with a shell operator after it"
+# A broken module, not a missing one (B5 review): a conflicted pull's SyntaxError still denies.
+cp "$T/root/modules/regatta/hooks/probe_deny.py" "$T/probe_deny.ok"; printf '<<<<<<< ours\n' >> "$T/root/modules/regatta/hooks/probe_deny.py"
+out=$(echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' \
+  | REGATTA_HOME="$T/root" python3 "$T/old/hooks/probe_deny.py" 2>/dev/null; echo "rc=$?")
+check "$(echo "$out" | head -1 | grep -c '"deny"') $(echo "$out" | tail -1)" "1 rc=0" "  a module with conflict markers: denied, exit 0 — never exit 1"
+cp "$T/probe_deny.ok" "$T/root/modules/regatta/hooks/probe_deny.py"
+out=$(env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import probe_deny" 2>&1 | tail -1 | cut -c1-12)
+check "$out" "ImportError:" "  imported with no core: the ImportError reaches the importer"
+check "$("$T/root/modules/regatta/bin/regatta" shim --deny modules/regatta/bin/.probe-sh 2>&1 >/dev/null; echo "rc=$?")" "regatta shim --deny: modules/regatta/bin/.probe-sh is no Python hook
+rc=2" "  a bash file: refused"
+# Any other hook's shim: with no core, one line and exit 0 (exit 1 printed a traceback at every
+# session start); with a core, the module.
+"$T/root/modules/regatta/bin/regatta" shim --hook modules/regatta/hooks/probe_deny.py > "$T/old/hooks/probe_hook.py"; check $? 0 "regatta shim --hook writes a hook's shim"
+check "$(echo '{}' | REGATTA_HOME="$T/root" python3 "$T/old/hooks/probe_hook.py")" "module $T/root/modules/regatta/hooks/probe_deny.py" "  with a core: the module runs"
+out=$(echo '{"hook_event_name":"PreToolUse"}' | env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 "$T/old/hooks/probe_hook.py" 2>"$T/hook.err"; echo "rc=$?")
+check "$out $(wc -l < "$T/hook.err" | tr -d ' ')" "rc=0 1" "  no core: no output, exit 0, one line on stderr — never a deny"
+out=$(env -u REGATTA_HOME REGATTA_CONFIG="$T/empty" python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import probe_hook" 2>&1 | tail -1 | cut -c1-12)
+check "$out" "ImportError:" "  imported with no core: the ImportError reaches the importer"
 
 mkdir -p "$HOME/.config/regatta"; echo "$ROOT" > "$HOME/.config/regatta/home"
 out=$(env -i HOME="$HOME" PATH=/usr/bin:/bin /usr/bin/python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(common.__file__)")
