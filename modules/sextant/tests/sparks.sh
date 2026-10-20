@@ -259,6 +259,11 @@ PY
 }
 check "$(cfgland '{"land": "merge"}') $(cfgland '{"launch": "merge"}') $(cfgland '{}')" "merge merge pr" 'the config key "land" and "launch" both read; neither: pr'
 check "$(cfgland '{}' SPARKS_LAND=merge) $(cfgland '{}' SPARKS_LAUNCH=merge)" "merge merge" "  and SPARKS_LAND and SPARKS_LAUNCH both"
+# rename S3: launch_vault is a name outside callers load through a shim — a rename here passes this
+# suite and breaks theirs, so the name itself is a case
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("sparks", sys.argv[1]); r = u.module_from_spec(u.spec_from_loader("sparks", l)); l.exec_module(r)
+print(callable(getattr(r, "launch_vault", None)))' "$B/sparks")" "True" "launch_vault is there by that name"
 export SPARKS_ROUTE=1 SPARKS_LAND=merge SPARKS_PROJECTS="$P" SPARKS_REPOS="$T/repos.json" SPARKS_FAKE_MERGE=1 SPARKS_HOST=
 printf '{"deny": ["vault/me/"]}' > "$T/route-config.json"; export SPARKS_CONFIG="$T/route-config.json"
 rm -f "$T/in"/*   # the failure cases above leave their audio for a retry, by design
