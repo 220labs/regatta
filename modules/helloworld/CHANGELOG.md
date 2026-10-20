@@ -19,6 +19,14 @@
   comment block first.
 - `publish --pr` points at an open replay branch instead of pushing only when that branch's trees
   are the ones this run would push, each scanned with today's lists.
+- `check-message --range A..B [--repo R]` (S7, publishable at the source): every commit of the
+  range (`A..B`, a bare rev refused) meets that scan, each finding under its commit; skipped as the
+  replay skips them: checkpoints, and commits whose published files equal their first parent's. A
+  repo without `.helloworld/` at HEAD has nothing to scan and its word list is not read; a repo git
+  cannot read exits 2. wharf's `/finish` runs it on the curated branch
+  before the push, in any repo with a public twin. A Mac without the word list scans the patterns
+  alone, says so in one line and in its last; a variable naming a missing list, or a default
+  path or helloworld folder that is a broken link, still refuses.
 
 ## 0.1.0 — 2026-10-18
 

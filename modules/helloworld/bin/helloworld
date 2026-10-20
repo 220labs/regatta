@@ -7,6 +7,9 @@ commits replayed one by one, the privacy scan as the gate.
     helloworld check-message --subject S [--body-file F] | --message-file F
                                             one commit message as the replay would scan it, at
                                             the private commit's making; reads no repo
+    helloworld check-message --range A..B [--repo R]
+                                            every commit of the range, the same scan: /finish's
+                                            curated branch, before its push (S7)
     helloworld publish <repo> [-m MSG]      the same at origin/main, then the repo's name typed
                                             back, one commit, one push; the owner's terminal only
     helloworld publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT] [--squash]
@@ -131,8 +134,10 @@ subject that fails refuses the run, and the fix is one reviewed line in .hellowo
 message meets the whole word list and the tree's patterns, and its own (D2 of the S2 digest, the
 owner's A, 2026-10-20): a sha-like token (7-40 hex, word-bounded), a cross-repo ref (owner/repo#N,
 repo#N, a/b/c#N, any GitHub link into a repo) and a session id (a uuid, session_<id>);
-`check-message` runs that scan on one message when the private commit is made, so a finding meets
-its writer, and the replay still runs it at publish. No
+`check-message` runs that scan on one message when the private commit is made, and `--range` on
+every commit of a curated branch (S7: wharf's `/finish` runs it before the push), so a finding meets
+its writer, and the replay still runs it at publish. Without a word list on the Mac the patterns
+run alone, said in one line. No
 base (a credit merged on GitHub changed the public tree) squashes as before, and the PR body says
 so; --squash asks for it. The same span makes the same shas again, the dates being the private
 ones. `check` prints the plan, private shas and fold reasons included, which never go public; its
@@ -1069,18 +1074,112 @@ def cmd_check(args):
     return 0 if clean else 1
 
 
+def message_words():
+    """The word list check-message scans with. A Mac with no list (none at the default paths, no
+    variable naming one) still meets the message patterns, and one printed line says the words
+    were skipped (S7; the design's entry G31: a Mac without the list). A variable naming a missing
+    file, a link that does not resolve, an empty list or an entry with '#' still refuse, as
+    wordlist() does: a typo or a list not yet downloaded is not "no list". "No list" means neither
+    default path holds an entry, live or broken, and the config dir's folder is no broken link (a
+    Drive folder unmounted): the S7 review, 2026-10-20, found both passed over as "no list"."""
+    p = wordlist_path()
+    new = common.CONFIG / "helloworld" / "wordlist.txt"
+    old = Path.home() / ".config" / "opensource" / "wordlist.txt"
+    dangling_dir = os.path.lexists(new.parent) and not new.parent.exists()
+    if (not any(os.environ.get(v) for v in ("HELLOWORLD_WORDLIST", "OPENSOURCE_WORDLIST"))
+            and not os.path.lexists(new) and not os.path.lexists(old) and not dangling_dir):
+        print(f"  no private word list at {p}: the word-list part is skipped; the patterns still run")
+        return None
+    return wordlist()[1]
+
+
+def message_report(raw, rx, indent="  "):
+    """One message's findings printed as the replay would meet them; the count."""
+    subject, body = public_message(raw)
+    msg = subject + ("\n\n" + body if body else "")
+    hits = message_scan(msg, rx)
+    for n, cat, txt in hits:
+        where = "subject" if n == 1 else f"body:{n - 2}"
+        said = "the replay refuses this subject" if n == 1 else "the replay drops this body"
+        print(mask_words(f"{indent}{where}: {cat} — {txt} ({said})", rx))
+    return len(hits)
+
+
+def check_range(args):
+    """S7, publishable at the source: every commit of a range — the curated branch /finish is
+    about to push — meets the message scan, so a private word, a sha, a cross-repo ref or a
+    session id is reworded while the branch is still private, not met by the next publish (the
+    owner, 2026-10-20). A repo without .helloworld/ (or the old .opensource/) at HEAD has no public
+    twin: nothing to scan, and the word list is not read, so a broken one never stops a landing
+    there. Skipped as the replay skips them: a checkpoint (FOLDS), which folds, and a commit whose
+    allowlisted tree is its first parent's, whose message stays private (replay_plan's `private`;
+    the S7 review found 20 of 60 refusals on main were such commits). A range is A..B: a bare rev
+    would scan the whole history, which no curation can fix. Exit 2, never a traceback's 1, for a
+    repo git cannot read."""
+    repo = Path(args.repo).resolve()
+    if ".." not in args.range or args.range.startswith("-"):
+        raise Refused(f"--range {args.range}: give A..B (origin/main..HEAD)")
+    head = git(repo, "rev-parse", "--verify", "-q", "HEAD^{commit}", check=False)
+    if head.returncode:
+        raise Refused(f"{repo}: {head.stderr.strip() or 'no commit at HEAD'}")
+    files = entries(repo, "HEAD")
+    if not any(f.startswith(c + "/") for c in CONFS for f in files):
+        print(f"  no {CONF}/ at HEAD: no public twin, nothing to scan")
+        return 0
+    words = message_words()
+    rx = words_regex(words or [])
+    shas = git(repo, "rev-list", "--reverse", args.range, "--").stdout.split()
+    objs = read_objects(repo, shas)
+    cache, bad, skipped, private = {}, 0, 0, 0
+    for c in shas:
+        raw = split_object(objs[c][1])[1]
+        subject, body = public_message(raw)
+        if FOLDS.match(subject):
+            skipped += 1
+            continue
+        mine = public_tree_at(repo, c, cache)
+        first = git(repo, "rev-parse", "-q", "--verify", f"{c}^1", check=False).stdout.strip()
+        theirs = public_tree_at(repo, first, cache) if first else None
+        if mine is None or (theirs is not None and mine["tree"] == theirs["tree"]):
+            private += 1
+            continue
+        hits = message_scan(subject + ("\n\n" + body if body else ""), rx)
+        # A subject with a finding is not printed: its hit lines below show it masked, and a
+        # credential or an address would otherwise stand in full above them.
+        said = "" if any(n == 1 for n, _, _ in hits) else f" {subject}"
+        print(mask_words(f"  {c[:7]}{said}", rx))
+        if message_report(raw, rx, indent="    "):
+            bad += 1
+    scanned = len(shas) - skipped - private
+    tail = "".join([f", {skipped} checkpoint(s) skipped" if skipped else "",
+                    f", {private} changing no published file" if private else "",
+                    ", patterns only: no word list here" if words is None else ""])
+    if bad:
+        print(f"  {bad} of {scanned} commit(s) would not go public as written{tail}: reword each subject or "
+              "body named above (a sha, a ref or an id named in words; a private word left out), then rerun")
+        return 1
+    print(f"  clean: {scanned} commit(s) would go public as written{tail}")
+    return 0
+
+
 def cmd_check_message(args):
     """One commit message as the replay would treat it, at the moment the private commit is made
     (the owner, D2 of the S2 digest: "any repo that has a public twin applies these rules at
-    private commit creation before PR merge … publishing should still check"). The trailers are
-    dropped first, as the replay drops them; then the subject meets message_scan (a finding: the
-    replay refuses it) and the body too (a finding: the replay drops it). The whole word list, no
-    credit and no exemption. Exit 0 clean, 1 a finding either way, 2 no word list or no message."""
+    private commit creation before PR merge … publishing should still check"); with --range,
+    every commit of a range (S7: /finish's curated branch). The trailers are dropped first, as the
+    replay drops them; then the subject meets message_scan (a finding: the replay refuses it) and
+    the body too (a finding: the replay drops it). The whole word list, no credit and no
+    exemption; no list on this Mac: the patterns alone, said in one line. Exit 0 clean, 1 a
+    finding, 2 a usage error, or a list or message that does not read."""
     def read(f):
         try:
             return sys.stdin.read() if f == "-" else Path(f).read_text()
         except (OSError, UnicodeDecodeError) as e:  # exit 2, never a traceback's 1 (a finding)
             raise Refused(f"cannot read {f}: {e}")
+    if args.range:
+        if args.subject is not None or args.body_file or args.message_file:
+            raise Refused("--range scans commits: give it alone (with --repo)")
+        return check_range(args)
     if args.message_file and (args.subject is not None or args.body_file):
         raise Refused("give --subject [--body-file F] or --message-file F, not both")
     if args.message_file:
@@ -1092,19 +1191,12 @@ def cmd_check_message(args):
         body = read(args.body_file) if args.body_file else ""
         raw = args.subject + ("\n\n" + body if body.strip() else "")
     else:
-        raise Refused("give --subject [--body-file F] or --message-file F")
+        raise Refused("give --subject [--body-file F], --message-file F or --range A..B")
     subject, body = public_message(raw)
     if not subject:
         raise Refused("the message has no subject")
-    _p, words = wordlist()
-    rx = words_regex(words)
-    msg = subject + ("\n\n" + body if body else "")
-    hits = message_scan(msg, rx)
-    for n, cat, txt in hits:
-        where = "subject" if n == 1 else f"body:{n - 2}"
-        said = "the replay refuses this subject" if n == 1 else "the replay drops this body"
-        print(mask_words(f"  {where}: {cat} — {txt} ({said})", rx))
-    if hits:
+    rx = words_regex(message_words() or [])
+    if message_report(raw, rx):
         print("  rewrite it before the commit lands: a public twin replays the subject and body as written")
         return 1
     print(f"  clean: the subject{' and body' if body else ''} would go public as written")
@@ -1463,10 +1555,13 @@ def main(argv=None):
     c = sub.add_parser("check", help="build and scan; never pushes")
     c.add_argument("repo")
     c.add_argument("--ref", default="origin/main", help="the commit to build from (default: origin/main, fetched)")
-    m = sub.add_parser("check-message", help="scan one commit message as the replay would; never reads a repo")
+    m = sub.add_parser("check-message", help="scan one commit message, or a range's, as the replay would; never pushes")
     m.add_argument("--subject", help="the subject line")
     m.add_argument("--body-file", help="the body, from a file (- for stdin)")
     m.add_argument("--message-file", help="the whole message, subject first (- for stdin; git log -1 --format=%%B)")
+    m.add_argument("--range", help="every commit of a rev range (origin/main..HEAD: /finish's curated branch); "
+                                   "checkpoints skipped; nothing to scan without .helloworld/ at HEAD")
+    m.add_argument("--repo", default=".", help="--range: the repo (default: the current directory)")
     p = sub.add_parser("publish", help="check origin/main, then commit and push (the owner's terminal only); "
                                        "--pr: a pull request instead (an agent may run it)")
     p.add_argument("repo")

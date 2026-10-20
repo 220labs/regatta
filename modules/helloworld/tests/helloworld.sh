@@ -1068,6 +1068,66 @@ check "$(cm --message-file "$T/msg")" 0 "Deployed: and Stood-By: are dropped wit
 check "$(cm --message-file "$T/nothing-here")" 2 "a file it cannot read: exit 2, not a finding"
 check "$(cm --subject 'Tool: x' --message-file "$T/msg")" 2 "--subject with --message-file: refused, not one ignored"
 
+echo "check-message --range: /finish's curated commits meet the scan before the push (S7)"
+# ec <subject> [body]: a commit on R2's current branch that changes a published file (one that
+# changes none stays private and is never scanned), its sha printed.
+ec() { echo "# $RANDOM$RANDOM" >> "$R2/tool.py"; git -C "$R2" commit -q -am "$1" ${2:+-m "$2"}; git -C "$R2" rev-parse HEAD; }
+git -C "$R2" checkout -q -b s7-clean main
+ec "Tool: faster" "Why: it was slow.
+
+$CA1
+$CS" > /dev/null
+ec "wip: changes between turns, after $P_SHA" > /dev/null
+ec "Wharf: the Orca host takes the runs" > /dev/null
+git -C "$R2" commit -q --allow-empty -m "Notes: after $P_SHA"
+check "$(cm --range main..s7-clean --repo "$R2")" 0 "a clean curated branch passes; Orca too, and the trailers are dropped"
+has "$T/out" "clean: 2 commit(s) would go public as written, 1 checkpoint(s) skipped, 1 changing no published file" \
+    "  the checkpoint and the private commit skipped: neither message goes public"
+git -C "$R2" checkout -q -b s7-bad main
+S_WORD=$(ec "Tool: works offline" "Tested on MyLaptop.")
+S_SHA=$(ec "Tool: after $P_SHA")
+S_REF=$(ec "Tool: the fix" "As $P_REF asked.")
+S_SID=$(ec "Tool: from $P_SID")
+S_OK=$(ec "Docs: how to run it")
+check "$(cm --range main..s7-bad --repo "$R2")" 1 "a curated branch with a private word, a sha, a cross-repo ref and a session id: refused"
+has "$T/out" "  ${S_WORD:0:7} Tool: works offline" "  the commit named"
+has "$T/out" "    body:1: private word — MyLaptop (the replay drops this body)" "  a private word in a body: the hit"
+has "$T/out" "  ${S_SHA:0:7}" "  the sha's commit named"
+lacks "$T/out" "  ${S_SHA:0:7} Tool:" "  its refused subject not printed above its masked hit"
+has "$T/out" "    subject: commit sha — $P_SHA (the replay refuses this subject)" "  a sha in a subject: the hit"
+has "$T/out" "    body:1: cross-repo ref — $P_REF (the replay drops this body)" "  a cross-repo ref: the hit"
+has "$T/out" "  ${S_SID:0:7}" "  the session id's commit named"
+has "$T/out" "    subject: session id — $P_SID (the replay refuses this subject)" "  a session id: the hit"
+has "$T/out" "4 of 5 commit(s) would not go public as written" "  counted, and the fix said"
+check "$(sed -n "/${S_OK:0:7}/{n;p;}" "$T/out" | grep -c '^    ')" 0 "  the clean commit among them has no finding under it"
+check "$(cm --range main..s7-bad --repo "$R2" --subject x)" 2 "--range with a message: a usage error"
+NOLIST() { env -u HELLOWORLD_WORDLIST -u OPENSOURCE_WORDLIST HOME="$T/nohome" REGATTA_CONFIG="$T/noconf" "$@"; }
+check "$(NOLIST env -u CLAUDECODE python3 "$B/helloworld" check-message --range main..s7-bad --repo "$R2" > "$T/out" 2>&1; echo $?)" 1 \
+      "no word list on the Mac: the patterns still refuse"
+check "$(grep -c 'no private word list' "$T/out")" 1 "  one line says the word list was skipped"
+lacks "$T/out" "private word —" "  the private word passes, unscanned"
+has "$T/out" "3 of 5 commit(s)" "  the sha, the ref and the session id still refused"
+has "$T/out" "patterns only: no word list here" "  and the last line says the words were not checked"
+check "$(NOLIST env -u CLAUDECODE python3 "$B/helloworld" check-message --subject 'Tool: faster' > "$T/out" 2>&1; echo $?)" 0 \
+      "no word list, one clean message: passes, said once"
+check "$(grep -c 'no private word list' "$T/out")" 1 "  one line"
+check "$(HELLOWORLD_WORDLIST="$T/typo.txt" env -u CLAUDECODE python3 "$B/helloworld" check-message --subject 'Tool: x' > "$T/out" 2>&1; echo $?)" 2 \
+      "a variable naming a missing list is refused, not skipped"
+git init -q -b main "$T/s7-plain"; git -C "$T/s7-plain" -c user.name="Film Maker" -c user.email=maker@example.org commit -q --allow-empty -m "Tool: after $P_SHA"
+check "$(cm --range main..HEAD --repo "$T/s7-plain")" 0 "a repo without .helloworld/: no public twin, nothing scanned"
+has "$T/out" "no .helloworld/ at HEAD" "  and said"
+check "$(HELLOWORLD_WORDLIST="$T/typo.txt" cm --range main..HEAD --repo "$T/s7-plain")" 0 \
+      "  a broken word list never stops a repo with no twin: the list is not read there"
+mkdir -p "$T/s7-none" "$T/s7-unborn"; git init -q "$T/s7-unborn"
+check "$(cm --range main..HEAD --repo "$T/s7-none")" 2 "--repo not a git repo: exit 2, not a finding's 1"
+check "$(cm --range main..HEAD --repo "$T/s7-unborn")" 2 "--repo with no commit: exit 2"
+check "$(cm --range main --repo "$R2")" 2 "--range without ..: refused, it would scan the whole history"
+mkdir -p "$T/s7-dl/regatta"; ln -s "$T/gone" "$T/s7-dl/regatta/helloworld"
+check "$(env -u HELLOWORLD_WORDLIST -u OPENSOURCE_WORDLIST HOME="$T/nohome" REGATTA_CONFIG="$T/s7-dl/regatta" \
+        env -u CLAUDECODE python3 "$B/helloworld" check-message --subject 'Tool: x' > "$T/out" 2>&1; echo $?)" 2 \
+      "the config dir's helloworld folder a broken link: refused, not \"no list\""
+git -C "$R2" checkout -q main
+
 git clone -q "$PUB2" "$T/gh2"; git -C "$T/gh2" config user.name gh; git -C "$T/gh2" config user.email 7+gh@users.noreply.github.com
 printf 'people:\n  - {name: "New Person"}\n' > "$T/gh2/CREDITS.yaml"; git -C "$T/gh2" add -A; git -C "$T/gh2" commit -qm "A credit"
 git -C "$T/gh2" push -q origin main
