@@ -921,13 +921,13 @@ WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
 # Allowed only when the session's own dry run says `start` — checkpoint.py's Stop checks it
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
 # 40 idle minutes.
-DECLARED_LINE = ADDRESS + "THIS SESSION IS DONE — IT LANDS BY ITSELF."
-# The rename's reader step (the overlay's wharf-rename design, M3): the line /autofinish says once
-# the writers switch, beside the one it says today. Every reader takes both until the aliases are
-# dropped — a session started before the switch still ends on the old line — and compares with
+# The rename (the overlay's wharf-rename design, M3): the line /autofinish says since its writer step
+# (S4), first, beside the one it said before. Every reader takes both until the aliases are dropped
+# — a session started before the switch still ends on the old line — and compares with
 # `in DECLARED_LINES`, never `== DECLARED_LINE`. Both literals on one line: the rename's map script
 # keeps a line holding both words, so a later map run cannot make it (new, new).
 DECLARED_LINES = (ADDRESS + "THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.", ADDRESS + "THIS SESSION IS DONE — IT LANDS BY ITSELF.")
+DECLARED_LINE = DECLARED_LINES[0]   # the line the overlay's /autofinish skill states, and the fallback quote
 CLOSING = (
     ("done", "|".join(re.escape(x) for x in FINISH_LINES)),                       # /finish, /evacuate
     ("done", "|".join(re.escape(x) for x in DECLARED_LINES)),                     # /autofinish
@@ -1143,16 +1143,16 @@ def autofinish_armed():
 # " pr=#<n>" or "", session, tip, rule, by, the first line kept, "; <notes>" or "".
 RUN_END = "%s run %s %s %s%s%s session=%s tip=%s rule=%s by=%s account=%s — %s%s"
 # account= since the account pool (2026-10-08): optional, so the lines before it still count.
-# `landed` until the rename switches the writer to `launched`; both forever: the launch door
-# counts the week's old lines beside the new (the wharf-rename design, M8, risk R2).
+# `launched` since the overlay's launcher switched (rename S4), `landed` before; both forever: the
+# launch door counts the week's old lines beside the new (the wharf-rename design, M8, risk R2).
 RUN_LAUNCHED = re.compile(r"^(\S+) run (\S+) (\S+) (?:landed|launched)(?: gate=\S+)?(?: pr=#\S+)? session=(\S+) tip=\S+ rule=\S+ by=(\S+)(?: account=\S+)? —")
 # The old name, for an overlay whose callers still say RUN_LANDED (not RUN_LAUNCHED): the core
 # launches first (the overlay's main imports it before its reader step says RUN_LAUNCHED). It goes
 # once no overlay caller says RUN_LANDED instead of RUN_LAUNCHED (S8).
 RUN_LANDED = RUN_LAUNCHED
 # An ended run's outcome that merged its branch (autofinish.json's `outcome`, the `autofinished`
-# lines, RUN_END's): `landed` until the writers switch, `launched` after; every reader takes both
-# forever (M7).
+# lines, RUN_END's): `launched` once the overlay's writers switch (S4), `landed` before; every reader
+# takes both forever (M7).
 LAUNCHED_OUTCOMES = ("launched", "landed")
 # The runner's gate for a start refused before any session: nothing ran. `not-launched` until the
 # start word changed (2026-10-17); read both forever — old run records and dated logs keep the old
