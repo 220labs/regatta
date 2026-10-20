@@ -21,7 +21,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `tests/check.sh` | every suite; scratch dirs only, no network |
 
 Install: `claude plugin marketplace add <this repo>`, then `claude plugin install lighthouse@regatta`
-(it needs the core, `regatta`). From a clone: `sh modules/lighthouse/install.sh --check`.
+(it needs the core, `regatta`, and `helloworld`, for beacon's build scan). From a clone: `sh modules/lighthouse/install.sh --check`.
 
 ## Private values
 
@@ -64,3 +64,12 @@ verb that needs it says so in one line and the rest runs (the design's G16–G18
 nothing from the core, so it guards where the core is missing too; `account_guard` and
 `design_route` fail closed when the core is missing or broken (a refusal naming the repair). They
 stop accidents, not intent: each header says what it does not see.
+
+## beacon — support: a site's contact form and its bot
+
+Lighthouse's second job is the people who meet a business from outside: beacon answers a site's
+visitors from the site's own pages (Claude Haiku, one Cloudflare Worker on the free plan) and
+hands what it cannot answer to the people behind the site through the contact form, which files
+each message as a GitHub issue. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
+whose word list scans what it builds. beacon is private until its scrub: its chart is
+`beacon/README.md`, and none of its files is in the public twin yet.

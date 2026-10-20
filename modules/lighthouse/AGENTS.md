@@ -18,3 +18,25 @@ agent:
 - A suite moves HOME and pins `REGATTA_CONFIG` to a scratch dir first; one that needs macOS
   (zsh, Apple clang) skips itself elsewhere with one line.
 - check: `bash modules/lighthouse/tests/check.sh`.
+
+## beacon, the support part
+
+beacon (a site's contact form and its bot, one Cloudflare Worker) joined after the upkeep tools;
+its chart is `beacon/README.md`.
+
+- Private until its scrub: the upkeep files are on `.helloworld/allowlist.txt`, beacon's are not
+  (`beacon/`, `bin/beacon`, `tests/beacon.sh`, `tests/dev.sh`, `tests/upstream_stub.py`,
+  `tests/worker.test.mjs`, `.gitignore`). A new beacon file stays off it too; this file,
+  `README.md`, `CHANGELOG.md`, `plugin.json` and `tests/check.sh` are public, so what they say of
+  beacon is written for the twin, and `tests/check.sh` skips beacon's Node suite where it is absent.
+- Every site value comes from the site's config file, never from this module: a test or example
+  uses `example` names, and a real site's config and persona live in that site's own repo.
+- `beacon/lib/bot.js` is a library: no route, storage or secret in it. Its `PRICES` table is
+  written as JSON, because `bin/beacon` reads it to check a config's model.
+- The Worker must load under plain Node for `tests/worker.test.mjs`: no `cloudflare:*` import,
+  so the Meter is a fetch-interface Durable Object, not RPC. `tests/dev.sh` (opt-in, downloads the
+  pinned wrangler, never run by `tests/check.sh`) is where the Workers runtime itself is proved.
+- A new sink is one entry in `beacon/worker/sinks.js`'s `SINKS` with its `needs`; `worker.js` does
+  not change. `bin/beacon`'s config check names the sinks it accepts.
+- beacon's Worker and `bin/beacon` are no live hook or shim: they stay out of the root
+  `autofinish_exclude`. Its Node suite needs Node 22.13 or later (`node:sqlite`).
