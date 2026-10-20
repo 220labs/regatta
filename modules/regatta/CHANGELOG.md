@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `regatta shim --deny <path>`: a deny hook's source shim. Run as a hook with no core to load
+  from, it denies a PreToolUse call in one line and exits 0 instead of dying with exit 1, which
+  Claude Code reads as no objection (C4); imported, it raises as the plain shim does. Made for
+  wharf's `checkpoint.py` (B5). The plain shim's text is unchanged.
+- `regatta shim --hook <path>`: any other hook's shim. Run with no core, one line on stderr and
+  exit 0 (C4's quiet exit), where the plain shim's traceback and exit 1 showed at every session
+  start. For wharf's `sync.py`, `branches.py`, `carried.py` and `worktree_allow.py` (B5).
+
 - `regatta check` also reports a module's own private values, listed in its `config-keys`:
   unreadable, or missing where an overlay is installed. The core's import never refuses on them.
 - The private values come from the config dir, one file each, with a neutral default where one
