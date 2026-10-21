@@ -30,7 +30,7 @@ hook (`templates/code/git-hooks/pre-push`, found through the core); without whar
 
 | Verb | Who | What reaches the public repo |
 | --- | --- | --- |
-| `check <repo> [--ref R]` | any session | nothing: build, scan, diff-stat against the public main, and the dry replay |
+| `check <repo> [--ref R]` | any session | nothing: build, scan, diff-stat against the public main, the dry replay, and how many commits wait for a publish |
 | `publish --pr <repo> [-m TITLE] [--topic T] [--note TEXT] [--squash]` | an agent (the usual route) | a `claude/publish/<date>-<topic>` branch and a PR, the replayed commits on it; **the owner's merge is the publish**; auto-merge off |
 | `check-message --subject S [--body-file F]`, `--message-file F` | any session, at the private commit's making | nothing: one message scanned as the replay would scan it; exit 1 when the replay would refuse its subject or drop its body |
 | `check-message --range A..B [--repo R]` | wharf's `/finish`, on the curated branch before its push | nothing: every commit of the range scanned so, checkpoints and commits changing no published file skipped (as the replay skips them), each finding under its commit; nothing to scan without `.helloworld/` |
@@ -55,6 +55,18 @@ is that scan on one message (a commit-msg hook's file too: git's `#` comment blo
 patterns run alone, said in one line. No base — a change merged on GitHub — squashes as before, and the PR body says so; `--squash`
 asks for it. `check` prints the plan; its refusals there are printed, not counted, so a work
 branch's checkpoints never turn a check line red.
+
+**The log** (2026-10-21; the design's D2-A). A log that names what was redacted leaks, so it is
+split. The PR body, public: each replayed subject, oldest first, in a fenced block (a `#N` or
+`@name` in a subject neither links nor notifies there), under one line of counts — replayed,
+folded, refused (a body dropped, a subject replaced by its reviewed line). Never a path with a
+line, a word, a private sha or a fold's reason. The full report, private: indented under the PR's
+row in `<git dir>/helloworld/PUBLISHED.md` — the private-to-public sha map (full shas; GitHub's
+rebase merge rewrites the public ones, the trees stay), each fold with the commit that carries it
+and why, every finding at `file:line`, each reviewed subject beside the one it replaced, the
+exemptions' exact strings. Inside an agent's shell it is written masked, as it prints. Every clean
+`check` ends on the backlog (the design's G3): `pending: N commit(s) not yet public (C would go up,
+F fold into them)`, "publish soon" above 5, never in the exit code.
 
 Publishing goes through a PR (the owner, 2026-10-09: "publishing through a PR is the right way, PRs
 from myself can eventually auto-merge after checks, but we can keep it off for now"). Everything a PR

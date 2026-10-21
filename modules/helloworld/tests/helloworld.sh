@@ -94,6 +94,7 @@ has "$T/out" 'exemption used: README.md: "hello@example.org" cleared 1' "  it pr
 has "$T/out" 'exemption used: edl/clean.yaml: "dispatch on MyLaptop" cleared 1' "  the film's own words, in their own file"
 has "$T/out" "allowlist 5 files" "  and the lists it read"
 has "$T/out" "first publish" "  no public main yet: says so"
+has "$T/out" "pending: all — the public repo has no main yet" "  pending (G3): all of it"
 has "$T/out" "Nothing was pushed" "  and says nothing was pushed"
 lacks "$T/out" "/Users/someone" "  a file outside the allowlist is not scanned (docs/private.md)"
 check "$(chk --ref main)" 0 "--ref names another commit"
@@ -130,6 +131,27 @@ mkdir -p "$T/gd/.git/opensource"
 check "$(gitdir)" "$T/gd/.git/opensource/PUBLISHED.md" "  one that published before the rename: <git dir>/opensource/, read as it is"
 mkdir -p "$T/gd/.git/helloworld"
 check "$(gitdir)" "$T/gd/.git/helloworld/PUBLISHED.md" "  once <git dir>/helloworld/ exists, that"
+# S3's counts and the report's masking, on hand-made plans: the suite's spans have no tail of folds
+# and no undone fold (S3 finish review, 2026-10-21). The address is assembled, as the credentials are.
+s3unit() { CLAUDECODE=1 python3 -c '
+import importlib.machinery as m, importlib.util as u, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+def st(k, sha, folded=()):
+    return dict(kind=k, sha=sha, why="", reworded=None, folded=[dict(sha=f) for f in folded])
+def counts(*steps):
+    n = mod.replay_counts(dict(steps=list(steps)))
+    return "%d up, %d folded, %d pending" % (n["commits"], n["folded"], n["pending"])
+if sys.argv[2] == "tail":
+    print(counts(st("commit", "X"), st("fold", "A"), st("fold", "B"), st("tail", "B", ["A"])))
+elif sys.argv[2] == "undone":
+    print(counts(st("commit", "X"), st("fold", "A"), st("private", "B"), st("commit", "C")))
+else:
+    print(mod.hide("Tool: t = " + sys.argv[3] + " for ann" + "@" + "example.org on Harbourview",
+                   mod.words_regex(["Harbourview"])))' "$B/helloworld" "$@"; }
+check "$(s3unit tail)" "2 up, 1 folded, 3 pending" "a tail of folds: the last goes up as the tail, counted once"
+check "$(s3unit undone)" "2 up, 0 folded, 2 pending" "a fold a private-only commit undid: neither folded nor pending"
+check "$(s3unit hide "$K_GH")" "Tool: t = gh… for an… on Ha…" "a replaced subject in the report: credential, address and word masked as they print"
 
 echo "each pattern, planted once"
 refused machine   scripts/cut.py "p = '/Users/someone/film'"                 "machine path — /Users/someone"
@@ -421,6 +443,7 @@ check "$(git -C "$PUB" rev-parse "$P3^")" "$P2" "  a child of the public main: a
 echo "check after a publish"
 check "$(chk)" 0 "check passes"
 has "$T/out" "nothing — the public main already has exactly this tree" "  and diffs against the public repo"
+has "$T/out" "pending: 0 commits — the public main has exactly this tree" "  pending (G3): none"
 check "$(git -C "$R" for-each-ref refs/helloworld | wc -l | tr -d ' ')" 0 "  after check and publish fetched the public main, no ref of the gate's own"
 
 echo "the public history: identities GitHub or a contributor wrote, not the gate"
@@ -910,11 +933,15 @@ has "$T/out" "$(git -C "$R2" rev-parse --short=7 main~3)   fold: its tree has 1 
 has "$T/out" "→ Tool: the leak taken back [carries 2 folded]" "  into the next commit that passes"
 has "$T/out" "private: no published file changed" "  a commit that changes no published file stays private"
 has "$T/out" "→ Docs: the README says how to run it [its body has findings: the subject goes alone]" "  a body that fails: the subject alone"
+has "$T/out" "pending: 5 commit(s) not yet public (3 would go up, 2 fold into them)" "  pending (G3): the commits that go up and those folded into them, not the private one"
+lacks "$T/out" "publish soon" "  five is G3's ceiling, not over it"
 check "$(pub2refs)" "refs/heads/main $P0" "  check pushed nothing"
 check "$(prun2 --squash)" 0 "--squash: one commit, as before the replay"
 BR2="claude/publish/$(TZ=UTC date +%F)-publish"
 check "$(git -C "$PUB2" rev-list --count "$P0..$BR2")" 1 "  one commit on the public main"
 has "$T/gh.body" "as one commit on main (squashed: on request)" "  the body says why"
+lacks "$T/gh.body" "Commits, oldest first" "  and lists no replayed subjects"
+has "$R2/.git/helloworld/PUBLISHED.md" "    squash (on request): $C6 → $(git -C "$PUB2" rev-parse "$BR2")" "  the private report maps the squash"
 git -C "$PUB2" update-ref -d "refs/heads/$BR2"
 check "$(prun2)" 0 "publish --pr: the replay"
 TIP=$(git -C "$PUB2" rev-parse "$BR2")
@@ -934,6 +961,26 @@ check "$(git -C "$PUB2" ls-tree -r "$TIP")" "$(git -C "$R2" ls-tree -r "$C6" REA
 has "$T/gh.body" "as 3 commits replayed from the private history one by one, each scanned on its own, 2 folded into the commit after them, 1 with the subject alone" "  the body counts them"
 lacks "$T/gh.body" "Harbourview" "  and names no fold's reason"
 lacks "$T/gh.body" "$(git -C "$R2" rev-parse --short=7 "$C1")" "  nor a private sha"
+# S3, the log (the design's D2-A): the subjects and the counts in the PR body, the rest private.
+has "$T/gh.body" "Commits, oldest first: 3 replayed, 2 folded, 1 refused (1 body dropped, the subject alone)." "  the body counts replayed, folded and refused"
+check "$(awk '/^```/{n++; next} n==1' "$T/gh.body" | tr '\n' '|')" \
+      "Tool: prints two|Tool: the leak taken back|Docs: the README says how to run it|" "  and lists each replayed subject, oldest first, fenced"
+lacks "$T/gh.body" "tool.py:1" "  no finding's file:line"
+lacks "$T/gh.body" "a checkpoint" "  no fold's reason"
+LOG2="$R2/.git/helloworld/PUBLISHED.md"
+has "$LOG2" "- $(TZ=UTC date +%F) pr $BR2 $TIP https://github.com/acme/film/pull/7" "the private report: under the PR's row in the git dir's PUBLISHED.md"
+has "$LOG2" "    replay onto $P0 from base $(git -C "$R2" rev-parse main~6): 3 replayed, 2 folded, 1 private only, 1 refused" "  the base, the public main and the counts"
+has "$LOG2" "    $C1 → $(git -C "$PUB2" rev-parse "$TIP~2"), tree" "  the sha map: private to public, full shas"
+has "$LOG2" "    $(git -C "$R2" rev-parse main~4) → folded into $(git -C "$PUB2" rev-parse "$TIP~1"): a checkpoint" "  each fold, what carries it and why"
+has "$LOG2" "    $(git -C "$R2" rev-parse main~3) → folded into $(git -C "$PUB2" rev-parse "$TIP~1"): its tree has 1 finding(s)" "  the planted leak's fold"
+has "$LOG2" "        tool.py:1: private word — Ha…" "  its finding at file:line, masked as an agent's shell prints it"
+has "$LOG2" "    $(git -C "$R2" rev-parse main~1) → private: no published file changed" "  the commit that stayed private"
+has "$LOG2" "    $C6 → $TIP, tree" "  the last commit mapped"
+has "$LOG2" "        body:1: private word — Ha…" "  the dropped body's finding, its line"
+has "$LOG2" "    the public shas are the proposal's: a rebase merge on GitHub rewrites them, the trees stay" "  and what the map is worth after the merge"
+check "$(grep -cvE '^(- |# |    )' "$LOG2")" 0 "  every report line indented: publish reads the rows alone"
+check "$(chk2)" 0 "  a report in the log moves nothing check reads"
+has "$T/out" "pending: 5 commit(s)" "  the same pending: a proposal is not a publish until its merge"
 git -C "$PUB2" update-ref -d "refs/heads/$BR2"
 check "$(prun2)" 0 "the same span again, its branch gone"
 check "$(git -C "$PUB2" rev-parse "$BR2")" "$TIP" "  the same shas: the dates are the private ones"
@@ -952,6 +999,10 @@ check "$(pub2refs)" "$before" "  nothing pushed"
 printf '# reviewed\n%s Tool: tuned\n' "${C7:0:12}" > "$R2/.helloworld/messages"; rc "Project: a public subject for the tuning commit"; up
 check "$(prun2)" 0 "with its line in .helloworld/messages: the run goes on"
 check "$(git -C "$PUB2" log -1 --format=%s "$BR2-2")" "Tool: tuned" "  the commit goes up under the reviewed subject"
+has "$T/gh.body" "4 replayed, 2 folded, 2 refused (1 body dropped, the subject alone; 1 subject replaced by a reviewed line)." "  the body counts the reviewed subject among the refused"
+has "$T/gh.body" "Tool: tuned" "  and lists it"
+lacks "$T/gh.body" "on MyLaptop" "  never the subject it replaced"
+has "$R2/.git/helloworld/PUBLISHED.md" "        the reviewed subject from .helloworld/messages; it was: Tool: tuned on My…" "  the private report keeps what it replaced, masked"
 check "$(git -C "$PUB2" rev-list --count "$P0..$BR2-2")" 4 "  after the three before it"
 printf '%s nope\n' "zz" > "$R2/.helloworld/messages"; rc "Project: a bad line"; up
 check "$(chk2)" 2 "a messages line that is not <sha> <subject>: refused"
@@ -985,6 +1036,7 @@ for v in "$P_SHA" "$P_REF" "$P_REPO" "$P_URL" "$P_UUID" "$P_SID"; do
 done
 up
 check "$(chk2)" 0 "a body with a sha, a cross-repo ref or a session id: check passes"
+has "$T/out" "fold into them) — more than 5 (G3): publish soon" "  pending over G3's ceiling (no PR merged yet): said, not counted"
 for k in 7 8 9 10 11 12; do
   has "$T/out" "→ Tool: $k [its body has findings: the subject goes alone]" "  Tool: $k's body is dropped"
 done
@@ -1135,6 +1187,7 @@ P9=$(git -C "$PUB2" rev-parse main)
 check "$(chk2)" 0 "a credit merged on GitHub: check passes"
 has "$T/out" "no commit on origin/main's line has the public main's tree" "  and says the replay has no base"
 has "$T/out" "publish --pr squashes, one commit" "  so a publish squashes"
+has "$T/out" "pending: not counted — no commit has the public main's tree" "  pending: not counted without a base"
 check "$(prun2)" 0 "publish --pr after a credit merged on GitHub: the span squashes"
 SQ=$(git -C "$PUB2" for-each-ref --sort=-creatordate --format='%(refname)' refs/heads/claude/publish | head -1)
 check "$(git -C "$PUB2" rev-list --count "$P9..$SQ")" 1 "  one commit on the new public main"

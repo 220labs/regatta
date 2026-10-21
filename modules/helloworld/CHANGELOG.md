@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The log (S3, the design's D2-A): `publish --pr`'s PR body lists each replayed subject, oldest
+  first and fenced, with the counts replayed, folded and refused (bodies dropped, subjects
+  replaced by a reviewed line). The full report — the private-to-public sha map, each fold and
+  why, every finding at file:line, each replaced subject, the exemptions' strings — goes indented
+  under the PR's row in `<git dir>/helloworld/PUBLISHED.md`, also when the push went up but no PR
+  opened or the read-back disagreed; in an agent's shell its text is masked as it prints, its shas
+  never. `check` prints `pending: N commit(s) not yet public`, "publish soon" above 5 (G3).
 - `publish --pr` replays (the design's D1-B): every private commit since the one whose allowlisted
   tree is the public main's goes up as its own public commit — its tree, its subject and body less
   the agent trailers and any Signed-off-by (by key), the publishing identity, its own dates at
