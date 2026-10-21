@@ -55,6 +55,8 @@ except g.GateError as e: print(e)'; }
 refusal() { "$@" 2>&1 | tail -1; }   # an importer's last line: the ImportError, when there is one
 check "$(py 'print(repr(common.ADDRESS), common.DECLARED_LINE)')" "'' THIS SESSION IS DONE — IT LAUNCHES BY ITSELF." "no overlay, no keys: the closing lines address no one"
 check "$(py 'print(common.closing_kind(common.FINISH_LINES[0]), common.closing_kind(common.WAITING_PREFIX + "D1"))')" "done waiting" "  and still read as closing lines"
+check "$(py 'print(common.closing_kind(common.PENDING_PREFIX + "the reviewers"), common.closing_kind(common.PENDING_PREFIX), common.unrelayed_ask("x\n\n" + common.PENDING_PREFIX + "the check"))')" "pending None None" \
+  "  WAITING FOR SOMETHING reads as pending, needs its what, and is no ask to relay"
 check "$(py 'print(common.OVERRIDE_BY, common.ORCA_ROW["repos"]["deny"])')" "owner []" "  the override marker is owner's, no repo denied an Orca login"
 check "$(jp 'print(j.GUARDED, j.WHO)')" "() the owner" "  jev guards nothing and asks the owner"
 check "$(jp 'print(j.log_dir())')" "$H/.local/state/regatta" "  the logs go to .local/state/regatta in the home folder"
