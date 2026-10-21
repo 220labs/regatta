@@ -29,7 +29,9 @@ An idea arrives any of three ways, and each ends as a note:
    the Mac, verbatim, in whatever language was spoken (`brew install whisper-cpp`, one model in
    `.cache/whisper` in the home folder). Optional: without whisper, recordings wait and written notes still file.
 2. **Written** — a `.txt`, `.md`, `.rtf` or `.html` dropped into the inbox takes the same path
-   minus whisper.
+   minus whisper: in a `"split"` config, or a routed one that says `"written": true` (an inbox
+   another tool writes notes into, a meeting's say; the note carries the config's `"source"`). That
+   tool writes each note as a dot-file and renames it when whole: a dot-file waits.
 3. **Apple Notes** — with `"apple_notes"`, each settled note in one folder (say `_ideas`) is
    exported into the inbox and moved to a second folder, so an idea is typed on any device.
 
@@ -44,7 +46,7 @@ every repo (audio is not text), and what a note proposes binning waits for a per
 `$SPARKS_CONFIG`, else `sextant/sparks.json` in the regatta config dir (`$REGATTA_CONFIG`, else
 `.config/regatta` in the home folder) — a link to wherever you keep it. The keys, with an example, are in
 `bin/sparks`'s header: `inbox`, `notes`, `archive`, `prompt` (a file beside the config),
-`language`, `split`, `route`, `host` (the one Mac that runs it), `also` (more configs the same
+`language`, `split`, `route`, `written`, `source`, `host` (the one Mac that runs it), `also` (more configs the same
 job runs after this one), `redact_approved`, `apple_notes`, `voice_memos`, `notify`, `publish`.
 
 **Private values** come through the config dir, one file each, written by whoever installs the

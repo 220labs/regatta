@@ -20,7 +20,11 @@ folder the note belongs in, and files it there. Nothing is deleted: the audio mo
 archive outside every repo, and whatever the note proposes binning waits for a human.
 In a split config, a written note (.txt, .md, .rtf, .html, 2026-10-07) takes the same path with
 its words as the transcript: no whisper, no transcript copy, and `source: written note` on what it
-files. With `"apple_notes"` (2026-10-08) the pass first exports each settled note of one Apple Notes
+files. A routed config takes one only with `"written": true` (2026-10-20): its inbox is written notes
+by design — a meeting's notes, dropped by the tool that wrote them — so each is shaped by the config's
+prompt, routed like a memo, and carries the config's `"source"` (default `written note`). The tool that
+drops one writes it as a dot-file and renames it when whole: a dot-file is skipped, and a note half on
+disk would otherwise be filed as it stands. With `"apple_notes"` (2026-10-08) the pass first exports each settled note of one Apple Notes
 folder into its inbox and moves the note to a second folder, so an idea is written in Notes on any
 device (the section "Apple Notes" below). With `"voice_memos"` (2026-10-16) it first copies each new
 recording of this Mac's Voice Memos library into its inbox — an Action Button set to Voice Memo,
@@ -47,6 +51,7 @@ a `model` left in a config is ignored. Shaping off fails (the audio waits); rout
       "launch":    "merge",                      // "merge" | "pr" — see Launch below
       "route_prompt": "memo-route.md",         // optional; the built-in one is generic
       "deny":    ["vault/me/"],                // never file under these, on top of DENY_*
+      "written": false,                        // true: written notes in the inbox route too
       "also":    ["ideas.json"]                // more configs; --session-start runs each too
     }
 
@@ -128,7 +133,7 @@ stubs: SPARKS_IN, SPARKS_OUT, SPARKS_ARCHIVE, SPARKS_STATE, WHISPER_BIN, WHISPER
 SPARKS_COMMIT (0 to skip the vault
 commit), SPARKS_ROUTE, SPARKS_LAUNCH, SPARKS_PROJECTS, SPARKS_REPOS, SPARKS_HOST, SPARKS_LOG, WHISPER_VAD (a Silero model: whisper skips non-speech, which
 otherwise comes back as an invented "Bye." or "you"), SPARKS_FAKE_MERGE (tests: push to the remote's main instead of
-calling GitHub), SPARKS_SPLIT, SPARKS_TRANSCRIPT, SPARKS_PUBLISH, PUBLISH_BIN, OSASCRIPT_BIN, SPARKS_RETRY_WAIT, SPARKS_NOTES (1: ask
+calling GitHub), SPARKS_SPLIT, SPARKS_WRITTEN, SPARKS_TRANSCRIPT, SPARKS_PUBLISH, PUBLISH_BIN, OSASCRIPT_BIN, SPARKS_RETRY_WAIT, SPARKS_NOTES (1: ask
 Apple Notes; only sextant-host sets it), SPARKS_VOICEMEMOS (a Voice Memos library folder; set, the
 real app is never started), SPARKS_VM_WAIT (seconds a pass waits for a recording being written; 90).
 
@@ -190,6 +195,10 @@ def load_config():
     # Typed by hand in a config: a bare string for "people" must not become its letters.
     speaker = str(cfg.get("speaker") or "").strip().lower()
     people = [str(p).strip().lower() for p in cfg["people"]] if isinstance(cfg.get("people"), list) else []
+    split = (os.environ.get("SPARKS_SPLIT") or cfg.get("split") or "") == "topics"
+    # a routed inbox takes written notes only when its config says so (audio_in_inbox); a split
+    # one takes them anyway, as ideas, so the key means nothing there (B3 navigator review)
+    written = not split and os.environ.get("SPARKS_WRITTEN", "1" if cfg.get("written") is True else "0") == "1"
 
     return {
         "in": path("inbox", "SPARKS_IN"),
@@ -212,12 +221,13 @@ def load_config():
         "host": os.environ.get("SPARKS_HOST", cfg.get("host") or ""),
         "deny": list(cfg.get("deny") or []),
         "also": [(CONFIG.resolve().parent / a).expanduser() for a in (cfg.get("also") or [])],
-        "split": (os.environ.get("SPARKS_SPLIT") or cfg.get("split") or "") == "topics",
+        "split": split,
+        "written": written,
         "transcript": os.environ.get("SPARKS_TRANSCRIPT") or cfg.get("transcript") or "note",
         "publish": os.environ.get("SPARKS_PUBLISH", cfg.get("publish") or ""),
         "speaker": speaker,
         "people": [p for p in dict.fromkeys(people + [speaker]) if p],  # the speaker is always one
-        "source": cfg.get("source") or "voice memo",
+        "source": cfg.get("source") or ("written note" if written else "voice memo"),
         "label": cfg.get("label") or "Memos",
         # Any value turns redaction on; bin/gate refuses one that is not {vendor: quote}, which
         # is the fail-closed path — never a pass that skips redaction.
@@ -285,7 +295,7 @@ BY_PROMPT = """then a plain line `By: ` with one plain word for whose idea the t
 {people}, both or unclear; unless the words show otherwise, the voice is {speaker} —
 """
 
-ROUTE_PROMPT = """You decide where one note belongs. It was made from a voice memo and is
+ROUTE_PROMPT = """You decide where one note belongs. It was made from a {source} and is
 printed at the end. Your working directory holds the owner's projects; these are the
 repositories a note may be filed into (path relative to the working directory):
 
@@ -537,7 +547,8 @@ def to_note(transcript, redacted=False, written=False):
     except gate.GateError as e:
         return None, str(e)[:400]
     prompt = prompt_text("prompt", TOPICS_PROMPT if CFG["split"] else FALLBACK_PROMPT)
-    rules = ([MARKER_RULE] if redacted else []) + ([WRITTEN_RULE] if written else [])
+    # WRITTEN_RULE is the ideas' (a topic per idea); a `"written"` config's own prompt shapes its notes
+    rules = ([MARKER_RULE] if redacted else []) + ([WRITTEN_RULE] if written and CFG["split"] else [])
     if rules:  # the rules live here, not in a prompt file: a prompt without them would drop markers
         body = prompt.rstrip()
         tail = "Transcript:" if body.endswith("Transcript:") else ""
@@ -908,7 +919,7 @@ def route(note, repos):
     listing = "\n".join(f"- {n}" + (f" (also takes notes about {', '.join(m['also'])})"
                                     if m.get("also") else "")
                         for n, m in sorted(repos.items()))
-    prompt = prompt_text("route_prompt", ROUTE_PROMPT).replace("{candidates}", listing)
+    prompt = prompt_text("route_prompt", ROUTE_PROMPT).replace("{candidates}", listing).replace("{source}", CFG["source"])
     prompt = prompt.replace("{{", "{").replace("}}", "}") + note
     r = run([CLAUDE, "-p", prompt, *flags, *ROUTE_TOOLS, "--output-format", "text",
              *QUIET], cwd=str(CFG["projects"]), timeout=900)
@@ -1035,7 +1046,7 @@ def launch_git(name, meta, path, content, title, key, pending=False):
             if git(repo, *s, env=env).returncode != 0:
                 return None, f"git {s[0]} failed in {name}"
         tree = git(repo, "write-tree", env=env).stdout.strip()
-    msg = (f"Memo: {title}\n\nFiled by sparks from a voice memo (D18): {path}\n\n"
+    msg = (f"Memo: {title}\n\nFiled by sparks from a {CFG['source']} (D18): {path}\n\n"
            "Co-Authored-By: Claude <noreply@anthropic.com>\n")
     commit = run(["git", "-C", str(repo), "commit-tree", tree, "-p", base], input=msg).stdout.strip()
     if not commit:
@@ -1059,7 +1070,7 @@ def launch_git(name, meta, path, content, title, key, pending=False):
         tok = common.token()
         if not slug_ or not tok:
             return {"state": "branch", "url": None, "branch": branch}, "no GitHub token or repo — the branch is pushed, no PR"
-        body = (f"A voice memo, filed by `sparks` (D18) from `{common.host_name()}`.\n\n"
+        body = (f"A {CFG['source']}, filed by `sparks` (D18) from `{common.host_name()}`.\n\n"
                 f"Adds `{path}` and nothing else.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)")
         pr = common.open_pr(slug_, branch, main, f"Memo: {title}", body, tok)
         if not pr:
@@ -1327,7 +1338,7 @@ def process(path, state):
             dest = ARCHIVE / f"{path.stem}-{key}{path.suffix}"
     # `audio:` names the archived original even for a written note: bin/redactions finds the
     # sidecar by it. A note has no size worth a line, and says what it is in `source:`.
-    head = (f"source: {'written note' if written else CFG['source']}\nrecorded: {when:%Y-%m-%d %H:%M}\n"
+    head = (f"source: {'written note' if written and not CFG['written'] else CFG['source']}\nrecorded: {when:%Y-%m-%d %H:%M}\n"
             f"audio: {archive_label(dest)}\n"
             + ("" if written else f"size: {round(path.stat().st_size / 1_000_000, 1)} MB\n"))
     if red is not None:
@@ -1870,7 +1881,7 @@ def note_titles(paths):
 
 def filed_message(recordings, titles):
     """One text for the whole pass: what was filed, as note titles; capped, never a wall."""
-    head = (f"⚡ Filed {recordings[0]}" if len(recordings) == 1 else f"⚡ Filed {len(recordings)} recordings")
+    head = (f"⚡ Filed {recordings[0]}" if len(recordings) == 1 else f"⚡ Filed {len(recordings)} {'notes' if CFG['written'] else 'recordings'}")
     if not titles:
         return f"{head} — nothing to keep in it"
     body = f"{head} → {len(titles)} note{'s' if len(titles) != 1 else ''}: " + "; ".join(titles)
@@ -1898,10 +1909,11 @@ def hold_lock():
 
 
 def audio_in_inbox():
-    """Recordings, and written notes where the config splits topics, oldest first; a dot-file (an
-    iCloud placeholder) is neither. A routed inbox stays audio-only: a stray .txt there would be
-    filed into a project repo and merged (review, 2026-10-07)."""
-    kinds = AUDIO | TEXT if CFG["split"] else AUDIO
+    """Recordings, and written notes where the config splits topics or says `"written": true`, oldest
+    first; a dot-file (an iCloud placeholder, a note being written) is neither. A routed inbox is
+    otherwise audio-only: a stray .txt there would be filed into a project repo and merged (review,
+    2026-10-07); `"written"` is the config saying its inbox holds notes by design (2026-10-20)."""
+    kinds = AUDIO | TEXT if CFG["split"] or CFG["written"] else AUDIO
     return sorted((p for p in IN.iterdir()
                    if p.suffix.lower() in kinds and not p.name.startswith(".")),
                   key=lambda p: p.stat().st_mtime)
@@ -2258,7 +2270,7 @@ def main():
                                  f"{line.split(': ', 1)[-1][:160]}")
             if "will retry" in line:
                 retry[k] = now + RETRY_WAIT
-        elif line and line.startswith("✓") and "→ archived" not in line and p.suffix.lower() in AUDIO:
+        elif line and line.startswith("✓") and "→ archived" not in line and (p.suffix.lower() in AUDIO or CFG["written"]):
             filed.append(re.sub(r" vm-[0-9a-z]{8}$", "", p.stem))
         lines.append(line)
         save_state(state)  # per memo: a crash later must not re-file one already filed
@@ -2269,7 +2281,8 @@ def main():
     if filed:  # before the commit: the text is about the recording, not the vault's push
         notify("filed", filed_message(filed, note_titles(WROTE)))
     for l in commit_publish(WROTE, f"{CFG['label']}: {len(WROTE)} note(s) from {n} recording(s)"
-                            if CFG["split"] else f"{CFG['label']}: {n} note(s) from voice memos"):
+                            if CFG["split"] else f"{CFG['label']}: {n} note(s) from "
+                            + ("its inbox" if CFG["written"] else "voice memos")):
         print(l)
     return 0
 
