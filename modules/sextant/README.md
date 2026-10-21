@@ -70,6 +70,13 @@ runs `sparks --chain` when an inbox changes and every 15 minutes.
 **Messages**: want a text when a recording arrives and when it is filed? Point the config's
 `notify` at any command that texts you (a messenger with its own `install.sh` and Messages grant).
 
+**What was already said**: `sparks related "<words>"` lists every note and proposal in the ideas
+pool — the notes folder of each topic-split config, its `proposals/` and `research/` — that mentions one of
+the words, whole words with a plural, most words matched first, then newest. A grep, no model;
+dropped notes and a friend's count like the owner's. An architect agent runs it before it designs.
+With `"sparks": "off"` in an optional `regatta/peers.json` in the config dir (`$REGATTA_PEERS`) it reads nothing and
+says so in one line.
+
 ## Optional peers
 
 Each is found through the core's `common.tool()`; absent, the pass says so in one line and the

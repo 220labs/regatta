@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New verb: `sparks related "<words>"` — the ideas pool grepped for a brief's words, dropped notes
+  and friends' notes included, the `sparks` peer's `off` honoured (the Sounding's S3, carried from
+  the overlay, 2026-10-21).
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `sparks` and
   `tests/sparks.sh` — `launch_git`, `CFG["launch"]` (the config's `land` key and `SPARKS_LAND` still
   read), a note that "goes to" the inbox rather than lands there.

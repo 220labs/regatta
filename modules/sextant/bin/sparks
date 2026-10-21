@@ -12,6 +12,7 @@ how-to, launcher.c.in and install.sh beside it the launcher a stranger builds.
     sparks --route <note.md>        where would this note go? prints the decision, files nothing
     sparks --chain                  this config's pass, then each `also` config's (what a watcher runs)
     sparks --inboxes                the inbox of this config and of each `also` config, one per line
+    sparks related "<words>"        notes and proposals in the ideas pool that mention any word (no model)
 
 Reads the folder a Shortcut drops recordings into, transcribes each new one on this Mac, asks
 Claude to turn the transcript into a note, asks Claude again — read-only — which project and
@@ -1960,6 +1961,124 @@ def route_only(note_path):
     return 0
 
 
+STOP = {"the", "and", "for", "with", "of", "to", "in", "on", "is", "it", "or", "an", "as", "by", "at"}
+
+
+def peer_state(name):
+    """`on | off | auto` for one optional peer, from an optional peers.json in the config dir (the
+    Sounding design's peers: declared and checked, never self-configured).
+    REGATTA_PEERS, else <REGATTA_CONFIG>/regatta/peers.json; absent or unreadable is `auto`."""
+    path = Path(os.environ.get("REGATTA_PEERS") or common.CONFIG / "regatta" / "peers.json").expanduser()
+    try:
+        v = json.loads(path.read_text()).get(name)
+    except (OSError, ValueError, AttributeError):
+        return "auto", path
+    return (v if v in ("on", "off", "auto") else "auto"), path
+
+
+def pool_dirs():
+    """The ideas pool `related` reads: the notes folder of this config and of each `also` config
+    that splits by topic (the ideas pipeline), each with its `proposals/` beside the notes.
+    Without SPARKS_CONFIG it reads sextant.json beside the default too: sparks.json's `also` is
+    empty and the ideas configs hang off the job's root (launcher.c.in; bin/redactions reads the
+    same two roots)."""
+    dirs = [OUT] if CFG["split"] and OUT else []
+    todo = ([] if os.environ.get("SPARKS_CONFIG") else [CONFIG.parent / "sextant.json"]) + CFG["also"]
+    seen = set()
+    while todo:
+        c = todo.pop(0)
+        if c in seen:
+            continue
+        seen.add(c)
+        try:
+            cfg = json.loads(c.read_text())
+        except (OSError, ValueError):
+            continue
+        if cfg.get("split") == "topics" and cfg.get("notes"):
+            dirs.append(Path(cfg["notes"]).expanduser())
+        todo += [(c.resolve().parent / a).expanduser() for a in (cfg.get("also") or [])]
+    return [d for d in dict.fromkeys(dirs) if d.is_dir()]
+
+
+def related(args):
+    """`sparks related <words>`: every note and proposal in the ideas pool that mentions one of the
+    words — the architects' and the sounder's look at what was already said (the Sounding design).
+    A grep, no model; dropped notes count, and a friend's idea is weighed like the owner's: every
+    hit is a lead. A file counts when its frontmatter has a status, so a README and triage.md stay
+    out (research/ is read whole); only the body is searched, as every note's frontmatter holds keys like `status` and an
+    audio path. Most words matched first, then newest (`updated`, else `date`, else the name's)."""
+    limit = 20
+    if "--limit" in args:
+        i = args.index("--limit")
+        try:
+            limit, args = int(args[i + 1]), args[:i] + args[i + 2:]
+            if limit < 1:
+                raise ValueError
+        except (IndexError, ValueError):
+            print('usage: sparks related "<words>" [--limit N]')
+            return 2
+    # A possessive or quoted noun is its bare word: `posthog's` must find `posthog` (review, 2026-10-21)
+    words = [w for w in dict.fromkeys(re.sub(r"'s$", "", t.strip("'-"))
+                                      for t in re.findall(r"[\w'-]+", " ".join(args).lower()))
+             if len(w) >= 2 and w not in STOP]
+    if not words:
+        print('usage: sparks related "<words>" [--limit N]')
+        return 2
+    state, peers = peer_state("sparks")
+    if state == "off":
+        print(f"sparks related: the sparks peer is off ({peers}) — no pool read")
+        return 0
+    dirs = pool_dirs()
+    if not dirs:
+        print(f"sparks related: no ideas pool — no config at {CONFIG} names a topic-split notes "
+              "folder; nothing read")
+        return 0
+    # Whole words, a plural allowed: `ide` must not match every "idea" (probe, 2026-10-18: 328 of 330).
+    # A plural asked finds the singular too: `stories` is `story` (review, 2026-10-21).
+    def pat(w):
+        base = w[:-3] + "y" if w.endswith("ies") and len(w) > 4 else \
+            w[:-1] if w.endswith("s") and not w.endswith("ss") and len(w) > 3 else w
+        alt = re.escape(base) + r"(?:s|es)?"
+        if base.endswith("y"):
+            alt += "|" + re.escape(base[:-1]) + "ies"
+        return re.compile(r"(?<!\w)(?:" + alt + r")(?!\w)")
+    pats = {w: pat(w) for w in words}
+    # research/ holds earlier research on ideas, no status in its frontmatter: read all of it
+    files = [p for d in dirs for p in sorted(d.glob("*.md")) + sorted(d.glob("proposals/*.md"))
+             + sorted(d.glob("research/*.md"))]
+    hits, n = [], 0
+    for p in files:
+        try:
+            text = p.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        fm, body = front(text)
+        if "status" not in fm and p.parent.name != "research":
+            continue
+        n += 1
+        low = body.lower()
+        got = [w for w in words if pats[w].search(low)]
+        if got:
+            title = next((l[2:].strip() for l in body.splitlines() if l.startswith("# ")), p.stem)
+            # A proposal's name has no date: its `updated` key dates it (review, 2026-10-21)
+            when = str(fm.get("updated") or fm.get("date") or p.name[:10])
+            hits.append((len(got), when, p, fm, title, got))
+    hits.sort(key=lambda h: h[1], reverse=True)  # newest first…
+    hits.sort(key=lambda h: h[0], reverse=True)  # …within a count, the sort being stable
+    where = ", ".join(str(d) for d in dirs)
+    if not hits:
+        print(f"sparks related: nothing in {n} files ({where}) mentions {' '.join(words)}")
+        return 0
+    print(f"sparks related: {len(hits)} of {n} files ({where}) mention {' '.join(words)}"
+          " — every hit a lead, unweighted")
+    for _, _, p, fm, title, got in hits[:limit]:
+        kind = {"proposals": "proposal", "research": "research"}.get(p.parent.name, "note")
+        print(f"{p} · {kind} · {fm.get('status') or '-'} · by {fm.get('by') or '-'} · {title} · {' '.join(got)}")
+    if len(hits) > limit:
+        print(f"… {len(hits) - limit} more (--limit {len(hits)})")
+    return 0
+
+
 def inboxes():
     """`--inboxes`: what a watcher should watch — this config's inbox and every `also` config's,
     and the Voice Memos library when any of them reads it (a new recording starts the job)."""
@@ -2003,6 +2122,8 @@ def main():
     if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
         print(__doc__.split("\n\n")[2])
         return 0
+    if sys.argv[1:2] == ["related"]:  # before the argument check and the host check: a lookup, any Mac, nothing filed
+        return related(sys.argv[2:])
     why = bad_args(sys.argv[1:])
     if why:
         print(f"sparks: {why} — nothing ran; `sparks --help` lists the calls", file=sys.stderr)

@@ -1191,4 +1191,37 @@ check "$(cat "$W/kc-args.txt")" "vault -m Ideas: 1 note(s) $W/vault/notes/a.md" 
 out=$(peers "s.KNOWLEDGE_COMMIT = None; s.PUBLISH = None; s.common.tool = lambda n: '$W/kc' if n == 'knowledge-commit' else None")
 echo "$out" | grep -q '^  vault commit: committed$'; check $? 0 "  found through the core's tool(), as on an installed Mac"
 
+echo "related: the ideas pool, grepped for the architects (the Sounding design's peers)"
+R="$T/related"; mkdir -p "$R/ideas/proposals"
+printf -- '---\nby: alex\nstatus: dropped\n---\n\n# A shared kiln and the tea set\n\nKiln time by the hour.\n' > "$R/ideas/2026-10-02-kiln.md"
+printf -- '---\nby: sam\nstatus: new\n---\n\n# A good idea for weekends\n\nA team game, no kettle.\n' > "$R/ideas/2026-10-08-weekends.md"
+printf -- '---\nstatus: seed\nupdated: 2026-09-01\n---\n# Workshops with coaches\n\nThe kiln as the room tool.\n' > "$R/ideas/proposals/workshops.md"
+printf '# Ideas\n\nThe kiln note lives here.\n' > "$R/ideas/README.md"
+printf '{ "notes": "%s/ideas", "split": "topics" }\n' "$R" > "$R/ideas.json"
+printf '{ "also": ["ideas.json"] }\n' > "$R/root.json"
+rel() { env -u SPARKS_OUT -u SPARKS_SPLIT SPARKS_CONFIG="$R/root.json" REGATTA_PEERS="$R/peers.json" python3 "$B/sparks" related "$@"; }
+out=$(rel "kiln tea")
+check "$(echo "$out" | head -1 | grep -c '^sparks related: 2 of 3 files')" "1" "a hit: the note and the proposal that name the kiln, of 3 files with a status (README out)"
+check "$(echo "$out" | sed -n 2p | grep -c "2026-10-02-kiln.md · note · dropped · by alex · A shared kiln and the tea set · kiln tea$")" "1" \
+  "  a dropped note, a friend's, counts — most words matched first"
+check "$(echo "$out" | sed -n 3p | grep -c 'proposals/workshops.md · proposal · seed')" "1" "  and the proposal after it"
+check "$(rel "tea" | head -1 | grep -c '1 of 3')" "1" "  whole words: tea is not every team"
+check "$(rel "coach" | head -1 | grep -c '1 of 3')" "1" "  a plural counts"
+check "$(rel "kiln's" | head -1 | grep -c '2 of 3')" "1" "  a possessive is its bare word"
+check "$(rel "kilns" | head -1 | grep -c '2 of 3')" "1" "  a plural asked finds the singular"
+mkdir -p "$R/ideas/research"; printf '# Glazes compared\n\nThree glazes, one kiln.\n' > "$R/ideas/research/glazes.md"
+check "$(rel "glazes" | grep -c 'research/glazes.md · research')" "1" "  research/ is read, though it has no status"
+rm -r "$R/ideas/research"
+check "$(rel "alex status" | grep -c 'nothing in 3 files')" "1" "  only the body: a frontmatter key or value is no mention"
+check "$(rel "kiln" | sed -n 2p | grep -c '2026-10-02-kiln.md')" "1" "  within a count, newest first: a proposal dates by its updated key"
+out=$(rel "zeppelin"); check "$(echo "$out" | grep -c 'nothing in 3 files')" "1" "no hit: says what it read"
+echo '{"sparks": "off"}' > "$R/peers.json"
+out=$(rel "kiln"); check "$(echo "$out" | grep -c 'the sparks peer is off')" "1" "peer off: one line, no pool read"
+rm "$R/peers.json"
+out=$(SPARKS_CONFIG="$T/none.json" SPARKS_SPLIT= REGATTA_PEERS="$R/peers.json" python3 "$B/sparks" related kiln)
+check "$(echo "$out" | grep -c 'no ideas pool')" "1" "no config: says so, exits 0"
+SPARKS_CONFIG="$R/root.json" python3 "$B/sparks" related > /dev/null; check $? 2 "no words: usage, exit 2"
+SPARKS_CONFIG="$R/root.json" python3 "$B/sparks" related kiln --limit > /dev/null; check $? 2 "  nor a --limit without a number"
+SPARKS_CONFIG="$R/root.json" python3 "$B/sparks" related kiln --limit 0 > /dev/null; check $? 2 "  nor a --limit below 1"
+
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }
