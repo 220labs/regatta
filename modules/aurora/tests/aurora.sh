@@ -174,4 +174,21 @@ grep -q "^schedule: *plist written but not loaded" "$T/check.out"; check $? 0 " 
 grep -q "^vault $V" "$T/check.out"; check $? 0 "  and where things are"
 sh "$D/install.sh" --remove >/dev/null; check "$(ls "$T/agents" | wc -l | tr -d ' ')" 0 "--remove deletes the plist"
 
+echo; echo "capped: the session's group, its cap and a passed signal"
+# The wrapper's python, lifted from weekly-run: the night itself needs claude. The early-TERM race
+# and the zombie-only EPERM are timing, not cases; the overlay's kill cases load them (2026-10-21).
+python3 - "$W" > "$T/capped.py" <<'EOF'
+import re, sys
+print(re.search(r"python3 -c '\n(.*?)\n' \"\$CAP\"", open(sys.argv[1]).read(), re.S).group(1))
+EOF
+export WEEKLY_CAP_MARK="$T/capmark"
+python3 "$T/capped.py" 5 sh -c 'exit 3'; check $? 3 "the session's exit code"
+python3 "$T/capped.py" 1 sleep 30; check $? 124 "at the cap: 124"
+check "$([ -e "$T/capmark" ] && echo marked)" marked "  and the mark"
+python3 "$T/capped.py" 60 sh -c "trap '' TERM; echo \$\$ > '$T/grp'; sleep 100" & w=$!
+sleep 1; t0=$(date +%s); kill -TERM $w; sleep 3; kill -TERM $w 2>/dev/null; wait $w
+check $? 143 "a TERM to the wrapper is re-raised: 143"
+s=$(( $(date +%s) - t0 )); check "$([ $s -ge 14 ] && [ $s -le 17 ] && echo one)" one "  after one 15 s grace, a second TERM ignored (${s}s)"
+check "$(kill -0 -- -"$(cat "$T/grp")" 2>/dev/null && echo alive || echo gone)" gone "  and the group, TERM-deaf, is gone"
+
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }
