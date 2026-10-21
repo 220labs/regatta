@@ -856,7 +856,7 @@ check "$(prun)" 2 "publish --pr: GitHub's committer address as git's own: refuse
 git -C "$R" config user.email maker@example.org
 git -C "$R" push -q -f origin main:main 2>/dev/null; git -C "$R" checkout -q main
 
-# A workflow merged on GitHub that lands PRs: the public main itself would merge the next one.
+# A workflow merged on GitHub that merges PRs: the public main itself would merge the next one.
 git -C "$T/gh" pull -q origin main; mkdir -p "$T/gh/.github/workflows"
 printf 'on: pull_request_target\njobs: {m: {steps: [{run: gh pr merge --squash}]}}\n' > "$T/gh/.github/workflows/land.yml"
 git -C "$T/gh" add -A; git -C "$T/gh" commit -qm "A workflow"; git -C "$T/gh" push -q origin main

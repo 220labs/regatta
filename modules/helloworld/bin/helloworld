@@ -78,7 +78,7 @@ stops accidents, not intent: a shell that unsets the variable and fakes a termin
 GIT_PUSH_OK; a PreToolUse deny on `helloworld publish` would be the next layer. It refuses a
 remote that is one of the private repo's own remotes (the allowlist-only tree would fast-forward
 the private main). It fetches origin, builds and scans origin/main (never a branch: what goes
-public has landed), scans and shows both identities the commit carries (dates in UTC, so no time
+public has launched), scans and shows both identities the commit carries (dates in UTC, so no time
 zone goes public), shows the diff-stat against the public repo's main, asks for the public repo's
 owner/name, commits the tree and pushes it as main with GIT_PUSH_OK=1 (the repo's own pre-push
 guard lets it through). The first publish is an orphan;
@@ -115,7 +115,7 @@ history — and the ref is deleted again, so no ref of the gate's own outlives a
 off by refusal: a workflow on the public main or in the proposed tree whose name or content says
 auto-merge (`gh pr merge`, `merge --auto`, enablePullRequestAutoMerge, `pulls.merge`, a
 `/pulls/N/merge` call), or a Mergify, Kodiak or Bulldozer config, stops the run — a text check of
-the house shapes, not of GitHub's own settings, since a ready claude/* PR would land itself. The same tree already on a
+the house shapes, not of GitHub's own settings, since a ready claude/* PR would launch itself. The same tree already on a
 claude/publish/* branch is not proposed twice while that branch's PR is open; without an open PR
 the run exits 2 with the command to open one. A first publish has no main to be a pull request
 against, so it stays `publish`.
@@ -260,7 +260,7 @@ MESSAGE_PATTERNS = [
 ]
 CREDIT_NAME = re.compile(r"(?:^|[{,\s])name:\s*(?:\"([^\"]+)\"|'([^']+)'|([^,}\n#]+?))\s*(?:[,}#]|$)")
 MASK_IN_AGENT = {"private word", "e-mail address"}
-# A workflow that lands a PR by itself, by its name or by what it runs (review 2026-10-09:
+# A workflow that merges a PR by itself, by its name or by what it runs (review 2026-10-09:
 # auto-merge.yml, or a pr.yml running `gh pr merge --auto`, passed a name-only check), and
 # Mergify, which needs no workflow at all.
 AUTOMERGE = re.compile(r"auto[-_]?merge|merge\s+--auto|enablePullRequestAutoMerge|gh\s+pr\s+merge|"
@@ -1363,7 +1363,7 @@ def cmd_publish_pr(args):
     if not parent:
         raise Refused("the public repo has no main yet — a pull request needs one to merge into; "
                       "the first publish is `publish`, in the owner's terminal")
-    # Auto-merge stays off (the owner, 2026-10-09) by refusal, not by absence: a ready claude/* PR lands
+    # Auto-merge stays off (the owner, 2026-10-09) by refusal, not by absence: a ready claude/* PR launches
     # itself wherever an automerge workflow is on main, so neither the
     # public main nor the tree proposed for it may carry one.
     for where, ref in (("the public main", parent), ("this tree", tree)):
