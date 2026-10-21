@@ -17,6 +17,11 @@
 - `autofinish-run --merge` (Lookout and Hail, S10, 2026-10-21): the owner's up-front `/finish --merge`
   carried into the unattended run (`--by override|typed` only; sweep, chain and yolo refused);
   `autofinish.json` records `merge: true`.
+- `orca-serve-agent` moves in from the overlay (D2-B, 2026-10-21): a Mac's Orca as a headless server
+  under a LaunchAgent. The label is read from `wharf-runs/serve-label` on the Mac it installs on
+  (default `org.regatta.orca-serve`), an older one from `wharf-runs/serve-label-previous`; the owner's
+  own labels live in the overlay's config. New `--dry-run` prints the label, the plist and the commands.
+
 - The wharf rename's S6 (2026-10-20), carried from the overlay: the launch word in `/later`, `/move`
   ("the arrival" for a move's own landing) and `/pickup`.
 - `test_wharf` finds helm's console and the old `bin/plan` each where it lives: `libexec/helm` in helm's

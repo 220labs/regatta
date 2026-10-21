@@ -22,12 +22,12 @@ if [ -f "$M/lib/core_path.py" ] && [ -f "$M/../wharf/lib/core_path.py" ]; then
 else
   echo "  --   skipped: no lib/core_path.py here, or no wharf beside it"
 fi
-# Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, and test_autofinish (made
+# Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), and test_autofinish (made
 # portable and run on ubuntu in the overlay's CI since 2026-10-07). The rest read launchd, plutil,
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
-LINUX_OK=" orca-host test_autofinish "
-for s in orca-host peers test_check test_harness test_hail test_rc_hosts test_autofinish_run test_pickup test_autofinish test_dispatch test_wharf; do
+LINUX_OK=" orca-host orca-serve-agent test_autofinish "
+for s in orca-host orca-serve-agent peers test_check test_harness test_hail test_rc_hosts test_autofinish_run test_pickup test_autofinish test_dispatch test_wharf; do
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  --   skipped: not in this checkout"; continue; fi
   if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only (runs in /finish)"; continue; fi
