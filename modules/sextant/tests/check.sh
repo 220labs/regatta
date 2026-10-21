@@ -52,6 +52,27 @@ if [ "$(uname)" = Darwin ] && command -v cc >/dev/null 2>&1; then
   ok $? "launcher.c.in compiles with its two defines"
   ! cc -x c -o "$T/l2" "$D/launcher.c.in" 2>/dev/null; ok $? "  and refuses to without them"
 else echo "  skipped: launcher.c.in is macOS-only (or no cc)"; fi
+# /sounding (the Sounding's S4): its frontmatter, and every `keel <verb> … --flag` it tells a session
+# to run is one keel takes — a renamed flag would otherwise fail only when a sounding reaches it.
+# keel is a peer (its own module, private until its scrub): absent, those cases are skipped.
+SK="$D/skills/sounding/SKILL.md"
+# Without PyYAML, a text check; with it, a description that does not parse fails (no fallback then).
+python3 -c '
+import sys
+t = open(sys.argv[1]).read()
+try: import yaml
+except ImportError: sys.exit(0 if t.startswith("---\nname: sounding\ndescription: ") else 1)
+m = yaml.safe_load(t.split("---")[1]); sys.exit(0 if m["name"] == "sounding" and m["description"] else 1)' "$SK"
+ok $? "skills/sounding: its frontmatter names it and says what it does"
+for h in architect sr-architect sounder; do grep -q "| \`$h\` |" "$SK"; ok $? "  …and picks \`$h\` by scope"; done
+KEEL=$(python3 "$D/../regatta/bin/regatta" which keel 2>/dev/null) || KEEL=""   # through the core, as wharf's test_agents.sh
+if [ -n "$KEEL" ]; then
+  for v in lint line light yolo pull; do python3 "$KEEL" "$v" --help >/dev/null 2>&1; ok $? "  keel $v, which it runs, is a keel verb"; done
+  lh=$(python3 "$KEEL" light --help 2>&1 | sed '/^positional/,$d')   # the usage block alone: other flags' help names these too
+  for f in --check --plan --write --record --review --why; do printf '%s' "$lh" | grep -q -- "$f"; ok $? "  keel light $f, which it runs, is a flag"; done
+  python3 "$KEEL" yolo --help 2>&1 | grep -q -- --dry-run; ok $? "  keel yolo --dry-run, which it runs, is a flag"
+  python3 "$KEEL" lint --help 2>&1 | grep -q -- --strict; ok $? "  keel lint --strict, which it runs, is a flag"
+else echo "  skipped: keel is not installed here (its module is private until its scrub)"; fi
 sh -n "$D/install.sh"; ok $? "install.sh parses"
 sh "$D/install.sh" --bogus >/dev/null 2>&1; [ $? = 2 ]; ok $? "install.sh refuses an unknown verb"
 exit $rc

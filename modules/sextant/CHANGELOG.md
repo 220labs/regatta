@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New skill: `/sounding` (the Sounding's S4) — the head by scope (`architect`, `sr-architect`,
+  `sounder`), the stance (`firm:` or sounded), the two peers' lines in the brief, the lint and
+  `reviewer-high` before the owner sees the doc, and three paths: full (`keel line`), `--light`
+  (`keel light`'s questionnaire, also unasked when its check passes) and `--yolo` (`keel yolo`).
+  Public: it quotes none of the shared body.
 - New agent: `agents/sounder.md` (the Sounding's S1) — the architects' method on an idea outside any
   repo; its body is the architects' shared one, byte for byte (wharf's `tests/test_agents.sh`), so it
   stays off the allowlist until that body is scrubbed.
