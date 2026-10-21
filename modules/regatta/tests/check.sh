@@ -149,8 +149,15 @@ check "$(py 'print(common.REFUSED_GATES)')" "('refused', 'not-launched')" "REFUS
 echo "the CLI"
 check "$("$RG" root)" "$ROOT" "regatta root"
 check "$("$RG" has regatta)" "$M" "regatta has regatta"
-out=$("$RG" has helm); check "$?:$out" "1:helm not installed" "regatta has helm: not installed, exit 1"
-out=$("$RG" helm board 2>&1); check "$?:$out" "2:regatta: helm not installed" "regatta helm …: one line, exit 2 (G28)"
+# helm absent: a core-only copy of the checkout, since this one holds helm since B12 (AGENTS.md's
+# "peer absent" trap); the legacy checkout above holds no helm either
+CO="$T/core-only"; mkdir -p "$CO/.claude-plugin" "$CO/modules"; cp "$ROOT/.claude-plugin/marketplace.json" "$CO/.claude-plugin/"
+cp -R "$M" "$CO/modules/"
+out=$("$CO/modules/regatta/bin/regatta" has helm); check "$?:$out" "1:helm not installed" "regatta has helm: not installed, exit 1"
+out=$("$CO/modules/regatta/bin/regatta" helm board 2>&1); check "$?:$out" "2:regatta: helm not installed" "regatta helm …: one line, exit 2 (G28)"
+if [ -d "$ROOT/modules/helm" ]; then
+  check "$("$RG" which helm)" "$ROOT/modules/helm/libexec/helm" "regatta which helm: libexec/, off PATH (C1)"
+fi
 check "$("$RG" old-tool ready 7)" "legacy ready 7" "regatta <tool> …: runs the tool where it is, args passed"
 out=$("$RG" which 2>&1); check "$?:$out" "2:regatta which: wrong arguments — \`regatta help\`" "regatta which, no name: a usage error, exit 2"
 rm "$T/config/legacy"
