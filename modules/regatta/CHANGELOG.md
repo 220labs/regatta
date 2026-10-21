@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A third waiting line, `PENDING_PREFIX` (`THIS SESSION IS WAITING FOR SOMETHING — <what>`), a
+  `pending` kind in `CLOSING`: the session waits on its own work and carries on by itself, so the
+  owner has nothing to do. It is no ask (`unrelayed_ask`, `asks_answers` skip it); keel's Stop lint
+  blocks one that asks, and a WAITING FOR YOU line that says there is nothing to do.
 - `regatta shim --deny-prompt <path>`: `--deny`'s shim, and with no core a UserPromptSubmit in a
   secondary login dir (`CLAUDE_CONFIG_DIR` set) is blocked too. Made for lighthouse's `account_guard`
   (B9 review: its `--deny` shim let every prompt through where the overlay's old hook blocked); `--deny`

@@ -913,7 +913,11 @@ def handoff(sid):
 # board) — how a session ended without anyone reading the reply. Each skill states its own
 # line; this table is what `bin/paste-paths --stop-hook` holds a reply to (`ending`), so a new
 # line goes here and in its skill in the same change. `done`: the session's job is over. `waiting`: only the owner can move
-# it on, and the line says what (the house rules, "How to talk").
+# it on, and the line says what (the house rules, "How to talk"). `pending`: the session waits on
+# something it started or watches itself — a reviewer, the check, a PR it polls — and carries on
+# by itself; the owner has nothing to do (the owner, 2026-10-20: the WAITING line said "nothing to do
+# yet; the reviewers are running" and still read as an ask). An ask under it is blocked
+# (keel's bin/paste-paths, two_waits_findings).
 # Each line opens by addressing the owner (OWNER_NAME upper-cased, then ", "), or on its first word
 # with no owner configured; a skill states its line in the addressed form, so every pattern
 # below starts with _TO.
@@ -922,6 +926,7 @@ _TO = re.escape(ADDRESS)
 FINISH_LINES = (ADDRESS + "IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING.",
                 ADDRESS + "THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.")
 WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
+PENDING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR SOMETHING — "
 # /autofinish (autofinish design E6, D7): the session is done and the launcher takes the branch.
 # Allowed only when the session's own dry run says `start` — checkpoint.py's Stop checks it
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
@@ -946,6 +951,7 @@ CLOSING = (
     ("done", _TO + r"THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — .+"),
     ("waiting", _TO + r"THIS SESSION WAITS TO MOVE TO \S+ — .+"),                   # /move, peer away
     ("waiting", re.escape(WAITING_PREFIX) + r"\S.*"),                               # A1: any ask
+    ("pending", re.escape(PENDING_PREFIX) + r"\S.*"),                               # no ask: it carries on by itself
     # session-asks R4: a dispatched run that relayed its ask waits on its skipper, not on the owner
     ("relayed", r"RELAYED TO \S.* — \S.*"),
 )
@@ -1011,7 +1017,7 @@ def bare(line):
 
 
 def closing_kind(line):
-    """'done', 'waiting' or None for one line of a reply. Markup around it doesn't change what
+    """'done', 'waiting', 'pending', 'relayed' or None for one line of a reply. Markup around it doesn't change what
     it says, so it doesn't change the answer."""
     line = bare(line)
     for kind, rx in _CLOSING_RE:
@@ -1021,7 +1027,7 @@ def closing_kind(line):
 
 
 def ending(text):
-    """How one message ends: (kind, line, problem). `kind` is 'done', 'waiting' or None for the
+    """How one message ends: (kind, line, problem). `kind` is a CLOSING kind or None for the
     closing line it ends on (link lines after it allowed), `line` that line, bare. `problem` is
     None, ('after', line) — something other than links follows a closing line, a code block
     included — or ('unknown', line): the last line reads as a closing line but is not one."""
