@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New agent: `agents/sounder.md` (the Sounding's S1) — the architects' method on an idea outside any
+  repo; its body is the architects' shared one, byte for byte (wharf's `tests/test_agents.sh`), so it
+  stays off the allowlist until that body is scrubbed.
 - New verb: `sparks related "<words>"` — the ideas pool grepped for a brief's words, dropped notes
   and friends' notes included, the `sparks` peer's `off` honoured (the Sounding's S3, carried from
   the overlay, 2026-10-21).
