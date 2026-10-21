@@ -2,7 +2,8 @@
 
 Sextant is Regatta's strategy module: what you are aiming at, which ideas get you there, and which
 of them get built. Today it holds its **ideas intake, Sparks** — ideas in, one note per idea out,
-filed where the strategy reads them. The strategy half (goals, priorities and budgets, candidates
+filed where the strategy reads them — and **`/sounding`**, which tests an idea before anything is
+built. The strategy half (goals, priorities and budgets, candidates
 and a queue) joins this same plugin later; there is never a separate Sparks plugin.
 
 | Piece | What it does |
@@ -11,6 +12,7 @@ and a queue) joins this same plugin later; there is never a separate Sparks plug
 | `bin/redactions` | what Sparks' redaction step hid, per recording, and putting it back on the owner's word |
 | `launcher.c.in`, `install.sh` | the launchd job that runs Sparks on a Mac, and the small launcher Full Disk Access is granted to |
 | `bench/redaction/` | can a classifier find what a memo should not put in git? Five arms over an invented corpus |
+| `skills/sounding/` | `/sounding <idea> [--light] [--yolo]`: one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`) sounds the idea — a Landscape of what exists, a one-line Verdict — and the doc reaches the owner in full, as a chat questionnaire or with its reversible picks taken unattended |
 | `agents/sounder.md` | the sounder: an architect for an idea outside any repo — a venture, a pitch, a tool to build or adopt — held to the ventures README's four gates, with a money flow and a smallest test; private until the architects' shared body is scrubbed |
 | `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled |
 
