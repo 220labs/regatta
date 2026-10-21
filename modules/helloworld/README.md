@@ -173,8 +173,8 @@ read at the time.
    the test's scratch word list, the real one stays outside every repo), run the test against the
    gate as it was and keep the FAIL line, fix `bin/helloworld` or the repo's lists, run it green.
    Both outputs go in the post-mortem.
-3. **Land both**: the gate fix in this module, the post-mortem through the source repo's own
-   landing; then tell every live session the one-line lesson.
+3. **Launch both**: the gate fix in this module, the post-mortem through the source repo's own
+   launch; then tell every live session the one-line lesson.
 
 ## Not verified
 
