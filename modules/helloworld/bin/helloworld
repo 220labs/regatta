@@ -144,6 +144,19 @@ ones. `check` prints the plan, private shas and fold reasons included, which nev
 refusals are printed there, not counted, so the check line stays the tree's verdict. Plain
 `publish` stays one commit: the first publish has no main to replay onto.
 
+The log (S3; the design's D2-A, the owner: "= recommended"): what a privacy check leaves behind is
+split by what may be public. The PR body lists each replayed subject, oldest first and fenced (a
+`#N` or `@name` in one neither links nor notifies), under one line of counts: replayed, folded,
+refused (a body dropped, a subject replaced by its reviewed line) — never a path with a line, a
+word, a private sha or a fold's reason. The full report goes under the PR's row in
+<git dir>/helloworld/PUBLISHED.md, indented so publish's row reader never sees it: the
+private-to-public sha map (full shas; a rebase merge rewrites the public ones, the trees stay),
+each fold with what carries it and why, every finding at file:line (a fold's tree, a dropped
+body), each reviewed subject with the one it replaced, the exemptions' exact strings; inside an
+agent's shell, written masked as it prints. Every clean `check` prints how many private commits
+that change a published file are not public yet (G3: those that go up and those that fold), and
+says "publish soon" above 5; never in its exit code.
+
 The public repo's history is scanned too (the 220-film incident, 2026-10-10: GitHub authored a
 squash commit with the merging account's private address, and the gate saw only the tree and its own
 commit). `check` fetches every public branch and tag (the one fetch that also gives the diff base's
@@ -912,7 +925,8 @@ def replay_plan(b, parent):
         dates = {k: v.rsplit(" ", 2)[1] for k, v in headers if k in ("author", "committer")}
         subject, body = public_message(raw)
         t = trees[c]
-        step = dict(sha=c, kind="", why="", tree=t["tree"], subject=subject, body=body, dates=dates, folded=[])
+        step = dict(sha=c, kind="", why="", tree=t["tree"], subject=subject, body=body, dates=dates, folded=[],
+                    findings=[], reworded=None)
         plan["steps"].append(step)
         if t["tree"] == last:  # folds before it, if any, were undone: nothing of theirs goes up
             step.update(kind="private", why="no published file changed")
@@ -930,20 +944,27 @@ def replay_plan(b, parent):
             t["bad_allow"] = t["bad_allow"] + ["its exemptions do not read"]
         own_credits = set(credits(blob(repo, t["files"]["CREDITS.yaml"][2]).decode(errors="replace"))
                           if "CREDITS.yaml" in t["paths"] else [])
-        wider = len(set(t["paths"]) - head_paths) + len(set(ex) - head_ex) + len(own_credits - head_credits)
+        wider = ([f"{p}: listed here, not at {b['ref']}" for p in sorted(set(t["paths"]) - head_paths)]
+                 + [f"{f}: an exemption {b['ref']} took back" for f, _s in sorted(set(ex) - head_ex)]
+                 + [f"CREDITS.yaml: {n}, a credit {b['ref']} took back" for n in sorted(own_credits - head_credits)])
         if wider:
-            step.update(kind="fold", why=f"its lists hold {wider} entr(ies) {b['ref']} took back")
+            step.update(kind="fold", why=f"its lists hold {len(wider)} entr(ies) {b['ref']} took back", findings=wider)
             pending.append(step)
             continue
         fix = next((v for k, v in fixes.items() if c.startswith(k)), None)
         if fix:
             used_fix.update(k for k in fixes if c.startswith(k))
+            step["reworded"] = subject  # the private subject, for the private report only
             subject = step["subject"] = fix
         msg = subject + ("\n\n" + body if body else "")
         hits, _used, bad_ex = scan(repo, t["paths"], t["files"], ex, b["words"])
         tree_bad = len(t["bad_allow"]) + len(bad_ex) + (not t["paths"]) + len(hits)
         if tree_bad:
-            step.update(kind="fold", why=f"its tree has {tree_bad} finding(s)")
+            # file:line for each, kept for the private report (S3); never in the PR body
+            found = ([f"allowlist: {x}" for x in t["bad_allow"]] + [f"exemption: {x}" for x in bad_ex]
+                     + (["allowlist: names no file"] if not t["paths"] else [])
+                     + [f"{w}: {cat} — {txt}" for w, cat, txt in hits])
+            step.update(kind="fold", why=f"its tree has {tree_bad} finding(s)", findings=found)
             pending.append(step)
             continue
         # The whole word list, a credit or not; and the message's own patterns (D2): a sha, a
@@ -953,22 +974,31 @@ def replay_plan(b, parent):
             if n == 1:
                 plan["refusals"].append((c, cat, txt))
         if any(n > 1 for n, _, _ in msg_hits):
-            step.update(body="", why="its body has findings: the subject goes alone")
+            step.update(body="", why="its body has findings: the subject goes alone",
+                        findings=[f"body:{n - 2}: {cat} — {txt}" for n, cat, txt in msg_hits if n > 1])
         step.update(kind="commit", folded=pending)
         last, pending = t["tree"], []
     if pending and pending[-1]["tree"] != last:  # a tail of folds: one commit under the run's title
         tail = pending[-1]
         plan["steps"].append(dict(sha=tail["sha"], kind="tail", why="the folds at the end", tree=tail["tree"],
-                                  subject=None, body="", dates=tail["dates"], folded=pending[:-1]))
+                                  subject=None, body="", dates=tail["dates"], folded=pending[:-1],
+                                  findings=[], reworded=None))
     plan["unused"] = [k for k in fixes if k not in used_fix]
     return plan
 
 
 def replay_counts(plan):
     kinds = [s["kind"] for s in plan["steps"]]
-    return dict(commits=kinds.count("commit") + kinds.count("tail"), folded=kinds.count("fold"),
+    # folded: the folds a commit or the tail carries. A tail is the last fold's own sha, so it counts
+    # as going up, not as folded; a fold a later private-only commit undid is carried by nothing.
+    # pending (G3): the private commits not yet public that will be — those going up and their folds.
+    folded = sum(len(s["folded"]) for s in plan["steps"] if s["kind"] in ("commit", "tail"))
+    commits = kinds.count("commit") + kinds.count("tail")
+    return dict(commits=commits, folded=folded,
                 private=kinds.count("private"), tail=kinds.count("tail"),
-                bodies=sum(1 for s in plan["steps"] if s["kind"] == "commit" and s["why"]))
+                bodies=sum(1 for s in plan["steps"] if s["kind"] == "commit" and s["why"]),
+                reworded=sum(1 for s in plan["steps"] if s["kind"] == "commit" and s["reworded"]),
+                pending=commits + folded)
 
 
 def print_replay(b, plan, parent):
@@ -1000,14 +1030,16 @@ def print_replay(b, plan, parent):
 def replay_chain(b, plan, parent, title):
     """The plan's public commits, made with commit-tree (objects only, no ref), each a child of the
     last: the publishing identity, the private dates at +0000 — so the same span makes the same
-    shas again — and the gate's Signed-off-by. The tip."""
+    shas again — and the gate's Signed-off-by. The tip; each public step keeps its sha as
+    `public`, the private report's sha map."""
     tip = parent
     for s in plan["steps"]:
         if s["kind"] not in ("commit", "tail"):
             continue
         msg = (s["subject"] + ("\n\n" + s["body"] if s["body"] else "")) if s["kind"] == "commit" else title
         env = {"GIT_AUTHOR_DATE": f"{s['dates']['author']} +0000", "GIT_COMMITTER_DATE": f"{s['dates']['committer']} +0000"}
-        tip = git(b["repo"], "commit-tree", s["tree"], "-p", tip, "-m", signed_off(msg, b["idents"]), env=env).stdout.strip()
+        tip = s["public"] = git(b["repo"], "commit-tree", s["tree"], "-p", tip, "-m", signed_off(msg, b["idents"]),
+                                env=env).stdout.strip()
     return tip
 
 
@@ -1065,13 +1097,36 @@ def cmd_check(args):
         return 1 if not clean else 2
     if clean:
         tree = write_tree(b["repo"], b["paths"], b["files"])
-        if diffstat(b, tree, parent) and parent:
+        differs, plan = diffstat(b, tree, parent), None
+        if differs and parent:
             # The dry replay: what publish --pr would push. Its refusals are printed, not counted:
             # the exit code stays the tree's and the history's, so a work branch's checkpoint
             # subjects, which /finish rewrites, never turn a check line red.
-            print_replay(b, replay_plan(b, parent), parent)
+            plan = replay_plan(b, parent)
+            print_replay(b, plan, parent)
+        print(pending_line(parent, differs, plan))
         print(f"  clean: {len(b['paths'])} files, tree {tree[:7]}. Nothing was pushed.")
     return 0 if clean else 1
+
+
+# G3 of the design: at most this many allowlisted private commits wait for a publish per twin.
+PENDING_MAX = 5
+
+
+def pending_line(parent, differs, plan):
+    """G3: how many private commits that change a published file are not public yet. Printed by
+    every clean check, never counted in its exit code: a backlog is a reason to publish, not a
+    finding."""
+    if not parent:
+        return "  pending: all — the public repo has no main yet (the first publish is `publish`)"
+    if not differs:
+        return "  pending: 0 commits — the public main has exactly this tree"
+    if plan is None or plan["base"] is None:
+        return "  pending: not counted — no commit has the public main's tree, so a publish squashes"
+    n = replay_counts(plan)
+    over = f" — more than {PENDING_MAX} (G3): publish soon" if n["pending"] > PENDING_MAX else ""
+    return (f"  pending: {n['pending']} commit(s) not yet public ({n['commits']} would go up, "
+            f"{n['folded']} fold into them){over}")
 
 
 def message_words():
@@ -1220,7 +1275,9 @@ def cmd_publish(args):
         return 1
     tree = write_tree(b["repo"], b["paths"], b["files"])
     last = log_path(b["repo"])
-    rows = [l.split() for l in last.read_text().splitlines() if l.startswith("- ")] if last.is_file() else []
+    # split("\n"), not splitlines(): a subject in an indented report may hold \x1c or U+2028, which
+    # splitlines() would break into a line of its own that could read as a row.
+    rows = [l.split() for l in last.read_text().split("\n") if l.startswith("- ")] if last.is_file() else []
     # "- <date> from <private sha> <published sha> <remote>", this remote's rows only;
     # "- <date> pr <branch> <sha> <url>" rows are proposals, not publishes
     rows = [r for r in rows if len(r) == 6 and r[2] == "from" and r[5] == b["remote"]]
@@ -1255,13 +1312,73 @@ def cmd_publish(args):
     return 0
 
 
-def log_row(repo, row):
+def log_row(repo, row, report=()):
+    """One row of PUBLISHED.md, then its private report indented under it. publish reads the
+    rows (lines that start `- `) only, so the report never moves its diff base."""
     last = log_path(repo)
     last.parent.mkdir(parents=True, exist_ok=True)
     with last.open("a") as fh:
         if fh.tell() == 0:
-            fh.write("# What `helloworld publish` pushed from this clone: date, from (private), published.\n")
-        fh.write(row + "\n")
+            fh.write("# What `helloworld publish` pushed from this clone: date, from (private), published;\n"
+                     "# under a `pr` row, its private report: the sha map, each fold and why, file:line.\n")
+        fh.write(row + "\n" + "".join(f"    {l}\n" for l in report))
+
+
+def private_report(b, plan, parent, tip, shape, used):
+    """The full log of one publish --pr (the design's D2-A), for PUBLISHED.md in the git dir and
+    never for the PR: the private-to-public sha map, each fold and why, every finding at file:line
+    (a fold's tree, a dropped body), each subject replaced by its reviewed line and what it was,
+    and the exemptions' exact strings. Inside an agent's shell its private words are written
+    masked, as they print: an agent reads this file back. Only the text is masked, never a sha: a
+    short word list entry made of hex letters would otherwise cut into the sha map."""
+    rxs = words_regex(b["words"])
+    m = lambda t: mask_words(t, rxs)  # noqa: E731
+    out = [m(f"exemption used: {f}: \"{s}\" cleared {c}") for f, s, c in used]
+    if plan is None:
+        out.insert(0, f"squash ({m(str(shape))}): {b['head']} → {tip}, tree {tree_of(b, tip)[:7]}")
+        return out
+    n = replay_counts(plan)
+    out.insert(0, f"replay onto {parent} from base {plan['base']}: {n['commits']} replayed, {n['folded']} folded, "
+                  f"{n['private']} private only, {refused_said(n)}")
+    out.insert(1, "the public shas are the proposal's: a rebase merge on GitHub rewrites them, the trees stay")
+    carrier = {}
+    for s in plan["steps"]:
+        if s["kind"] in ("commit", "tail"):
+            carrier.update((f["sha"], s["public"]) for f in s["folded"])
+            if s["kind"] == "tail":
+                carrier[s["sha"]] = s["public"]
+    for s in plan["steps"]:
+        if s["kind"] == "commit":
+            out.append(f"{s['sha']} → {s['public']}, tree {s['tree'][:7]}: {m(s['subject'])}"
+                       + (f" [{m(s['why'])}]" if s["why"] else ""))
+        elif s["kind"] == "fold":
+            into = f"folded into {carrier[s['sha']]}" if s["sha"] in carrier else "folded, then undone: nothing went up"
+            out.append(f"{s['sha']} → {into}: {m(s['why'])}")
+        elif s["kind"] == "private":
+            out.append(f"{s['sha']} → private: {m(s['why'])}")
+        else:  # the tail: its sha is the last fold's, listed above
+            out.append(f"the folds at the end → {s['public']}, tree {s['tree'][:7]}: the run's title")
+        if s["reworded"]:  # set before the tree scan, so a commit that then folded shows it too
+            said = "" if s["kind"] == "commit" else f" ({m(s['subject'])}, unused: the commit folded)"
+            out.append(f"    the reviewed subject from .helloworld/messages{said}; it was: {hide(s['reworded'], rxs)}")
+        out += [f"    {m(f)}" for f in s["findings"]]
+    return out
+
+
+def hide(text, words_rx):
+    """text with each finding as a report prints it (shown): a credential always masked, a private
+    word or an address inside an agent's shell. A refused subject holds one by definition."""
+    kept = []  # the earliest, then longest, of overlapping hits: a word inside a token masks it whole
+    for h in sorted(text_hits(text, words_rx), key=lambda h: (h[0], -h[1])):
+        if not kept or h[0] >= kept[-1][1]:
+            kept.append(h)
+    for start, end, _cat, said in reversed(kept):
+        text = text[:start] + said + text[end:]
+    return text
+
+
+def tree_of(b, sha):
+    return git(b["repo"], "rev-parse", f"{sha}^{{tree}}").stdout.strip()
 
 
 def public_clone(b):
@@ -1315,9 +1432,22 @@ def gh(*args, cwd=None):
         return subprocess.CompletedProcess(["gh"], 127, "", "gh is not installed")
 
 
-def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=False, shape=None):
+def refused_said(shape):
+    """The replay's scan refusals a run got past, as the PR body counts them: a body dropped (its
+    subject went alone) and a subject replaced by its reviewed line. Counts only, never a reason."""
+    parts = []
+    if shape["bodies"]:
+        parts.append(f"{shape['bodies']} bod{'ies' if shape['bodies'] != 1 else 'y'} dropped, the subject alone")
+    if shape["reworded"]:
+        parts.append(f"{shape['reworded']} subject{'s' if shape['reworded'] != 1 else ''} replaced by a reviewed line")
+    return f"{shape['bodies'] + shape['reworded']} refused" + (f" ({'; '.join(parts)})" if parts else "")
+
+
+def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=False, shape=None, subjects=()):
     """What the PR says, built from the scan's verdict alone: everything in it is public. `shape`
-    is how the files go up: replay counts (replay_counts), or the reason for a squash."""
+    is how the files go up: replay counts (replay_counts), or the reason for a squash. `subjects`
+    are the replayed commits' subjects, oldest first (D2-A): each already scanned as a commit
+    message, and fenced, so no `#N` or `@name` in one links or notifies on GitHub."""
     per_file = {}
     for f, _s, c in used:
         per_file[f] = per_file.get(f, 0) + c
@@ -1332,6 +1462,12 @@ def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=Fals
            f"(tree {tree[:7]}). Merging this pull request is the publish; nothing has reached main yet.", ""]
     if note:
         out += [note.strip(), ""]
+    if isinstance(shape, dict) and subjects:
+        fence = "```"
+        while any(fence in s for s in subjects):
+            fence += "`"
+        out += [f"Commits, oldest first: {shape['commits']} replayed, {shape['folded']} folded, {refused_said(shape)}.",
+                "", fence] + list(subjects) + [fence, ""]
     out.append(f"Privacy scan (`helloworld`, {dt.datetime.now(dt.timezone.utc).date().isoformat()}): {n_files} files, "
                + ("each commit's tree and message, " if isinstance(shape, dict) else "")
                + "the title, this body, the branch name, the commit identities"
@@ -1461,7 +1597,9 @@ def cmd_publish_pr(args):
         if r.returncode:
             print(f"  PR author: the search for a public merged PR failed, so the login is scanned "
                   f"({(r.stderr or 'no answer').strip()[:200]})")
-    body = pr_body(len(b["paths"]), tree, parent, body_stat, removed, used, args.note, bool(public_as), shape)
+    subjects = [s["subject"] if s["kind"] == "commit" else title for s in plan["steps"]
+                if s["kind"] in ("commit", "tail")] if plan else []
+    body = pr_body(len(b["paths"]), tree, parent, body_stat, removed, used, args.note, bool(public_as), shape, subjects)
     # The identities' address is the one the owner chose to publish (as publish's): the address
     # shape is not a finding there, a private word (a machine, an account) is.
     meta = [("PR title", title, ()), ("PR body", body, ()), ("PR branch", branch, ())]
@@ -1525,7 +1663,11 @@ def cmd_publish_pr(args):
     if r.returncode:
         raise Refused(f"push of {branch} refused: {(r.stderr or r.stdout).strip()[:300]}")
     seen = git(clone, "ls-remote", "origin", f"refs/heads/{branch}").stdout.split()
+    # What went up is public from the push on, PR or not, read back or not: its private report is
+    # written either way.
+    private = private_report(b, plan, parent, sha, shape, used)
     if not seen or seen[0] != sha:
+        log_row(b["repo"], f"- {today} pr {branch} {sha} read-back:{seen[0][:7] if seen else 'none'}", private)
         print(f"Pushed, but the public {branch} reads {seen[0][:7] if seen else 'nothing'}, not {sha[:7]} — "
               "look before opening a PR.")
         return 2
@@ -1539,11 +1681,12 @@ def cmd_publish_pr(args):
     finally:
         os.unlink(fh.name)
     if r.returncode:
+        log_row(b["repo"], f"- {today} pr {branch} {sha} no-pr", private)
         print(f"Pushed {branch} ({sha[:7]}, read back), but no PR: {(r.stderr or r.stdout).strip()[:300]}\n"
               f"  open it with: gh pr create --repo {slug} --base main --head {branch}")
         return 2
     url = (r.stdout.strip().splitlines() or [""])[-1]
-    log_row(b["repo"], f"- {today} pr {branch} {sha} {url}")
+    log_row(b["repo"], f"- {today} pr {branch} {sha} {url}", private)
     print(f"Proposed {sha[:7]} as {branch} (read back): {url}\n"
           f"  Merging it is the publish; the public main is untouched until then. Logged in {log_path(b['repo'])}.")
     return 0
