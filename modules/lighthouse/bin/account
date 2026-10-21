@@ -7,7 +7,7 @@
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once; the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
     account limits [LABEL | --all [--parked]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too
-    account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list)
+    account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
     account which                                               the label of the dir this process runs under
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
     account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
@@ -82,6 +82,23 @@ boundary (section 2 of the doc) — bar, for `allowed`, a path that holds a deni
 (holds_denied, since 2026-10-18): Claude Code loads the default dir's CLAUDE.md as such a folder's
 project memory, imports included.
 
+Tenants (multi-tenancy, the owner 2026-10-20: "instead of banning [an employer's] projects from
+[another employer's login], send their sessions to a separate account"). The registry may say
+`"tenants": {name: {"repos": [key or glob, …]}}` and a row `"tenant": name`: a tenant's repos run on
+its own rows only. Every other row is refused them, as if they were on its deny list. That includes
+the default dir, which otherwise denies nothing. Only rows refuse, never the tenant's own, so pick
+routes rather than bans: `pick --repo` (dispatch, pickup, autofinish, a ship) walks past every
+other row to the tenant's login and waits (exit 3) when that one has no room, never falling back to
+another seat. A tenant's own row is not confined to its repos: its own deny list says where else it
+may run (an organisation's seat wants the vault on it). Entries are repo keys as in a deny list,
+or a glob (`acme-*`; `*` spans `/`) matched against the key and, when git cannot answer, the path,
+so a repo cloned later is the tenant's the day it lands. With no reading of the tenant login's
+limits, pick runs it there rather than nothing, as the primary's rule has it: no other row may. `holds_denied` ignores tenancy: a folder holding a
+tenant's repo loads nothing of it. The guard (account_guard) asks `allowed` on the default dir too
+while any tenant exists, and the refusal names the way in: the login's VS Code profile (`vscode
+LABEL`), or `cc X` in a Terminal. `doctor` checks that VS Code ties each tenant repo's folder, and
+each workspace that opens one, to a profile of the tenant's login.
+
 Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
 on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
 Its usage-probe.json and exhaustion.jsonl are written into that Codex home, beside Codex's own files.
@@ -122,6 +139,7 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
+import fnmatch
 import functools
 import hashlib
 import json
@@ -194,7 +212,7 @@ def employer(a):
     No vault named, no employer row — bar where the overlay is installed: there it is an error."""
     if not VAULT:
         overlay_key_missing("lighthouse/vault")
-    return bool(VAULT) and bool(denied(a, projects_dir() / VAULT))
+    return bool(VAULT) and bool(denied(a, projects_dir() / VAULT, routes=False))
 
 
 def projects_dir():
@@ -415,7 +433,60 @@ def load_registry():
         a["parked"] = a.get("label") in parked
         a.setdefault("rules", {})
     mark_same_logins(reg)
+    apply_tenants(reg)
     return reg
+
+
+def apply_tenants(reg):
+    """Tenancy (header): `tenants` {name: {repos: [key or glob]}} and a row's `tenant: name`. Each row
+    gets `routed` {entry: {tenant, logins}} — the other tenants' repos, which it may not run — and the
+    registry `tenants` {name: [entry]}. A malformed entry is dropped, never a crash: the guard reads this."""
+    raw = reg.get("tenants")
+    raw = raw if isinstance(raw, dict) else {}
+    # `repos` must be a list: a string would split into one-letter entries, and a `*` among them routes
+    # every repo; a number would crash every command (code review 2026-10-20). An entry is a key under
+    # the projects folder, never absolute (Path.glob refuses one, and no repo key starts so).
+    # Each entry is stored normalised ("acme-*/", "./acme-*" → "acme-*"): route_of re-matches the key
+    # denied() returned against these, and an unstripped "acme-*/" there let the default dir in (review 2026-10-21).
+    reg["tenants"] = {n: [e for e in (tenant_entry(r) for r in (t.get("repos") if isinstance(t.get("repos"), list) else [])) if e]
+                      for n, t in raw.items() if isinstance(n, str) and isinstance(t, dict)}
+    for a in reg.get("accounts") or []:
+        a["routed"] = routes_for(reg, a)
+
+
+def tenant_entry(r):
+    """A tenant repo entry as a key: "/" and a leading "./" stripped; None for a non-string, an empty one
+    or an absolute one (Path.glob refuses one, and no repo key starts so). account_guard keeps a copy."""
+    if not isinstance(r, str) or r.startswith(("/", "~")):
+        return None
+    while r.startswith("./"):
+        r = r[2:]
+    return r.strip("/") or None
+
+
+def own_tenant(reg, a, path):
+    """True when path is a repo of row a's own tenant: there it is the one row that may run it, so an
+    unreadable reading runs the step rather than nothing, as the primary's does (review 2026-10-20)."""
+    t = a.get("tenant")   # a list or object here would be unhashable: no tenant, never a crash (review 2026-10-21)
+    entries = (reg.get("tenants") or {}).get(t) if isinstance(t, str) else None
+    return bool(entries and path and denied({"routed": dict.fromkeys(entries)}, path))
+
+
+def routes_for(reg, a):
+    """{entry: {tenant, logins}} for every tenant repo entry row `a` is not the tenant of."""
+    out = {}
+    for name, repos in (reg.get("tenants") or {}).items():
+        if a.get("tenant") == name:
+            continue
+        logins = [r["label"] for r in reg.get("accounts") or [] if r.get("tenant") == name
+                  and r.get("enabled", True) and r.get("provider", "claude") == "claude"]
+        for e in repos:
+            out.setdefault(e, {"tenant": name, "logins": logins})
+    return out
+
+
+def is_glob(e):
+    return any(c in e for c in "*?[")
 
 
 def read_json(p, default):
@@ -559,20 +630,79 @@ def repo_of(path):
         return None
 
 
-def denied(a, path):
-    """→ the repo key if this row's deny list names the repo at path, else None."""
-    deny = ((a.get("repos") or {}).get("deny")) or []
+def denied(a, path, routes=True):
+    """→ the repo key if this row's deny list names the repo at path — or, with `routes`, a tenant's
+    repo the row is not the tenant of (header) — else None. A glob entry matches repo keys only."""
+    deny = list(((a.get("repos") or {}).get("deny")) or []) + (list(a.get("routed") or {}) if routes else [])
     if not deny or not path:
         return None
     key = repo_of(path)
-    if key in deny:
+    if key is not None and any(key == d or (is_glob(d) and fnmatch.fnmatchcase(key, d)) for d in deny):
         return key
     p = Path(path).expanduser().absolute().resolve()
+    try:
+        rel = p.relative_to(projects_dir().resolve()).parts
+    except ValueError:
+        rel = ()
     for d in deny:  # a folder that is no git repo (the CV folder, P6) still is its path
+        # A glob by path too, only when git cannot answer, so such a git never opens a tenant's repo
+        # (review 2026-10-20); a key git gave that no glob matches stays unmatched (review 2026-10-21).
+        if is_glob(d) and key is None:
+            n = len(d.strip("/").split("/"))
+            if len(rel) >= n and fnmatch.fnmatchcase("/".join(rel[:n]), d.strip("/")):
+                return "/".join(rel[:n])
+        # then as a folder, so a literal name holding "[" or "*" still refuses its path, as before globs
         root = (projects_dir() / d).resolve()
         if p == root or root in p.parents:
             return d
     return None
+
+
+def route_of(a, key):
+    """→ {tenant, logins} when repo `key` (a value denied() returned) is off row `a` by tenancy, else None."""
+    for e, t in (a.get("routed") or {}).items():
+        if key == e or (is_glob(e) and fnmatch.fnmatchcase(key, e)):
+            return t
+    return None
+
+
+def routed_off(a, path):
+    """→ (key, {tenant, logins}) when path is a tenant's repo row `a` may not run, else None: the one
+    refusal the default dir has (its own deny list binds pick only, as before)."""
+    d = denied({"routed": a.get("routed")}, path)
+    t = d and route_of(a, d)
+    return (d, t) if t else None
+
+
+def use_line(t):
+    """How to start a tenant repo's session on its own login: what the guard and run print."""
+    if not t["logins"]:
+        return f"no enabled login has tenant {t['tenant']!r} in {REGISTRY.name}"
+    prefix = (config_lines("lighthouse/cc-prefix") or [""])[0]
+    ways = []
+    for label in t["logins"]:
+        short = label[len(prefix):]
+        cc = f"`cc {short}`" if label.startswith(prefix) and len(short) == 1 else f"`{BIN / 'account'} run {label}`"
+        ways.append(f"VS Code profile {label}, or {cc} in a Terminal")
+    return "open it in " + "; or ".join(ways)
+
+
+def off_line(a, key):
+    """The guard's line for repo `key` off row `a`: ' is off ' is what account_guard blocks on, and a
+    tenant's line ends in the way to its own login, which the guard passes on as it is."""
+    t = route_of(a, key)
+    if t:
+        return (f"{key} is off {a['label']}: it is {t['tenant']}'s, which runs on "
+                f"{', '.join(t['logins']) or 'no login'} only (accounts.json tenants) — {use_line(t)}")
+    return None
+
+
+def off_reason(a, key):
+    """Why row `a` may not run repo `key`: its tenant's route, else its deny list (pick's skip line)."""
+    t = route_of(a, key)
+    if t:
+        return f"{key} is {t['tenant']}'s: it runs on {', '.join(t['logins']) or 'no login'} only (tenants)"
+    return f"{key} is on its deny list"
 
 
 def holds_denied(a, path):
@@ -986,7 +1116,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
     for a in rows:
         d = denied(a, repo)
         if d:
-            skipped.append((a["label"], f"{d} is on its deny list"))
+            skipped.append((a["label"], off_reason(a, d)))
             continue
         if not a["home"].is_dir():  # one registry for both Macs; the always-on Mac has the primary only
             skipped.append((a["label"], "its login is not in Orca here (no orca-sync has found it)" if via_orca(a)
@@ -1006,6 +1136,9 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
             # primary (the Pro fallback, the owner's last resort since 2026-10-16) is for a primary with no room,
             # never one whose room is unknown.
             return a, "limits unknown — the primary runs it rather than nothing", skipped
+        if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
+            # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever
+            return a, "limits unknown — the tenant's own login runs it rather than nothing", skipped
         skipped.append((a["label"], why))
     raise Short(skipped)
 
@@ -1642,6 +1775,9 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                 ok, why = judge(a, lim, t)
                 if not ok and lim is None and a.get("primary") and not cooldown(a, t):
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
+                elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
+                        and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
+                    ok, why = True, "limits unknown — the tenant's own login runs it rather than nothing"
                 if ok:
                     if pin:  # a pin lasts PIN_DAYS from its last use, so a long ship keeps it
                         ships[key]["at"] = int(now())
@@ -1820,10 +1956,63 @@ def denied_workspaces(rows):
         for ws in sorted(projects.glob(pattern)):
             if ".claude" in ws.parts:
                 continue
-            keys = sorted({d for f in workspace_folders(ws) for a in rows for d in [denied(a, f)] if d})
+            keys = sorted({d for f in workspace_folders(ws) for a in rows for d in [denied(a, f, routes=False)] if d})
             if keys:
                 loc = assoc.get(ws.resolve().as_uri())
                 out.append((ws, keys, "default" if loc in (None, "__default__profile__") else by_loc.get(loc, loc)))
+    return out
+
+
+def tenant_ties(reg):
+    """→ [(label, level, text, fix)]: each tenant repo cloned here, and each workspace that opens one,
+    against the VS Code profile VS Code ties it to. An untied one opens in the default profile, whose
+    panel runs on the default dir, which the guard refuses it. `code --profile LABEL <path>` ties it
+    for good (cmd_vscode's docstring); it opens a window, so it is the fix line, never run here."""
+    profiles, assoc = vscode_state()
+    if profiles is None or not reg.get("tenants"):
+        return []
+    by_loc = {v: k for k, v in profiles.items()}
+    projects = projects_dir()
+    out = []
+    for name, entries in reg["tenants"].items():
+        rows = {a["label"]: a for a in reg["accounts"] if a.get("tenant") == name and a["enabled"] and a["provider"] == "claude"}
+        logins = list(rows)
+        # a glob by fnmatch on the key, as denied() reads it (`*` spans `/`), never Path.glob (review 2026-10-21)
+        clones = [g.parent for pat in ("*/.git", "*/*/.git", "*/*/*/.git") for g in projects.glob(pat)
+                  if ".claude" not in g.parts]
+        repos = set()
+        for e in entries:
+            for p in ([c for c in clones if fnmatch.fnmatchcase(c.relative_to(projects).as_posix(), e)]
+                      if is_glob(e) else [projects / e]):
+                if (p / ".git").exists():
+                    repos.add(p.resolve())
+        targets = sorted(repos)
+        for pattern in ("*.code-workspace", "*/*.code-workspace", "*/*/*.code-workspace"):
+            for ws in sorted(projects.glob(pattern)):
+                if ".claude" not in ws.parts and any(f in repos or repos & set(f.parents) for f in workspace_folders(ws)):
+                    targets.append(ws.resolve())
+        for p in targets:
+            loc = assoc.get(p.as_uri())
+            prof = "default" if loc in (None, "__default__profile__") else by_loc.get(loc, loc)
+            label = logins[0] if logins else "-"
+            # a profile is the login's only when its panel carries the login's dir: `code --profile X`
+            # makes a bare one when X is missing, so the profile comes first (review 2026-10-20)
+            ready = [l for l in logins if profiles.get(l) and profile_entry(profiles[l]) == str(rows[l]["home"])]
+            if prof in ready:
+                out.append((prof, "ok", f"{p} opens on VS Code profile {prof}, {name}'s login"))
+            elif logins and not ready:
+                # info where no tenant login has a dir on this Mac: nothing here can tie it, and doctor
+                # must be able to reach "every row ok" (review 2026-10-21, as the profile check above)
+                here = any(rows[l]["home"].is_dir() for l in logins)
+                out.append((label, "fix" if here else "info", f"{p} is {name}'s, and no VS Code profile runs its panel on {label}'s dir",
+                            f"{BIN / 'account'} vscode {label}   (then tie {p} to it: doctor names the line)"))
+            elif not logins:
+                out.append(("-", "fix", f"{p} is {name}'s, and no enabled login has tenant {name!r} in {REGISTRY.name}",
+                            f"add \"tenant\": \"{name}\" to its login's row"))
+            else:
+                label = ready[0]
+                out.append((label, "fix", f"{p} opens on VS Code profile {prof}, which is refused {name}'s repos",
+                            f"{shlex.quote(CODE_CLI)} --profile {label} {shlex.quote(str(p))}   (opens it in a window, tied to {label} for good)"))
     return out
 
 
@@ -2030,6 +2219,8 @@ def doctor_local(reg, logins, peer=None, record=True):
             f(on[0] if on else "-", "fix" if on else "info",
               f"{ws} opens {', '.join(keys)} — profile {prof}" + (": a denied repo on that account" if on else ""),
               "open it with the default profile" if on else None)
+        for t in tenant_ties(reg):
+            f(*t)
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
         f("-", "info", "credential expiry: the keychain is not read here (it would prompt)")
     known = {a["home"] for a in reg["accounts"]}
@@ -2114,7 +2305,7 @@ def limits_json(a, lim, at, t, repo=None):
     ok, why = judge(a, lim, t)
     d = denied(a, repo)
     if d:
-        ok, why = False, f"{d} is on its deny list"
+        ok, why = False, off_reason(a, d)
     if not a["enabled"]:  # only `limits --all --parked` lists one; never a pick. judge's reason kept: why no figures
         ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
@@ -2199,9 +2390,12 @@ def main(argv):
         if a["provider"] != "claude":  # it would exec claude on the default login with only CODEX_HOME set
             print(f"account: {a['label']} is a {a['provider']} login — run starts claude only", file=sys.stderr)
             return 1
-        d = None if is_default(a) else (denied(a, os.getcwd()) or holds_denied(a, os.getcwd()))
+        cwd = os.getcwd()
+        r = routed_off(a, cwd)  # a tenant's repo is off every other row, the default dir's too
+        d = r[0] if r else None if is_default(a) else (denied(a, cwd) or holds_denied(a, cwd))
         if d:
-            print(f"account: {d} is off {a['label']} (accounts.json deny list)", file=sys.stderr)
+            why = off_line(a, d) or f"{d} is off {a['label']} (accounts.json deny list)"
+            print(f"account: {why}", file=sys.stderr)
             return 1
         # An inherited token outranks the config dir's login (autofinish-run's KEEP_CLAUDE), so a
         # session started from inside another would silently spend that token's seat.
@@ -2226,11 +2420,16 @@ def main(argv):
     if args.cmd == "allowed":  # the guard's question: this process's dir, the path's repo
         here = current_home()
         for a in reg["accounts"]:
+            if a["provider"] == "claude" and a["home"] == here and is_default(a):
+                r = routed_off(a, args.path)   # the default dir denies nothing but another tenant's repo
+                if r:
+                    print(off_line(a, r[0]))
+                    return 1
             if a["provider"] == "claude" and a["home"] == here and not is_default(a):
                 d = denied(a, args.path)
                 whose = "ORCA_ROW's deny list" if a.get("implicit") else "accounts.json deny list"
                 if d:
-                    print(f"{d} is off {a['label']} ({whose})")
+                    print(off_line(a, d) or f"{d} is off {a['label']} ({whose})")
                     return 1
                 h = holds_denied(a, args.path)
                 if h:   # a folder holding a denied repo: its sessions would load what the list keeps out
@@ -2249,6 +2448,12 @@ def main(argv):
         try:
             here.resolve().relative_to(ORCA_DATA.resolve())
         except (ValueError, OSError):
+            # no row names this dir (a registry without the default dir's row, a stray dir): it is no
+            # tenant's, so a tenant's repo is off it (review 2026-10-20); anything else stays open
+            r = routed_off({"label": "this login (no row)", "routed": routes_for(reg, {})}, args.path)
+            if r:
+                print(off_line({"label": "this login (no row)", "routed": routes_for(reg, {})}, r[0]))
+                return 1
             return 0
         email = (signed_in_as(here) or "").lower()
         owner = None
@@ -2269,7 +2474,7 @@ def main(argv):
         if owner is not None:
             d, h = denied(owner, args.path), holds_denied(owner, args.path)
             if d:
-                print(f"{d} is off {owner['label']}, whose login this Orca dir is (accounts.json deny list)")
+                print(off_line(owner, d) or f"{d} is off {owner['label']}, whose login this Orca dir is (accounts.json deny list)")
                 return 1
             if h:
                 print(f"{args.path} is off {owner['label']}, whose login this Orca dir is: it holds {h}; "
@@ -2278,9 +2483,10 @@ def main(argv):
             return 0
         common = core()
         unsynced = common.orca_row("unsynced")
+        unsynced["routed"] = routes_for(reg, unsynced)   # no row names it, so no tenant either
         d = denied(unsynced, args.path) or holds_denied(unsynced, args.path)
         if d:
-            print(f"{d} is off this Orca login, which no row names yet (ORCA_ROW's deny list; "
+            print(off_line(unsynced, d) or f"{d} is off this Orca login, which no row names yet (ORCA_ROW's deny list; "
                   f"`account orca-sync` records it)")
             return 1
         return 0

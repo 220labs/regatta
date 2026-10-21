@@ -20,6 +20,26 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `hooks/tool_path.py` | the package managers' bin dirs on every session's Bash PATH |
 | `tests/check.sh` | every suite; scratch dirs only, no network |
 
+## Tenants
+
+Work for several organisations from one Mac without mixing their seats. Name each organisation's
+repos as a tenant in the registry and mark its login's row:
+
+```json
+{"accounts": [{"label": "acme", "home": "<its config dir>", "tenant": "acme",
+               "repos": {"deny": ["<your private vault>"]}}, …],
+ "tenants": {"acme": {"repos": ["acme-*"]}}}
+```
+
+A tenant's repos then run on its own login, and only there. `account pick --repo` takes every
+dispatched, picked-up or self-landing run there, and waits when that login has no room instead of
+borrowing another seat. A session started by hand on any other login, the default one included, is
+stopped at its first prompt by `account_guard`, which names the way in: that login's VS Code
+profile (`account vscode acme`) or `cc <letter>`. `account doctor` checks that VS Code opens each
+tenant folder, and each workspace holding one, in that profile. A tenant's login may still open
+other repos unless its own deny list says otherwise — so give an organisation's seat the deny list
+that keeps your private repos off it, as above. An entry is a repo key or a glob (`*` spans `/`).
+
 Install: `claude plugin marketplace add <this repo>`, then `claude plugin install lighthouse@regatta`
 (it needs the core, `regatta`, and `helloworld`, for beacon's build scan). From a clone: `sh modules/lighthouse/install.sh --check`.
 
