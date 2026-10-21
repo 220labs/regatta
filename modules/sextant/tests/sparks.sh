@@ -328,6 +328,49 @@ route '{"repo": "vault", "path": "ventures/idea.md", "confidence": "high", "why"
 out=$(memo vault)
 [ -f "$P/vault/ventures/idea.md" ]; check $? 0 "the vault takes a file directly"
 
+echo "a meeting's notes (2026-10-20): a routed config with \"written\": true shapes, routes and files a written note"
+M="$T/meet"; mkdir -p "$M/in" "$M/out" "$M/archive"
+git init -q --bare "$T/acme.git"; git init -q -b main "$P/acme"
+mkdir -p "$P/acme/docs/meetings"; echo k > "$P/acme/docs/meetings/2026-10-01-kickoff.md"
+git -C "$P/acme" add -A; git -C "$P/acme" commit -qm init
+git -C "$P/acme" remote add origin "$T/acme.git"; git -C "$P/acme" push -q origin main 2>/dev/null
+printf '{"repos": {"acme": {}, "vault": {"knowledge": true}}}' > "$T/repos-meet.json"
+printf '#!/bin/sh\necho "$@" >> "$TMPDIR_CAPTURE/notify.txt"\n' > "$T/bin/notify"; chmod +x "$T/bin/notify"
+cat > "$M/meetings.json" <<EOF
+{ "inbox": "$M/in", "notes": "$M/out", "archive": "$M/archive", "state": "$M/state.json",
+  "prompt": "meeting-prompt.md", "route": true, "written": true, "land": "merge",
+  "source": "meeting", "label": "Meetings", "commit": false,
+  "notify": {"command": ["$T/bin/notify"], "on": ["received", "filed", "failed"]} }
+EOF
+printf 'MEETING PROMPT: keep the sections\n\nTranscript:\n' > "$M/meeting-prompt.md"
+meet() { env -u SPARKS_IN -u SPARKS_OUT -u SPARKS_ARCHIVE -u SPARKS_STATE -u SPARKS_ROUTE \
+  SPARKS_CONFIG="$M/meetings.json" SPARKS_REPOS="$T/repos-meet.json" python3 "$B/sparks" "$@"; }
+printf '# Notes — Acme sync\n\n## Summary\n\nThe cutover moves to May.\n\n## Follow-up research\n\n- none\n' > "$M/in/2026-10-20-acme-sync.md"
+printf '.' > "$M/in/.2026-10-20-half.md"
+meet --dry-run | grep -q 'would process: 2026-10-20-acme-sync.md$'; check $? 0 "the inbox lists the written note, not a dot-file being written"
+route '{"repo": "acme", "path": "docs/meetings/2026-10-20-acme-sync.md", "confidence": "high", "why": "the Acme sync"}'
+: > "$T/claude-calls.txt"; out=$(meet)
+check "$(echo "$out" | grep -c '→ acme/docs/meetings/2026-10-20-acme-sync.md')" "1" "  high confidence: filed into the repo's docs/meetings/"
+git -C "$P/acme" fetch -q origin main
+git -C "$P/acme" show origin/main:docs/meetings/2026-10-20-acme-sync.md > "$T/meet-filed.md" 2>/dev/null; check $? 0 "  the file is on the remote's main"
+grep -q '^source: meeting$' "$T/meet-filed.md"; check $? 0 "  its source is the config's, not \"written note\""
+git -C "$P/acme" log -1 --format=%B origin/main | grep -q 'Filed by sparks from a meeting (D18)'; check $? 0 "  the repo's commit names the meeting, not a voice memo"
+grep -q 'The cutover moves to May' "$T/meet-filed.md"; check $? 0 "  the notes' own words ride along as the verbatim text"
+grep -v 'Read,Glob,Grep' "$T/claude-calls.txt" | grep -q 'MEETING PROMPT: keep the sections'; check $? 0 "  the config's prompt shapes it"
+grep -v 'Read,Glob,Grep' "$T/claude-calls.txt" | grep -q 'never leave `## Topics` empty'; check $? 1 "  and the ideas' written-note rule is not added"
+grep -q '^filed: acme/docs/meetings/2026-10-20-acme-sync.md' "$M/out"/*.md; check $? 0 "  the vault inbox keeps the stub"
+[ -f "$M/archive/2026-10-20-acme-sync.md" ] && [ ! -f "$M/in/2026-10-20-acme-sync.md" ]; check $? 0 "  the note moves to the archive"
+grep -q 'Filed 2026-10-20-acme-sync' "$T/notify.txt" 2>/dev/null; check $? 0 "  \"notify\" texts the filing, as for a recording"
+printf '# Notes — A call with no home\n\n## Summary\n\nSomething vague.\n' > "$M/in/2026-10-20-vague.md"
+route '{"repo": "acme", "path": "docs/meetings/2026-10-20-vague.md", "confidence": "low", "why": "unsure"}'
+out=$(meet)
+f=$(grep -l 'route: acme/docs/meetings/2026-10-20-vague.md — not filed: .*not sure' "$M/out"/*.md | head -1)
+[ -n "$f" ]; check $? 0 "  below high: it lands in the vault inbox, the reason on it"
+grep -q '^source: meeting$' "$f"; check $? 0 "  still with the config's source"
+git -C "$P/acme" fetch -q origin main
+git -C "$P/acme" cat-file -e origin/main:docs/meetings/2026-10-20-vague.md 2>/dev/null && r=0 || r=1; check $r 1 "  and nothing reaches the repo"
+rm -f "$M/in/.2026-10-20-half.md"
+
 route '{"repo": "film", "path": "notes/feedback-r3.md", "confidence": "high", "why": "cut feedback"}'
 out=$(SPARKS_LAUNCH=pr memo pr)
 git -C "$P/film" fetch -q origin main
@@ -450,13 +493,13 @@ printf '#!/bin/sh\necho called > "$TMPDIR_CAPTURE/whisper-called.txt"; exit 1\n'
 chmod +x "$T/bin/claude" "$T/bin/whisper"; rm -f "$T/whisper-called.txt"
 n=$(ls "$I/notes" | wc -l | tr -d ' ')
 printf 'Rooftop cinema\nFilms on the roof every Friday in July.\n' > "$I/in/2026-10-07-2210.txt"
-out=$(WHISPER_MODEL="$T/no-model.bin" ideas)
+out=$(SPARKS_WRITTEN=1 WHISPER_MODEL="$T/no-model.bin" ideas)
 check "$(ls "$I/notes" | wc -l | tr -d ' ')" "$((n + 1))" "a .txt in the inbox: one note, with no whisper model installed"
 [ -f "$T/whisper-called.txt" ]; check $? 1 "  whisper is never called"
 grep -q 'Films on the roof every Friday' "$T/claude-args.txt"; check $? 0 "  the note's words are the transcript"
 grep -q 'a written note, not a recording' "$T/claude-args.txt"; check $? 0 "  and the prompt is told it is written"
 f=$(ls "$I/notes"/*rooftop-cinema.md)
-grep -q '^source: written note$' "$f"; check $? 0 "  source: written note"
+grep -q '^source: written note$' "$f"; check $? 0 "  source: written note, though SPARKS_WRITTEN=1: the key is a routed config's"
 grep -q '^size:' "$f"; check $? 1 "  no size line"
 grep -q '^audio: archive/2026-10-07-2210.txt$' "$f"; check $? 0 "  audio: names the archived original (bin/redactions reads it)"
 [ -f "$I/archive/2026-10-07-2210.txt" ] && [ ! -f "$I/archive/2026-10-07-2210.txt.txt" ] && [ -z "$(ls "$I/in")" ]

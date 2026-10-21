@@ -11,6 +11,9 @@
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `sparks` and
   `tests/sparks.sh` — `launch_git`, `CFG["launch"]` (the config's `land` key and `SPARKS_LAND` still
   read), a note that "goes to" the inbox rather than lands there.
+- Sparks: a routed config with `"written": true` takes written notes from its inbox too — shaped
+  by its own prompt, routed and filed like a recording, with the config's `"source"` on the note
+  and `"notify"`'s `filed` text. Without the key a routed inbox stays audio-only, as before.
 
 ## 0.1.0 — 2026-10-19
 
