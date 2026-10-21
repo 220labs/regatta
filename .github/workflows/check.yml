@@ -34,7 +34,9 @@ jobs:
     # runs every pull request's code as its login, with that machine's credentials in reach: set
     # the variable only on a repo whose every writer you trust, never on one that takes forks' PRs.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    timeout-minutes: 25   # wharf's test_checkpoint alone is about 4 min on a Mac (B5)
+    # A self-hosted Mac's whole check took 18.5 and 22 min (2026-10-21) beside its own sessions,
+    # most of it wharf-runs (about 15) and wharf (about 7); 40 is about twice the slowest run seen
+    timeout-minutes: 40
     # wharf is private until its scrub: the public twin gets this file but not the module, so its
     # step runs only where the module is (B5 review).
     steps:
