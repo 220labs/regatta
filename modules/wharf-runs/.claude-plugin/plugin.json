@@ -1,6 +1,6 @@
 {
   "name": "wharf-runs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unattended runs across a fleet of Macs: Orca on each Mac kept to the registry's scopes, and the Macs paired (orca-host). Grouping needs a `scopes` tool, not yet published.",
   "author": { "name": "220 Labs" },
   "dependencies": ["regatta"]

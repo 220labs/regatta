@@ -11,4 +11,15 @@ Read `README.md` first: it is the chart. For an agent:
   the README names, never a stack trace.
 - `orca-host` changes a live Orca: in a session, `check` and `--dry-run` only, unless the owner
   asked for the change.
+- The files B7 moved in (everything but `orca-host`, its suite and this module's face) are
+  private until a wharf-runs scrub: off `.helloworld/allowlist.txt`. New text in them is written
+  as if public already. They find the core by `lib/core_path.py` (wharf's, byte for byte: the
+  check compares them) and each peer through `common.tool()`; a hard peer missing (wharf) is one
+  line and exit 2, an optional one the fallback `tests/peers.sh` pins.
+- `dispatch`, `dispatch-rc` and `autofinish-run` run every unattended session, this one included:
+  a change to them runs `tests/test_dispatch.sh` and `tests/test_autofinish_run.sh` before it is
+  saved in the main checkout. Their launchd jobs name the overlay's shim path where an overlay is
+  installed, else this module in the main checkout — never a worktree's copy.
+- An embedded Python heredoc inside `"$(…)"` in a bash file holds no apostrophe, not even in a
+  comment: bash 3.2 parses quotes there and the whole substitution goes wrong.
 - check: `bash modules/wharf-runs/tests/check.sh`.
