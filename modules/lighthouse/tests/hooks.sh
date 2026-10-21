@@ -277,6 +277,24 @@ check "$(echo 'not json' | HOME="$GH" CLAUDE_CONFIG_DIR="$GH/.claude-work" ACCOU
 check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | HOME="$GH" ACCOUNTS_FILE=/nonexistent CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")" "rc=0" "no registry: silent, exit 0"
 printf '{"accounts": [\n' > "$T/guard-truncated.json"
 check "$(echo "{\"cwd\":\"$GH/projects/app2\"}" | HOME="$GH" ACCOUNTS_FILE="$T/guard-truncated.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")" "rc=0" "a malformed registry (a merge in progress): silent, never a block (review 2026-10-06)"
+echo "account_guard: a tenant's repo, on every login but the tenant's (2026-10-20)"
+mkdir -p "$GH/.claude-lab"; git init -q "$GH/projects/acme-one"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy","cv"]}},{"label":"lab","home":"~/.claude-lab","tenant":"acme"},{"label":"main","home":"~/.claude","primary":true}],"tenants":{"acme":{"repos":["acme-*"]}}}' > "$T/guard-tenants.json"
+agt() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py"; fi; }
+out=$(agt "" "$GH/projects/acme-one")
+check "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["decision"])')" "block" "the default dir in a tenant's repo: blocked, though it denies nothing else"
+check "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["reason"])' | grep -c "acme-one is off main: it is acme's, which runs on lab only (accounts.json tenants) — open it in VS Code profile lab")" 1 "  the reason names the tenant's login and its way in"
+check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …and not the deny list's way out"
+check "$(agt "" "$GH/projects/app2")" "" "the default dir elsewhere: silent"
+check "$(agt "" "$GH/projects/privy")" "" "the default dir in a repo another row denies: silent, as before"
+check "$(agt "" "$GH/projects")" "" "the default dir in ~/projects, which holds the tenant's repo: silent (holding loads nothing of it)"
+check "$(agt "$GH/.claude-lab" "$GH/projects/acme-one")" "" "the tenant's own login in its repo: silent"
+check "$(agt "$GH/.claude-lab" "$GH/projects/app2")" "" "  …and in another repo (its own deny list says where else)"
+check "$(agt "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "another secondary in the tenant's repo: blocked"
+mkdir -p "$GH/projects/clients"; git init -q "$GH/projects/clients/x-acme"
+sed 's#"acme-\*"#"*-acme"#' "$T/guard-tenants.json" > "$T/guard-tenants2.json"
+out=$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/clients/x-acme\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants2.json" python3 "$H/account_guard.py")
+check "$(echo "$out" | grep -c '"block"')" 1 "a glob whose * spans / (\"*-acme\" takes clients/x-acme): the default dir is asked, and blocked (review 2026-10-21)"
 # A config dir the overlay installed (a legacy file) without the private values: a core from B2b on
 # refuses to load, bin/account cannot answer, and the deny hook fails closed. Judged by what the
 # core does (config_problems), so a core from before B2b skips the case.
@@ -287,6 +305,9 @@ if python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); impor
   check "$(echo "$out" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])' 2>&1) $(echo "$out" | tail -1)" "block rc=0" \
     "the core refusing an incomplete config: a prompt anywhere is blocked, exit 0 (fails closed)"
   check "$(echo "$out" | head -1 | grep -c 'regatta/owner missing.*bootstrap.sh --config')" 1 "  the reason names the missing keys and the repair"
+  out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" REGATTA_CONFIG="$AGC" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" 2>"$T/ag-err"; echo "rc=$?")
+  check "$out" "rc=0" "…but on the default dir, in a tenant's repo, it fails open: the seat a broken core is repaired from (review 2026-10-20)"
+  check "$(grep -c 'tenancy unchecked on the default dir' "$T/ag-err")" 1 "  …saying so on stderr"
 else
   echo "  skip the core predates B2b: an incomplete config dir is no import error there"
 fi

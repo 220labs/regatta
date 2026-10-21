@@ -846,5 +846,117 @@ check "$(peer "$T/nothing" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" 
 check "$(peer "$OV" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "True None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
   "  the overlay's worktree_allow.py found through the core"
 
+echo "tenants: a tenant's repos run on its own login, routed, not banned (2026-10-20)"
+export ACCOUNT_VSCODE_USER="$T/vsc-t"; mkdir -p "$T/vsc-t/globalStorage" "$T/vsc-t/profiles/pl"
+L="$HOME/.claude-lab"; mkdir -p "$L"; login "$L/.claude.json" u-lab c@example.com
+for r in acme-one acme-two; do git init -q "$PR/$r"; git -C "$PR/$r" commit -q --allow-empty -m init; done
+git -C "$PR/acme-one" worktree add -q "$PR/acme-one/.claude/worktrees/y" -b y 2>/dev/null
+cat > "$ACCOUNTS_FILE.t" <<'J'
+{"accounts": [
+  {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["privy", "cv"]}},
+  {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
+ "tenants": {"acme": {"repos": ["acme-*"]}, "bad": "not an object"}}
+J
+TA() { ACCOUNTS_FILE="$ACCOUNTS_FILE.t" ACCOUNT_NOW=$WED A "$@"; }
+rm -f "$F/usage-probe.json" "$P1/usage-probe.json" "$L/usage-probe.json"; use "$F" "10 10"; use "$P1" "10 10"; use "$L" "10 10"
+check "$(TA pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "pick --repo a tenant's repo → its login, past the rows before it"
+has "$T/out" "acme-one is acme's: it runs on lab only (tenants)" "…naming why work was skipped"
+check "$(TA pick --repo "$PR/acme-two" --json) $(field "['account']")" "0 lab" "a glob entry: a second repo is the tenant's too"
+check "$(TA pick --repo "$PR/acme-one/.claude/worktrees/y" --json) $(field "['account']")" "0 lab" "…and a worktree of one"
+check "$(TA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "another repo: the walk as before"
+check "$(TA pick --repo "$PR/privy" --json) $(field "['account']")" "0 lab" "the tenant's login runs elsewhere by its own deny list (none: privy too)"
+use "$L" "100 100"; rm -f "$L/usage-probe.json"
+check "$(TA pick --repo "$PR/acme-one" --json)" 3 "the tenant's login out of room → exit 3, never the primary's or another seat"
+use "$L" "10 10"; rm -f "$L/usage-probe.json" "$L/exhaustion.jsonl"
+check "$(TA limits --all --repo "$PR/acme-one" --json; python3 -c "import json;print([(r['label'], r['eligible']) for r in json.load(open('$T/out'))])")" "0
+[('work', False), ('lab', True), ('main', False)]" "limits --repo: only the tenant's login is eligible"
+check "$(TA allowed "$PR/acme-one")" 1 "allowed: the default dir in a tenant's repo → exit 1"
+has "$T/out" "acme-one is off main: it is acme's, which runs on lab only (accounts.json tenants) — open it in VS Code profile lab, or \`$B/account run lab\` in a Terminal" "…the guard's line, with the way in"
+check "$(TA allowed "$PR/privy")" 0 "…the default dir still denies nothing else"
+check "$(TA allowed "$PR")" 0 "…nor ~/projects, which holds the tenant's repo (holds_denied ignores tenancy)"
+check "$(CLAUDE_CONFIG_DIR="$L" TA allowed "$PR/acme-one")" 0 "allowed: the tenant's own login → exit 0"
+check "$(CLAUDE_CONFIG_DIR="$F" TA allowed "$PR/acme-two")" 1 "allowed: another secondary → exit 1"
+has "$T/out" "acme-two is off work: it is acme's" "…named as the tenant's"
+check "$(CLAUDE_CONFIG_DIR="$F" TA allowed "$PR")" 1 "…while work's own deny list still holds ~/projects (it holds privy)"
+echo l > "$REGATTA_CONFIG/lighthouse/cc-prefix"
+cat > "$ACCOUNTS_FILE.t2" <<'J'
+{"accounts": [{"label": "la", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
+ "tenants": {"acme": {"repos": ["acme-one"]}}}
+J
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t2" A allowed "$PR/acme-one")" 1 "a login the cc prefix reaches…"
+has "$T/out" "or \`cc a\` in a Terminal" "…is named as its cc letter"
+rm -f "$REGATTA_CONFIG/lighthouse/cc-prefix"
+check "$(cd "$PR/acme-one" && TA run main --version)" 1 "run: the default dir in a tenant's repo is refused before claude starts"
+has "$T/out" "account: acme-one is off main: it is acme's" "…with the same line"
+check "$(cd "$PR/acme-one" && TA run work --version)" 1 "run: another secondary too"
+has "$T/out" "account: acme-one is off work: it is acme's" "…refused by tenancy, not by a claude that failed to start"
+mkdir -p "$PR/acme-nogit"
+check "$(TA allowed "$PR/acme-nogit")" 1 "a glob entry matches by path where git has no answer (a folder in no repo)"
+rm -f "$L/stub-usage" "$L/usage-probe.json"
+check "$(TA pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "the tenant login's limits unreadable → it runs there rather than nothing (no other row may)"
+has "$T/out" "the tenant's own login runs it rather than nothing" "…saying so"
+check "$(TA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…while elsewhere an unreadable non-primary is skipped, as before"
+use "$L" "10 10"; rm -f "$L/usage-probe.json"
+echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
+  {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "primary": true}],
+ "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.t5"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t5" A allowed "$PR/acme-one")" 1 "a registry with no row for the default dir: the default dir is still refused a tenant's repo"
+has "$T/out" "acme-one is off this login (no row): it is acme's" "…named as no row's"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t5" A allowed "$PR/app")" 0 "…and allowed elsewhere"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"acme": {"repos": "a*"}, "num": {"repos": 5}, "abs": {"repos": ["/x/*", "~/y"]}}}' > "$ACCOUNTS_FILE.t6"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t6" A allowed "$PR/app")" 0 "a string repos is dropped, never split into letters (a* would route app)"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t6" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 main" "…a number and absolute entries too: no crash, nothing routed"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}, {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"}], "tenants": {"acme": {"repos": ["acme-*/"]}}}' > "$ACCOUNTS_FILE.t7"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t7" A allowed "$PR/acme-one")" 1 "a glob with a trailing slash is the same glob: the default dir is refused (review 2026-10-21)"
+sed 's#"acme-\*/"#"./acme-*"#' "$ACCOUNTS_FILE.t7" > "$ACCOUNTS_FILE.t8"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t8" A allowed "$PR/acme-one")" 1 "…and one with a leading ./"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}, {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": ["acme"]}], "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.t9"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t9" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json >/dev/null; grep -c Traceback "$T/out")" "0" "a row whose tenant is a list is no tenant's: no traceback (review 2026-10-21)"
+mkdir -p "$PR/notes[old]"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}, {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["notes[old]"]}}]}' > "$ACCOUNTS_FILE.t10"
+check "$(CLAUDE_CONFIG_DIR="$HOME/.claude-work" ACCOUNTS_FILE="$ACCOUNTS_FILE.t10" A allowed "$PR/notes[old]")" 1 "a literal deny entry holding [ still refuses its folder (review 2026-10-21)"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"acme": {"repos": ["acme-one"]}}}' > "$ACCOUNTS_FILE.t3"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t3" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json)" 3 "a tenant with no login: its repos run nowhere (exit 3), never on the primary"
+has "$T/out" "acme-one is acme's: it runs on no login only (tenants)" "…saying so"
+python3 - "$T/vsc-t" "$PR" <<'PY'
+import json, sys
+from pathlib import Path
+v, pr = sys.argv[1], Path(sys.argv[2]).resolve()
+(pr / "acme.code-workspace").write_text(json.dumps({"folders": [{"path": "acme-one"}, {"path": "overlay"}]}))
+(pr / "plain.code-workspace").write_text(json.dumps({"folders": [{"path": "app"}]}))
+json.dump({"userDataProfiles": [{"location": "pl", "name": "lab"}],
+           "profileAssociations": {"workspaces": {(pr / "acme-one").as_uri(): "pl",
+                                                  (pr / "acme.code-workspace").as_uri(): "__default__profile__"}}},
+          open(v + "/globalStorage/storage.json", "w"))
+PY
+ties() { ACCOUNTS_FILE="${TIES_FILE:-$ACCOUNTS_FILE.t}" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_t", sys.argv[1]).load_module()
+for t in a.tenant_ties(a.load_registry()):
+    print(t[1], t[2].replace(sys.argv[2], "PR"), "|", (t[3] if len(t) > 3 else "").replace(sys.argv[2], "PR"))' "$B/account" "$(cd "$PR" && pwd -P)"; }
+ties > "$T/ties"
+has "$T/ties" "fix PR/acme-one is acme's, and no VS Code profile runs its panel on lab's dir" "doctor: a profile named lab with no CLAUDE_CONFIG_DIR is no tie (code --profile makes such a bare one)"
+has "$T/ties" "account vscode lab" "…the fix makes the profile first"
+printf '{"claudeCode.environmentVariables": [{"name": "CLAUDE_CONFIG_DIR", "value": "%s"}]}\n' "$L" > "$T/vsc-t/profiles/pl/settings.json"
+ties > "$T/ties"
+has "$T/ties" "ok PR/acme-one opens on VS Code profile lab, acme's login" "doctor: a tenant folder tied to the tenant's profile is ok"
+has "$T/ties" "fix PR/acme-two opens on VS Code profile default, which is refused acme's repos" "…an untied one opens on the default profile: a fix"
+has "$T/ties" "--profile lab PR/acme-two" "…the fix ties it with code --profile"
+has "$T/ties" "fix PR/acme.code-workspace opens on VS Code profile default" "…a workspace that opens a tenant folder, on the default profile: a fix"
+check "$(grep -c plain.code-workspace "$T/ties")" 0 "…a workspace with no tenant folder is not listed"
+mkdir -p "$PR/acme-zone"; git init -q "$PR/acme-zone/inner"
+ties > "$T/ties"
+has "$T/ties" "PR/acme-zone/inner opens on VS Code profile default" "doctor: a nested repo the glob takes (\`*\` spans /) is checked too (review 2026-10-21)"
+rm -rf "$PR/acme-zone"
+echo '{"accounts": [{"label": "far", "provider": "claude", "home": "~/.claude-far", "tenant": "beta"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"beta": {"repos": ["acme-two"]}}}' > "$ACCOUNTS_FILE.t11"
+TIES_FILE="$ACCOUNTS_FILE.t11" ties > "$T/ties"
+has "$T/ties" "info PR/acme-two is beta's, and no VS Code profile runs its panel on far's dir" "doctor: a tenant whose login has no dir on this Mac is info, not a fix (review 2026-10-21)"
+rm -f "$PR/acme.code-workspace" "$PR/plain.code-workspace"
+unset ACCOUNT_VSCODE_USER
+
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
