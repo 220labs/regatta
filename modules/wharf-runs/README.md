@@ -6,6 +6,7 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | Piece | What it does |
 | --- | --- |
 | `bin/orca-host` | Orca on this Mac kept to the registry: the app and its CLI, one project group per scope (anchor first, coloured, worktrees from local `main` in `.claude/worktrees/`), and the pairing to the Macs whose Orca it drives (`check`, `setup`, `scopes`, `pair PEER`, `--on PEER <verb>`) |
+| `bin/orca-serve-agent` | a Mac's Orca run as a headless server under a LaunchAgent in the login session, so it survives a reboot and reaches the keychain (`HOST\|here [--remove] [--dry-run]`); the agent's label is a config key |
 | `bin/dispatch`, `run-seed` | a seeded `claude/*` branch started with nobody at the keyboard: now, at a time, on another Mac (`--on`), or as the next step of a chain (`--next`); the run's records, its watcher and its window (`dispatch-rc`) |
 | `bin/autofinish`, `autofinish-run` | the lander: a sweep that judges each idle `claude/*` worktree by the start rules in its header and, once armed on a Mac, starts a fresh unattended `/finish` on it; `install.sh --schedule` adds the sweep |
 | `bin/pickup` | a session's branch picked up, seeded, reviewed or moved between Macs (`/pickup`, `/move`, `/later`) |
@@ -16,7 +17,8 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
 | `hooks/cold_prompt.py` | a typed `/finish` in a cold or expensive session handed to a fresh run instead |
 
-The rows after `orca-host` moved in with the build's B7 step and stay private until a wharf-runs
+`orca-serve-agent` is private until the same scrub (off `.helloworld/allowlist.txt`), though written
+as if public. The rows after it moved in with the build's B7 step and stay private until a wharf-runs
 scrub: their text still names the owner's own layout. They find the core as wharf does
 (`lib/core_path.py`) and every peer through `common.tool()`: wharf (a hard edge: `branches`,
 `checkpoint`, `session_status`), keel, plumb's `tier_check`, lighthouse's `account` and the
@@ -46,9 +48,11 @@ the tools here will find.
   | --- | --- | --- |
   | `wharf-runs/orca-pairs` | `<host>:<peer>` — PEER's Orca is an environment of HOST's; `check` expects exactly these | no Mac pairs |
   | `wharf-runs/ssh` | `<peer>:<ssh alias>` — how `orca-host --on PEER` reaches it | `--on` knows no peer |
+  | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on | `org.regatta.orca-serve` |
+  | `wharf-runs/serve-label-previous` | an older label `orca-serve-agent` boots out and removes first, so one agent serves | none |
 
   With an overlay installed (a `legacy` file in the config dir) a missing key is an error naming
-  it, as the core does for its own. Host names are compared lower-case.
+  it, as the core does for its own (bar the two `serve-label` keys, optional). Host names are compared lower-case.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
   plugin) and reads that Mac's registry and config, so the peer needs the core installed, and
   the two keys where it has an overlay.

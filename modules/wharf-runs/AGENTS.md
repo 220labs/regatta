@@ -11,7 +11,13 @@ Read `README.md` first: it is the chart. For an agent:
   the README names, never a stack trace.
 - `orca-host` changes a live Orca: in a session, `check` and `--dry-run` only, unless the owner
   asked for the change.
-- The files B7 moved in (everything but `orca-host`, its suite and this module's face) are
+- `orca-serve-agent` runs on the Mac it installs the agent on (over ssh for a peer), so it reads
+  that Mac's `${REGATTA_CONFIG}/wharf-runs/serve-label` itself and imports nothing: no core, no
+  module. Its text is ASCII only (bash under a C locale over ssh read a multibyte character after a
+  variable as part of its name, 2026-10-19). In a session, `--dry-run` only: it installs an
+  always-on service, which is the owner's to do.
+- The files B7 moved in (everything but `orca-host`, `orca-serve-agent`, their suites and this
+  module's face) are
   private until a wharf-runs scrub: off `.helloworld/allowlist.txt`. New text in them is written
   as if public already. They find the core by `lib/core_path.py` (wharf's, byte for byte: the
   check compares them) and each peer through `common.tool()`; a hard peer missing (wharf) is one
