@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `capped` (2026-10-21): the signal handlers go in before the session's `Popen`, so a TERM in
+  between is passed to the group, not lost with the wrapper (under load, 3 of 200 early TERMs left
+  the group running before, 0 after), and one held before the session starts stops the wrapper
+  without starting it; a group left with one zombie (EPERM on macOS) is polled until the reap,
+  or counts as gone at the TERM and the SIGKILL, not a traceback and exit 1 (about 1 loaded run
+  in 4 before); a second signal during the 15 s grace no longer restarts it.
 - The wharf rename's S6 (2026-10-20): the launch word in `/aurora`'s sections and `/embark`.
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `weekly-run`
   (`launched_entry`, `charts_launch`, its log and bulletin lines); `quiet_week` reads only the

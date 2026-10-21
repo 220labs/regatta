@@ -313,7 +313,8 @@ capmark="$(dirname "$log")/.capped-$$"  # written by capped on a kill: exit 124 
 # $capmark. Its own group is not launchd's, so a TERM, INT or HUP to the wrapper (a bootout, a
 # Ctrl-C) is passed to the group with 15 s of grace (launchd's ExitTimeOut is 20) and then
 # re-raised, so bash stops the night as it would have. A child a signal ended exits 128+n, as a
-# shell reports it (review 2026-10-05).
+# shell reports it (review 2026-10-05). The python is bash single-quoted: an apostrophe in it, a
+# comment included, ends the quote and every night exits 2 (2026-10-21; aurora.sh catches it).
 capped() {
   WEEKLY_CAP_MARK="$capmark" python3 -c '
 import os, signal, subprocess, sys, time
@@ -326,19 +327,42 @@ def end(grace):
                 os.waitpid(pg, os.WNOHANG)
             except ChildProcessError:
                 pass
-            os.killpg(pg, 0)  # ProcessLookupError once the whole group is gone
+            try:
+                os.killpg(pg, 0)  # ProcessLookupError once the whole group is gone
+            except PermissionError:  # macOS, a group of one zombie: the leader between its exit and the reap above
+                pass
             time.sleep(0.2)
         os.killpg(pg, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 def passed(sig, _frame):
+    if pg is None:  # before the group exists: held, and passed on once it does
+        pending.append(sig)
+        return
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # one end() only: a nested one restarts the grace past the 20 s ExitTimeOut
+        signal.signal(s, signal.SIG_IGN)
     end(15)
+    reraise(sig)
+def reraise(sig):
     signal.signal(sig, signal.SIG_DFL)
     os.kill(os.getpid(), sig)
-p = subprocess.Popen(sys.argv[2:], start_new_session=True)
-pg = p.pid
+# The handlers go in before the Popen: installed after it, a TERM in between ended this wrapper
+# alone and left the new group running, unsignalled (2026-10-21). A signal held before the Popen
+# stops the wrapper without starting the session, as does one held when the Popen fails.
+pg, pending = None, []
 for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(s, passed)
+if pending:
+    reraise(pending[0])
+try:
+    p = subprocess.Popen(sys.argv[2:], start_new_session=True)
+except OSError:
+    if pending:
+        reraise(pending[0])
+    raise
+pg = p.pid
+if pending:
+    passed(pending[0], None)
 try:
     rc = p.wait(timeout=float(sys.argv[1]))
 except subprocess.TimeoutExpired:
