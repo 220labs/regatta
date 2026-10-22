@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""Sextant's sounding queue: the proposals the owner chose to have sounded, and when each starts.
+
+    soundings add <proposal> [--now [--branch B --repo R]]   the owner's pick, never an unattended run's
+    soundings list [--json]                                  every entry, its state, and the two counts
+    soundings next [--json]                                  what Sextant may dispatch now, with the commands
+    soundings brief <proposal> [--out FILE]                  the seeded run's brief, for `pickup seed --file`
+    soundings mark <proposal> scheduled --branch B --at WHEN [--repo R]
+    soundings mark <proposal> launched [--branch B --repo R] | done | parked | dropped
+    soundings mark <proposal> queued                         a scheduled run that never started, back in line
+    soundings refresh [--json]                               open entries on main done, never-started requeued
+
+The Sounding design's section 5 (the overlay's docs/record/proposer-2026-10-16.md, step S7, and its
+D2 answer): a `ready` proposal goes where the owner puts it, every time — *launch now* (`/sounding`
+at once, in any session: `add --now` records it) or this queue (`add`); nothing is queued unasked,
+so `add` refuses an unattended caller (CLAUDE_UNATTENDED, a dispatched run's; WEEKLY_RUN, the weekly
+job's, which aurora's weekly-run exports; the weekly run also denies the verb by name).
+Sextant's step 2c reads `next`: it seeds each candidate (`pickup seed`) and schedules it with
+`dispatch <branch> --at reset[+30|+60] --if-room`, staggered, never further ahead for now. dispatch
+reads the week when the run fires (`--if-room`: autofinish's week_tight; `tight` or `none` refuses),
+since a run at the reset spends the next week, not this one. A run refused then leaves its branch a
+seed: once the week it was scheduled for is past, `refresh` puts the entry back to `queued` with its
+branch, and `next` then gives only the dispatch (the seed is made once).
+
+Two caps, both counted here: at most three dispatched in seven days (WEEK_MAX), and never more than
+five open (OPEN_MAX) — scheduled by Sextant or launched by hand, earlier weeks' included, until the
+sounding's branch has reached its repo's main (or left origin: launched and reaped) or the entry is
+marked done, parked or dropped. "Reached main" survives a rebase merge, the landings' way: the tip is
+an ancestor of main, or `git cherry` finds every commit's patch there, or every path the branch changed
+has the same blob on main. A proposal whose sounding came back `disproved` is parked by the
+sounding's own run; `refresh` reads a proposal's `status: parked` and parks its entry too.
+
+Three gates hold a queued entry back, each named in `next`: the proposal is `status: ready` with a
+`## Launch test` section; that section's `repo:` line names a repo (a path, or a folder under the
+projects dir); the repo's contract says `physical: none` (dispatch's own test, read the same way).
+The third gate of the design — the owner put it there — is `add` itself.
+
+Where things are: the queue is `soundings.json` in the ideas pool's folder (Sparks' pool_dirs(): the
+first topic-split notes folder its configs name), SOUNDINGS_QUEUE over it; the proposals are that
+folder's `proposals/<slug>.md`. This tool writes the queue and commits nothing: the caller commits
+it as the pool's other records (in the overlay, `knowledge-commit <vault> -m … <file>`).
+SOUNDINGS_TODAY stands in for today's date (the tests). Stdlib only.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+WEEK_MAX = 3   # dispatched by Sextant in any seven days (D2's answer: "up to 3 per week")
+OPEN_MAX = 5   # still with the owner, earlier weeks' counted ("cap to 5 including the ones I'm still working on")
+SLOTS = ("reset", "reset+30", "reset+60")  # the stagger: one --at per dispatch of a week
+OPEN = ("scheduled", "launched")
+STATES = ("queued",) + OPEN + ("done", "parked", "dropped")
+HERE = Path(__file__).resolve().parent
+
+
+def sparks():
+    """Sparks as a module: its pool_dirs() and front() are the pool's one reader (no copy here)."""
+    argv, sys.argv = sys.argv, ["sparks"]
+    try:
+        return SourceFileLoader("sparks", str(HERE / "sparks")).load_module()
+    finally:
+        sys.argv = argv
+
+
+def today():
+    t = os.environ.get("SOUNDINGS_TODAY")
+    return datetime.date.fromisoformat(t) if t else datetime.date.today()
+
+
+class Stop(Exception):
+    pass
+
+
+def pool():
+    dirs = sparks().pool_dirs()
+    if not dirs:
+        raise Stop("no ideas pool: no Sparks config names a topic-split notes folder (sextant/sparks.json "
+                   "in the regatta config dir); set SOUNDINGS_QUEUE and SOUNDINGS_PROPOSALS to use another")
+    return dirs[0]
+
+
+def queue_path():
+    q = os.environ.get("SOUNDINGS_QUEUE")
+    return Path(q).expanduser() if q else pool() / "soundings.json"
+
+
+def proposals_dir():
+    p = os.environ.get("SOUNDINGS_PROPOSALS")
+    return Path(p).expanduser() if p else pool() / "proposals"
+
+
+def load():
+    p = queue_path()
+    try:
+        d = json.loads(p.read_text())
+    except FileNotFoundError:
+        return {"entries": []}
+    except (OSError, ValueError) as e:
+        raise Stop(f"{p} is unreadable ({e}): fix it by hand; nothing written")
+    if not isinstance(d, dict) or not isinstance(d.get("entries"), list):
+        raise Stop(f"{p} has no `entries` list: fix it by hand; nothing written")
+    return d
+
+
+def save(d):
+    p = queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".soundings.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, p)  # whole or not at all: the weekly run and a session may both write it
+
+
+def entry(d, slug):
+    return next((e for e in d["entries"] if e.get("slug") == slug), None)
+
+
+def note(e, state, why=""):
+    e["state"] = state
+    e.setdefault("log", []).append(f"{today().isoformat()} {state}{' — ' + why if why else ''}")
+
+
+def proposal(slug):
+    """(frontmatter, the Launch test section's text or None) of proposals/<slug>.md, or None."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        raise Stop(f"{slug!r} is not a proposal's slug (proposals/<slug>.md: lower case, digits, hyphens)")
+    p = proposals_dir() / f"{slug}.md"
+    try:
+        text = p.read_text()
+    except OSError:
+        return None
+    fm, body = sparks().front(text)
+    m = re.search(r"^## Launch test[^\n]*\n(.*?)(?=^## |\Z)", body, flags=re.M | re.S)
+    return fm, (m.group(1) if m else None)
+
+
+def projects():
+    try:
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import find_core  # noqa: PLC0415
+        sys.path.insert(0, find_core.hooks())
+        import common  # noqa: PLC0415
+        return Path(common.PROJECTS)
+    except (ImportError, SystemExit, AttributeError):
+        return Path.home() / "projects"
+
+
+def repo_of(launch):
+    m = re.search(r"^\s*[-*]?\s*`?repo`?:\s*`?([^`\s]+)`?", launch or "", flags=re.M)
+    if not m:
+        return None
+    r = Path(os.path.expanduser(m.group(1)))
+    return r if r.is_absolute() else projects() / r
+
+
+def physical_none(repo):
+    """dispatch's physical_ok(), read the same way: the first `- physical:` line of AGENTS.md, then CLAUDE.md."""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        try:
+            for line in (repo / name).read_text().splitlines():
+                if line.startswith("- physical:"):
+                    return line.startswith("- physical: none"), line.strip()
+        except OSError:
+            continue
+    return False, "nothing"
+
+
+def gates(slug):
+    """(repo, None) when every gate holds, else (repo or None, why)."""
+    got = proposal(slug)
+    if got is None:
+        return None, f"no proposal {slug}.md in {proposals_dir()}"
+    fm, launch = got
+    if fm.get("status") != "ready":
+        return None, f"the proposal is `status: {fm.get('status') or '?'}`, not ready"
+    if launch is None:
+        return None, "the proposal has no `## Launch test` section"
+    repo = repo_of(launch)
+    if repo is None:
+        return None, "its Launch test names no `repo:`"
+    if not (repo / ".git").exists():
+        return repo, f"its repo {repo} is not a git checkout here"
+    ok, said = physical_none(repo)
+    if not ok:
+        return repo, f"{repo}'s contract must say `physical: none` (it says: {said})"
+    return repo, None
+
+
+def git(repo, *a):
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+
+
+def branch_ref(repo, branch):
+    """(origin/<main>, the branch's ref: origin's, else the local one, else None), or None when
+    origin/<main> is unreadable. Reads the refs as they are: the nightly tend fetches."""
+    main = "main"
+    try:
+        main = json.loads((Path(repo) / ".claude" / "workflow.json").read_text()).get("main") or "main"
+    except (OSError, ValueError, AttributeError):
+        pass
+    if git(repo, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{main}").returncode:
+        return None
+    ref = next((r for r in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}")
+                if not git(repo, "rev-parse", "-q", "--verify", r).returncode), None)
+    return f"refs/remotes/origin/{main}", ref
+
+
+def merged(repo, branch):
+    """True when the branch is on origin/<main>, or gone from both origin and here (launched and
+    reaped); None when unreadable. On main by any of three proofs, since landings rebase-merge (a
+    landed branch is no ancestor of main): an ancestor; `git cherry` finds every commit's patch on
+    main (no merge commits: cherry skips those); every path changed since the merge-base has the
+    same `ls-tree` entry on main (wharf's branches.py reads launched the same ways)."""
+    got = branch_ref(repo, branch)
+    if got is None:
+        return None
+    main, ref = got
+    if ref is None:
+        return True  # neither on origin nor here: launched and reaped (a seed pushes and keeps its local ref)
+    if not git(repo, "merge-base", "--is-ancestor", ref, main).returncode:
+        return True
+    merges = git(repo, "rev-list", "--merges", "-n", "1", f"{main}..{ref}")
+    cherry = git(repo, "cherry", main, ref)
+    marks = [l[:1] for l in cherry.stdout.splitlines() if l.strip()]
+    if not merges.returncode and not merges.stdout.strip() and not cherry.returncode and marks \
+            and all(m == "-" for m in marks):
+        return True
+    base = git(repo, "merge-base", main, ref).stdout.strip()
+    # -z: without it git C-quotes a non-ASCII path, ls-tree matches the quoted form on neither side,
+    # and two empty answers read as equal (the S7 /finish review's F2)
+    paths = git(repo, "diff", "-z", "--name-only", "--no-renames", base, ref).stdout.split("\0") if base else []
+    paths = [x for x in paths if x]
+    if not paths:
+        return False  # nothing to compare: never proof
+    a, b = (git(repo, "ls-tree", tree, "--", *paths) for tree in (ref, main))
+    return not a.returncode and not b.returncode and a.stdout == b.stdout
+
+
+def never_started(repo, branch):
+    """True when every commit the branch holds beyond origin/<main> is pickup's `Seed: ` commit —
+    a run that started commits (the checkpoint hook) — and False otherwise or when unreadable."""
+    got = branch_ref(repo, branch)
+    if got is None or got[1] is None:
+        return False
+    log = git(repo, "log", "--format=%s", f"{got[0]}..{got[1]}")
+    subjects = [l for l in log.stdout.splitlines() if l.strip()]
+    return not log.returncode and bool(subjects) and all(l.startswith("Seed: ") for l in subjects)
+
+
+def counts(d):
+    since = today() - datetime.timedelta(days=6)
+    week = sum(1 for e in d["entries"] if e.get("scheduled") and e.get("state") != "dropped"
+               and datetime.date.fromisoformat(e["scheduled"]) >= since)
+    return week, sum(1 for e in d["entries"] if e.get("state") in OPEN)
+
+
+def unattended():
+    """Who is unattended, or None: a dispatched run (CLAUDE_UNATTENDED) or the weekly job (WEEKLY_RUN,
+    which aurora's weekly-run exports instead of CLAUDE_UNATTENDED: its other readers would change
+    that run — the S7 /finish review's R2)."""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return "CLAUDE_UNATTENDED=" + os.environ["CLAUDE_UNATTENDED"]
+    if os.environ.get("WEEKLY_RUN"):
+        return "WEEKLY_RUN=" + os.environ["WEEKLY_RUN"]
+    return None
+
+
+# ---- the verbs ------------------------------------------------------------------------------------
+
+def cmd_add(a):
+    if unattended():
+        raise Stop(f"`soundings add` is the owner's pick, and this is an unattended run ({unattended()}): "
+                   "nothing is queued unasked — name the candidate for the owner instead")
+    d = load()
+    if proposal(a.proposal) is None:
+        raise Stop(f"no proposal {a.proposal}.md in {proposals_dir()}")
+    e = entry(d, a.proposal)
+    if e and e.get("state") in ("queued",) + OPEN:
+        raise Stop(f"{a.proposal} is already {e['state']}: `soundings mark` changes it")
+    if e is None:
+        e = {"slug": a.proposal}
+        d["entries"].append(e)
+    e.update({"added": today().isoformat(), "scheduled": None, "at": None, "branch": a.branch,
+              "repo": str(Path(a.repo).expanduser().resolve()) if a.repo else None})
+    if a.now:
+        note(e, "launched", "launch now: /sounding at once")
+    else:
+        note(e, "queued")
+    save(d)
+    print(f"{a.proposal}: {e['state']} — {queue_path()}; commit it with the pool's records")
+    if not a.now:
+        _, why = gates(a.proposal)
+        if why:
+            print(f"  held until it clears: {why}")
+
+
+def cmd_list(a):
+    d = load()
+    week, opened = counts(d)
+    if a.json:
+        print(json.dumps({"queue": str(queue_path()), "week": week, "open": opened,
+                          "week_max": WEEK_MAX, "open_max": OPEN_MAX, "entries": d["entries"]}, indent=2))
+        return
+    print(f"{queue_path()}: {week} of {WEEK_MAX} dispatched in seven days, {opened} of {OPEN_MAX} open")
+    for e in d["entries"]:
+        extra = " ".join(x for x in (e.get("branch") or "", f"at {e['at']}" if e.get("at") else "") if x)
+        print(f"  {e.get('state', '?'):9} {e['slug']}{'  ' + extra if extra else ''}")
+
+
+def cmd_next(a):
+    d = load()
+    week, opened = counts(d)
+    room = max(0, min(WEEK_MAX - week, OPEN_MAX - opened))
+    out, held = [], []
+    for e in sorted((e for e in d["entries"] if e.get("state") == "queued"), key=lambda e: e.get("added") or ""):
+        repo, why = gates(e["slug"])
+        if why:
+            held.append({"slug": e["slug"], "why": why})
+            continue
+        if len(out) >= room:
+            held.append({"slug": e["slug"], "why": "the caps: " + cap_words(week + len(out), opened + len(out))})
+            continue
+        at = SLOTS[min(week + len(out), len(SLOTS) - 1)]
+        topic = f"sounding-{e['slug']}"
+        if e.get("branch"):  # seeded already (a run that never started, back in line): the seed is made once
+            commands = [f"dispatch {e['branch']} --repo {repo} --at {at} --if-room",
+                        f"soundings mark {e['slug']} scheduled --branch {e['branch']} --at {at} --repo {repo}"]
+        else:
+            commands = [f"soundings brief {e['slug']} --out <scratch>/{topic}.md",
+                        f"pickup seed {topic} --file <scratch>/{topic}.md --repo {repo} --no-start",
+                        f"dispatch <the branch pickup printed> --repo {repo} --at {at} --if-room",
+                        f"soundings mark {e['slug']} scheduled --branch <the branch> --at {at} --repo {repo}"]
+        out.append({"slug": e["slug"], "repo": str(repo), "topic": topic, "at": at, "commands": commands})
+    if a.json:
+        print(json.dumps({"week": week, "open": opened, "room": room, "dispatch": out, "held": held}, indent=2))
+        return
+    print(f"room: {room} ({cap_words(week, opened)})")
+    for o in out:
+        print(f"dispatch {o['slug']} → {o['repo']} at {o['at']}")
+        for c in o["commands"]:
+            print(f"    {c}")
+    for h in held:
+        print(f"held {h['slug']}: {h['why']}")
+    if not out and not held:
+        print("nothing queued")
+
+
+def cap_words(week, opened):
+    return f"{week} of {WEEK_MAX} dispatched in seven days, {opened} of {OPEN_MAX} open"
+
+
+BRIEF = """kind: sounding
+Task: sound the proposal `{slug}` with `/sounding`, the full path — the owner queued it, and Sextant
+started it at the weekly reset.
+
+The proposal: {proposal}. Its `## Launch test` is the gain this sounding tests:
+
+{launch}
+
+Run `/sounding` on it, unmarked (sounded, not firm), with the head its scope takes: `architect` when
+it is about one repo, `sounder` for an idea outside any repo. The skill's section 4 is the rest: its
+Landscape, its Verdict, `keel lint --strict`, `reviewer-high`, and its D1, **Build: full · light chain
+· yolo · no**, `Reversible: no`, never standing.
+
+- The path is full. `--light` and `--yolo` are the owner's words only; neither is given here.
+- Nobody is watching: the hand-over is `ask relay <doc> D1` (no manager of its own: this Mac's
+  standing manager takes it, else the board), and the run ends on the line it prints.
+- The doc stays on this branch until answered, never on main.
+- `Verdict: disproved`: set the proposal's `status: parked` with a `## Log` line, and end; the queue
+  parks its entry at its next `refresh`.
+- Spend, publish, a dependency, a deletion or a live system is a `Reversible: no` item; the owner's
+  identity is a `human` step.
+
+Do not build, land or /finish: the build waits for the owner's answer to D1.
+"""
+
+
+def cmd_brief(a):
+    got = proposal(a.proposal)
+    if got is None:
+        raise Stop(f"no proposal {a.proposal}.md in {proposals_dir()}")
+    _, launch = got
+    if launch is None:
+        raise Stop(f"{a.proposal} has no `## Launch test` section: nothing to sound against")
+    quoted = "\n".join("> " + l if l.strip() else ">" for l in launch.strip().splitlines())
+    text = BRIEF.format(slug=a.proposal, proposal=proposals_dir() / f"{a.proposal}.md", launch=quoted)
+    if len(text.splitlines()) > 60 or len(text) > 4000:  # pickup seed's caps (BRIEF_LINES, BRIEF_CHARS)
+        raise Stop(f"the brief would be {len(text.splitlines())} lines, {len(text)} characters, past pickup "
+                   "seed's 60 / 4,000: shorten the proposal's Launch test")
+    out = Path(a.out).expanduser() if a.out else Path(tempfile.gettempdir()) / f"sounding-{a.proposal}.md"
+    out.write_text(text)
+    print(out)
+
+
+def requeue(e, why):
+    """A scheduled entry back in line, its branch kept (the seed exists; `next` dispatches it again)."""
+    e["scheduled"], e["at"] = None, None
+    note(e, "queued", why)
+
+
+def cmd_mark(a):
+    if a.state not in STATES:
+        raise Stop(f"mark takes {', '.join(STATES)}")
+    d = load()
+    e = entry(d, a.proposal)
+    if e is None:
+        raise Stop(f"{a.proposal} is not in the queue: `soundings add` puts it there (the owner's pick)")
+    if a.state == "queued":
+        if e.get("state") != "scheduled":
+            raise Stop(f"{a.proposal} is {e.get('state')}: only a scheduled entry goes back to queued")
+        requeue(e, "its run never started")
+        save(d)
+        week, opened = counts(d)
+        print(f"{a.proposal}: queued, {e.get('branch')} kept — {cap_words(week, opened)}; commit {queue_path()}")
+        return
+    if a.state == "scheduled":
+        if not (a.branch and a.at):
+            raise Stop("mark … scheduled needs --branch and --at, as dispatch was given them")
+        if e.get("state") != "queued":
+            raise Stop(f"{a.proposal} is {e.get('state')}, not queued: only a queued entry is scheduled")
+        e["scheduled"] = today().isoformat()
+    if a.state == "launched" and unattended():
+        raise Stop("`mark … launched` records the owner's launch now; an unattended run schedules instead")
+    for k in ("branch", "at"):
+        if getattr(a, k):
+            e[k] = getattr(a, k)
+    if a.repo:
+        e["repo"] = str(Path(a.repo).expanduser().resolve())
+    note(e, a.state)
+    save(d)
+    week, opened = counts(d)
+    print(f"{a.proposal}: {a.state} — {cap_words(week, opened)}; commit {queue_path()}")
+
+
+def cmd_refresh(a):
+    d = load()
+    changed = []
+    for e in d["entries"]:
+        if e.get("state") not in ("queued",) + OPEN:
+            continue
+        got = proposal(e["slug"])
+        if got and got[0].get("status") == "parked":
+            note(e, "parked", "the proposal is parked")
+            changed.append((e["slug"], "parked"))
+            continue
+        if e.get("state") in OPEN and e.get("branch") and e.get("repo"):
+            m = merged(e["repo"], e["branch"])
+            if m:
+                note(e, "done", "its branch reached main or left origin")
+                changed.append((e["slug"], "done"))
+                continue
+        # scheduled more than a week ago (`--at reset` is at most seven days out, the slots an hour more)
+        # and still a seed: the run was refused at fire time (--if-room) or never fired
+        if e.get("state") == "scheduled" and e.get("scheduled") and e.get("branch") and e.get("repo") \
+                and datetime.date.fromisoformat(e["scheduled"]) <= today() - datetime.timedelta(days=8) \
+                and never_started(e["repo"], e["branch"]):
+            requeue(e, "its run never started (refused at fire time, or never fired)")
+            changed.append((e["slug"], "queued"))
+    if changed:
+        save(d)
+    week, opened = counts(d)
+    if a.json:
+        print(json.dumps({"changed": changed, "week": week, "open": opened}))
+        return
+    for s, st in changed:
+        print(f"{s}: {st}")
+    print(f"{cap_words(week, opened)}{'' if changed else '; nothing changed'}")
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="soundings", formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 description="\n\n".join(__doc__.split("\n\n")[:2]))
+    sub = ap.add_subparsers(dest="verb", required=True)
+    p = sub.add_parser("add")
+    p.add_argument("proposal")
+    p.add_argument("--now", action="store_true")
+    p.add_argument("--branch")
+    p.add_argument("--repo")
+    p = sub.add_parser("list")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("next")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("brief")
+    p.add_argument("proposal")
+    p.add_argument("--out")
+    p = sub.add_parser("mark")
+    p.add_argument("proposal")
+    p.add_argument("state")
+    p.add_argument("--branch")
+    p.add_argument("--at")
+    p.add_argument("--repo")
+    p = sub.add_parser("refresh")
+    p.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    if a.verb == "add" and (a.branch or a.repo) and not a.now:
+        ap.error("--branch and --repo go with --now (a queued entry gets its branch from pickup seed)")
+    try:
+        {"add": cmd_add, "list": cmd_list, "next": cmd_next, "brief": cmd_brief,
+         "mark": cmd_mark, "refresh": cmd_refresh}[a.verb](a)
+    except Stop as e:
+        print(f"soundings: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
