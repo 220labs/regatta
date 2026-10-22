@@ -54,6 +54,10 @@ check "$(SP 'print(common.scope_paths("nope"), common.confidential_scopes(path="
 head -c 40 "$T/sc.json" > "$T/torn.json"; printf '{"repos": {"a": {}}, "scopes": {"x": {"repos": 5}, "y": 3}}\n' > "$T/odd.json"
 check "$(SP 'print(common.registry_unreadable(), common.registry_unreadable(path="/no/such"), common.registry_unreadable(path="'"$T/torn.json"'"))')" \
   "False False True" "  registry_unreadable(): a torn file is, a good one or none is not (the fence fails closed on it)"
+ln -s "$T/moved.json" "$T/dangling.json"
+check "$(SP 'print(common.registry_unreadable(path="'"$T/dangling.json"'"))')" "True" "  a registry link whose target moved is unreadable too"
+mkdir -p "$T/dcfg/wharf"; ln -s "$T/moved.json" "$T/dcfg/wharf/repos.json"
+check "$(REGATTA_CONFIG="$T/dcfg" py 'print(common.registry_unreadable())')" "True" "  the config's own repos.json link, dangling: unreadable, not absent"
 check "$(SP 'print(common.scope_of_key("a", path="'"$T/odd.json"'"), common.scope_paths("x", path="'"$T/odd.json"'"))')" "None []" \
   "  a malformed scope: no member, no error"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
