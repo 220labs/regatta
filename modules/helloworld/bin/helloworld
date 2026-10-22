@@ -126,7 +126,10 @@ first-parent line whose allowlisted tree, built with that commit's own lists, is
 main's; every commit after it becomes one public commit — its allowlisted tree, its subject and
 body with every Co-Authored-By, Signed-off-by and Claude-Session line dropped by key (any case,
 any value), the publishing identity, its own author and committer dates at +0000, and the gate's
-Signed-off-by. Each is scanned as a publish of that commit alone would be, message included. A
+Signed-off-by. Each is scanned as a publish of that commit alone would be, message included, with one difference:
+the exemptions are the reviewed ref's, for every commit (its own allowlist and CREDITS.yaml stay
+its own) — an exemption is text that goes public with the ref anyway, in the one file it names, so
+a string the ref exempts no longer folds the commits made before the exemption was. A
 commit whose published files did not change stays private; a `wip:` or fixup checkpoint, or one
 whose tree fails, folds: the next that passes carries its changes, and a tail of folds goes up as
 one commit under the PR's title. A body that fails is dropped and the subject goes alone; a
@@ -885,9 +888,9 @@ def replay_plan(b, parent):
 
     Each commit after the base, oldest first, is one step:
       private  its published files equal the last public commit's: nothing to show, it stays here
-      fold     a `wip:`/fixup checkpoint, its lists hold a file, exemption or credit the reviewed
-               ref took back, or its tree fails the scan (with its own lists, as a publish of that
-               commit would): the next commit that passes carries its changes
+      fold     a `wip:`/fixup checkpoint, its lists hold a file or credit the reviewed ref took
+               back, or its tree fails the scan (its own allowlist and credits, the reviewed ref's
+               exemptions): the next commit that passes carries its changes
       commit   one public commit: that tree, the message with the trailers dropped, its dates.
                A body that fails (message_scan: a private word, a pattern, a sha, a cross-repo
                ref, a session id) is dropped and the subject goes alone; a subject that fails
@@ -913,11 +916,18 @@ def replay_plan(b, parent):
     span = line[:line.index(base)][::-1]
     fixes, used_fix = overrides(b), set()
     objs = read_objects(repo, span)
-    # The reviewed ref's lists bound every public tree: a file, exemption or credit it took back
-    # never goes up in an earlier commit (the squash it replaces could not publish one either).
+    # The reviewed ref's lists bound every public tree: a file or credit it took back never goes up
+    # in an earlier commit (the squash it replaces could not publish one either).
+    # Exemptions are the ref's alone, for every commit (2026-10-21: a twin's generic tool paths): an
+    # exemption is reviewed text in one file that goes public with the ref anyway, so an older tree
+    # publishes no exempted string outside the one file the ref names it in. The rest of that older
+    # file is scanned as any text is; the exemption covers the file's whole replayed history. Judged with its
+    # own exemptions, every commit from the string's arrival to the exemption folded into the
+    # exemption's commit. The allowlist stays each commit's own: it decides what that commit's tree
+    # is, and a file published before it was listed would skip the review the listing is.
     head_credits = set(credits(blob(repo, b["files"]["CREDITS.yaml"][2]).decode(errors="replace"))
                        if "CREDITS.yaml" in b["paths"] else [])
-    head_paths, head_ex = set(b["paths"]), set(b["ex"])
+    head_paths = set(b["paths"])
     every_word = words_regex(b["words"])
     last, pending = target, []
     for c in span:
@@ -936,16 +946,9 @@ def replay_plan(b, parent):
             step.update(kind="fold", why="a checkpoint")
             pending.append(step)
             continue
-        ex = []
-        try:
-            if f"{t['conf']}/exemptions.txt" in t["files"]:
-                ex = exemptions(blob(repo, t["files"][f"{t['conf']}/exemptions.txt"][2]).decode())
-        except (Refused, UnicodeDecodeError):
-            t["bad_allow"] = t["bad_allow"] + ["its exemptions do not read"]
         own_credits = set(credits(blob(repo, t["files"]["CREDITS.yaml"][2]).decode(errors="replace"))
                           if "CREDITS.yaml" in t["paths"] else [])
         wider = ([f"{p}: listed here, not at {b['ref']}" for p in sorted(set(t["paths"]) - head_paths)]
-                 + [f"{f}: an exemption {b['ref']} took back" for f, _s in sorted(set(ex) - head_ex)]
                  + [f"CREDITS.yaml: {n}, a credit {b['ref']} took back" for n in sorted(own_credits - head_credits)])
         if wider:
             step.update(kind="fold", why=f"its lists hold {len(wider)} entr(ies) {b['ref']} took back", findings=wider)
@@ -957,11 +960,13 @@ def replay_plan(b, parent):
             step["reworded"] = subject  # the private subject, for the private report only
             subject = step["subject"] = fix
         msg = subject + ("\n\n" + body if body else "")
-        hits, _used, bad_ex = scan(repo, t["paths"], t["files"], ex, b["words"])
-        tree_bad = len(t["bad_allow"]) + len(bad_ex) + (not t["paths"]) + len(hits)
+        # The ref's exemptions; their own complaints (a string not yet in its file, a file not yet
+        # listed) are the ref's to answer, in check's own scan, and are not this tree's findings.
+        hits, _used, _bad_ex = scan(repo, t["paths"], t["files"], b["ex"], b["words"])
+        tree_bad = len(t["bad_allow"]) + (not t["paths"]) + len(hits)
         if tree_bad:
             # file:line for each, kept for the private report (S3); never in the PR body
-            found = ([f"allowlist: {x}" for x in t["bad_allow"]] + [f"exemption: {x}" for x in bad_ex]
+            found = ([f"allowlist: {x}" for x in t["bad_allow"]]
                      + (["allowlist: names no file"] if not t["paths"] else [])
                      + [f"{w}: {cat} — {txt}" for w, cat, txt in hits])
             step.update(kind="fold", why=f"its tree has {tree_bad} finding(s)", findings=found)
