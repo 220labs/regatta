@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The account registry and usage-report's config are read from the config dir only (2026-10-22):
+  `lighthouse/accounts.json` ($ACCOUNTS_FILE over it) in `tier_check`, `usage-report`, `interruptions` and
+  `knowledge-numbers`, and `plumb/usage.json` ($USAGE_CONFIG) in `usage-report`. The old fallback was a
+  path into the owner's vault, which a work login is refused; the overlay links both into its `settings/`.
 - The wharf rename's S6 (2026-10-20): `bench/`'s prose says launch for a merge, and "come in" for a run's
   result arriving.
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): `knowledge-numbers`' G4 list follows
