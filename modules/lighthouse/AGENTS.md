@@ -55,3 +55,11 @@ its chart is `deadman/README.md`.
   suite needs Node 20 or later.
 - Every yard, repo, mention and address comes from `lighthouse/deadman.json` in the config dir; a
   test uses made-up names (`alpha`, `beta`, `example/inbox`).
+- **No KV key may stand for "an alarm exists" past a failed GitHub call.** Symptom: a yard goes
+  silent and nothing is raised, or an issue opens at every cron. Cause: `open:` kept after a
+  refused close skipped the yard for good, and an `open:` put lost after the POST (the day's writes
+  spent) raised again. GitHub decides: a ping ends the alarm and owes the close (`closing:`), a
+  raise adopts an open issue first, never one owed a close (finish review, 2026-10-22).
+- **Every KV write on a failure path is counted against 1,000 a day.** An error written twice per
+  cron, or rewritten as an outage's pages or calls change, spends the budget; past it every
+  `last:` put fails and every yard reads silent. The Node suite asserts write counts per path.
