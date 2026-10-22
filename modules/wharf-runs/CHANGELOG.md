@@ -10,6 +10,15 @@
   `wharf status --orphans` lists the Orca repos and Runs no plan here accounts for (paged; Orca's legacy row
   and `bin/harness run`'s Runs left out). A block on another host is not braked by this Mac's brake. Cases in
   `test_wharf.sh`.
+- `dispatch --if-room` (the Sounding's S7, 2026-10-22): at fire time, after the account pick, a run
+  refuses to start when autofinish's `week_tight` says `tight` or `none`, or when reading it raises — for
+  the sounding queue's runs at the weekly reset, which spend the week they fire in. No reading (no
+  registry, no sample, last week's figure) is room, so at the reset `none` is what refuses in practice.
+- `dispatch --at` given twice is refused (exit 2): the last one won, so a rule pinned to `--at reset`
+  passed `--at reset --at <clock>` (S7's /finish review, R5).
+- Under `WEEKLY_RUN` (aurora's weekly Sextant, in `auto` mode): `dispatch` takes only
+  `<branch> --repo R --at reset|reset+30|reset+60 --if-room`, and `pickup seed` only with `--no-start`;
+  anything else exits refused (S7's /finish review, F1).
 - `bin/hail` and `hail subs` (Lookout and Hail, S2, 2026-10-21): one verb that delivers a pointer to any
   session `harness` names — Claude Code's inbox socket (S1's wire: an `auth` line with the key file's
   `peerToken`, then the `user` line; only to a session idle 60 s or more, re-read before the post;
