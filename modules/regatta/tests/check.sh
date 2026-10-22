@@ -28,6 +28,34 @@ check "$(py 'print(common.repos_json())')" "$T/config/wharf/repos.json" "the con
 check "$(py 'print([p.name for p in common.cloned_repos()])')" "['a']" "  cloned_repos() reads it, no argument"
 check "$(py 'print(common.guarded_repos())')" "('a',)" "  guarded_repos() takes its strings"
 check "$(CLAUDE_REPOS_JSON=/x py 'print(common.repos_json(), common.REPOS_JSON)')" "/x /x" "CLAUDE_REPOS_JSON wins"
+
+echo "scopes: the confidential flag and the login (knowledge-layers S1)"
+HD="$HOME"; PJ="$HD/projects"; mkdir -p "$PJ/k/memory" "$PJ/z-1" "$HD/.claude" "$HD/.claude-w"
+git init -q "$PJ/k"; git -C "$PJ/k" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$PJ/k" worktree add -q "$PJ/k-tree" -b w
+printf '{"accounts": [{"label": "w", "provider": "claude", "home": "~/.claude-w"}, {"label": "gone", "home": "~/.claude-gone"}]}\n' > "$T/acc.json"
+printf '{"repos": {"k": {}, "z-1": {}, "o": {}},\n "scopes": {"node": {"file": "n", "repos": ["k", "z-*"], "confidential": true, "login": "w"},\n  "half": {"file": "h", "repos": ["o"], "confidential": "yes"}}}\n' > "$T/sc.json"
+SP() { CLAUDE_REPOS_JSON="$T/sc.json" ACCOUNTS_FILE="$T/acc.json" py "$1"; }
+check "$(SP 'print(sorted(common.confidential_scopes()))')" "['node']" "confidential_scopes(): only a real true counts"
+check "$(SP 'print(common.scope_members(common.scope_registry()[1]["node"], common.scope_registry()[0]))')" "['k', 'z-1']" \
+  "  scope_members(): the named keys, then a glob's"
+check "$(SP 'print(common.scope_of_key("z-1"), common.scope_of_key("o"), common.scope_of_key("nope"))')" "node half None" "  scope_of_key()"
+check "$(SP 'print(common.scope_login("node"), common.scope_login("half"), common.scope_login("nope"))')" "w None None" "  scope_login()"
+check "$(SP 'print([str(p.relative_to(common.PROJECTS)) for p in common.confidential_roots()])')" "['k', 'z-1']" "  confidential_roots(): each repo's checkout"
+check "$(SP 'print([p.name for p in common.login_dirs()])')" "['.claude', '.claude-w']" "  login_dirs(): ~/.claude and each row's dir that exists"
+out=$(SP 'print("\n".join(str(p) for p in common.scope_paths("node")))')
+WT="$(cd "$PJ/k-tree" && pwd -P)"   # git names it by its real path
+check "$(printf '%s\n' "$out" | grep -c .)" 11 "  scope_paths(): 2 checkouts + 1 worktree, 2 transcript dirs, a slug folder per login (2) per tree (3)"
+printf '%s\n' "$out" | grep -qx "$WT"; check $? 0 "    the worktree, from git worktree list"
+printf '%s\n' "$out" | grep -qx "$PJ/k"; check $? 0 "    the checkout by its projects path, once (its real path is no second entry)"
+printf '%s\n' "$out" | grep -qx "$PJ/transcripts/z-1"; check $? 0 "    the transcripts folder by the repo's name"
+printf '%s\n' "$out" | grep -qx "$HD/.claude-w/projects/$(printf '%s' "$WT" | sed 's/[^A-Za-z0-9]/-/g')"; check $? 0 "    a login's slug folder for the worktree (its transcripts and memory)"
+check "$(SP 'print(common.scope_paths("nope"), common.confidential_scopes(path="/no/such"))')" "[] {}" "  an unknown scope, an unreadable registry: empty, no error"
+head -c 40 "$T/sc.json" > "$T/torn.json"; printf '{"repos": {"a": {}}, "scopes": {"x": {"repos": 5}, "y": 3}}\n' > "$T/odd.json"
+check "$(SP 'print(common.registry_unreadable(), common.registry_unreadable(path="/no/such"), common.registry_unreadable(path="'"$T/torn.json"'"))')" \
+  "False False True" "  registry_unreadable(): a torn file is, a good one or none is not (the fence fails closed on it)"
+check "$(SP 'print(common.scope_of_key("a", path="'"$T/odd.json"'"), common.scope_paths("x", path="'"$T/odd.json"'"))')" "None []" \
+  "  a malformed scope: no member, no error"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"

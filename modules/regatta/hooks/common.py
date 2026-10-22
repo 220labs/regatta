@@ -8,6 +8,7 @@ Nothing here raises to a caller but write_owner: a missing token is None, a fail
 Hooks must never cost a turn over GitHub being unreachable.
 """
 import base64
+import fnmatch
 import glob
 import json
 import os
@@ -221,6 +222,143 @@ def guarded_repos():
     except (OSError, ValueError, AttributeError):
         return ()
     return tuple(x for x in g if isinstance(x, str)) if isinstance(g, list) else ()
+
+
+# Scopes — the groups of repos in the registry's `scopes` (wharf's bin/scopes writes their
+# workspace files). A scope flagged `"confidential": true` is a node nothing outside it reads
+# (knowledge-layers design D3, 2026-10-20), and its `login` is the account label its runs start
+# on (`account pick --repo`). These are the one reader of both keys: the fence, the passes,
+# sheep_gate and bin/scopes all ask here, never repos.json themselves.
+
+def scope_registry(path=None):
+    """(repos, scopes) from the registry — `path`, else repos_json(); ({}, {}) when it cannot be
+    read. Never raises."""
+    p = Path(path) if path else repos_json()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p else {}
+        repos, scopes = d.get("repos") or {}, d.get("scopes") or {}
+        return (repos, scopes) if isinstance(repos, dict) and isinstance(scopes, dict) else ({}, {})
+    except (OSError, ValueError, AttributeError):
+        return {}, {}
+
+
+def registry_unreadable(path=None):
+    """True when a registry file is there but its repos or scopes cannot be read — a torn write,
+    conflict markers, a non-object. scope_registry() reads that as no scopes at all, which is open;
+    a fence asks this first and fails closed on it. False with no registry file. Never raises."""
+    p = Path(path) if path else repos_json()
+    try:
+        if not p or not p.exists():
+            return False
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return not (isinstance(d, dict) and isinstance(d.get("repos") or {}, dict)
+                    and isinstance(d.get("scopes") or {}, dict))
+    except (OSError, ValueError):
+        return True
+
+
+def is_glob(m):
+    return any(c in m for c in "*?[")
+
+
+def scope_members(scope, repos):
+    """The scope's repo keys, in its order: each listed key, then each key a glob matches (sorted)."""
+    out = []
+    ms = scope.get("repos") if isinstance(scope, dict) else None
+    for m in ms if isinstance(ms, list) else []:
+        if not isinstance(m, str):
+            continue
+        hits = sorted(k for k in repos if fnmatch.fnmatchcase(k, m)) if is_glob(m) else [m]
+        out += [k for k in hits if k not in out]
+    return out
+
+
+def scope_of_key(key, path=None):
+    """The name of the scope holding registry key `key`, or None."""
+    repos, scopes = scope_registry(path)
+    return next((n for n, s in scopes.items() if key and key in scope_members(s, repos)), None)
+
+
+def confidential_scopes(path=None):
+    """{name: scope} for each scope flagged `"confidential": true` (only a real true counts)."""
+    return {n: s for n, s in scope_registry(path)[1].items() if isinstance(s, dict) and s.get("confidential") is True}
+
+
+def scope_login(name, path=None):
+    """The account label scope `name` runs on (its `login`), or None."""
+    s = scope_registry(path)[1].get(name) or {}
+    v = s.get("login") if isinstance(s, dict) else None
+    return v if isinstance(v, str) and v else None
+
+
+def confidential_roots(path=None):
+    """[Path] — the checkout of every repo in a confidential scope, under PROJECTS. A worktree sits
+    inside its checkout, so a prefix test covers it; no git call, for hooks."""
+    repos, _ = scope_registry(path)
+    return [PROJECTS / k for s in confidential_scopes(path).values() for k in scope_members(s, repos) if k in repos]
+
+
+def login_dirs(home=None):
+    """[Path] — every Claude config dir here: the home folder's .claude and each accounts.json row's dir that
+    exists (an Orca one read back, account_home); lighthouse's registry, ACCOUNTS_FILE in tests."""
+    home = home or Path.home()
+    out = [home / ".claude"]
+    try:
+        f = Path(os.environ.get("ACCOUNTS_FILE") or CONFIG / "lighthouse" / "accounts.json")
+        rows = json.loads(f.read_text(encoding="utf-8")).get("accounts") or []
+    except (OSError, ValueError, AttributeError):
+        rows = []
+    for a in account_rows(rows, home):
+        if a.get("provider", "claude") == "claude":
+            d = account_home(a, home)
+            if d and d not in out:
+                out.append(d)
+    return [d for d in out if d.is_dir()]
+
+
+def project_slug(path):
+    """Claude Code's folder name under <config>/projects for a start directory."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def scope_paths(name, path=None, home=None):
+    """[Path] — what a scope's sessions leave on this Mac, the paths the fence keeps out: per repo
+    of the scope (its anchor, the knowledge repo, first) its checkout and every `git worktree list`
+    entry, PROJECTS/transcripts/<repo>/, and each login dir's projects/<slug>/ for each of those
+    checkouts — the transcripts and the memory both (week-digest reads the .jsonl files there). A
+    worktree already removed left a folder whose slug starts with its checkout's slug and a `-`:
+    a reader matches that prefix, as sheep_gate's transcript test does. A copy outside a
+    registered repo is not found. [] for a scope the registry lacks. Never raises."""
+    repos, scopes = scope_registry(path)
+    if name not in scopes:
+        return []
+    logins = login_dirs(home)
+    out, seen = [], set()
+
+    def add(p):   # git names a tree by its real path: one entry per folder, the first form kept
+        r = os.path.realpath(p)
+        if r not in seen:
+            seen.add(r)
+            out.append(p)
+    for key in scope_members(scopes[name], repos):
+        if key not in repos:
+            continue
+        top = PROJECTS / key
+        trees = [top]
+        try:
+            r = subprocess.run(["git", "-C", str(top), "worktree", "list", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            trees += [Path(l[len("worktree "):]) for l in r.stdout.splitlines() if l.startswith("worktree ")] if r.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            pass
+        trees = [t for n, t in enumerate(trees) if os.path.realpath(t) not in {os.path.realpath(x) for x in trees[:n]}]
+        for t in trees:
+            add(t)
+        add(PROJECTS / "transcripts" / key.rsplit("/", 1)[-1])
+        for d in logins:
+            for t in trees:
+                add(d / "projects" / project_slug(t))
+    return out
 
 API = "https://api.github.com"
 _host = None
