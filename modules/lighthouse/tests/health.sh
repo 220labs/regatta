@@ -171,7 +171,7 @@ orun lctl-down orca-ok
 check "$(log | grep -c "Orca's serve agent: failing, already posted")" 1 "the same the next day: posted once"
 check "$(grep -c . "$T/commits")" 1 "  not committed twice"
 orun lctl-up orca-bad
-check "$(log | grep -c '^orca: the serve agent serve.example runs (pid 4242) but orca run-list does not answer$')" 1 "a pid with no answer from run-list is a failure too"
+check "$(log | grep -c '^orca: the serve agent serve.example runs but orca run-list does not answer (pid 4242)$')" 1 "a pid with no answer from run-list is a failure too"
 check "$(grep -c . "$T/commits")" 2 "  posted as a new one"
 orun lctl-up orca-ok
 [ -f "$T/logs/health.last.orca" ]; check $? 1 "serving again clears what was posted"
