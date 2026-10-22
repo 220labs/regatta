@@ -15,7 +15,7 @@ night (DESIGN section 8); safe to run by hand any time.
 ## 1. Gather — bounded, in this order
 
 ```bash
-<module>/bin/week-digest --days 7                 # 7, or the --days Aurora was given; what the owner typed, per project; ✱ = maybe a correction
+<module>/bin/week-digest --days 7                 # 7, or the --days Aurora was given; what the owner typed, per project; ✱ = maybe a correction; a confidential scope's sessions counted, not quoted
 <regatta> knowledge-numbers                       # the numbers (plumb)
 <regatta> interruptions --days 7 --list all       # every question put to the owner this week, and the answer
 <regatta> bulletin.py --list                      # live bulletin entries
@@ -33,7 +33,9 @@ Then read:
   until someone clicks (2026-09-16). A phone inbox is read only if
   `<vault>/inbox/.icloud-inbox` exists and names its path, which the owner creates
   after granting Claude Code iCloud access once, by hand.
-- `grep -rn "<!-- promote:" <projects>/*/ --include='*.md'` — tagged candidates.
+- `<module>/bin/week-digest --promote-tags` — tagged candidates (the `<!-- promote:` lines, as
+  `grep -rn` prints them, stopping at a confidential scope's folders; never grep `<projects>` yourself:
+  nothing reads down into a confidential node, knowledge-layers S4).
 - The last two entries of `<vault>/log.md` and the previous
   `<vault>/dreams/*.md` — what was already proposed, approved or rejected.
   A rejected proposal is not re-proposed unless something new supports it; say what.

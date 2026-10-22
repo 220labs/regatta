@@ -361,6 +361,62 @@ def scope_paths(name, path=None, home=None):
                 add(d / "projects" / project_slug(t))
     return out
 
+
+def scope_match(name, path=None, home=None):
+    """A test path -> bool: is it one of scope `name`'s (scope_paths)? Under one of its folders by
+    the path as given or its real path, or a folder under any `projects/` whose name is one of its
+    slugs or starts with one and a `-` — a login dir scope_paths did not list, a worktree already
+    removed. The prefix over-reaches (a repo `<name>-x` beside `<name>`): for a fence that is the
+    safe side. Never raises."""
+    ps = scope_paths(name, path, home)
+    roots = {os.path.normpath(str(p)) for p in ps} | {os.path.realpath(p) for p in ps}
+    slugs = {project_slug(r) for r in roots}
+
+    def match(p):
+        try:
+            s = os.path.normpath(os.path.expanduser(str(p)))
+            if any(c == r or c.startswith(r + os.sep) for c in {s, os.path.realpath(s)} for r in roots):
+                return True
+            parts = Path(s).parts
+            return any(parts[i - 1] == "projects" and any(parts[i] == g or parts[i].startswith(g + "-") for g in slugs)
+                       for i in range(1, len(parts)))
+        except (OSError, ValueError, TypeError):
+            return False
+    return match
+
+
+def gather_fence(scope=None, path=None, home=None):
+    """What a Gather reader (week-digest, interruptions, knowledge-numbers, `repos --branches`) may do
+    with an item, judged by the paths it came from (knowledge-layers S4: "nothing reads down into a
+    confidential node; only generalised knowledge flows upstream"). Returns fence(*paths) ->
+    "quote" (print it), "fenced" (a confidential scope's: count it, never quote it) or "outside"
+    (not the scope asked for: leave it out). Without `scope` an item any path of which is a
+    confidential scope's is fenced, the rest quoted. With `scope` an item of that scope is quoted —
+    unless a path is also another confidential scope's (fenced) — and the rest is outside. An item
+    with no path is fenced, or outside under `scope`: unknown is never quoted (quoted only where no
+    scope is confidential). An unreadable
+    registry fences everything (a fence fails closed, regatta AGENTS.md's Traps). ValueError: a
+    scope the registry lacks, or any scope asked of a registry that cannot be read."""
+    if registry_unreadable(path):
+        if scope:
+            raise ValueError("the registry %s cannot be read, so no scope can be" % (path or repos_json()))
+        return lambda *paths: "fenced"
+    if scope and scope not in scope_registry(path)[1]:
+        raise ValueError("no scope %r in the registry" % scope)
+    others = [scope_match(n, path, home) for n in confidential_scopes(path) if n != scope]
+    own = scope_match(scope, path, home) if scope else None
+
+    def fence(*paths):
+        ps = [p for p in paths if p]
+        if not ps:  # unknown is never quoted — unless no scope is confidential at all
+            return "outside" if scope else "fenced" if others else "quote"
+        if any(m(p) for m in others for p in ps):
+            return "fenced"
+        if own and not any(own(p) for p in ps):
+            return "outside"
+        return "quote"
+    return fence
+
 API = "https://api.github.com"
 _host = None
 

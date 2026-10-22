@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Gather bounded (knowledge-layers S4, 2026-10-22): `interruptions` keeps a confidential scope's
+  rows in every count with their text, file and project blanked (`(confidential)`), leaves them out
+  of `--list`, and counts its untrusted repos unnamed; `knowledge-numbers` sums its repos into one
+  `(confidential)` row and counts its unlinked memory the same way. Both take `--scope <scope>`
+  (that scope's rows alone; knowledge-numbers hands it to interruptions).
+- `interruptions` no longer crashes on a multiSelect answer stored as a list: it is joined, then
+  judged (it failed on this Mac's week of 2026-10-22, so knowledge-numbers' row read "no output").
 - The account registry and usage-report's config are read from the config dir only (2026-10-22):
   `lighthouse/accounts.json` ($ACCOUNTS_FILE over it) in `tier_check`, `usage-report`, `interruptions` and
   `knowledge-numbers`, and `plumb/usage.json` ($USAGE_CONFIG) in `usage-report`. The old fallback was a

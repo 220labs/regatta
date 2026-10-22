@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `gather_fence(scope)` and `scope_match(scope)` (knowledge-layers S4, 2026-10-22): what a Gather
+  reader may do with an item, by the paths it came from — `quote`, `fenced` (a confidential scope's:
+  count it, never quote it) or `outside` (not the scope asked for); a scope's folders matched by
+  path or by slug folder name under any `projects/`; an unreadable registry fences everything.
 - A third waiting line, `PENDING_PREFIX` (`THIS SESSION IS WAITING FOR SOMETHING — <what>`), a
   `pending` kind in `CLOSING`: the session waits on its own work and carries on by itself, so the
   owner has nothing to do. It is no ask (`unrelayed_ask`, `asks_answers` skip it); keel's Stop lint

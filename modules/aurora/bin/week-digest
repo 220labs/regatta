@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """What the owner actually typed this week, per project — the raw material the dream (Aurora) reads.
 
-    week-digest [--days 7] [--max-chars 400]
+    week-digest [--days 7] [--max-chars 400] [--scope <scope>]
+    week-digest --promote-tags [--scope <scope>]
 
 A week of transcripts is hundreds of megabytes of tool output; the signal the dream needs is
 the human side: requests, corrections, preferences, "remember this", "never do that again".
@@ -13,16 +14,31 @@ are its source's and are skipped (bin/fork_claude_session.py; teleport design E1
 
 Lines that look like corrections are marked `✱` so the dream can count repeats: they contain
 "again", "still", "I told you", "don't", "never", "stop", "wrong", "remember", "always".
+
+The fence (knowledge-layers S4): a session of a confidential scope (the registry's
+`"confidential": true`, read through the core's gather_fence) is counted, never quoted — its own
+scope's pass reads it. `--scope <scope>` reads that scope alone, a confidential one included.
+
+`--promote-tags` is the dream's other raw read: every `<!-- promote:` line in a Markdown file
+under the projects folder, as `grep -rn` prints it, never descending into a confidential scope's
+folders (the grep it replaces walked them all).
 """
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402  the regatta core's hooks/; none: one line, exit 2
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  gather_fence, PROJECTS
+
 HOME = Path.home()
-SOURCES = [HOME / "projects" / "transcripts", HOME / ".claude" / "projects"]
+SOURCES = [common.PROJECTS / "transcripts", HOME / ".claude" / "projects"]
+PROMOTE_TAG = "<!-- promote:"
 IDE_BLOCK = re.compile(r"<(ide_\w+)>.*?</\1>", re.S)
 COMMAND = re.compile(r"<command-message>.*?</command-message>\s*<command-name>(.*?)</command-name>"
                      r"(?:\s*<command-args>(.*?)</command-args>)?", re.S)
@@ -72,25 +88,73 @@ def project_of(path):
     return slug.rsplit("-projects-", 1)[-1] if "-projects-" in slug else slug
 
 
+def promote_tags(fence, scope=None):
+    """`grep -rn "<!-- promote:" <projects>/*/ --include='*.md'`, the fence applied: a confidential
+    scope's folder is never descended into (counted), and under --scope a file outside it is never
+    read. Returns (lines, folders fenced)."""
+    hits, fenced = [], 0
+    tops = sorted(p for p in common.PROJECTS.iterdir() if p.is_dir() and not p.name.startswith(".")) \
+        if common.PROJECTS.is_dir() else []
+    for top in tops:
+        for d, subs, files in os.walk(top):
+            if fence(d) == "fenced":
+                fenced += 0 if scope else 1  # a scoped pass does not even count another scope
+                subs[:] = []
+                continue
+            subs[:] = sorted(x for x in subs if x != ".git")
+            for f in sorted(files):
+                p = os.path.join(d, f)
+                if not f.endswith(".md") or fence(p) != "quote":
+                    continue
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        hits += [f"{p}:{n}:{l.rstrip()}" for n, l in enumerate(fh, 1) if PROMOTE_TAG in l]
+                except OSError:
+                    continue
+    return hits, fenced
+
+
 def main():
     days = arg("--days", 7)
     limit = arg("--max-chars", 400)
+    if "--scope" in sys.argv and (sys.argv[-1] == "--scope" or sys.argv[sys.argv.index("--scope") + 1].startswith("--")):
+        print("week-digest: --scope needs a scope's name", file=sys.stderr)
+        return 2
+    scope = arg("--scope", "") or None
+    try:
+        fence = common.gather_fence(scope)
+    except ValueError as e:
+        print(f"week-digest: {e}", file=sys.stderr)
+        return 2
+    if "--promote-tags" in sys.argv:
+        hits, fenced = promote_tags(fence, scope)
+        print("\n".join(hits) if hits else f"(no {PROMOTE_TAG} tags)")
+        if fenced:
+            print(f"({fenced} folder(s) of a confidential scope not read — its own pass reads them)")
+        return 0
     cutoff = time.time() - days * 86400
-    seen, by_project = set(), {}
+    seen, by_project, hidden = set(), {}, [0, 0]
     for root in SOURCES:
         for f in sorted(root.glob("*/*.jsonl")):
             if f.stat().st_mtime < cutoff:
+                continue
+            verdict = fence(f)
+            if verdict == "outside" or scope and verdict != "quote":   # under --scope, only its own counts
                 continue
             sid, title, ps = prompts(f)
             key = sid or f.stem
             if key in seen or not ps:
                 continue
             seen.add(key)
+            if verdict == "fenced":   # counted in the heading, never quoted
+                hidden[0] += 1
+                hidden[1] += len(ps)
+                continue
             by_project.setdefault(project_of(f), []).append((ps[0][0], key, title, ps))
-    total = sum(len(s[3]) for v in by_project.values() for s in v)
+    total = sum(len(s[3]) for v in by_project.values() for s in v) + hidden[1]
     marked = 0
     print(f"# Week digest — last {days} days, {len(seen)} sessions, {total} prompts "
-          f"({dt.date.today().isoformat()})\n")
+          f"({dt.date.today().isoformat()})" + (f" — scope {scope}" if scope else "") + "\n")
     for project in sorted(by_project):
         print(f"## {project}\n")
         for start, key, title, ps in sorted(by_project[project]):
@@ -101,8 +165,12 @@ def main():
                 marked += mark == "✱ "
                 print(f"{mark}{flat[:limit]}{' […]' if len(flat) > limit else ''}")
             print()
+    if hidden[0]:
+        print(f"_{hidden[0]} sessions ({hidden[1]} prompts) of a confidential scope: counted above, not quoted — "
+              "its own pass reads them._\n")
     print(f"_{marked} prompts marked ✱ as possible corrections — read them, don't count them blindly._")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
