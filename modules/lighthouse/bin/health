@@ -184,7 +184,8 @@ else
 fi
 
 # orca_answers <cli>: run-list answers with ok JSON within 60 s. Python for the timeout (macOS has
-# no timeout(1)); ELECTRON_RUN_AS_NODE cleared, as the Orca adapter does, or the CLI runs as Node.
+# no timeout(1)); ELECTRON_RUN_AS_NODE cleared as the Orca adapter does (the `orca` launcher sets
+# it itself; it matters only where HEALTH_ORCA_CMD is the Electron binary).
 orca_answers() { env -u ELECTRON_RUN_AS_NODE python3 -c 'import json, subprocess, sys
 try:
     r = subprocess.run([sys.argv[1], "orchestration", "run-list", "--limit", "1", "--json"], capture_output=True, text=True, timeout=60)
@@ -199,7 +200,8 @@ if [ "$ORCA" != on ]; then
 elif case "$label" in *[!A-Za-z0-9._-]*) true;; *) false;; esac; then
   echo "orca: wharf-runs/serve-label is not a launchd label — skipped"
 elif [ ! -f "$HOME/Library/LaunchAgents/$label.plist" ]; then
-  echo "orca: no serve agent here ($label) — skipped"
+  # no agent, nothing failing: a failure posted before the agent went must post again if it returns
+  echo "orca: no serve agent here ($label) — skipped"; rm -f "$state.orca"
 else
   pid=$(${HEALTH_LAUNCHCTL_CMD:-launchctl} print "gui/$(id -u)/$label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -1)
   ocli="${HEALTH_ORCA_CMD:-$(command -v orca || echo /Applications/Orca.app/Contents/Resources/bin/orca)}"
