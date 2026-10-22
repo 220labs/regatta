@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `wharf` start fixes (skipper-resilience S1, 2026-10-22), found by the yard probe: `start_orca` trusts the
+  picked login's config dir first, as dispatch does (`dispatch-rc trusted`, then lighthouse's
+  `trust-projects`, read back; still untrusted is one failed start); a worktree git just made that Orca's
+  list does not show yet defers the start one pass without counting it; a start waits for the studio brake
+  (the brake's sentinel file in the home folder, or the stopped process of the job `wharf-runs/brake-label` names); and
+  `wharf status --orphans` lists the Orca repos and Runs no plan here accounts for (paged; Orca's legacy row
+  and `bin/harness run`'s Runs left out). A block on another host is not braked by this Mac's brake. Cases in
+  `test_wharf.sh`.
 - `bin/hail` and `hail subs` (Lookout and Hail, S2, 2026-10-21): one verb that delivers a pointer to any
   session `harness` names — Claude Code's inbox socket (S1's wire: an `auth` line with the key file's
   `peerToken`, then the `user` line; only to a session idle 60 s or more, re-read before the post;

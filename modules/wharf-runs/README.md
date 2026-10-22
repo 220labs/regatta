@@ -50,9 +50,10 @@ the tools here will find.
   | `wharf-runs/ssh` | `<peer>:<ssh alias>` — how `orca-host --on PEER` reaches it | `--on` knows no peer |
   | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on | `org.regatta.orca-serve` |
   | `wharf-runs/serve-label-previous` | an older label `orca-serve-agent` boots out and removes first, so one agent serves | none |
+  | `wharf-runs/brake-label` | the launchd job the studio brake stops (SIGSTOP), first non-blank line; a `wharf` start waits while that job's process is stopped, as it does while the brake's sentinel file (`.studio-brake` in the home folder) exists | only the file brakes |
 
   With an overlay installed (a `legacy` file in the config dir) a missing key is an error naming
-  it, as the core does for its own (bar the two `serve-label` keys, optional). Host names are compared lower-case.
+  it, as the core does for its own (bar the two `serve-label` keys and `brake-label`, optional). Host names are compared lower-case.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
   plugin) and reads that Mac's registry and config, so the peer needs the core installed, and
   the two keys where it has an overlay.
