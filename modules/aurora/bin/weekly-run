@@ -190,10 +190,52 @@ tools+=("Bash(ls:*)" "Bash(grep:*)" "Bash(date:*)" "Bash(wc:*)"
         "Bash(git log:*)" "Bash(git diff:*)" "Bash(git -C:*)" "Bash(git rev-list:*)" "Bash(git branch:*)")
 [ "$job" = sextant ] && tools+=(WebSearch WebFetch EnterWorktree)
 [ "$job" = aurora ] && tools+=(EnterWorktree)  # the charts section works in its own layer worktree
+# Sextant's step 2c, the sounding queue (the Sounding design's S7, section 5): the queue's reading and
+# bookkeeping verbs, `keel lint`, and two writers pinned to the one shape each the step runs, their tails
+# literal (no trailing `*`): `pickup seed … --no-start` (without it, seed starts the run at once through
+# `dispatch --next`: no reset, no --if-room, no cap — the /finish review's R1), and `dispatch … --at
+# <slot> --if-room` for the three slots (`reset`, `reset+30`, `reset+60`), never `dispatch:*` (R5;
+# dispatch refuses a second --at, so `--at reset --at <clock>` cannot pass as a slot). `soundings add`
+# is the owner's pick and is denied below by name; so are the flags that would widen either past the
+# queue's (--yolo answers for the owner, --start/--launch and --allow/--undeny run a prompt of the
+# caller's with the lists changed, --force crosses an account's rules, --account picks another login
+# and its reset, --note puts the caller's words in the run's prompt, --background lets it spawn
+# unwatched, --end stops another run). The core's form, the module's own path (sextant's, found as every
+# peer is), then the layer's, each written out: the overlay's test_hooks.sh greps this file for
+# `bin/<tool> <verb>:*` per call /sextant makes, and for these two shapes. The core's form twice, as the
+# layer's: absolute, and with $HOME as `~` (a skill in the layer writes it so).
+if [ "$job" = sextant ]; then
+  q=$(tool soundings); regs=("$REG"); [[ "$REG" == "$HOME"/* ]] && regs+=("~${REG#"$HOME"}")
+  for r in "${regs[@]}"; do
+    for v in next list brief mark refresh; do tools+=("Bash($r soundings $v:*)"); done
+    tools+=("Bash($r pickup seed * --no-start)" "Bash($r keel lint:*)")
+    tools+=("Bash($r dispatch * --at reset --if-room)" "Bash($r dispatch * --at reset+30 --if-room)"
+            "Bash($r dispatch * --at reset+60 --if-room)")  # soundings' SLOTS, each written out (the greps)
+  done
+  for v in next list brief mark refresh; do [ -n "$q" ] && tools+=("Bash($q $v:*)"); done
+  for base in ${bases[@]+"${bases[@]}"}; do
+    tools+=("Bash($base/bin/soundings next:*)" "Bash($base/bin/soundings list:*)" "Bash($base/bin/soundings brief:*)"
+            "Bash($base/bin/soundings mark:*)" "Bash($base/bin/soundings refresh:*)"
+            "Bash($base/bin/pickup seed * --no-start)" "Bash($base/bin/keel lint:*)")
+    tools+=("Bash($base/bin/dispatch * --at reset --if-room)" "Bash($base/bin/dispatch * --at reset+30 --if-room)"
+            "Bash($base/bin/dispatch * --at reset+60 --if-room)")
+  done
+fi
+# The two refusals in soundings (`add`, `mark … launched`) read this, not CLAUDE_UNATTENDED: that one
+# is dispatch's, and its other readers would change the run (ask_guard and the Stop hook's ask
+# findings turn the session's WAITING line into a relay, pickup and check take their unattended paths)
+# in ways this job was never run under — the /finish review's R2. It is also what holds the two
+# writers: under `auto` the allow rules above only spare the classifier, so `pickup seed` refuses
+# without --no-start and dispatch refuses all but `--at <slot> --if-room` under WEEKLY_RUN (F1).
+export WEEKLY_RUN="$job"
 # dispatch's deny list bar deploy: neither skill calls these, and under auto nothing else refuses
 # them by name (knowledge-commit --in runs bin/pr as its own subprocess, which no rule sees)
 denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)"
         "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)")  # the skills' `<regatta> pr …` form
+[ "$job" = sextant ] && denied+=("Bash(*soundings add*)" "Bash(*dispatch*--yolo*)" "Bash(*dispatch*--start*)"
+  "Bash(*dispatch*--launch*)" "Bash(*dispatch*--allow*)" "Bash(*dispatch*--undeny*)" "Bash(*dispatch*--force*)"
+  "Bash(*dispatch*--account*)" "Bash(*dispatch*--note*)" "Bash(*dispatch*--background*)" "Bash(*dispatch*--end*)"
+  "Bash(*pickup*--start*)" "Bash(*pickup*--launch*)" "Bash(*pickup*--force*)")
 cd "$cwd" || exit 1
 
 # Aurora's sections and their cadence; a new section is one line here (skills/aurora/SKILL.md)
@@ -436,7 +478,9 @@ charts_launch() {
 run_claude() {  # $1: the sections for this session (WEEKLY_CLAUDE sees them as $sections)
   local sections="$1"
   if [ -n "${WEEKLY_CLAUDE:-}" ]; then
-    ( export sections; capped bash -c "$WEEKLY_CLAUDE" )
+    # the two lists as claude would get them, one per line, for the suites' rehearsals (S7's case)
+    WEEKLY_ALLOWED=$(printf '%s\n' "${tools[@]}") WEEKLY_DENIED=$(printf '%s\n' "${denied[@]}")
+    ( export sections WEEKLY_ALLOWED WEEKLY_DENIED; capped bash -c "$WEEKLY_CLAUDE" )
   else
     # through claude-host once this Mac's sitting is done (docs/tcc-one-identity-2026-10-18.md):
     # under a bash job, claude is charged to its own versioned path, which every update replaces
