@@ -63,6 +63,30 @@ mkdir -p "$T/dcfg/wharf"; ln -s "$T/moved.json" "$T/dcfg/wharf/repos.json"
 check "$(REGATTA_CONFIG="$T/dcfg" py 'print(common.registry_unreadable())')" "True" "  the config's own repos.json link, dangling: unreadable, not absent"
 check "$(SP 'print(common.scope_of_key("a", path="'"$T/odd.json"'"), common.scope_paths("x", path="'"$T/odd.json"'"))')" "None []" \
   "  a malformed scope: no member, no error"
+echo "gather_fence: what a Gather reader may quote (knowledge-layers S4)"
+SK=$(printf '%s' "$PJ/k" | sed 's/[^A-Za-z0-9]/-/g')
+GF() { SP "f = common.gather_fence($1)
+for a in [$2]: print(f(*a) if isinstance(a, tuple) else f(a))" | tr '\n' ' ' | sed 's/ $//'; }
+check "$(GF '' "'$PJ/k/docs/x.md', '$WT/a', '$PJ/transcripts/z-1/s.jsonl', '$PJ/o/x', '$PJ/elsewhere'")" "fenced fenced fenced quote quote" \
+  "no scope: the confidential scope's checkout, worktree and archive fenced; the rest quoted"
+check "$(GF '' "'$HD/.claude/projects/$SK/s.jsonl', '~/.claude-gone/projects/$SK--claude-worktrees-old/m.md', '$HD/.claude/projects/-other/s.jsonl'")" \
+  "fenced fenced quote" "  a login's slug folder, a removed worktree's under a login no row lists: fenced by name"
+check "$(GF '' "(None, '$PJ/o/x'), ('$PJ/o/x', '$PJ/k'), (), (None,)")" "quote fenced fenced fenced" \
+  "  any fenced path fences the item; one with no path is never quoted"
+check "$(GF '"half"' "'$PJ/o/x', '$PJ/k/x', '$PJ/elsewhere', ()")" "quote fenced outside outside" \
+  "--scope of an open scope: its own quoted, the confidential one still fenced, the rest outside"
+check "$(GF '"node"' "'$PJ/k/x', '$HD/.claude-w/projects/$SK/s.jsonl', '$PJ/o/x'")" "quote quote outside" \
+  "--scope of the confidential scope: it reads itself, nothing else"
+check "$(SP 'f = common.gather_fence(path="'"$T/no-registry.json"'"); print(f(), f("'"$PJ/k/x"'"))')" "quote quote" \
+  "  no registry, so no confidential scope: a path-less item is quoted as before S4"
+check "$(SP '
+try: common.gather_fence("nope")
+except ValueError as e: print(e)')" "no scope 'nope' in the registry" "  a scope the registry lacks: ValueError"
+check "$(SP 'f = common.gather_fence(path="'"$T/torn.json"'"); print(f("'"$PJ/o/x"'"))')" "fenced" \
+  "  a torn registry: everything fenced (fails closed)"
+check "$(SP '
+try: common.gather_fence("half", path="'"$T/torn.json"'")
+except ValueError as e: print("refused")')" "refused" "  and a scope asked of it: ValueError"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"

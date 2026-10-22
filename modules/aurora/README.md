@@ -9,7 +9,7 @@ approve.
 | File | What it is |
 | --- | --- |
 | `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend and the classify (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, and checks each section's proof; `--dry-run` prints tonight's order; `weekly-run where` prints where things are |
-| `bin/week-digest` | what the owner typed this week, per project and session — the raw material the dream reads; read-only |
+| `bin/week-digest` | what the owner typed this week, per project and session — the raw material the dream reads — and `--promote-tags`, the tagged lines; a confidential scope's counted, never quoted, `--scope` for one scope; read-only |
 | `skills/aurora/` | `/aurora`, and its `sections/`: `branches` (a verdict per idle branch code could not settle), `charts` (the layer's docs map and charts kept current, one PR), `dream` (one reviewed proposal for the always-loaded layer) |
 | `skills/embark/` | `/embark`, the Monday sitting |
 | `install.sh` | `--check` what aurora finds; `--schedule` the nightly launchd job (21:00); `--remove` it |
