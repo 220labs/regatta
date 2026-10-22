@@ -6,6 +6,13 @@
   `pending` kind in `CLOSING`: the session waits on its own work and carries on by itself, so the
   owner has nothing to do. It is no ask (`unrelayed_ask`, `asks_answers` skip it); keel's Stop lint
   blocks one that asks, and a WAITING FOR YOU line that says there is nothing to do.
+- Scopes' one reader (knowledge-layers S1, 2026-10-21): `scope_registry()`, `scope_members()`
+  (globs matched), `scope_of_key()`, `confidential_scopes()` (a scope with `"confidential": true`),
+  `scope_login()` (the label its runs start on), `confidential_roots()` (each flagged repo's
+  checkout, no git call, for hooks), `login_dirs()` and `scope_paths(scope)` — a scope's checkouts,
+  their worktrees, transcripts folders and each login's slug folder (transcripts and memory), the
+  paths the fence keeps out. Never raise, a malformed scope included; an unreadable registry reads
+  as no scopes, and `registry_unreadable()` tells a fence so, to fail closed on it.
 - `regatta shim --deny-prompt <path>`: `--deny`'s shim, and with no core a UserPromptSubmit in a
   secondary login dir (`CLAUDE_CONFIG_DIR` set) is blocked too. Made for lighthouse's `account_guard`
   (B9 review: its `--deny` shim let every prompt through where the overlay's old hook blocked); `--deny`
