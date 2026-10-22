@@ -285,6 +285,25 @@ check "$(DA pick --repo "$PR/privy/.claude/worktrees/x" --json) $(field "['accou
 check "$(DA pick --repo "$PR/cv" --json) $(field "['account']")" "0 main" "cv, a folder in no git repo → main (by path)"
 check "$(DA pick --repo "$PR" --json) $(field "['account']")" "0 work" "~/projects itself is no repo → allowed (fails open, by design)"
 check "$(DA pick --json) $(field "['account']")" "0 work" "no --repo → the walk as before"
+# a scope's login (repos.json, knowledge-layers D3): its repos' runs start on that row alone
+printf '{"repos": {"app": {}, "app2": {}, "privy": {}},\n "scopes": {"node": {"file": "n.code-workspace", "repos": ["app2"], "confidential": true, "login": "main"},\n  "lab": {"file": "l.code-workspace", "repos": ["app", "privy"]}}}\n' > "$T/scoped.json"
+SDA() { CLAUDE_REPOS_JSON="$T/scoped.json" DA "$@"; }
+check "$(SDA pick --repo "$PR/app2" --json) $(field "['account']")" "0 main" "pick --repo app2, in a scope whose login is main → main, though work is first and allowed"
+has "$T/out" "scope node runs on main" "…naming why work was skipped"
+check "$(SDA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…a repo in a scope with no login → the walk as before"
+check "$(sed 's/"login": "main"/"login": "nobody"/' "$T/scoped.json" > "$T/scoped2.json"; CLAUDE_REPOS_JSON="$T/scoped2.json" DA pick --repo "$PR/app2" --json)" 3 \
+  "…a login no enabled row has → exit 3, never another seat"
+has "$T/out" "scope node runs on nobody, which is no enabled claude account" "…saying so"
+check "$(SDA limits work --cached --repo "$PR/app2" --json; field "[0]['eligible']"; field "[0]['denied']")" "0
+False
+scope node" "limits --repo app2 on another row: not eligible, and denied (dispatch's --force never crosses it)"
+printf '{"repos": {"cv": {}}, "scopes": {"cvs": {"file": "c.code-workspace", "repos": ["cv"], "login": "main"}}}\n' > "$T/scoped4.json"
+mkdir -p "$PR/cv/sub"
+check "$(CLAUDE_REPOS_JSON="$T/scoped4.json" DA pick --repo "$PR/cv/sub" --json) $(field "['account']")" "0 main" \
+  "…a scope member that is a folder in no git repo: its path finds the login"
+head -c 50 "$T/scoped.json" > "$T/torn.json"
+check "$(CLAUDE_REPOS_JSON="$T/torn.json" DA pick --repo "$PR/app" --json)" 3 "…a registry that does not read: every pick waits (exit 3)"
+has "$T/out" "the registry does not read" "…saying so"
 check "$(DA limits --all --cached --repo "$PR/privy" --json; field "[0]['eligible']")" "0
 False" "limits --repo privy: work not eligible"
 check "$(CLAUDE_CONFIG_DIR="$F" DA allowed "$PR/privy")" 1 "allowed: privy under work's dir → exit 1"
@@ -653,6 +672,11 @@ check "$(ACCOUNT_NOW=$WED AG pick --ship overlay/b7 --json) $(field "['account']
 check "$(ACCOUNT_NOW=$WED AG ships)" 0 "ships lists the pins"
 has "$T/out" "overlay/b7: work2" "…b7 on work2"
 has "$T/out" "overlay/other: stray2" "…other on stray2"
+printf '{"repos": {"app2": {}}, "scopes": {"node": {"file": "n.code-workspace", "repos": ["app2"], "login": "stray2"}}}\n' > "$T/scoped3.json"
+check "$(CLAUDE_REPOS_JSON="$T/scoped3.json" ACCOUNT_NOW=$WED AG pick --ship overlay/b7 --repo "$PR/app2" --json) $(field "['account']")" "0 stray2" \
+  "a ship pinned to work2, run in a repo whose scope's login is stray2: it moves there"
+has "$T/out" "moved: work2 is not scope node's login stray2" "…saying why"
+check "$(ACCOUNT_NOW=$WED AG ships --pin overlay/b7 work2)" 0 "…(pinned back for the cases after)"
 rm -f "$P1/usage-probe.json"; rm -f "$P1/stub-usage"
 check "$(ACCOUNT_NOW=$WED AG ships --pin overlay/p main; ACCOUNT_NOW=$WED AG pick --ship overlay/p --json) $(field "['account']")" "0
 0 main" "a ship pinned to the primary whose limits cannot be read: runs, as plain pick has it"

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `account pick --repo` honours a scope's `login` (knowledge-layers S1, 2026-10-21): a repo in a
+  scope that names one is picked onto that row alone, waits (exit 3) when it cannot run rather
+  than move to another seat, and a ship pinned elsewhere moves to it. `limits --repo` marks every
+  other row ineligible and denied (dispatch's `--account` and `--force` never cross it); a folder
+  that is no git repo finds its scope by path; a registry that does not read makes every pick wait.
 - beacon joins as lighthouse's support part (private until its scrub; chart: `beacon/README.md`):
   a site's contact form and its bot as one Cloudflare Worker (`/contact`, `/chat/start`, `/chat`,
   `/status`), the Meter (a SQLite Durable Object), the `github` sink (an App's RS256 JWT by

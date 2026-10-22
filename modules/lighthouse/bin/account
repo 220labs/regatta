@@ -81,6 +81,10 @@ folder itself, the home folder — is allowed: the list says where sessions star
 boundary (section 2 of the doc) — bar, for `allowed`, a path that holds a denied repo
 (holds_denied, since 2026-10-18): Claude Code loads the default dir's CLAUDE.md as such a folder's
 project memory, imports included.
+A repo in a scope whose `login` names a label (repos.json's scopes, read through the core's
+`scope_login`; knowledge-layers D3, 2026-10-20) is picked onto that row alone: `pick --repo` skips
+every other row, waits (exit 3) when that one cannot run rather than move a confidential node's
+run to another seat, and a ship pinned elsewhere moves to it.
 
 Tenants (multi-tenancy, the owner 2026-10-20: "instead of banning [an employer's] projects from
 [another employer's login], send their sessions to a separate account"). The registry may say
@@ -712,6 +716,32 @@ def off_reason(a, key):
     return f"{key} is on its deny list"
 
 
+def scope_login_of(path):
+    """→ (scope, login) when the repo at `path` is in a scope whose `login` names the account its
+    runs start on (the core's registry reader; knowledge-layers D3, 2026-10-20), else None. A
+    confidential node's pass on the walk's first row would run on another employer's seat. A
+    folder that is no git repo is its path, as in denied(). A registry file that does not read →
+    (its reason, "") — a login no row has, so every pick waits rather than guess (the /finish
+    review of S1, 2026-10-22)."""
+    if not path:
+        return None
+    keys = [repo_of(path)]
+    try:
+        rel = Path(path).expanduser().absolute().resolve().relative_to(projects_dir().resolve()).parts
+        keys += ["/".join(rel[:i]) for i in range(len(rel), 0, -1)]
+    except ValueError:
+        pass
+    try:
+        c = core()
+        if getattr(c, "registry_unreadable", lambda: False)():
+            return ("the registry does not read", "")
+        name = next((n for n in (c.scope_of_key(k) for k in keys if k) if n), None)
+        login = c.scope_login(name) if name else None
+    except Exception:
+        return None
+    return (name, login) if login else None
+
+
 def holds_denied(a, path):
     """→ the key of a denied repo that lies inside `path` (path is the home or the projects folder,
     say), else None. Claude Code reads every ancestor's .claude/CLAUDE.md — the default dir's is the
@@ -1124,7 +1154,15 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
     if not rows:
         raise Short([(prov, f"no enabled {prov} account{' marked primary' if bound else ''} in {REGISTRY}")])
     skipped = []
+    own = scope_login_of(repo)
+    if own and not own[1]:
+        raise Short([("registry", f"{own[0]}: no run picks a seat until it does")])
+    if own and not any(a["label"] == own[1] for a in rows):
+        raise Short([(own[1], f"scope {own[0]} runs on {own[1]}, which is no enabled {prov} account in {REGISTRY}")])
     for a in rows:
+        if own and a["label"] != own[1]:
+            skipped.append((a["label"], f"scope {own[0]} runs on {own[1]}"))
+            continue
         d = denied(a, repo)
         if d:
             skipped.append((a["label"], off_reason(a, d)))
@@ -1925,9 +1963,10 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
         moved = None
         if a is not None:
             d = denied(a, repo)
+            own = scope_login_of(repo)
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
                 or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
-                or (d and f"denied for {d}")
+                or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}")
             if not gone:
                 t = now()
                 lim = None if cooldown(a, t) else limits(a, cached=cached)[0]
@@ -2465,6 +2504,9 @@ def limits_json(a, lim, at, t, repo=None):
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)
+    own = scope_login_of(repo)
+    if own and own[1] != a["label"]:  # in `denied` too: dispatch's --force never crosses that
+        ok, why, d = False, (f"scope {own[0]} runs on {own[1]}" if own[1] else own[0]), d or f"scope {own[0]}"
     if not a["enabled"]:  # only `limits --all --parked` lists one; never a pick. judge's reason kept: why no figures
         ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
