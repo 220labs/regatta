@@ -22,4 +22,10 @@ Read `README.md` first: it is the chart. For an agent:
   installed, else this module in the main checkout — never a worktree's copy.
 - An embedded Python heredoc inside `"$(…)"` in a bash file holds no apostrophe, not even in a
   comment: bash 3.2 parses quotes there and the whole substitution goes wrong.
+- `hail` reaches live sessions: in a session, `--dry-run` only, unless the owner asked for the hail.
+  Its socket road posts only to a session idle 60 s or more, re-read just before the post (a post
+  mid-turn lands at the receiver's next tool boundary), and `delivered` is read back from the
+  receiver, never from the socket, which answers nothing. Its suite, `tests/test_hail.sh`, posts to
+  fake inboxes only. The peer bundle embeds sources with `ascii()`: Python 3.9 reading a long
+  non-ASCII line from stdin fails "Non-UTF-8 code".
 - check: `bash modules/wharf-runs/tests/check.sh`.
