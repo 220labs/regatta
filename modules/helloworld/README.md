@@ -41,9 +41,12 @@ possible. We'll squash as a fallback, but will try to avoid it."). The base is t
 commit whose allowlisted tree is the public main's. Each commit after it goes up as one public
 commit: its allowlisted tree, its subject and body less every `Co-Authored-By`, `Signed-off-by` and
 `Claude-Session` line and the workflow's `Deployed:` and `Stood-By:` (by key, any case or value), the publishing identity, its own dates at
-`+0000`, the gate's `Signed-off-by`. Each is scanned on its own. A commit that changes no published
-file stays private; a `wip:` checkpoint, a commit whose tree fails, or one whose lists hold a file,
-exemption or credit the reviewed ref took back folds into the next that passes; a body that fails is dropped and the subject goes alone; a subject that fails refuses the
+`+0000`, the gate's `Signed-off-by`. Each is scanned on its own: its own allowlist and credits, the
+reviewed ref's exemptions (2026-10-21: an exemption is text that goes public with the ref anyway, in
+the one file it names, so a string exempted today no longer folds every commit since it arrived
+into the exemption's; the exemption covers that file's whole replayed history). A commit that changes no published
+file stays private; a `wip:` checkpoint, a commit whose tree fails, or one whose lists hold a file
+or credit the reviewed ref took back folds into the next that passes; a body that fails is dropped and the subject goes alone; a subject that fails refuses the
 run until `.helloworld/messages` gives that commit a reviewed subject (`<private sha> <subject>`).
 A message meets the whole word list and the tree's patterns, and its own (2026-10-20, the owner's
 answer to D2 of the S2 digest): a sha-like token (7-40 hex, word-bounded: a revert's "This reverts

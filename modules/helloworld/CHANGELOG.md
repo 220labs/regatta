@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The replay judges every commit's tree with the reviewed ref's exemptions, and with that commit's
+  own allowlist and credits: an exemption is text that goes public with the ref anyway, in the one
+  file it names, so commits made before it was exempted no longer fold into the exemption's. A
+  string the ref does not exempt, or exempts in another file, folds as before; an exemption an
+  older commit had and the ref took back clears nothing.
 - The log (S3, the design's D2-A): `publish --pr`'s PR body lists each replayed subject, oldest
   first and fenced, with the counts replayed, folded and refused (bodies dropped, subjects
   replaced by a reviewed line). The full report — the private-to-public sha map, each fold and

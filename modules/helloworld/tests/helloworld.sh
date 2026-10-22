@@ -1087,6 +1087,43 @@ check "$([ "$(pub2refs)" != "$before" ] && echo pushed)" pushed "  a new branch 
 mv "$T/words.bak" "$HELLOWORLD_WORDLIST"
 git -C "$R2" diff --binary HEAD "$BEFORE" | git -C "$R2" apply; rc "Project: back as it was, a third time"; up
 
+# Every replayed tree is judged with the ref's exemptions, not its own (2026-10-21): a string that
+# went public with the ref anyway stops folding the commits made before it was exempted. Only the
+# exact string, only in the file the ref names; anything else folds as before.
+BEFORE=$(git -C "$R2" rev-parse HEAD)
+printf 'print(58)  # Harbourview Lane\n' > "$R2/tool.py"; echo "tool.py:Harbourview Lane" >> "$R2/.helloworld/exemptions.txt"
+rc "Tool: the lane"; CE0=$(git -C "$R2" rev-parse HEAD)
+printf 'print(59)\n' > "$R2/tool.py"
+git -C "$R2" show "$BEFORE:.helloworld/exemptions.txt" > "$R2/.helloworld/exemptions.txt" 2>/dev/null || rm -f "$R2/.helloworld/exemptions.txt"
+rc "Tool: fifty-nine"; CEB=$(git -C "$R2" rev-parse HEAD)
+printf 'print(60)  # Harbourview Road\n' > "$R2/tool.py"; rc "Tool: sixty"; CE1=$(git -C "$R2" rev-parse HEAD)
+printf '# Tool\nRun it. Harbourview Road\n' > "$R2/README.md"; rc "Docs: the road in the README"; CE2=$(git -C "$R2" rev-parse HEAD)
+printf '# Tool\nRun it twice.\n' > "$R2/README.md"; rc "Docs: run it twice"; CE3=$(git -C "$R2" rev-parse HEAD)
+printf 'print(61)  # Harbourview Road, Harbourview Hill\n' > "$R2/tool.py"; rc "Tool: sixty-one"; CE4=$(git -C "$R2" rev-parse HEAD)
+printf 'print(62)  # Harbourview Road\n' > "$R2/tool.py"; rc "Tool: sixty-two"; CE5=$(git -C "$R2" rev-parse HEAD)
+echo "tool.py:Harbourview Road" >> "$R2/.helloworld/exemptions.txt"; rc "Project: the road is public"; CE6=$(git -C "$R2" rev-parse HEAD); up
+check "$(chk2)" 0 "a string exempted at the ref, in commits made before the exemption: check passes"
+has "$T/out" 'exemption used: tool.py: "Harbourview Road" cleared 1' "  the ref's own scan uses the exemption"
+has "$T/out" "${CE1:0:7} → Tool: sixty" "  the first commit to hold the string goes up on its own, cleared by the ref's exemption"
+lacks "$T/out" "${CE1:0:7}   fold" "  and does not fold into the exemption's commit"
+lacks "$T/out" "${CE1:0:7} → Tool: sixty [carries" "  and carries nothing: the ref's exemption complaints are not an older tree's findings"
+has "$T/out" "${CE0:0:7}   fold: its tree has 1 finding(s)" "  an exemption a commit had and the ref took back clears nothing: it folds"
+has "$T/out" "${CEB:0:7} → Tool: fifty-nine [carries 1 folded]" "  carried by the next that passes"
+has "$T/out" "${CE2:0:7}   fold: its tree has 1 finding(s)" "  the same string in another file: the ref's exemption for tool.py does not clear README.md"
+has "$T/out" "${CE3:0:7} → Docs: run it twice [carries 1 folded]" "  carried by the next that passes"
+has "$T/out" "${CE4:0:7}   fold: its tree has 1 finding(s)" "  a string the ref does not exempt, in the exempted file: folds"
+has "$T/out" "${CE5:0:7} → Tool: sixty-two [carries 1 folded]" "  carried by the next that passes"
+has "$T/out" "${CE6:0:7}   private: no published file changed" "  the exemption's own commit publishes nothing"
+check "$(prun2 --topic exempted)" 0 "  publish --pr: the replay goes up"
+TIPE=$(git -C "$PUB2" rev-parse "claude/publish/$(TZ=UTC date +%F)-exempted")
+check "$(git -C "$PUB2" log --reverse --format=%s "$TIPE~4..$TIPE" | tr '\n' '|')" \
+      "Tool: fifty-nine|Tool: sixty|Docs: run it twice|Tool: sixty-two|" "  one public commit each, under their own subjects"
+leaked=0; for c in $(git -C "$PUB2" rev-list "$TIPE~4..$TIPE"); do
+  git -C "$PUB2" grep -qE "Harbourview (Hill|Lane)" "$c" && leaked=1; git -C "$PUB2" grep -q Harbourview "$c" -- README.md && leaked=1
+done
+check "$leaked" 0 "  no public tree holds an unexempted or taken-back string, nor the exempted one outside its file"
+git -C "$R2" diff --binary HEAD "$BEFORE" | git -C "$R2" apply; rc "Project: back as it was, a fourth time"; up
+
 echo "check-message: one message as the replay would scan it, when the private commit is made (D2)"
 cm() { env -u CLAUDECODE python3 "$B/helloworld" check-message "$@" > "$T/out" 2>&1; echo $?; }
 printf 'Why: it was slow.\n' > "$T/body"
