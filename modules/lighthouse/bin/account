@@ -102,6 +102,13 @@ tenant's repo loads nothing of it. The guard (account_guard) asks `allowed` on t
 while any tenant exists, and the refusal names the way in: the login's VS Code profile (`vscode
 LABEL`), or `cc X` in a Terminal. `doctor` checks that VS Code ties each tenant repo's folder, and
 each workspace that opens one, to a profile of the tenant's login.
+The tenants file (`lighthouse/tenants.json`, since 2026-10-22: the owner keeps the list in the vault,
+not in the repo that holds the registry) says the same in one place, `{name: {"repos": […], "logins":
+[label, …]}}`: written, it is the whole of tenancy, and the registry's `tenants` and rows' `tenant` are
+ignored. Each good read is copied beside it (`.tenants.json.last`), and a link that reads nothing (the
+drive behind it away) holds by that copy, never failing open: that would let every seat, another
+employer's included, into a tenant's repos. Only with no copy either is tenancy off, said on stderr
+(not under --json). To end tenancy, write `{}`: a deleted file or link leaves the copy holding.
 
 Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
 on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
@@ -166,6 +173,11 @@ HOME = Path.home()
 DEFAULT_DIR = HOME / ".claude"
 CONFIG = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
 REGISTRY = Path(os.environ.get("ACCOUNTS_FILE") or CONFIG / "lighthouse" / "accounts.json")
+# A registry named by ACCOUNTS_FILE (a suite's fixture) has its own tenants file beside it, never the
+# live key: a fixture must not take the Mac's tenancy, nor write its last good copy (review 2026-10-22).
+TENANTS = Path(os.environ.get("TENANTS_FILE")
+               or (REGISTRY.with_name(REGISTRY.name + ".tenants") if os.environ.get("ACCOUNTS_FILE")
+                   else CONFIG / "lighthouse" / "tenants.json"))
 BIN = Path(__file__).resolve().parent
 CACHE_S = 60          # a probe answers for this long (R4: one probe per minute per account)
 PROBE_TIMEOUT = 30    # two tries per row: pickup's 150 s covers two rows (review 2026-10-03)
@@ -449,10 +461,21 @@ def load_registry():
 
 
 def apply_tenants(reg):
-    """Tenancy (header): `tenants` {name: {repos: [key or glob]}} and a row's `tenant: name`. Each row
+    """Tenancy (header): the tenants file when written, else the registry's `tenants` {name: {repos:
+    [key or glob]}} and a row's `tenant: name`. Each row
     gets `routed` {entry: {tenant, logins}} — the other tenants' repos, which it may not run — and the
     registry `tenants` {name: [entry]}. A malformed entry is dropped, never a crash: the guard reads this."""
     raw = reg.get("tenants")
+    if tenants_file():   # written, the tenants file is the whole of tenancy (header)
+        raw = read_tenants_file()
+        for a in reg.get("accounts") or []:
+            a.pop("tenant", None)
+        for n, t in raw.items():
+            logins = t.get("logins") if isinstance(t, dict) else None
+            logins = [logins] if isinstance(logins, str) else logins   # one label, as a row's `tenant` was
+            for a in reg.get("accounts") or []:
+                if isinstance(logins, list) and a.get("label") in logins:
+                    a["tenant"] = n
     raw = raw if isinstance(raw, dict) else {}
     # `repos` must be a list: a string would split into one-letter entries, and a `*` among them routes
     # every repo; a number would crash every command (code review 2026-10-20). An entry is a key under
@@ -463,6 +486,61 @@ def apply_tenants(reg):
                       for n, t in raw.items() if isinstance(n, str) and isinstance(t, dict)}
     for a in reg.get("accounts") or []:
         a["routed"] = routes_for(reg, a)
+
+
+def tenants_file():
+    """True when the tenants key is written: a file, or a link, read or not (a dangling one is not "absent"),
+    or its last good copy — bootstrap.sh --config removes a link whose target is away, and that must not
+    end tenancy either (code review 2026-10-22). Ending it is writing `{}`."""
+    return TENANTS.is_symlink() or TENANTS.exists() or tenants_last().is_file()
+
+
+def tenants_last():
+    """The last good read of the tenants file, kept beside it: what holds while its link reads nothing."""
+    return TENANTS.with_name("." + TENANTS.name + ".last")
+
+
+def read_tenants_file():
+    """The tenants file's object, copied to tenants_last() whenever it reads. When it reads nothing (the
+    drive behind a link away) that copy holds: failing open would let every seat, another employer's
+    included, into a tenant's repos (review 2026-10-22). Neither readable: {} — tenancy off — said on
+    stderr, except under --json, which dispatch parses with stderr merged in."""
+    last = tenants_last()
+    try:
+        got = json.loads(TENANTS.read_text())
+        if not isinstance(got, dict):
+            raise ValueError("no object")
+    except (OSError, ValueError) as e:
+        try:
+            got = json.loads(last.read_text())
+        except (OSError, ValueError):
+            got = None
+        if isinstance(got, dict):
+            return got
+        if "--json" not in sys.argv:
+            print(f"account: {TENANTS} unreadable ({e}), and no last good copy — tenancy is off until it reads", file=sys.stderr)
+        return {}
+    try:
+        text = json.dumps(got, sort_keys=True)
+        if not last.is_file() or last.read_text() != text:
+            tmp = last.with_name(f"{last.name}.{os.getpid()}")
+            tmp.write_text(text)
+            os.replace(tmp, last)
+    except OSError:
+        pass   # a config dir that takes no write: the file still reads, only the fallback is lost
+    return got
+
+
+def tenants_source():
+    """Where tenancy is read from, by its key's name, for the lines that name it."""
+    return TENANTS.name if tenants_file() else "accounts.json tenants"
+
+
+def no_login(name):
+    """→ (why, fix) for a tenant no enabled login is marked for, in the form tenancy was written in."""
+    if tenants_file():
+        return (f"no enabled login is {name}'s in {TENANTS.name}", f"add its login's label to {name}'s \"logins\" in {TENANTS}")
+    return (f"no enabled login has tenant {name!r} in {REGISTRY.name}", f"add \"tenant\": \"{name}\" to its login's row")
 
 
 def tenant_entry(r):
@@ -688,7 +766,7 @@ def routed_off(a, path):
 def use_line(t):
     """How to start a tenant repo's session on its own login: what the guard and run print."""
     if not t["logins"]:
-        return f"no enabled login has tenant {t['tenant']!r} in {REGISTRY.name}"
+        return no_login(t["tenant"])[0]
     prefix = (config_lines("lighthouse/cc-prefix") or [""])[0]
     ways = []
     for label in t["logins"]:
@@ -704,7 +782,7 @@ def off_line(a, key):
     t = route_of(a, key)
     if t:
         return (f"{key} is off {a['label']}: it is {t['tenant']}'s, which runs on "
-                f"{', '.join(t['logins']) or 'no login'} only (accounts.json tenants) — {use_line(t)}")
+                f"{', '.join(t['logins']) or 'no login'} only ({tenants_source()}) — {use_line(t)}")
     return None
 
 
@@ -2205,8 +2283,8 @@ def tenant_ties(reg):
                 out.append((label, "fix" if here else "info", f"{p} is {name}'s, and no VS Code profile runs its panel on {label}'s dir",
                             f"{BIN / 'account'} vscode {label}   (then tie {p} to it: doctor names the line)"))
             elif not logins:
-                out.append(("-", "fix", f"{p} is {name}'s, and no enabled login has tenant {name!r} in {REGISTRY.name}",
-                            f"add \"tenant\": \"{name}\" to its login's row"))
+                why, fix = no_login(name)
+                out.append(("-", "fix", f"{p} is {name}'s, and {why}", fix))
             else:
                 label = ready[0]
                 out.append((label, "fix", f"{p} opens on VS Code profile {prof}, which is refused {name}'s repos",

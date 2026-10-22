@@ -1080,6 +1080,49 @@ check "$(CLAUDE_CONFIG_DIR="$HOME/.claude-work" ACCOUNTS_FILE="$ACCOUNTS_FILE.t1
 echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"acme": {"repos": ["acme-one"]}}}' > "$ACCOUNTS_FILE.t3"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t3" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json)" 3 "a tenant with no login: its repos run nowhere (exit 3), never on the primary"
 has "$T/out" "acme-one is acme's: it runs on no login only (tenants)" "…saying so"
+
+echo "tenants: the tenants file, its logins named there, is the whole of tenancy (2026-10-22)"
+cat > "$ACCOUNTS_FILE.tf" <<'J'
+{"accounts": [
+  {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["privy", "cv"]}},
+  {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "beta"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
+ "tenants": {"beta": {"repos": ["app"]}}}
+J
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}, "bad": "not an object"}' > "$T/tenants.json"
+TF() { TENANTS_FILE="$T/tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A "$@"; }
+check "$(TF pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "pick --repo a tenant's repo → the login the file names"
+check "$(TF allowed "$PR/acme-one")" 1 "allowed: the default dir in the file's tenant's repo → exit 1"
+has "$T/out" "acme-one is off main: it is acme's, which runs on lab only (tenants.json) — open it in VS Code profile lab" "…naming the file"
+check "$(TF allowed "$PR/app")" 0 "the registry's own tenants and row marks are ignored beside the file"
+check "$(CLAUDE_CONFIG_DIR="$L" TF allowed "$PR/acme-one")" 0 "the file's login in its tenant's repo → exit 0"
+echo '{"acme": {"repos": ["acme-one"]}}' > "$T/tenants-nologin.json"
+check "$(TENANTS_FILE="$T/tenants-nologin.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A allowed "$PR/acme-one")" 1 "a file tenant with no logins: its repos run nowhere"
+has "$T/out" "no enabled login is acme's in tenants-nologin.json" "…saying where to name one"
+ln -s "$T/nowhere.json" "$T/tenants-gone.json"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/acme-one")" 0 "a link that reads nothing: tenancy off, the registry's tenants not read instead"
+has "$T/out" "unreadable" "…said on stderr"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/privy")" 1 "…while deny lists keep working"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…and --json stays parseable with stderr merged in (dispatch reads it so; review 2026-10-22)"
+cp "$T/tenants.json" "$T/tenants-drive.json"; ln -s "$T/tenants-drive.json" "$T/tenants-link.json"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A allowed "$PR/acme-one")" 1 "a link that reads: a secondary is refused the tenant's repo…"
+check "$(test -f "$T/.tenants-link.json.last" && echo kept)" "kept" "…and the good read is copied beside the link"
+rm "$T/tenants-drive.json"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A allowed "$PR/acme-one")" 1 "the link's drive away: the copy holds, the secondary still refused (never fail open; review 2026-10-22)"
+has "$T/out" "acme-one is off work: it is acme's" "…named as the tenant's"
+rm "$T/tenants-link.json"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A allowed "$PR/acme-one")" 1 "the link removed (bootstrap.sh --config, its target away): the copy still holds (code review 2026-10-22)"
+cat > "$ACCOUNTS_FILE.tg" <<'J'
+{"accounts": [
+  {"label": "work", "provider": "claude", "home": "~/.claude-work", "tenant": "acme"},
+  {"label": "lab", "provider": "claude", "home": "~/.claude-lab"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}
+J
+echo '{"acme": {"repos": ["acme-*"], "logins": "lab"}}' > "$T/tenants-str.json"
+check "$(CLAUDE_CONFIG_DIR="$L" TENANTS_FILE="$T/tenants-str.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/acme-one")" 0 "a string logins is one label: lab runs acme's repo"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-str.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/acme-one")" 1 "a row the registry marks acme's but the file leaves out is refused it"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/app"; test -e "$ACCOUNTS_FILE.tg.tenants" || echo none)" "0
+none" "a fixture registry reads its own tenants file, never the live key"
 python3 - "$T/vsc-t" "$PR" <<'PY'
 import json, sys
 from pathlib import Path

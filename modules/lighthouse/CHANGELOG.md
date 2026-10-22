@@ -33,6 +33,12 @@
   `account_guard` (now also on the default dir while a tenant exists) name the way in, and
   `doctor` checks the VS Code profile ties. Tenant entries may be globs, matched by repo key and
   by path. On the default dir the guard asks only inside a tenant's folder, and fails open there.
+- The tenants file (2026-10-22): `lighthouse/tenants.json`, `{name: {repos, logins}}`, holds the
+  whole of tenancy when written — the registry's `tenants` and rows' `tenant` are then ignored — so
+  an organisation's list can live apart from the registry (the owner keeps it in the vault). Each good
+  read is copied beside the key, and that copy holds while the link reads nothing or is gone, in
+  `account` and the guard alike: never failing open onto another seat. A fixture `ACCOUNTS_FILE`
+  reads its own `<it>.tenants`, never the live key.
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `claude-settings`
   and `tiling`'s prose and messages.
 

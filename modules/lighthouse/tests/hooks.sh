@@ -305,6 +305,24 @@ mkdir -p "$GH/projects/clients"; git init -q "$GH/projects/clients/x-acme"
 sed 's#"acme-\*"#"*-acme"#' "$T/guard-tenants.json" > "$T/guard-tenants2.json"
 out=$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/clients/x-acme\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants2.json" python3 "$H/account_guard.py")
 check "$(echo "$out" | grep -c '"block"')" 1 "a glob whose * spans / (\"*-acme\" takes clients/x-acme): the default dir is asked, and blocked (review 2026-10-21)"
+echo "account_guard: the tenants file, its logins named there (2026-10-22)"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy","cv"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}' > "$T/guard-rows.json"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/guard-tenants-file.json"
+agf() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py"; fi; }
+out=$(agf "" "$GH/projects/acme-one")
+check "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["reason"])' | grep -c "acme-one is off main: it is acme's, which runs on lab only (guard-tenants-file.json) — open it in VS Code profile lab")" 1 "the default dir in the file's tenant's repo: blocked, with the way in"
+check "$(agf "$GH/.claude-lab" "$GH/projects/acme-one")" "" "the login the file names, in its repo: silent"
+check "$(agf "" "$GH/projects/app2")" "" "the default dir elsewhere: silent"
+ln -s "$T/nowhere.json" "$T/guard-tenants-gone.json"
+out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-gone.json" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" 2>"$T/ag-err"; echo "rc=$?")
+check "$out" "rc=0" "a tenants link that reads nothing: the default dir passes (the registry's tenants not read instead)"
+check "$(grep -c 'tenancy unchecked' "$T/ag-err")" 1 "  …saying so on stderr"
+cp "$T/guard-tenants-file.json" "$T/guard-drive.json"; ln -s "$T/guard-drive.json" "$T/guard-tenants-link.json"
+agl() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" TENANTS_FILE="$T/guard-tenants-link.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-link.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py"; fi; }
+check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c '"block"')" 1 "a tenants link that reads: another secondary blocked (and bin/account keeps a copy)"
+rm "$T/guard-drive.json"
+check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "its drive away: the last good copy holds, the secondary still blocked (review 2026-10-22)"
+check "$(agl "" "$GH/projects/acme-one" | grep -c '"block"')" 1 "  …and the default dir too"
 # A config dir the overlay installed (a legacy file) without the private values: a core from B2b on
 # refuses to load, bin/account cannot answer, and the deny hook fails closed. Judged by what the
 # core does (config_problems), so a core from before B2b skips the case.
