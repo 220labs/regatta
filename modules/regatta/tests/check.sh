@@ -3,11 +3,14 @@
 # values with and without their keys (neutral stand-ins only), the regatta
 # CLI, the gate's table order and its write through a config symlink, jev's key files, and the
 # shim `regatta shim` makes, under every way a caller loads a file (the design's P5).
-# Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is read or written.
+# Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is written,
+# and the one read is the autofinish_exclude case's: the caller's config dir's `legacy` file.
 #   bash modules/regatta/tests/check.sh
 set -u
 M="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$M/../.." && pwd)"
+# the caller's config dir, read before the scratch one replaces it: the autofinish_exclude case names the overlay by it
+REAL_RC="${REGATTA_CONFIG:-}" REAL_HOME="$HOME"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset GATE_TABLE JEV_ENV_FILE JEV_LOG TYPESAFE_API_KEY TYPESAFE_BASE_URL COST_RATIO SECRETS_DIR SECRETS_REPOS SECRETS_PROJECTS SECRETS_HOST
@@ -437,6 +440,81 @@ print("; ".join(bad) or "none")
 PY
 )
 check "$bad" none "every module's Python compiles with warnings as errors"
+
+# `.claude/workflow.json`'s `autofinish_exclude` is hand-kept: a path a live hook or an overlay shim runs from
+# this checkout, missing from it, lands through autofinish unreviewed (the B4-fixes review, 2026-10-20: the core's
+# `hooks/` since B1, plumb's and atlas's hooks and `lib/` since B8 and B10). Live = every file under
+# `modules/*/hooks|lib|libexec|shell`; a shim the overlay made with a flag (`--hook`, `--deny`: wired into the hooks);
+# a `bin/<name>` the AGENTS.md autofinish paragraph names. A plain shimmed tool is not live by itself (the
+# paragraph's rule: those that gate or write live state are named in it), so it is counted, not failed.
+# The overlay is the `legacy` file of the caller's config dir (the suite's HOME and REGATTA_CONFIG are scratch ones);
+# absent (CI, whose job sets its own REGATTA_CONFIG, and the public twin): the shim half is skipped.
+echo "autofinish_exclude covers every live path"
+out=$(python3 -I - "$ROOT" "$REAL_RC" "$REAL_HOME" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+wf = os.path.join(root, ".claude", "workflow.json")
+if not os.path.isfile(wf):
+    print("SKIP no .claude/workflow.json in this tree (the public twin has none)")
+    print("RESULT none")
+    sys.exit(0)
+exclude = tuple(json.load(open(wf)).get("autofinish_exclude") or ())
+live = {}
+def rel(path): return os.path.relpath(path, root)
+for d in sorted(os.listdir(os.path.join(root, "modules"))):
+    for sub in ("hooks", "lib", "libexec", "shell"):
+        top = os.path.join(root, "modules", d, sub)
+        for dp, _, ns in os.walk(top):
+            for n in ns:
+                live.setdefault(rel(os.path.join(dp, n)), "a hook, lib or shell file")
+agents = os.path.join(root, "AGENTS.md")
+if os.path.isfile(agents):
+    text = open(agents).read()
+    m = re.search(r"^- autofinish:.*?(?=^\S|^- |\Z)", text, re.S | re.M)
+    for name in sorted(set(re.findall(r"`bin/([A-Za-z0-9_.-]+)`", m.group(0) if m else ""))):
+        for d in sorted(os.listdir(os.path.join(root, "modules"))):
+            f = "modules/%s/bin/%s" % (d, name)
+            if os.path.isfile(os.path.join(root, f)):
+                live.setdefault(f, "a tool AGENTS.md names")
+config, home = sys.argv[2] or os.path.join(sys.argv[3], ".config", "regatta"), sys.argv[3]
+try:
+    with open(os.path.join(config, "legacy"), encoding="utf-8-sig") as fh:
+        coding = next((l.strip() for l in fh if l.strip()), "")
+except OSError:
+    coding = ""
+if coding == "~" or coding.startswith("~/"):
+    coding = home + coding[1:]
+plain = []
+if not os.path.isdir(coding):
+    print("SKIP no overlay is named: the shim half is not checked")
+else:
+    pat = re.compile(r"Made by `regatta shim ((?:--[a-z-]+ )*)(\S+?)`")
+    for sub in ("bin", "hooks", "shell"):
+        for dp, _, ns in os.walk(os.path.join(coding, sub)):
+            for n in sorted(ns):
+                try:
+                    head = open(os.path.join(dp, n), errors="replace").read(2000)
+                except OSError:
+                    continue
+                m = pat.search(head)
+                if not m or not os.path.isfile(os.path.join(root, m.group(2))):
+                    continue
+                flags, path = m.group(1).strip(), m.group(2)
+                if flags:
+                    live.setdefault(path, "a shim wired as a hook (%s)" % flags)
+                elif path not in live:
+                    plain.append(path)
+bad = ["%s (%s)" % (p, why) for p, why in sorted(live.items()) if not p.startswith(exclude)]
+plain = [p for p in sorted(set(plain)) if not p.startswith(exclude) and "/tests/" not in p]
+if plain:
+    print("NOTE %d shimmed tools land through autofinish, by the paragraph's rule: %s"
+          % (len(plain), " ".join(os.path.basename(p) for p in plain)))
+print("%d live paths read" % len(live))
+print("RESULT " + ("; ".join(bad) or "none"))
+PY
+)
+printf '%s\n' "$out" | grep -v '^RESULT ' | sed 's/^/    /'
+check "$(printf '%s\n' "$out" | sed -n 's/^RESULT //p')" none "no live path lies outside autofinish_exclude"
 
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]
