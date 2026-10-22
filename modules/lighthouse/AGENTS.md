@@ -36,8 +36,14 @@ its chart is `beacon/README.md`.
 - The Worker must load under plain Node for `tests/worker.test.mjs`: no `cloudflare:*` import,
   so the Meter is a fetch-interface Durable Object, not RPC. `tests/dev.sh` (opt-in, downloads the
   pinned wrangler, never run by `tests/check.sh`) is where the Workers runtime itself is proved.
-- A new sink is one entry in `beacon/worker/sinks.js`'s `SINKS` with its `needs`; `worker.js` does
-  not change. `bin/beacon`'s config check names the sinks it accepts.
+- A new sink is one entry in `beacon/worker/sinks.js`'s `SINKS` with its `needs`, mirrored in
+  `bin/beacon`'s `SINK_NEEDS` (`tests/beacon.sh` holds the two equal). A sink that relays (`relay:
+  true`, `telegram.js`) brings the hand-off routes, the webhook and the mail handler worker.js
+  routes to; one that does not leaves them 503.
+- postal-mime is beacon's one npm dependency, for the mail door: pinned in `bin/beacon`
+  (`POSTAL_MIME`), written into the build dir's `package.json` and installed there by `deploy`,
+  never into the module. `worker.js` takes the parser as `parseMail`, so the Node suite loads
+  without it; `tests/dev.sh` runs the real one.
 - beacon's Worker and `bin/beacon` are no live hook or shim: they stay out of the root
   `autofinish_exclude`. Its Node suite needs Node 22.13 or later (`node:sqlite`).
 
