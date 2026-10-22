@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- deadman joins as lighthouse's switch for the unattended Macs (private until its scrub; chart:
+  `deadman/README.md`): one Cloudflare Worker, cron every 5 minutes, one KV namespace; a Mac that
+  pinged and went quiet past the period and grace is one GitHub issue that mentions the owner,
+  closed by its next ping; a braked ping holds it off, a failed pass raises at once, a refused
+  token falls back to one mail. `bin/deadman build|deploy|ping|status`; status names the GitHub
+  token 14 days before it ends. Tested against stubs; not deployed anywhere.
+- `health` reads the Orca serve agent: on a Mac with its LaunchAgent, launchd's pid for the label
+  (`wharf-runs/serve-label`) and `orca orchestration run-list` answering, one line a day; a missing
+  pid or a list that does not answer is posted once, under its own state file.
+
 - `account_guard` judges where the session started ($CLAUDE_PROJECT_DIR, else the event's cwd), not where
   its shell is now (2026-10-22). The event's cwd follows a `cd`, so a work-login session started in an open
   repo that later moved its shell to the projects folder had every following prompt blocked (it holds the vault): 18 in

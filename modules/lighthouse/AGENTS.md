@@ -40,3 +40,18 @@ its chart is `beacon/README.md`.
   not change. `bin/beacon`'s config check names the sinks it accepts.
 - beacon's Worker and `bin/beacon` are no live hook or shim: they stay out of the root
   `autofinish_exclude`. Its Node suite needs Node 22.13 or later (`node:sqlite`).
+
+## deadman, the yards' switch
+
+deadman (a dead-man's switch the unattended Macs ping, one Cloudflare Worker) joined after beacon;
+its chart is `deadman/README.md`.
+
+- Private until lighthouse's scrub, as beacon: `deadman/`, `bin/deadman`, `tests/deadman.sh` and
+  `tests/deadman.test.mjs` stay off `.helloworld/allowlist.txt`; what this file, `README.md`,
+  `CHANGELOG.md` and `tests/check.sh` say of it is written for the twin.
+- Unlike beacon, `bin/deadman` is in the root `autofinish_exclude`: a yard's tick runs it after
+  every pass, so a broken `ping` silences every yard at once and opens an alarm for each.
+- The Worker loads under plain Node: `cloudflare:email` is imported in `entry.js` only. Its Node
+  suite needs Node 20 or later.
+- Every yard, repo, mention and address comes from `lighthouse/deadman.json` in the config dir; a
+  test uses made-up names (`alpha`, `beta`, `example/inbox`).

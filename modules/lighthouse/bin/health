@@ -37,6 +37,17 @@
 # only once the Mac's sitting is done (before it, the list is what the sitting fixes). Read-only:
 # `log show`.
 #
+# Then the serve agent (skipper-resilience, the watch, 2026-10-22): on a Mac whose Orca runs as a
+# headless server under wharf-runs' LaunchAgent (`orca-serve-agent`; its label the config dir's
+# `wharf-runs/serve-label`, else org.regatta.orca-serve), one line a day says whether it serves:
+# launchd's pid for the label, and `orca orchestration run-list` answering. `orca serve
+# --supervise` restarts a crashed server, but a supervisor that stopped leaves the agent loaded with
+# no process, and every dispatch then fails where nobody is watching. A Mac with no such plist in
+# its LaunchAgents skips in one line. A missing pid, or a run-list that does not answer in 60 s, is
+# posted like a failing check, under its own state file. Read-only: run-list creates nothing, and
+# it is asked only while the agent has a pid (with no server up, an `orca` call may start the app's
+# runtime; not probed).
+#
 # Where things are (regatta-modules B9): the core through lib/find_core.py; every peer through
 # `common.tool()` — wharf's `tend` and `sync.py`, wharf-runs' `rc-hosts`, atlas's `bulletin.py` and
 # `knowledge-commit` — and a peer not installed is a logged skip, never a failure of the pass (the
@@ -48,7 +59,8 @@
 # HEALTH_COMMIT replaces knowledge-commit for the suite (it would push the real vault).
 # HEALTH_TEND (on|off) overrides TEND for the suite; HEALTH_TEND_CMD replaces bin/tend there.
 # HEALTH_TCC (on|off) and HEALTH_TCC_CMD do the same for the privacy survey (`log show` is slow and
-# reads the real Mac). HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
+# reads the real Mac). HEALTH_ORCA (on|off), HEALTH_LAUNCHCTL_CMD and HEALTH_ORCA_CMD do the same
+# for the serve agent. HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # A fetch or push stalled on a half-open connection would hold the job, and launchd skips a
@@ -77,6 +89,7 @@ BULLETIN="${HEALTH_BULLETIN_CMD:-$(peer bulletin.py)}"
 SYNC=$(peer sync.py)
 TEND="${HEALTH_TEND:-on}"  # on since R5 printed clean on the always-on Mac, 2026-10-05 (header)
 TCC="${HEALTH_TCC:-on}"    # the privacy survey (header)
+ORCA="${HEALTH_ORCA:-on}"  # the serve agent's line (header)
 state="$LOGDIR/health.last"   # the failure last posted; a repeat posts nothing
 
 # ff <repo>: fast-forward main to origin/main when it is checked out and clean; say why not.
@@ -168,6 +181,33 @@ elif [ "$TCC" = on ]; then
   fi
 else
   echo "privacy: off (TCC in bin/health)"
+fi
+
+# orca_answers <cli>: run-list answers with ok JSON within 60 s. Python for the timeout (macOS has
+# no timeout(1)); ELECTRON_RUN_AS_NODE cleared, as the Orca adapter does, or the CLI runs as Node.
+orca_answers() { env -u ELECTRON_RUN_AS_NODE python3 -c 'import json, subprocess, sys
+try:
+    r = subprocess.run([sys.argv[1], "orchestration", "run-list", "--limit", "1", "--json"], capture_output=True, text=True, timeout=60)
+    d = json.loads(r.stdout)
+    sys.exit(0 if isinstance(d, dict) and d.get("ok", r.returncode == 0) else 1)
+except Exception:
+    sys.exit(1)' "$1" >/dev/null 2>&1; }
+label=$(core 'print(common.config_line("wharf-runs/serve-label") or "org.regatta.orca-serve")' 2>/dev/null)
+label=${label:-org.regatta.orca-serve}
+if [ "$ORCA" != on ]; then
+  echo "orca: off (ORCA in bin/health)"
+elif case "$label" in *[!A-Za-z0-9._-]*) true;; *) false;; esac; then
+  echo "orca: wharf-runs/serve-label is not a launchd label — skipped"
+elif [ ! -f "$HOME/Library/LaunchAgents/$label.plist" ]; then
+  echo "orca: no serve agent here ($label) — skipped"
+else
+  pid=$(${HEALTH_LAUNCHCTL_CMD:-launchctl} print "gui/$(id -u)/$label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -1)
+  ocli="${HEALTH_ORCA_CMD:-$(command -v orca || echo /Applications/Orca.app/Contents/Resources/bin/orca)}"
+  if [ -z "$pid" ]; then ofail="the serve agent $label has no process (launchd shows no pid: its supervisor stopped)"
+  elif ! orca_answers "$ocli"; then ofail="the serve agent $label runs (pid $pid) but orca run-list does not answer"
+  else ofail=""; fi
+  if [ -z "$ofail" ]; then echo "orca: $label pid $pid, run-list answers"; rm -f "$state.orca"
+  else echo "orca: $ofail"; post_once "$state.orca" "Orca's serve agent" "$ofail"; fi
 fi
 
 if [ -n "${HEALTH_CHECK_CMD:-}" ]; then what="$HEALTH_CHECK_CMD"; out=$($HEALTH_CHECK_CMD 2>&1); rc=$?
