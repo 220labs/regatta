@@ -830,6 +830,142 @@ use "$P1" "10 99"
 check "$(ACCOUNT_NOW=$WED ACCOUNTS_FILE="$ACCOUNTS_FILE.l" A pick --json) $(field "['account']")" "0 spare" "…and runs once the primary has no room"
 reset
 
+echo "limits --orca: every other agent Orca reads limits for, as report-only rows (2026-10-20)"
+# Orca's rateLimits as 1.4.x shapes it: Claude and Codex (probed here per login, so never repeated),
+# an agent with quota buckets, one with a month and no buckets, one with no login, one whose
+# reading failed, and the non-agent keys beside them. Times are milliseconds.
+ms() { python3 -c "print(int(($WED + $1) * 1000))"; }
+cat > "$T/orca-r.json" <<EOF
+{"ok": true, "result": {"claude": {"accounts": []}, "rateLimits": {
+  "claude": {"provider": "claude", "status": "ok", "weekly": {"usedPercent": 99, "windowMinutes": 10080, "resetsAt": $(ms 86400)}},
+  "codex": {"provider": "codex", "status": "ok", "weekly": {"usedPercent": 99, "windowMinutes": 10080, "resetsAt": $(ms 86400)}},
+  "agy": {"provider": "agy", "status": "ok", "session": null, "updatedAt": $(ms -600),
+          "weekly": {"usedPercent": 40, "windowMinutes": 10080, "resetsAt": $(ms 432000)},
+          "buckets": [{"name": "Fast Models", "usedPercent": 12, "windowMinutes": 10080, "resetsAt": $(ms 432000)},
+                      {"name": "Big models", "usedPercent": 40, "windowMinutes": 10080, "resetsAt": $(ms 432000)}]},
+  "monthly-one": {"provider": "mon", "status": "ok", "planType": "free", "updatedAt": $(ms -60),
+                  "weekly": {"usedPercent": 7, "windowMinutes": 10080, "resetsAt": $(ms 259200)},
+                  "monthly": {"usedPercent": 5, "windowMinutes": 44640, "resetsAt": $(ms 1728000)}},
+  "nologin": {"provider": "nologin", "status": "unavailable", "error": "Not signed in"},
+  "flaky": {"provider": "flaky", "status": "error", "error": "token expired", "weekly": null},
+  "claudeTarget": {"runtime": "host"}, "nologinConfigured": false, "inactiveClaudeAccounts": []}}}
+EOF
+# the stub logs each call; -down plays an app not running, -empty one not ready (no agent listed),
+# -bad an answer whose shape changed (a buckets list that is a number)
+cat > "$T/orca-r" <<EOF
+#!/bin/sh
+[ "\$1 \$2" = "account list" ] || exit 9
+echo call >> "$T/orca-r-calls"
+[ -f "$T/orca-r-down" ] && { echo "connect ECONNREFUSED" >&2; exit 1; }
+[ -f "$T/orca-r-empty" ] && { echo '{"ok": true, "result": {"rateLimits": {}}}'; exit 0; }
+[ -f "$T/orca-r-bad" ] && { sed 's/"buckets": \[/"buckets": 5, "x": [/' "$T/orca-r.json"; exit 0; }
+cat "$T/orca-r.json"
+EOF
+chmod +x "$T/orca-r"
+AR() { ACCOUNTS_FILE="$ACCOUNTS_FILE.c" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=${NOW_AT:-$WED} python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
+reset; rm -f "$P1/account-orca.json" "$P1/account-orca-limits.json" "$T/orca-r-calls"; use "$P1" "10 10"
+rows() { python3 -c "import json;print([$1 for r in json.load(open('$T/out')) if ${2:-True}])"; }
+check "$(AR limits --all --orca --json; rows "r['label']")" "0
+['main', 'agy', 'mon', 'flaky']" "limits --all --orca: one row per agent Orca reads, bar Claude and Codex (probed here) and one with no login"
+check "$(rows "(r['label'], r['provider'], r['eligible'], r.get('report'), r['limits'] and [(b['name'], b['percent']) for b in r['limits']['buckets'] + r['limits']['windows']])" "r.get('via') == 'orca'")" \
+  "[('agy', 'agy', False, True, [('Fast Models', 12), ('Big models', 40)]), ('mon', 'mon', False, True, [('month', 5)]), ('flaky', 'flaky', False, True, None)]" \
+  "…report only, never eligible: an agent's own buckets and its other windows by name; a failed reading has none"
+check "$(rows "(r['limits']['seven_day'], r['limits']['five_hour'], r['limits']['locked'], r['sampled'] == $WED - 600)" "r['label'] == 'agy'")" \
+  "[(40, None, [], True)]" "…Orca's week as the week, its time as the sample's"
+check "$(rows "(r['limits']['seven_day'], r['limits']['buckets'])" "r['label'] == 'mon'")" "[(7, [])]" \
+  "…an agent with a month and no buckets keeps its week beside the month (review 2026-10-21)"
+check "$(field "[3]['why']")" "Orca: token expired" "…and a failed one says Orca's error"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.c" ACCOUNT_ORCA="$T/orca-r" python3 "$B/account" limits --all --cached --json 2>/dev/null | python3 -c "import json,sys;print([r['label'] for r in json.load(sys.stdin)])")" \
+  "['main']" "without --orca: no such row (the walk, the tier check, usage-report)"
+check "$(AR limits --all --orca; grep -c '(Orca)' "$T/out")" "0
+3" "the text form: a line per agent"
+has "$T/out" "agy (Orca): week 40% (resets Mon 12:00); Fast Models 12% (resets Mon 12:00); Big models 40%" "…its week and buckets"
+has "$T/out" "mon (Orca): week 7% (resets Sat 12:00); month 5% (resets Oct 27 12:00)" "…a reset more than a week ahead by its date"
+has "$T/out" "flaky (Orca): no reading; Orca: token expired" "…and no figure as 'no reading'"
+check "$(wc -l < "$T/orca-r-calls" | tr -d ' '; AR limits --all --orca --cached --json; wc -l < "$T/orca-r-calls" | tr -d ' '; rows "(r['label'], r['why'][:19])" "r.get('via')")" \
+  "2
+0
+2
+[('agy', \"Orca's last reading\"), ('mon', \"Orca's last reading\")]" "--cached asks Orca nothing: the last readings (review 2026-10-21)"
+touch "$T/orca-r-down"
+check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:16])" "r.get('via')")" \
+  "0
+[('agy', 'Orca unreadable '), ('mon', 'Orca unreadable ')]" "Orca down: each agent's last reading, said so; no output on stderr (the widget's reply would fail)"
+check "$(NOW_AT=$(python3 -c "print($WED + 6 * 86400)") AR limits --all --orca --json; rows "[b['percent'] for b in r['limits']['buckets']]" "r['label'] == 'agy'")" \
+  "0
+[[0, 0]]" "…a bucket past its reset reads 0, as a window does"
+rm -f "$T/orca-r-down"; touch "$T/orca-r-empty"
+check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:20])" "r.get('via')"; python3 -c "import json;print(sorted(json.load(open('$P1/account-orca-limits.json'))))")" \
+  "0
+[('agy', 'Orca listed no agent'), ('mon', 'Orca listed no agent')]
+['agy', 'flaky', 'mon']" "Orca listing no agent is Orca not ready: the last readings, none wiped (review 2026-10-21)"
+rm -f "$T/orca-r-empty"; touch "$T/orca-r-bad"
+check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:40])" "r.get('via')")" \
+  "0
+[('agy', \"Orca's answer unreadable (TypeError); it\"), ('mon', \"Orca's answer unreadable (TypeError); it\")]" \
+  "an answer of a changed shape: the last readings, said so, never a traceback on stderr"
+rm -f "$T/orca-r-bad"
+check "$(AR orca off agy; AR limits --all --orca --json; rows "r['label']")" "0
+0
+['main', 'mon', 'flaky']" "orca off: an agent's card hidden"
+check "$(AR orca on agy; AR limits --all --orca --json; rows "r['label']")" "0
+0
+['main', 'agy', 'mon', 'flaky']" "…orca on: back"
+rm -f "$P1/account-orca-limits.json"
+check "$(AR orca off mon; python3 -c "import json;print(json.load(open('$P1/account-orca-limits.json'))['mon'])")" "0
+{'enabled': False}" "orca off for an agent not read yet: looked up in Orca, switched (review 2026-10-21)"
+check "$(AR orca off nosuch)" 1 "…one Orca has no agent or login by that name: refused"
+has "$T/out" "no agent Orca reads limits for" "…saying so"
+AR orca on mon > /dev/null
+python3 - "$T/run-parse.py" "$B/account" <<'PY'
+import sys
+open(sys.argv[1], "w").write('''import runpy, sys
+m = runpy.run_path(sys.argv[1], run_name="account_test")
+w = {"usedPercent": 100, "windowMinutes": 10080, "resetsAt": 1}
+print(m["parse_orca"]({"weekly": w, "buckets": [dict(w, name="A"), dict(w, name="B", usedPercent=20)]})["locked"],
+      m["parse_orca"]({"weekly": w})["locked"])
+mo = dict(w, windowMinutes=44640)
+print(m["parse_orca"]({"monthly": mo, "buckets": [dict(mo, name="A")]})["windows"])
+''')
+PY
+check "$(python3 "$T/run-parse.py" "$B/account")" "[] ['seven_day']
+[]" \
+  "parse_orca: a full week that is an agent's fuller bucket locks nothing; a week alone locks; a month of its buckets' span is their summary, no bar of its own (review 2026-10-21)"
+AR limits --all --orca --json > /dev/null   # a good reading of agy first
+python3 - "$T/orca-r.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); a = d["result"]["rateLimits"]["agy"]
+a.update(status="error", error="auth expired"); json.dump(d, open(sys.argv[1], "w"))
+PY
+check "$(AR limits --all --orca --json; rows "(r['limits']['seven_day'], r['why'])" "r['label'] == 'agy'")" \
+  "0
+[(40, 'Orca: auth expired; its last reading')]" "a reading that fails after a good one keeps the good one, said so"
+python3 - "$T/orca-r.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); a = d["result"]["rateLimits"]["agy"]
+a.update(status="unavailable", error="Update agy", usageMetadata={"failureKind": "usage-unavailable"}); json.dump(d, open(sys.argv[1], "w"))
+PY
+check "$(AR limits --all --orca --json; rows "(r['limits']['seven_day'], r['why'])" "r['label'] == 'agy'")" \
+  "0
+[(40, 'Orca: Update agy; its last reading')]" "Orca's unavailable for a CLI too old keeps the card and says why (review 2026-10-21)"
+python3 - "$T/orca-r.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); a = d["result"]["rateLimits"]["agy"]
+a.update(usageMetadata={"failureKind": "missing-credentials"}); json.dump(d, open(sys.argv[1], "w"))
+PY
+check "$(AR limits --all --orca --json; rows "r['label']")" "0
+['main', 'mon', 'flaky']" "…signed out: no card"
+cat > "$ACCOUNTS_FILE.o" <<'EOF'
+{"accounts": [
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}},
+  {"label": "mon", "provider": "claude", "home": "~/.claude-mon", "enabled": false, "rules": {}},
+  {"label": "orca-mon", "provider": "claude", "home": "~/.claude-orca-mon", "enabled": false, "rules": {}}]}
+EOF
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.o" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=$WED python3 "$B/account" limits --all --orca --json 2>/dev/null | python3 -c "import json,sys;print([(r['label'], r['provider']) for r in json.load(sys.stdin)])")" \
+  "[('main', 'claude'), ('orca-mon-2', 'mon'), ('flaky', 'flaky')]" \
+  "an agent named as a row, and its orca- name taken too, gets a unique label, never a shadow; its provider stays Orca's"
+rm -f "$P1/account-orca-limits.json" "$T/orca-r-calls"; reset
+
 echo "peers absent: wharf's window and worktree hook, plumb's usage column (G16, G18)"
 peer() { REGATTA_LEGACY="$1" python3 -c 'import sys, importlib.machinery as m, importlib.util as u
 sp = u.spec_from_loader("acct", m.SourceFileLoader("acct", sys.argv[1])); a = u.module_from_spec(sp); sp.loader.exec_module(a)

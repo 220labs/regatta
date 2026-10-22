@@ -4,9 +4,9 @@
     account pick [--kind K] [--provider P] [--bound] [--repo PATH] [--ship KEY] [--json]   the first account with room; exit 3 if none
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
-    account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once; the default for new ones
+    account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
-    account limits [LABEL | --all [--parked]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too
+    account limits [LABEL | --all [--parked] [--orca]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
     account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
     account which                                               the label of the dir this process runs under
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
@@ -114,6 +114,12 @@ registry first when its deny list is longer than ORCA_ROW's.
 A plan has the windows it has (prolite: the week alone), and a window a plan lacks is no limit.
 `pick --provider codex` answers with a Codex row, but nothing starts Codex yet: `run` and bin/pickup
 start claude only and refuse a Codex pick; the readings feed `limits` and the desktop widget. Orca's Codex logins become rows as its Claude ones do (`orca-sync`, orca_codex_sync).
+Every other agent Orca can sign in to — Antigravity, Cursor — is Orca's to read: `limits --all --orca`
+adds one report-only row per agent Orca reads limits for (the owner, 2026-10-20: "add antigravity
+from orca … automate this"), so one signed in there reaches the widget with no change here. Those
+rows are no registry rows: never walked, picked or probed, and gone when Orca says the agent is
+signed out; Orca's other `unavailable` (a CLI too old, a provider switched off) and its errors keep
+the last reading (ORCA_SEEN) with its age and Orca's word, as does an Orca that cannot be read.
 Stdlib only, Python 3.9.
 
 A row may say `"via": "orca"` (docs/orca-accounts-2026-10-16.md; the owner, 2026-10-16: "add one
@@ -181,6 +187,7 @@ VAULT = (config_lines("lighthouse/vault") or [""])[0]   # the owner's private va
 SHIPS = DEFAULT_DIR / "account-ships.json"        # {ship key: {label, at}}: the login each ship stays on
 PIN_DAYS = 14         # a pin older than this is no ship any more and goes at the next write
 ORCA_FILE = Path(os.environ.get("ACCOUNT_ORCA_FILE") or DEFAULT_DIR / "account-orca.json")   # orca-sync's read-back, this Mac's: {label: {home, orca_id, email, enabled?}, _default?}; hooks/common.py orca_file()
+ORCA_SEEN = Path(os.environ.get("ACCOUNT_ORCA_SEEN") or DEFAULT_DIR / "account-orca-limits.json")   # limits --orca's last reading per agent, this Mac's: {label: {at, limits, enabled?}}
 ORCA_DATA = Path(os.environ.get("ACCOUNT_ORCA_DATA") or HOME / "Library/Application Support/orca")
 ORCA_APP_CLI = "/Applications/Orca.app/Contents/Resources/bin/orca"
 # What a secondary dir shares with the default dir by link (D3, section 2e). Never .claude.json, the
@@ -1045,7 +1052,11 @@ def margin(a, t):
 # ---------------------------------------------------------------------------- pick
 
 def when(t):
-    return dt.datetime.fromtimestamp(t).strftime("%a %H:%M") if t else "?"
+    # a weekday names any reset within a week, a week's own included (tier_check prints it so); a
+    # month's (Cursor's, via Orca) gets its date
+    if not t:
+        return "?"
+    return dt.datetime.fromtimestamp(t).strftime("%a %H:%M" if t - now() < 7 * 86400 else "%b %-d %H:%M")
 
 
 def ceiling(a, lim, t):
@@ -1409,23 +1420,157 @@ def orca_claude_accounts():
     return [x for x in accts if isinstance(x, dict)]
 
 
-@functools.lru_cache(maxsize=1)  # orca-sync's two halves read one snapshot, one Electron start (review 2026-10-16)
-def orca_list():
-    """→ the `result` of `orca account list --json` (every agent's accounts), or exits.
+def orca_read():
+    """→ (the `result` of `orca account list --json`, None), or (None, why there is none).
     ELECTRON_RUN_AS_NODE is cleared: VS Code's terminals set it and the app's CLI then runs as
     bare node (lessons/claude-code.md)."""
     o = orca_bin()
     if not o:
-        sys.exit("account: no orca CLI here (install the Orca app)")
+        return None, "no orca CLI here (install the Orca app)"
     env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
     try:
         r = subprocess.run([o, "account", "list", "--json"], capture_output=True, text=True, timeout=30, env=env)
         d = json.loads(r.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
-        sys.exit(f"account: `orca account list` gave nothing readable ({e}) — is the app running?")
-    if not d.get("ok"):
-        sys.exit(f"account: `orca account list` refused: {json.dumps(d.get('error'))[:300]}")
-    return d.get("result") or {}
+        return None, f"`orca account list` gave nothing readable ({e}) — is the app running?"
+    if not isinstance(d, dict) or not d.get("ok"):
+        return None, f"`orca account list` refused: {json.dumps(d.get('error') if isinstance(d, dict) else d)[:300]}"
+    return d.get("result") or {}, None
+
+
+@functools.lru_cache(maxsize=1)  # orca-sync's two halves read one snapshot, one Electron start (review 2026-10-16)
+def orca_list():
+    """→ the `result` of `orca account list --json` (every agent's accounts), or exits."""
+    res, err = orca_read()
+    if err:
+        sys.exit(f"account: {err}")
+    return res
+
+
+# Claude and Codex are probed here, login by login, and Orca's figure for each is one of those
+# logins' own; every other agent in Orca's `rateLimits` is reported from Orca alone (`limits --orca`).
+ORCA_PROBED = ("claude", "codex")
+ORCA_WINDOWS = {"session": "five_hour", "weekly": "seven_day"}   # Orca's window names → WINDOWS
+
+
+def parse_orca(x):
+    """One agent's `rateLimits` entry in Orca's list → the limits dict probe() gives, plus `buckets`,
+    the agent's own quota groups (Antigravity's Gemini and Claude/GPT models, Cursor's), and `windows`,
+    the ones ORCA_WINDOWS does not name (a month), each {name, percent, resets, window_s}. A full
+    bucket parks those models, not the login, so like Fable's week it stays out of `locked`; an
+    agent with buckets has its week as its fuller bucket (Antigravity's), so a full week locks
+    nothing either (review 2026-10-21). Orca's times are milliseconds."""
+    ms = lambda v: v / 1000 if isinstance(v, (int, float)) else None
+    win = lambda v: isinstance(v, dict) and isinstance(v.get("usedPercent"), (int, float))
+    bucket = lambda name, v: {"name": name, "percent": v["usedPercent"], "resets": ms(v.get("resetsAt")),
+                              "window_s": v["windowMinutes"] * 60 if isinstance(v.get("windowMinutes"), (int, float)) else None}
+    groups = [bucket(str(b.get("name") or "?"), b) for b in x.get("buckets") or [] if win(b)]
+    out = {"plan": x.get("planType"), "locked": [], "fable": None, "kinds": [],
+           "fable_week": None, "fable_week_resets": None, "buckets": groups, "windows": []}
+    for w in WINDOWS:
+        out[w], out[w + "_resets"] = None, None
+    for k, v in x.items():
+        if not win(v):
+            continue
+        if k in ORCA_WINDOWS:
+            w = ORCA_WINDOWS[k]
+            out[w], out[w + "_resets"] = v["usedPercent"], ms(v.get("resetsAt"))
+            out["kinds"].append(w)
+            if v["usedPercent"] >= 100 and not (groups and w == "seven_day"):
+                out["locked"].append(w)
+        else:
+            out["windows"].append(bucket({"monthly": "month"}.get(k, k), v))
+    # a window of the buckets' own span is their summary (Cursor's month, as Antigravity's week)
+    spans = {b["window_s"] for b in groups}
+    out["windows"] = [w for w in out["windows"] if w["window_s"] not in spans]
+    return out
+
+
+def agent_label(p, taken):
+    """The label of Orca's agent `p`: its own name, or `orca-<name>` made unique when a row (the
+    registry's, an Orca login's) or an earlier agent has it — never a shadow of either."""
+    return p if p not in taken else orca_label({"email": p}, taken)
+
+
+def orca_row(p, label, lim, at, why):
+    """A `limits --orca` row, in limits_json's shape: report only, so never eligible. A bucket or
+    window past its reset reads 0, as rolled() reads the others (an Orca down for a week)."""
+    lim = rolled(lim)
+    if lim:
+        t = now()
+        lim = dict(lim, **{k: [dict(b, percent=0, resets=None) if b.get("resets") and b["resets"] <= t else b
+                               for b in lim.get(k) or [] if isinstance(b, dict)] for k in ("buckets", "windows")})
+    return {"label": label, "provider": p, "primary": False, "enabled": True, "here": True, "home": None,
+            "env": {}, "limits": lim, "sampled": at, "eligible": False, "why": why,
+            "denied": None, "same_as": None, "via": "orca", "report": True}
+
+
+def orca_reported(taken=(), cached=False):
+    """→ the rows `limits --all --orca` adds: one per agent Orca reads limits for, bar ORCA_PROBED
+    (the header), kept in ORCA_SEEN under Orca's name for it. An agent signed out, or never read, that
+    Orca calls `unavailable` is none; any other that answers without figures keeps its last reading and says
+    Orca's error. Every last reading in ORCA_SEEN, with its own age, when Orca is not asked
+    (--cached), cannot be read (the app not running), lists no agent (not ready yet: rebuilding from
+    that would wipe them all) or answers in a shape this does not read — never a traceback, whose
+    stderr would fail the widget's whole reply. `orca off NAME` hides one."""
+    seen = {k: e for k, e in read_json(ORCA_SEEN, {}).items() if isinstance(e, dict)}
+    off = {k for k, e in seen.items() if e.get("enabled") is False}
+    used = set(taken)
+
+    def label(p):
+        lab = agent_label(p, used)
+        used.add(lab)
+        return lab
+
+    def last(why):
+        return [orca_row(p, label(p), e.get("limits"), e.get("at"), why)
+                for p, e in seen.items() if p not in off and e.get("limits")]
+
+    if cached:
+        return last("Orca's last reading (--cached asks it nothing)")
+    res, err = orca_read()
+    if err:
+        return last(f"Orca unreadable ({err}); its last reading")
+    try:
+        rl = res.get("rateLimits") if isinstance(res, dict) else None
+        agents = [x for x in (rl.values() if isinstance(rl, dict) else [])
+                  if isinstance(x, dict) and isinstance(x.get("provider"), str) and x["provider"] not in ORCA_PROBED]
+        if not agents:
+            return last("Orca listed no agent (not ready yet); its last reading")
+        keep, rows = {p: {"enabled": False} for p in off}, []
+        for x in agents:
+            p = x["provider"]
+            prev = seen.get(p, {})
+            # `unavailable` is Orca not asking: signed out (missing-credentials), but also a CLI too
+            # old to answer /usage or a provider switched off (review 2026-10-21, Orca's source). A
+            # sign-out, or an agent never read, is no card; any other keeps its last reading, said so.
+            if x.get("status") == "unavailable" and (not prev.get("limits")
+                                                     or (x.get("usageMetadata") or {}).get("failureKind") == "missing-credentials"):
+                continue
+            if x.get("status") == "ok":
+                u = x.get("updatedAt")
+                lim, why = parse_orca(x), "reported by Orca; report only, never walked"
+                at = u / 1000 if isinstance(u, (int, float)) and u > 0 else None
+            else:
+                lim, at = prev.get("limits"), prev.get("at")
+                why = f"Orca: {x.get('error') or x.get('status')}" + ("; its last reading" if lim else "")
+            keep[p] = dict(keep.get(p, {}), at=at, limits=lim)
+            if p not in off:
+                rows.append(orca_row(p, label(p), lim, at, why))
+    except Exception as e:  # an Orca whose answer changed shape: its last readings, said so
+        used = set(taken)
+        return last(f"Orca's answer unreadable ({type(e).__name__}); its last reading")
+    # An `orca on|off` written while Orca answered wins over the switch read before (no lock: the
+    # widget's 10-minute refresh is the only other writer, and its next run honours the switch).
+    for p, e in read_json(ORCA_SEEN, {}).items():
+        if isinstance(e, dict) and "enabled" in e:
+            keep[p] = dict(keep.get(p, {}), enabled=e["enabled"])
+    if keep != seen:
+        try:
+            write_json(ORCA_SEEN, keep)
+        except OSError:
+            pass  # a reading not kept costs only the stale fallback
+    return rows
 
 
 def orca_codex_sync(reg, off=False):
@@ -1726,7 +1871,21 @@ def cmd_orca_switch(reg, what, label=None):
         return 0
     e = synced.get(label)
     if not isinstance(e, dict) or label.startswith("_"):
-        print(f"account: {label} is no Orca login synced on this Mac ({ORCA_FILE}) — account orca-sync first", file=sys.stderr)
+        # An agent `limits --orca` reports (Antigravity, Cursor): no walk to leave, only its card.
+        # Kept under Orca's name for it, so the switch follows the agent whatever its card is called;
+        # the card's `orca-<name>` label is taken too. One not read yet is looked up in Orca itself.
+        seen = read_json(ORCA_SEEN, {})
+        res, _ = orca_read() if not any(k in seen for k in (label, label[5:] if label.startswith("orca-") else None)) else (None, None)
+        known = set(seen) | {x.get("provider") for x in (((res or {}).get("rateLimits") or {}).values() if isinstance(res, dict) else [])
+                             if isinstance(x, dict) and x.get("provider") not in ORCA_PROBED}
+        p = label if label in known else label[5:] if label.startswith("orca-") and label[5:] in known else None
+        if p:
+            seen[p] = dict(seen.get(p) if isinstance(seen.get(p), dict) else {}, enabled=what == "on")
+            write_json(ORCA_SEEN, seen)
+            print(f"{p}: its card {'shown' if what == 'on' else 'hidden'} in limits --orca (the widget) on this Mac from now on")
+            return 0
+        print(f"account: {label} is no Orca login synced on this Mac ({ORCA_FILE}; account orca-sync records them)"
+              f" and no agent Orca reads limits for", file=sys.stderr)
         return 1
     e["enabled"] = what == "on"
     write_json(ORCA_FILE, synced)
@@ -2340,6 +2499,7 @@ def main(argv):
     p.add_argument("label", nargs="?")
     p.add_argument("--all", action="store_true")
     p.add_argument("--parked", action="store_true", help="with --all: the rows accounts.json parks too, never an `orca off` one (the widget)")
+    p.add_argument("--orca", action="store_true", help="with --all: a report-only row per other agent Orca reads limits for (the widget)")
     p.add_argument("--repo")
     p.add_argument("--cached", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -2545,11 +2705,20 @@ def main(argv):
         for a in rows:
             lim, at = limits(a, cached=args.cached)
             out.append(limits_json(a, lim, at, t, args.repo))
+        if args.orca and (args.all or not args.label):
+            out += orca_reported({a["label"] for a in reg["accounts"]}, cached=args.cached)
         if args.json:
             print(json.dumps(out, ensure_ascii=False))
             return 0
         for o in out:
             lim = o["limits"]
+            if o.get("report"):  # Orca's figure for an agent no row names: no plan or org of ours to add
+                figs = ([f"{n} {lim[w]}% (resets {when(lim[w + '_resets'])})" for n, w in (("5h", "five_hour"), ("week", "seven_day"))
+                         if lim.get(w) is not None]
+                        + [f"{b['name']} {b['percent']}%" + (f" (resets {when(b['resets'])})" if b.get("resets") else "")
+                           for b in (lim.get("buckets") or []) + (lim.get("windows") or [])]) if lim else []
+                print(f"{o['label']} (Orca): {'; '.join(figs) if figs else 'no reading'}; {o['why']}")
+                continue
             if not lim:
                 print(f"{o['label']}: {'no cached probe' if args.cached else 'probe failed'}")
                 continue
