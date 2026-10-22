@@ -204,10 +204,11 @@ else
   pid=$(${HEALTH_LAUNCHCTL_CMD:-launchctl} print "gui/$(id -u)/$label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -1)
   ocli="${HEALTH_ORCA_CMD:-$(command -v orca || echo /Applications/Orca.app/Contents/Resources/bin/orca)}"
   if [ -z "$pid" ]; then ofail="the serve agent $label has no process (launchd shows no pid: its supervisor stopped)"
-  elif ! orca_answers "$ocli"; then ofail="the serve agent $label runs (pid $pid) but orca run-list does not answer"
+  elif ! orca_answers "$ocli"; then ofail="the serve agent $label runs but orca run-list does not answer"
   else ofail=""; fi
+  # the pid stays out of ofail: post_once compares its text, and a restarting agent's pid changes
   if [ -z "$ofail" ]; then echo "orca: $label pid $pid, run-list answers"; rm -f "$state.orca"
-  else echo "orca: $ofail"; post_once "$state.orca" "Orca's serve agent" "$ofail"; fi
+  else echo "orca: $ofail${pid:+ (pid $pid)}"; post_once "$state.orca" "Orca's serve agent" "$ofail"; fi
 fi
 
 if [ -n "${HEALTH_CHECK_CMD:-}" ]; then what="$HEALTH_CHECK_CMD"; out=$($HEALTH_CHECK_CMD 2>&1); rc=$?
