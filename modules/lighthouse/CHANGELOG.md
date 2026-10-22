@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `account_guard` judges where the session started ($CLAUDE_PROJECT_DIR, else the event's cwd), not where
+  its shell is now (2026-10-22). The event's cwd follows a `cd`, so a work-login session started in an open
+  repo that later moved its shell to the projects folder had every following prompt blocked (it holds the vault): 18 in
+  4 days on the owner's Macs. The deny list governs where sessions start (the hook's header), and
+  CLAUDE_PROJECT_DIR keeps the start across a `cd` (a two-prompt headless probe).
+  Where the shell went is judged too, bar the "holds" rule: a `cd` into a denied or a tenant's repo is still refused.
 - `account pick --repo` honours a scope's `login` (knowledge-layers S1, 2026-10-21): a repo in a
   scope that names one is picked onto that row alone, waits (exit 3) when it cannot run rather
   than move to another seat, and a ship pinned elsewhere moves to it. `limits --repo` marks every

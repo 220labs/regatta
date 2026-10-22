@@ -272,6 +272,12 @@ check "$(ag "$GH/.claude-work" "$GH/projects/cv" | grep -c 'cv is off work')" 1 
 check "$(ag "$GH/.claude-work" "$GH/projects/app2")" "" "work in app2: passes, silent"
 check "$(ag "$GH/.claude-work" "$GH/projects" | grep -c '"block"')" "1" "work in ~/projects itself: blocked, since it holds privy (2026-10-18: ~/.claude/CLAUDE.md's imports load there)"
 check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" python3 "$H/account_guard.py")" "" "no CLAUDE_CONFIG_DIR (the default dir): nothing happens"
+check "$(echo "{\"cwd\":\"$GH/projects\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")" "" \
+  "a session started in app2 whose shell moved to ~/projects: passes — \"holds\" binds the start only (2026-10-22)"
+check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c 'privy is off work')" "1" \
+  "  one whose shell moved into a denied repo: still blocked"
+check "$(echo "{\"cwd\":\"$GH/projects/app2\"}" | CLAUDE_PROJECT_DIR="$GH/projects" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c '"block"')" "1" \
+  "  one started in ~/projects is blocked wherever its shell went"
 check "$(ag "$GH/.claude-stray" "$GH/projects/privy")" "" "a dir with no row in the registry: nothing happens"
 check "$(echo 'not json' | HOME="$GH" CLAUDE_CONFIG_DIR="$GH/.claude-work" ACCOUNTS_FILE="$T/guard-accounts.json" python3 "$H/account_guard.py" >/dev/null 2>&1; echo "rc=$?")" "rc=0" "bad input: exit 0"
 check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | HOME="$GH" ACCOUNTS_FILE=/nonexistent CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")" "rc=0" "no registry: silent, exit 0"
@@ -291,6 +297,10 @@ check "$(agt "" "$GH/projects")" "" "the default dir in ~/projects, which holds 
 check "$(agt "$GH/.claude-lab" "$GH/projects/acme-one")" "" "the tenant's own login in its repo: silent"
 check "$(agt "$GH/.claude-lab" "$GH/projects/app2")" "" "  …and in another repo (its own deny list says where else)"
 check "$(agt "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "another secondary in the tenant's repo: blocked"
+check "$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" | grep -c "acme-one is off main: it is acme's")" 1 \
+  "the default dir started in app2, its shell moved into the tenant's repo: still blocked (tenancy follows the shell, 2026-10-22)"
+check "$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c "acme-one is off work: it is acme's")" 1 \
+  "  a secondary likewise"
 mkdir -p "$GH/projects/clients"; git init -q "$GH/projects/clients/x-acme"
 sed 's#"acme-\*"#"*-acme"#' "$T/guard-tenants.json" > "$T/guard-tenants2.json"
 out=$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/clients/x-acme\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants2.json" python3 "$H/account_guard.py")
