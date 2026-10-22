@@ -11,7 +11,7 @@ that net: on every prompt of a session on a secondary config dir it asks `bin/ac
 on the default login).
 
 A tenant's repo (bin/account's header, Tenants, 2026-10-20) is off every login but the tenant's,
-the default dir's included, so while the registry names a tenant the hook asks on the default dir
+the default dir's included, so while the tenants file (else the registry) names a tenant the hook asks on the default dir
 too, and a tenant refusal is passed on as `allowed` words it: it names the login's own way in.
 A no-op without CLAUDE_CONFIG_DIR and no tenant (the default dir denies nothing) and for a dir the registry
 has no row for — bar a tenant's repo, which such a dir is refused too, and one under Orca's data, which `allowed` answers by the row of the login it is
@@ -36,16 +36,36 @@ ACCOUNT = Path(__file__).resolve().parent.parent / "bin" / "account"
 
 
 def tenant_entries():
-    """The registry's tenant repo entries ([] when none, or unreadable — as before tenancy). A plain read,
-    no subprocess: the hook runs on every prompt of every default-dir session."""
+    """The tenant repo entries: the tenants file's when written, else the registry's ([] when none, or
+    unreadable — as before tenancy). A plain read, no subprocess: the hook runs on every prompt of every
+    default-dir session."""
     config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
     reg = Path(os.environ.get("ACCOUNTS_FILE") or config / "lighthouse" / "accounts.json")
-    try:
-        t = json.loads(reg.read_text()).get("tenants")
-    except (OSError, ValueError, AttributeError):
-        return []
-    if not isinstance(t, dict):
-        return []
+    # bin/account's TENANTS, its fixture rule included, and its last good copy, which holds while the
+    # link reads nothing or is gone (the drive away; reviews 2026-10-22)
+    tenants = Path(os.environ.get("TENANTS_FILE")
+                   or (reg.with_name(reg.name + ".tenants") if os.environ.get("ACCOUNTS_FILE")
+                       else config / "lighthouse" / "tenants.json"))
+    last = tenants.with_name("." + tenants.name + ".last")
+    if tenants.is_symlink() or tenants.exists() or last.is_file():   # written, the whole of tenancy (bin/account's header)
+        t = None
+        for f in (tenants, last):
+            try:
+                t = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(t, dict):
+                break
+        if not isinstance(t, dict):
+            print(f"account_guard: {tenants} unreadable, and no last good copy — tenancy unchecked", file=sys.stderr)
+            return []
+    else:
+        try:
+            t = json.loads(reg.read_text()).get("tenants")
+        except (OSError, ValueError, AttributeError):
+            return []
+        if not isinstance(t, dict):
+            return []
     return [e for v in t.values() if isinstance(v, dict) and isinstance(v.get("repos"), list)
             for e in map(tenant_entry, v["repos"]) if e]
 
@@ -131,7 +151,7 @@ def main():
     if r.returncode != 1 or " is off " not in r.stdout:
         return
     why = r.stdout.strip()
-    if "(accounts.json tenants)" in why:   # a tenant's repo: the line already names its own login's way in
+    if "'s, which runs on " in why:   # a tenant's repo (off_line): the line already names its own login's way in
         print(json.dumps({"decision": "block", "reason": why}))
         return
     print(json.dumps({"decision": "block", "reason": f"{why}: open it in the default VS Code profile, "
