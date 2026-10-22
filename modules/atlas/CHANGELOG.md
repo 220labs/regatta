@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `bin/knowledge-home` (knowledge-layers S3, 2026-10-21): a confidential scope's memory in its
+  knowledge repo, the rest in the vault — `where`, `adopt`, `init`, `check`; `tests/knowledge-home.sh`.
+
 - The wharf rename's S6 (2026-10-20): the launch word in `/promote` and `/routine`.
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `knowledge-commit`
   (its exit helper is `launched`), `docs-index` and `tests/docs-index.sh`.

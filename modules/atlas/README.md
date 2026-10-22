@@ -14,6 +14,7 @@ loop that consolidates all three, is a module of its own and builds on this one.
 | `hooks/archive_transcript.py` | SessionEnd: copies the session's transcript out of Claude Code's 30-day sweep |
 | `bin/knowledge-commit` | the one door from any session into the two knowledge repos: records in place, everything else through a reviewed branch |
 | `bin/docs-index` | the docs map: charts say what is, records say why (`check`, `banner`, `move`, `relink`, `due`, `reads`) |
+| `bin/knowledge-home` | where a repo's auto-memory lives by the registry: a confidential scope's in its knowledge repo, the rest in the vault (`where`, `adopt`, `init`, `check`) |
 | `bin/routine` + `skills/routine` (`/routine`) | a scheduled cloud routine's prompt kept in git, in step with the live routine |
 | `bin/skill-frontmatter` | does each skill's and agent's frontmatter parse |
 | `tests/check.sh` | the module's check; no network |
@@ -37,6 +38,21 @@ line, the primary checkout on the second. `knowledge-commit` also takes the role
 and `vault`. `ATLAS_LAYER` and `ATLAS_VAULT` override the paths for a test suite or one shell, and so does the variable a key names on an optional third line (an installer whose scripts already use one).
 Where an overlay is installed (a `legacy` file in the config dir), a missing key is refused,
 never guessed; without one, the vault defaults to `atlas` in the XDG data folder.
+
+## A scope's knowledge repo
+
+A scope in the registry flagged `"confidential": true` is a node nothing outside it reads: its
+repos' auto-memory lives in the scope's knowledge repo — its anchor, the scope's first repo,
+`<scope>-knowledge` by convention — at `memory/<repo>/`, and the scope's docs in that repo's
+`docs/`. `knowledge-home init <scope>` gives a new knowledge repo `memory/`, a `docs/` map,
+`memory/` in `in_place` and the worktrees ignored (an existing one: it names what is missing, for
+a branch to add); `adopt <repo>` moves a repo's memory into its
+home and links each login dir's `projects/<slug>/memory` to it; `check` fails where a confidential
+repo's memory sits outside its node. Every other repo's home is the vault's `memory/<repo>/`.
+It fails closed: a repo in a confidential scope and an open one is confidential, and a registry
+that does not read, or a confidential scope with no anchor, is refused — never sent to the vault.
+The scope readers are the core's (`common.scope_registry`, `scope_members`); this module never
+reads the registry file itself.
 
 ## Optional peers
 

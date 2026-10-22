@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""knowledge-home — where a repo's auto-memory lives, by the registry. Stdlib, Python 3.9.
+
+    knowledge-home where REPO               the home `adopt` would link REPO's memory to, one line
+    knowledge-home adopt REPO [--config-dir DIR]... [--vault DIR] [--dry-run]
+                                            move REPO's auto-memory into its home and link it back
+    knowledge-home init SCOPE [--dry-run]   give SCOPE's knowledge repo (its anchor) memory/, docs/,
+                                            .claude/workflow.json with memory/ in place, the ignore line
+    knowledge-home check [--config-dir DIR]... [--vault DIR]
+                                            exit 1, naming each, where a confidential scope's memory
+                                            sits outside its node; every login dir here by default
+
+**The rule.** A repo in a scope flagged `"confidential": true` keeps its memory in that scope's
+knowledge repo — the scope's anchor, its first repo, `<scope>-knowledge` by convention — at
+`<anchor>/memory/<repo>/`; its docs live in the same repo's `docs/`. Every other repo keeps it in
+the vault's `memory/<repo>/`, as before. Claude Code writes a project's auto-memory to
+`<config dir>/projects/<slug>/memory`, so the home is reached by a link there, one per login dir
+(the knowledge-layers design, D1 and its revision, 2026-10-20: "besides memory, all project docs
+go there. This should be part of Atlas"). The link, not `autoMemoryDirectory`: the binary ignores a
+checked-in value until the repo is trusted, which only a VM's setup does.
+
+`<repo>` is the checkout's folder name, the rule `bootstrap.sh adopt-memory` always had; the slug
+is Claude Code's own, every non-alphanumeric character a dash (the core's `project_slug`). The
+registry, the scope's flag and its members are read through the core alone (`common`), never
+repos.json here.
+
+**adopt** acts on each login dir it is given (`--config-dir`, repeatable), else on
+`$CLAUDE_CONFIG_DIR` when set, else on every login dir here (`common.login_dirs()`), once per real
+`projects` folder: a second login dir that links its `projects` to the first's is the same memory.
+Per dir: a link to the home is left alone; a folder moves into the home (one rename on one volume,
+atomic for a session writing to it) and is linked back; no memory yet gets an empty home and the
+link; a link to the *other* home — the vault's copy of a now-confidential repo, or the node's of
+a scope opened again — moves that folder across and re-points the link, and every other login
+dir here linking to it is re-pointed too. A home that already holds files beside a folder to
+move is never merged (an empty one is taken over): one line, nothing moved, exit 1; so is a
+vault folder an open repo of the same name shares. A repo in an open and a confidential scope
+counts as confidential; a confidential scope with no anchor, or a registry that does not read,
+is refused, never sent to the vault. A confidential
+repo's home needs its anchor here with memory/ (`init` first); `--vault` names the vault for the
+other case (bootstrap.sh passes its primary checkout), else atlas's vault key, its primary
+checkout when the key names a worktree.
+
+**init** writes only what is missing and never rewrites a file that exists: a workflow.json
+without memory/ in `in_place` is a fault it names (the checkpoint hook would deny every memory
+write on the knowledge repo's main). A new folder becomes a git repo on `main` and is committed
+there, its first commit; in an existing checkout nothing is written — each missing file is named,
+exit 1, for a `claude/*` branch of that repo to add. No remote is made: registering and creating the GitHub repo is
+`github-repo`'s.
+
+**check** is G2 of the design: for each confidential scope, the anchor here holds memory/ and
+lists it in `in_place`; no login dir holds a member repo's memory as a folder or a link that
+resolves outside `<anchor>/memory/`; the vault holds no `memory/<repo>/` for a member (a name an
+open repo shares is not counted); the anchor's docs map (`docs-index check`) is clean, a fault
+only once its `mode:` says live. An anchor not cloned here is a note. bootstrap.sh --check runs it.
+"""
+import errno
+import fnmatch
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+LIB = Path(__file__).resolve().parent.parent / "lib"
+sys.path.insert(0, str(LIB))
+import atlaslib  # noqa: E402
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+PROG = "knowledge-home"
+IN_PLACE = ["memory/", "dreams/"]   # dreams/: the scope's own pass writes its dream there (design S5)
+MEMORY_README = """# memory — {scope}'s auto-memory
+
+One folder per repo of the scope, `memory/<repo>/`, each linked from every login's
+`projects/<slug>/memory` by `knowledge-home adopt <repo>` (atlas). Sessions write here on `main`
+(`in_place` in `.claude/workflow.json`); nothing outside the scope reads it.
+"""
+DOCS_MAP = """# docs — the map
+
+**Charts** (`docs/<topic>.md`) say what exists now. **Records** (`docs/record/<topic>-<date>.md`)
+hold a design, its decisions and the answers as they were made. Checked by atlas's
+`docs-index check --repo <this repo>`; `knowledge-home check` runs it.
+
+mode: dry
+
+| Topic | Chart | Records | Code |
+| --- | --- | --- | --- |
+"""
+
+
+def say(*a):
+    print(*a)
+
+
+def real(p):
+    return os.path.realpath(str(p))
+
+
+def inside(p, root):
+    """Does path p resolve inside root (or to it)?"""
+    p, root = real(p), real(root)
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+
+def repo_root(path):
+    """The primary checkout of the repo `path` is in (a worktree folds into it), else the folder."""
+    p = Path(path).resolve()
+    r = git(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if r.returncode == 0 and r.stdout.strip():
+        c = Path(r.stdout.strip())
+        return c.parent if c.name == ".git" else p
+    return p
+
+
+def registry_key(root, repos, scopes=None):
+    """The registry's key for checkout `root` (its path under the projects folder), or None: a key
+    of `repos`, or one a scope names outright though `repos` lacks it (its scope still holds it)."""
+    try:
+        key = Path(real(root)).relative_to(real(common.PROJECTS)).as_posix()
+    except ValueError:
+        return None
+    named = {m for s in (scopes or {}).values() if isinstance(s, dict)
+             for m in (s.get("repos") or []) if isinstance(m, str) and not common.is_glob(m)}
+    return key if key in repos or key in named else None
+
+
+def glob_scope(root, scopes):
+    """The confidential scope whose glob matches checkout `root` though the registry lacks it, or
+    None: a clone under `acme/*` not yet in `repos` is that scope's, never the vault's (fails closed)."""
+    try:
+        rel = Path(real(root)).relative_to(real(common.PROJECTS)).as_posix()
+    except ValueError:
+        return None
+    return next((n for n, s in scopes.items() if confidential(s) for m in (s.get("repos") or [])
+                 if isinstance(m, str) and common.is_glob(m) and fnmatch.fnmatchcase(rel, m)), None)
+
+
+def vault_dir(explicit=None):
+    """The vault's primary checkout: --vault, else atlas's key (a worktree folds into its primary)."""
+    if explicit:
+        return Path(os.path.abspath(Path(explicit).expanduser()))   # a link written to a relative path dangles
+    v = atlaslib.repo("vault")
+    return repo_root(v) if v and Path(v).is_dir() else v
+
+
+def registry():
+    """(repos, scopes), or None with one line when the registry is there but cannot be read: read
+    as no scopes, every repo's home would be the vault, confidential memory included — so every
+    command fails closed instead (the core's registry_unreadable, AGENTS.md's fence trap)."""
+    p = common.repos_json()
+    gone = p is not None and not p.exists()   # $CLAUDE_REPOS_JSON naming a missing file, a dangling link
+    if gone or common.registry_unreadable():
+        print(f"{PROG}: the registry {p} cannot be read — nothing done", file=sys.stderr)
+        return None
+    return common.scope_registry()
+
+
+def confidential(scope):
+    return isinstance(scope, dict) and scope.get("confidential") is True
+
+
+def scope_for(key, repos, scopes):
+    """The scope holding `key`, a confidential one first: a repo in an open and a confidential
+    scope keeps its memory in the node, whichever the registry lists first (fails closed)."""
+    hits = [n for n, s in scopes.items() if key and key in common.scope_members(s, repos)]   # named ones too
+    return next((n for n in hits if confidential(scopes[n])), hits[0] if hits else None)
+
+
+def open_keys(repos, scopes):
+    """Registry keys in no confidential scope."""
+    conf = {k for s in scopes.values() if confidential(s) for k in common.scope_members(s, repos)}
+    return {k for k in repos if k not in conf}
+
+
+def anchor_of(scope):
+    first = ((scope or {}).get("repos") or [None])[0]
+    return first if isinstance(first, str) and not common.is_glob(first) else None
+
+
+def home_of(root, vault, repos, scopes):
+    """→ (kind, home, other, scope name, anchor) for checkout `root`: kind "node" (a confidential
+    scope's anchor), "vault", or "orphan" (a confidential scope with no anchor: no home at all,
+    never the vault); `other` is the home a link may still point at from before a flag changed,
+    or None."""
+    name = Path(root).name
+    key = registry_key(root, repos, scopes)
+    if key is None and glob_scope(root, scopes):
+        g = glob_scope(root, scopes)
+        return "unregistered", None, None, g, anchor_of(scopes[g])
+    sname = scope_for(key, repos, scopes) if key else None
+    scope = scopes.get(sname) if sname else None
+    anchor = anchor_of(scope)
+    node = common.PROJECTS / anchor / "memory" / name if anchor else None
+    in_vault = Path(vault) / "memory" / name if vault else None
+    if confidential(scope):
+        return ("node", node, in_vault, sname, anchor) if anchor else ("orphan", None, in_vault, sname, None)
+    # The node is an old home only where a knowledge repo with memory/ is: an open scope's first
+    # repo is otherwise any repo, never a place memory was kept.
+    was = node if anchor and (common.PROJECTS / anchor / "memory").is_dir() else None
+    return "vault", in_vault, was, sname, anchor
+
+
+def config_dirs(given, every=False):
+    """The login dirs to act on, one per real `projects` folder: those given, else (a write)
+    $CLAUDE_CONFIG_DIR alone when set, else every login dir here; `every` (a read) adds them all."""
+    env = [Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser()] if os.environ.get("CLAUDE_CONFIG_DIR") else []
+    if given:
+        dirs = [Path(d).expanduser() for d in given]
+    elif env and not every:
+        dirs = env
+    else:
+        dirs = env + common.login_dirs()
+    out, seen = [], set()
+    for d in dirs:
+        r = real(d / "projects")
+        if r not in seen:
+            seen.add(r)
+            out.append(d)
+    return out
+
+
+def relink(src, dest, dry):
+    """Point the link at src to dest, replacing whatever link is there in one rename."""
+    if dry:
+        return
+    tmp = src.with_name(src.name + ".knowledge-home")
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    os.symlink(str(dest), str(tmp))
+    os.replace(str(tmp), str(src))
+
+
+def move(a, b):
+    try:
+        os.rename(str(a), str(b))   # one volume: atomic
+    except OSError as e:
+        if e.errno != errno.EXDEV:   # a dest that appeared meanwhile: shutil.move would nest a inside it
+            raise
+        shutil.move(str(a), str(b))
+
+
+def occupied(dest, dry):
+    """Does dest hold a home to merge with? An empty folder — an earlier login dir's `create` in
+    this run, or a bare mkdir — is taken over: removed here, so the move that follows lands."""
+    if dest.is_dir() and not dest.is_symlink() and not any(dest.iterdir()):
+        if not dry:
+            dest.rmdir()
+        return False
+    return dest.exists() or dest.is_symlink()
+
+
+def target(src):
+    t = Path(os.readlink(str(src)))
+    return t if t.is_absolute() else src.parent / t
+
+
+def adopt_one(cfg, root, kind, dest, other, dry, shared=()):
+    """One login dir: → True when it ended (or would end) linked to dest. `shared`: other repos
+    whose vault folder is this one's too (the same folder name) — that folder never moves."""
+    pre = "would " if dry else ""
+    slug = common.project_slug(root)
+    src = cfg / "projects" / slug / "memory"
+    if not dry:
+        src.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_symlink():
+        t = target(src)
+        if real(t) == real(dest) or (not t.exists() and str(t) == str(dest)):
+            if not dest.is_dir():   # a fresh clone of the node: git keeps no empty folder
+                if not dry:
+                    dest.mkdir(parents=True, exist_ok=True)
+                say(f"  {pre}create  {dest}, already linked from {src} ({kind})")
+                return True
+            say(f"  ok      {src} → {dest}")
+            return True
+        if other and real(t) == real(other):
+            if t.is_dir():
+                if shared and kind == "node":
+                    say(f"  ✗ {t} is also the memory of repo{'s' if len(shared) > 1 else ''} {', '.join(sorted(shared))} "
+                        f"(the same folder name) — split it by hand into {dest}; nothing moved")
+                    return False
+                if occupied(dest, dry):
+                    say(f"  ✗ {dest} already exists and {src} still links to {t} — merge by hand, nothing moved")
+                    return False
+                if not dry:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    move(t, dest)
+                moved = True
+            else:
+                moved = False
+                if not dry:
+                    dest.mkdir(parents=True, exist_ok=True)
+            relink(src, dest, dry)
+            say(f"  {pre}rehome  {src}: {t} → {dest} ({kind})")
+            if moved and kind == "node":
+                say(f"  note    {t} leaves the vault's tree, not its git history: what it held stays there")
+            return True
+        say(f"  ✗ {src} already links to {t} — left alone")
+        return False
+    if src.is_dir() and not any(src.iterdir()):   # an empty folder holds nothing to move: a link
+        if not dry:
+            src.rmdir()
+            dest.mkdir(parents=True, exist_ok=True)
+            os.symlink(str(dest), str(src))
+        say(f"  {pre}create  {dest}, linked from {src} (an empty folder replaced, {kind})")
+        return True
+    if src.is_dir():
+        if occupied(dest, dry):
+            say(f"  ✗ {dest} already exists — merge by hand, nothing moved")
+            return False
+        n = len(list(src.iterdir()))
+        if not dry:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            move(src, dest)
+            os.symlink(str(dest), str(src))
+        say(f"  {pre}move    {src} → {dest} ({n} files, {kind}), linked back")
+        return True
+    if not dry:
+        dest.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(dest), str(src))
+    say(f"  {pre}create  {dest}, linked from {src} ({kind})")
+    return True
+
+
+def cmd_where(path, vault=None):
+    reg = registry()
+    if reg is None:
+        return 1
+    root = repo_root(path)
+    kind, home, _, sname, anchor = home_of(root, vault_dir(vault), *reg)
+    if kind == "unregistered":
+        print(f"{PROG}: {root} sits under confidential scope {sname}'s glob but the registry lacks it — "
+              f"register it first; no home", file=sys.stderr)
+        return 1
+    if kind == "orphan":
+        print(f"{PROG}: {root.name} is in confidential scope {sname}, which has no anchor (its first repo, named) — no home", file=sys.stderr)
+        return 1
+    if home is None:
+        print(f"{PROG}: no home for {root} — {atlaslib.missing('vault')}", file=sys.stderr)
+        return 1
+    say(f"{home}\t{kind}" + (f"\t{sname}" if sname else ""))
+    return 0
+
+
+def cmd_adopt(path, dirs=(), vault=None, dry=False):
+    if not Path(path).is_dir():
+        print(f"{PROG} adopt: no folder {path}", file=sys.stderr)
+        return 2
+    reg = registry()
+    if reg is None:
+        return 1
+    repos, scopes = reg
+    root = repo_root(path)
+    kind, dest, other, sname, anchor = home_of(root, vault_dir(vault), repos, scopes)
+    if kind == "unregistered":
+        print(f"{PROG} adopt: {root} sits under confidential scope {sname}'s glob but the registry lacks it — "
+              f"register it first; nothing moved", file=sys.stderr)
+        return 1
+    if kind == "orphan":
+        print(f"{PROG} adopt: {root.name} is in confidential scope {sname}, which has no anchor (its first repo, "
+              f"named, not a glob) — no home; nothing moved", file=sys.stderr)
+        return 1
+    if dest is None:
+        print(f"{PROG} adopt: no home for {root} — {atlaslib.missing('vault')}", file=sys.stderr)
+        return 1
+    if kind == "node":
+        top = common.PROJECTS / anchor
+        if not top.is_dir():
+            print(f"{PROG} adopt: {root.name} is in confidential scope {sname}, whose knowledge repo {anchor} is not "
+                  f"on this Mac — clone it, then `{PROG} init {sname}`; nothing moved", file=sys.stderr)
+            return 1
+        if not (top / "memory").is_dir():
+            print(f"{PROG} adopt: {top} has no memory/ — `{PROG} init {sname}` first; nothing moved", file=sys.stderr)
+            return 1
+    elif not dry:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    key = registry_key(root, repos, scopes)
+    # Any other repo with this folder name shared the vault's memory/<name> (the old rule): open or
+    # another scope's, that folder is never moved into this node whole.
+    shared = {k for k in repos if k != key and Path(k).name == root.name} if kind == "node" else set()
+    # The node's folder is memory/<leaf name>: two members of one scope with the same leaf would
+    # share one memory, silently — refused, the members renamed or split by hand.
+    twins = [k for k in common.scope_members(scopes[sname], repos) if k != key and Path(k).name == root.name] if kind == "node" else []
+    if twins:
+        print(f"{PROG} adopt: {', '.join(twins)} in scope {sname} has the same folder name as {key} — both would "
+              f"live in {dest}; rename one first; nothing moved", file=sys.stderr)
+        return 1
+    acts = config_dirs(dirs)
+    # A rehome moves the one folder every login dir links to: a login dir not acted on here, whose
+    # link points at the old home, would dangle, so it is re-pointed too (a link only, no move).
+    acted = {real(d / "projects") for d in acts}
+    slug = common.project_slug(root)
+    for d in config_dirs((), every=True):
+        m = d / "projects" / slug / "memory"
+        if real(d / "projects") not in acted and other and m.is_symlink() and real(target(m)) == real(other):
+            acts.append(d)
+            acted.add(real(d / "projects"))
+    # 5: two homes holding memory — a folder in each of two login dirs, or a folder in one and a
+    # link to a full old home in another — would move one and refuse the other half-way; refuse
+    # up front, so --dry-run and the real run agree.
+    mems = [d / "projects" / slug / "memory" for d in acts]
+    full = [str(m.parent.parent.parent) for m in mems if m.is_dir() and not m.is_symlink() and any(m.iterdir())]
+    if other and other.is_dir() and any(other.iterdir()) and any(m.is_symlink() and real(target(m)) == real(other) for m in mems):
+        full.append(str(other))
+    if len(full) > 1:
+        print(f"{PROG} adopt: {len(full)} places hold {root.name}'s memory ({', '.join(full)}) "
+              f"— merge them into one by hand first; nothing moved", file=sys.stderr)
+        return 1
+    ok = all([adopt_one(d, root, kind, dest, other, dry, shared) for d in acts])
+    return 0 if ok else 1
+
+
+def workflow_faults(top):
+    """What the knowledge repo's .claude/workflow.json lacks for memory written on main."""
+    f = top / ".claude" / "workflow.json"
+    try:
+        w = json.loads(f.read_text(encoding="utf-8"))
+    except OSError:
+        return [f"{f} is missing — the checkpoint hook would deny every memory write on {top.name}'s main"]
+    except ValueError:
+        return [f"{f} does not parse"]
+    ip = [e.strip("/") for e in (w.get("in_place") or []) if isinstance(e, str)]
+    return [] if "memory" in ip else [f"{f} has no memory/ in in_place — add it, or every memory write on main is denied"]
+
+
+def cmd_init(sname, dry=False):
+    reg = registry()
+    if reg is None:
+        return 1
+    repos, scopes = reg
+    if sname not in scopes:
+        print(f"{PROG} init: no scope {sname} in the registry — it has {', '.join(scopes) or 'none'}", file=sys.stderr)
+        return 1
+    anchor = anchor_of(scopes[sname])
+    if not anchor:
+        print(f"{PROG} init: scope {sname} has no anchor (its first repo, named, not a glob)", file=sys.stderr)
+        return 1
+    if anchor not in repos:
+        print(f"{PROG} init: scope {sname}'s anchor {anchor} is not a registered repo — register it first "
+              f"(name {sname}-knowledge first in the scope)", file=sys.stderr)
+        return 1
+    top = common.PROJECTS / anchor
+    pre = "would write" if dry else "wrote"
+    fresh = not top.exists()
+    if not fresh and git(top, "rev-parse", "--show-toplevel").stdout.strip() != real(top):
+        print(f"{PROG} init: {top} exists and is not a git checkout's top — nothing written", file=sys.stderr)
+        return 1
+    if fresh and not dry:
+        top.mkdir(parents=True)
+        r = git(top, "init", "-q", "-b", "main")
+        if r.returncode != 0:
+            print(f"{PROG} init: git init in {top} failed — {r.stderr.strip()}", file=sys.stderr)
+            return 1
+    files = {
+        "memory/README.md": MEMORY_README.format(scope=sname),
+        "docs/README.md": DOCS_MAP,
+        ".claude/workflow.json": json.dumps({"checkpoint": True, "main": "main", "merge": "auto",
+                                             "in_place": IN_PLACE}, indent=2) + "\n",
+    }
+    # An existing checkout's primary sits on main, where no session writes but in_place: what it
+    # lacks is named for a claude/* branch to add, never written there (rules: git-workflow).
+    write = fresh and not dry
+    wrote = []
+    for rel, body in files.items():
+        p = top / rel
+        if p.exists() or (rel == "memory/README.md" and (top / "memory").is_dir()):
+            continue
+        if write:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+        wrote.append(rel)
+    ignore = top / ".gitignore"
+    have = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
+    ignored = ".claude/worktrees/" in [l.strip() for l in have.splitlines()] or (
+        not fresh and git(top, "check-ignore", "-q", ".claude/worktrees/x").returncode == 0)   # any spelling
+    if not ignored:
+        if write:   # an unignored worktree is committed as a gitlink (knowledge-commit's gap review item 1)
+            ignore.write_text(have + ("\n" if have and not have.endswith("\n") else "") + ".claude/worktrees/\n", encoding="utf-8")
+        wrote.append(".gitignore")
+    for rel in wrote:
+        say(f"  {pre} {top / rel}" if fresh else f"  ✗ {top / rel} is missing — add it on a claude/* branch of {anchor}")
+    bad = [] if fresh or ".claude/workflow.json" in wrote else workflow_faults(top)
+    if not fresh:   # written by an earlier run whose commit failed: present, never committed
+        bad += [f"{top / rel} is not committed — commit it on a claude/* branch of {anchor}"
+                for rel in [*files, ".gitignore"] if rel not in wrote and (top / rel).exists()
+                and git(top, "ls-files", "--error-unmatch", "--", rel).returncode != 0]
+    for b in bad:
+        say(f"  ✗ {b}")
+    if write and wrote:
+        git(top, "add", "--", *wrote)
+        r = git(top, "commit", "-q", "-m", f"Knowledge: {sname}'s home — memory/, docs/, the workflow ({PROG} init)")
+        if r.returncode != 0:
+            print(f"{PROG} init: not committed in {top} — {(r.stderr or r.stdout).strip()}", file=sys.stderr)
+            return 1
+        say(f"  committed on main in {top}")
+    if not wrote and not bad:
+        say(f"  ok      {top} already holds memory/, docs/ and the workflow")
+    return 1 if bad or (wrote and not fresh) else 0
+
+
+def docs_map(top):
+    """(mode, errors) of the anchor's docs map through docs-index, or None without a map."""
+    di = Path(__file__).resolve().parent / "docs-index"
+    if not (top / "docs" / "README.md").is_file():
+        return None
+    mode = subprocess.run([sys.executable, str(di), "mode", "--repo", str(top)], capture_output=True, text=True).stdout.strip()
+    out = subprocess.run([sys.executable, str(di), "check", "--repo", str(top)], capture_output=True, text=True)
+    errs = [l for l in (out.stdout + out.stderr).splitlines() if l.startswith("ERROR")]
+    if out.returncode != 0 and not errs:   # a crash prints no ERROR line: never read as clean
+        errs = [f"docs-index check exited {out.returncode}"]
+    return mode or "dry", errs
+
+
+def cmd_check(dirs=(), vault=None):
+    reg = registry()
+    if reg is None:
+        say(f"✗ memory homes: the registry cannot be read — unchecked")
+        return 1
+    repos, scopes = reg
+    conf = {n: s for n, s in scopes.items() if confidential(s)}
+    vault = vault_dir(vault)
+    projects = [d / "projects" for d in config_dirs(dirs, every=True)]
+    open_names = {Path(k).name for k in open_keys(repos, scopes)}
+    faults, notes = [], []
+    for sname, scope in conf.items():
+        anchor = anchor_of(scope)
+        if not anchor:
+            faults.append(f"confidential scope {sname} has no anchor (its first repo, named) — its memory has no home")
+            continue
+        top = common.PROJECTS / anchor
+        home = top / "memory"
+        if not top.is_dir():
+            notes.append(f"confidential scope {sname}'s knowledge repo {anchor} is not on this Mac — its own checks unchecked here")
+        elif not home.is_dir():
+            faults.append(f"{top} has no memory/ — `{PROG} init {sname}`")
+        else:
+            faults += [f"{sname}: {b}" for b in workflow_faults(top)]
+            dm = docs_map(top)
+            if dm and dm[1]:
+                (faults if dm[0] == "live" else notes).append(
+                    f"{sname}: {top}'s docs map ({dm[0]}) has {len(dm[1])} problem(s) — docs-index check --repo {top}")
+        leaves = [Path(k).name for k in common.scope_members(scope, repos)]
+        faults += [f"{sname}: {n} is the folder name of {leaves.count(n)} of its repos — they would share {home / n}"
+                   for n in sorted(set(leaves)) if leaves.count(n) > 1]
+        for key in common.scope_members(scope, repos):   # a member repos lacks is still the scope's
+            name = Path(key).name
+            # adopt acts on the slug of the resolved checkout; a projects folder reached through a
+            # link may also have left memory under the slug of the path as written: both are read.
+            own = common.project_slug(Path(real(common.PROJECTS / key)))
+            slugs = {common.project_slug(common.PROJECTS / key), own}
+            for proj in projects:
+                for slug in sorted(slugs):
+                    for f in sorted(proj.glob(slug + "*")) if proj.is_dir() else []:
+                        if f.name != slug and not f.name.startswith(slug + "--claude-worktrees-"):
+                            continue
+                        mem = f / "memory"
+                        fix = (f"`{PROG} adopt {common.PROJECTS / key}`" if f.name == own
+                               else f"a folder adopt never reads — move its notes into {home / name} by hand")
+                        if mem.is_symlink():
+                            if not inside(mem, home):
+                                faults.append(f"{mem} links to {os.readlink(str(mem))}, outside {sname}'s node — {fix}")
+                        elif mem.exists():
+                            faults.append(f"{mem} is a folder outside {sname}'s node — {fix}")
+            if vault and name not in open_names:
+                v = Path(vault) / "memory" / name
+                if (v.exists() or v.is_symlink()) and not inside(v, home):
+                    faults.append(f"the vault holds {v}, memory of {key} in confidential scope {sname} — `{PROG} adopt` "
+                                  f"moves it while a login links to it; else merge it into {home / name} by hand")
+    if faults:
+        for f in faults:
+            say(f"✗ {f}")
+        for n in notes:
+            say(f"  {n}")
+        return 1
+    say(f"✓ memory homes: {len(conf)} confidential scope{'' if len(conf) == 1 else 's'}, each one's memory inside its node")
+    for n in notes:
+        say(f"  {n}")
+    return 0
+
+
+def opts(rest, flags):
+    """→ (positional, {flag: [values]}, dry) for the repeatable value flags named."""
+    pos, got, dry, i = [], {f: [] for f in flags}, False, 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--dry-run":
+            dry = True
+        elif a in flags and i + 1 < len(rest):
+            got[a].append(rest[i + 1])
+            i += 1
+        elif a.startswith("--"):
+            raise SystemExit(f"{PROG}: unknown option {a}")
+        else:
+            pos.append(a)
+        i += 1
+    return pos, got, dry
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.split("\n\n")[1] if argv else __doc__)
+        return 0 if argv else 2
+    cmd, rest = argv[0], argv[1:]
+    try:
+        pos, got, dry = opts(rest, ("--config-dir", "--vault"))
+    except SystemExit as e:
+        print(e, file=sys.stderr)
+        return 2
+    vault = (got["--vault"] or [None])[-1]
+    if cmd == "where" and len(pos) == 1:
+        return cmd_where(pos[0], vault)
+    if cmd == "adopt" and len(pos) == 1:
+        return cmd_adopt(pos[0], got["--config-dir"], vault, dry)
+    if cmd == "init" and len(pos) == 1:
+        return cmd_init(pos[0], dry)
+    if cmd == "check" and not pos:
+        return cmd_check(got["--config-dir"], vault)
+    print(__doc__.split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
