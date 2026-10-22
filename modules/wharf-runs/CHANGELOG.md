@@ -19,6 +19,12 @@
 - Under `WEEKLY_RUN` (aurora's weekly Sextant, in `auto` mode): `dispatch` takes only
   `<branch> --repo R --at reset|reset+30|reset+60 --if-room`, and `pickup seed` only with `--no-start`;
   anything else exits refused (S7's /finish review, F1).
+- `bin/headroom` (2026-10-22): whether this host has the memory for one more run — % free, GB of swap
+  in use and MB/s swapped over a 2 s sample, read from sysctl and vm_stat on macOS, /proc on Linux —
+  against its line in `wharf-runs/headroom`. `dispatch` asks it beside the run cap at all four gates
+  and refuses a run past it, refused not queued; a reading it cannot take goes ahead, said. One row
+  per check in `headroom.jsonl`. Six runs had left a 16 GB host thrashing with four slots still free.
+  `tests/test_headroom.sh`, Linux from a stand-in /proc. Private until the scrub.
 - `bin/hail` and `hail subs` (Lookout and Hail, S2, 2026-10-21): one verb that delivers a pointer to any
   session `harness` names — Claude Code's inbox socket (S1's wire: an `auth` line with the key file's
   `peerToken`, then the `user` line; only to a session idle 60 s or more, re-read before the post;
