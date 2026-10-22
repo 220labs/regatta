@@ -15,7 +15,8 @@ Read `README.md` first: it is the chart. For an agent:
   that Mac's `${REGATTA_CONFIG}/wharf-runs/serve-label` itself and imports nothing: no core, no
   module. Its text is ASCII only (bash under a C locale over ssh read a multibyte character after a
   variable as part of its name, 2026-10-19). In a session, `--dry-run` only: it installs an
-  always-on service, which is the owner's to do.
+  always-on service, which is the owner's to do. It is private until the wharf-runs scrub (off
+  `.helloworld/allowlist.txt`, with its suite), though written as if public.
 - The files B7 moved in (everything but `orca-host`, `orca-serve-agent`, their suites and this
   module's face) are
   private until a wharf-runs scrub: off `.helloworld/allowlist.txt`. New text in them is written
