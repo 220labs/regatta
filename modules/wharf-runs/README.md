@@ -10,6 +10,7 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/autofinish`, `autofinish-run` | the lander: a sweep that judges each idle `claude/*` worktree by the start rules in its header and, once armed on a Mac, starts a fresh unattended `/finish` on it; `install.sh --schedule` adds the sweep |
 | `bin/pickup` | a session's branch picked up, seeded, reviewed or moved between Macs (`/pickup`, `/move`, `/later`) |
 | `bin/harness` | one set of verbs over every coding-agent CLI (Claude Code, Codex, Orca), its adapters in `bin/harness_adapters/` |
+| `bin/hail` | a pointer delivered to any session `harness` names — Claude Code's inbox socket (only to one idle 60 s or more, read back from the receiver), `codex queue` by thread, Orca's mailbox, a peer Mac over ssh, else helm's Talk and file roads; `--when idle` keeps a subscription that `hail subs --fulfil` sends |
 | `bin/wharf`, `blueprintlib.py` | a ship's blueprint checked and applied, block by block (`wharf check`, `wharf apply`) |
 | `bin/rc-hosts` | one Remote Control host per registry repo on this Mac |
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
@@ -51,6 +52,17 @@ the tools here will find.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
   plugin) and reads that Mac's registry and config, so the peer needs the core installed, and
   the two keys where it has an overlay.
+
+## Hail
+
+`hail REF (--text T | --file F) [--kind event|report|ask] [--about REPO:BRANCH:DOC[#Dn]] [--thread ID]
+[--host here|<peer>] [--when now|idle] [--dry-run] [--json]` prints one record, `{road, verdict, target, at}`,
+the verdict `delivered`, `queued`, `held`, `unreachable` or `refused`. The frame is fixed text,
+`HAIL <kind> from <sender> — <text> — about <repo>:<branch>:<doc>#<Dn> @<sha>`: a pointer, never an
+answer's words (a text carrying one is refused). A hail is data to its receiver; it approves nothing.
+It keeps `hail.jsonl` and the `--when idle` rows, `hail-subs.jsonl`, in keel's state dir
+(`MEMO_STATE_DIR` moves it). Without helm's `asklib.py` the Talk and file roads
+are skipped, said in the record.
 
 ## Schedule
 

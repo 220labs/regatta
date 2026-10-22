@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `bin/hail` and `hail subs` (Lookout and Hail, S2, 2026-10-21): one verb that delivers a pointer to any
+  session `harness` names — Claude Code's inbox socket (S1's wire: an `auth` line with the key file's
+  `peerToken`, then the `user` line; only to a session idle 60 s or more, re-read before the post;
+  `delivered` read back from the receiver's transcript or status, `held` when nothing shows), `codex
+  queue` by an explicit thread, Orca's mailbox or an idle worker's terminal, the adapter roads on a peer
+  over ssh, else helm's Talk and file roads. A `send()` in each adapter. `--when idle` keeps a row in
+  `hail-subs.jsonl` that `hail subs --fulfil` sends once the target is idle or gone (72 h, then dropped).
+  The frame never carries an answer's words. `tests/test_hail.sh`, stubs only. Private until the scrub.
 - The wharf rename's S6 (2026-10-20), carried from the overlay: the launch word in `/later`, `/move`
   ("the arrival" for a move's own landing) and `/pickup`.
 - `test_wharf` finds helm's console and the old `bin/plan` each where it lives: `libexec/helm` in helm's
