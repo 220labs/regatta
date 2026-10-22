@@ -204,13 +204,14 @@ def module_path(name):
 
 
 def repos_json():
-    """The registry of repos: `CLAUDE_REPOS_JSON`, else `<config>/wharf/repos.json`, else None.
-    The one reader every caller goes through (C3)."""
+    """The registry of repos: `CLAUDE_REPOS_JSON`, else `<config>/wharf/repos.json` (a dangling link
+    to it included: its read fails, never "no registry"), else None. The one reader every caller
+    goes through (C3)."""
     v = os.environ.get("CLAUDE_REPOS_JSON")
     if v:
         return Path(v)
     p = CONFIG / "wharf" / "repos.json"
-    return p if p.exists() else None
+    return p if p.exists() or p.is_symlink() else None   # a dangling link is a registry gone, not none
 
 
 def guarded_repos():
@@ -248,8 +249,8 @@ def registry_unreadable(path=None):
     a fence asks this first and fails closed on it. False with no registry file. Never raises."""
     p = Path(path) if path else repos_json()
     try:
-        if not p or not p.exists():
-            return False
+        if not p or not (p.exists() or p.is_symlink()):
+            return False   # a dangling link reads below and fails: unreadable (its target moved)
         d = json.loads(p.read_text(encoding="utf-8"))
         return not (isinstance(d, dict) and isinstance(d.get("repos") or {}, dict)
                     and isinstance(d.get("scopes") or {}, dict))
