@@ -138,6 +138,30 @@ grep -qF '*/../../bin/weekly-run' "$W"; check $? 1 "  pinned to the skill dirs, 
 grep -qF '"Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)"' "$W"; check $? 0 "the core's pr ready/merge form denied"
 grep -qE '"\$\{cl\[@\]\}" -p .*--permission-mode auto .*--disallowedTools' "$W"; check $? 0 "claude runs in auto mode with a deny list"
 
+echo "Sextant's step 2c: the queue's verbs and dispatch at the reset, nothing wider (the Sounding's S7)"
+# The stand-in writes the two lists weekly-run hands claude (WEEKLY_ALLOWED / WEEKLY_DENIED, one per line).
+lists() { printf 'printf "%%s\\n" "$WEEKLY_ALLOWED" > %s; printf "%%s\\n" "$WEEKLY_DENIED" > %s' "$T/$1-allow" "$T/$1-deny"; }
+WEEKLY_CLAUDE="$(lists sx)" "$W" sextant "$L" >/dev/null 2>&1
+AURORA_SECTIONS=dream WEEKLY_CLAUDE="$(lists au)" "$W" aurora "$V" >/dev/null 2>&1
+for s in reset reset+30 reset+60; do
+  check "$(grep -cxE "Bash\(.*(/bin/dispatch|regatta dispatch) \* --at ${s/+/\\+} --if-room\)" "$T/sx-allow")" 2 "sextant: dispatch allowed as \`dispatch * --at $s --if-room\`, the core's form and the layer's"
+done
+check "$(grep 'dispatch' "$T/sx-allow" | grep -vE 'dispatch \* --at reset(\+30|\+60)? --if-room\)$')" "" "  and in no other shape: the tail literal, --if-room required, never dispatch:* (R5)"
+check "$(grep -cxE 'Bash\(.*(/bin/pickup|regatta pickup) seed \* --no-start\)' "$T/sx-allow")" 2 "pickup seed allowed only ending --no-start, the core's form and the layer's (R1)"
+check "$(grep 'pickup' "$T/sx-allow" | grep -vE 'pickup (seed \* --no-start|show:\*)\)$')" "" "  and in no other shape (seed without --no-start starts the run at once)"
+check "$(grep -E -- '--(yolo|start|launch|allow|undeny|force)' "$T/sx-allow" | grep -v -- '--no-start)$')" "" "  no allow rule names --yolo, --start, --undeny or their kin"
+for f in '*soundings add*' '*dispatch*--yolo*' '*dispatch*--start*' '*dispatch*--launch*' '*dispatch*--undeny*' '*dispatch*--allow*' '*dispatch*--force*' \
+         '*dispatch*--account*' '*dispatch*--note*' '*dispatch*--background*' '*dispatch*--end*' '*pickup*--start*' '*pickup*--launch*' '*pickup*--force*'; do
+  grep -qxF "Bash($f)" "$T/sx-deny"; check $? 0 "  denied: $f"
+done
+grep -q '^export WEEKLY_RUN="\$job"$' "$W"; check $? 0 "the job exports WEEKLY_RUN, which soundings' two refusals read (R2), never CLAUDE_UNATTENDED"
+check "$(grep -c 'CLAUDE_UNATTENDED=' "$W")" 0 "  weekly-run sets no CLAUDE_UNATTENDED"
+for v in next list brief mark refresh; do grep -qF "soundings $v:*)" "$T/sx-allow"; check $? 0 "  allowed: soundings $v"; done
+check "$(grep -E 'soundings (add|\*)|soundings:' "$T/sx-allow")" "" "  never soundings add, nor soundings:*"
+grep -qF 'keel lint:*)' "$T/sx-allow"; check $? 0 "  allowed: keel lint"
+check "$(grep -cE 'dispatch|soundings|pickup seed|keel lint' "$T/au-allow")" 0 "aurora's run gets none of them"
+check "$(grep -c 'dispatch' "$T/au-deny")" 0 "  nor the sextant's deny lines"
+
 echo "a plain launchd environment (no REGATTA_HOME, no PATH but /usr/bin:/bin)"
 # launchd passes no REGATTA_CONFIG: the config dir is the default one under HOME.
 mkdir -p "$HOME/.config"; cp -R "$REGATTA_CONFIG" "$HOME/.config/regatta"

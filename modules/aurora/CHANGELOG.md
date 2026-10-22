@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `weekly-run sextant` (the Sounding's S7, 2026-10-22): the step 2c allow rules — `soundings`' reading and
+  bookkeeping verbs, `keel lint`, `pickup seed * --no-start` and `dispatch * --at reset[+30|+60] --if-room`
+  (three literal tails), never `dispatch:*` — and the deny lines that keep `soundings add`, dispatch's
+  `--yolo`, `--start`/`--launch`, `--allow`, `--undeny`, `--force`, `--account`, `--note`, `--background`
+  and `--end`, and pickup's `--start`/`--launch`/`--force` out. The job exports `WEEKLY_RUN=sextant`,
+  which soundings' two refusals read and pickup and dispatch enforce (the run is in `auto` mode, where
+  an allow rule refuses nothing). A rehearsal's stand-in reads both lists as `WEEKLY_ALLOWED` / `WEEKLY_DENIED`.
 - `capped` (2026-10-21): the signal handlers go in before the session's `Popen`, so a TERM in
   between is passed to the group, not lost with the wrapper (under load, 3 of 200 early TERMs left
   the group running before, 0 after), and one held before the session starts stops the wrapper
