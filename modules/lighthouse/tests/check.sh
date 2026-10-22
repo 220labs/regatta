@@ -24,4 +24,15 @@ if [ -f "$D/worker.test.mjs" ]; then
     node --test --no-warnings=ExperimentalWarning "$D/worker.test.mjs" || rc=1
   fi
 fi
+# deadman's Worker against stubs (a fake KV, a stub GitHub and mail): node --test, Node 20 or later
+# for the global WebCrypto. Private until its scrub, as beacon: absent, skipped; present, Node is required.
+if [ -f "$D/deadman.test.mjs" ]; then
+  echo "== deadman worker"
+  if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(Number(process.versions.node.split(".")[0])>=20?0:1)'; then
+    echo "deadman's Worker suite needs Node 20 or later; found $(node --version 2>/dev/null || echo none)"
+    rc=1
+  else
+    node --test "$D/deadman.test.mjs" || rc=1
+  fi
+fi
 exit $rc

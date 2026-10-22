@@ -7,7 +7,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 
 | Piece | What it does |
 | --- | --- |
-| `bin/health` | the unattended daily pass: fast-forward the checkouts `lighthouse/ff` names, wharf's tend, the privacy survey, the overlay's check (else `regatta check`); a failure posted once to the bulletin |
+| `bin/health` | the unattended daily pass: fast-forward the checkouts `lighthouse/ff` names, wharf's tend, the privacy survey, the Orca serve agent's process and answer, the overlay's check (else `regatta check`); a failure posted once to the bulletin |
 | `bin/claude-settings` | the declared settings (`check`, `apply`, `declare`): one declaration in git, applied to each config dir, drift reported |
 | `bin/account` | several Claude Code (and Codex) logins on one Mac: the registry, `pick`, `limits`, `run`, `setup`, `check` |
 | `shell/cc.zsh` | `cc <label> [claude args]`: start Claude Code on a chosen login |
@@ -81,6 +81,7 @@ an override is never exported.
 | `lighthouse/nas`, `lighthouse/drive` | publish's two roots: the NAS mount, the Drive's folder of shares | `publish` | `PUBLISH_NAS`, `PUBLISH_DRIVE` | that destination left out; none: refused |
 | `lighthouse/yabairc` | the yabai rc `.yabairc` links to (a link) | `tiling` | — | this module's `settings/yabairc` |
 | `wharf-runs/ssh` | `<host>:<ssh alias>` per peer Mac (wharf-runs' key, read here) | `account` | — | no peer: doctor and setup stay local |
+| `wharf-runs/serve-label` | the Orca serve agent's launchd label (wharf-runs' key, read here) | `health` | — | `org.regatta.orca-serve`; no such LaunchAgent on the Mac: the line is skipped |
 
 The core's own keys are read as the core reads them: `regatta/owner` (the name in a refusal),
 `regatta/projects`, `regatta/orca-deny` (ORCA_ROW's list). `install.sh --check` lists each key
@@ -106,3 +107,10 @@ hands what it cannot answer to the people behind the site through the contact fo
 each message as a GitHub issue. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
 whose word list scans what it builds. beacon is private until its scrub: its chart is
 `beacon/README.md`, and none of its files is in the public twin yet.
+
+## deadman — the switch for the Macs nobody watches
+
+A Mac that runs unattended work cannot report its own death. deadman is one Cloudflare Worker on
+the free plan that each such Mac pings every few minutes; one that goes quiet past a grace becomes
+a GitHub issue that mentions its owner, closed again by its next ping, with a mail as the fallback
+when GitHub refuses the token. Private until its scrub, as beacon: its chart is `deadman/README.md`.

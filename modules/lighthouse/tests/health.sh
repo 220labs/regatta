@@ -126,6 +126,61 @@ HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-bad" hrun
 check "$(grep -c 'a claude without claude-host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "  the same services the next day post nothing"
 HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-ok" hrun; [ -f "$HT/log/health.last.tcc" ]; check $? 1 "  a clean survey clears it"
 
+echo "the serve agent's line (skipper-resilience, the watch, 2026-10-22)"
+HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^orca: no serve agent here (org.regatta.orca-serve) — skipped$')" 1 "no serve agent's plist here: one line, skipped"
+LA="$T/home"; LA="$LA/Library/LaunchAgents"   # the moved HOME's: the real one is never read
+mkdir -p "$LA" "$REGATTA_CONFIG/wharf-runs"
+echo serve.example > "$REGATTA_CONFIG/wharf-runs/serve-label"
+touch "$LA/serve.example.plist"
+# launchctl print's shape: a running service has a `pid = N` line, a stopped one none
+cat > "$T/lctl-up" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/lctl.args"
+printf 'gui/501/serve.example = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n}\n'
+STUB
+cat > "$T/lctl-down" <<STUB
+#!/bin/sh
+printf 'gui/501/serve.example = {\n\tstate = not running\n\tlast exit code = 1\n}\n'
+STUB
+cat > "$T/orca-ok" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/orca.args"
+echo '{"ok": true, "result": {"runs": []}}'
+STUB
+cat > "$T/orca-bad" <<STUB
+#!/bin/sh
+echo "\$*" >> "$T/orca.args"
+echo '{"ok": false, "error": {"message": "no runtime"}}'; exit 1
+STUB
+chmod +x "$T/lctl-up" "$T/lctl-down" "$T/orca-ok" "$T/orca-bad"
+: > "$T/commits"; : > "$T/orca.args"
+orun() { HEALTH_LAUNCHCTL_CMD="$T/$1" HEALTH_ORCA_CMD="$T/$2" HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run; }
+orun lctl-up orca-ok
+check "$(log | grep -c '^orca: serve.example pid 4242, run-list answers$')" 1 "a live pid and a run-list that answers: one line"
+check "$(cat "$T/lctl.args")" "print gui/$(id -u)/serve.example" "  launchd asked for the label wharf-runs/serve-label names"
+check "$(cat "$T/orca.args")" "orchestration run-list --limit 1 --json" "  and Orca only for a list"
+check "$(grep -c . "$T/commits")" 0 "  nothing posted"
+: > "$T/orca.args"
+orun lctl-down orca-ok
+check "$(log | grep -c '^orca: the serve agent serve.example has no process')" 1 "no pid: said in the log"
+check "$(log | grep -c "^- posted: --post Orca's serve agent fails on")" 1 "  and posted"
+check "$(grep -c . "$T/commits")" 1 "  and committed"
+check "$(grep -c . "$T/orca.args")" 0 "  Orca is not asked while the agent has no process"
+orun lctl-down orca-ok
+check "$(log | grep -c "Orca's serve agent: failing, already posted")" 1 "the same the next day: posted once"
+check "$(grep -c . "$T/commits")" 1 "  not committed twice"
+orun lctl-up orca-bad
+check "$(log | grep -c '^orca: the serve agent serve.example runs (pid 4242) but orca run-list does not answer$')" 1 "a pid with no answer from run-list is a failure too"
+check "$(grep -c . "$T/commits")" 2 "  posted as a new one"
+orun lctl-up orca-ok
+[ -f "$T/logs/health.last.orca" ]; check $? 1 "serving again clears what was posted"
+check "$(log | tail -2 | tr '\n' ' ')" "ok rc=0 " "the agent's line never changes the pass's exit"
+HEALTH_ORCA=off HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^orca: off')" 1 "HEALTH_ORCA=off switches it off"
+grep -qF 'ORCA="${HEALTH_ORCA:-on}"' "$HB"; check $? 0 "  it is on by default"
+rm -f "$REGATTA_CONFIG/wharf-runs/serve-label" "$LA/serve.example.plist"
+
 echo "no core: one line, exit 2"
 cp "$HB" "$T/lonely-health"
 out=$(HEALTH_LOG_DIR="$T/logs2" "$T/lonely-health"; echo "rc=$?"); check "$out" "rc=2" "a copy with no lib/ and no core beside it exits 2"
