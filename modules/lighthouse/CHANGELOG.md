@@ -11,6 +11,15 @@
 - `health` reads the Orca serve agent: on a Mac with its LaunchAgent, launchd's pid for the label
   (`wharf-runs/serve-label`) and `orca orchestration run-list` answering, one line a day; a missing
   pid or a list that does not answer is posted once, under its own state file.
+- beacon's `telegram` sink, two-way (2026-10-22): every form send, chat hand-off ("Talk to a person"
+  in the widget) and mail to the site's address is one issue and one forum topic in the people's
+  Telegram group; their reply in the topic reaches the visitor's chat panel while it polls, else
+  their mailbox (Resend) with a `Reply-To` whose token is an HMAC of the conversation, and the
+  visitor's mail reply comes back to the same topic. New: the Conversation Durable Object, the
+  routes `/chat/handoff`, `/chat/say`, `/chat/poll` and `/telegram`, the Worker's email handler
+  (forwards first, never throws past it), `/close` in a topic, and postal-mime, pinned and
+  installed in the build dir only. Tested against a stub Bot API and mail sender in Node and,
+  opt-in, under `wrangler dev`; not deployed by this change.
 
 - `account_guard` judges where the session started ($CLAUDE_PROJECT_DIR, else the event's cwd), not where
   its shell is now (2026-10-22). The event's cwd follows a `cd`, so a work-login session started in an open
