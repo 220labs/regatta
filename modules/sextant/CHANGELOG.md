@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- New tool: `bin/soundings` (the Sounding's S7) — the queue of proposals the owner chose to have
+  sounded: `add` (the owner's pick, refused to an unattended run; `--now` records a launch now),
+  `next` (three gates, three a week, five open, the `reset` / `reset+30` / `reset+60` stagger and the
+  commands), `brief`, `mark`, `refresh`, `list`. The queue is `soundings.json` beside the ideas pool.
 - New skill: `/sounding` (the Sounding's S4) — the head by scope (`architect`, `sr-architect`,
   `sounder`), the stance (`firm:` or sounded), the two peers' lines in the brief, the lint and
   `reviewer-high` before the owner sees the doc, and three paths: full (`keel line`), `--light`

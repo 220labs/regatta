@@ -11,6 +11,7 @@ and a queue) joins this same plugin later; there is never a separate Sparks plug
 | `bin/sparks` | a recording, a written note or an Apple Note → one Markdown note per idea, filed into a folder or a project |
 | `bin/redactions` | what Sparks' redaction step hid, per recording, and putting it back on the owner's word |
 | `launcher.c.in`, `install.sh` | the launchd job that runs Sparks on a Mac, and the small launcher Full Disk Access is granted to |
+| `bin/soundings` | the sounding queue: the proposals the owner chose to have sounded, three a week and five open at most, each started by Sextant at the weekly reset with the week read when it fires |
 | `bench/redaction/` | can a classifier find what a memo should not put in git? Five arms over an invented corpus |
 | `skills/sounding/` | `/sounding <idea> [--light] [--yolo]`: one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`) sounds the idea — a Landscape of what exists, a one-line Verdict — and the doc reaches the owner in full, as a chat questionnaire or with its reversible picks taken unattended |
 | `agents/sounder.md` | the sounder: an architect for an idea outside any repo — a venture, a pitch, a tool to build or adopt — held to the ventures README's four gates, with a money flow and a smallest test; private until the architects' shared body is scrubbed |
@@ -19,7 +20,7 @@ and a queue) joins this same plugin later; there is never a separate Sparks plug
 Install, from a clone (the shell and launchd face): `sh modules/sextant/install.sh --check` says
 what is found, `--launcher` builds and schedules the job, `--remove` takes it out. As a plugin:
 `claude plugin marketplace add <this repo>`, then `claude plugin install sextant@regatta` (it
-needs the core, `regatta`); the plugin puts `sparks` and `redactions` on the Bash PATH.
+needs the core, `regatta`); the plugin puts `sparks`, `redactions` and `soundings` on the Bash PATH.
 
 ## Sparks, the ideas intake
 
