@@ -19,7 +19,9 @@ signed in as, else ORCA_ROW's list (2026-10-17). Fails closed when bin/account c
 traceback: the core missing or its config incomplete, B2b), open on any other error, and by design for a cwd in no repo — bar one that holds a denied repo
 (the projects folder, or the home folder for a row denying the vault), refused since 2026-10-18: Claude Code reads the default config dir's CLAUDE.md
 as that folder's project memory and follows its imports there. Otherwise the list says where sessions
-start; it is no data boundary (section 2 of the doc).
+start; it is no data boundary (section 2 of the doc). Hence the start is what it judges ($CLAUDE_PROJECT_DIR,
+else the event's cwd): a session that later `cd`s into the projects folder is not refused (2026-10-22). Where
+the shell went is judged too, bar "it holds a denied repo": a `cd` into a denied or a tenant's repo is still refused.
 Wired user-wide on UserPromptSubmit (the overlay's `bootstrap.sh --hooks`, or this plugin's
 hooks.json). Stdlib only, Python 3.9, never exits non-zero (exit 2 there erases the prompt).
 """
@@ -85,7 +87,23 @@ def main():
         data = json.load(sys.stdin)
     except ValueError:
         data = {}
-    cwd = (data or {}).get("cwd") or os.getcwd()
+    # Where the session started, not where its shell is now: the hook's `cwd` follows a `cd` (into the
+    # projects folder for a cross-repo grep, say), and judged by it every later prompt of a session started
+    # in an open repo was blocked — 18 prompts on two work logins in 4 days (2026-10-22). The list
+    # is about what Claude Code loads at the start (header), and CLAUDE_PROJECT_DIR keeps the start
+    # across a `cd` (probed 2026-10-22 with a two-prompt headless session).
+    here = (data or {}).get("cwd") or os.getcwd()
+    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or here
+    # Where the shell went is judged too, bar the one rule about the start: a denied or a tenant's repo
+    # the shell moved into is still refused, while "it holds" a denied repo (the projects folder, the
+    # home folder) is about what loads at the start and binds the start only (the branch's reviews).
+    if here != cwd and (not default_dir or maybe_tenants(here, entries)):
+        t = subprocess.run([sys.executable, str(ACCOUNT), "allowed", here], capture_output=True, text=True, timeout=20)
+        if t.returncode == 1 and " is off " in t.stdout and " holds " not in t.stdout:
+            why = t.stdout.strip()
+            print(json.dumps({"decision": "block", "reason": why if "(accounts.json tenants)" in why else
+                              f"{why}: open it in the default VS Code profile, or a Terminal claude on the default login (no CLAUDE_CONFIG_DIR)"}))
+            return
     if default_dir and not maybe_tenants(cwd, entries):
         return
     r = subprocess.run([sys.executable, str(ACCOUNT), "allowed", cwd], capture_output=True, text=True, timeout=20)
