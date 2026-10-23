@@ -7483,11 +7483,18 @@ def resolve_session(key, top, branch, ref, runs):
     return "none", None, None
 
 
+# The tools whose module path the account dirs' allow rules name since B14a (the overlay's
+# bootstrap.sh --hooks): overlay_cmd spells these by tool(), the rest by the shim until B14b.
+MODULE_RULED = ("ask", "helm")
+
+
 def overlay_cmd(name):
     """`name` spelled as the overlay's shim where one is installed: the account dirs' allow rules
     name it, and an unattended session is denied the bare name (AGENTS.md, Traps; as paste-paths'
-    _ask_cmd)."""
+    _ask_cmd). A MODULE_RULED tool by its module path, which the rules name since B14a."""
     try:
+        if name in MODULE_RULED and _common().tool(name):
+            return str(_common().tool(name))
         old = _common().legacy_root()
         if old and (old / "bin" / name).is_file():
             return str(old / "bin" / name)

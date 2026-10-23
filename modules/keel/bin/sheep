@@ -98,8 +98,8 @@ which erases prompts and blocks every tool. `gate` refuses to write one (the pri
 has no hooks/sheep_gate.py until this launches there). settings.json is read, changed and written
 under bin/claude-settings' lock, with its backup-first, atomic writer.
 
-Paths (tests override): $SHEEP_GATE (else <overlay>/hooks/sheep_gate.py — the primary
-checkout, never a worktree that will be removed), $SHEEP_SESSIONPIPE (else `sessionpipe` on PATH,
+Paths (tests override): $SHEEP_GATE (else the regatta main checkout's modules/keel/hooks/sheep_gate.py —
+the config dir's `home`, never a worktree that will be removed; since B14a, not the overlay's shim), $SHEEP_SESSIONPIPE (else `sessionpipe` on PATH,
 else ~/.local/bin/sessionpipe), $SHEEP_SPACESHEEP (else `spacesheep` on PATH), $SESSIONPIPE_STATE /
 $XDG_STATE_HOME for the outbox and the daemon's log, $SHEEP_ENV_FILE for the .env, $SHEEP_HOST.
 `sheep control` (docs/session-listen-2026-10-13.md, B1): the folders sessionpipe's control daemon may
@@ -143,10 +143,38 @@ def _legacy():
     return Path(v).expanduser() if v else None
 
 
-# The hook command's path: the overlay's shim while there is one (its primary checkout, the path every
-# settings file already names), else this module's own file.
+def _home():
+    """The regatta main checkout (`REGATTA_HOME`, else the config dir's `home` file), or None: read
+    here without loading the core, as _legacy() is. A worktree resolves to its main checkout, as
+    dispatch resolves the overlay: `gate` writes this path into every login dir, and a worktree's
+    path breaks every hook once /finish removes it (B14a landing review, 2026-10-23)."""
+    v = os.environ.get("REGATTA_HOME")
+    if not v:
+        cfg = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+        try:
+            v = next((l.strip() for l in (cfg / "home").read_text(encoding="utf-8-sig").splitlines() if l.strip()), "")
+        except (OSError, UnicodeDecodeError):
+            v = ""
+    if not v:
+        return None
+    p = Path(v).expanduser()
+    if (p / ".git").is_file():
+        try:
+            common = subprocess.run(["git", "-C", str(p), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                    capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            common = ""
+        if common:
+            p = Path(common).parent
+    return p
+
+
+# The hook command's path: this module's file in the main checkout (B14a, 2026-10-23: the overlay's shim
+# until then), else the file beside this one. `gate` moves an entry behind the shim's path to this one
+# (gated()), so a run after the change re-points every settings file it writes.
+_HOME = _home()
 GATE = Path(os.environ.get("SHEEP_GATE") or next(
-    (p for p in [(_legacy() or HERE) / "hooks" / "sheep_gate.py"] if _legacy() and p.is_file()),
+    (p for p in [_HOME / "modules" / "keel" / "hooks" / "sheep_gate.py"] if _HOME and p.is_file()),
     HERE.parent / "hooks" / "sheep_gate.py"))
 _gate = SourceFileLoader("sheep_gate", str(HERE.parent / "hooks" / "sheep_gate.py")).load_module()
 
@@ -433,8 +461,14 @@ def gated(cmd):
 
 
 def is_gated(cmd):
-    """Behind this gate, and the gate file is there: a missing script makes python3 exit 2."""
-    return cmd == gated(cmd) and GATE.is_file()
+    """Behind this gate, and the gate file is there: a missing script makes python3 exit 2. Behind
+    the overlay's shim counts too while that file is there (B14a: `check` stays green on a Mac whose
+    settings still name it; `gate` moves them, as it moves any other path). B14b drops the second."""
+    if cmd == gated(cmd) and GATE.is_file():
+        return True
+    m, old = GATED.match(cmd), _legacy()
+    shim = old / "hooks" / "sheep_gate.py" if old else None
+    return bool(m and shim and Path(m.group(1)) == shim and shim.is_file())
 
 
 def _cmds(g):

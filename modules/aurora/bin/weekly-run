@@ -75,7 +75,7 @@ atlas_repo() {
   local v p="" up; up=ATLAS_$(printf %s "$1" | tr a-z A-Z); p=${!up:-}
   v=$(atlas_line "$1" 3); [ -z "$p" ] && [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && p=${!v:-}
   [ -z "$p" ] && { p=$(atlas_line "$1" 2); [[ "$p" == /* || "$p" == "~"* ]] || p=""; }
-  [ -z "$p" ] && [ "$1" = vault ] && [ ! -e "$RCFG/legacy" ] && p="${XDG_DATA_HOME:-$HOME/.local/share}/atlas"
+  [ -z "$p" ] && [ "$1" = vault ] && [ ! -e "$RCFG/legacy" ] && [ ! -e "$RCFG/regatta/overlay" ] && p="${XDG_DATA_HOME:-$HOME/.local/share}/atlas"
   printf '%s\n' "${p/#\~/$HOME}"
 }
 C=$(atlas_repo layer); P=$(atlas_repo vault)
@@ -151,7 +151,7 @@ post() {  # post <why> <text>: one bulletin line through atlas; without atlas, t
 # loaded before. Where the overlay is installed and the key is absent the run refuses: a guess
 # either way is a lost or a doubled dream. Without the overlay, no host is skipped.
 if [ -z "${WEEKLY_ANY_HOST:-}" ]; then
-  if [ ! -f "$RCFG/aurora/skip-hosts" ] && [ -e "$RCFG/legacy" ]; then
+  if [ ! -f "$RCFG/aurora/skip-hosts" ] && { [ -e "$RCFG/legacy" ] || [ -e "$RCFG/regatta/overlay" ]; }; then
     say "$(date '+%H:%M') refused: no $RCFG/aurora/skip-hosts (your overlay's bootstrap.sh --config)"
     [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: no aurora/skip-hosts in $RCFG — bootstrap.sh --config writes it. Log: $log"
     refuse

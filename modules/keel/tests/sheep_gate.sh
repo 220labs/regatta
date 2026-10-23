@@ -60,4 +60,13 @@ rm "$REGATTA_CONFIG/wharf/repos.json"
 check "$(sg "{\"cwd\":\"$P/know\"}")" sent "no registry: as before the flag (PRIVATE_REPOS alone)"
 check "$(sg "{\"cwd\":\"$P/vault\"}")" dropped "…and vault still dropped"
 
+# sheep's GATE: REGATTA_HOME at a worktree resolves to its main checkout, never the worktree a
+# /finish removes (B14a landing review, 2026-10-23)
+R="$T/rg"; mkdir -p "$R/modules/keel/hooks"; : > "$R/modules/keel/hooks/sheep_gate.py"
+git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.email=t@t commit -qm x \
+  && git -C "$R" worktree add -q "$T/rg-wt" 2>/dev/null
+gate_at() { REGATTA_HOME="$1" SHEEP_GATE= python3 -c 'import importlib.machinery,sys; sys.argv=["sheep"]; print(importlib.machinery.SourceFileLoader("sheep", "'"$H"'/../bin/sheep").load_module().GATE)' 2>&1; }
+check "$(gate_at "$T/rg-wt")" "$(cd "$R" && pwd -P)/modules/keel/hooks/sheep_gate.py" "sheep: REGATTA_HOME at a worktree gates at its main checkout"
+check "$(gate_at "$R")" "$R/modules/keel/hooks/sheep_gate.py" "  …and the main checkout itself as given"
+
 [ $fails -eq 0 ] && echo "sheep_gate: all ok" || { echo "sheep_gate: $fails failing"; exit 1; }

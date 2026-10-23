@@ -180,7 +180,7 @@ def module_problems():
     """One line per module key that is unreadable, or missing where an overlay is installed — the
     module refuses at use (orca-host's config_map), so a key it needs is said here, never by the
     core's import: a module's key never stops the core loading."""
-    overlay = (common.CONFIG / "legacy").exists()
+    overlay = common.overlay_installed()
     out = []
     for k in module_keys():
         lines, why = common.config_read(k)
@@ -257,6 +257,10 @@ def check():
     if old:
         print(("  ok  legacy: %s" if old.is_dir() else "  --  legacy: %s is no directory") % old)
         bad += 0 if old.is_dir() else 1
+    # the overlay marker (B14a): reported where an overlay is installed, never failed — a config
+    # dir from before the step marks the overlay by `legacy` alone, which the core still accepts
+    if old and not (common.CONFIG / "regatta" / "overlay").exists():
+        print("  ..  regatta/overlay: none yet (the overlay's bootstrap.sh --config writes it; B14b needs it)")
     problems = list(common.CONFIG_PROBLEMS) + module_problems()
     refused = {x.split()[0] for x in problems}   # said once, below, never also `ok`
     if common.CONFIG.is_dir():

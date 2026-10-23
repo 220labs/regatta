@@ -589,7 +589,7 @@ SENSITIVE = {"yes": "the sentence reveals something in one of the listed categor
 # owner's (`sextant/source`); where an overlay is installed and the key is missing, gate_ready()
 # refuses rather than send under a name the gate does not guard.
 REDACT_SOURCE = common.config_line("sextant/source") or "sparks"
-REDACT_SOURCE_MISSING = (common.CONFIG / "legacy").exists() and not common.config_line("sextant/source")
+REDACT_SOURCE_MISSING = common.overlay_installed() and not common.config_line("sextant/source")
 WRITTEN_RULE = ("The input below is a written note, not a recording: treat it as the transcript, "
                 "in one voice, and keep its own wording where you can, translated as the shape asks; "
                 "a short note makes a short topic. Every written note is at least one idea, however "

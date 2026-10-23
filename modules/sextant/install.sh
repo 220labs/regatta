@@ -178,8 +178,8 @@ case "${1:-}" in
     fi
     [ -z "${2:-}" ] || { echo "usage: install.sh --schedule [--dry-run]" >&2; exit 2; }
     [ "$(uname)" = Darwin ] || [ -n "${SEXTANT_LAUNCHCTL:-}" ] || { echo "install.sh --schedule: macOS only (launchd)" >&2; exit 2; }
-    if [ -e "$cfgdir/legacy" ] && [ -z "${SEXTANT_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "install.sh --schedule: an overlay is installed here ($cfgdir/legacy): it schedules /sextant itself; not loading a second job" >&2
+    if { [ -e "$cfgdir/legacy" ] || [ -e "$cfgdir/regatta/overlay" ]; } && [ -z "${SEXTANT_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "install.sh --schedule: an overlay is installed here ($cfgdir/legacy or $cfgdir/regatta/overlay): it schedules /sextant itself; not loading a second job" >&2
       exit 1
     fi
     # A host aurora/skip-hosts lists gets no job: the run would only log its skip each week

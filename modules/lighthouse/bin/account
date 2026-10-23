@@ -223,10 +223,10 @@ ORCA_MEMORY_STUB = "@~/.claude/CLAUDE.md\n"   # what Orca 1.4.2xx writes into a 
 
 
 def overlay_key_missing(rel, env=None):
-    """ImportError when the overlay is installed (the config dir's `legacy`) and its key `rel` is
+    """ImportError when the overlay is installed (the config dir's `regatta/overlay` or `legacy`) and its key `rel` is
     not written, nor named by `env`: a guard reading an absent key as "nothing to deny" fails open,
     so this one fails closed, as the core does for its own keys (B2b; B9 review)."""
-    if (CONFIG / "legacy").exists() and not (env and os.environ.get(env)) and not (CONFIG / rel).exists():
+    if ((CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()) and not (env and os.environ.get(env)) and not (CONFIG / rel).exists():
         raise ImportError(f"{rel} missing in {CONFIG} — write it with the overlay's bootstrap.sh --config")
 
 

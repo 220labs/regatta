@@ -36,6 +36,9 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   scope, and project scope when the cwd is inside it); else the checkout named by
   `REGATTA_LEGACY` or the `legacy` file; else None — and the caller takes the fallback its
   README names, never a stack trace.
+- **An overlay**: `common.overlay_installed()` — the config dir's `regatta/overlay` marker, or its
+  `legacy` file, which the marker outlives. Where it is true, a key the overlay owes and did not
+  write is refused, never read as absent.
 - **Private config**: every file keeps its environment override (for a test suite or one shell,
   never exported), and its default is `${REGATTA_CONFIG}/<module>/<file>`. For the core:
   `regatta/models.json` (the gate's table; the defaults beside the gate otherwise),

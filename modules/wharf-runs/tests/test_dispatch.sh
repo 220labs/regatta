@@ -355,17 +355,18 @@ has "$T/claude.calls" "bin/helm report --task demo" "  and the ship's reports (t
 has "$T/claude.calls" "bin/keel step <doc> <S> done --branch" "  and a brief's Steps: are marked done by the run (entry S7, the done prompt)"
 has "$T/claude.calls" "AskUserQuestion" "AskUserQuestion is on the denied list (R2's belt)"
 check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its manager, plan and page"
-# no stand-ins for the paths: with an overlay installed the prompt names its shims, which the allow
-# rules name (bin/plan until rename S8; S5 review) — never helm's module paths, though tool() finds
-# them first. The overlay is a stand-in named by REGATTA_LEGACY, so the case runs on every Mac and in
-# CI alike, never against whichever overlay the login has (suites-host, 2026-10-20)
+# no stand-ins for the paths: with an overlay installed the prompt still names helm's module paths,
+# which tool() finds and the overlay's allow rules name since B14a — never the overlay's shims, as it
+# did until then. The overlay is a stand-in named by REGATTA_LEGACY, so the case runs on every Mac and
+# in CI alike, never against whichever overlay the login has (suites-host, 2026-10-20)
 OVL="$(cd "$T" && pwd -P)/overlay"; mkdir -p "$OVL/bin"   # resolved, as dispatch resolves a checkout that is no git repo
 for t in ask plan; do printf '#!/bin/sh\n' > "$OVL/bin/$t"; chmod +x "$OVL/bin/$t"; done
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; PL2=$(basename "$(pl)" .plist); : > "$T/claude.calls"
 # the same environment as the run above: later cases read the newest run record
 env -u DISPATCH_ASK -u DISPATCH_HELM REGATTA_LEGACY="$OVL" DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_PLAN_SPACE=sp-1 DISPATCH_MANAGER_HOST=laptop DISPATCH_MANAGER_ACCOUNT=/x/.acct-c DISPATCH_LOG="$HOME/mgr2.log" DISPATCH_LABEL=$PL2 "$B/dispatch" $BR --repo "$T/repo" --headless
-has "$T/claude.calls" "$OVL/bin/ask apply" "  the real lookup: the overlay's bin/ask, which the allow rules name"
-has "$T/claude.calls" "$OVL/bin/plan report --task demo" "  and its bin/plan for the reports (until rename S8)"
+has "$T/claude.calls" "modules/helm/bin/ask apply" "  the real lookup: helm's bin/ask, which the allow rules name since B14a"
+has "$T/claude.calls" "modules/helm/libexec/helm report --task demo" "  and helm's console for the reports"
+grep -q "$OVL/bin/" "$T/claude.calls"; check "$?" "1" "  never the overlay's shims (B14a)"
 # orchestration B2: what a retry needs to start the same step again, under the same manager
 check "$(python3 -c '
 import json, sys

@@ -72,10 +72,17 @@ OVERLAY_KEYS = ("owner", "guarded", "orca-deny", "log-dir", "projects")
 PATH_KEYS = ("log-dir", "projects")
 
 
+def overlay_installed():
+    """An overlay is installed here: the config dir's `regatta/overlay` marker, which the overlay
+    writes since B14a (2026-10-23), or its `legacy` file, the only marker until then. B14b drops
+    `legacy` with the shims; every reader of "an overlay is installed" asks this, or reads both."""
+    return (CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()
+
+
 def config_problems():
     """One line per private-value key that is wrong: missing (where the overlay is installed),
     unreadable, or a relative path. [] when all is well. `regatta check` prints them."""
-    overlay = (CONFIG / "legacy").exists()
+    overlay = overlay_installed()
     out = []
     for k in OVERLAY_KEYS:
         lines, why = config_read("regatta/" + k)

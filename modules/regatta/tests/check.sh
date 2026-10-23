@@ -156,6 +156,12 @@ out=$("$RG" check 2>&1)
 check "$(echo "$out" | grep -c -- '^  --  regatta/projects is not an absolute path: work')$(echo "$out" | grep -c '^  ok  regatta/projects$')" "10" "  regatta check says it once, as a problem, and never also ok"
 rm "$T/config/legacy"
 check "$(refusal py 'pass' | grep -o 'regatta/projects [^—]*')" "regatta/projects is not an absolute path: work " "  with or without the overlay"
+# B14a: the overlay's own marker, which outlives `legacy` (B14b), marks the overlay alone
+echo "$T" > "$T/config/regatta/overlay"; mv "$T/config/regatta/owner" "$T/owner.kept"
+check "$(refusal py 'pass' | grep -o 'regatta/owner missing')" "regatta/owner missing" "B14a: regatta/overlay alone marks the overlay — a key it owes is refused, as under legacy"
+rm "$T/config/regatta/overlay"
+check "$(refusal py 'pass' | grep -c 'regatta/owner')" "0" "  neither marker: an absent key is its default again"
+mv "$T/owner.kept" "$T/config/regatta/owner"
 
 printf '\xef\xbb\xbf\n  Kapitän\n' > "$T/config/regatta/owner"; printf 'notes\n\nlogbook\n' > "$T/config/regatta/guarded"
 printf 'logbook\n' > "$T/config/regatta/orca-deny"; printf '~%s\n' /logs > "$T/config/regatta/log-dir"; printf '~%s\n' /work > "$T/config/regatta/projects"

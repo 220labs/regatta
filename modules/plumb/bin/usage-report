@@ -131,7 +131,7 @@ FIELDS = ["day", "host", "source", "session", "title", "project", "model", "effo
 
 def load_config():
     cfg = {}
-    if not CONFIG.is_file() and (common.CONFIG / "legacy").exists():
+    if not CONFIG.is_file() and common.overlay_installed():
         # the overlay is installed and wrote no settings: say so once, then run on the defaults
         print(f"usage-report: no {CONFIG} — collecting only (bootstrap.sh --config writes it)", file=sys.stderr)
     if CONFIG.is_file():
