@@ -2,6 +2,9 @@
 # where an overlay is installed, or unreadable.
 wharf-runs/orca-pairs
 wharf-runs/ssh
+wharf-runs/dispatch-host
+wharf-runs/label-prefix
+wharf-runs/public-repos
 wharf-runs/load-max
 wharf-runs/load-margin
 # Not listed: wharf-runs/node/* (bin/yard-node's docstring) — only a Mac that drives a yard node

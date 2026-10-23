@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # wharf-runs' check: every tool's suite (the core's check compiles this module's Python).
 # Scratch paths only; no Orca, no network, no real launchd. A suite this checkout lacks is skipped
-# with a line: the B7 files are private until their scrub, so the public twin holds orca-host's alone.
+# with a line (a trimmed copy; every suite is public since the scrub, 2026-10-22).
 #   bash modules/wharf-runs/tests/check.sh     (about 15 minutes; test_autofinish and test_dispatch most of it)
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"

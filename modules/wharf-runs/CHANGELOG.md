@@ -31,6 +31,11 @@
   `wharf status --orphans` lists the Orca repos and Runs no plan here accounts for (paged; Orca's legacy row
   and `bin/harness run`'s Runs left out). A block on another host is not braked by this Mac's brake. Cases in
   `test_wharf.sh`.
+- The scrub (2026-10-22): every file public. Hosts come from `wharf-runs/ssh` and the new
+  `wharf-runs/dispatch-host` (`dispatch --on` takes any peer the key names, or `here`; an unknown one
+  is refused naming the known ones; the run cap is 10 on the dispatch host), launchd labels from the
+  new `wharf-runs/label-prefix`, the owner from the core's `regatta/owner`, the overlay from `legacy`,
+  Codex's off-limits repos from the new `wharf-runs/public-repos`. The harness reads its launcher checkout from `HARNESS_LAUNCHER`. The suites use synthetic names only (`laptop`, `buildbox`, Sam, `shop`).
 - `dispatch --if-room` (the Sounding's S7, 2026-10-22): at fire time, after the account pick, a run
   refuses to start when autofinish's `week_tight` says `tight` or `none`, or when reading it raises — for
   the sounding queue's runs at the weekly reset, which spend the week they fire in. No reading (no
@@ -69,7 +74,7 @@
   queue` by an explicit thread, Orca's mailbox or an idle worker's terminal, the adapter roads on a peer
   over ssh, else helm's Talk and file roads. A `send()` in each adapter. `--when idle` keeps a row in
   `hail-subs.jsonl` that `hail subs --fulfil` sends once the target is idle or gone (72 h, then dropped).
-  The frame never carries an answer's words. `tests/test_hail.sh`, stubs only. Private until the scrub.
+  The frame never carries an answer's words. `tests/test_hail.sh`, stubs only.
 - `pickup brief BRANCH --text T|-` (Lookout and Hail, S4, 2026-10-21): commits
   `docs/handoff/<date>-<topic>.md` onto an existing `claude/*` branch by plumbing (no checkout), so a
   launchd job with no worktree can hand `dispatch` a run; fast-forwards from origin first, refuses a
@@ -109,7 +114,6 @@
 - The unattended runs move in (B7): `dispatch`, `dispatch-rc`, `run-seed`, `harness` and its adapters,
   `rc-hosts`, `autofinish`, `autofinish-run`, `pickup`, `blueprintlib`, `wharf`, `check`,
   `hooks/cold_prompt.py`, the skills `/autofinish`, `/later`, `/move`, `/pickup`, and their suites.
-  Private until the module's scrub.
 - They find the core by `lib/core_path.py` and their peers through `common.tool()`; the registry is
   the core's `repos_json()` (`autofinish` keeps `AUTOFINISH_REPOS`). Without lighthouse's `account`
   a run starts on the one login (G12); without helm's `ask` and `helm` a run's prompt drops their

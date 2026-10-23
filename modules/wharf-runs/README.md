@@ -18,13 +18,13 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
 | `hooks/cold_prompt.py` | a typed `/finish` in a cold or expensive session handed to a fresh run instead |
 
-`orca-serve-agent` is private until the same scrub (off `.helloworld/allowlist.txt`), though written
-as if public. So are `yard-node`, its `node/` templates and their suite (the yard node's S2). The rows after it moved in with the build's B7 step and stay private until a wharf-runs
-scrub: their text still names the owner's own layout. They find the core as wharf does
-(`lib/core_path.py`) and every peer through `common.tool()`: wharf (a hard edge: `branches`,
-`checkpoint`, `session_status`), keel, plumb's `tier_check`, lighthouse's `account` and the
-project-management tools `ask`, `helm` and `helmlib` (absent: a run's prompt drops the ask lines,
-`wharf check` refuses).
+The tools after `orca-serve-agent` find the core as wharf does (`lib/core_path.py`) and every peer
+through `common.tool()`: wharf (a hard edge: `branches`, `checkpoint`, `session_status`), keel,
+plumb's `tier_check`, lighthouse's `account` and the project-management tools `ask`, `helm` and
+`helmlib` (absent: a run's prompt drops the ask lines, `wharf check` refuses). Which Mac is which,
+who the owner is and where an overlay lives are config, below; the code names none of them.
+`yard-node`, its `node/` templates and their suite (the yard node's S2) are private until a scrub of
+their own (off `.helloworld/allowlist.txt`).
 
 ## Install
 
@@ -52,13 +52,20 @@ the tools here will find.
   | `wharf-runs/node/*` | the yard node's values, one per line: `ssh`, `name`, `user`, `ssh-keys`, `tailscale` (`<role>:<address>`), `logins`, `size`, `pool`, `orca-release` (`yard-node`'s header) | `yard-node` names the missing key, exit 2 |
   | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on | `org.regatta.orca-serve` |
   | `wharf-runs/serve-label-previous` | an older label `orca-serve-agent` boots out and removes first, so one agent serves | none |
+  | `wharf-runs/dispatch-host` | the Mac a run goes to when `dispatch` names none (`--on`), and the one whose run cap is 10 (3 elsewhere; `DISPATCH_MAX_RUNS` over either) | the first peer of `wharf-runs/ssh`, with one line on stderr; none, this Mac |
+  | `wharf-runs/label-prefix` | the reverse-DNS prefix of the launchd jobs `dispatch`, `dispatch-rc`, `rc-hosts` and the sweep write and find (`<prefix>.dispatch.<repo>.<topic>…`, `<prefix>.autofinish`) | `org.regatta.claude` |
+  | `wharf-runs/public-repos` | repo folder names a Codex run through `harness` stays out of, beside the overlay's own checkout and anything under `projects/oss/` | those two only, with one line on stderr |
   | `wharf-runs/brake-label` | the launchd job the studio brake stops (SIGSTOP), first non-blank line; a `wharf` start waits while that job's process is stopped, as it does while the brake's sentinel file (`.studio-brake` in the home folder) exists | only the file brakes |
   | `wharf-runs/headroom` | `<host>:avail=<min % free>,swap=<max GB>,rate=<max MB/s swapping>`, `*:` for any other host — the memory `headroom` lets `dispatch` start a run in; the same names on macOS and Linux | 10 % free, 50 MB/s, no swap rule |
   | `wharf-runs/load-max` | `<load per core> [log]` — a host whose 5-minute load per core is at or over it is passed over for the next one its scope allows; `log` records the pick without acting on it | 1.5; log only while `load-margin` is unset or `log` too |
   | `wharf-runs/load-margin` | `<load per core> [log]` — how much lighter a later host must be than the ones passed over | 0.5; log only while `load-max` is unset or `log` too |
 
-  With an overlay installed (a `legacy` file in the config dir) a missing key is an error naming
-  it, as the core does for its own (bar the two `serve-label` keys, `brake-label` and `headroom`, optional). Host names are compared lower-case.
+  The core's own keys are read too: `regatta/laptop` (the Mac with a screen: a run's window opens
+  there only), `regatta/owner` (the name the closing lines and refusals address, and the `by` of a
+  marker the owner writes), `legacy` (the overlay checkout whose `bin/` a run's prompt names first).
+  With an overlay installed (a `legacy` file in the config dir) `regatta check` names a missing key
+  (bar the two `serve-label` keys, `brake-label` and `headroom`, optional); the tools themselves never refuse over one they did
+  not refuse over before: they take the default and say so on stderr. Host names are compared lower-case.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
   plugin) and reads that Mac's registry and config, so the peer needs the core installed, and
   the two keys where it has an overlay.

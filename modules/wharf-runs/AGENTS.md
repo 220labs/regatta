@@ -2,9 +2,13 @@
 
 Read `README.md` first: it is the chart. For an agent:
 
+- Public since the scrub (2026-10-22): every file here is on `.helloworld/allowlist.txt`, and both
+  scans (the gate, and the overlay's substring grep of its private-names list) must stay clean.
+  Owner, host, login and overlay path are config keys (README, "What it reads"); fixtures use
+  `laptop`, `buildbox` (alias `buildbox-ssh`), Sam, `shop`, `example.invalid`.
 - Which Mac is which is config, never code: a host name, an ssh alias or a Tailscale address is
   a line in `${REGATTA_CONFIG}/wharf-runs/`, read through the core's `config_read`. Tests use
-  made-up names (`laptop`, `studio`) and documentation addresses (192.0.2.0/24, 198.51.100.0/24).
+  made-up names (`laptop`, `buildbox`) and documentation addresses (192.0.2.0/24, 198.51.100.0/24).
 - `orca-host` is the one file `--on` copies to a peer, so it finds the core itself (an inline
   copy of helloworld's `lib/find_core.py`) and imports nothing else from this module.
 - A peer tool (`scopes`, `account`) is reached through `common.tool()`; its absence is the line
@@ -15,12 +19,8 @@ Read `README.md` first: it is the chart. For an agent:
   that Mac's `${REGATTA_CONFIG}/wharf-runs/serve-label` itself and imports nothing: no core, no
   module. Its text is ASCII only (bash under a C locale over ssh read a multibyte character after a
   variable as part of its name, 2026-10-19). In a session, `--dry-run` only: it installs an
-  always-on service, which is the owner's to do. It is private until the wharf-runs scrub (off
-  `.helloworld/allowlist.txt`, with its suite), though written as if public.
-- The files B7 moved in (everything but `orca-host`, `orca-serve-agent`, their suites and this
-  module's face) are
-  private until a wharf-runs scrub: off `.helloworld/allowlist.txt`. New text in them is written
-  as if public already. They find the core by `lib/core_path.py` (wharf's, byte for byte: the
+  always-on service, which is the owner's to do.
+- The tools beside `orca-host` find the core by `lib/core_path.py` (wharf's, byte for byte: the
   check compares them) and each peer through `common.tool()`; a hard peer missing (wharf) is one
   line and exit 2, an optional one the fallback `tests/peers.sh` pins.
 - `dispatch`, `dispatch-rc` and `autofinish-run` run every unattended session, this one included:
@@ -40,6 +40,7 @@ Read `README.md` first: it is the chart. For an agent:
   Every private value is a line under `${REGATTA_CONFIG}/wharf-runs/node/`; a template placeholder
   is `@@NAME@@`, and one alone on its line becomes one line per value. `agent.user-data.yaml` names
   nothing of Incus (its suite greps for it): the same file boots a cloud instance. All four files and
-  `tests/node.sh` are private-first until the wharf-runs scrub, off `.helloworld/allowlist.txt`,
+  `tests/node.sh` are private-first until a scrub of their own (the module's of 2026-10-22 came
+  before them), off `.helloworld/allowlist.txt`,
   though written as if public; the suite replays both word scans on them.
 - check: `bash modules/wharf-runs/tests/check.sh`.
