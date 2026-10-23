@@ -1,0 +1,893 @@
+#!/usr/bin/env python3
+"""The weekly loop's numbers, computed — DESIGN.md section 8. Read-only.
+
+    knowledge-numbers            # markdown table for the sextant entry
+    knowledge-numbers --json     # the same, for a script
+    knowledge-numbers --scope S  # the per-project numbers of scope S alone (repos.json's scopes)
+
+What each number is a proxy for:
+  shipped / open branches   work that landed vs work still in flight (the owner-time per outcome)
+  decisions waiting         things blocked on the owner, and how old the oldest is
+  interruptions             everything that took the owner's attention this week — questions, hand-offs,
+                            replies a Stop hook sent round again, permission dialogs, notices,
+                            trust dialogs waiting — and the share of
+                            questions where the owner took the recommendation unchanged (bin/interruptions)
+  always-loaded lines       what every session pays before it starts
+  transcripts archived      whether the episodic record the dream reads is being kept
+  bulletin live entries     whether /share is used at all
+  stood by default          docs whose Reversible: yes picks the stand sweep took (`Stood-By:`
+                            commits, entry S3/S9 of docs/design-docs-2026-10-14.md): defaults that ran
+  memory entries            the size of what the dream has to consolidate
+  memory unlinked           projects with a transcript this week whose auto-memory is not linked
+                            into its home — the vault, or for a confidential scope's repo its
+                            knowledge repo (atlas's `knowledge-home adopt`): what no dream reads
+  synced skills             account skills whose descriptions every terminal session loads
+  user settings             declared settings missing or undeclared on this Mac (drift)
+  Course goals G1–G6        the entry doc's Goals table of docs/design-docs-2026-10-14.md, one row
+                            each, read from `keel parse` / `keel list --json` / `keel open --json`
+                            (entry S10); a goal that cannot be measured yet says why, never a guess
+  Wharf goals G1–G5         the Goals table of docs/wharf-on-orca-2026-10-17.md (S8), each a number
+                            with its source: ships built by `wharf apply` (plan.json + events.jsonl),
+                            ship workers' asks that reached the owner (attention log), dispatch-Mac starts that
+                            never reached a prompt (dispatch logs, over ssh), live lines of the layer,
+                            old words in live files. A read that cannot be made says why, never a 0
+
+"Corrections repeated" comes from the dream's own log line, not from here.
+
+The fence (knowledge-layers S4): a confidential scope's repos (the core's gather_fence) are summed
+into one `(confidential)` project row and counted as `(confidential)` among the unlinked memories,
+never named; interruptions applies the same fence to its rows. `--scope S` keeps scope S's
+projects alone, by name, and hands the scope to interruptions; the machine-wide numbers (the
+always-loaded layer, the plan, the goals) are the same either way.
+Projects = every git repo one or two levels under ~/projects, except the two knowledge repos.
+"""
+import datetime as dt
+import inspect
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+def _core_hooks():
+    """The folder `import common` reads. In regatta's plumb module, the core's hooks/ found by
+    lib/find_core.py (the checkout, the config dir's `home`, the plugin's installPath); in the
+    overlay, hooks/ beside bin/, whose common.py is the core's source shim (regatta-modules
+    C2). One body for both homes, so the move to modules/plumb is a pure copy."""
+    root = Path(__file__).resolve().parent.parent
+    if (root / "lib" / "find_core.py").is_file():
+        sys.path.insert(0, str(root / "lib"))
+        import find_core
+        return find_core.hooks()
+    return str(root / "hooks")
+
+
+sys.path.insert(0, _core_hooks())
+import common  # noqa: E402  cost_text: spend as list and effective (the owner, 2026-10-05)
+
+HOME = Path.home()
+PROJECTS = common.PROJECTS
+
+
+def knowledge_repo(key):
+    """(name, checkout) of a knowledge repo from atlas's key (`atlas/layer`, `atlas/vault`: its name,
+    its checkout, the variable that overrides the checkout), (None, None) without the key: the numbers
+    that read it then say not measured, and the overlay's absent key is one line on stderr."""
+    items = common.config_lines(key) or []
+    if len(items) < 2:
+        if (common.CONFIG / "legacy").exists():
+            print("knowledge-numbers: no %s in %s — its numbers are not measured" % (key, common.CONFIG), file=sys.stderr)
+        return None, None
+    env = os.environ.get(items[2]) if len(items) > 2 else None
+    return items[0], Path(env or items[1]).expanduser()
+
+
+LAYER_NAME, LAYER = knowledge_repo("atlas/layer")
+VAULT_NAME, VAULT = knowledge_repo("atlas/vault")
+# the checkout whose docs/ holds the entry: KNOWLEDGE_NUMBERS_ROOT; else, from regatta's plumb
+# module, the overlay the core names as legacy (until B14); else this checkout
+ROOT = Path(os.environ.get("KNOWLEDGE_NUMBERS_ROOT") or (
+    common.legacy_root() if (Path(__file__).resolve().parent.parent / "lib" / "find_core.py").is_file() else None)
+    or Path(__file__).resolve().parent.parent)
+KNOWLEDGE = {n for n in (LAYER_NAME, VAULT_NAME) if n}
+WEEK = 7 * 24 * 3600
+CONFIDENTIAL = "(confidential)"   # a confidential scope's project, counted, never named (S4)
+
+
+def git(repo, *args):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def lines(path):
+    try:
+        return len(Path(path).read_text(encoding="utf-8").splitlines())
+    except OSError:
+        return 0
+
+
+def imported(claude_md):
+    """Files a CLAUDE.md pulls in with @path (outside code spans), one level deep."""
+    out = []
+    try:
+        text = Path(claude_md).read_text(encoding="utf-8")
+    except OSError:
+        return out
+    text = re.sub(r"```.*?```", "", text, flags=re.S)
+    text = re.sub(r"`[^`]*`", "", text)
+    for m in re.finditer(r"(?:^|\s)@(~?/?[\w./-]+)", text):
+        p = Path(m.group(1)).expanduser()
+        if not p.is_absolute():
+            p = Path(claude_md).parent / p
+        if p.is_file():
+            out.append(p)
+    return out
+
+
+KEEL = common.tool("keel")  # keel's (G36); None: the course rows say "not installed"
+ENTRY = "design-docs-2026-10-14.md"
+WINDOW_DAYS = 28  # the baselines' own window: docs handed over in the last four weeks
+DATE_IN_NAME = re.compile(r"-(\d{4}-\d{2}-\d{2})\.md$")
+FIRST_ANSWER = re.compile(r"first answer (\d{4}-\d{2}-\d{2})")
+
+
+class NotMeasured(Exception):
+    """A goal this run cannot measure: the message is the reason, printed after `not measured — `."""
+
+
+def keel_json(*args, timeout=300):
+    if not KEEL:
+        return None
+    try:
+        r = subprocess.run([str(KEEL), *args], capture_output=True, text=True, timeout=timeout)
+        return json.loads(r.stdout) if r.stdout.strip() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def course_goals(now, root=None, projects=None):
+    """[{id, metric, baseline, target, how, value|None, why|None}] — the entry's Goals table, each row
+    measured from the Keel's own verbs (`keel parse`, `list --json`, `open --json`), or `why` it cannot
+    be yet (entry S10). Read-only, no model; a goal is never estimated."""
+    root, projects = root or ROOT, projects or PROJECTS
+    if not KEEL:
+        return [{"id": "G1–G6", "metric": "the Course goals", "baseline": "", "target": "", "how": "", "value": None,
+                 "why": "not installed (keel)"}]
+    entry = next((p for p in (root / "docs" / ENTRY, root / "docs" / "record" / ENTRY) if p.is_file()), None)
+    kp = keel_json("parse", str(entry)) if entry else None
+    if not kp or not kp.get("goals"):
+        return [{"id": "G1–G6", "metric": "the Course goals", "baseline": "", "target": "", "how": "", "value": None,
+                 "why": "docs/%s is not on this checkout, or bin/keel cannot read its Goals table" % ENTRY}]
+    day = 86400
+    data = {}
+
+    def listing():
+        if "list" not in data:
+            data["list"] = keel_json("list", "--root", str(projects), "--limit", "0", "--json") or []
+        return data["list"]
+
+    def recent(min_days, max_days=WINDOW_DAYS):
+        return [r for r in listing() if r.get("born") and min_days * day <= now - r["born"] <= max_days * day]
+
+    def course_docs():
+        """[(list row, first answer's day as a time or None, keel word, steps)] of every doc that
+        carries the Keel: only a Course doc's Status line dates its first answer."""
+        if "course" not in data:
+            out = []
+            for r in listing():
+                if not r.get("keel"):
+                    continue
+                d = keel_json("parse", r["path"]) or {}
+                m = FIRST_ANSWER.search((d.get("keel") or {}).get("line") or "")
+                out.append((r, m and dt.datetime.strptime(m.group(1), "%Y-%m-%d").timestamp(),
+                            (d.get("keel") or {}).get("word"), d.get("steps") or []))
+            data["course"] = out
+        return data["course"]
+
+    def g1():
+        rows = [r for r in recent(3) if r.get("review")]
+        if not rows:
+            raise NotMeasured("no doc with D-items was handed over 3 to %d days ago" % WINDOW_DAYS)
+        n = sum(1 for r in rows if r["review"].startswith("unseen"))
+        return "%d %% (%d of %d)" % (round(100 * n / len(rows)), n, len(rows))
+
+    def g2():
+        aged = [r for r, fa, _, _ in course_docs() if fa and now - fa >= 3 * day]
+        if not aged:
+            raise NotMeasured("only a Course doc's Status line dates its first answer, and none has one 72 h old (%d Course docs, %d with a first answer)"
+                              % (len(course_docs()), sum(1 for _, fa, _, _ in course_docs() if fa)))
+        n = sum(1 for r in aged if (r.get("review") or "").startswith("partial"))
+        return "%d %% (%d of %d Course docs)" % (round(100 * n / len(aged)), n, len(aged))
+
+    def g3():
+        raise NotMeasured("a Status line keeps the day of the first answer, not the hour (%d Course docs have one); the first answer's commit time is not read yet"
+                          % sum(1 for _, fa, _, _ in course_docs() if fa))
+
+    def g4():
+        old = [steps for _, fa, w, steps in course_docs() if fa and now - fa >= 7 * day and w not in (None, "proposed", "superseded")]
+        if not old:
+            raise NotMeasured("only a Course doc carries S-steps, and none was answered 7 days ago yet; the baseline's commit proxy is not computed here")
+        n = sum(1 for steps in old if any(s.get("status") == "done" for s in steps))
+        return "%d %% (%d of %d Course docs)" % (round(100 * n / len(old)), n, len(old))
+
+    def g5():
+        k = o = n4 = o4 = 0
+        for r in recent(0):
+            p = r.get("picks") or {}
+            k, o, n4, o4 = k + p.get("kept", 0), o + p.get("overruled", 0), n4 + p.get("n4", 0), o4 + p.get("o4", 0)
+        if k + o == 0:
+            raise NotMeasured("no doc handed over in the last %d days has an item the owner answered against a bare pick" % WINDOW_DAYS)
+        return "%d %% overruled (%d of %d)%s" % (round(100 * o / (k + o)), o, k + o,
+                                                 "; %d %% with 4+ options (%d of %d)" % (round(100 * o4 / n4), o4, n4) if n4 else "")
+
+    def g6():
+        rows = keel_json("open", "--root", str(projects), "--json")
+        if rows is None:
+            raise NotMeasured("`keel open --json` printed nothing")
+        old = sum(1 for r in rows if DATE_IN_NAME.search(r["path"])
+                  and now - dt.datetime.strptime(DATE_IN_NAME.search(r["path"]).group(1), "%Y-%m-%d").timestamp() > 7 * day)
+        return "%d of %d (age from the file name)" % (old, len(rows))
+
+    measure = {"G1": g1, "G2": g2, "G3": g3, "G4": g4, "G5": g5, "G6": g6}
+    out = []
+    for g in kp["goals"]:
+        row = {"id": g["id"], "metric": g["metric"], "baseline": g["today"], "target": g["target"], "how": g["how"],
+               "value": None, "why": None}
+        try:
+            if g["id"] not in measure:
+                raise NotMeasured("no measure for %s in bin/knowledge-numbers yet" % g["id"])
+            row["value"] = measure[g["id"]]()
+        except NotMeasured as e:
+            row["why"] = str(e)
+        out.append(row)
+    return out
+
+
+def claude_dirs():
+    """Every Claude Code config dir on this Mac, as bootstrap.sh's claude_dirs finds them: this
+    session's ($CLAUDE_CONFIG_DIR, else ~/.claude) first, then each claude row of the account
+    registry whose home exists, deduplicated by real path. Orca's logins are rows too."""
+    dirs = [Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")]
+    try:
+        reg = json.loads(Path(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json")
+                         .read_text(encoding="utf-8")).get("accounts", [])
+        for a in common.account_rows(reg):
+            if isinstance(a, dict) and a.get("provider", "claude") == "claude":
+                h = common.account_home(a)
+                if h and h.is_dir():
+                    dirs.append(h)
+    except Exception:  # a missing or malformed registry leaves the session's own dir, never a crash
+        pass
+    seen, out = set(), []
+    for d in dirs:
+        if os.path.realpath(d) not in seen:
+            seen.add(os.path.realpath(d))
+            out.append(d)
+    return out
+
+
+def slug(path):
+    """Claude Code's folder name for a directory: every non-alphanumeric character becomes `-`
+    (the rule of bootstrap.sh cmd_adopt_memory)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def recent_transcript(folder, now):
+    """A non-empty transcript modified this week; one moved or deleted mid-scan is skipped."""
+    for p in folder.glob("*.jsonl"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size > 0 and now - st.st_mtime < WEEK:
+            return True
+    return False
+
+
+def memory_homes():
+    """{registry key: the memory/ folder that repo's memory links into} for each repo of a scope
+    flagged confidential: its knowledge repo's, the scope's anchor (knowledge-layers D1). Every
+    other repo's home is the vault's memory/. The same rule as atlas's knowledge-home, read by flag
+    through the core's scope readers; {} when the registry cannot be read. A confidential scope with
+    no anchor (a glob first) has no home: its repos map to None, unlinked wherever they link."""
+    repos, scopes = common.scope_registry()
+    out = {}
+    for s in scopes.values():
+        if not (isinstance(s, dict) and s.get("confidential") is True):
+            continue
+        first = (s.get("repos") or [None])[0]
+        anchor = first if isinstance(first, str) and not common.is_glob(first) else None
+        for k in common.scope_members(s, repos):
+            out.setdefault(k, (PROJECTS / anchor / "memory").resolve() if anchor else None)   # the first, as knowledge-home
+    return out
+
+
+def memory_unlinked(now, dirs=None, fence=None):
+    """Names of the projects with a non-empty transcript modified this week whose `memory` entry is
+    not a symlink into its home's memory/ (memory_homes; the vault's for most). A project is a `<config dir>/projects/<slug>/` folder;
+    a worktree's folder (`…--claude-worktrees-<topic>`) folds into its repo's, because Claude Code
+    keys auto-memory by the repo root and its worktree folders never hold a `memory`. The same
+    project on two logins counts once, unlinked if any login's memory is. A slug no ~/projects dir
+    (or one under a folder of repos) accounts for is listed as the slug. With `fence` (the core's
+    gather_fence), a confidential scope's project is listed as `(confidential)`, once per project,
+    and one outside the scope asked for not at all."""
+    if VAULT is None:  # no vault named (atlas/vault): nothing to link into, so nothing to count
+        return []
+    names = {}
+    for top in sorted(PROJECTS.glob("*")) + sorted(PROJECTS.glob("*/*")):
+        if top.is_dir() and not top.name.startswith("."):
+            names.setdefault(slug(top), str(top.relative_to(PROJECTS)))  # shallower path wins
+    vault_memory = (VAULT / "memory").resolve()
+    homes = memory_homes()
+    folders = {}  # (real projects dir, repo slug) -> any folder of it has a transcript this week
+    for d in (dirs if dirs is not None else claude_dirs()):
+        # Real path: a second login dir and Orca's profile link `projects` to ~/.claude's, so
+        # their memory is one memory and is read once.
+        proj = Path(os.path.realpath(d / "projects"))
+        for f in proj.glob("*"):
+            # Only a folder under ~/projects is a project: a /tmp scratchpad, a session opened in ~
+            # or an Orca probe workspace never has its memory adopted (review, 2026-10-19).
+            if not f.name.startswith(slug(PROJECTS) + "-"):
+                continue
+            key = (proj, f.name.split("--claude-worktrees-")[0])
+            folders[key] = folders.get(key, False) or recent_transcript(f, now)
+    out = set()
+    for (proj, s), recent in folders.items():
+        mem = proj / s / "memory"
+        home = homes.get(names.get(s), vault_memory)
+        if recent and not (home and mem.is_symlink() and mem.resolve().is_relative_to(home)):
+            out.add(names.get(s, s))
+    if not fence:
+        return sorted(out)
+    verdict = {n: fence(PROJECTS / n if not n.startswith("-") else None,
+                        *(proj / s for (proj, s) in folders if names.get(s, s) == n)) for n in out}
+    return sorted(n for n in out if verdict[n] == "quote") + [CONFIDENTIAL] * sum(v == "fenced" for v in verdict.values())
+
+# ---------------------------------------------------------------------------- Wharf goals G1–G5
+# docs/wharf-on-orca-2026-10-17.md, Goals (S8): "how we will know it worked". Same shape as
+# course_goals: the doc's own table through `keel parse`, one measure per id, `NotMeasured` for a read
+# this run cannot make. The ids repeat the Course's (G1–G6), so the table and the JSON key are apart.
+
+WHARF_ENTRY = "wharf-on-orca-2026-10-17.md"
+CLAUDE_LOGS = HOME / "Library" / "Logs" / "claude-weekly"
+ATTENTION = common.LOG_DIR / "attention"   # one JSONL a month; bin/asklib.py log_relay writes the Relay rows
+DISPATCH_KEY = "plumb/dispatch-host"   # `<host>:<ssh alias>`, the Mac dispatch runs on (README, "Private values")
+PEERS_KEY = "wharf-runs/ssh"   # orca-host's PEERS, `<peer>:<ssh alias>` lines: the fallback, its first line
+# G4's files: docs/record/wharf-on-orca-evidence-2026-10-17.md section 2, whole files. That table names
+# 29 of them and says "four test files 3,836" without naming them; these four sum to 3,836 at da825619
+# (1,238 + 690 + 492 + 1,416), and the list as a whole to the doc's 33,892 there. Rename S5 (H1)
+# moved bin/plan's text to bin/helm, planlib.py and plan_render.py to helm*, and split bin/test_plan.sh
+# into test_helm.sh and test_wharf.sh: the list follows the text, so the number stays comparable.
+G4_FILES = (
+    "bin/blueprintlib.py", "bin/helm", "bin/harness", "bin/harness_adapters/orca.py",
+    "bin/harness_adapters/claude_code.py", "bin/harness_adapters/codex.py",
+    "bin/ask", "bin/asklib.py", "hooks/ask_guard.py", "hooks/talk_nudge.py",
+    "bin/helmlib.py", "bin/helm_render.py", "bin/stalls.py", "bin/stalls_tick.py",
+    "bin/dispatch", "bin/dispatch-rc", "skills/later/SKILL.md", "bin/weekly-run",
+    "bin/sheep", "bin/account", "bin/autofinish", "bin/autofinish-run", "skills/finish/SKILL.md",
+    "bin/pickup", "bin/keel", "bin/interruptions", "bin/session_status.py", "bin/statusline", "hooks/attention.py",
+    "bin/test_helm.sh", "bin/test_wharf.sh", "bin/test_harness.sh", "bin/test_ask.sh", "bin/test_dispatch.sh",
+)
+G4_NEW = ("bin/wharf", "bin/plan")   # S1's file, and S5's shim: not in the baseline's list, so printed beside it
+# A checkout from before S5 (an overlay whose S5 has not landed runs this file through its shim) holds the
+# text under the old names: count those instead, and bin/plan as a baseline file, not as the new shim.
+G4_BEFORE_S5 = {"bin/helm": "bin/plan", "bin/helmlib.py": "bin/planlib.py", "bin/helm_render.py": "bin/plan_render.py",
+                "bin/test_helm.sh": "bin/test_plan.sh", "bin/test_wharf.sh": None}
+# G5's interim read: the grep docs/wharf-rename-2026-10-16.md S8 names for bin/test_vocabulary.sh
+LAND_WORDS = "land|lands|landed|landing|landings|relands?|lander"
+LAND_PATHS = ("bin", "hooks", "skills", "rules", "agents", "AGENTS.md", "README.md", "DESIGN.md", "templates", "settings")
+
+
+def scan_logs(logdir, dates):
+    """{"<log name>#<n>": True when that start never got busy} for each start in each dispatch log dated
+    in `dates`. dispatch appends every run of a topic on one day to the same log, so a log is cut into
+    starts at dispatch's `== exit` lines; a start failed when it says `FAILED: never busy` and exits 3
+    (the retry that succeeded exits otherwise, and its two lines sit before one exit, so it counts once).
+    A tail with the line and no exit yet is one more failed start; a refused start writes neither.
+    None when the directory cannot be read. Self-contained: G3 sends this source to the dispatch Mac."""
+    import os
+    import re
+    try:
+        names = sorted(os.listdir(logdir))
+    except OSError:
+        return None
+    out = {}
+    for n in names:
+        if n[:10] not in dates or "-dispatch-" not in n or not n.endswith(".log"):
+            continue
+        try:
+            with open(os.path.join(logdir, n), errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        start = 0
+        for i, m in enumerate(re.finditer(r"(?m)^== exit (\S+)", text)):
+            out["%s#%d" % (n, i)] = "FAILED: never busy" in text[start:m.start()] and m.group(1) == "3"
+            start = m.end()
+        if "FAILED: never busy" in text[start:]:
+            out["%s#tail" % n] = True
+    return out
+
+
+def dispatch_peer():
+    """(host, ssh alias) of the Mac that runs dispatch, whose logs G3 reads: DISPATCH_KEY; without it
+    the first line of PEERS_KEY, as before the key (the lines have no order, so one line on stderr);
+    (None, None) without either. A config key, not a name here: public code names no host
+    (regatta's AGENTS.md)."""
+    lines = common.config_lines(DISPATCH_KEY)
+    if lines is None and common.config_lines(PEERS_KEY):
+        print("knowledge-numbers: no %s — G3 takes %s's first line" % (DISPATCH_KEY, PEERS_KEY), file=sys.stderr)
+    for line in (lines if lines is not None else common.config_lines(PEERS_KEY)) or []:
+        host, _, alias = line.partition(":")
+        if host.strip() and alias.strip():
+            return host.strip().lower(), alias.strip()
+    return None, None
+
+
+def dispatch_scan(dates):
+    """scan_logs on the dispatch Mac, over ssh to its PEERS_KEY alias (read-only): its dispatch logs live there."""
+    _, ssh_alias = dispatch_peer()
+    if not ssh_alias:
+        raise NotMeasured("the dispatch Mac's ssh alias is not configured (%s in the regatta config dir)" % DISPATCH_KEY)
+    code = inspect.getsource(scan_logs) + "\nimport json, os\nprint(json.dumps(scan_logs(os.path.expanduser(%r), %r)))" % (
+        "~/Library/Logs/claude-weekly", list(dates))
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh_alias,
+                            "python3 -c " + shlex.quote(code)], capture_output=True, text=True, timeout=60)
+        out = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        raise NotMeasured("the dispatch Mac is not readable over ssh %s (%s)" % (ssh_alias, type(e).__name__))
+    if out is None and r.returncode == 0 and r.stdout.strip() == "null":
+        raise NotMeasured("the dispatch Mac has no readable ~/Library/Logs/claude-weekly")
+    if out is None:
+        raise NotMeasured("the dispatch Mac is not readable over ssh %s (%s)" % (ssh_alias, (r.stderr.strip().splitlines() or ["no output"])[-1][:100]))
+    return out
+
+
+def this_host():
+    """This Mac as dispatch names it: PLAN_HOST, DISPATCH_HOST, else the core's host_name() (asklib's
+    this_host, which the module cannot import); None when it cannot say."""
+    try:
+        return os.environ.get("PLAN_HOST") or os.environ.get("DISPATCH_HOST") or common.host_name()
+    except Exception:
+        return None
+
+
+def ship_records(plans):
+    """[{plan, ship, bp, tasks, last, sessions, cancelled}] — every blueprint with an `orca_run`, in
+    every plan.json under `plans`. `tasks` are its blocks' plan tasks, `last` each task's newest status
+    event ({task: (status, t)}) from the plan's events.jsonl: plan.json holds no status."""
+    out = []
+    try:
+        dirs = sorted(d for d in Path(plans).iterdir() if (d / "plan.json").is_file())
+    except OSError:
+        return None
+    for d in dirs:
+        try:
+            plan = json.loads((d / "plan.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(plan, dict):
+            continue
+        events = []
+        try:
+            for line in (d / "events.jsonl").read_text().splitlines():
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue   # a torn line from a crash
+                if isinstance(ev, dict):
+                    events.append(ev)
+        except OSError:
+            pass
+        for ship, bp in (plan.get("blueprints") or {}).items():
+            if not isinstance(bp, dict) or not bp.get("orca_run"):
+                continue
+            tasks = {t: v for t, v in (plan.get("tasks") or {}).items() if isinstance(v, dict) and v.get("ship") == ship and t in (bp.get("blocks") or {})}
+            last = {}
+            for ev in events:
+                if ev.get("task") in tasks and ev.get("status") and ev.get("t") is not None:
+                    if ev["task"] not in last or ev["t"] >= last[ev["task"]][1]:
+                        last[ev["task"]] = (ev["status"], ev["t"])
+            # a ship worker's session: one that reported on a build block. `helm report` stamps whoever ran
+            # it, so the skipper (`by`, the plan's manager) and a launch block's lander are left out (review, 2026-10-19)
+            skipper = {str(x)[:8] for x in (bp.get("by"), (plan.get("manager") or {}).get("session")) if x}
+            sessions = {str(e["session"])[:8] for e in events
+                        if e.get("task") in tasks and e.get("session") and not str(e["task"]).startswith("launch-")} - skipper
+            out.append({"plan": d.name, "ship": ship, "bp": bp, "tasks": tasks, "last": last, "sessions": sessions,
+                        "cancelled": bool(bp.get("cancelled"))})
+    return out
+
+
+def wharf_goals(now, root=None, plans=None, attention=None, logs=None, scan=None, host=None):
+    """[{id, metric, baseline, target, how, value|None, why|None}] — the wharf doc's Goals table, each
+    row measured, or `why` it cannot be (S8). Every value ends in its source. Read-only, no model."""
+    root = root or ROOT
+    plans = plans or CLAUDE_LOGS / "plans"
+    attention = attention or ATTENTION
+    logs = logs or CLAUDE_LOGS
+    scan = scan or dispatch_scan
+    entry = next((p for p in (root / "docs" / WHARF_ENTRY, root / "docs" / "record" / WHARF_ENTRY) if p.is_file()), None)
+    kp = keel_json("parse", str(entry)) if entry else None
+    if not kp or not kp.get("goals"):
+        return [{"id": "G1–G5", "metric": "the Wharf goals", "baseline": "", "target": "", "how": "", "value": None,
+                 "why": "docs/%s is not on this checkout, or bin/keel cannot read its Goals table" % WHARF_ENTRY}]
+    since = now - WEEK
+
+    def g1():
+        ships = ship_records(plans)
+        if ships is None:
+            raise NotMeasured("no plans directory at %s" % plans)
+        ships = [x for x in ships if not x["cancelled"]]
+        # built end to end = wharf's own mark: finish_if_ended stamps `ended` once every block ended in the
+        # plan (done, landed or launched). Counted since the first ship, as the target is ("3 by 2026-10-31").
+        built = [x for x in ships if x["bp"].get("ended")]
+        week = sum(1 for x in built if x["bp"]["ended"] >= since)
+        return "%d of %d ships with an Orca Run built, %d this week — plan.json blueprints with `orca_run` that wharf marked `ended` (every block ended)" % (
+            len(built), len(ships), week)
+
+    def g2():
+        rows, relays = [], 0
+        months = {dt.datetime.fromtimestamp(t).strftime("%Y-%m") for t in (since, now)}
+        found = False
+        for m in sorted(months):
+            f = Path(attention) / ("%s.jsonl" % m)
+            if not f.is_file():
+                continue
+            found = True
+            for line in f.read_text(errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                    ts = dt.datetime.fromisoformat(r["ts"]).timestamp()
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if r.get("event") == "Relay" and ts >= since:
+                    relays += 1
+                    if r.get("type") == "escalated":
+                        rows.append((r, ts))
+        if not found:
+            raise NotMeasured("no attention log for this month at %s" % attention)
+        src = "attention log, %d Relay rows in the last 7 days" % relays
+        if not rows:
+            return "0 — no `Relay` row `escalated` (%s)" % src
+        ships = ship_records(plans) or []
+        if not any(s["sessions"] for s in ships):
+            raise NotMeasured("%d `Relay` rows `escalated`, but no ship worker's session is recorded in events.jsonl (a wharf task has session null), so a row cannot be tied to a ship" % len(rows))
+        n = 0
+        for r, ts in rows:
+            sid = (r.get("session") or "")[:8]
+            # the log has no liveness field: the skipper is read as live while its ship was open (its Run made —
+            # `accepted` moves at every re-accept — and not ended)
+            if sid and any(sid in s["sessions"] and (s["bp"].get("created_run") or s["bp"].get("accepted", 0)) <= ts and not (s["bp"].get("ended") and s["bp"]["ended"] < ts) for s in ships):
+                n += 1
+        return "%d of %d escalated rows from a ship worker while its ship was open (%s)" % (n, len(rows), src)
+
+    def g3():
+        today = dt.date.fromtimestamp(now)
+        days = [(today - dt.timedelta(days=i)).isoformat() for i in range(7)]
+        mine = scan_logs(logs, days)
+        here = "this Mac: %d of %d" % (sum(mine.values()), len(mine)) if mine is not None else "this Mac's logs unreadable"
+        peer = dispatch_peer()[0]
+        if peer and (host or this_host()) == peer:
+            theirs, how = mine, "its own logs"
+        else:
+            try:
+                theirs, how = scan(days), "over ssh %s" % dispatch_peer()[1]
+            except NotMeasured as e:
+                raise NotMeasured("%s; %s" % (e, here))
+        if not theirs:
+            raise NotMeasured("no dispatch log on the dispatch Mac in the last 7 days records a start (%s)" % how)
+        return "%d of %d starts never busy — `FAILED: never busy` and exit 3, one per start, the dispatch Mac's `*-dispatch-*.log` %s; %s" % (
+            sum(theirs.values()), len(theirs), how, here)
+
+    def count(paths):
+        n, missing, shims = 0, [], []
+        for f in paths:
+            try:
+                text = (root / f).read_text(errors="replace")
+            except OSError:
+                missing.append(f)
+                continue
+            n += len(text.splitlines())
+            if "source shim" in text[:400].lower():   # moved to a regatta module: its lines left with it
+                shims.append(f)
+        return n, missing, shims
+
+    def g4():
+        files, extra = G4_FILES, G4_NEW
+        if not (root / "bin/helm").exists() and (root / "bin/planlib.py").exists():
+            files = tuple(G4_BEFORE_S5.get(f, f) for f in G4_FILES if G4_BEFORE_S5.get(f, f))
+            extra = tuple(f for f in G4_NEW if f != "bin/plan")
+        n, missing, shims = count(files)
+        if len(missing) == len(files):
+            raise NotMeasured("none of the baseline's %d files is on this checkout (%s)" % (len(files), root))
+        new = count(extra)[0]
+        s = "{:,} lines — `wc -l` over the baseline's %d files (evidence section 2); {:,} with %s".format(n, n + new) % (
+            len(files) - len(missing), ", ".join(extra))
+        return s + ("; MISSING %s, so those lines are not in the number" % ", ".join(missing) if missing else "") + (
+            "; SHIM %s, moved to regatta, so the drop is a move, not a cut" % ", ".join(shims) if shims else "")
+
+    def g5():
+        script = root / "bin" / "test_vocabulary.sh"
+        if script.is_file():
+            r = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=600, cwd=str(root))
+            tail = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["no output"])[-1][:120]
+            return "bin/test_vocabulary.sh exits %d — %s" % (r.returncode, tail)
+        paths = [p for p in LAND_PATHS if (root / p).exists()]
+        if not paths:
+            raise NotMeasured("none of the grep's paths (%s) is on this checkout (%s)" % (" ".join(LAND_PATHS), root))
+        r = subprocess.run(["grep", "-rniwE", LAND_WORDS] + paths, capture_output=True, text=True, cwd=str(root), timeout=120)
+        if r.returncode not in (0, 1):
+            raise NotMeasured("the land-word grep failed: %s" % (r.stderr.strip()[:100] or "exit %d" % r.returncode))
+        hits = [l for l in r.stdout.splitlines() if l]
+        return "{:,} land lines in {} files — INTERIM read: the rename doc's S8 grep, not bin/test_vocabulary.sh (not built yet); no allow-list applied".format(
+            len(hits), len({l.split(":", 1)[0] for l in hits}))
+
+    measure = {"G1": g1, "G2": g2, "G3": g3, "G4": g4, "G5": g5}
+    out = []
+    for g in kp["goals"]:
+        row = {"id": g["id"], "metric": g["metric"], "baseline": g["today"], "target": g["target"], "how": g["how"],
+               "value": None, "why": None}
+        try:
+            if g["id"] not in measure:
+                raise NotMeasured("no measure for %s in bin/knowledge-numbers yet" % g["id"])
+            row["value"] = measure[g["id"]]()
+        except NotMeasured as e:
+            row["why"] = str(e)
+        except Exception as e:  # one read's failure never costs the run its other numbers
+            row["why"] = "the read failed: %s: %s" % (type(e).__name__, str(e)[:100])
+        for k in ("value", "why"):
+            if row[k]:
+                row[k] = row[k].replace("|", "/")   # a table cell
+        out.append(row)
+    return out
+
+
+def scoped(fence, scope):
+    """The fence as this file applies it: under --scope another confidential scope's item is not
+    the scope's, so it is left out, as one outside it, never counted."""
+    return (lambda *p: "quote" if fence(*p) == "quote" else "outside") if scope else fence
+
+
+def fold_fenced(rows, fenced):
+    """The project rows with the fenced ones summed into one `(confidential)` row, last: every
+    count holds, no name of theirs is printed (S4)."""
+    if not fenced:
+        return rows
+    one = {"project": CONFIDENTIAL}
+    for k in fenced[0]:
+        if k != "project":
+            one[k] = sum(r[k] for r in fenced)
+    return rows + [one]
+
+
+def main():
+    scope = sys.argv[sys.argv.index("--scope") + 1] if "--scope" in sys.argv[:-1] else None
+    if "--scope" in sys.argv and (not scope or scope.startswith("--")):
+        print("knowledge-numbers: --scope needs a scope's name", file=sys.stderr)
+        sys.exit(2)
+    try:
+        fence = common.gather_fence(scope)
+    except ValueError as e:
+        print(f"knowledge-numbers: {e}", file=sys.stderr)
+        return 2
+    now = dt.datetime.now().timestamp()
+    # Repos one or two levels down (a folder of repos holds repos one level down).
+    candidates = list(PROJECTS.glob("*/.git")) + list(PROJECTS.glob("*/*/.git")) if PROJECTS.is_dir() else []
+    repos = sorted({g.parent for g in candidates if g.parent.name not in KNOWLEDGE
+                    and g.parent.parent.name not in KNOWLEDGE and "worktrees" not in g.parts})
+    fence = scoped(fence, scope)
+    verdicts = {r: fence(r) for r in repos}
+    repos = [r for r in repos if verdicts[r] != "outside"]
+    rows, fenced = [], []
+    for r in repos:
+        main_branch = "main"
+        wf = r / ".claude" / "workflow.json"
+        if wf.is_file():
+            try:
+                main_branch = json.loads(wf.read_text()).get("main") or "main"
+            except ValueError:
+                pass
+        shipped = git(r, "rev-list", "--count", "--since=7.days", main_branch) or "0"
+        branches = [b for b in git(r, "for-each-ref", "--format=%(refname:short)", "refs/heads/claude/").split()
+                    if b and not b.endswith("-raw")]
+        todo = r / "TODO.md"
+        decide = len(re.findall(r"\*\*Decide:\*\*", todo.read_text())) if todo.is_file() else 0
+        local = r / "CLAUDE.md"
+        always = lines(local) + sum(lines(p) for p in imported(local)) \
+            + sum(lines(p) for p in (r / ".claude" / "rules").glob("**/*.md"))
+        # Checkpoints that landed with no summary at all — the "commit summaries again"
+        # correction (2026-09-10, 2026-09-12) made visible, so the dream sees if it recurs.
+        no_summary = git(r, "rev-list", "--count", "--all", "--since=7.days",
+                         "--grep=^wip(no-summary)") or "0"
+        # A stood doc is one commit carrying the trailer (bin/keel's STOOD_TRAILER), on whatever
+        # branch the sweep or autofinish stood it (review D3-A: the count in /sextant's numbers).
+        # Distinct by subject: /finish's rewrite lands a copy on main while the original lives on in
+        # the branch's -raw, archive or remote ref, and --all would count both (review 2026-10-16).
+        stood = len(set(git(r, "log", "--all", "--since=7.days", "--fixed-strings", "--format=%s",
+                            "--grep=Stood-By: autofinish").splitlines()))
+        (fenced if verdicts[r] == "fenced" else rows).append(
+            {"project": str(r.relative_to(PROJECTS)), "shipped_7d": int(shipped), "open_claude_branches": len(branches),
+             "decide_items": decide, "project_always_loaded": always,
+             "no_summary_7d": int(no_summary), "stood_7d": int(stood)})
+    rows = fold_fenced(rows, fenced)
+
+    user_md = HOME / ".claude" / "CLAUDE.md"
+    user_always = lines(user_md) + sum(lines(p) for p in imported(user_md)) \
+        + sum(lines(p) for p in (HOME / ".claude" / "rules").glob("**/*.md"))
+    me = sum(lines(p) for p in (VAULT / "me").glob("*.md")) if VAULT else 0
+    rules = sum(lines(p) for p in (LAYER / "rules").glob("*.md")) if LAYER else 0
+
+    sessions_week = sum(1 for p in (HOME / ".claude" / "projects").glob("*/*.jsonl")
+                        if now - p.stat().st_mtime < WEEK)
+    archived_week = sum(1 for p in (PROJECTS / "transcripts").glob("*/*.jsonl")
+                        if now - p.stat().st_mtime < WEEK)
+    bulletin = (VAULT or PROJECTS / ".no-vault") / "bulletin.md"
+    today = dt.date.today().isoformat()
+    live = 0
+    if bulletin.is_file():
+        for l in bulletin.read_text().splitlines():
+            m = re.search(r" · until (\d{4}-\d{2}-\d{2}) · ", l)
+            if l.startswith("- ") and m and m.group(1) >= today:
+                live += 1
+    # Usage-limit hits (the owner, D13: "I never want to stop work and wait for tokens to refresh").
+    # Claude Code writes each as an API-error assistant record: "You've hit your session
+    # limit · resets 11pm (…)". Forks copy records, so count distinct record uuids.
+    limit_hits = {}
+    for p in list((HOME / ".claude" / "projects").glob("*/*.jsonl")) + list((PROJECTS / "transcripts").glob("*/*.jsonl")):
+        if now - p.stat().st_mtime > WEEK:
+            continue
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if "hit your" not in line or '"isApiErrorMessage":true' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    ts = dt.datetime.fromisoformat(rec.get("timestamp", "").replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    continue
+                if now - ts > WEEK:
+                    continue
+                m = re.search(r"hit your (\w+) limit", line)
+                limit_hits[rec.get("uuid") or line] = m.group(1) if m else "?"
+    kinds = {}
+    for k in limit_hits.values():
+        kinds[k] = kinds.get(k, 0) + 1
+    # The transcript count above sees only a hard stop that surfaced as an error in Claude Code. A
+    # weekly limit that rolled into paid extra usage, or one hit in Cowork, leaves no such record —
+    # both happened the week of 2026-09-14 and this number read 0. bin/usage-report reads the plan's
+    # own percentages (the Claude app's 15-minute history and Claude Code's /usage cache) and is the
+    # authority when it has data; the transcript count stays as the fallback.
+    usage = {}
+    try:
+        out = subprocess.run([str(Path(__file__).with_name("usage-report")), "numbers", "--json"],
+                             capture_output=True, text=True, timeout=120).stdout
+        usage = json.loads(out) if out.strip() else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        usage = {}
+    if usage.get("limit_hits") is not None and (usage.get("limits_now") or usage.get("proxy_usd")):
+        kinds = usage["limit_hits"]
+    memory = sum(1 for p in (VAULT / "memory").glob("*/*.md") if p.name != "MEMORY.md") if VAULT else 0
+    index_lines = sum(lines(p) for p in (VAULT / "memory").glob("*/MEMORY.md")) if VAULT else 0
+    unlinked = memory_unlinked(now, fence=fence)
+    # Skills enabled on the claude.ai account sync into every terminal session (Claude Code
+    # 2.1.275) and each description is loaded at start — an always-loaded cost the me/ + rules/
+    # budget doesn't see. Pruned on the account, not here (DESIGN D20).
+    synced = sorted({p.parent.name for p in (HOME / ".claude" / "skills" / "synced").glob("**/SKILL.md")})
+
+    # The declared user settings on this Mac (docs/record/machine-settings-2026-09-29.md): drift reaches
+    # The owner here, as a number, only on the Mac the weekly runs on.
+    cs = common.tool("claude-settings")  # lighthouse's (G36); absent, the row says so
+    try:
+        if not cs:
+            raise LookupError
+        r = subprocess.run([str(cs), "check", "--json"],
+                           capture_output=True, text=True, timeout=20)
+        settings = json.loads(r.stdout) if r.stdout.strip() else {"error": r.stderr.strip() or "no output"}
+    except LookupError:
+        settings = {"error": "not installed (lighthouse's claude-settings)"}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        settings = {}
+
+    # Number 6 (the owner, 2026-10-10): every question put to the owner, and how many the owner answered with the
+    # pick offered. About a minute: the D-item channel walks every doc's git history.
+    try:
+        r = subprocess.run([str(Path(__file__).with_name("interruptions")), "--days", "7", "--json"]
+                           + (["--scope", scope] if scope else []),
+                           capture_output=True, text=True, timeout=300)
+        interruptions = json.loads(r.stdout) if r.stdout.strip() else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        interruptions = {}
+
+    goals = course_goals(now)  # entry S10: the Course's G1–G6, a few seconds of keel list
+    wharf = wharf_goals(now)  # wharf S8: G1–G5 of docs/wharf-on-orca-2026-10-17.md; an ssh to the dispatch Mac, a land-word grep
+
+    totals = {
+        "date": today,
+        "scope": scope,
+        "shipped_7d": sum(r["shipped_7d"] for r in rows),
+        "open_claude_branches": sum(r["open_claude_branches"] for r in rows),
+        "decide_items": sum(r["decide_items"] for r in rows),
+        "stood_7d": sum(r["stood_7d"] for r in rows),
+        "user_always_loaded": user_always,
+        "budget_me": f"{me}/100", "budget_rules": f"{rules}/250",
+        "sessions_7d": sessions_week, "archived_7d": archived_week,
+        "limit_hits_7d": kinds, "usage": usage,
+        "bulletin_live": live, "memory_entries": memory, "memory_index_lines": index_lines,
+        "memory_unlinked_projects": unlinked,
+        "synced_skills": synced,
+        "interruptions_7d": {k: v for k, v in interruptions.items() if k != "rows"},
+        "user_settings": {k: (len(v) if isinstance(v, list) else v) for k, v in settings.items()},
+        "course_goals": goals,
+        "wharf_goals": wharf,
+        "projects": rows,
+    }
+    if "--json" in sys.argv:
+        print(json.dumps(totals, indent=1))
+        return
+    print(f"Numbers — {today}" + (f", scope {scope}" if scope else "") + " (bin/knowledge-numbers)\n")
+    print("| | Value |\n| --- | --- |")
+    print(f"| commits on main, last 7 days (all projects) | {totals['shipped_7d']} |")
+    print(f"| `claude/*` branches still open | {totals['open_claude_branches']} |")
+    print(f"| `**Decide:**` items in TODO.md files | {totals['decide_items']} (plus open D-items in DESIGN.md) |")
+    print(f"| docs stood by default, last 7 days (`Stood-By:` commits; one bulletin line each) | {totals['stood_7d']} |")
+    hits = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())) or "0"
+    print(f"| usage-limit hits, last 7 days (plan's own samples; episodes at 100%) | {hits} |")
+    if usage:
+        print(f"| plan now / extra usage | {usage.get('limits_now') or '?'} / {usage.get('extra_usage') or '?'} |")
+        split = ", ".join(f"{k} {v}%" for k, v in (usage.get("breakdown") or {}).items() if v)
+        print(f"| Claude Code, API-price proxy, last 7 days (by host) | {common.cost_text(usage.get('proxy_usd', 0))} "
+              f"({', '.join(f'{h} {common.cost_text(v)}' for h, v in (usage.get('by_host') or {}).items())}); week by surface: {split or '?'} |")
+        # Each scope's weekly pass (aurora's `/aurora dream --scope`, knowledge-layers S5), by its
+        # session's title; under --scope, that scope's alone.
+        passes = {k: v for k, v in (usage.get("scope_passes") or {}).items() if not scope or k == scope}
+        print(f"| scope passes, last 7 days (`/aurora dream --scope`; sessions, API-price proxy) | "
+              + ("; ".join(f"{k} {v['sessions']} · {common.cost_text(v['usd'])}" for k, v in passes.items()) or "none")
+              + " |")
+    print(f"| always-loaded lines, user level (`~/.claude/CLAUDE.md` + imports + rules) | {user_always} |")
+    if interruptions.get("channels"):
+        ch = interruptions["channels"]
+        def part(c):
+            k = c["kinds"]
+            return f"{c['n']} ({k.get('recommended', 0)} took the pick)"
+        print(f"| interruptions, last 7 days (`bin/interruptions`; class: hooks/attention.py) | "
+              f"{interruptions.get('total')} — questions: AskUserQuestion {part(ch['ask'])}, D-items {part(ch['memo'])}, "
+              f"{interruptions.get('predictable_pct')}% predictable, {ch['ask']['kinds'].get('unranked', 0)} with no pick; "
+              f"hand-offs {ch['handoff']['n']} ({', '.join(f'{k} {n}' for k, n in ch['handoff']['kinds'].items())}); "
+              + (f"resent by a Stop hook {ch['repeat']['n']} ({', '.join(f'{k} {n}' for k, n in ch['repeat']['kinds'].items())}"
+                 f"{'; unattended not in the total' if 'unattended' in ch['repeat']['kinds'] else ''}); "
+                 if 'repeat' in ch else "")
+              + f"permission dialogs {ch['permission']['n']}; notices {ch['notice']['n']}; "
+              f"trust dialogs waiting {sum(len(v) for v in (interruptions.get('trust_waiting') or {}).values())} |")
+    else:
+        print("| interruptions, last 7 days (`bin/interruptions`) | ⚠ no output |")
+    print(f"| budget: `me/` · `rules/` | {totals['budget_me']} · {totals['budget_rules']} |")
+    print(f"| sessions this week / transcripts archived this week | {sessions_week} / {archived_week} |")
+    print(f"| bulletin entries live | {live} |")
+    print(f"| auto-memory entries in the vault / index lines | {memory} / {index_lines} |")
+    print(f"| projects with a transcript this week and no memory link | {len(unlinked)} ({', '.join(unlinked) or 'none'}) |")
+    print(f"| skills synced from the claude.ai account (a description each, every session) | {len(synced)} |")
+    if settings.get("error"):
+        print(f"| user settings (`bin/claude-settings check`) | ⚠ {settings['error']} |")
+    elif settings.get("declared"):
+        print(f"| user settings: declared / missing / undeclared (`bin/claude-settings check`) | "
+              f"{settings['declared']} / {len(settings.get('missing', []))} / {len(settings.get('undeclared', []))} |")
+    print("\n| Course goal (`docs/%s`) | Baseline | Target | Now |\n| --- | --- | --- | --- |" % ENTRY)
+    for g in goals:
+        print("| %s — %s | %s | %s | %s |" % (g["id"], g["metric"], g["baseline"], g["target"],
+                                           g["value"] if g["value"] is not None else "not measured — " + g["why"]))
+    print("\n| Wharf goal (`docs/%s`) | Baseline | Target | Now |\n| --- | --- | --- | --- |" % WHARF_ENTRY)
+    for g in wharf:
+        print("| %s — %s | %s | %s | %s |" % (g["id"], g["metric"], g["baseline"], g["target"],
+                                           g["value"] if g["value"] is not None else "not measured — " + g["why"]))
+    print("\n| project | shipped 7d | open branches | Decide | always-loaded | no-summary checkpoints |\n"
+          "| --- | --- | --- | --- | --- | --- |")
+    for r in rows:
+        print(f"| {r['project']} | {r['shipped_7d']} | {r['open_claude_branches']} | {r['decide_items']} "
+              f"| {r['project_always_loaded']} | {r['no_summary_7d']} |")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

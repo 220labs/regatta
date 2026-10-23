@@ -1,0 +1,7 @@
+{
+  "name": "wharf",
+  "version": "0.2.0",
+  "description": "One session, one worktree: the checkpoint hook and its lock, branch hygiene, the pull request tool, the review gate and the landing (/finish, /evacuate, /todo); the repo registry and its tools (repos, scopes, github-repo, tend), session forks and status (/fork, /new-project), and seven agents.",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

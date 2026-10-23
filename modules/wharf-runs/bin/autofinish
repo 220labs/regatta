@@ -1,0 +1,2027 @@
+#!/usr/bin/env python3
+"""autofinish — which idle claude/* worktrees a runner would launch by itself, why the rest would
+not, and (armed) the start. E2 of docs/autofinish-design-2026-10-02.md, the dry run and the start
+rules; E3, the triggers; E6's half, the /autofinish override.
+
+  autofinish --dry-run [<repo>] [--log]
+        one line per claude/* worktree of <repo> (a path, or a repos.json key such as
+        `shop/pipeline`), or of every repo in repos.json whose own .claude/workflow.json says
+        `"checkpoint": true`:  `<repo> <branch> <verdict>`, the verdict one of
+            start (A|B|C|D|E|L|M)
+            wait: idle N min
+            skip: <veto> [(<detail>)]
+        --log also appends each verdict as `<iso> dry <repo> <branch> <verdict>` to
+        ~/Library/Logs/claude-weekly/autofinish-<yyyy-mm-dd>.log. One line per verdict, fields
+        space separated, the verdict last, so `grep ' skip: busy'` or `awk '{print $5}'` read it.
+  autofinish --sweep
+        what launchd runs every 10 min (bootstrap.sh --schedule, <label-prefix>.autofinish):
+        the all-repos dry run, always logged. Armed, it then starts at most SWEEP_CAP `start`
+        verdicts, each re-judged just before (R7, with a fetch: see below) and never a tip it
+        started before, and logs
+          <iso> start <repo> <branch> <rule>
+          <iso> failed <repo> <branch> <rule> (<error>)
+        Only a start counts against the cap and is remembered: a failed start is tried again at
+        the next tick, and one worktree that keeps failing does not starve the rest.
+        First, armed or not, every worktree whose run is dead — started, no outcome, its claude
+        and watcher gone (bin/autofinish-run's dead()) — is recorded `died` by the runner's
+        bury(), which logs `<iso> run <repo> <branch> died session=… tip=… rule=… by=… account=… — …`, and
+        printed here as `died <repo> <branch> — <why>`. The dry run reports such a worktree as
+        `skip: died, not recorded yet (…)` and writes nothing.
+        Prints only those lines (the launchd log); the verdicts are in the dated log.
+  autofinish --worktree <path> [--after <s>] [--session <id>] [--reply <file>] [--dry-run] [--log]
+        one worktree: its verdict line, then the start on that same verdict, when armed and not
+        --dry-run. It is judged with a fetch when a start may follow, and not judged twice: the
+        start comes seconds after it, not the sweep's minutes (code review F9). --after waits that long first (SessionEnd's trigger: 60 s; under a pinned
+        AUTOFINISH_NOW the clock moves instead of sleeping). --session: the caller's own session
+        is at its turn's end, so it is never `busy` for itself (nor is any session among this
+        process's ancestors). --reply: the last reply's text from this file, not the transcript —
+        the Stop hook's, which has it before the transcript may.
+  autofinish arm [--by <who>] | disarm | status
+        this Mac's switch, ~/.local/state/autofinish/armed (JSON {"by", "ts"}). Disarmed is the
+        default and means: verdicts and logs only, nothing starts, whatever the trigger. The owner,
+        2026-10-05: three hours of the dry log first, read by the parent, then armed. `arm`
+        refuses under CLAUDE_UNATTENDED (a runner, any dispatch session): an interactive session
+        arms on the owner's word; nothing unattended arms itself.
+  autofinish override [now | off] [<branch>]
+        /autofinish's verb (skills/autofinish): writes or removes the marker for this worktree,
+        or for <branch>'s in this repo, then prints the branch's verdict and the switch. Refused
+        under CLAUDE_UNATTENDED, and inside a Claude session (CLAUDECODE) unless the last prompt
+        queued in this checkout's <git dir>/claude/prompts.json starts with `/autofinish`: the
+        marker says `by: <owner>`, so only the owner's typed /autofinish may write it, never a model
+        that decided to.
+
+Read-only but for: --log and --sweep (the log), arm/disarm, override (its marker), the state dir
+(the started tips, the sweep lock), a rule-D start's `memo stand --apply` (one commit on that
+branch), and an armed sweep's burial of a dead run (bin/autofinish-run's bury: its state, lock,
+record and one PR comment), and the judging a start follows: its fresh `account pick` probes
+and writes bin/account's cache. No other write to a repo's branches or locks, no session messaged. Origin's tip is read
+with `git ls-remote`; GitHub through hooks/common.py's REST client (no `gh`). No fetch while
+judging — the dry run and the sweep's pass give `memo status --no-fetch` — except the judging a
+start follows (the sweep's re-judge, or --worktree when armed): there memo status fetches, so a
+GitHub web edit by the owner voids a stand before anything starts. `start_runner()` calls E1's
+bin/autofinish-run.
+
+The run record — the contract E1's runner writes and the hooks read (hooks/common.py's readers):
+  <git dir>/claude/autofinish.json, one per worktree, the last run on it:
+    {"started": iso, "session": uuid, "tip": sha, "by": "sweep|override|typed|yolo|dnd",
+     "rule": "A|B|C|D|E|L|M", "window": str, "account": label|dir|"oauth-token"|null, "ended": iso|null,
+     "outcome": "launched|stopped|never-started|died"|null, "pr": int|null, "gate": str|null}
+    plus `"merge": true` for a run started with `--merge`, `"hold": "<why>"` for one held at a ready
+    PR (S3b; autofinish-run's header); each absent otherwise
+    (`launched` was `landed` before the rename's S4, 2026-10-19; every reader takes both)
+  Written before the runner's first call (owner.json then names `session`), `ended` and
+  `outcome` at its end. While `ended` is null and the lock names `session`, checkpoint.py tells
+  a prompt in the old panel once that the run is under way, and refuses its writes with the
+  same words (lock_reason); after the end it says the outcome once.
+  <common git dir>/claude/autofinished, one line appended per ended run (design section 7):
+    <iso> launched <branch> #<pr>   (`landed` before 2026-10-19; no `#<pr>` when the runner could not read the number)
+    <iso> stopped <branch> <gate> <the first ⚠ line>
+    <iso> never-started <branch> <the first line it kept: the screen's, or dispatch's log>
+    <iso> died <branch> <tip7> <dispatch log's last line>   (the sweep's, for a runner that died)
+  sync.py's session start says each new line once; `bin/repos --branches` groups the latest per
+  branch as `autofinished` and `stopped` (never-started and died are stops).
+The state dir (AUTOFINISH_STATE_DIR, else ~/.local/state/autofinish): `armed`; `first-armed`
+({"ts"}, the launch door's start, kept across disarm and re-arm); `tried.jsonl`,
+one {"ts","repo","branch","tip","rule","kind"} per runner started, so a tip is never started
+twice — unless its run record says gate `refused` (`not-launched` before 2026-10-17; dispatch refused
+before any session existed: nothing ran); `sweep.lock/`, held while an armed sweep or a --worktree start runs (R12),
+taken over after LOCK_TTL, removed only by the pid that holds it.
+
+The start rules (design section 15; D1, D6, D7, D11; rule E: autofinish-widen-2026-10-06 D2-C,
+D3-C), checked in this order, first veto wins:
+  off       `autofinish` from `git show origin/<main>:.claude/workflow.json` — the base's copy,
+            so a branch cannot widen its own list (R8); with none there, the repo's `workflow` in
+            the overlay's repos.json; off beside .claude/no-workflow. "records" | "small" | "all" |
+            "off"; a missing key is "records" when `records` is set, else "off", and an
+            unknown value is "off". Off skips everything but the override.
+  state     the worktree on disk; no /move marker; no live session on the branch whose registry
+            status is anything but `idle` — busy, waiting on a dialog, a shell (always
+            `skip: busy`, override or not); no `finishing` marker under 2 h old; no
+            rebase or merge in progress; nothing uncommitted (the checkpoint hook commits every
+            turn, so a dirty idle worktree is the owner editing by hand).
+  launched  hooks/branches.py's proof → `skip: launched`; its hint → `skip: pickup review` (R10).
+  stopped   the worktree's last run (autofinish.json) stopped or never started (gate other than
+            `refused`), and nobody has spoken to the branch since it ended: no prompts.json
+            entry from another session, no turn's end (last-reply), no override marker newer
+            than `ended` → `skip: stopped at <gate> (<ended>) — waits for a prompt`. Without it
+            a stop whose own session committed would start again on the new tip (review F6).
+  died      the run died (outcome `died`, bin/autofinish-run's bury) is no stop: it is judged once
+            more, as below (docs/autofinish-died-2026-10-07.md). The worktree's last two
+            ended runs in `autofinished` both `died` on the same tip, and nobody spoke since →
+            `skip: died twice (<date>) — waits for a prompt`: a retry that dies too is not a power
+            cut but a pattern. A death whose runner had already rewritten the local branch (its
+            recorded tip no ancestor of HEAD: curated, then never pushed) → `skip: died
+            mid-curation (…) — waits for a prompt`: a /finish on it fails its own lease check.
+            A run not yet recorded is `skip: died, not recorded yet (…)` — an armed sweep's first
+            pass records it; a disarmed one only says so.
+  asks      the diff against the merge-base with origin/<main> adds no `➤ Answer:`, D-item
+            (`**D<n> —`), `**Decide:**`, `- [ ]` or `docs/handoff/` line, and no file under
+            docs/handoff/ (a seed). Lines are read in .md/.txt files only, and code spans
+            don't count: in code the markers are fixtures, in a code span prose about the shape.
+            Paths come from `--name-status -z`, the added lines from each path's own diff; a
+            line that can't be placed is `skip: asks (<path>: unparsed diff)`, never a pass.
+            Override or not (R1). The one exception is rule D.
+  D         the branch ADDS one or more D-list docs and every asks line is a `➤ Answer:` or
+            D-item line in one of them: `bin/keel status --json <doc>` per doc decides, and D
+            starts only when every doc reads `due`, `answered`, or `stood` with its
+            `Stood-By: autofinish` commit on the branch. The start runs `memo stand --apply` on
+            each `due` doc in the worktree first; an apply that fails is a failed start. A
+            `part-stood` doc, or a `due` one whose `unstandable` list is not empty (a stand takes
+            only `Reversible: yes` items with a bare pick: entry S3), is a skip — no branch launches
+            with `no` or unmarked items open.
+            Anything else names the doc and the verdict under `skip: asks`; memo missing or
+            failing is `skip: memo status unavailable`, never a start. The rest of the branch
+            must be records, text.
+  M         (skipper-modes S3b, the landing ladder) the branch's mode — landing_mode: helmlib's
+            branch_mode, the plan task naming the branch, else its newest dispatch record — is `dnd`
+            or `yolo`, and no override: asks lines only in D-list docs the branch adds, each
+            `answered`, `stood` or `taken` (mode_asks: keel yolo's picks no veto here); then any
+            shape, size and host, no launch door, never a binary, an `open item` tip, a deploy
+            (rule L comes first), the week's pause, a busy session, a reply that asks, the idle
+            clock or the GitHub gates. Gates are not skipped: autofinish-run's landing() reads the
+            mode again and holds at a ready PR what held_slice names — under dnd money in the
+            prose added, a physical repo, `autofinish_exclude` and `in_place`, a path the public
+            twin's allowlist publishes, a deleted data file, a yolo-taken answer; under both the
+            launcher's own GATES. A branch whose mode is `ask` is judged by the rules here and
+            every start of it holds (`--hold`). No mode (no sent task; a session the owner types in):
+            the rules here, unchanged.
+  tip       the tip's message carries no "open item".
+  steps     no brief the branch added (docs/handoff/) names a step its Course doc has open —
+            `keel landing`, entry S7: `skip: open step (<brief> names <doc> S3 — not started)`.
+  L         a commit on the branch (any, not only the tip) carries a `Deployed:` line that says
+            something went live (common.deployed: not `no`, `none`, `n/a`, a dash, nor a future
+            `on merge`, `after …`, `once …`): the live system runs this branch, so it launches at
+            once, the drift being the risk (the owner, 2026-10-13: "If the code is deployed already, it
+            should be launched ASAP - no wait"). Any shape and size, any host, the week's pause
+            lifted, and a `/autofinish` marker does not bring the idle wait back; still never a
+            binary, a gate (below), an `off` repo, a busy session, an ask, a reply that asks, or
+            anything the GitHub check refuses. Its idle is none: the Stop hook of a turn whose own
+            commit says `Deployed:` pushes at once and hands the branch to the launcher (checkpoint.py,
+            autofinish_at_stop), else the next sweep takes it. Only deploys committed from
+            common.L_SINCE (2026-10-14) count: an older one keeps `skip: deployed before rule L`,
+            the typed /finish it always waited for. Its launches never open E's door (below).
+            The cost, known: a sweep may take the worktree between two turns of a live
+            conversation, and the next prompt there is refused writes until the run ends.
+  shape     A: every changed path under a `records` prefix and `.md`/`.txt` (R13), no binary.
+            B ("small" and "all" repos, where A's shape fails): text, under 100 inserted lines,
+            on the laptop. Lifted by the override (D7).
+            E ("all" repos only, where A's and B's shape fail): text of any size, on the laptop.
+            A small diff in an "all" repo stays B. Every other gate holds, the binary veto included.
+            The launch door (D1-A: "widen after ~5 real launches", built in so no one has to
+            remember it): E, and B in a repo that was not "small" or "all" at the first arm (read
+            from origin/<main>'s history; item 2; a mode that cannot be read waits too, and before
+            any arm a "small" repo keeps its B), start only once E_LAUNCHES runs the sweep
+            started have launched since the first arm — the `launched … by=sweep` end lines (`landed`
+            before rename S4, both read), rule L's apart, (common.RUN_LAUNCHED) in the dated logs, not `autofinished`, which the owner's own
+            /finish and /autofinish runs fill too. The first arm is `first-armed` in the state
+            dir, which arm and disarm keep, so a re-arm does not reset the count; else `armed`'s
+            ts. Before that `skip: <E|B> waits for 5 launches (n/5)`, or `(disarmed)`.
+            A D-list doc the owner answered in full, beside code in an "all" repo, is no
+            ask: the branch is judged as B or E; any other memo verdict there is `skip: asks
+            (<doc>: memo <v>, beside code …)`.
+  gates     A, B, D, E and L never start a branch touching a gate: in the launcher's repo only, the launcher's
+            own files (`hooks/`, `bin/autofinish*`, `skills/finish/`, `skills/autofinish/`,
+            `bin/review-gate`, `bin/pr`, `bin/keel`, `bin/account`, `repos.json`,
+            `.claude/workflow.json`, `bootstrap.sh`, the git-hook template; GATES), and in every
+            repo its `in_place` paths and the prefixes in the base's `autofinish_exclude`
+            (workflow.json or the repos.json overlay; either not a list → the repo reads off) →
+            `skip: touches a gate (<path>) — launches by /finish or /autofinish only`. The owner's D1-A
+            (2026-10-13) lifted the rest — `.github/`, `.claude/` elsewhere, AGENTS.md /
+            CLAUDE.md, repo-level git hooks, the check line's scripts — for CI and /finish's own
+            gates to hold; so the runner no longer pre-approves the check command. Prefixes, on
+            the --no-renames diff, so a gate moved away counts. C (the owner's override) launches a gate.
+            Checked before B's and E's host and door. Gates are judged on the tip before the
+            start; a run's own later edits are not re-judged (open: docs/autofinish-widen-2026-10-06.md).
+  week      the week of the login the runner would start on — `bin/account pick --repo <repo>`:
+            the work login first in the walk unless the repo is on its deny list (work-account E5;
+            joined early on the owner's word, 2026-10-08 — the sweep had paused all night on the primary login's
+            80 % while the work login sat at 6 %). A secondary's week is its registry ceiling, which the
+            pick applies; on the primary, that row's `limits --cached` and review-gate's threshold
+            (10 points over pace, or 80 % used) pause A, B and E (design section 6, R6; R4 of the widen doc), as
+            `skip: week tight (<label> <n>% used, pace <p>%)`. No registry (pick's exit 4), an
+            unreadable answer, or a primary with no reading: tier_check's reading of the default
+            login, as before. Not C (D7), D or L. The pick reads cached readings (`--cached`)
+            except in the judging a start follows. No row may run → `skip: no account (<label>:
+            <why>; …)`, for A, B and E here and for every rule just before a start (C and D too: the
+            runner would refuse it, and D only after its stand commit).
+  reply     the owning session's last reply does not end in `?` nor in the WAITING line
+            (common.ending); unread → skip, never a guess.
+  idle      40 min (D2) since <git dir>/claude/last-reply (the Stop hook writes it, with the
+            reply's tail), else the newest of prompts.json and the owning session's transcript,
+            else the tip's commit time. Under the override, a last reply that is the declared
+            line (the declared closing line (common.DECLARED_LINES), E6) starts at once, and so
+            does any reply under `/autofinish now` (rule C: "at the next turn end whose reply
+            asks nothing"). D waits on its deadline, which memo status computed, not on idle.
+  GitHub    pushed (origin's tip is ours; origin ahead or apart → `skip: moved on origin`,
+            R7), the PR still `WIP:`, and no comment or review on it since the tip's commit.
+            After a death, origin at the dead run's recorded tip (local rewritten by it is the
+            mid-curation skip above), or descendants of it each carrying that session's
+            `Claude-Session:` trailer (a push not yet seen), is not "moved"; the death's own PR
+            comment is no activity, anyone else's since the tip still is. A death's tip is started
+            again once (`tried` and bin/autofinish-run's same-tip refusal both let it through).
+
+The override (rule C): <git dir>/claude/autofinish, JSON {"by": <the owner, lower-cased>, "ts": epoch, "now": bool},
+written by E6's /autofinish (`autofinish override`). It lifts off, shape, size, host
+and the week — never busy, asks, reply or GitHub; idle only for the declared line or `now`.
+
+The owning session: owner.json's, else the last prompts.json entry's, else the tip's
+`Claude-Session:` trailer (8 hex), else a live registry session whose cwd is the worktree.
+Its transcript: ~/.claude/projects/*/<id>.jsonl (CLAUDE_CONFIG_DIR moves ~/.claude).
+
+Test seams, all environment: AUTOFINISH_NOW (epoch; also pins tier_check's clock),
+AUTOFINISH_HOST, AUTOFINISH_REPOS (repos.json), AUTOFINISH_PROJECTS (its root),
+AUTOFINISH_MEMO (bin/keel), AUTOFINISH_GITHUB (a JSON fixture {branch: {"pr": {...}|null,
+"activity": n}} in place of GitHub), AUTOFINISH_LOG_DIR, AUTOFINISH_STATE_DIR,
+AUTOFINISH_RUNNER (a command run as `<it> <worktree> <rule>` in place of start_runner),
+AUTOFINISH_ACCOUNT (bin/account; the tests run the real one on ACCOUNTS_FILE and ACCOUNT_NOW),
+AUTOFINISH_TEST_BEFORE_START (a shell line run just before the sweep's re-judging, R7's test);
+tier_check's own CLAUDE_TIER_CLAUDE_JSON / CLAUDE_TIER_APP_HISTORY. Tests: bin/test_autofinish.sh.
+Python 3.9, stdlib only.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+sys.path.insert(0, str(BIN.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402 — host, GitHub REST, the lock's reader, the closing lines
+# branches.py is wharf's hook (a hard edge, M2): its folder joins the path, after the core's.
+_BRANCHES = common.tool("branches.py")
+if not _BRANCHES:
+    sys.exit("autofinish: wharf's hooks/branches.py not found — install the `wharf` module beside wharf-runs")
+sys.path.insert(2, str(_BRANCHES.parent))
+import branches  # noqa: E402 — launched / probably launched: only it judges that
+
+CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+PROJECTS = CONFIG / "projects"
+REGISTRY = CONFIG / "sessions"
+# The registry: AUTOFINISH_REPOS for the tests, else the core's one reader (C3). A Mac with none reads
+# a path that does not exist, so every repo reads off.
+REPOS_JSON = Path(os.environ.get("AUTOFINISH_REPOS") or common.repos_json() or "/nonexistent/repos.json")
+ROOT = Path(os.environ.get("AUTOFINISH_PROJECTS") or Path.home() / "projects")
+# keel (M4) and account (lighthouse) are peers found through the core; absent, the path below does
+# not exist, the call raises OSError and its caller's own fallback holds (memo_status None, no pick).
+MEMO = os.environ.get("AUTOFINISH_MEMO") or str(common.tool("keel") or BIN / "keel")
+LOG_DIR = Path(os.environ.get("AUTOFINISH_LOG_DIR") or Path.home() / "Library/Logs/claude-weekly")
+
+IDLE_MIN = 40          # D2: "the owner is done" (40 min, decoupled from the lock)
+SMALL_LINES = 100      # rule B: under this many inserted lines
+E_LAUNCHES = 5         # the launch door: E (and B where no B ran at the first arm) after this many sweep launches since the first arm (widen doc D1-A, D2-C, item 2)
+# The launcher's own gates (path prefixes), in the launcher's repo only: B, D and E never start a branch that
+# touches one. The owner's D1-A (docs/autofinish-everything-2026-10-11.md, 2026-10-13) lifted every
+# other gate — .github/, .claude/, AGENTS.md / CLAUDE.md, the repo-level git hooks, the check
+# line's scripts — in every repo: "secure it through tests on CI, not by slowing down
+# development"; /finish still runs every gate, and the base's workflow.json, never the branch's,
+# is what this reads (R8). What stays is what the widen doc's item 3 named first: hooks/, which
+# every session runs, and the launcher, which must not widen itself unwatched (bin/autofinish*,
+# skills/finish/, skills/autofinish/, bin/review-gate, bin/pr, the config it reads — repos.json and
+# the overlay's own .claude/workflow.json, whose records or merge key would widen it — bootstrap.sh,
+# which decides which hooks every account runs, bin/keel and bin/account, which decide rule D and
+# the week gate, and the git-hook template; code review, 2026-10-13). A repo adds its own with `autofinish_exclude`.
+GATES = ("hooks/", "bin/autofinish", "skills/finish/", "skills/autofinish/", "bin/review-gate",
+         "bin/pr", "bin/keel", "bin/memo", "bin/account", "repos.json", ".claude/workflow.json", "bootstrap.sh",
+         "templates/code/git-hooks/")
+# the repo GATES apply to, by folder name; AUTOFINISH_LANDER, the old name of AUTOFINISH_LAUNCHER, is read until S8
+# Default: the overlay checkout's folder name (legacy_root), none where no overlay is installed, so no repo is the launcher's.
+LAUNCHER = os.environ.get("AUTOFINISH_LAUNCHER") or os.environ.get("AUTOFINISH_LANDER") or (common.legacy_root().name if common.legacy_root() else None)
+OWNER = common.OWNER_NAME or "the owner"   # who the verdicts and refusals say is waited on
+OWNER_S = OWNER + "'s"
+LAPTOP = common.LAPTOP  # rule B runs on the laptop only (D3, D6)
+FINISHING_TTL = 2 * 3600  # checkpoint.py's: an older `finishing` marker is an abandoned /finish
+GIT_BUSY = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")  # checkpoint.py's BUSY_MARKERS
+TEXT_SUFFIXES = (".md", ".txt")  # R13: a records prefix can gain a file a script reads
+DECLARED = common.DECLARED_LINES  # in common.CLOSING since E6; the old line and the new (rename S2)
+MEMO_TIMEOUT = 30
+# dry_run() judges a repo's worktrees this many at a time. A verdict is ~20 git processes, plus
+# bin/keel, ps, `gh auth token` and up to 4 GitHub REST reads, and a temporary index (read-tree)
+# in branches.probably; nothing it writes is shared, and no start (the starts come after, one at
+# a time, each judged again). A GitHub refusal under 8 at once reads `skip: GitHub unreachable`,
+# never a start. The wall time was git's start-up, serially: 37 s for the suite's 75-worktree repo on a loaded Mac, 11 s at 8
+# (2026-10-17). The per-process caches a verdict fills take _CACHE to fill, and are read without
+# it once filled: each is assigned whole, so a thread sees nothing or all of it.
+JUDGE_THREADS = 8
+_CACHE = threading.RLock()  # reentrant: week() reads tier_check(), each filling its own cache
+STATE = common.autofinish_state_dir()
+# Starts per sweep. The design names the cap (section 15, "the sweep's cap") but no number; one
+# is the brief's (2026-10-05): a runner is a whole /finish session, and the next tick is 10 min away.
+SWEEP_CAP = 1
+LOCK_TTL = 20 * 60  # a sweep lock older than this is a sweep that died: taken over (R12)
+RUNNER_TIMEOUT = 120  # start_runner's wait: autofinish-run detaches after its pick (15 + 5 s) and ending a warm run (90 s), 110 s at worst
+TAIL_BYTES = 4_000_000  # a transcript's tail read for the last reply; tool output runs to MBs
+REFUSED_GATES = common.REFUSED_GATES  # bin/autofinish-run's gate for a run dispatch refused: nothing ran
+STOOD_BY = "Stood-By: autofinish"  # bin/keel's STOOD_TRAILER, on the commit `stand --apply` makes
+DIED = "died"  # bin/autofinish-run's outcome for a runner that ended without one (its bury())
+DIED_HEAD = "**autofinish runner died**"  # bin/autofinish-run's death comment: no one speaking
+
+CODE_SPAN = re.compile(r"`[^`]*`")
+D_ITEM = re.compile(r"\*\*D\d+\s*[—–-]")      # `**D1 —**` and `**D1 — Title.**` alike
+DECIDE = re.compile(r"\*\*Decide:\*\*")
+CHECKBOX = re.compile(r"^\s*[-*+]\s+\[ \]")
+HANDOFF = branches.HANDOFF_DIR + "/"
+LINK_ONLY = re.compile(r"^\s*(?:[-*]\s*)?(?:<?https?://\S+>?|\[[^\]]*\]\([^)]*\))\s*$")
+
+
+def now():
+    return float(os.environ.get("AUTOFINISH_NOW") or time.time())
+
+
+def host():
+    return os.environ.get("AUTOFINISH_HOST") or common.host_name()
+
+
+def git(repo, *args, timeout=30):
+    """stdout stripped, or None when git failed — never an exception to the caller."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+# ---- the seam E1 fills --------------------------------------------------------------------
+
+def runner_by(worktree, rule):
+    """`--by` for a start: `override` for rule C, else `sweep` — but `yolo` when the worktree's last
+    run was a yolo launch that died (E12, review of 2026-10-08): its retry must stay one, or a plain
+    `/finish --unattended` would merge the taken answers where the yolo run stops at a held PR."""
+    gitdir = git(worktree, "rev-parse", "--absolute-git-dir")
+    run = common.autofinish_run(Path(gitdir) / "claude") if gitdir else None
+    if rule == "M":
+        # rule M's start names its mode (S3b); autofinish-run reads plan.json again before it merges
+        # (a mode lowered since the verdict: `sweep`, and autofinish-run holds a rule-M start whatever its --by)
+        # with the repo, as verdict reads it: a same-named branch in a sibling repo has its own mode
+        cdir = git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        primary = str(Path(cdir).parent) if cdir and cdir.endswith("/.git") else None
+        m = landing_mode(git(worktree, "rev-parse", "--abbrev-ref", "HEAD"), primary)[0]
+        return m if m in LAND_MODES else "sweep"
+    if run and run.get("by") in ("yolo", "dnd") and run.get("outcome") == DIED:
+        return run["by"]
+    return "override" if rule == "C" else "sweep"
+
+
+def start_runner(worktree, rule, cfg=None):
+    """Start `/finish <branch> --unattended` in `worktree` through bin/autofinish-run (E1), which
+    pre-writes the lock, detaches and returns at once. Rule C is the owner's /autofinish, so it is
+    recorded as `override`; every other rule is the sweep's. A non-zero exit is a failed start
+    (2: not a claude/* worktree, 3: refused — that tip tried, or a run already going)."""
+    by = runner_by(worktree, rule)
+    # without the login variables a hook or a dispatched session passed down: the runner picks
+    # its login as week() did; only a typed hand-off (cold_prompt) keeps the caller's. `cfg`: the
+    # dir attempt()'s fresh pick chose, passed as an explicit login so the runner starts on the
+    # row the gate checked, not a second pick a minute later (review, 2026-10-08); "" is the
+    # default login, which autofinish-run reads back as unset
+    env = {k: v for k, v in os.environ.items() if k not in LOGIN_ENV}
+    if cfg is not None:
+        env["CLAUDE_CONFIG_DIR"] = cfg or str(Path.home() / ".claude")
+    r = subprocess.run([str(BIN / "autofinish-run"), str(worktree), "--rule", rule, "--by", by],
+                       capture_output=True, text=True, timeout=RUNNER_TIMEOUT, env=env)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip() or f"exit {r.returncode}")[:120])
+
+
+# ---- inputs -------------------------------------------------------------------------------
+
+def repo_config(repo, main, at=None):
+    """(mode, records, problem, exclude) from origin/<main>:.claude/workflow.json — the base's
+    copy, never the branch's (R8) — else the repo's `workflow` in the overlay's repos.json; off beside
+    a .claude/no-workflow on origin/<main>. `exclude`: its `autofinish_exclude` and `in_place`
+    prefixes, gated beside GATES. `at`: the same read at that commit of it (the launch door's "what was it at the
+    first arm"), never the overlay, which only knows today."""
+    ref = at or f"origin/{main}"
+    if git(repo, "show", f"{ref}:.claude/no-workflow") is not None:
+        return "off", [], f"origin/{main} carries .claude/no-workflow", []
+    text = git(repo, "show", f"{ref}:.claude/workflow.json")
+    if text is None and at is not None:
+        # repos.json today is not what it was at `at`: reading it let a repo's flip to "all"
+        # skip the launch door (review, 2026-10-11)
+        return "off", [], f"no .claude/workflow.json at {at[:12]}; the overlay is today's", []
+    if text is None:
+        # a repo that keeps its opt-in out of git: the overlay's repos.json, which the branch
+        # under judgement cannot edit either (common.workflow_overlay)
+        cfg = common.workflow_overlay(repo, REPOS_JSON)
+        if not isinstance(cfg, dict):
+            return "off", [], f"no .claude/workflow.json on origin/{main}, none in repos.json", []
+    else:
+        try:
+            cfg = json.loads(text)
+        except ValueError:
+            return "off", [], "workflow.json on origin is not JSON", []
+    records = [r for r in cfg.get("records") or [] if isinstance(r, str) and r]
+    raw_ex = cfg.get("autofinish_exclude")
+    if raw_ex is not None and not isinstance(raw_ex, list):  # a safety list must not fail open
+        return "off", records, f"autofinish_exclude is not a list ({type(raw_ex).__name__})", []
+    exclude = []
+    # in-place paths never launch from a branch (knowledge-commit refuses them): gated in every repo,
+    # so a repo need not copy its `in_place` into `autofinish_exclude` (review, 2026-10-13)
+    raw_ip = cfg.get("in_place")
+    if raw_ip is not None and not isinstance(raw_ip, list):  # a safety list must not fail open
+        return "off", records, f"in_place is not a list ({type(raw_ip).__name__})", []
+    inplace = raw_ip or []
+    for p in (raw_ex if isinstance(raw_ex, list) else []) + inplace:
+        p = (p[2:] if p.startswith("./") else p.lstrip("/")) if isinstance(p, str) else ""
+        if p:  # an empty prefix would gate every path: a typo, not a wish
+            exclude.append(p)
+    mode = cfg.get("autofinish") or ("records" if records else "off")
+    if mode not in ("records", "small", "all", "off"):
+        return "off", records, f"unknown autofinish value {mode!r}", exclude
+    return mode, records, None, exclude
+
+
+def touches_gate(repo, main, exclude, paths):
+    """The first of `paths` under one of the repo's gates — GATES in the launcher's own repo, the
+    repo's `autofinish_exclude` everywhere — as plain prefixes (`bin/autofinish` is
+    bin/autofinish-run too), or None. The diff runs --no-renames, so a gate moved away shows
+    under its old path."""
+    gates = (tuple(GATES) if Path(repo).name == LAUNCHER else ()) + tuple(exclude)
+    return next((p for p in sorted(paths) if gates and p.startswith(gates)), None)
+
+
+def gate_skip(repo, main, exclude, paths):
+    """touches_gate's verdict line, or None — the one wording for rules A, B, D, E and L."""
+    gate = touches_gate(repo, main, exclude, paths)
+    return f"skip: touches a gate ({gate}) — launches by /finish or /autofinish only" if gate else None
+
+
+# ---- the landing ladder (skipper-modes S3b) -----------------------------------------------
+# The owner, 2026-10-21: "dnd: I want to automerge as well. apply the same logic to merges". A sent task's
+# mode (helmlib, plan.json the authority) decides how far its branch lands by itself: `ask` never (every
+# launch holds at a ready PR: autofinish-run adds --hold), `default` by the rules above, `dnd` every
+# branch of the ship bar the held slice (held_slice), `yolo` whatever passes the check and the review
+# gate bar the launcher's gates and the repo's `autofinish_exclude` and `in_place` (the landing review). Rule M is the sweep's start for a dnd or yolo branch: any shape, any host, `taken` docs
+# included; never a binary, an open item, the week's pause, a busy session or the GitHub gates. Whether
+# that start merges or holds is autofinish-run's, which reads the mode again itself (never the sweep's
+# word, nor a caller's --by): a mode only the owner raises (helmlib.raise_refusal) is the yes to merge.
+LAND_MODES = ("dnd", "yolo")
+# keel's DND_HOLDS money pattern, over the prose a branch adds (.md/.txt, code spans cut): a model cost
+# written `$<list> ($<eff> effective)` is no money (rules: every model cost), nor a bare $0 in a table
+MONEY_RE = re.compile(r"[$€£]\s?(?!0(?![\d.,]))\d|\blist-only\b|\b(?:usd|eur|gbp)\b|\bsubscription\b|\binvoice\b", re.I)
+MODEL_COST_RE = re.compile(r"\$[\d.,]+[kKmM]?\s*\(\s*\$[\d.,]+[kKmM]?\s+effective\s*\)")
+DATA_SUFFIXES = (".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".yaml", ".yml", ".sqlite", ".db")
+YOLO_TAKEN = "Taken unattended (%s's yolo, " % (common.OWNER_NAME or "Owner")   # keel's YOLO_ANSWER (its owner key, "Owner" unset): no holds were applied to it
+PHYSICAL_RE = re.compile(r"^\s*-\s*physical:\s*(.*?)\s*$", re.M)
+
+
+def landing_mode(branch, repo=None):
+    """(mode, where) of the newest sent task on `branch` — helmlib.branch_mode: the plan task naming
+    it, else its newest run record — or (None, why) for a branch no task was sent on (a session the owner
+    types in has no mode) and for a mode that cannot be read, which lands by the rules above."""
+    p = common.tool("helmlib.py")
+    if not p:
+        return None, "helm is not installed here"
+    if str(p.parent) not in sys.path:
+        sys.path.insert(0, str(p.parent))
+    try:
+        import helmlib  # noqa: E402 — helm's, a soft edge: absent, no branch has a mode
+        return helmlib.branch_mode(branch, str(repo) if repo else None)
+    except Exception as e:  # noqa: BLE001 — unreadable is no mode, never a crashed sweep
+        return None, f"the mode is unreadable ({type(e).__name__})"
+
+
+def physical_line(repo, main):
+    """The contract's `physical:` value on origin/<main> (AGENTS.md, else CLAUDE.md), or None."""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        m = PHYSICAL_RE.search(git(repo, "show", f"origin/{main}:{name}") or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def published(repo, main):
+    """The paths origin/<main>'s .helloworld/allowlist.txt sends to the public twin (one per line)."""
+    text = git(repo, "show", f"origin/{main}:.helloworld/allowlist.txt") or ""
+    return {l.strip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")}
+
+
+def held_slice(repo, wt, main, mode, cfg=None):
+    """Why a dnd or yolo landing stops at a ready PR, or None when it may merge (the ladder, S3b).
+    Every mode: the launcher's own gates (GATES, in the overlay) and a path in the base's
+    `autofinish_exclude` or `in_place` — a branch never lands the gate it is judged by, nor what every
+    session's hooks run; yolo's "all the way" stops there (the landing review, 2026-10-22; bin/pr
+    refuses it end to end anyway). dnd adds the slice the owner kept for themself: a repo whose `physical:`
+    is not none, a path the public twin publishes, a data file the branch deletes, money in the prose
+    it adds, and an answer taken under yolo (no holds applied).
+    Any other mode holds everything: `ask` by its rule, `default` because a taken answer never lands
+    there (yolo-veto D1). What it cannot read is a hold, never a pass."""
+    if mode not in LAND_MODES:
+        return "mode ask — nothing lands by itself" if mode == "ask" else \
+            f"mode {mode or 'default'} — a taken answer never lands there (yolo-veto D1)"
+    tip = git(wt, "rev-parse", "HEAD")
+    base = git(wt, "merge-base", f"origin/{main}", tip) if tip else None
+    if not base:
+        return f"no merge-base with origin/{main}"
+    status, _, _, added, unparsed = diff_facts(wt, base, tip)
+    if Path(repo).name == LAUNCHER:
+        g = next((p for p in sorted(status) if p.startswith(GATES)), None)
+        if g:
+            return f"the launcher's own gate ({g})"
+    _, records, problem, exclude = cfg or repo_config(repo, main)
+    # a list that will not read fails closed; a repo with no workflow config at all has no gates to name
+    if problem and not problem.startswith(("no .claude/workflow.json", "unknown autofinish value")):
+        return f"the repo's config ({problem})"
+    g = next((p for p in sorted(status) if exclude and p.startswith(tuple(exclude))), None)
+    if g:
+        return f"a gated path ({g}: autofinish_exclude or in_place)"
+    if mode == "yolo":
+        return None
+    phys = physical_line(repo, main)
+    if not phys or not phys.lower().startswith("none"):
+        return f"a physical repo (physical: {phys or 'no line in the contract'})"
+    pub = published(repo, main)
+    g = next((p for p in sorted(status) if p in pub), None)
+    if g:
+        return f"a public publish ({g} goes to the public twin)"
+    g = next((p for p in sorted(status) if status[p] == "D" and (p.endswith(DATA_SUFFIXES) or under(p, records))), None)
+    if g:
+        return f"a deletion of data ({g})"
+    if unparsed:
+        return f"money unread ({unparsed[0]}: unparsed diff)"
+    for p in sorted(added):
+        for line in added[p]:
+            if YOLO_TAKEN in line:
+                return f"an answer taken under yolo, the ship now dnd ({p})"
+            m = MONEY_RE.search(MODEL_COST_RE.sub(" ", CODE_SPAN.sub(" ", line)))
+            if m:
+                return f"money in the diff ({p}: {m.group(0).strip()})"
+    return None
+
+
+def mode_asks(wt, asks, status, fetch):
+    """Rule M's asks gate, or None: every asks line in a D-list doc the branch adds, and every such
+    doc settled — `answered`, `stood`, or `taken` (keel yolo's picks, which this mode lands)."""
+    docs = sorted({p for p, _, dl in asks if dl and status.get(p) == "A" and p.endswith(".md")})
+    stray = next((h for h in asks if not h[2] or h[0] not in docs), None)
+    if stray:
+        return f"skip: asks ({stray[0]}: {stray[1]})"
+    for doc in docs:
+        s = memo_status(wt, doc, fetch)
+        if s is None:
+            return f"skip: memo status unavailable ({doc})"
+        if s.get("verdict") not in ("answered", "stood", "taken"):
+            return f"skip: asks ({doc}: memo {s.get('verdict')} — lands once nothing is open)"
+    return None
+
+
+DATED_LOG = re.compile(r"^autofinish-(\d{4}-\d{2}-\d{2})\.log$")  # not autofinish-launchd.log
+
+
+def first_arm():
+    """The launch door's epoch: the earliest of `first-armed` (arm and disarm keep it, so a
+    re-arm does not reset the count to 0/5 — widen review) and the live `armed`'s ts; None when
+    this Mac was never armed. Deleting `first-armed` is the deliberate reset."""
+    ts = [t for t in (first_armed_ts(), iso_ts((armed() or {}).get("ts"))) if t is not None]
+    return min(ts) if ts else None
+
+
+def first_armed_ts():
+    try:
+        return iso_ts(json.loads((STATE / "first-armed").read_text()).get("ts"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def launches_since_arm():
+    """(n, armed) — how many runs the sweep started (`by=sweep`) launched at or after this Mac's
+    first arm, from the dated logs; (0, False) while disarmed. The launch door: E, and B in a
+    repo that was not "small" or "all" at the first arm, open at E_LAUNCHES.
+    Not <git dir>/claude/autofinished: it records the owner's typed /finish hand-offs and /autofinish
+    runs too, about three a day, which would open the door before autofinish chose five (review)."""
+    since = first_arm() if armed() else None
+    if since is None:
+        return 0, False
+    first = (datetime.datetime.fromtimestamp(since) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    seen = set()
+    for path in sorted(LOG_DIR.glob("autofinish-*.log")):
+        day = DATED_LOG.match(path.name)
+        if not day or day.group(1) < first:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for ln in text.splitlines():
+            m = common.RUN_LAUNCHED.match(ln) if " landed " in ln or " launched " in ln else None  # most lines are dry verdicts
+            # rule L's launches are the deploy's, not the sweep's judgement: they never open the door
+            t = iso_ts(m.group(1)) if m and m.group(5) == "sweep" and " rule=L " not in ln else None
+            if t is not None and t >= since:
+                seen.add((m.group(2), m.group(3), m.group(4)))
+                if len(seen) >= E_LAUNCHES:  # the door is open: no need to read months of logs (review)
+                    return len(seen), True
+    return len(seen), True
+
+
+_was = {}
+
+
+def mode_at_first_arm(repo, main):
+    """The repo's autofinish value on origin/<main> at the first arm: its last first-parent
+    commit at or before that moment. None when this Mac was never armed, or origin/<main> has no
+    commit that old. The door spares B only where this is "small" or "all": B ran there before the
+    arm, so "all" opens nothing new for it (the owner, 2026-10-08, the widen doc's item 2); a repo
+    that turned "small" after the arm (shop/books) waits like any other, and so does None (review
+    at /finish). Read by committer date; a flip rebased in after the arm reads as the mode at the
+    arm. An overlay repo reads "off" (repo_config's `at`). verdict() does not call this before the first arm: there a "small" repo keeps its B and an
+    "all" one waits."""
+    key = str(repo)
+    if key in _was:
+        return _was[key]
+    with _CACHE:
+        if key not in _was:
+            since, mode = first_arm(), None
+            sha = since is not None and git(repo, "rev-list", "-1", "--first-parent",
+                                            f"--before={int(since)}", f"origin/{main}")
+            if sha:
+                mode = repo_config(repo, main, sha)[0]
+            _was[key] = mode
+        return _was[key]
+
+
+_launches = None
+
+
+def launches():
+    global _launches
+    if _launches is not None:
+        return _launches
+    with _CACHE:
+        if _launches is None:
+            _launches = launches_since_arm()
+        return _launches
+
+
+def under(path, prefixes):
+    """knowledge-commit's prefix syntax: `x/` is a folder, anything else one file."""
+    return any(path.startswith(p) if p.endswith("/") else path == p for p in prefixes)
+
+
+override = common.autofinish_override  # rule C's marker: one reader, shared with checkpoint.py
+
+
+def running(pid, proc_start):
+    """bin/pickup's test: alive, and the same process (procStart is `ps -o lstart` in UTC)."""
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        pass
+    except OSError:
+        return False
+    if not proc_start:
+        return True
+    try:
+        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                           timeout=5, env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # can't tell: count it alive, the safe side for a veto
+    return " ".join(r.stdout.split()) == " ".join(proc_start.split())
+
+
+_live = None
+
+
+def live_sessions():
+    global _live
+    if _live is not None:  # published whole (below), so a reader never takes it half-filled
+        return _live
+    with _CACHE:  # a half-filled list read by another judging thread would miss a busy session
+        if _live is None:
+            live = []
+            for f in REGISTRY.glob("*.json"):
+                try:
+                    e = json.loads(f.read_text())
+                except (OSError, ValueError):
+                    continue
+                if isinstance(e, dict) and isinstance(e.get("pid"), int) and e.get("sessionId") \
+                        and running(e["pid"], e.get("procStart")):
+                    live.append(e)
+            _live = live
+        return _live
+
+
+def inside(path, root):
+    try:
+        p, r = Path(path).resolve(), Path(root).resolve()
+    except OSError:
+        return False
+    return p == r or r in p.parents
+
+
+def sessions_on(worktree, ids):
+    """Live registry entries on this worktree: by id (the registry's cwd stays where a session
+    started, before EnterWorktree), or by cwd."""
+    return [e for e in live_sessions()
+            if e["sessionId"] in ids or (e.get("cwd") and inside(e["cwd"], worktree))]
+
+
+def ancestors():
+    """The pids above this process: a session that runs `autofinish` (a hook, /autofinish's
+    Bash) is one of them, and it is busy only because it is running us."""
+    pids, pid = set(), os.getpid()
+    for _ in range(40):
+        try:
+            r = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+            pid = int(r.stdout.strip() or 0)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            break
+        if pid <= 1:
+            break
+        pids.add(pid)
+    return pids
+
+
+def own_sessions(session=None):
+    """(ids, pids) never `busy` for this evaluation: the caller's session at its turn's end
+    (--session, a full id or its first 8) and every live session among our ancestors."""
+    return ({session} if session else set()), ancestors()
+
+
+def is_own(entry, own):
+    if not own:
+        return False
+    ids, pids = own
+    sid = entry.get("sessionId") or ""
+    return entry.get("pid") in pids or any(i and (sid == i or sid.startswith(i)) for i in ids)
+
+
+def queue_session(state):
+    try:
+        q = json.loads((state / "prompts.json").read_text())
+        return next((e.get("session") for e in reversed(q) if isinstance(e, dict) and e.get("session")), None)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def transcript(sid):
+    """The newest transcript for a full id or an 8-hex prefix, or None."""
+    if not sid:
+        return None
+    hits = [p for p in PROJECTS.glob(f"*/{sid}*.jsonl") if p.is_file()]
+    return max(hits, key=lambda p: p.stat().st_mtime) if hits else None
+
+
+def last_reply(path):
+    """The assistant text since the last human prompt (bin/paste-paths' last_reply), read from
+    the file's tail. None when the file can't be read or holds no reply."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - TAIL_BYTES))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    texts = []
+    for raw in reversed(lines):
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or e.get("isSidechain"):
+            continue
+        content = (e.get("message") or {}).get("content")
+        if e.get("type") == "user":
+            if isinstance(content, str) or not any(
+                    isinstance(c, dict) and c.get("type") == "tool_result" for c in content or []):
+                break
+            continue
+        if e.get("type") == "assistant" and isinstance(content, list):
+            texts.extend(c.get("text", "") for c in reversed(content)
+                         if isinstance(c, dict) and c.get("type") == "text")
+    return "\n".join(reversed(texts)) if texts else None
+
+
+def reply_veto(text, live=True):
+    """Why this reply leaves the next move to the owner, or None. `live`: a session is on the branch —
+    a WAITING FOR SOMETHING reply vetoes only then: with its session gone, nothing wakes it."""
+    kind, _, _ = common.ending(text)
+    if kind == "waiting":
+        return f"waiting for {OWNER} (last reply ends in the WAITING line)"
+    if kind == "relayed":  # session-asks R4: an ask is out with its skipper; the answer comes back here
+        return "waiting on its skipper (last reply ends in the RELAYED line)"
+    if kind == "pending" and live:  # mid-work: its reviewers, check or poll wake it, never launched under it
+        return "waiting on its own work (last reply ends in the WAITING FOR SOMETHING line)"
+    for line in reversed(text.splitlines()):
+        line = common.bare(line.strip())
+        if not line or LINK_ONLY.match(line):
+            continue
+        return "last reply asks (ends in ?)" if line.endswith("?") else None
+    return None
+
+
+def mtime(p):
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return None
+
+
+ACCOUNT = os.environ.get("AUTOFINISH_ACCOUNT") or str(common.tool("account") or BIN / "account")
+PICK_TIMEOUT = 90  # a fresh pick probes each row it reaches (~4 s, two tries of 30 s at worst)
+# The login variables bin/account must not inherit: a token outranks the dir it probes (account
+# run strips it too), and the runner gets neither from start_runner, so the gate and the run pick alike.
+LOGIN_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+_TC = None
+
+
+def tier_check():
+    """hooks/tier_check.py, loaded once. It reads CLAUDE_CONFIG_DIR at import: hidden here, so a
+    a work-login caller (a session-end child of a work-login run) reads the default login, as named."""
+    global _TC
+    if _TC is not None:
+        return _TC
+    with _CACHE:
+        # The pop below must not overlap a judging thread: one copying os.environ (dict(os.environ,
+        # …) in branches.probably, dispatch-rc) meets a KeyError mid-copy. dry_run() loads this
+        # before its pool starts, so the window is single-threaded (review, 2026-10-18).
+        if _TC is None:
+            if os.environ.get("AUTOFINISH_NOW"):
+                os.environ.setdefault("CLAUDE_TIER_NOW", os.environ["AUTOFINISH_NOW"])
+            from importlib.machinery import SourceFileLoader
+            cfg = os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            try:
+                _TC = SourceFileLoader("tier_check", str(common.tool("tier_check.py") or BIN / "tier_check.py")).load_module()
+            finally:
+                if cfg is not None:
+                    os.environ["CLAUDE_CONFIG_DIR"] = cfg
+        return _TC
+
+
+def tightness(pct, sampled, resets, who=""):
+    """(tight, detail) by review-gate's threshold; (False, None) for last week's figure or no reading
+    — review-gate's rule: no reading is the normal budget."""
+    try:
+        tc = tier_check()
+        pct = float(pct)
+        if not resets:
+            return pct >= tc.LOW, f"{who}{pct:g}% used"
+        resets = float(resets)
+        while resets < tc.now():  # a cached reset in the past: the week rolled over since (tier_check's weekly)
+            resets += tc.WEEK
+        if sampled and float(sampled) < resets - tc.WEEK:  # sampled before this week began: last week's figure
+            return False, None
+        pace = tc.week_pace(resets)
+        return (pct > pace + tc.AHEAD or pct >= tc.LOW), f"{who}{pct:g}% used, pace {pace:g}%"
+    except Exception:  # noqa: BLE001
+        return False, None
+
+
+def default_week(who=""):
+    """tier_check's reading of the default login (~/.claude.json, CLAUDE_TIER_CLAUDE_JSON in tests)."""
+    try:
+        tc = tier_check()
+        w = tc.weekly(tc.load(tc.CLAUDE_JSON))
+    except Exception:  # noqa: BLE001
+        return False, None
+    return tightness(w[0], w[1] / 1000, w[2], who) if w else (False, None)
+
+
+def account(*args, timeout=PICK_TIMEOUT):
+    """(exit, parsed JSON or None) of bin/account; exit None when it could not run."""
+    env = {k: v for k, v in os.environ.items() if k not in LOGIN_ENV}
+    try:
+        r = common.run_group([ACCOUNT, *args], timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    try:
+        return r.returncode, json.loads(r.stdout)
+    except ValueError:
+        return r.returncode, None
+
+
+def week(repo, fresh=False):
+    """→ (verdict, detail): ("tight", …), ("none", reasons) when no account may run, or
+    (None, detail) — the row `account pick --repo` takes for this repo (header, week). `fresh`
+    probes (the judging a start follows); every other judging reads the cached readings only,
+    so a dry run, the Stop hook's check and a disarmed sweep spawn no probe."""
+    rc, d = account("pick", "--repo", str(repo), "--json", *([] if fresh else ["--cached"]))
+    if rc == 3 and isinstance(d, dict):
+        return "none", "; ".join(f"{l}: {w}" for l, w in d.get("skipped") or []) or "the registry has no row"
+    if rc != 0 or not isinstance(d, dict) or not d.get("account"):  # exit 4 (no registry) included
+        tight, detail = default_week()
+        return ("tight" if tight else None), detail
+    label = d["account"]
+    if fresh:
+        _picked[str(repo)] = (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", "")
+    if not d.get("primary"):
+        # a secondary's week is its own registry ceiling (week_max, its reserve), which the pick
+        # just applied: review-gate's pace rule guards the owner's own week, not a seat meant to be
+        # spent — on the work login's last day the pick allows 100 % (review, 2026-10-08)
+        return None, f"{label}: {d.get('reason') or 'picked'}"
+    rc, rows = account("limits", label, "--cached", "--json", timeout=30)
+    row = rows[0] if rc == 0 and isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+    lim = row.get("limits") or {}
+    if lim.get("seven_day") is None:
+        if not d.get("env"):  # the default login: tier_check's reading, as before the pool
+            tight, detail = default_week(f"{label} ")
+            return ("tight" if tight else None), detail
+        return None, f"{label}: no week reading"
+    tight, detail = tightness(lim["seven_day"], row.get("sampled"), lim.get("seven_day_resets"), f"{label} ")
+    return ("tight" if tight else None), detail
+
+
+_week = {}
+_picked = {}  # repo → the CLAUDE_CONFIG_DIR of its last fresh pick ("" the default login)
+
+
+def week_tight(repo, fresh=False):
+    """week(repo), once per repo and freshness per process: the sweep judges many branches of one
+    repo. attempt() clears it before the judging a start follows. An odd answer is no account,
+    never a crashed sweep (review, 2026-10-08)."""
+    key = (str(repo), bool(fresh))
+    hit = _week.get(key)  # one read: attempt() clears _week, though only after the pool has joined
+    if hit is not None:
+        return hit
+    with _CACHE:  # one bin/account per repo, however many judging threads reach it at once
+        if key not in _week:
+            try:
+                _week[key] = week(repo, fresh)
+            except Exception as e:  # noqa: BLE001
+                _week[key] = ("none", f"the pick could not be read ({type(e).__name__})")
+        return _week[key]
+
+
+def memo_status(worktree, doc, fetch=False):
+    """bin/keel's verdict for one doc as a dict, or None when memo can't say. The contract
+    (E10, built in parallel): JSON with `verdict` in stands-at|due|stood|part-stood|voided|too-big|
+    physical|no-contract|taken|answered, `deadline` (ISO or null) and, since S3, `unstandable`. `fetch` only for the judging a
+    start follows: a dry run writes no remote-tracking ref, and is no slower for GitHub."""
+    cmd = [MEMO, "status", "--json"] + ([] if fetch else ["--no-fetch"]) + [doc]
+    try:
+        r = subprocess.run(cmd, cwd=str(worktree), capture_output=True, text=True, timeout=MEMO_TIMEOUT)
+        if r.returncode:
+            return None
+        s = json.loads(r.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if isinstance(s, list):
+        s = s[0] if s else None
+    return s if isinstance(s, dict) and s.get("verdict") else None
+
+
+_remote = {}
+
+
+def origin_tip(repo, branch):
+    """origin's tip of `branch` from `git ls-remote` (read-only, unlike a fetch): sha, "" when
+    origin has no such branch, None when origin could not be asked."""
+    key = str(repo)
+    if key not in _remote:
+        with _CACHE:  # one ls-remote per repo, however many judging threads reach it: origin is GitHub
+            if key not in _remote:
+                text = git(repo, "ls-remote", "origin", "refs/heads/claude/*", timeout=30)
+                _remote[key] = None if text is None else dict(
+                    (l.split("\t")[1][len("refs/heads/"):], l.split("\t")[0]) for l in text.splitlines() if "\t" in l)
+            tips = _remote[key]
+    else:
+        tips = _remote.get(key)  # one read: attempt() pops _remote, though only after the pool has joined
+    return None if tips is None else tips.get(branch, "")
+
+
+def github_state(repo, branch, since):
+    """{"pr": {number, title, draft} or None, "activity": comments and reviews on it after
+    `since`}, or None when GitHub could not be asked. The only GitHub reader here, so the tests
+    stub exactly this (AUTOFINISH_GITHUB)."""
+    fixture = os.environ.get("AUTOFINISH_GITHUB")
+    if fixture:
+        try:
+            data = json.loads(Path(fixture).read_text())
+        except (OSError, ValueError):
+            return None
+        return data.get(branch) or {"pr": None, "activity": 0}
+    slug = common.repo_slug(git(repo, "remote", "get-url", "origin") or "")
+    tok = common.token()
+    if not slug or not tok:
+        return None
+    head = urllib.parse.quote(f"{slug.split('/')[0]}:{branch}", safe=":")
+    st, prs = common.api("GET", f"/repos/{slug}/pulls?state=open&per_page=5&head={head}", tok=tok)
+    if st != 200 or not isinstance(prs, list):
+        return None
+    if not prs:
+        return {"pr": None, "activity": 0}
+    pr = prs[0]
+    iso = datetime.datetime.fromtimestamp(since, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    n = 0
+    for path in (f"/repos/{slug}/issues/{pr['number']}/comments?since={iso}&per_page=50",
+                 f"/repos/{slug}/pulls/{pr['number']}/comments?since={iso}&per_page=50"):
+        st, items = common.api("GET", path, tok=tok)
+        if st != 200 or not isinstance(items, list):
+            return None
+        n += sum(1 for c in items if not str((c or {}).get("body") or "").startswith(DIED_HEAD))
+    st, reviews = common.api("GET", f"/repos/{slug}/pulls/{pr['number']}/reviews?per_page=50", tok=tok)
+    if st != 200 or not isinstance(reviews, list):
+        return None
+    n += sum(1 for r in reviews if (r.get("submitted_at") or "") > iso)
+    return {"pr": {"number": pr["number"], "title": pr.get("title") or "", "draft": pr.get("draft")},
+            "activity": n}
+
+
+# ---- the diff -----------------------------------------------------------------------------
+
+def raw(repo, *args, timeout=30):
+    """git's stdout unstripped (a -z listing ends in NUL, a diff's lines keep their spaces), or None."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def added_lines(wt, base, tip, path):
+    """The lines one path's diff adds, or None when the diff can't be read line by line. Its own
+    diff, so no header line can be taken for a path: the first review found `+++ b/<path>`
+    parsing lost a name with a space (git appends a TAB) and let an added `++ b/x` line re-target
+    every line after it. Header lines are skipped up to the first `@@`; after it every line is a
+    hunk header, `+`, `-`, ` ` or `\\ No newline`, or the diff is not what this reads."""
+    out = raw(wt, "-c", "core.quotePath=false", "diff", "--no-renames", "--no-color", "--no-ext-diff",
+              "--no-textconv", "-U0", base, tip, "--", path, timeout=60)
+    if out is None:
+        return None
+    lines, hunks = [], False
+    for line in out.split("\n")[:-1] if out.endswith("\n") else out.split("\n"):
+        if line.startswith("@@"):
+            hunks = True
+        elif not hunks:
+            continue
+        elif line.startswith("+"):
+            lines.append(line[1:])
+        elif not line.startswith(("-", " ", "\\")):
+            return None
+    return lines
+
+
+def diff_facts(wt, base, tip):
+    """Paths with their status, inserted lines, binaries, every added line per text path, and the
+    text paths whose added lines could not be read (each an asks veto: never a silent pass)."""
+    status = {}
+    fields = (raw(wt, "diff", "--no-renames", "--name-status", "-z", base, tip) or "").split("\0")
+    for st, path in zip(fields[0::2], fields[1::2]):
+        if path:
+            status[path] = st[:1]
+    inserted, binary, counts = 0, [], {}
+    numstat = raw(wt, "diff", "--no-renames", "--numstat", "-z", base, tip)
+    if numstat is None and status:
+        # git failed or timed out (likelier with JUDGE_THREADS at once): no counts means no binary
+        # veto and no size, so every path is unread rather than a silent pass (review, 2026-10-18)
+        return status, 0, [], {}, sorted(status)
+    for rec in (numstat or "").split("\0"):
+        parts = rec.split("\t", 2)
+        if len(parts) == 3:
+            if parts[0] == "-":
+                binary.append(parts[2])
+            elif parts[0].isdigit():
+                inserted += int(parts[0])
+                counts[parts[2]] = int(parts[0])
+    added, unparsed = {}, []
+    for path in sorted(status):
+        if status[path] == "D" or not path.endswith(TEXT_SUFFIXES) or path in binary:
+            continue
+        lines = added_lines(wt, base, tip, path)
+        # numstat's count is the cross-check: a line the hunks did not yield is a line unread
+        if lines is None or len(lines) != counts.get(path, len(lines)):
+            unparsed.append(path)
+        elif lines:
+            added[path] = lines
+    return status, inserted, binary, added, unparsed
+
+
+def asks_in(path, lines, st="M"):
+    """[(path, marker, is_dlist_marker)] for every line that asks the owner something. Lines are read
+    in text files only: in code the markers are fixtures and regexes (keel's tests/keel.sh in regatta,
+    bin/dispatch on the first real run, 2026-10-05), and a code file never passes rule A anyway."""
+    hits = []
+    if path.startswith(HANDOFF) and st != "D":
+        hits.append((path, "a seed under docs/handoff/", False))
+    if not path.endswith(TEXT_SUFFIXES):
+        return hits
+    for raw in lines:
+        if branches.asks_answer(raw):
+            hits.append((path, "➤ Answer:", True))
+            continue
+        line = CODE_SPAN.sub("", raw)
+        if D_ITEM.search(line):
+            hits.append((path, "**D<n> —**", True))
+        elif DECIDE.search(line):
+            hits.append((path, "**Decide:**", False))
+        elif CHECKBOX.match(line):
+            hits.append((path, "- [ ]", False))
+        elif HANDOFF in line:
+            hits.append((path, "a docs/handoff/ line", False))
+    return hits
+
+
+# ---- one worktree -------------------------------------------------------------------------
+
+def iso_ts(iso):
+    try:
+        return datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def spoken_since(state, rec, ov):
+    """True when anyone spoke to the branch after its last run ended: a prompt queued by a session
+    other than the run's, a turn's end (last-reply: the runner's own last turn ends at least the
+    watcher's 10 idle minutes before `ended`), or an override marker set since. prompts.json
+    alone would not do: a checkpoint commit takes its session's prompts out of the queue."""
+    ended = iso_ts(rec.get("ended"))
+    if ended is None:
+        return True  # an end it can't read is no stop to wait on
+    try:
+        q = json.loads((state / "prompts.json").read_text())
+    except (OSError, ValueError):
+        q = []
+    for e in q if isinstance(q, list) else []:
+        if isinstance(e, dict) and e.get("session") != rec.get("session") \
+                and isinstance(e.get("ts"), (int, float)) and e["ts"] > ended:
+            return True
+    if (mtime(state / "last-reply") or 0) > ended:
+        return True
+    if ov:
+        ts = ov.get("ts")
+        return (ts if isinstance(ts, (int, float)) else mtime(state / common.AUTOFINISH_OVERRIDE) or 0) > ended
+    return False
+
+
+_runner = None
+
+
+def runner():
+    """bin/autofinish-run as a module: dead() and bury() are the runner's, beside the `finally`
+    whose writes they stand in for."""
+    global _runner
+    if _runner is not None:
+        return _runner
+    with _CACHE:  # published once exec_module has filled it: no judging thread takes it half-made
+        if _runner is None:
+            import importlib.machinery
+            import importlib.util
+            loader = importlib.machinery.SourceFileLoader("autofinish_run", str(BIN / "autofinish-run"))
+            mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+            loader.exec_module(mod)
+            _runner = mod
+        return _runner
+
+
+def dead_run(state, run):
+    """Why the worktree's unended run is dead, or None (bin/autofinish-run's dead()); `state` is
+    its <git dir>/claude, where the waiter's pid is."""
+    if not run or run.get("ended"):
+        return None
+    return runner().dead(None, run, now=now(), state_dir=str(state))
+
+
+def died_twice(wt, branch):
+    """The date of the second death when the branch's last two ended runs both died on one tip (the
+    retry of a death dying too, not two unrelated power cuts), else None."""
+    cdir = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ends = [e for e in common.autofinished(cdir) if e["branch"] == branch] if cdir else []
+    if len(ends) < 2 or not all(e["outcome"] == DIED for e in ends[-2:]):
+        return None
+    tips = [(e["detail"] or "").split(" ", 1)[0] for e in ends[-2:]]
+    return ends[-1]["ts"][:10] if tips[0] and tips[0] == tips[1] else None
+
+
+def own_push(wt, run, remote):
+    """True when origin's tip is the dead runner's own push: its recorded tip, or descendants of it
+    every one of which carries the session's `Claude-Session:` trailer (checkpoint.py's, 8 hex).
+    Origin's commit not here (no fetch while judging) is no proof: moved, as before."""
+    tip0, sid = run.get("tip"), str(run.get("session") or "")[:8]
+    if not tip0 or not sid:
+        return False
+    if remote == tip0:
+        return True
+    if git(wt, "merge-base", "--is-ancestor", tip0, remote) is None:
+        return False
+    out = git(wt, "log", "--format=%H%x1f%(trailers:key=Claude-Session,valueonly,separator=%x2C)",
+              f"{tip0}..{remote}")
+    rows = [l.split("\x1f") for l in (out or "").splitlines() if l]
+    return bool(rows) and all(len(r) == 2 and sid in r[1].split(",") for r in rows)
+
+
+def bury_dead(repos):
+    """The sweep's first pass: each worktree whose run died is recorded so (bin/autofinish-run's
+    bury: state, lock, PR comment, record, log), and the line printed for launchd's log."""
+    for name, repo in repos:
+        for wt, branch, gitdir in branches.worktrees(repo):
+            if not branch or not branch.startswith("claude/") or gitdir is None or not Path(wt).is_dir():
+                continue  # a prunable worktree: its Tree() would answer with empty paths
+            run = common.autofinish_run(Path(gitdir) / "claude")
+            if not run or run.get("ended"):
+                continue
+            try:
+                why = dead_run(Path(gitdir) / "claude", run)
+                if why and runner().bury(runner().Tree(str(wt)), why):
+                    print(f"died {name} {branch} — {why}", flush=True)
+            except Exception as e:  # noqa: BLE001 — one odd run must not stop the sweep
+                print(f"autofinish: {name} {branch}: could not judge its run ({type(e).__name__}: {str(e)[:80]})",
+                      flush=True)
+
+
+# the docs a `start (D)` verdict found `due`, per worktree: what attempt() applies before the start
+_due = {}
+
+
+def deployed_on(wt, base, tip):
+    """(live, before): the first `Deployed:` value in base..tip that says something went live
+    (common.deployed), from a commit made at or after common.L_SINCE — rule L — and the first from
+    an older one. Every commit, not only the tip: a later turn that deployed nothing writes no
+    line, and the live system still runs the branch (review at /finish, 2026-10-14)."""
+    live = before = None
+    for rec in (git(wt, "log", "--format=%ct%x1f%B%x1e", f"{base}..{tip}") or "").split("\x1e"):
+        ct, sep, body = rec.strip().partition("\x1f")
+        value = common.deployed(body) if sep else None
+        if not value:
+            continue
+        if float(ct or 0) >= common.L_SINCE:
+            live = live or value
+        else:
+            before = before or value
+    return live, before
+
+
+def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=False):
+    """`start (X)` / `wait: idle N min` / `skip: <veto>` for one claude/* worktree. `own`: the
+    sessions never busy here (own_sessions); `reply`: the last reply's text in place of the
+    transcript's (the Stop hook's, read before the transcript may hold it); `fetch`: memo status
+    fetches first (the judging a start follows)."""
+    mode, records, problem, exclude = cfg
+    if not wt.is_dir():
+        return "skip: worktree missing"
+    state = gitdir / "claude"
+    ov = override(state)
+    if mode == "off" and not ov:
+        return "skip: off" + (f" ({problem})" if problem else "")
+
+    m = common.moved(state)
+    if m:
+        return f"skip: moved ({common.moved_line(m)})"
+    run = common.autofinish_run(state)
+    why = dead_run(state, run)
+    if why:
+        return f"skip: died, not recorded yet ({why}; session {str(run.get('session'))[:8]}) — an armed sweep records it"
+    owner = (common.read_owner(state) or {}).get("session")
+    tip = git(wt, "rev-parse", "HEAD")
+    message = git(wt, "log", "-1", "--format=%B", "HEAD") or ""
+    trailer = re.search(r"^Claude-Session:\s*([0-9a-f]{8})\s*$", message, re.M)
+    ids = {s for s in (owner, queue_session(state)) if s}
+    on = sessions_on(wt, ids)
+    # anything but idle: `waiting` is a dialog or a permission prompt in front of the owner, `shell` a
+    # command running — the CLI's registry has more states than busy and idle (review, 2026-10-05)
+    busy = [e for e in on if e.get("status") != "idle" and not is_own(e, own)]
+    if busy:
+        st = busy[0].get("status")
+        return f"skip: busy (session {busy[0]['sessionId'][:8]}" + ("" if st == "busy" else f", {st or 'no status'}") + ")"
+    fin = mtime(state / "finishing")
+    if fin and now() - fin < FINISHING_TTL:
+        return "skip: finishing (a /finish is under way)"
+    gb = next((x for x in GIT_BUSY if (gitdir / x).exists()), None)
+    if gb:
+        return f"skip: git busy ({gb})"
+    dirty = branches.uncommitted(wt)
+    if dirty is None or dirty:
+        return f"skip: uncommitted ({dirty if dirty else '?'} files)"
+    if not tip:
+        return "skip: no commit"
+
+    tgt = f"origin/{main}"
+    # a worktree nothing was committed in yet is on main too, but it is not "launched"
+    if branches.is_ancestor(repo, tip, tgt) and branches.committed_nothing(repo, branch, tip):
+        return "skip: nothing committed"
+    b = branches.Branch(branch)
+    b.local = tip
+    proof = branches.prove(repo, b, tgt)
+    if proof:
+        return f"skip: launched ({proof})"
+    hint = branches.probably(repo, b, tgt)
+    if hint:
+        return f"skip: pickup review ({hint})"
+    if run and run.get("ended") and run.get("outcome") in ("stopped", "never-started") \
+            and run.get("gate") not in REFUSED_GATES and not spoken_since(state, run, ov):
+        return f"skip: stopped at {run.get('gate') or '?'} ({run.get('ended')}) — waits for a prompt"
+    retry = bool(run and run.get("ended") and run.get("outcome") == DIED)
+    if retry:
+        twice = died_twice(wt, branch)
+        if twice and not spoken_since(state, run, ov):
+            return f"skip: died twice ({twice}) — waits for a prompt"
+        tip0 = run.get("tip")
+        if tip0 and tip and tip != tip0 and git(wt, "merge-base", "--is-ancestor", tip0, tip) is None \
+                and not spoken_since(state, run, ov):
+            return (f"skip: died mid-curation (local rewritten since {tip0[:7]}; {branch}-raw may hold it)"
+                    " — waits for a prompt")
+    base = git(wt, "merge-base", tgt, tip)
+    if not base:
+        return f"skip: no merge-base with {tgt}"
+    live = None  # rule L's deploy, read below (not for rule D)
+    status, inserted, binary, added, unparsed = diff_facts(wt, base, tip)
+    if not status:
+        return "skip: nothing to launch"
+    if any(p.startswith("docs/handoff/") for p in status):
+        why = open_steps(wt, base)
+        if why:
+            return f"skip: open step ({why})"
+    if unparsed:
+        return f"skip: asks ({unparsed[0]}: unparsed diff)"
+
+    # asks, and rule D — the only start a branch with asks lines can get, bar rule M
+    asks = [h for p in sorted(status) for h in asks_in(p, added.get(p, []), status[p])]
+    rule, docs, beside = None, [], None
+    _due.pop(str(wt), None)
+    # the landing ladder (S3b): a dnd or yolo branch is judged by rule M, its taken docs no veto
+    lmode = None if ov else landing_mode(branch, repo)[0]
+    if lmode in LAND_MODES:
+        skip = mode_asks(wt, asks, status, fetch) if asks else None
+        if skip:
+            return skip
+        asks = []
+    if asks:
+        docs = sorted({p for p, _, dl in asks if dl and status.get(p) == "A" and p.endswith(".md")})
+        if not docs or any(not dl or p not in docs for p, _, dl in asks):
+            p, marker, _ = next(h for h in asks if not h[2] or h[0] not in docs)
+            return f"skip: asks ({p}: {marker})"
+        # shape first: a doc with code beside it is a build, never D, whatever memo says — and
+        # that reason outlives memo's (first real run: memo-form-github read "memo unavailable")
+        if binary:
+            return f"skip: binary ({binary[0]})"
+        beside = next((p for p in sorted(status) if not under(p, records) or not p.endswith(TEXT_SUFFIXES)), None)
+        if beside and mode != "all":  # item 7 named "all" only: small repos keep main's veto (review)
+            return f"skip: not records ({beside})" if not under(beside, records) else f"skip: not text ({beside})"
+    if beside:
+        # an "all" repo: the design doc of a build the owner answered in full is no ask any
+        # more, and the build is judged as code (B or E) — never stood in for the owner, never D (widen review)
+        for doc in docs:
+            s = memo_status(wt, doc, fetch)
+            if s is None:
+                return f"skip: memo status unavailable ({doc})"
+            if s.get("verdict") != "answered":
+                return f"skip: asks ({doc}: memo {s.get('verdict')}, beside code — launches once answered)"
+        asks = []
+    if asks:
+        # due: the start applies it first. stood: applied already — by an earlier start whose
+        # runner never ran, say — but only by this launcher's commit on this branch, not a trailer
+        # anywhere memo looks. answered: the owner answered every item; /finish takes it from there.
+        due = []
+        for doc in docs:
+            s = memo_status(wt, doc, fetch)
+            if s is None:
+                return f"skip: memo status unavailable ({doc})"
+            v = s.get("verdict")
+            if v == "part-stood":
+                # entry D4-A (S3): a stand takes only Reversible: yes items with a bare pick; the rest
+                # wait on the owner, so no branch launches with `no` or unmarked items open
+                return f"skip: asks ({doc}: memo part-stood — {s.get('reason') or 'items still open'})"
+            if v == "due" and s.get("unstandable"):
+                # the stand would leave it part-stood, and /finish would then stop on the open items
+                left = ", ".join(f"{i} {w}" for i, w in s["unstandable"])
+                return f"skip: asks ({doc}: memo due, but a stand leaves {left} open)"
+            if v == "stood" and not git(wt, "log", "-1", "--format=%h", "--fixed-strings",
+                                        f"--grep={STOOD_BY}", f"{base}..{tip}", "--", doc):
+                return f"skip: asks ({doc}: memo stood, but no `{STOOD_BY}` commit on the branch)"
+            if v == "due" and lmode == "ask":
+                # keel's stand_status says ask-mode itself; this holds where an older keel says due
+                return f"skip: asks ({doc}: memo due, but mode ask — nobody answers it but {OWNER})"
+            if v == "due":
+                due.append(doc)
+            elif v not in ("stood", "answered"):
+                when = f" {s['deadline']}" if s.get("deadline") else ""
+                return f"skip: asks ({doc}: memo {v}{when})"
+        skip = gate_skip(repo, main, exclude, status)  # a records prefix can hold a gate
+        if skip:
+            return skip
+        _due[str(wt)] = due
+        rule = "D"
+    else:
+        live, before = deployed_on(wt, base, tip)
+        if re.search(r"open item", message, re.I):
+            return "skip: open item in the tip's message"
+        if ov:
+            rule = "C"
+        elif lmode in LAND_MODES:
+            # rule M (S3b): the mode is the owner's word for this ship — any shape, size and host, no launch
+            # door; gates are held at a ready PR by the runner (held_slice), never skipped here. A deployed
+            # one too: rule L's start would be `--by sweep`, its taken docs read as open by /finish and
+            # its held slice never applied (landing review 18); it keeps L's at-once clock and the week
+            # does not pause it, as rule L's
+            if binary:
+                return f"skip: binary ({binary[0]})"
+            rule = "M"
+            kind, detail = week_tight(repo)
+            if kind == "none":
+                return f"skip: no account ({detail})"
+            if kind == "tight" and not live:
+                return f"skip: week tight ({detail})"
+        elif before and not live:
+            # deployed before rule L existed: those branches waited for a typed /finish, and one
+            # was a stale +1,011-line branch whose deploy had been put back (review at
+            # /finish, 2026-10-14) — they keep that wait rather than launch unread on the first sweep
+            return f"skip: deployed before rule L ({before[:60]}) — launches by /finish"
+        elif live:
+            # rule L: the live system already runs this branch, so main is behind it until it
+            # launches — launch it at once, any shape (the owner, 2026-10-13: "If the code is deployed
+            # already, it should be launched ASAP - no wait - otherwise we have a drift between the
+            # code and the live state"). Until then a deploy was a skip that waited on /finish.
+            if binary:
+                return f"skip: binary ({binary[0]})"
+            skip = gate_skip(repo, main, exclude, status)
+            if skip:
+                return skip
+            rule = "L"
+        else:
+            if binary:
+                return f"skip: binary ({binary[0]})"
+            outside = next((p for p in sorted(status) if not under(p, records)), None)
+            untext = next((p for p in sorted(status) if not p.endswith(TEXT_SUFFIXES)), None)
+            if not outside and not untext:
+                skip = gate_skip(repo, main, exclude, status)  # in_place and excluded paths too
+                if skip:
+                    return skip
+                rule = "A"
+            elif mode not in ("small", "all"):
+                return f"skip: not records ({outside})" if outside else f"skip: not text ({untext})"
+            elif inserted >= SMALL_LINES and mode == "small":
+                return f"skip: too big for B ({inserted} inserted lines, needs < {SMALL_LINES})"
+            else:
+                rule = "B" if inserted < SMALL_LINES else "E"  # under "all", B first where it fits
+                # first: it holds on any host and any count, so it is the reason worth naming
+                skip = gate_skip(repo, main, exclude, status)
+                if skip:
+                    return skip
+                if host() != LAPTOP:
+                    return f"skip: {rule} is laptop only (host {host()})"
+                # the door: E always; B too unless B already ran there at the first arm. Records
+                # or off then, a "small" that launched after the arm, and a mode that cannot be
+                # read (no history that old) all wait: the door fails closed (review at /finish).
+                # Never armed, there is no arm to read: a "small" repo keeps the B it always had,
+                # an "all" one waits as before
+                was = None if rule == "E" else mode_at_first_arm(repo, main) if first_arm() is not None \
+                    else mode if mode == "small" else None
+                if rule == "E" or was not in ("small", "all"):
+                    n, armed_on = launches()  # not `on`: that is the live sessions, read below
+                    if n < E_LAUNCHES:
+                        return f"skip: {rule} waits for {E_LAUNCHES} launches ({f'{n}/{E_LAUNCHES}' if armed_on else 'disarmed'})"
+            # cached: the fresh pick is attempt()'s, after the idle clock — a session end's
+            # judging would otherwise probe every row only to say `wait: idle` (review, 2026-10-08)
+            kind, detail = week_tight(repo)
+            if kind == "none":
+                return f"skip: no account ({detail})"
+            if kind == "tight":
+                return f"skip: week tight ({detail})"
+
+        # the last reply, then the idle clock
+        sid = owner or queue_session(state) or (trailer.group(1) if trailer else None) \
+            or next((e["sessionId"] for e in on), None)
+        tr = transcript(sid)
+        text = reply if reply is not None else (last_reply(tr) if tr else None)
+        if text is None:
+            return "skip: last reply unknown" + (f" (session {sid[:8]})" if sid else " (no session)")
+        veto = reply_veto(text, live=bool(on))
+        if veto:
+            return f"skip: {veto}"
+        # common.ending, as checkpoint's autofinish_due reads it: link lines may follow the closing line
+        # (review at rename S2's /finish — the last line alone disagreed with the Stop hook's own check)
+        declared = rule == "C" and common.ending(text)[1] in DECLARED
+        # `/autofinish now`, and rule L: this turn's end
+        at_once = (rule == "C" and ov.get("now") is True) or bool(live)  # a deploy under C too
+        clock = mtime(state / "last-reply")
+        if clock is None:
+            clock = max([t for t in (mtime(state / "prompts.json"), mtime(tr)) if t] or [0]) or None
+        if clock is None:
+            clock = float(git(wt, "log", "-1", "--format=%ct", "HEAD") or 0)
+        idle = int(max(0, now() - clock) // 60)
+        if idle < IDLE_MIN and not declared and not at_once:
+            return f"wait: idle {idle} min"
+
+    # GitHub: pushed, not moved on, the PR still WIP and quiet since the tip
+    remote = origin_tip(repo, branch)
+    if remote is None:
+        return "skip: origin unreachable"
+    if not remote:
+        return "skip: not pushed"
+    if remote != tip:
+        if git(wt, "merge-base", "--is-ancestor", remote, tip) is not None:
+            return "skip: not pushed (local is ahead of origin)"
+        if not (retry and own_push(wt, run, remote)):
+            return "skip: moved on origin"
+    since = float(git(wt, "log", "-1", "--format=%ct", "HEAD") or 0)
+    gh = github_state(repo, branch, since)
+    if gh is None:
+        return "skip: GitHub unreachable"
+    pr = gh.get("pr")
+    if not pr:
+        return "skip: no PR"
+    if not str(pr.get("title") or "").startswith("WIP:"):
+        return f"skip: PR #{pr.get('number')} is no longer WIP"
+    if gh.get("activity"):
+        return f"skip: GitHub activity since the tip ({gh['activity']} on #{pr.get('number')})"
+    return f"start ({rule})"
+
+
+# ---- repos --------------------------------------------------------------------------------
+
+def known_repos():
+    """[(name, path)] from repos.json whose own workflow.json says checkpoint: true, or, with
+    none on disk yet, whose repos.json entry opts it in (bar a .claude/no-workflow)."""
+    try:
+        names = list(json.loads(REPOS_JSON.read_text()).get("repos") or {})
+    except (OSError, ValueError):
+        return []
+    found = []
+    for name in names:
+        path = ROOT / name
+        try:
+            if json.loads((path / ".claude" / "workflow.json").read_text()).get("checkpoint") is True:
+                found.append((name, path))
+        except (OSError, ValueError, AttributeError):
+            if (path.is_dir() and not (path / ".claude" / "no-workflow").exists()
+                    and isinstance(common.workflow_overlay(path, REPOS_JSON), dict)):
+                found.append((name, path))  # opted in from repos.json, not yet written here
+    return found
+
+
+def resolve(arg):
+    """A repos.json key or a path → (name, primary checkout)."""
+    for name, path in known_repos():
+        if arg == name:
+            return name, path
+    p = Path(arg).expanduser()
+    if not p.is_dir():
+        sys.exit(f"autofinish: no repo {arg}")
+    top = git(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    primary = Path(top).parent if top else p.resolve()
+    for name, path in known_repos():
+        if path.resolve() == primary.resolve():
+            return name, path
+    return primary.name, primary
+
+
+def dry_run(name, repo):
+    """[(branch, verdict, (wt, gitdir, main, cfg))] for every claude/* worktree of one repo; the
+    third part is what a start needs to judge the worktree again."""
+    main = branches.main_branch(repo)
+    cfg = repo_config(repo, main)
+    todo = [(Path(wt), branch, Path(gitdir)) for wt, branch, gitdir in branches.worktrees(repo)
+            if branch and branch.startswith("claude/") and gitdir is not None]
+    # judged JUDGE_THREADS at a time, listed in worktree order as before (map keeps it); judge()
+    # never raises, so one odd worktree still cannot hide the rest
+    try:
+        tier_check()  # its env pop, before any thread copies os.environ (tier_check's comment)
+    except Exception:  # noqa: BLE001 — a verdict that needs it reports the error itself
+        pass
+    pool = ThreadPoolExecutor(max_workers=JUDGE_THREADS)
+    try:
+        verdicts = list(pool.map(lambda t: judge(repo, t[0], t[1], t[2], main, cfg), todo))
+    finally:  # a Ctrl-C drops the queued verdicts instead of waiting out each one's git timeouts
+        pool.shutdown(wait=True, cancel_futures=True)
+    return [(branch, v, (wt, gitdir, main, cfg)) for (wt, branch, gitdir), v in zip(todo, verdicts)]
+
+
+def judge(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=False):
+    try:
+        return verdict(repo, wt, branch, gitdir, main, cfg, own, reply, fetch)
+    except Exception as e:  # noqa: BLE001 — one odd worktree must not hide the rest
+        return f"skip: error ({type(e).__name__}: {str(e)[:80]})"
+
+
+def stamp():
+    return datetime.datetime.fromtimestamp(now()).astimezone()
+
+
+def log_lines(rows, kind="dry"):
+    """Append `<iso> <kind> <repo> <branch> <text>` per (repo, branch, text) to the day's log."""
+    t = stamp()
+    path = LOG_DIR / f"autofinish-{t.strftime('%Y-%m-%d')}.log"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    iso = t.isoformat(timespec="seconds")
+    with open(path, "a", encoding="utf-8") as fh:
+        for name, branch, v in rows:
+            fh.write(f"{iso} {kind} {name} {branch} {v}\n")
+    return path
+
+
+# ---- this Mac's state: the switch, the tried tips, the sweep lock -------------------------
+
+def armed():
+    return common.autofinish_armed()
+
+
+def keep_first_arm(ts):
+    """Write `first-armed` once ({"ts"}): the launch door counts from it, across disarm and re-arm."""
+    if ts and first_armed_ts() is None:
+        tmp = STATE / f".first-armed.{os.getpid()}"
+        tmp.write_text(json.dumps({"ts": ts}) + "\n")
+        os.replace(tmp, STATE / "first-armed")
+
+
+def arm(by):
+    STATE.mkdir(parents=True, exist_ok=True)
+    ts = stamp().isoformat(timespec="seconds")
+    keep_first_arm((armed() or {}).get("ts") or ts)
+    tmp = STATE / f".armed.{os.getpid()}"
+    tmp.write_text(json.dumps({"by": by, "ts": ts}) + "\n")
+    os.replace(tmp, STATE / "armed")
+
+
+def disarm():
+    a = armed()
+    if a:
+        keep_first_arm(a.get("ts"))
+    try:
+        (STATE / "armed").unlink()
+    except FileNotFoundError:
+        pass
+
+
+def switch_line():
+    a = armed()
+    if not a:
+        return "disarmed — verdicts and logs only; nothing starts (autofinish arm)"
+    return f"armed by {a.get('by') or '?'} at {a.get('ts') or '?'} — `start` verdicts start runners (autofinish disarm)"
+
+
+TRIED = "tried.jsonl"
+
+
+def unattended_refusal(verb):
+    """Why `verb` is refused here, or None: a runner, or any dispatch session, never arms the
+    launcher nor writes the owner's override (review, 2026-10-05: the marker says `by: <owner>`, and the
+    runner's allowlist pre-approves bin/*)."""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return (f"autofinish {verb}: refused in an unattended session (CLAUDE_UNATTENDED="
+                f"{os.environ['CLAUDE_UNATTENDED']}) — arming and the override are {OWNER_S}")
+    return None
+
+
+def typed_autofinish(here):
+    """True when the last prompt queued in `here`'s checkout (checkpoint.py's prompts.json, which
+    the UserPromptSubmit hook writes before the model sees the prompt) is the owner's /autofinish."""
+    gd = git(here, "rev-parse", "--absolute-git-dir")
+    if not gd:
+        return False
+    try:
+        q = json.loads((Path(gd) / "claude" / "prompts.json").read_text())
+    except (OSError, ValueError):
+        return False
+    last = q[-1] if isinstance(q, list) and q else None
+    text = last.get("prompt") if isinstance(last, dict) else last
+    return isinstance(text, str) and text.lstrip().startswith("/autofinish")
+
+
+def tried(repo, branch, tip):
+    """True when a runner was already started on this tip: never again (design section 7)."""
+    try:
+        lines = (STATE / TRIED).read_text().splitlines()
+    except OSError:
+        return False
+    for raw in lines:
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        if e.get("tip") == tip and e.get("branch") == branch and e.get("repo") == str(repo):
+            return True
+    return False
+
+
+def remember(repo, branch, tip, rule, kind):
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / TRIED, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": stamp().isoformat(timespec="seconds"), "repo": str(repo),
+                             "branch": branch, "tip": tip, "rule": rule, "kind": kind}) + "\n")
+
+
+def take_lock():
+    """True when this process now holds the sweep lock (R12: two sweeps, or a sweep and a
+    SessionEnd start, never start two runners at once). mkdir is the atomic test-and-set; a lock
+    older than LOCK_TTL is a holder that died, taken over."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    lock = STATE / "sweep.lock"
+    for _ in range(2):
+        try:
+            lock.mkdir()
+            (lock / "pid").write_text(str(os.getpid()))
+            return True
+        except FileExistsError:
+            age = time.time() - (mtime(lock) or time.time())
+            if age < LOCK_TTL:
+                return False
+            for f in lock.iterdir():
+                f.unlink()
+            lock.rmdir()
+    return False
+
+
+def drop_lock():
+    """Only our own: a sweep that outlived LOCK_TTL had its lock taken over, and removing the
+    newer holder's would let a third start beside it."""
+    lock = STATE / "sweep.lock"
+    if lock_holder() != str(os.getpid()):
+        return
+    try:
+        for f in lock.iterdir():
+            f.unlink()
+        lock.rmdir()
+    except OSError:
+        pass
+
+
+def lock_holder():
+    try:
+        return (STATE / "sweep.lock" / "pid").read_text().strip()
+    except OSError:
+        return "?"
+
+
+# ---- the start ----------------------------------------------------------------------------
+
+def run_start(wt, rule, cfg=None):
+    """start_runner, or in the tests AUTOFINISH_RUNNER run as `<it> <worktree> <rule>` (a
+    non-zero exit is a failed start)."""
+    cmd = os.environ.get("AUTOFINISH_RUNNER")
+    if not cmd:
+        return start_runner(wt, rule, cfg)
+    env = dict(os.environ)
+    if cfg is not None:  # as start_runner passes it, so a test sees the gate's pick
+        env["CLAUDE_CONFIG_DIR"] = cfg or str(Path.home() / ".claude")
+    r = subprocess.run([cmd, str(wt), rule], capture_output=True, text=True, timeout=RUNNER_TIMEOUT, env=env)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip() or f"exit {r.returncode}")[:120])
+
+
+def restartable(gitdir, tip):
+    """The worktree's last run was on this tip and never started (dispatch refused it before any
+    session existed — its run cap, its start lock), or died before an outcome (the verdict's
+    `died twice` caps that at one retry): bin/autofinish-run starts such a tip again, so a
+    remembered start does not hold it back either."""
+    rec = common.autofinish_run(Path(gitdir) / "claude") or {}
+    return rec.get("tip") == tip and (rec.get("gate") in REFUSED_GATES or rec.get("outcome") == DIED)
+
+
+def open_steps(wt, base):
+    """Entry D6-A (S7): None when no brief the branch added names a step its Course doc has open,
+    else the first such line from `keel landing` — a skip, never a start, and nothing written."""
+    try:
+        r = subprocess.run([MEMO, "landing", "--base", base], cwd=str(wt), capture_output=True, text=True,
+                           timeout=MEMO_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"keel landing unavailable: {type(e).__name__}"
+    if r.returncode == 0:
+        return None
+    lines = (r.stdout or r.stderr).strip().splitlines()
+    return (lines[0][len("open step: "):] if lines and lines[0].startswith("open step: ") else
+            (lines[0] if lines else f"keel landing exit {r.returncode}"))
+
+
+def stand_docs(wt, docs):
+    """Rule D's own step: `memo stand --apply` on each due doc, in the worktree, so the runner's
+    /finish finds the Applied replies committed rather than open D-items it must stop on. Raises
+    on the first that fails: nothing starts on a half-stood branch."""
+    for doc in docs:
+        r = subprocess.run([MEMO, "stand", "--apply", doc], cwd=str(wt), capture_output=True, text=True,
+                           timeout=MEMO_TIMEOUT)
+        if r.returncode:
+            raise RuntimeError(f"memo stand --apply {doc}: " + ((r.stderr or r.stdout).strip() or f"exit {r.returncode}"))
+
+
+def attempt(name, repo, branch, ctx, own=None, reply=None, v=None):
+    """Start one worktree whose verdict read `start`: the log kind it came to (start, failed),
+    or None when it did not try — a tip started before, or a verdict that changed when judged
+    again just now. `v`: the caller's verdict, judged with a fetch seconds ago (one()); without
+    it — the sweep, whose dry run is minutes old — it is judged again here with a fetch (R7:
+    origin moved since, a prompt arrived, the owner edited a standing doc on GitHub)."""
+    global _live
+    wt, gitdir, main, cfg = ctx
+    tip = git(wt, "rev-parse", "HEAD")
+    if tried(repo, branch, tip) and not restartable(gitdir, tip):
+        return None
+    if v is None:
+        hook = os.environ.get("AUTOFINISH_TEST_BEFORE_START")
+        if hook:
+            subprocess.run(hook, shell=True, check=False)
+        _remote.pop(str(repo), None)  # origin and the registry read fresh, not the dry run's copies
+        _live = None
+        _week.clear()
+        _picked.clear()
+        v = judge(repo, wt, branch, gitdir, main, cfg, own, reply, fetch=True)
+        if not v.startswith("start ("):
+            log_lines([(name, branch, v)])
+            return None
+    rule = v[len("start ("):-1]
+    # no row may run it: refused before rule D's stand commits (the runner would refuse after it,
+    # leaving the branch ahead of origin) — C and D included, which the week never pauses
+    kind, detail = week_tight(repo, fresh=True)
+    if kind == "none":
+        log_lines([(name, branch, f"skip: no account ({detail})")])
+        return None
+    if kind == "tight" and rule in ("A", "B", "E", "M"):  # judge() read the cache; this is the fresh reading
+        log_lines([(name, branch, f"skip: week tight ({detail})")])
+        return None
+    try:
+        if rule == "D":
+            stand_docs(wt, _due.get(str(wt), []))
+        run_start(wt, rule, _picked.get(str(repo)))
+        kind, text = "start", rule
+    except Exception as e:  # noqa: BLE001 — a failed start is logged, never a crashed sweep
+        kind, text = "failed", f"{rule} ({type(e).__name__}: {str(e)[:100]})"
+    if kind == "start":  # a failed start is tried again next tick: nothing ran on that tip
+        remember(repo, branch, git(wt, "rev-parse", "HEAD"), rule, kind)
+    log_lines([(name, branch, text)], kind)
+    print(f"{kind} {name} {branch} {text}", flush=True)
+    return kind
+
+
+def sweep():
+    """launchd's entry: every repo judged and logged; armed, at most SWEEP_CAP starts."""
+    on = armed()
+    if on and not take_lock():
+        print(f"autofinish: a sweep or start (pid {lock_holder()}) holds {STATE / 'sweep.lock'}; "
+              f"this tick does nothing", flush=True)
+        return 0
+    try:
+        repos = known_repos()
+        if on:  # disarmed is verdicts and logs only: its dry run says `died, not recorded yet`
+            bury_dead(repos)
+        rows, ready = [], []
+        for name, repo in repos:
+            for branch, v, ctx in dry_run(name, repo):
+                rows.append((name, branch, v))
+                if v.startswith("start ("):
+                    ready.append((name, repo, branch, ctx))
+        log_lines(rows)
+        if not on:
+            return 0
+        started = 0
+        for name, repo, branch, ctx in ready:
+            if started >= SWEEP_CAP:
+                break
+            if attempt(name, repo, branch, ctx) == "start":
+                started += 1
+        return 0
+    finally:
+        if on:
+            drop_lock()
+
+
+# ---- one worktree: SessionEnd, the Stop hook, /autofinish -----------------------------------
+
+def locate(path):
+    """(name, repo, branch, (wt, gitdir, main, cfg)) for the checkout holding `path`, or exits."""
+    p = Path(path).expanduser()
+    top = git(p, "rev-parse", "--show-toplevel")
+    gitdir = git(p, "rev-parse", "--absolute-git-dir")
+    if not top or not gitdir:
+        sys.exit(f"autofinish: {path} is not in a git checkout")
+    branch = git(p, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
+    name, repo = resolve(top)
+    main = branches.main_branch(repo)
+    return name, repo, branch, (Path(top), Path(gitdir), main, repo_config(repo, main))
+
+
+def find_worktree(word, here):
+    """The worktree of the repo `here` is in whose branch is `word`, or ends in `-<word>` (a
+    topic), or exits naming what it found."""
+    name, repo = resolve(here)
+    hits = [Path(wt) for wt, branch, _ in branches.worktrees(repo) if branch and branch.startswith("claude/")
+            and (branch == word or branch.endswith("-" + word) or branch.endswith("/" + word))]
+    if len(hits) != 1:
+        sys.exit(f"autofinish: {len(hits)} claude/* worktrees of {name} match {word!r}"
+                 + ("" if hits else " (git worktree list names them)"))
+    return hits[0]
+
+
+def one(path, after=0, session=None, reply_file=None, dry=False, log=False):
+    """Judge one worktree, print its line, and start it when armed and `start`."""
+    if after:
+        if os.environ.get("AUTOFINISH_NOW"):  # a pinned clock moves; nothing sleeps (the tests)
+            os.environ["AUTOFINISH_NOW"] = str(now() + after)
+        else:
+            time.sleep(after)
+    name, repo, branch, ctx = locate(path)
+    if not branch.startswith("claude/"):
+        print(f"{name} {branch or '(detached)'} skip: not a claude/* worktree")
+        return 0
+    reply = None
+    if reply_file:
+        try:
+            reply = Path(reply_file).read_text(encoding="utf-8")
+        except OSError:
+            reply = None  # the transcript's, then
+    own = own_sessions(session)
+    go = not dry and armed()  # a start may follow: judge with a fetch, and only once (F9)
+    v = judge(repo, ctx[0], branch, ctx[1], ctx[2], ctx[3], own, reply, fetch=go)
+    print(f"{name} {branch} {v}", flush=True)
+    if log:
+        log_lines([(name, branch, v)])
+    if not go or not v.startswith("start ("):
+        return 0
+    if not take_lock():
+        print(f"autofinish: a sweep or start (pid {lock_holder()}) holds the lock; the next sweep looks again")
+        return 0
+    try:
+        attempt(name, repo, branch, ctx, own, reply, v)
+    finally:
+        drop_lock()
+    return 0
+
+
+def set_override(args, here):
+    """`override [now|off] [<branch>]`: /autofinish's marker, then the verdict and the switch."""
+    mode = "off" if "off" in args else "now" if "now" in args else "set"
+    rest = [a for a in args if a not in ("now", "off")]
+    if len(rest) > 1:
+        sys.exit("usage: autofinish override [now | off] [<branch>]")
+    why = unattended_refusal("override")
+    if why:
+        sys.exit(why)
+    if os.environ.get("CLAUDECODE") and not typed_autofinish(here):
+        sys.exit(f"autofinish override: refused — inside a Claude session it runs only for {OWNER_S} typed "
+                 f"/autofinish (the last prompt queued in this checkout's prompts.json); ask {OWNER} to type it")
+    target = find_worktree(rest[0], here) if rest else Path(here)
+    name, repo, branch, ctx = locate(target)
+    if not branch.startswith("claude/"):
+        sys.exit(f"autofinish: {name} is on {branch or 'a detached HEAD'} here, not a claude/* worktree — "
+                 f"the override is per branch (give one: autofinish override <branch>)")
+    marker = ctx[1] / "claude" / common.AUTOFINISH_OVERRIDE
+    if mode == "off":
+        try:
+            marker.unlink()
+            print(f"override off: {branch} — back to the repo's own start rules")
+        except FileNotFoundError:
+            print(f"no override on {branch}")
+        run = common.autofinish_running(ctx[1] / "claude", common.read_owner(ctx[1] / "claude"))
+        if run:  # the marker only gates the next start; a /finish under way ends in its window
+            print(f"a run is under way since {common.iso_clock(run.get('started'))} in the window "
+                  f"\"{common.autofinish_window(run, branch)}\" — off does not stop it; end it there")
+    else:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.parent / f".autofinish.{os.getpid()}"
+        tmp.write_text(json.dumps({"by": common.OVERRIDE_BY, "ts": int(now()), "now": mode == "now"}) + "\n")
+        os.replace(tmp, marker)
+        print(f"override set: {branch} — rule C, "
+              + ("at this turn's end (the Stop hook judges it)" if mode == "now"
+                 else "after 40 min idle, or at once on the declared line"))
+    v = judge(repo, ctx[0], branch, ctx[1], ctx[2], ctx[3], own_sessions())
+    print(f"{name} {branch} {v}")
+    print(switch_line())
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="autofinish", description=__doc__.split("\n")[0])
+    ap.add_argument("cmd", nargs="?", choices=("arm", "disarm", "status", "override"))
+    ap.add_argument("args", nargs="*", help="override: [now | off] [<branch>]")
+    ap.add_argument("--dry-run", nargs="?", const="", metavar="REPO",
+                    help="one verdict per claude/* worktree (every workflow repo when no REPO)")
+    ap.add_argument("--log", action="store_true", help="append the verdicts to the day's log")
+    ap.add_argument("--sweep", action="store_true", help="launchd's tick: judge, log, and (armed) start")
+    ap.add_argument("--worktree", metavar="PATH", help="judge one worktree, and (armed) start it")
+    ap.add_argument("--after", type=float, default=0, metavar="S", help="with --worktree: wait first")
+    ap.add_argument("--session", metavar="ID", help="with --worktree: the caller's session, never busy for itself")
+    ap.add_argument("--reply", metavar="FILE", help="with --worktree: the last reply's text, in place of the transcript")
+    ap.add_argument("--by", default=os.environ.get("USER") or "?", help="arm: who armed it")
+    a = ap.parse_args(argv)
+    if a.cmd == "arm":
+        why = unattended_refusal("arm")
+        if why:
+            sys.exit(why)
+        arm(a.by)
+        print(switch_line())
+        return 0
+    if a.cmd == "disarm":
+        disarm()
+        print(switch_line())
+        return 0
+    if a.cmd == "status":
+        print(switch_line())
+        return 0
+    if a.cmd == "override":
+        return set_override(a.args, Path.cwd())
+    if a.sweep:
+        return sweep()
+    if a.worktree:
+        if a.dry_run:
+            ap.error("--worktree takes --dry-run without a repo")
+        return one(a.worktree, a.after, a.session, a.reply, dry=a.dry_run is not None, log=a.log)
+    if a.dry_run is None:
+        ap.error("give --dry-run, --sweep, --worktree, or arm | disarm | status | override")
+    targets = [resolve(a.dry_run)] if a.dry_run else known_repos()
+    rows = []
+    for name, repo in targets:
+        for branch, v, _ in dry_run(name, repo):
+            rows.append((name, branch, v))
+            print(f"{name} {branch} {v}", flush=True)
+    if a.log:
+        log_lines(rows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,1106 @@
+#!/usr/bin/env python3
+"""Helm: a skipper's ship page — the ship's tasks, each one's status, ETA, cost and asks, live
+(docs/session-asks-2026-10-09.md sections 3 and 5, B2/B6/B7/B8; the words, docs/record/helm-vocabulary-2026-10-16.md).
+
+    helm ship <topic> [--id ID] [--space UUID] [--repo DIR] [--due DATE] [--cost LIST]
+                                     # a ship; the id defaults to this session's. On a ship that exists,
+                                     #   --due and --cost set its date and its cost to deliver
+    helm task <id> <task> [--title T] [--by WHO] [--kind session|human] [--branch B] [--repo R]
+                          [--owns PATH]... [--live SYSTEM]... [--milestone NAME] [--ship NAME] [--block ID]
+                          [--provider orca|claude-code|shell|memo] [--agent claude|codex] [--host H]
+                          [--done-when KIND:VALUE] [--orca-task ID] [--orca-dispatch ID]...
+    helm dep <id> <task> --on <task>                            # the task waits on another
+    helm eta <id> <task> <40m|2h|ISO> [--cost LIST]             # the skipper's ETA and cost estimate
+    helm milestone <id> <name> --on <YYYY-MM-DD[ HH:MM]>
+    helm mode <id> [default|ask|dnd|yolo] [--task T] [--clear]   # a sent task's mode (skipper-modes S1):
+                                     #   the ship's, or one task's; no mode prints it and where it is read
+    helm report [<id>] --task T --status S [--progress "…"] [--eta 40m] [--ask DOC#Dn] [--by WHO]
+                [--parked Dn]... [--owns PATH]... [--live SYSTEM]... [--cost auto|LIST] [--answered DOC#Dn]
+    helm show [<id>]                 # the merged state as text: siblings, owned files, open asks
+    helm tail [<id>] <task> [-n 20]  # the raw tail of a task's session, local only
+    helm state [<id>]                # state.json on stdout (what every rendering reads)
+    helm compile [<id>] <doc.md> [--by WHO]   # the doc's Action plan (S-lines) into tasks and deps
+    helm digest [<id>] <doc.md>      # a Course doc: each step's status: from the ship, in place, then the
+                                     #   Status line stamped; any other doc: the ship as a "Plan" section
+    helm pull [<id>]                 # phone ticks back into the ship (needs the records backend, B0b)
+    helm render [<id>] [--json] [--deploy] [--open]   # local page + state.json; spacesheep; Artifact line
+    helm open [<id>]                 # the local page in VS Code's Simple Browser
+    helm board [--deploy] [--json]   # the board over every ship, memo doc, orphan run, PR and stall
+    helm tick [--dry-run] [--json]   # every stall on both Macs (bin/stalls.py, S1–S7), gated, acted on
+                                     # when armed (bin/stalls_tick.py; chain-manager E1/E3, D4 = C)
+    helm tick --arm [--by WHO] | --disarm | --status   # the tick's switch; 3 h dry after arming
+    helm backends                    # the seams' rows (settings/surfaces.json)
+    helm list
+    helm skipper --hold --scope SCOPE [--once]   # the sidecar: take each ship of SCOPE the yard holds,
+                                     #   renew the ones this session holds, every 300 s while its claude lives
+    helm skipper --renew PLAN [--gen N]          # one renewal at the caller's generation
+    helm skipper --ships SCOPE [--json]          # the ships of SCOPE here: holder, gen, blocks open and waiting
+    helm skipper --status [--json]               # every scope: its record, holder, pid, session, ships, since
+    helm skipper --stand-down                    # this skipper's: every ship it holds back to the yard
+                                     #   (`stood down`), its record deleted, its claude ended
+
+ship: a noun here (one launch or feature); the merge is a launch. A task is a block's execution (a
+block is its description in a blueprint; `wharf apply` makes one task per block, naming it with
+--block). The blueprint's own verbs are bin/wharf's: `wharf check`, `wharf apply`, `wharf status`.
+Until rename S8, the old words still answer: `bin/plan` (a shim: `plan chain|apply` → wharf, the
+rest → here), `new` (= ship), `overview` (= board), `--owner` (= --by).
+
+Children write through `report`, never the files: one O_APPEND line each, so two never conflict.
+Off the skipper's Mac (the build box, the cloud, another harness) `report` sends the same line as a Talk
+message with a REPORT prefix, which the skipper's `bin/ask listen` appends. The id defaults to
+$DISPATCH_SHIP or $DISPATCH_PLAN (a dispatched run; helmlib.env), else this session's id (a
+skipper's own ship). Stdlib only, Python 3.9, nothing of Claude's imported (R8). PLANS_DIR moves the
+store (tests); on disk it is still plans/<id>/plan.json.
+"""
+import argparse
+import json
+import os
+import re
+import signal
+import subprocess
+import time
+import sys
+from pathlib import Path
+
+# This file sits in the module's libexec/, off PATH (C1: an installed Kubernetes `helm` would win
+# a bare call), and is reached as `regatta helm`; its libraries are in the module's bin/.
+HERE = Path(__file__).resolve().parent.parent / "bin"
+sys.path.insert(0, str(HERE))
+import helmlib  # noqa: E402
+import surfaces  # noqa: E402
+
+
+def money(x):
+    try:
+        return helmlib._common().cost_text(float(x))
+    except Exception:
+        return "$%.2f" % float(x)
+
+
+def default_id(given=None):
+    pid = given or helmlib.env("ship") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not pid:
+        raise SystemExit("helm: no ship id — pass one, or run inside a session (DISPATCH_SHIP or DISPATCH_PLAN, "
+                         "CLAUDE_CODE_SESSION_ID)")
+    return pid
+
+
+def plan_locked(fn):
+    """A writer of plan.json under the plan's lock (helmlib.locked): read, change, save as one."""
+    def run(a):
+        with helmlib.locked(default_id(a.id)):
+            return fn(a)
+    run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+    return run
+
+
+def need(pid):
+    p = helmlib.load_plan(pid)
+    if p is None:
+        raise SystemExit("helm: no ship %s in %s (helm ship <topic>)" % (pid, helmlib.plans_root()))
+    return p
+
+
+def ago(t):
+    if not t:
+        return "—"
+    s = int(helmlib.now() - float(t))
+    if s < 90:
+        return "%ds ago" % s
+    if s < 5400:
+        return "%dm ago" % (s // 60)
+    if s < 172800:
+        return "%dh ago" % (s // 3600)
+    return "%dd ago" % (s // 86400)
+
+
+def until(t):
+    if not t:
+        return "—"
+    s = int(float(t) - helmlib.now())
+    if s < 0:
+        return "overdue %dm" % (-s // 60)
+    return "in %dm" % (s // 60) if s < 5400 else "in %.1fh" % (s / 3600)
+
+
+# ---------------------------------------------------------------------------- commands
+
+def due_arg(text):
+    """`--due 2026-10-20` (end of that day), an ISO time, or 3d / 40h from now → epoch seconds."""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text.strip()):
+        text = text.strip() + "T23:59:59"
+    return helmlib.parse_eta(text)
+
+
+def cmd_ship(a):
+    pid = a.id or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not pid:
+        raise SystemExit("helm ship: --id, or run inside a session")
+    due = due_arg(a.due) if a.due else None
+    cost = float(a.cost) if a.cost is not None else None
+    if helmlib.load_plan(pid):
+        if due is None and cost is None:
+            raise SystemExit("helm ship: %s exists (%s) — --due or --cost sets its card" % (pid, helmlib.plan_dir(pid)))
+        with helmlib.locked(pid):   # a ship made before rename S5 gains its due date and cost here
+            p = need(pid)
+            if due is not None:
+                p["due"] = due
+            if cost is not None:
+                p["cost"] = cost
+            helmlib.save_plan(p)
+        print(pid)
+        return
+    # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6)
+    manager = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
+    helmlib.new_plan(pid, a.topic, manager=manager, space=a.space, repo=a.repo, due=due, cost=cost)
+    print(pid)
+
+
+@plan_locked
+def cmd_task(a):
+    p = need(a.id)
+    t = p["tasks"].setdefault(a.task, {})
+    for k in ("title", "by", "kind", "branch", "repo", "milestone", "session", "ship", "block", "provider", "agent",
+              "host", "orca_task"):
+        v = getattr(a, k, None)
+        if v:
+            t[k] = v
+    if a.kind == "human" and not helmlib.doer(t):
+        raise SystemExit("helm task: a human task needs --by %s" % "|".join(helmlib.people()))
+    if a.host == "here":
+        t["host"] = helmlib.host()   # what plan_fields records, so a dry run shows no host drift
+    if a.done_when:
+        try:
+            t["done_when"] = done_when_arg(a.done_when)
+        except ValueError as e:   # json's JSONDecodeError included
+            raise SystemExit("helm task: %s" % e)
+    for x in a.orca_dispatch or []:
+        t.setdefault("orca_dispatches", [])
+        if x not in t["orca_dispatches"]:
+            t["orca_dispatches"].append(x)
+    for k in ("owns", "live"):
+        for x in getattr(a, k) or []:
+            t.setdefault(k, [])
+            if x not in t[k]:
+                t[k].append(x)
+    helmlib.save_plan(p)
+    print("task %s in %s" % (a.task, a.id))
+
+
+@plan_locked
+def cmd_dep(a):
+    p = need(a.id)
+    for name in (a.task, a.on):
+        p["tasks"].setdefault(name, {})
+    deps = p["tasks"][a.task].setdefault("deps", [])
+    if a.on not in deps:
+        deps.append(a.on)
+    helmlib.save_plan(p)
+    print("%s waits on %s" % (a.task, a.on))
+
+
+@plan_locked
+def cmd_eta(a):
+    p = need(a.id)
+    t = p["tasks"].setdefault(a.task, {})
+    t["eta"] = helmlib.parse_eta(a.eta)
+    if a.cost is not None:
+        t["cost_est"] = float(a.cost)
+    helmlib.save_plan(p)
+    print("%s: ETA %s%s" % (a.task, helmlib.iso(t["eta"]), (", estimate " + money(t["cost_est"])) if a.cost is not None else ""))
+
+
+@plan_locked
+def cmd_mode(a):
+    """skipper-modes S1: the ship's mode, or one task's, rewritten in plan.json — every reader reads it
+    at the moment of its decision, so a change mid-flight is this one write. No mode: print it.
+    A ship's mode is a ceiling: setting it clears each task mode above it, so `helm mode <ship> default`
+    lowers every task (landing review 6). `--branch B`: the mode of one branch with no ship (a `dispatch
+    --mode`/`--yolo` run), in branch-modes.json, which helmlib.branch_mode reads first (landing review 4b)."""
+    if a.branch:
+        return mode_branch(a)
+    if not a.id:
+        sys.exit("helm mode: a ship, or --branch BRANCH")
+    p = need(a.id)
+    if a.mode is None and not a.clear:
+        m, where = helmlib.task_mode(a.id, a.task)
+        print("%s%s: %s (%s)" % (a.id, " task " + a.task if a.task else "", m, where))
+        return
+    # S3b: a raise is a yes to merge, so an unattended caller keeps or lowers a mode only
+    # (a --clear is judged by what the next source would say: the ship's for a task, else the scope's)
+    old, new = helmlib.task_mode(a.id, a.task)[0], a.mode
+    if a.clear:
+        new = p["mode"] if a.task and p.get("mode") in helmlib.MODES else helmlib.task_mode(None, None, p.get("repo"))[0]
+    why = helmlib.raise_refusal(old, new)
+    if why:
+        sys.exit("helm mode: " + why)
+    where = p["tasks"].setdefault(a.task, {}) if a.task else p
+    if a.clear:
+        where.pop("mode", None)
+    else:
+        where["mode"] = a.mode
+    lowered = []
+    if not a.task and not a.clear:   # the ship's mode now: no task keeps a mode above it
+        top = helmlib.MODE_RANK[a.mode]
+        for tid, t in sorted((p.get("tasks") or {}).items()):
+            if isinstance(t, dict) and helmlib.MODE_RANK.get(t.get("mode"), -1) > top:
+                lowered.append((tid, t.pop("mode")))
+    helmlib.save_plan(p)
+    m, src = helmlib.task_mode(a.id, a.task)
+    print("%s%s: mode %s (%s)" % (a.id, " task " + a.task if a.task else "", m, src))
+    for tid, was in lowered:
+        print("  task %s: mode %s cleared — now %s (%s)" % ((tid, was) + helmlib.task_mode(a.id, tid)))
+
+
+def mode_branch(a):
+    """`helm mode --branch B [--repo R] [mode] [--clear]` (cmd_mode's docstring). The positional that
+    names a ship elsewhere is the mode here. A --clear is judged by what the branch reads after it."""
+    if a.id and a.id not in helmlib.MODES:
+        sys.exit("helm mode --branch: the mode is one of %s" % ", ".join(helmlib.MODES))
+    mode = a.mode or a.id
+    if mode is None and not a.clear:
+        print("%s: %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, a.repo)))
+        return
+    key = "%s|%s" % (helmlib._common().repo_key(a.repo) if a.repo else "", a.branch)
+    f = helmlib.branch_modes_file()
+    before = helmlib.load_branch_modes()
+    old = helmlib.branch_mode(a.branch, a.repo)[0]
+    bm = dict(before)
+    if a.clear:
+        bm.pop(key, None)
+    else:
+        bm[key] = {"mode": mode, "ts": int(time.time())}
+
+    def write(d):
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(d, indent=1, sort_keys=True) + "\n")
+        os.replace(tmp, f)
+    write(bm)
+    why = helmlib.raise_refusal(old, helmlib.branch_mode(a.branch, a.repo)[0])
+    if why:
+        write(before)
+        sys.exit("helm mode: " + why)
+    print("%s: mode %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, a.repo)))
+
+
+@plan_locked
+def cmd_milestone(a):
+    p = need(a.id)
+    on = helmlib.parse_eta(a.on)
+    ms = [m for m in p.get("milestones") or [] if m["name"] != a.name]
+    ms.append({"name": a.name, "on": on, "lane": a.lane})
+    p["milestones"] = sorted(ms, key=lambda m: m["on"])
+    helmlib.save_plan(p)
+    print("milestone %s on %s" % (a.name, helmlib.iso(on)))
+
+
+def report_event(a):
+    if a.status and a.status not in helmlib.STATUSES:
+        raise SystemExit("helm report: --status is one of %s" % ", ".join(helmlib.STATUSES))
+    sid = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    ev = {"task": a.task, "session": sid, "host": helmlib.host(), "harness": helmlib.harness()}
+    repo = helmlib.current_repo()
+    if repo:  # K6: state() guards a task when any of its events comes from a guarded repo
+        ev["repo"] = repo
+    for k in ("status", "progress", "ask", "answered", "by", "summary", "reversible", "recommended", "branch"):
+        v = getattr(a, k, None)
+        if v:
+            ev[k] = v
+    if a.eta:
+        ev["eta"] = helmlib.parse_eta(a.eta)
+    if a.parked is not None:
+        ev["parked"] = [x for x in a.parked if x]
+    for k in ("owns", "live"):
+        if getattr(a, k):
+            ev[k] = getattr(a, k)
+    if a.cost == "auto":
+        c = helmlib.session_cost(sid) if sid else None
+        if c is not None:
+            ev["cost"] = round(c, 4)
+    elif a.cost:
+        ev["cost"] = float(a.cost)
+    return ev
+
+
+def cmd_report(a):
+    pid = default_id(a.id)
+    ev = report_event(a)
+    if helmlib.load_plan(pid) is not None:
+        helmlib.append_event(pid, dict(ev, plan=pid))
+        rerender(pid)
+        print("reported %s %s to %s" % (a.task, ev.get("status") or "", pid))
+        return
+    # off the skipper's Mac: the same line as a Talk message (section 3, "Source of truth")
+    import asklib
+    ctx = {"manager": helmlib.env("skipper"), "space": os.environ.get("DISPATCH_PLAN_SPACE"),
+           "manager_host": helmlib.env("skipper_host"),
+           "session": ev.get("session"), "manager_account": helmlib.env("skipper_account") or "",
+           "account": asklib.own_account()}
+    wire = dict(ev, plan=pid)
+    if helmlib._guarded_repo(ev.get("repo")):
+        # K6: a guarded repo's text never rides Talk — spacesheep's server sees it. The repo stays,
+        # so the manager's state() guards the task; the status, ETA and cost are not text.
+        for k in ("progress", "summary", "recommended", "branch", "owns", "live"):
+            wire.pop(k, None)
+    text = "REPORT " + json.dumps(wire, ensure_ascii=False, sort_keys=True)
+    order = [b for b in surfaces.row("ask.relay") if b == "talk"]
+    name, verdict, detail, tried = asklib.relay(ctx, text, order, dry=a.dry_run)
+    if verdict in ("sent", "dry-run"):
+        print("reported %s to %s through %s (%s)" % (a.task, pid, name, detail))
+        return
+    why = "; ".join("%s: %s" % x for x in tried) or detail
+    print("helm report: no ship %s on this Mac and no road to its skipper (%s) — the report is lost; "
+          "the commit is the record" % (pid, why), file=sys.stderr)
+    sys.exit(1)
+
+
+def rerender(pid):
+    """A report re-renders the local page (no tokens); the deploy is the live backend's business."""
+    if os.environ.get("PLAN_NO_RENDER"):
+        return
+    try:
+        import helm_render
+        helm_render.render(pid, deploy=None)
+    except Exception as e:  # a render never fails a report
+        print("helm: render skipped (%s)" % e, file=sys.stderr)
+
+
+def kind_word(k):
+    """The estimate's kind as printed: plan.json's persisted "manager" is the skipper's (H1)."""
+    return helmlib.SKIPPER if k == "manager" else k
+
+
+def card_line(st):
+    """The ship's card (H1, C5): started · due · cost to deliver — none on a ship from before rename S5."""
+    due = helmlib.iso(st.get("due"))
+    return "started %s · due %s · cost %s" % (
+        (helmlib.iso(st.get("started")) or "none")[:16].replace("T", " "), (due or "none")[:10],
+        "%s of %s est." % (money(st["totals"]["cost"]), money(st["cost"])) if st.get("cost") is not None else "none")
+
+
+def show_text(st):
+    # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6); printed skipper
+    lines = ["ship %s — %s (%s %s on %s); as of %s" % (
+        st["id"], st.get("topic") or "", helmlib.SKIPPER, (st["manager"].get("session") or "?")[:8],
+        st["manager"].get("host") or "?", helmlib.iso(st["as_of"]))]
+    tot = st["totals"]
+    lines.append(card_line(st))
+    lines.append("cost so far %s · estimate to go %s · open asks %d" % (money(tot["cost"]), money(tot["est_to_go"]), tot["open_asks"]))
+    for m in st["milestones"]:
+        lines.append("◆ %s on %s — %d open" % (m["name"], helmlib.iso(m["on"])[:16], m["open"]))
+    for t in st["tasks"]:
+        who = helmlib.doer(t) or ((t.get("session") or "")[:8] + ("@" + t["host"] if t.get("host") else ""))
+        lines.append("- %s [%s]%s — %s; updated %s; ETA %s%s" % (
+            t["id"], t["status"], (" " + t["title"]) if t["title"] != t["id"] else "", who or "nobody",
+            ago(t["updated"]), until(t["eta"]), " (overrun)" if t["overrun"] else ""))
+        if t.get("progress"):
+            lines.append("    %s" % t["progress"])
+        if t.get("cost") is not None or t.get("est_to_go") is not None:
+            lines.append("    cost %s%s" % (money(t["cost"] or 0), (" → to go %s %s" % (money(t["est_to_go"]), kind_word(t["est_kind"]))) if t.get("est_to_go") else ""))
+        if t["owns"] or t["live"]:
+            lines.append("    owns: %s" % ", ".join(t["owns"] + ["live:" + x for x in t["live"]]))
+        c = t.get("blueprint")
+        if c:
+            lines.append("    ship %s: %s%s%s%s%s" % (
+                c.get("name") or "—", c.get("provider") or "?", ("/" + c["agent"]) if c.get("agent") else "",
+                (" on " + c["host"]) if c.get("host") else "", (" · Orca " + c["orca_task"]) if c.get("orca_task") else "",
+                (" · dispatches " + ", ".join(c["orca_dispatches"])) if c.get("orca_dispatches") else ""))
+        if t["blockers"]:
+            lines.append("    blocked: %s" % "; ".join(t["blockers"]))
+        if t["parked"]:
+            lines.append("    parked: %s (since %s)" % (", ".join(t["parked"]), ago(t["parked_at"])))
+        for a in t["asks"]:
+            if a["open"]:
+                lines.append("    ask %s — %s%s" % (a["ref"], a.get("summary") or "", (" — Recommended: %s" % a["recommended"]) if a.get("recommended") else ""))
+    return "\n".join(lines)
+
+
+def cmd_show(a):
+    pid = default_id(a.id)
+    need(pid)
+    print(show_text(helmlib.state(pid)))
+
+
+def cmd_state(a):
+    pid = default_id(a.id)
+    need(pid)
+    st = helmlib.state(pid)
+    print(json.dumps(helmlib.public(st) if a.public else st, indent=1, ensure_ascii=False, sort_keys=True))
+
+
+def cmd_tail(a):
+    pid = default_id(a.id)
+    st = helmlib.state(pid)
+    t = next((t for t in st["tasks"] if t["id"] == a.task), None)
+    if not t:
+        raise SystemExit("helm tail: no task %s in %s" % (a.task, pid))
+    if t.get("guarded"):
+        print("guarded — open it")
+        return
+    if not t.get("session"):
+        raise SystemExit("helm tail: %s has reported no session yet" % a.task)
+    for x in helmlib.tail_lines(t["session"], a.n):
+        print(x)
+
+
+DIGEST_RE = re.compile(r"^## Plan\b.*?(?=^## |\Z)", re.M | re.S)
+# only a section that says it is this tool's is ever replaced: the mark it writes, and the one a
+# digest written before rename S5 carries (a doc keeps it until its next digest)
+DIGEST_MARKS = ("(bin/helm digest;", "(bin/plan digest;")
+STEP_LINE_RE = re.compile(r"^\s*[-*]\s+\*\*S\d+\s*[—–-]", re.M)
+
+
+def digest_md(st):
+    out = ["## Plan", "", "Digest of ship `%s` as of %s (bin/helm digest; the live state is the ship's page)." % (
+        st["id"], helmlib.iso(st["as_of"])), "",
+        "| Task | Status | By | ETA | Cost so far | Open asks |", "| --- | --- | --- | --- | --- | --- |"]
+    for t in st["tasks"]:
+        out.append("| %s | %s | %s | %s | %s | %s |" % (
+            t["id"], t["status"], helmlib.doer(t) or (t.get("session") or "")[:8] or "—",
+            helmlib.iso(t["eta"])[:16] if t.get("eta") else "—", money(t["cost"]) if t.get("cost") is not None else "—",
+            ", ".join(a["ref"] for a in t["asks"] if a["open"]) or "—"))
+    for m in st["milestones"]:
+        out.append("")
+        out.append("- Milestone **%s** on %s: %d open." % (m["name"], helmlib.iso(m["on"])[:10], m["open"]))
+    out += ["", "Totals: %s so far, %s to go (estimate)." % (money(st["totals"]["cost"]), money(st["totals"]["est_to_go"])), ""]
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------- the Keel's Action plan
+# Entry S4 of docs/design-docs-2026-10-14.md (layer D4-A: the Action plan is the chain declaration).
+# `compile` reads the doc through `keel parse` — one parser, bin/keel's — and `digest` writes a
+# step's status through `keel step`, the one writer (entry D6-A). Layer section 1's mapping:
+STEP_OF = {"planned": "not started", "waiting": "not started", "running": "wip", "relayed": "wip",
+           "parked": "wip", "blocked": "blocked", "failed": "blocked", "done": "done",
+           "landed": "done", "launched": "done"}  # one line: rename-map.sh keeps a line with both words
+
+
+def keel(*args):
+    """bin/keel, run as a program: (rc, stdout, stderr)."""
+    exe = helmlib.peer("keel")
+    if not exe:
+        return 2, "", "keel not installed (the keel module): no doc read"
+    r = subprocess.run([sys.executable, str(exe)] + [str(x) for x in args], capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def keel_steps(doc):
+    rc, out, err = keel("parse", doc)
+    if rc:
+        raise SystemExit("helm: keel parse %s: %s" % (doc, (err or out).strip()))
+    return json.loads(out).get("steps") or []
+
+
+def cmd_compile(a):
+    """The doc's S-lines into tasks named by their ids (S3), `--kind` from the step's kind, one dep per
+    `after:` step id of the same doc (a D waits in the doc, not the plan). `project` is no plan kind:
+    such a step is a human task for `--by` (default the owner, helmlib.people()'s first) with the project as its repo — someone
+    starts a session there. A step the doc marks done or blocked is reported so, once."""
+    pid = default_id(a.id)
+    steps = keel_steps(a.doc)   # before the lock: keel has no timeout, and the lock holds every writer
+    if not steps:
+        raise SystemExit("helm compile: %s has no S-lines under an \"Action plan\" heading" % a.doc)
+    with helmlib.locked(pid):   # the read-modify-write only; the render after it, outside (it may deploy)
+        p = need(pid)
+        ids = {s["id"] for s in steps}
+        doc = str(Path(a.doc).resolve())
+        kinds, deps = {}, 0
+        # tasks are named by bare step ids: a second doc's S1 would overwrite the first's (review 2026-10-16)
+        other = sorted({t.get("doc") for k, t in p["tasks"].items() if k in ids and t.get("doc") not in (None, doc)})
+        if other:
+            raise SystemExit("helm compile: ship %s already holds %s's steps under the same ids — compile %s into "
+                             "a ship of its own (helm ship, then helm compile <id> <doc>)" % (pid, Path(other[0]).name, Path(doc).name))
+        for s in steps:
+            t = p["tasks"].setdefault(s["id"], {})
+            t["title"], t["doc"] = s["what"], doc
+            if s["kind"] in ("human", "project"):
+                t["kind"] = "human"
+                t["by"] = helmlib.doer(t) or a.by or helmlib.people()[0]
+                if s["kind"] == "project":
+                    name = s["who"].strip().strip("`")
+                    t["repo"] = name
+                    t["title"] = "project %s: %s" % (name, s["what"])
+            else:
+                t["kind"] = "session"
+            kinds[t["kind"]] = kinds.get(t["kind"], 0) + 1
+            have = t.setdefault("deps", [])
+            for x in s["after"]:
+                if x in ids and x != s["id"] and x not in have:
+                    have.append(x)
+            deps += len(have)
+        helmlib.save_plan(p)
+    st = {t["id"]: t for t in helmlib.state(pid)["tasks"]}
+    marked = 0
+    for s in steps:
+        want = {"done": "done", "superseded": "done", "blocked": "blocked"}.get(s["status"])
+        if want and st.get(s["id"], {}).get("status") not in (want, "landed", "launched"):
+            helmlib.append_event(pid, {"task": s["id"], "status": want, "host": helmlib.host(), "plan": pid,
+                                       "progress": "the doc says: %s" % s["status_text"]})
+            marked += 1
+    rerender(pid)
+    print("compiled %d step%s of %s into ship %s: %s; %d dep%s; %d marked from the doc" % (
+        len(steps), "" if len(steps) == 1 else "s", Path(a.doc).name, pid,
+        ", ".join("%d %s" % (n, k) for k, n in sorted(kinds.items())), deps, "" if deps == 1 else "s", marked))
+
+
+def digest_steps(pid, doc, steps):
+    """Each step's `status:` from its task, by STEP_OF, through `keel step`; then the Status lines.
+    Never moves a step the doc marks done or superseded back (the build session's record), and
+    leaves a step alone whose task has reported nothing. Returns the lines it printed."""
+    tasks = {t["id"]: t for t in helmlib.state(pid)["tasks"]}
+    out = []
+    for s in steps:
+        t = tasks.get(s["id"])
+        if not t or not t.get("updated"):
+            continue
+        word = STEP_OF.get(t["status"])
+        if not word:
+            continue
+        if s["status"] in ("done", "superseded") and word != "done":
+            out.append("kept %s %s (the ship says %s)" % (s["id"], s["status_text"], t["status"]))
+            continue
+        if s["status"] == word and t["status"] != "failed":
+            continue
+        day = helmlib.iso(t["updated"])[:10]
+        args = ["step", doc, s["id"], word]
+        if word == "done":
+            args += ["--date", day] + (["--branch", t["branch"]] if t.get("branch") else [])
+        if t["status"] == "failed":
+            args += ["--note", "failed %s" % day]
+        rc, so, se = keel(*args)
+        if rc:
+            raise SystemExit("helm digest: keel %s: %s" % (" ".join(args[:4]), (se or so).strip()))
+        out.append(so.strip())
+    rc, so, se = keel("status", "--stamp", doc)
+    out += [x for x in (so or se).strip().splitlines() if x.startswith(("stamped", "unchanged"))]
+    return out
+
+
+def cmd_digest(a):
+    pid = default_id(a.id)
+    need(pid)
+    p = Path(a.doc)
+    steps = keel_steps(a.doc)
+    if steps:  # a Course doc: the Action plan is the record; no section is written or replaced
+        for line in digest_steps(pid, str(p), steps) or ["no step's status changed"]:
+            print(line)
+        return
+    text = p.read_text()
+    block = digest_md(helmlib.state(pid))
+    own = next((m for m in DIGEST_RE.finditer(text) if any(k in m.group(0) for k in DIGEST_MARKS)), None)
+    if own:
+        text = text[:own.start()] + block + text[own.end():]
+    else:  # a `## Plan` someone wrote (an action plan by another name) is never replaced
+        text = text.rstrip("\n") + "\n\n" + block
+    p.write_text(text)
+    print("wrote the Plan section of %s" % p)
+
+
+def cmd_pull(a):
+    live = surfaces.row("helm.state")
+    if live != "records":
+        print("helm pull: the records backend is off (helm.state = %s): phone ticks need B0b's probe to pass. "
+              "Comments on a page come back through memo sheep pull." % live)
+        return
+    raise SystemExit("helm pull: the records backend is not built (B0b)")
+
+
+def cmd_backends(a):
+    print(surfaces.describe())
+
+
+def cmd_list(a):
+    for pid in helmlib.list_plans():
+        p = helmlib.load_plan(pid) or {}
+        print("%s  %s  %s" % (pid, p.get("topic") or "", ago(p.get("updated"))))
+
+
+def cmd_render(a):
+    import helm_render
+    pid = default_id(a.id)
+    need(pid)
+    res = helm_render.render(pid, deploy=a.deploy)
+    if a.json:
+        print(json.dumps(helmlib.public(helmlib.state(pid)), ensure_ascii=False, sort_keys=True))
+        return
+    for line in res:
+        print(line)
+    if a.open:
+        helm_render.open_page(pid)
+
+
+def cmd_open(a):
+    import helm_render
+    pid = default_id(a.id)
+    need(pid)
+    helm_render.render(pid, deploy=None)
+    print(helm_render.open_page(pid))
+
+
+def cmd_board(a):
+    import helm_render
+    res = helm_render.overview(deploy=a.deploy, as_json=a.json)
+    print(res if isinstance(res, str) else "\n".join(res))
+
+
+def cmd_tick(a):
+    """The tick (orchestration B1, B3; bin/stalls_tick.py's header): every stall on
+    both Macs judged by bin/stalls.py, gated, and acted on only when armed and past its 3 dry hours;
+    --dry-run calls nothing past the judge and writes nothing but wharf's said-once note per ship
+    (wharf-<ship>.said, so a dry tick does not repeat itself every 5 min). --arm, --disarm and --status are the
+    switch (~/.local/state/stalls/armed); arming is refused under CLAUDE_UNATTENDED."""
+    import stalls_tick
+    if a.arm or a.disarm:
+        # only arming is the owner's: disarming is the safe direction, open to a manager that sees a runaway tick
+        why = stalls_tick.unattended_refusal("arm") if a.arm else None
+        if why:
+            raise SystemExit(why)
+        stalls_tick.arm(a.by) if a.arm else stalls_tick.disarm()
+    if a.arm or a.disarm or a.status:
+        print("\n".join(stalls_tick.status_lines()))
+        return
+    r = stalls_tick.tick(dry_run=a.dry_run, peer=not os.environ.get("PLAN_NO_PEER"))
+    ships = wharf_once(a.dry_run or r["mode"] != "armed")
+    if a.json:
+        print(json.dumps(dict(stalls_tick.as_json(r), wharf=ships), ensure_ascii=False, sort_keys=True))
+        return
+    print("\n".join(stalls_tick.lines_of(r) + ships))
+
+
+def wharf_once(dry):
+    """B7: one `wharf apply --once` pass per ship with a Run, acting only when the tick itself is
+    armed past its dry hours (the same switch: acting on a ship is acting); quiet when nothing moved.
+    A failure is a line, never the tick's."""
+    if os.environ.get("PLAN_NO_WHARF"):
+        return []
+    exe = helmlib.peer("wharf")
+    if not exe:
+        return ["wharf: skipped — not installed (wharf-runs)"]
+    argv = [sys.executable, str(exe), "apply", "--once", "--all"] + (["--dry-run"] if dry else [])
+    # ask poll's kill time (STALLS_DEADLINE) reaches wharf through the environment, and wharf starts
+    # nothing that cannot finish before it; this timeout ends a little sooner than the kill
+    try:
+        dl = float(os.environ.get("STALLS_DEADLINE") or 0)
+    except ValueError:
+        dl = 0
+    if dl and dl - time.time() < 35:
+        return ["wharf: skipped — %ds before the tick's kill time" % max(0, dl - time.time())]
+    limit = min(600, dl - time.time() - 15) if dl else 600
+    # the child's own deadline is this timeout's end, set whether or not the tick gave one, so wharf
+    # never starts what this kill would cut off (an attended `plan tick` has none of its own)
+    env = dict(os.environ, STALLS_DEADLINE=str(int(time.time() + limit)))
+    try:
+        w = subprocess.run(argv, capture_output=True, text=True, timeout=limit, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return ["wharf: %s" % e]
+    # any stderr is shown: exit 1 is a refused digest, and also what an uncaught exception exits with
+    return (w.stdout or "").rstrip().splitlines() + (["wharf: exit %d: %s" % (w.returncode, (w.stderr or "").strip()[-200:])]
+                                                     if (w.stderr or "").strip() else [])
+
+
+# ---------------------------------------------------------------------------- the blueprint (B6)
+
+def done_when_arg(text):
+    """`marker:docs/x.md#B6a`, `pr_merged` alone, or a JSON map → the one-key done_when map."""
+    bl = helmlib.peer("blueprintlib.py")   # wharf-runs': the blueprint's own vocabulary
+    if not bl:
+        raise SystemExit("helm: --done-when needs blueprintlib.py (wharf-runs), which is not installed")
+    if str(bl.parent) not in sys.path:
+        sys.path.insert(0, str(bl.parent))
+    import blueprintlib
+    text = text.strip()
+    if text.startswith("{"):
+        v = json.loads(text)
+    else:
+        k, sep, rest = text.partition(":")
+        v = {k.strip(): rest.strip() if sep else True}
+    if not (isinstance(v, dict) and len(v) == 1 and next(iter(v)) in blueprintlib.DONE_WHEN):
+        raise ValueError("--done-when is KIND:VALUE, KIND one of %s" % ", ".join(blueprintlib.DONE_WHEN))
+    (k, x), = v.items()
+    # the same rule as a blueprint's done_when (blueprintlib._check_block): only pr_merged stands alone
+    if not (isinstance(x, str) and x.strip()) and not (k == "pr_merged" and x is True):
+        raise ValueError("--done-when's %s needs a value (%s:…)" % (k, k))
+    return v
+
+
+# ---------------------------------------------------------------------------- the skipper (skipper-resilience S4)
+# The lease is bin/leaselib.py's; these are the skipper session's own verbs on it. S5 adds --start and
+# --stop (the tick's: they load a plist, so the allow rule names the session verbs one by one), S7
+# --line. A refusal exits leaselib.REFUSED_EXIT (4), as every fenced verb does.
+
+def cmd_skipper(a):
+    import leaselib
+    if a.hold:
+        return skipper_hold(a, leaselib)
+    if a.renew:
+        return skipper_renew(a, leaselib)
+    if a.ships:
+        return skipper_ships(a, leaselib)
+    if a.status:
+        return skipper_status(a, leaselib)
+    if a.stand_down:
+        return skipper_stand_down(a, leaselib)
+    raise SystemExit("helm skipper: one of --hold, --renew, --ships, --status, --stand-down")
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def is_claude(pid):
+    try:
+        r = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return os.path.basename(r.stdout.strip()) == "claude"
+
+
+def hold_parent():
+    """The pid the sidecar lives by: HELM_HOLD_PARENT (tests; a runner that knows it), else the nearest
+    ancestor named `claude` — the session's own process, whose death ends the sidecar; the background
+    shell between them may outlive it — else the parent process."""
+    raw = os.environ.get("HELM_HOLD_PARENT")
+    if raw:
+        if not raw.isdigit():
+            raise SystemExit("helm skipper --hold: HELM_HOLD_PARENT=%r is no pid" % raw[:40])
+        return int(raw)
+    p = os.getppid()
+    for _ in range(12):
+        if p <= 1:
+            break
+        try:
+            r = subprocess.run(["/bin/ps", "-o", "ppid=,comm=", "-p", str(p)], capture_output=True, text=True, timeout=5)
+            ppid, _, comm = r.stdout.strip().partition(" ")
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        if os.path.basename(comm.strip()) == "claude":
+            return p
+        if not ppid.strip().isdigit():
+            break
+        p = int(ppid)
+    return os.getppid()
+
+
+def skipper_session(verb):
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        raise SystemExit("helm skipper %s: a skipper session's own verb — no CLAUDE_CODE_SESSION_ID here" % verb)
+    return sid
+
+
+def skipper_hold(a, leaselib):
+    """The sidecar (the design's renewal A): a pass, then a pass every HELM_HOLD_EVERY seconds (300)
+    while its parent lives. A pass takes every ship of the scope the yard holds and renews each one
+    this session holds at the gen it took it at; the store is read afresh every pass, so a ship laid
+    later joins. A renewal refused (the yard or another skipper has it now) ends the sidecar, exit 4,
+    and that pass takes nothing: the late holder stands down. take() keeps no memory across
+    processes, so a sidecar re-armed after exit 4 would take a handed-back ship again — S5's runner
+    stands down on exit 4, never re-arms (S4 finish review)."""
+    if not a.scope:
+        raise SystemExit("helm skipper --hold: --scope SCOPE")
+    sid = skipper_session("--hold")
+    parent = hold_parent()
+    try:
+        every = float(os.environ.get("HELM_HOLD_EVERY") or 300)
+    except ValueError:
+        every = float("nan")
+    if not 1 <= every <= leaselib.TTL / 2:   # nan fails too; a zero period would rewrite skipper.json in a loop
+        raise SystemExit("helm skipper --hold: HELM_HOLD_EVERY=%r is no period from 1 to %d seconds"
+                         % (os.environ.get("HELM_HOLD_EVERY"), leaselib.TTL // 2))
+    account = os.environ.get("SKIPPER_ACCOUNT") or None
+    held = {}
+    print("helm skipper --hold: scope %s, session %s, while pid %d lives%s" % (
+        a.scope, sid[:8], parent, "" if a.once else ", every %gs" % every), flush=True)
+    while True:
+        if not pid_alive(parent):
+            print("helm skipper --hold: pid %d has ended — the sidecar ends with it" % parent, flush=True)
+            return 0
+        rc = hold_pass(leaselib, a.scope, sid, parent, account, held)
+        if rc or a.once:
+            return rc
+        end = time.monotonic() + every   # monotonic: a clock stepped back never stretches the period past the TTL
+        while time.monotonic() < end:   # the parent is watched every second: the sidecar ends within one of its death
+            if not pid_alive(parent):
+                break
+            time.sleep(max(0.05, min(1.0, end - time.monotonic())))
+
+
+def hold_pass(leaselib, scope, sid, parent, account, held):
+    """Renewals first, takes after, and no take in a pass where a renewal was refused: a skipper that
+    is about to stand down never leaves a ship it just took stranded (S4 finish review). A lease that
+    stops reading, or a write that fails, costs that ship this pass, never the sidecar."""
+    refused = []
+    rows = leaselib.leases(scope)
+    seen = {pid for pid, _ in rows}
+    for pid, rec in rows:
+        if pid not in held and rec["holder"] != leaselib.YARD and rec.get("session") == sid:
+            held[pid] = rec["gen"]   # held before this sidecar started (a --once pass, a re-armed one)
+    for pid in [p for p in rows_order(rows) if p in held]:
+        try:
+            leaselib.renew(pid, held[pid])
+        except leaselib.Refused as e:
+            print("%s: %s" % (pid, e), flush=True)
+            refused.append(pid)
+            held.pop(pid, None)
+        except (leaselib.Unreadable, OSError) as e:
+            print("%s: %s" % (pid, e), flush=True)
+    if not refused:
+        for pid, rec in rows:
+            if pid in held or rec["holder"] != leaselib.YARD:
+                continue   # ours, renewed above, or another skipper's: left alone
+            try:
+                got = leaselib.take(pid, scope, sid, parent, account)
+            except leaselib.Refused as e:
+                print("%s: %s" % (pid, e), flush=True)
+                continue
+            except (leaselib.Unreadable, OSError) as e:
+                print("%s: %s" % (pid, e), flush=True)
+                continue
+            held[pid] = got["gen"]
+            print("taken %s by %s at gen %d" % (pid, got["holder"], got["gen"]), flush=True)
+    for pid in [p for p in held if p not in seen]:   # landed, or its lease gone: nothing more to renew
+        held.pop(pid)
+    if refused:
+        print("helm skipper --hold: a newer holder has %s — this skipper stands down (helm skipper --stand-down)"
+              % ", ".join(refused), flush=True)
+        return leaselib.REFUSED_EXIT
+    return 0
+
+
+def rows_order(rows):
+    return [pid for pid, _ in rows]
+
+
+def skipper_renew(a, leaselib):
+    pid = a.renew
+    try:
+        rec = leaselib.read(pid)
+    except leaselib.Unreadable as e:
+        print(leaselib.unreadable_text(e), file=sys.stderr)
+        return leaselib.REFUSED_EXIT
+    if rec is None:
+        raise SystemExit("helm skipper --renew: ship %s has no lease here (only a ship laid with wharf apply --yard has one)" % pid)
+    try:
+        gen, ok = leaselib.caller_gen(pid, rec, a.gen)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return leaselib.REFUSED_EXIT
+    if not ok and gen == rec["gen"]:
+        gen = None   # a session that does not hold it is refused by the mismatch, whatever gen it last held
+    try:
+        got = leaselib.renew(pid, gen)
+    except leaselib.Refused as e:
+        print(e, file=sys.stderr)
+        return leaselib.REFUSED_EXIT
+    print("renewed %s at gen %d, until %s" % (pid, got["gen"], helmlib.iso(got["until"])))
+    return 0
+
+
+def ship_row(leaselib, pid, rec):
+    """One ship of a scope: its lease, and its blocks open and waiting from the merged state."""
+    try:
+        tasks = helmlib.state(pid)["tasks"]
+    except (FileNotFoundError, ValueError):
+        tasks = []
+    live = [t for t in tasks if t["status"] not in helmlib.ENDED]
+    waiting = [t for t in live if t["status"] in ("waiting", "relayed", "parked", "blocked") or any(x["open"] for x in t["asks"])]
+    return {"plan": pid, "holder": rec["holder"], "gen": rec["gen"], "session": rec.get("session"), "pid": rec.get("pid"),
+            "since": rec.get("since"), "until": rec.get("until"), "lapsed": leaselib.lapsed(pid, rec=rec),
+            "open": len(live), "waiting": len(waiting), "waiting_on": [t["id"] for t in waiting]}
+
+
+def skipper_ships(a, leaselib):
+    rows = [ship_row(leaselib, pid, rec) for pid, rec in leaselib.leases(a.ships)]
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, sort_keys=True))
+        return 0
+    if not rows:
+        print("no ship of scope %s here" % a.ships)
+    for r in rows:
+        print("%s  %s  gen %d%s  open %d, waiting %d%s" % (
+            r["plan"], r["holder"], r["gen"],
+            "  lapsed" if r["lapsed"] else ("  until %s" % helmlib.iso(r["until"])[11:16] if r["until"] else ""),
+            r["open"], r["waiting"], (" (%s)" % ", ".join(r["waiting_on"])) if r["waiting_on"] else ""))
+    return 0
+
+
+def skipper_status(a, leaselib):
+    """Every scope with a lease here: its S5 record (none until S5 writes one), who holds its ships, the
+    holder's pid and whether it lives, the session, how many ships, since when."""
+    scopes, bad = {}, []
+    for pid, rec in leaselib.leases():
+        if isinstance(rec, Exception):
+            bad.append({"plan": pid, "unreadable": str(rec)})
+            continue
+        s = scopes.setdefault(rec.get("scope") or "?", {"scope": rec.get("scope"), "ships": 0, "holders": {}})
+        s["ships"] += 1
+        h = s["holders"].setdefault((rec["holder"], rec.get("session")), {"holder": rec["holder"], "session": rec.get("session"), "pid": rec.get("pid"),
+                                                    "alive": pid_alive(rec["pid"]) if rec.get("pid") else None,
+                                                    "since": rec.get("since"), "ships": []})
+        h["ships"].append({"plan": pid, "gen": rec["gen"], "lapsed": leaselib.lapsed(pid, rec=rec)})
+        if rec.get("since") is not None and (h["since"] is None or rec["since"] < h["since"]):
+            h["since"] = rec["since"]   # since its first hold of the scope's ships
+    out = []
+    for name in sorted(scopes):
+        s = scopes[name]
+        rec = leaselib.read_record(name) if s["scope"] else None
+        out.append({"scope": s["scope"], "ships": s["ships"], "record": rec, "holders": list(s["holders"].values())})
+    if a.json:
+        print(json.dumps({"scopes": out, "unreadable": bad}, ensure_ascii=False, sort_keys=True))
+        return 0
+    if not out and not bad:
+        print("no ship here holds a lease")
+    for s in out:
+        r = s["record"]
+        print("scope %s — %d ship%s; record: %s" % (s["scope"], s["ships"], "" if s["ships"] == 1 else "s",
+                                                    "session %s, pid %s" % (str(r.get("session"))[:8], r.get("pid")) if r else "none"))
+        for h in s["holders"]:
+            print("  %s%s — %s, since %s" % (
+                h["holder"], " (session %s, pid %s%s)" % (str(h["session"])[:8], h["pid"], "" if h["alive"] else ", gone") if h["session"] else "",
+                ", ".join("%s gen %d%s" % (x["plan"], x["gen"], " lapsed" if x["lapsed"] else "") for x in h["ships"]),
+                (helmlib.iso(h["since"]) or "—")[:16].replace("T", " ")))
+    for b in bad:
+        print("  %s: %s" % (b["plan"], b["unreadable"]))
+    return 0
+
+
+def skipper_stand_down(a, leaselib):
+    """This skipper ends itself (the design's stand-down): each ship it holds goes back to the yard at
+    gen + 1 (`stood down`), its S5 record is deleted when it is this session's, then the claude the
+    sidecar lived by — the pid its leases and its record name — gets SIGTERM. A lease it no longer
+    holds is left alone; a stale SKIPPER_GEN is refused for that ship (exit 4) and the rest still stand down."""
+    sid = skipper_session("--stand-down")
+    rc, scopes, pids, back = 0, set(), set(), []
+    for pid, rec in leaselib.leases(include_ended=True):
+        if isinstance(rec, Exception) or rec.get("session") != sid or rec["holder"] == leaselib.YARD:
+            continue
+        scopes.add(rec.get("scope"))
+        why = leaselib.fence(pid, "helm skipper --stand-down")
+        if why:
+            print("%s: %s" % (pid, why), file=sys.stderr)
+            rc = leaselib.REFUSED_EXIT
+            continue
+        if rec.get("pid"):
+            pids.add(int(rec["pid"]))
+        try:   # checked again under the plan's lock: a hand-back in between is never undone
+            leaselib.stand_down(pid, sid)
+        except (leaselib.Refused, leaselib.Unreadable) as e:
+            print("%s" % e, file=sys.stderr)
+            continue
+        back.append(pid)
+    if os.environ.get("SKIPPER_SCOPE"):
+        scopes.add(os.environ["SKIPPER_SCOPE"])
+    for scope in sorted(s for s in scopes if s):
+        r = leaselib.read_record(scope)
+        if r and r.get("session") == sid:   # another skipper's record of the scope is its own to keep
+            if r.get("pid"):
+                pids.add(int(r["pid"]))
+            try:
+                leaselib.record_path(scope).unlink()
+                print("record of skipper · %s deleted" % scope)
+            except OSError as e:
+                print("record of skipper · %s not deleted (%s)" % (scope, e), file=sys.stderr)
+    print("stood down: %s back to the yard" % (", ".join(back) if back else "no ship"))
+    pids.discard(os.getpid())
+    # a lease taken under an earlier sidecar may name a claude long gone, its pid since reused: only a
+    # live process still named claude is signalled (S4 finish review)
+    pids = {p for p in pids if p > 1 and pid_alive(p) and is_claude(p)}
+    if not pids:
+        print("no claude pid recorded for session %s: end the session yourself" % sid[:8])
+        return rc
+    sys.stdout.flush()
+    for p in sorted(pids):
+        try:
+            os.kill(p, signal.SIGTERM)
+            print("ended pid %d" % p, flush=True)
+        except OSError as e:
+            print("pid %d: %s" % (p, e), file=sys.stderr)
+    return rc
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="helm", description=__doc__.split("\n\n")[0])
+    sp = ap.add_subparsers(dest="cmd")
+    # `new` and `overview` are the verbs' names before rename S5, answered until S8 (bin/plan execs here)
+    s = sp.add_parser("ship", aliases=["new"]); s.add_argument("topic"); s.add_argument("--id"); s.add_argument("--space")
+    s.add_argument("--repo"); s.add_argument("--due", help="YYYY-MM-DD, an ISO time, or 3d / 40h from now")
+    s.add_argument("--cost", help="the ship's cost to deliver, list dollars")
+    s = sp.add_parser("task"); s.add_argument("id"); s.add_argument("task")
+    for k in ("title", "branch", "repo", "milestone", "session"):
+        s.add_argument("--" + k)
+    # --by: who does it (helm-vocabulary D3-A); --owner, its name before rename S5, read until S8
+    s.add_argument("--by", "--owner", dest="by")
+    s.add_argument("--kind", choices=("session", "human"))
+    s.add_argument("--owns", action="append"); s.add_argument("--live", action="append")
+    # the blueprint's fields (orchestration-orca Q1): what the ship keeps that Orca has no slot for; a
+    # task `wharf apply` makes names its block (helm-vocabulary D2, Revised)
+    s.add_argument("--ship"); s.add_argument("--block"); s.add_argument("--provider", choices=("orca", "claude-code", "shell", "memo"))
+    s.add_argument("--agent", choices=("claude", "codex")); s.add_argument("--host")
+    s.add_argument("--done-when", dest="done_when", help="KIND:VALUE, KIND one of marker, pr_merged, check, memo_answered, file")
+    s.add_argument("--orca-task", dest="orca_task"); s.add_argument("--orca-dispatch", dest="orca_dispatch", action="append")
+    s = sp.add_parser("dep"); s.add_argument("id"); s.add_argument("task"); s.add_argument("--on", required=True)
+    s = sp.add_parser("eta"); s.add_argument("id"); s.add_argument("task"); s.add_argument("eta"); s.add_argument("--cost", type=float)
+    s = sp.add_parser("milestone"); s.add_argument("id"); s.add_argument("name"); s.add_argument("--on", required=True); s.add_argument("--lane")
+    s = sp.add_parser("mode"); s.add_argument("id", nargs="?"); s.add_argument("mode", nargs="?", choices=helmlib.MODES)
+    s.add_argument("--task"); s.add_argument("--clear", action="store_true", help="drop the mode written here: the next source decides")
+    s.add_argument("--branch", help="one branch's mode, for a run with no ship (the positional is then the mode)")
+    s.add_argument("--repo", help="with --branch: its repo, so a same-named branch elsewhere keeps its own")
+    s = sp.add_parser("report"); s.add_argument("id", nargs="?"); s.add_argument("--task", required=True)
+    s.add_argument("--status"); s.add_argument("--progress"); s.add_argument("--eta"); s.add_argument("--ask")
+    s.add_argument("--answered"); s.add_argument("--parked", nargs="*"); s.add_argument("--owns", action="append")
+    s.add_argument("--live", action="append"); s.add_argument("--cost"); s.add_argument("--session")
+    s.add_argument("--by", "--owner", dest="by")
+    s.add_argument("--summary"); s.add_argument("--reversible"); s.add_argument("--recommended"); s.add_argument("--branch")
+    s.add_argument("--dry-run", action="store_true")
+    s = sp.add_parser("show"); s.add_argument("id", nargs="?")
+    s = sp.add_parser("state"); s.add_argument("id", nargs="?"); s.add_argument("--public", action="store_true")
+    s = sp.add_parser("tail"); s.add_argument("args", nargs="+"); s.add_argument("-n", type=int, default=20)
+    s = sp.add_parser("digest"); s.add_argument("args", nargs="+")
+    s = sp.add_parser("compile"); s.add_argument("args", nargs="+"); s.add_argument("--by", "--owner", dest="by", default=None)
+    s = sp.add_parser("pull"); s.add_argument("id", nargs="?")
+    s = sp.add_parser("render"); s.add_argument("id", nargs="?"); s.add_argument("--json", action="store_true")
+    s.add_argument("--deploy", action="store_true", default=None); s.add_argument("--open", action="store_true")
+    s = sp.add_parser("open"); s.add_argument("id", nargs="?")
+    s = sp.add_parser("board", aliases=["overview"]); s.add_argument("--deploy", action="store_true"); s.add_argument("--json", action="store_true")
+    s = sp.add_parser("tick"); s.add_argument("--dry-run", action="store_true"); s.add_argument("--json", action="store_true")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--arm", action="store_true"); g.add_argument("--disarm", action="store_true"); g.add_argument("--status", action="store_true")
+    s.add_argument("--by", default=os.environ.get("USER") or "?", help="--arm: who armed it")
+    sp.add_parser("backends"); sp.add_parser("list")
+    # the skipper's session verbs (S4); --start, --stop (S5) and --line (S7) are not here yet
+    s = sp.add_parser("skipper"); g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--hold", action="store_true"); g.add_argument("--renew", metavar="PLAN")
+    g.add_argument("--ships", metavar="SCOPE"); g.add_argument("--status", action="store_true")
+    g.add_argument("--stand-down", dest="stand_down", action="store_true")
+    s.add_argument("--scope"); s.add_argument("--once", action="store_true"); s.add_argument("--gen", type=int)
+    s.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    if a.cmd == "skipper":   # its own exit codes: 4 is a refusal by the lease
+        try:
+            return cmd_skipper(a)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit("helm skipper: %s" % e)
+    if a.cmd in ("tail", "digest", "compile"):
+        a.id, rest = (a.args[0], a.args[1:]) if len(a.args) > 1 else (None, a.args)
+        setattr(a, {"tail": "task", "digest": "doc", "compile": "doc"}[a.cmd], rest[0])
+    fn = {"ship": cmd_ship, "new": cmd_ship, "task": cmd_task, "dep": cmd_dep, "eta": cmd_eta, "milestone": cmd_milestone, "mode": cmd_mode,
+          "report": cmd_report, "show": cmd_show, "state": cmd_state, "tail": cmd_tail, "digest": cmd_digest, "compile": cmd_compile,
+          "pull": cmd_pull, "render": cmd_render, "open": cmd_open, "board": cmd_board, "overview": cmd_board,
+          "backends": cmd_backends, "list": cmd_list, "tick": cmd_tick}.get(a.cmd)
+    if not fn:
+        ap.print_help()
+        return 2
+    try:
+        fn(a)
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit("helm %s: %s" % (a.cmd, e))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

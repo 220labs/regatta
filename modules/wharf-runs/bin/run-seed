@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# run-seed: the old name of bin/dispatch (renamed 2026-10-05), kept for its callers: launchd jobs
+# scheduled before the rename (their plists call this path with RUN_SEED_*, which dispatch reads
+# as DISPATCH_*) and sessions that still say `run-seed --next`. At the rename one such job was
+# running on the laptop and another plist sat unloaded in ~/Library/LaunchAgents, which launchd
+# loads at the next login. Delete once, on both Macs, `launchctl list | grep run-seed` and
+# `ls ~/Library/LaunchAgents/<prefix>.run-seed.*` (the prefix: `wharf-runs/label-prefix`) both
+# come back empty.
+exec "$(dirname "$0")/dispatch" "$@"

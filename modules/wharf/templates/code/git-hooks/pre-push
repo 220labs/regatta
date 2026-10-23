@@ -1,0 +1,106 @@
+#!/bin/sh
+# main is the owner's alone. An agent may push its own branches, and reaches main only by
+# opening a pull request the owner merges on github.com. Copy this into any repo with an `origin`.
+#
+# The Claude Code CLI is stopped by hooks/checkpoint.py, in every folder. Nothing else is:
+# Claude Code in Claude Desktop's local agent mode runs without this machine's user-level
+# hooks and pushed see-poetry to origin on 2026-09-17 before anything noticed, and a plain
+# terminal has no guard at all. A git hook is the one layer all of them go through.
+#
+# Two things count as the owner pushing, and they are unrestricted:
+#
+#   GIT_PUSH_OK=1 git push                      — from any terminal
+#   Push / Sync in VS Code's Source Control panel
+#
+# The button is recognised by VSCODE_GIT_COMMAND, which VS Code's git extension sets on every
+# git process it spawns itself — spawn() in extensions/git/dist/main.js, read against VS Code
+# 1.138.0 — and never exports to the integrated terminal, which gets only
+# VSCODE_GIT_IPC_HANDLE and, with git.terminalAuthentication on, the askpass variables. An
+# agent shell has none of them even under the extension host. lessons/claude-code.md,
+# "Telling a human's VS Code click from an agent's git call", has the evidence.
+#
+# It stops accidents, not intent: an agent that sets either variable on purpose gets through.
+# That was the accepted trade (the owner, 2026-09-17) — the alternative was a button that never
+# worked, and a rule the owner had to work around daily is a rule that gets deleted.
+#
+# Everything else is an agent. An agent may push ONLY:
+#   * to refs/heads/claude/**  — the namespace the worktree workflow already mints, so the
+#     permission follows the convention rather than adding a second thing to remember;
+#   * never a deletion — a deleted branch takes its open PR's review context with it, and
+#     an agent has no reason to remove a branch the owner may still be reading.
+# main, other branches, tags and notes are refused (the owner, 2026-09-19, replacing "never push
+# in any form"). The agent's route to main is: push the branch, `gh pr create`, stop.
+#
+# THE CHECK READS STDIN, NOT THE COMMAND LINE. git feeds one line per ref being updated —
+#   <local ref> <local sha> <remote ref> <remote sha>
+# — so `git push --all`, `git push --mirror`, `git push origin HEAD:main` and a refspec that
+# renames the branch on the far side are all seen for what they really are. A regex on the
+# command text can be fooled by every one of those; this cannot. That is why this file is
+# the layer that decides, and checkpoint.py's Bash-level guard is only the early warning.
+#
+# The button has one exception (2026-09-24): a branch started with `git checkout -b …
+# origin/main` TRACKS main, and Sync pushes a branch onto whatever it tracks — so one click
+# fast-forwarded household's main to an agent's commit, with no dialog (git.confirmSync was
+# off). A claude/* branch landing on any other ref is that accident, never a decision: main
+# moves through a pull request, and a deliberate push of that shape is GIT_PUSH_OK=1.
+#
+# Empty stdin means nothing is being pushed, which is allowed — there is nothing to refuse.
+# Test with: sh scripts/test_git_hooks.sh
+[ "${GIT_PUSH_OK:-}" = "1" ] && exit 0
+
+refs=$(cat)
+
+if [ "${VSCODE_GIT_COMMAND:-}" = "push" ]; then
+	onto=''
+	while read -r local_ref local_sha remote_ref remote_sha; do
+		[ -z "$remote_ref" ] && continue
+		case "$local_ref" in
+			refs/heads/claude/*)
+				case "$remote_ref" in
+					refs/heads/claude/*) ;;
+					*) onto="$onto  $local_ref -> $remote_ref
+" ;;
+				esac
+				;;
+		esac
+	done <<EOF
+$refs
+EOF
+	[ -z "$onto" ] && exit 0
+	printf 'refusing this push: it would land an agent branch on another ref:\n%s\n' "$onto" >&2
+	printf 'The branch tracks that ref (git checkout -b … origin/main does this), so Sync aimed\n' >&2
+	printf 'there. To publish the branch instead:  git push -u origin <branch>\n' >&2
+	printf 'To move main on purpose:  GIT_PUSH_OK=1 git push origin <branch>:main\n' >&2
+	exit 1
+fi
+
+refused=''
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ -z "$remote_ref" ] && continue
+	# An all-zero local sha is a deletion. Matched as "contains no non-zero character" so
+	# it holds for SHA-256 repos (64 chars) as well as SHA-1 (40), rather than comparing
+	# against a literal of one fixed length.
+	case "$local_sha" in
+		*[!0]*)
+			case "$remote_ref" in
+				refs/heads/claude/*) ;;
+				*) refused="$refused  $remote_ref
+" ;;
+			esac
+			;;
+		*) refused="$refused  $remote_ref (deletion)
+" ;;
+	esac
+done <<EOF
+$refs
+EOF
+
+[ -z "$refused" ] && exit 0
+
+printf 'refusing this push: an agent may push only its own branches.\n\n' >&2
+printf 'Not allowed here:\n%s\n' "$refused" >&2
+printf 'Allowed: refs/heads/claude/** , never a deletion.\n\n' >&2
+printf 'To change main, push the claude/* branch and open a pull request — the owner merges it\n' >&2
+printf 'on github.com. Do not retry, and do not look for another way to move main.\n' >&2
+printf 'The owner pushes anything with:  GIT_PUSH_OK=1 git push  — or VS Code'"'"'s Push button.\n' >&2
+exit 1

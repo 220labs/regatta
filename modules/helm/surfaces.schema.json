@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "surfaces.schema.json",
+  "title": "helm's surfaces.json",
+  "description": "Which backend each seam of the asks and the board takes, in order of preference. The file is the owner's, linked into the regatta config dir as helm/surfaces.json (SURFACES_FILE overrides it); a missing file or row reads as bin/surfaces.py's DEFAULTS. Each enum here is surfaces.KNOWN's, kept equal by tests/check.sh.",
+  "type": "object",
+  "properties": {
+    "_": {"type": "string", "description": "a note for the reader; ignored"},
+    "ask": {
+      "type": "object",
+      "properties": {
+        "relay": {"type": "array", "items": {"enum": ["file", "sendmessage", "talk"]}},
+        "listen": {"enum": ["none", "sendmessage", "talk"]},
+        "parked": {"type": "boolean"}
+      }
+    },
+    "helm": {
+      "type": "object",
+      "properties": {
+        "render": {"type": "array", "items": {"enum": ["artifact", "local", "sheep"]}},
+        "live": {"enum": ["local-sse", "records", "redeploy", "stream"]},
+        "live_fallback": {"enum": ["none", "redeploy"]},
+        "state": {"type": "string"}
+      }
+    },
+    "plan": {"$ref": "#/properties/helm", "description": "the helm row's name before rename S5, read as helm's"},
+    "notify": {
+      "type": "object",
+      "description": "per host (surfaces.host()): how an ask nobody relays reaches the owner",
+      "additionalProperties": {"type": "array", "items": {"enum": ["banner", "telegram"]}}
+    }
+  }
+}

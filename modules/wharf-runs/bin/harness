@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+"""harness — one set of verbs over every coding-agent CLI: the provider contract of
+docs/harness-contract-2026-10-11.md, section 3 (orchestration B5; the owner's D2-A, 2026-10-14: ACP's
+verb meanings, A2A's state names plus `idle`, sessionpipe's events; one bin/harness, one adapter
+file per harness).
+
+    harness status REF [--harness NAME] [--host here|PEER|all] [--repo DIR] [--json]
+        V3: one session record. REF is a session id or a prefix of 6 or more, a session's title
+        (Claude Code's `name`), or a dispatch run's topic — its live run first, else its newest.
+        Exit 1: nothing matches; 2: two live sessions match (each is listed; --repo narrows).
+    harness list [--harness NAME] [--host here|PEER|all] [--unsettled] [--json]
+        V4: every live session record. --json prints one JSON array of records, else a table.
+        Exit 3: a host asked for did not answer — what the others hold is still printed.
+        --unsettled adds the runs that ended without completing which the harness still lists
+        (Orca: every failed or canceled Dispatch) — bin/stalls.py's read; the others ignore it.
+    harness retry REF [--harness orca] [--model M] [--effort E] [--json]
+        A fresh attempt at a failed run's task, the same placement: Orca's `--retry-of` (the tick's
+        S1 retry of an Orca step, B8). Only the orca adapter has it; a Claude Code step is
+        re-dispatched from its brief by bin/stalls_tick.py instead. Exit 2: not a failed run.
+    harness run [--harness claude-code|orca|codex] (--prompt TEXT | --prompt-file FILE | --branch BRANCH)
+                [--cwd DIR] [--repo DIR] [--name TOPIC] [--agent claude|codex] [--runner orca]
+                [--model M] [--effort E] [--account auto|LABEL [--ship KEY]] [--headless] [--on HOST] [--json]
+        V1: start a session; prints its record at once (state `submitted` or later, its session_id
+        when the harness has one by then). claude-code (the default) is bin/dispatch: --prompt in
+        --cwd, a claude/* worktree, is `dispatch --start` detached; --branch is a seeded branch,
+        `dispatch BRANCH` (launchd, about 2 min; --on PEER there only). orca makes the worktree
+        itself in --repo (`<yyyy-mm-dd>-<topic>` → claude/<host>/<yyyy-mm-dd>-<topic>) and starts an
+        `--agent` worker in it — with --account (auto: bin/account's pick; --ship KEY keeps a ship on
+        the login it was pinned to) a Claude worker on that login, in a terminal of ours (docs/
+        orca-accounts-2026-10-16.md); codex is `codex exec --json` detached in --cwd, or Orca's codex
+        worker with --runner orca. Exit 1: the start failed; 2: refused before anything started.
+    harness resume REF (--prompt TEXT | --prompt-file FILE) [--fork] [--harness NAME] [--repo DIR] [--json]
+        V2: REF's next turn — the same session, or with --fork a copy under a new id (claude-code,
+        codex; Orca has no fork). A live session is not continued beside itself: stop it first, or fork.
+    harness stop REF [--harness NAME] [--repo DIR] [--json]
+        V5: end REF now, busy or not; prints the exit report. Only what a harness started: a dispatch
+        run (dispatch --end), an Orca worker (worker-stop), a harness codex run (SIGTERM, its start
+        time checked). The owner's own sessions are not this verb's to end (exit 2).
+    V1, V2 and V5 act on this Mac only (--host is refused): a peer's runs start through dispatch --on.
+
+Every run is refused (exit 2) unless the repo's contract says `physical: none` — bin/dispatch's rule,
+which `dispatch --start` leaves to its caller — and a Codex run (--harness codex or --agent codex)
+in a public repo (oss/, the overlay's own, those wharf-runs/public-repos names): OpenAI's docs say not to use a plan login in scripts on
+public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14).
+
+--host: `here` (the default) is this Mac; PEER a Mac wharf-runs/ssh names (`<peer>:<ssh alias>`),
+read over that alias; `all` both. ssh runs from the Mac whose key names the peer (bin/pickup's PEERS,
+D2): from a Mac with no peer key, `all` is that Mac alone. The peer runs this same code, sent on
+stdin to its `python3 -` as bin/pickup's probe is, so the two ends never disagree on a mapping; it
+reads only, and reaches its own launcher checkout only for the scripts an adapter reads through
+(bin/dispatch-rc).
+
+The session record (contract section 3), one shape for every harness:
+
+    {"harness", "account", "session_id", "machine", "cwd", "branch", "pid", "started_at",
+     "updated_at", "state", "attention": null | {"kind", "message", "since"}, "model", "effort",
+     "title", "attach", "native": {…}}
+
+Times are epoch seconds (B1's adapter set it; bin/stalls.py computes with them). `native` is the one key beyond the contract: what the harness itself
+said (Claude Code's own status word, a dispatch run's record path, topic and end), so a caller can
+check a mapping without a second reader. States: submitted, working, input-required, idle,
+completed, failed, canceled, auth-required (A2A's names, plus idle); attention kinds are
+sessionpipe's: permission, question, elicitation, idle, error.
+
+Adapters: bin/harness_adapters/<file>.py, one per harness, found by listing the folder — an orca
+or codex adapter is one more file there and nothing here changes. Each module has
+    NAME                  the harness name its records carry ("claude-code")
+    sessions(ctx)         V4: every live session of this harness on this machine, as records
+    candidates(ctx, ref)  V3: the records REF could mean, live or ended (the choice is made here,
+                          the same way for every harness: pick())
+    run(ctx, req)         V1: start one; returns its record (req: prompt, cwd, repo, name, branch,
+                          agent, runner, model, effort, account, headless, on, topic, date)
+    resume(ctx, rec, req) V2: REF's next turn (req adds fork); returns the new run's record
+    stop(ctx, rec)        V5: end it; returns its last record (`last_message` added when known)
+    send(ctx, rec, msg)   bin/hail's road into REC: {"verdict", "why"} (bin/hail's header; msg: frame,
+                          kind, dry, idle_s) — Claude Code's inbox socket, `codex queue`, Orca's mailbox
+An adapter refuses with ctx.fail(message, code): 2 for "not started, by rule", 1 for "it failed".
+Claude Code's also keeps B1's list() and status(sid), which
+bin/stalls.py calls directly (it ships the adapter's source to the peer itself). `ctx` carries `machine` (this Mac's name), `coding` (the
+launcher checkout on this machine), `dispatch_host` (dispatch's default --on), `warn(msg)` (stderr; a line, never an exit) and `fail(msg, code)`.
+
+Python 3.9, stdlib only; no model call, no Claude import — an adapter reads a harness's files and
+runs its CLI, never its libraries.
+"""
+import calendar
+import glob
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import time
+import types
+
+common = None   # the core's config reader; none on a peer (stdin has no path), where nothing here needs it
+if "__file__" in globals():   # here, not on a peer from stdin: the regatta core on the path, for the adapters' peers
+    sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+    try:
+        import core_path
+        core_path.add()
+        import common
+    except ImportError:
+        pass
+
+USAGE = __doc__ or "harness status|list"
+
+
+def config_lines(key):
+    """`<config>/<key>`'s non-blank lines through the core's one reader, [] with no core or no such key."""
+    try:
+        return (common.config_lines(key) or []) if common else []
+    except Exception:   # noqa: BLE001 — a reader that cannot be used is no key
+        return []
+
+
+def ssh_peers():
+    """{peer: ssh alias} from wharf-runs/ssh (`<peer>:<alias>` per line), peers lower-cased."""
+    out = {}
+    for line in config_lines("wharf-runs/ssh"):
+        peer, _, alias = line.partition(":")
+        if peer.strip() and alias.strip():
+            out[peer.strip().lower()] = alias.strip()
+    return out
+
+
+PEERS = ssh_peers()   # bin/pickup's, bin/account's: the ssh alias per peer Mac
+SSH = os.environ.get("HARNESS_SSH") or "ssh"
+FINAL = ("completed", "failed", "canceled")
+# Codex never runs in these (module docstring): repo folder names the wharf-runs/public-repos key
+# lists, the overlay's own checkout, and anything under ~/projects/oss/
+PUBLIC = tuple(config_lines("wharf-runs/public-repos"))
+
+
+def warn(msg):
+    print("harness: %s" % msg, file=sys.stderr, flush=True)
+
+
+class Failed(Exception):
+    """An adapter's refusal or failure: the message, and the exit code (2 refused, 1 failed)."""
+    def __init__(self, msg, code=1):
+        Exception.__init__(self, msg)
+        self.code = code
+
+
+def fail(msg, code=1):
+    raise Failed(msg, code)
+
+
+def embedded():
+    """{file name: source} when this copy runs on a peer from stdin (bundle()); else None."""
+    return globals().get("HARNESS_EMBEDDED")
+
+
+def machine():
+    """This Mac's name as branches and repos.json spell it (`laptop`, `buildbox`): LocalHostName,
+    lower-cased — helmlib.host()'s reading. HARNESS_HOST stands in for it (tests, as PICKUP_HOST)."""
+    if os.environ.get("HARNESS_HOST"):
+        return os.environ["HARNESS_HOST"]
+    try:
+        r = subprocess.run(["/usr/sbin/scutil", "--get", "LocalHostName"], capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            return r.stdout.strip().lower()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return socket.gethostname().split(".")[0].lower()
+
+
+def coding_root():
+    """The checkout an adapter reads scripts from: this file's own on the machine it lives on
+    (rules/engineering.md: a script anchors on its own path); on a peer, stdin has no path, so
+    HARNESS_LAUNCHER, else that Mac's overlay (the config dir's `legacy`), else this module in the
+    checkout its `home` file names."""
+    if embedded() is None:
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.environ.get("HARNESS_LAUNCHER"):
+        return os.environ["HARNESS_LAUNCHER"]
+    cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+
+    def first(name):
+        try:
+            with open(os.path.join(cfg, name)) as f:
+                return os.path.expanduser(f.readline().strip())
+        except OSError:
+            return ""
+
+    old, home = os.environ.get("REGATTA_LEGACY") or first("legacy"), first("home")
+    if old and os.path.isdir(old):
+        return old
+    return os.path.join(home, "modules", "wharf-runs") if home else os.path.expanduser("~/projects/regatta/modules/wharf-runs")
+
+
+def adapter_sources():
+    """{file name: source} of every adapter, in name order; underscore files are helpers, not harnesses."""
+    emb = embedded()
+    if emb is not None:
+        return dict(sorted(emb.items()))
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness_adapters")
+    out = {}
+    for p in sorted(glob.glob(os.path.join(d, "*.py"))):
+        if not os.path.basename(p).startswith("_"):
+            with open(p) as f:
+                out[os.path.basename(p)] = f.read()
+    return out
+
+
+def adapters():
+    """[module] of every adapter, loaded from its source text — the same path here and on a peer,
+    where the source came over stdin. One that fails to load is named and skipped: a broken codex
+    adapter must not take Claude Code's list with it."""
+    mods = []
+    for fname, src in adapter_sources().items():
+        mod = types.ModuleType("harness_adapter_" + fname[:-3])
+        mod.__file__ = fname
+        try:
+            exec(compile(src, fname, "exec"), mod.__dict__)
+        except Exception as e:   # noqa: BLE001 — any error in one adapter is that adapter's
+            warn("adapter %s did not load: %s" % (fname, e))
+            continue
+        if not getattr(mod, "NAME", None):
+            warn("adapter %s has no NAME: skipped" % fname)
+            continue
+        mods.append(mod)
+    return mods
+
+
+def dispatch_host():
+    """Where dispatch sends a run with no --on: the wharf-runs/dispatch-host key, else the first
+    peer of wharf-runs/ssh (dispatch says so itself), else "" (this Mac), lower-cased."""
+    line = (config_lines("wharf-runs/dispatch-host") or [""])[0]
+    return (line or next(iter(PEERS), "")).lower()
+
+
+class Ctx:
+    def __init__(self):
+        self.machine = machine()
+        self.coding = coding_root()
+        self.dispatch_host = dispatch_host()
+        self.warn = warn
+        self.fail = fail
+        self._mods = None
+
+    def adapter(self, name):
+        """Another harness's adapter module, or None: Orca's worker is a claude or codex session too,
+        and that harness's own reader knows whether it waits on a prompt (orca.py, _inner())."""
+        if self._mods is None:
+            self._mods = adapters()
+        return next((m for m in self._mods if m.NAME == name), None)
+
+
+def chosen(mods, name):
+    if not name:
+        return mods
+    picked = [m for m in mods if m.NAME == name]
+    if not picked:
+        sys.exit("harness: no adapter %r (have: %s)" % (name, ", ".join(m.NAME for m in mods) or "none"))
+    return picked
+
+
+# ---- hosts ---------------------------------------------------------------------------------
+
+def peers():
+    """{host: ssh alias} of the other machines. HARNESS_PEER_<HOST>=alias adds or overrides one
+    (tests; bin/pickup's PICKUP_PEER_<HOST>); this machine is never its own peer."""
+    p = dict(PEERS)
+    p.update({k[len("HARNESS_PEER_"):].lower(): v for k, v in os.environ.items()
+              if k.startswith("HARNESS_PEER_") and v})
+    p.pop(machine(), None)
+    return p
+
+
+def hosts_for(arg):
+    """[(host, alias or None for here)] that --host names."""
+    me, other = machine(), peers()
+    if arg in ("here", me):
+        return [(me, None)]
+    if arg == "all":
+        return [(me, None)] + sorted(other.items())
+    if arg in other:
+        return [(arg, other[arg])]
+    sys.exit("harness: unknown host %r (here, all, %s)" % (arg, ", ".join(sorted(other)) or "no peers"))
+
+
+def bundle():
+    """This file with every adapter's source in front: what a peer's `python3 -` runs."""
+    with open(os.path.abspath(__file__)) as f:
+        me = f.read()
+    # ascii(): the adapters on one line with non-ASCII escaped — Python 3.9 reading source from stdin
+    # failed "Non-UTF-8 code" on the literal form once the adapters grew (hail's send(), 2026-10-21)
+    return "HARNESS_EMBEDDED = %s\n%s" % (ascii(adapter_sources()), me)
+
+
+def remote(host, alias, argv):
+    """Run this code on a peer with ARGV, read-only; (parsed JSON, None) or (None, why)."""
+    cmd = "python3 - " + " ".join(shlex.quote(a) for a in argv)
+    try:
+        r = subprocess.run([SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", alias, cmd],
+                           input=bundle(), capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "%s did not answer: %s" % (host, e)
+    for line in (r.stderr or "").splitlines():
+        if line.strip():
+            print("%s: %s" % (host, line), file=sys.stderr)
+    try:
+        return json.loads(r.stdout), None
+    except ValueError:
+        return None, "%s did not answer (ssh %s, exit %s)" % (host, alias, r.returncode)
+
+
+# ---- V4 list -------------------------------------------------------------------------------
+
+def local_list(mods, ctx):
+    out = []
+    for m in mods:
+        try:
+            out.extend(m.sessions(ctx))
+        except Exception as e:   # noqa: BLE001 — one harness's failure is named, the others still listed
+            warn("%s: list failed: %s" % (m.NAME, e))
+    return out
+
+
+def gather(verb, extra, args, mods):
+    """(records, hosts that did not answer) over --host: here from the adapters, a peer over ssh."""
+    recs, missed = [], []
+    for host, alias in hosts_for(args.get("host") or "here"):
+        if alias is None:
+            ctx = Ctx()
+            ctx.unsettled = bool(args.get("unsettled"))
+            recs.extend(local_list(mods, ctx) if verb == "list" else local_candidates(mods, ctx, extra[0]))
+            continue
+        argv = [verb] + extra + ["--host", "here", "--json"] + (["--unsettled"] if args.get("unsettled") else [])
+        if args.get("harness"):
+            argv += ["--harness", args["harness"]]
+        got, why = remote(host, alias, argv)
+        if why:
+            warn(why)
+            missed.append(host)
+        elif isinstance(got, list):
+            recs.extend(r for r in got if isinstance(r, dict))
+    return recs, missed
+
+
+def ago(when):
+    """'12 min' since a record's time, for the table."""
+    t = epoch(when)
+    if t is None:
+        return "-"
+    m = max(0, int((time.time() - t) // 60))
+    return "%d min" % m if m < 120 else "%.1f h" % (m / 60) if m < 2880 else "%d d" % (m // 1440)
+
+
+def where(cwd):
+    """A cwd under any Mac's ~/projects, without it: a peer's home is not this one's."""
+    return re.sub(r"^/Users/[^/]+/projects/", "", cwd or "?")
+
+
+def table(recs):
+    if not recs:
+        print("no live sessions")
+        return
+    print("%-15s %-9s %-9s %-24s %-8s %s" % ("STATE", "HOST", "SESSION", "TITLE", "SINCE", "WHERE · BRANCH"))
+    for r in recs:
+        att = r.get("attention") or {}
+        state = r.get("state") or "?"
+        if att.get("kind") and att["kind"] != "idle":
+            state += " (%s)" % att["kind"]
+        print("%-15s %-9s %-9s %-24s %-8s %s%s" % (
+            state, r.get("machine") or "?", (r.get("session_id") or "?")[:8], (r.get("title") or "-")[:24],
+            ago(r.get("updated_at")), where(r.get("cwd")), " · " + r["branch"] if r.get("branch") else ""))
+
+
+def order(recs):
+    """Machine, then the most recently updated first."""
+    return sorted(recs, key=lambda r: (r.get("machine") or "", -(epoch(r.get("updated_at")) or 0)))
+
+
+def epoch(t):
+    """Epoch seconds from a record's time: a number as it is, an ISO string parsed."""
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        return float(t)
+    try:
+        return float(calendar.timegm(time.strptime((t or "")[:19], "%Y-%m-%dT%H:%M:%S")))
+    except (ValueError, TypeError):
+        return None
+
+
+def cmd_list(args):
+    mods = chosen(adapters(), args.get("harness"))
+    recs, missed = gather("list", [], args, mods)
+    recs = order(recs)
+    if args.get("json"):
+        print(json.dumps(recs, indent=1))
+    else:
+        table(recs)
+    return 3 if missed else 0
+
+
+# ---- V3 status -----------------------------------------------------------------------------
+
+def local_candidates(mods, ctx, ref):
+    out = []
+    for m in mods:
+        try:
+            out.extend(m.candidates(ctx, ref))
+        except Exception as e:   # noqa: BLE001
+            warn("%s: status failed: %s" % (m.NAME, e))
+    return out
+
+
+def under(path, root):
+    if not path or not root:
+        return False
+    p, r = os.path.realpath(path), os.path.realpath(root)
+    return p == r or p.startswith(r + "/")
+
+
+def pick(cands, ref):
+    """(record, None) or (None, [the live records REF could mean]). One rule for every harness: a
+    whole session id wins outright; else a live match, when there is exactly one; else the newest
+    ended one. Two live sessions answering to one topic (two repos ran it) are not guessed between."""
+    exact = [c for c in cands if c.get("session_id") == ref]
+    if exact:
+        # one session, several runs: a continued run keeps the id (V2), so the live one, else the newest
+        live = [c for c in exact if c.get("state") not in FINAL]
+        return (live or sorted(exact, key=lambda c: -(epoch(c.get("updated_at")) or 0)))[0], None
+    seen, live = set(), []
+    for c in cands:
+        # a record with no session id yet (a codex run still submitted) is its own: never folded into another
+        key = (c.get("machine"), c.get("session_id")) if c.get("session_id") else id(c)
+        if c.get("state") not in FINAL and key not in seen:
+            seen.add(key)
+            live.append(c)
+    if len(live) > 1:
+        return None, live
+    if live:
+        return live[0], None
+    ended = sorted(cands, key=lambda c: -(epoch(c.get("updated_at")) or 0))
+    return (ended[0], None) if ended else (None, [])
+
+
+def cmd_status(args):
+    ref = args.get("ref")
+    if not ref:
+        sys.exit(USAGE)
+    mods = chosen(adapters(), args.get("harness"))
+    cands, missed = gather("candidates", [ref], args, mods)
+    if args.get("repo"):
+        cands = [c for c in cands if under(c.get("cwd"), args["repo"])
+                 or under((c.get("native") or {}).get("repo"), args["repo"])]
+    rec, many = pick(cands, ref)
+    if rec is None and many:
+        warn("%d live sessions answer to %r — say which by session id or --repo:" % (len(many), ref))
+        for c in many:
+            print("  %s %s %s %s" % (c.get("machine"), c.get("session_id"), c.get("state"), where(c.get("cwd"))), file=sys.stderr)
+        return 2
+    if rec is None:
+        warn("no session or run answers to %r%s" % (ref, " (and %s did not answer)" % ", ".join(missed) if missed else ""))
+        return 1
+    if args.get("json"):
+        print(json.dumps(rec, indent=1))
+    else:
+        for k in ("state", "attention", "session_id", "harness", "machine", "title", "cwd", "branch", "pid",
+                  "model", "effort", "account", "started_at", "updated_at", "attach"):
+            v = rec.get(k)
+            if v is not None:
+                print("%-11s %s" % (k, json.dumps(v) if isinstance(v, dict) else v))
+        for k, v in sorted((rec.get("native") or {}).items()):
+            print("%-11s %s" % ("." + k, v))
+    return 0
+
+
+def cmd_candidates(args):
+    """The peer's half of a status across hosts: every candidate, as JSON (not a user verb)."""
+    mods = chosen(adapters(), args.get("harness"))
+    print(json.dumps(local_candidates(mods, Ctx(), args.get("ref") or "")))
+    return 0
+
+
+# ---- V1 run, V2 next turn, V5 stop: the rules every harness shares -----------------------------
+
+def git_out(cwd, *argv, strip=True):
+    try:
+        r = subprocess.run(["git", "-C", cwd] + list(argv), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode:
+        return None
+    return r.stdout.strip() if strip else r.stdout
+
+
+def repo_root(path):
+    """The main checkout of the repo PATH is in (a worktree's too: its common dir's parent), or None."""
+    common = git_out(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return os.path.realpath(os.path.dirname(common)) if common else None
+
+
+def physical_ok(root):
+    """None when the repo's contract says `physical: none`, else why not — bin/dispatch's
+    physical_ok(), word for word in effect: the first `- physical:` line of AGENTS.md or CLAUDE.md."""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        try:
+            with open(os.path.join(root, name)) as f:
+                for line in f:
+                    if line.startswith("- physical:"):
+                        if line.startswith("- physical: none"):
+                            return None
+                        return "%s's contract must say `physical: none` (it says: %s)" % (root, line.strip())
+        except OSError:
+            continue
+    return "%s's contract must say `physical: none` (it says: nothing)" % root
+
+
+_PUBLIC_WARNED = []
+
+
+def public_repo(root):
+    """True for a repo that is or may go public: Codex's plan login stays out of it (module docstring)."""
+    real = os.path.realpath(root)
+    if not PUBLIC and not _PUBLIC_WARNED:
+        _PUBLIC_WARNED.append(1)
+        warn("wharf-runs/public-repos is not set: only the overlay's checkout and projects/oss/ count as public for Codex")
+    old = common.legacy_root() if common else None
+    names = PUBLIC + ((os.path.basename(os.path.realpath(str(old))),) if old else ())
+    return os.path.basename(real) in names or "/projects/oss/" in real + "/"
+
+
+def codex_in(req, harness):
+    return harness == "codex" or (req.get("agent") or "") == "codex"
+
+
+def guard(req, harness):
+    """The shared refusals before any start (exit 2), and req["repo"] made the main checkout."""
+    where = req.get("cwd") or req.get("repo")
+    if not where or not os.path.isdir(where):
+        fail("--cwd or --repo must name a directory (got %r)" % where, 2)
+    root = repo_root(where)
+    if not root:
+        fail("%s is in no git repository" % where, 2)
+    why = physical_ok(root)
+    if why:
+        fail(why, 2)
+    if os.environ.get("CLAUDE_UNATTENDED") and (harness in ("orca", "codex") or req.get("runner") == "orca"):
+        # an Orca worker or a Codex run counts against no run cap (dispatch-rc live sees neither) and no
+        # depth cap: only an attended caller starts one (review 2026-10-15). stalls.py sees Orca workers
+        # since B8, and the tick's `harness retry` passes here from launchd (no CLAUDE_UNATTENDED), bounded
+        # by its two retries per Task; a dispatched session's tick is refused, and raised after six
+        fail("%s runs are started attended only (CLAUDE_UNATTENDED=%s): no run cap counts them yet"
+             % (req.get("runner") or harness, os.environ["CLAUDE_UNATTENDED"]), 2)
+    if codex_in(req, harness) and public_repo(root):
+        fail("Codex does not run in %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — OpenAI's docs say not "
+             "to use a plan login in scripts there (contract E4)" % root, 2)
+    req["repo"] = root
+    return req
+
+
+def prompt_of(args):
+    if args.get("prompt-file"):
+        try:
+            with open(args["prompt-file"]) as f:
+                return f.read()
+        except OSError as e:
+            sys.exit("harness: --prompt-file: %s" % e)
+    return args.get("prompt")
+
+
+def request(args):
+    """The adapter's request from the command line; the date is today's, here, once."""
+    req = {k: args.get(k) for k in ("cwd", "repo", "name", "branch", "agent", "runner", "model", "effort",
+                                      "account", "ship", "on", "fork")}
+    req["prompt"] = prompt_of(args)
+    req["headless"] = bool(args.get("headless"))
+    req["date"] = time.strftime("%Y-%m-%d")
+    for k in ("cwd", "repo"):
+        if req.get(k):
+            req[k] = os.path.abspath(os.path.expanduser(req[k]))
+    return req
+
+
+def show(rec, as_json):
+    if as_json:
+        print(json.dumps(rec, indent=1))
+        return
+    for k in ("state", "attention", "session_id", "harness", "machine", "title", "cwd", "branch", "pid",
+              "model", "effort", "account", "started_at", "updated_at", "attach", "stop_reason",
+              "last_message", "ended_at", "files_changed"):
+        v = rec.get(k)
+        if v is not None and v != []:
+            print("%-11s %s" % (k, json.dumps(v) if isinstance(v, (dict, list)) else v))
+    for k, v in sorted((rec.get("native") or {}).items()):
+        print("%-11s %s" % ("." + k, v))
+
+
+def one_here(args, verb):
+    """(adapter, record) REF names on this Mac, or exits as status does: 1 none, 2 ambiguous."""
+    if args.get("host") not in (None, "here", machine()):
+        sys.exit("harness: %s acts on this Mac only; a peer's runs start and end through dispatch --on" % verb)
+    mods = chosen(adapters(), args.get("harness"))
+    ref = args.get("ref")
+    if not ref:
+        sys.exit(USAGE)
+    ctx = Ctx()
+    cands = local_candidates(mods, ctx, ref)
+    if args.get("repo"):
+        cands = [c for c in cands if under(c.get("cwd"), args["repo"])
+                 or under((c.get("native") or {}).get("repo"), args["repo"])]
+    rec, many = pick(cands, ref)
+    if rec is None and many:
+        warn("%d live sessions answer to %r — say which by session id or --repo" % (len(many), ref))
+        sys.exit(2)
+    if rec is None:
+        warn("no session or run here answers to %r" % ref)
+        sys.exit(1)
+    mod = next((m for m in mods if m.NAME == rec.get("harness")), None)
+    if mod is None or not hasattr(mod, verb):
+        warn("%s has no %s" % (rec.get("harness"), verb))
+        sys.exit(2)
+    return mod, rec, ctx
+
+
+def cmd_run(args):
+    name = args.get("harness") or "claude-code"
+    if args.get("host") not in (None, "here", machine()):
+        sys.exit("harness: run starts on this Mac; for a peer, --on HOST with a --branch (dispatch's)")
+    mod = chosen(adapters(), name)[0]
+    if not hasattr(mod, "run"):
+        warn("%s has no run" % name)
+        return 2
+    req = request(args)
+    if not (req.get("prompt") or req.get("branch")):
+        sys.exit("harness: run needs --prompt, --prompt-file or --branch\n" + USAGE)
+    try:
+        guard(req, name)
+        if req.get("runner") == "orca" and name != "orca":
+            # a harness run *by* Orca is Orca's worker: its records are the orca adapter's
+            req["agent"] = req.get("agent") or {"claude-code": "claude"}.get(name, name)
+            mod = chosen(adapters(), "orca")[0]
+        rec = mod.run(Ctx(), req)
+    except Failed as e:
+        warn(str(e))
+        return e.code
+    show(rec, args.get("json"))
+    return 0
+
+
+def cmd_resume(args):
+    mod, rec, ctx = one_here(args, "resume")
+    req = request(args)
+    req["fork"] = bool(args.get("fork"))
+    if not req.get("prompt"):
+        sys.exit("harness: resume needs --prompt or --prompt-file (the next turn)")
+    try:
+        # the record's own agent: an Orca codex worker is Codex, whatever --agent this call left out
+        agent = req.get("agent") or (rec.get("native") or {}).get("agent")
+        guard(dict(req, agent=agent, cwd=rec.get("cwd") or (rec.get("native") or {}).get("repo")), rec.get("harness"))
+        new = mod.resume(ctx, rec, req)
+    except Failed as e:
+        warn(str(e))
+        return e.code
+    show(new, args.get("json"))
+    return 0
+
+
+def cmd_retry(args):
+    mod, rec, ctx = one_here(args, "retry")
+    req = request(args)
+    try:
+        agent = (rec.get("native") or {}).get("agent")
+        guard(dict(req, agent=agent, cwd=rec.get("cwd")), rec.get("harness"))
+        new = mod.retry(ctx, rec, req)
+    except Failed as e:
+        warn(str(e))
+        return e.code
+    show(new, args.get("json"))
+    return 0
+
+
+def exit_report(rec):
+    """The contract's exit report from a session's last record. Cost is not measured here (the plan
+    readings are bin/account's, a reading of the whole login): null, not guessed; turns only where
+    the harness counted them (a codex run's turn.completed events)."""
+    native = rec.get("native") or {}
+    files = None
+    if rec.get("cwd") and os.path.isdir(rec["cwd"]):
+        st = git_out(rec["cwd"], "status", "--porcelain", strip=False)   # its first column is the status
+        files = [l[3:] for l in st.splitlines() if l.strip()] if st is not None else None
+    return {"session_id": rec.get("session_id"), "harness": rec.get("harness"), "state": rec.get("state"),
+            "stop_reason": native.get("end_reason") or native.get("stop_reason"),
+            "last_message": rec.get("last_message") or native.get("last_message"),
+            "turns": native.get("turns"), "cost": None,
+            "started_at": rec.get("started_at"), "ended_at": native.get("ended_at") or time.time(),
+            "files_changed": files, "cwd": rec.get("cwd"), "branch": rec.get("branch"), "native": native}
+
+
+def cmd_stop(args):
+    mod, rec, ctx = one_here(args, "stop")
+    try:
+        last = mod.stop(ctx, rec)
+    except Failed as e:
+        warn(str(e))
+        return e.code
+    show(exit_report(last), args.get("json"))
+    return 0
+
+
+# ---- the command line ----------------------------------------------------------------------
+
+VALUED = {"status": ("--host", "--harness", "--repo"), "list": ("--host", "--harness", "--repo"),
+          "candidates": ("--host", "--harness", "--repo"),
+          "run": ("--host", "--harness", "--repo", "--cwd", "--prompt", "--prompt-file", "--branch", "--name",
+                  "--agent", "--runner", "--model", "--effort", "--account", "--ship", "--on"),
+          "resume": ("--host", "--harness", "--repo", "--prompt", "--prompt-file", "--model", "--effort"),
+          "stop": ("--host", "--harness", "--repo"),
+          "retry": ("--host", "--harness", "--repo", "--model", "--effort")}
+FLAGS = {"run": ("--json", "--headless"), "resume": ("--json", "--fork"), "list": ("--json", "--unsettled")}
+
+
+def parse(argv):
+    """{"verb", "ref", and each option without its dashes}; exits with the usage on anything else."""
+    if not argv:
+        sys.exit(USAGE)
+    a = {"verb": argv[0]}
+    rest = argv[1:]
+    valued, flags = VALUED.get(argv[0], ()), FLAGS.get(argv[0], ("--json",))
+    i = 0
+    while i < len(rest):
+        x = rest[i]
+        if x in flags or x == "--json":
+            a[x[2:]] = True
+        elif x in valued and i + 1 < len(rest):
+            a[x[2:]] = rest[i + 1]
+            i += 1
+        elif x in ("-h", "--help"):
+            print(USAGE)
+            sys.exit(0)
+        elif not x.startswith("-") and "ref" not in a and a["verb"] in ("status", "candidates", "resume", "stop", "retry"):
+            a["ref"] = x
+        else:
+            sys.exit("harness: unexpected %r\n%s" % (x, USAGE))
+        i += 1
+    return a
+
+
+def main(argv):
+    a = parse(argv)
+    verb = a["verb"]
+    if verb == "list":
+        return cmd_list(a)
+    if verb == "status":
+        return cmd_status(a)
+    if verb == "candidates":
+        return cmd_candidates(a)
+    if verb == "run":
+        return cmd_run(a)
+    if verb == "resume":
+        return cmd_resume(a)
+    if verb == "stop":
+        return cmd_stop(a)
+    if verb == "retry":
+        return cmd_retry(a)
+    if verb in ("-h", "--help", "help"):
+        print(USAGE)
+        return 0
+    sys.exit(USAGE)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

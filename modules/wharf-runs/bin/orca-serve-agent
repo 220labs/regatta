@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# orca-serve-agent HOST|here [--remove] [--dry-run]
+#
+# Runs a Mac's Orca as a headless server under a LaunchAgent in the login session, so it survives a
+# reboot and can reach the keychain. Started over ssh instead, Orca says "the macOS keychain needs a
+# prompt that this session cannot show ... secrets are stored unencrypted". The Orca app still opens
+# on that Mac: it attaches a window to the same server (`orca open` there reported
+# desktopWindowStatus "available" against a headless serve).
+#
+# The LaunchAgent's label is config, read on the Mac the agent is installed on (the remote side for
+# HOST, this Mac for `here`), from ${REGATTA_CONFIG:-$HOME/.config/regatta}/wharf-runs/:
+#   serve-label           the label, first non-blank line; org.regatta.orca-serve when absent
+#   serve-label-previous  an older label to boot out and remove first, so one agent serves; none when absent
+#
+# Output goes to /dev/null: `orca serve` prints the pairing link, a credential, and a log would keep
+# it. A paired client keeps its device key across restarts; to pair a new client, stop the agent and
+# run `orca serve --pairing-address <tailscale ip>` once in a screen.
+#
+# An always-on service is the owner's to install (an auto-mode classifier refuses it to a session as
+# persistence), so this runs from the owner's own terminal. --dry-run prints the label, the plist and
+# the commands and changes nothing.
+#
+# ASCII only: bash under a C locale over ssh read a multibyte ellipsis after a variable as part of
+# the variable's name (2026-10-19).
+set -euo pipefail
+host=${1:?usage: orca-serve-agent HOST|here [--remove] [--dry-run]}
+shift
+remove=0 dry=0
+for a in "$@"; do
+  case "$a" in
+    --remove) remove=1 ;;
+    --dry-run) dry=1 ;;
+    *) echo "orca-serve-agent: unknown argument $a" >&2; exit 2 ;;
+  esac
+done
+# `here` runs it on this Mac: the laptop's yard stopped when its Orca app was closed, since a run
+# needs a runtime and only the other Mac had a headless one. Quit the Orca app first: the script waits
+# up to 30 s for it to go. Workers keep running: their terminals live in Orca's terminal host
+# (daemon-host/.../terminal-host-*, parent launchd), not in the app.
+if [ "$host" = here ]; then
+  on() { REMOVE=$remove DRYRUN=$dry bash -s; }
+else
+  on() { ssh -o ConnectTimeout=8 "$host" "REMOVE=$remove DRYRUN=$dry" 'bash -s'; }
+fi
+on <<'REMOTE'
+set -euo pipefail
+# A C locale, so the label's character class stays ASCII: under UTF-8, bash 3.2's [A-Za-z] lets
+# accented letters through, and `here` would accept a label ssh's C locale refuses.
+export LC_ALL=C
+cfg=${REGATTA_CONFIG:-$HOME/.config/regatta}
+# The first non-blank line of a config file, trimmed, a BOM and a CR dropped: what the core's
+# config_read takes. Empty when the file is absent or blank.
+config_line() {
+  local f=$cfg/wharf-runs/$1 l
+  [ -f "$f" ] || return 0
+  while IFS= read -r l || [ -n "$l" ]; do
+    l=${l#$'\xef\xbb\xbf'}; l=${l%$'\r'}
+    l=${l#"${l%%[![:space:]]*}"}; l=${l%"${l##*[![:space:]]}"}
+    if [ -n "$l" ]; then printf '%s\n' "$l"; return 0; fi
+  done < "$f"
+}
+# A label lands in a plist and a path: reverse-DNS characters only.
+check_label() {
+  case "$2" in
+    ""|*[!A-Za-z0-9._-]*) echo "orca-serve-agent: $1 is not a launchd label: '$2'" >&2; exit 2 ;;
+  esac
+}
+label=$(config_line serve-label)
+[ -n "$label" ] || label=org.regatta.orca-serve
+check_label serve-label "$label"
+old=$(config_line serve-label-previous)
+if [ -n "$old" ]; then check_label serve-label-previous "$old"; fi
+[ "$old" != "$label" ] || old=
+plist=$HOME/Library/LaunchAgents/$label.plist
+orca=/Applications/Orca.app/Contents/Resources/bin/orca
+uid=$(id -u)
+# the removals go through run, so --dry-run shows them as a real run executes them; the install's
+# own steps are listed in the dry-run block below, beside the real ones
+run() {
+  if [ "$DRYRUN" = 1 ]; then echo "+ $*"; else "$@" || true; fi
+}
+echo "label: $label"
+if [ -n "$old" ]; then echo "previous label: $old"; fi
+# the first name it was written under: taken back so one agent serves
+remove_old() {
+  if [ -n "$old" ]; then
+    run launchctl bootout "gui/$uid/$old" 2>/dev/null
+    run rm -f "$HOME/Library/LaunchAgents/$old.plist"
+  fi
+}
+# Another LaunchAgent that runs `orca serve` under a label this run does not know (a Mac whose
+# serve-label was never written, or renamed without serve-label-previous): installing beside it
+# leaves two always-on serves fighting for one Orca, and the ready check passes on the old one.
+# Refused before anything changes; orca-host's serve_agent() reads plists the same way.
+for f in "$HOME"/Library/LaunchAgents/*.plist; do
+  [ -f "$f" ] || continue
+  n=$(basename "$f" .plist)
+  [ "$n" != "$label" ] && [ "$n" != "$old" ] || continue
+  if grep -qi 'orca' "$f" && grep -q '<string>serve</string>' "$f"; then
+    echo "orca-serve-agent: $f already runs orca serve; name $n in wharf-runs/serve-label or serve-label-previous" >&2
+    exit 2
+  fi
+done
+if [ "$REMOVE" = 1 ]; then
+  remove_old
+  run launchctl bootout "gui/$uid/$label" 2>/dev/null
+  run rm -f "$plist"
+  if [ "$DRYRUN" = 1 ]; then echo "dry run: nothing changed"; else echo "removed $label; open the Orca app to run it as before"; fi
+  exit 0
+fi
+ip=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null | head -1 || true)
+[ -n "$ip" ] || ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
+if [ -z "$ip" ]; then
+  if [ "$DRYRUN" = 1 ]; then ip='<tailscale ip>'; else echo "no Tailscale address on this Mac" >&2; exit 1; fi
+fi
+plist_text() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array>
+    <string>$orca</string><string>serve</string><string>--supervise</string>
+    <string>--pairing-address</string><string>$ip</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+}
+if [ "$DRYRUN" = 1 ]; then
+  echo "plist: $plist"
+  plist_text
+  echo "+ plutil -lint $plist"
+  remove_old
+  echo "+ screen -S orca-serve -X quit"
+  echo "+ pkill -f 'Orca.app/Contents/MacOS/Orca .*serve'"
+  echo "+ (wait up to 30 s for the Orca app to quit)"
+  run launchctl bootout "gui/$uid/$label" 2>/dev/null
+  run launchctl bootstrap "gui/$uid" "$plist"
+  echo "+ (wait up to 60 s for: $orca status --json to say ready)"
+  echo "dry run: nothing changed"
+  exit 0
+fi
+mkdir -p "$HOME/Library/LaunchAgents"
+plist_text > "$plist.new"
+plutil -lint "$plist.new" >/dev/null
+mv "$plist.new" "$plist"
+# the old agent stops only once the new plist is known good: a failed step above leaves it serving
+remove_old
+echo "stopping the Orca running now (up to 30 s)..."
+screen -S orca-serve -X quit >/dev/null 2>&1 || true
+pkill -f "Orca.app/Contents/MacOS/Orca .*serve" 2>/dev/null || true
+for i in $(seq 1 15); do pgrep -x Orca >/dev/null || break; sleep 2; done
+echo "starting ${label}..."
+launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+# a bootstrap while the old job still exits fails "5: Input/output error": wait up to 10 s for it to go
+for i in $(seq 1 10); do launchctl print "gui/$uid/$label" >/dev/null 2>&1 || break; sleep 1; done
+launchctl bootstrap "gui/$uid" "$plist"
+echo "waiting for orca serve to be ready (up to 60 s)..."
+for i in $(seq 1 30); do
+  # captured, never piped to grep -q: under pipefail a status write after grep quits fails the test
+  st=$(env -u ELECTRON_RUN_AS_NODE "$orca" status --json 2>/dev/null || true)
+  if printf '%s' "$st" | grep -Eq '"state": ?"ready"'; then
+    echo "orca serve: ready under $label, advertised on $ip"; exit 0
+  fi
+  sleep 2
+done
+echo "orca serve did not reach ready in 60 s: launchctl print gui/$uid/$label" >&2; exit 1
+REMOTE

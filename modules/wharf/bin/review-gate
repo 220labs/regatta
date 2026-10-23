@@ -1,0 +1,780 @@
+#!/usr/bin/env python3
+"""review-gate — the two halves of /finish step 1 that are code, not judgement. Stdlib, Python 3.9.
+
+    review-gate plan  [--base main] [--json]
+        Which two reviews this branch gets: counts inserted lines in `git diff base...HEAD` and
+        reads the week's plan usage, then names the agents and the `/code-review` level.
+    review-gate merge --reviewer FILE --code-review FILE [--repo DIR] [--base main] [--no-model] [--no-shadow]
+        One de-duplicated, severity-sorted list from the two reports. Prints Markdown.
+
+Design: docs/record/review-gate-2026-10-02.md (the owner's D1–D7), from the bench in
+docs/record/review-codereview-bench-2026-09-30.md. The proposal called the merge `bin/review-merge`;
+it lives here beside `plan` so /finish calls one script.
+
+plan — the size rule (D7), counted in INSERTED lines (deletions moved C11 to the wrong tier):
+  under 100        reviewer at high  + /code-review high
+  100 to 1,000     reviewer at high  + /code-review xhigh
+  over 1,000       reviewer at xhigh + /code-review xhigh
+  The week, from hooks/tier_check.py (the same reading and threshold the session's tier line
+  uses): "tight" (10 points over pace, or 80% used) turns the top tier into xhigh + CR high;
+  "lowest" (LOWEST% used, a threshold set here, not measured) puts every tier on high + CR high
+  (TODO 12's wording). The reviewer's effort lives in agent frontmatter and the Agent tool cannot
+  set it, so each level is its own agent file: reviewer (xhigh) / reviewer-high, bodies kept
+  identical by bin/test_review_gate.sh. A project with its own `reviewer` and no `reviewer-high`
+  (the home repo) keeps its own at its own effort: its read-only probe list matters more than the
+  effort. /code-review needs no second agent: a forked skill takes its effort from the level in
+  its args (Claude Code 2.1.287 source, "SkillTool executing forked skill"), so one
+  `code-reviewer` passes the level and its own effort only prices its two turns.
+  The week reading is dropped when sampled before the current week began (a stale cache keeps
+  last week's percent while the reset rolls forward).
+  Each review's provider is a row in settings/models.json (review-gate.reviewer,
+  review-gate.code-review), read through bin/gate: plan prints it and refuses a provider it has
+  no agent for (claude only, today); a row off with when_off skip prints "off" and names no agent.
+
+merge — G4 of the Jev pipeline doc:
+  1. Parse: the reviewer's blocks (`file:line — text` then `verdict:`) and /code-review's JSON
+     list (the last fenced block, or the whole text).
+  2. Pair in code: every reviewer finding against every /code-review finding on the same file.
+  3. One call on the review-gate.merge row (Opus 5.5 `medium` today; `claude -p`, no tools, no
+     settings) answers "same defect?" per pair and a severity per finding; the row off is --no-model. B2 measured precision 0.90, recall 0.93 on 1,090 pairs, but
+     with its own prompts (pairs batched 15 a call; severity from the diff hunk): this combined
+     prompt, with severity from the claim alone, is unmeasured. p >= 0.5 merges. On any failure the lists come out unmerged, unsorted by severity, and say so:
+     the gate never blocks /finish.
+  4. Check each cited file:line exists in the worktree (code, not a model, as G4 asked).
+  5. Jev (D4): the review-gate.same-shadow row (Jev, `batch: 1`) answers the same pairs, one
+     classify call per pair as B2 measured, in parallel with the merge call. Two weeks in shadow
+     met D4's bar (verdict 2026-10-19: 0 of 1,544 confident pairs disagreed with Opus, against
+     0.5% allowed; the band 51.8%, against 40% — the record's "Checked, 2026-10-19"), so since then Jev's answer decides a
+     pair it is confident on (p < 0.1 or > 0.9) and Opus's the rest — only from a model in TAKES,
+     the version measured; a newer Jev is shadow again until re-measured. Both answers still go
+     to the log, which says who decided each pair. Through bin/gate's classify, never from a
+     hook; a repo bin/jev guards (the registry's guarded list) is refused by the gate and skipped,
+     not sent; the row off logs "shadow off"; a Jev error leaves the pair to Opus.
+  The parent still checks every finding against the code with its tools before fixing it (D5:
+  no cheap model can judge a finding).
+
+Log: one JSON line per merge in $REVIEW_GATE_LOG, default <data>/review-gate.jsonl, where <data> is
+bin/usage-report's own (usage.json's "data" for this host; the log dir on both Macs today),
+local, not git: repo, branch, counts, cost, and per pair both scores and the two claims cut to
+300 characters — D4 reads disagreements one by one, as the bench did.
+Since 2026-10-05 the line also carries the passive quality metrics of the model-routing design
+(docs/record/model-routing-2026-09-30.md section 7, D8; S-E), read by `usage-report numbers`:
+  diff      added and removed lines against --base, doc files left out (DOC_RE);
+  findings  the merged list's items by severity (S1, S2, S3, S? when the merge model did not run);
+  wrong     the same for the confirmed ones: an item holding a reviewer `WRONG` (the reviewer checked
+            it against the code; a /code-review finding alone is unconfirmed, D5);
+  models    who built the branch, read from its transcripts, never from a brief: the main sessions'
+            models (assistant records whose gitBranch is this branch) and each subagent's type (its
+            meta file) and model (its own records; the meta's `model` is only the alias asked for).
+            A subagent counts when its records are on the branch, or when its parent session was on
+            the branch at the time it started — a worker in its own worktree carries its own branch.
+            Only records in this repo count (cwd, a worktree mapped to its main checkout), and the
+            agents of the review itself (REVIEW_SKILLS: /finish's reviewers, the forked /code-review)
+            are left out: they reviewed the branch, they did not build it.
+"""
+import argparse
+import concurrent.futures as cf
+import glob
+import json
+import os
+import re
+import queue
+import subprocess
+import sys
+import threading
+import time
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+# The core (lib/core_path.py, C2) and its gate: a hard edge, so none found is one line and exit 2.
+# usage-report and tier_check are peers (plumb), found through common.tool() and optional (G7).
+sys.path.insert(0, os.path.join(HERE, "..", "lib"))
+import core_path  # noqa: E402
+CORE_HOOKS = core_path.require()
+import common  # noqa: E402
+# The core's own gate, beside the hooks require() found — not tool("gate"), which searches every
+# module and returns None (the path "None") where the registry's scope hides the core.
+gate = SourceFileLoader("gate", os.path.join(CORE_HOOKS, "..", "bin", "gate")).load_module()
+SMALL, LARGE = 100, 1000   # inserted lines (D7)
+LOWEST = 90                # % of the week used: every tier drops to high + CR high
+SAME = 0.5
+CONFIDENT = (0.1, 0.9)     # Jev decides a pair below the first or above the second (D4's band)
+TAKES = ("jev-1.13.0",)    # the Jev versions D4's shadow measured: only these decide a pair
+SHADOW_DEADLINE = 90       # s for the whole Jev shadow
+OPUS_TIMEOUT = 420         # s for the merge call; /finish gives the command 600
+DOC_RE = re.compile(r"(\.(md|markdown|txt|rst)$|(^|/)docs/)")
+TRANSCRIPTS = ("USAGE_CC", "~/.claude/projects"), ("USAGE_ARCHIVE", "~/projects/transcripts")  # usage-report's
+
+
+def peer(name, as_name):
+    """A peer module's tool loaded as a module (G7). Absent: an error that names it, which each
+    caller's `except` turns into its fallback."""
+    p = common.tool(name)
+    if not p:
+        raise FileNotFoundError("%s not installed" % name)
+    return SourceFileLoader(as_name, str(p)).load_module()
+
+
+def log_path():
+    if os.environ.get("REVIEW_GATE_LOG"):
+        return os.environ["REVIEW_GATE_LOG"]
+    try:
+        ur = peer("usage-report", "usage_report")
+        return str(ur.data_dir() / "review-gate.jsonl")
+    except Exception as e:  # noqa: BLE001 — the log must still be written somewhere: the core's log dir
+        print("review-gate: usage data folder not read (%s); log in %s" % (e, common.LOG_DIR), file=sys.stderr)
+        return str(common.LOG_DIR / "review-gate.jsonl")
+
+# ---------- plan ----------
+
+
+def git(repo, *args):
+    p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else ""
+
+
+def inserted(repo, base):
+    """-> (inserted lines, warning or None). A failed diff is said, never read as 0 lines."""
+    p = subprocess.run(["git", "-C", repo, "diff", "--numstat", "%s...HEAD" % base],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        return 0, "git diff %s...HEAD failed (%s): the tier below is a guess" % (base, p.stderr.strip()[:120])
+    n = 0
+    for line in p.stdout.splitlines():
+        a = line.split("\t", 1)[0]
+        if a.isdigit():  # "-" for a binary file
+            n += int(a)
+    return n, (None if p.stdout.strip() else "no difference from %s: is this the branch's worktree?" % base)
+
+
+def week():
+    """-> (percent, pace, ahead, low, age in hours) or None, through tier_check's own reading."""
+    try:
+        tc = peer("tier_check.py", "tier_check")
+        w = tc.weekly(tc.load(tc.CLAUDE_JSON))
+        if not w:
+            return None
+        age = (tc.now() - w[1] / 1000) / 3600
+        if not w[2]:  # no reset time: no pace, but the 80%-used rule still holds
+            return float(w[0]), None, tc.AHEAD, tc.LOW, age
+        if w[1] / 1000 < w[2] - tc.WEEK:  # sampled before this week began: last week's percent
+            print("review-gate: week reading predates this week's reset; ignored", file=sys.stderr)
+            return None
+        return float(w[0]), tc.week_pace(w[2]), tc.AHEAD, tc.LOW, age
+    except Exception as e:  # noqa: BLE001 — no week reading means the normal tiers
+        print("review-gate: week not read (%s)" % e, file=sys.stderr)
+        return None
+
+
+def own_reviewer(repo):
+    """A project's own reviewer without a -high twin is used as is (the home repo's AGENTS.md)."""
+    d = os.path.join(repo, ".claude", "agents")
+    return os.path.isfile(os.path.join(d, "reviewer.md")) and not os.path.isfile(os.path.join(d, "reviewer-high.md"))
+
+
+def review_provider(site):
+    """The provider a review row names, None when it is off + skip. GateError (GateOff too) for a
+    row plan cannot run: /finish's review agents are Claude Code agents, so claude only, today."""
+    row = gate.resolve(site)
+    if row is not None and row["provider"] != "claude":
+        raise gate.GateError("%s: provider %s has no review agent here (claude only) — `bin/gate set %s "
+                             "provider=claude`, or write its agent first" % (site, row["provider"], site))
+    return row and row["provider"]
+
+
+def plan(repo, base):
+    rp, cp = review_provider("review-gate.reviewer"), review_provider("review-gate.code-review")
+    n, warn = inserted(repo, base)
+    w = week()
+    budget = "normal"
+    if w:
+        pct, pace, ahead, low, _ = w
+        if pct >= LOWEST:
+            budget = "lowest"
+        elif (pace is not None and pct > pace + ahead) or pct >= low:
+            budget = "tight"
+    if n < SMALL:
+        tier, r, c = "small", "high", "high"
+    elif n <= LARGE:
+        tier, r, c = "medium", "high", "xhigh"
+    else:
+        tier, r, c = "large", "xhigh", "xhigh"
+        if budget == "tight":
+            c = "high"
+    if budget == "lowest":
+        r, c = "high", "high"
+    rev = {"agent": "reviewer" if r == "xhigh" else "reviewer-high", "effort": r}
+    if own_reviewer(repo):
+        rev = {"agent": "reviewer", "effort": "the project's own"}
+    rev["provider"] = rp or "off"
+    cr = {"agent": "code-reviewer", "level": c, "args": "%s %s...HEAD" % (c, base), "provider": cp or "off"}
+    for x, on in ((rev, rp), (cr, cp)):
+        if not on:
+            x["agent"] = None
+    return {
+        "inserted": n, "tier": tier, "budget": budget, "warning": warn,
+        "week": {"percent": w[0], "pace": w[1], "age_h": round(w[4], 1)} if w else None,
+        "reviewer": rev,
+        "code_review": cr,
+    }
+
+
+def print_plan(p):
+    w = p["week"]
+    wk = ("week %.0f%% (pace %s, sampled %.1f h ago), %s" % (
+        w["percent"], "%.1f%%" % w["pace"] if w["pace"] is not None else "unknown", w["age_h"], p["budget"])
+        if w else "week unknown, normal")
+    if p["warning"]:
+        print("⚠ " + p["warning"])
+    print("size: %d inserted lines → %s tier · %s" % (p["inserted"], p["tier"], wk))
+    off = "off in settings/models.json — not spawned"
+    r, c = p["reviewer"], p["code_review"]
+    print("reviewer:    " + ("subagent_type %s (effort: %s), provider %s, model opus" % (r["agent"], r["effort"], r["provider"])
+                             if r["agent"] else off))
+    print("code-review: " + ("subagent_type code-reviewer, provider %s, model opus, prompt: %s" % (c["provider"], c["args"])
+                             if c["agent"] else off))
+
+
+# ---------- merge: parse ----------
+
+# Real heads vary (a 2026-10-02 sweep of 9 reviewer reports lost 21 of 74 blocks to a strict
+# pattern): `a.py:241-257, 294 — …`, `a.py:280 + b.yaml:19 — …`, `a.py (this branch) — …`,
+# `dir/*.yaml — …`. So a block is anchored on its verdict line and never dropped: the first
+# path-like token gives file and line when there is one, else file "?" and the whole head.
+VERDICT_RE = re.compile(r"(?i)^\W*verdict\W*:\W*([A-Z][A-Z-]*)")
+FIELD_RE = re.compile(r"(?i)^\W*(evidence|fix)\W*:\W*(.*)")
+PATH_RE = re.compile(r"(?P<file>[\w.*-]*[/.][\w./*-]*\w)(?::(?P<line>\d+))?")
+DASH_RE = re.compile(r"\s+(?:—|–|--|-)\s+")
+
+
+def parse_reviewer(text):
+    """-> (findings, number of verdict lines). Head line, then verdict/evidence/fix lines."""
+    lines = text.splitlines()
+    out, seen = [], 0
+    for i, l in enumerate(lines):
+        m = VERDICT_RE.match(l)
+        if not m:
+            continue
+        seen += 1
+        j = i - 1
+        while j >= 0 and (not lines[j].strip() or lines[j].strip().startswith("```")):
+            j -= 1
+        head = lines[j].strip().strip("`*").strip() if j >= 0 else ""
+        parts = DASH_RE.split(head, 1)
+        if len(parts) == 2:
+            parts[0] = parts[0].strip("`* ")
+        pm = PATH_RE.search(parts[0]) if len(parts) == 2 else PATH_RE.match(head)
+        f = dict(file=pm.group("file").strip("`*") if pm else "?",
+                 line=int(pm.group("line")) if pm and pm.group("line") else None,
+                 text=(parts[1] if len(parts) == 2 else head).strip() or "(no head line)",
+                 verdict=m.group(1).upper())
+        if len(parts) == 2 and parts[0] != (pm.group(0) if pm else ""):
+            f["cites"] = parts[0].strip("`* ")  # several places, a range, a note: kept as written
+        field = None
+        for k in range(i + 1, len(lines)):
+            if VERDICT_RE.match(lines[k]) or (k + 1 < len(lines) and VERDICT_RE.match(lines[k + 1])):
+                break
+            km = FIELD_RE.match(lines[k])
+            if km:
+                field = km.group(1).lower()
+                f[field] = km.group(2).strip()
+            elif field and lines[k].strip() and not lines[k].strip().startswith("```"):
+                f[field] += " " + lines[k].strip()  # a field's continuation lines
+            elif not lines[k].strip():
+                field = None
+        out.append(f)
+    return out, seen
+
+
+def parse_code_review(text):
+    m = re.findall(r"```(?:json)?\s*\n(.*?)\n```", text, re.S)
+    try:
+        items = json.loads(m[-1] if m else text)
+    except ValueError:
+        return None
+    if isinstance(items, dict):
+        items = items.get("findings")
+    if not isinstance(items, list):
+        return None
+    out = []
+    for x in items:
+        if not isinstance(x, dict):
+            continue
+        try:
+            line = int(x.get("line")) if x.get("line") is not None else None
+        except (TypeError, ValueError):
+            line = None
+        out.append(dict(file=x.get("file") or "?", line=line, text=(x.get("summary") or "").strip(),
+                        scenario=(x.get("failure_scenario") or "").strip(), category=x.get("category")))
+    return out
+
+
+def norm(repo, f):
+    f = (f or "").strip()
+    if os.path.isabs(f) and repo and f.startswith(repo.rstrip("/") + "/"):
+        f = os.path.relpath(f, repo)
+    while f.startswith("./"):  # never lstrip("./"): it eats a dotfile's dot
+        f = f[2:]
+    return f
+
+
+# ---------- merge: models ----------
+
+PROMPT = """You merge two code-review reports on one change. The FINDINGS are labelled R (the project
+reviewer) and C (the code-review skill). Answer two things, judging each on its own:
+
+severity, for every finding: 0 for a doc, naming, comment or style issue; 1 for wrong behaviour of
+the software; 2 for physical, irreversible, data loss or an unwanted write to a live system (say
+what it would be if true).
+same, for every PAIR: the probability (0 to 1) that a and b describe the same underlying defect:
+fixing one would also resolve the other (same place in the code, same problem), not merely the
+same file or nearby lines.
+
+Return only one JSON object: {"severity": {"<finding id>": 0|1|2, ...}, "same": {"<pair id>": <0..1>, ...}}
+
+FINDINGS:
+%s
+
+PAIRS:
+%s"""
+
+
+def claim(f):
+    s = f["text"]
+    if f.get("scenario"):
+        s += " — " + f["scenario"]
+    return s
+
+
+def model_label(row):
+    """The header's short name for a row: claude-opus-5-5 (or opus) at medium is "Opus medium"."""
+    m = re.sub(r"^claude-", "", row.get("model") or "").split("-")[0].capitalize() or row["provider"]
+    return " ".join(x for x in (m, row.get("effort")) if x)
+
+
+def ask_merge(findings, pairs, repo, row):
+    body_f = "\n".join(json.dumps({"id": f["id"], "file": f["file"], "line": f["line"], "claim": claim(f)},
+                                  ensure_ascii=False) for f in findings)
+    body_p = "\n".join("%s: a=%s b=%s" % (p["id"], p["a"], p["b"]) for p in pairs) or "(none)"
+    cmd = ["claude", "-p", *gate.claude_flags(row), "--output-format", "json",
+           "--tools", "", "--setting-sources", "", "--no-session-persistence"]
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    p = subprocess.run(cmd, input=PROMPT % (body_f, body_p), cwd=repo or None, env=env,
+                       capture_output=True, text=True, timeout=OPUS_TIMEOUT)
+    try:
+        res = json.loads(p.stdout)
+    except ValueError:
+        raise RuntimeError("no JSON from claude -p: %s" % (p.stdout + p.stderr)[-300:])
+    if res.get("is_error"):
+        raise RuntimeError(str(res.get("result"))[:300])
+    txt = res.get("result") or ""
+    m = re.findall(r"```(?:json)?\s*\n(.*?)\n```", txt, re.S)
+    ans = json.loads(m[-1] if m else txt)
+    return ans.get("severity") or {}, ans.get("same") or {}, float(res.get("total_cost_usd") or 0)
+
+
+# bench/b2.py's question and criteria, word for word; the request shape is bin/gate's, not B2's (TODO 10).
+SHADOW = "review-gate.same-shadow"
+ASK_SAME = "Do `a` and `b`, two code-review findings on the same change, describe the same underlying defect?"
+LABELS_SAME = {
+    "yes": "fixing the defect in one would also resolve the other: same place in the code, same problem",
+    "no": "they are different problems, even if they touch the same file or nearby lines",
+}
+VENDOR_NAME = {"jev": "TypeSafe", "claude": "Anthropic", "codex": "OpenAI"}
+
+
+def shadow(byid, pairs, source):
+    """The shadow row on every pair; ({pair id: {p, label, model, cost_usd} | {error}}, note). Never raises."""
+    if not pairs:
+        return {}, None
+    try:
+        row = gate.resolve(SHADOW)
+    except Exception as e:  # noqa: BLE001 — a bad table must not hold up /finish
+        return {}, "shadow not run: %s" % e
+    if row is None:
+        return {}, "shadow off (settings/models.json %s)" % SHADOW
+    who = "%s shadow" % row["provider"].capitalize()
+
+    out, refused, todo = {}, [], queue.Queue()
+    for p in pairs:
+        todo.put(p)
+
+    def worker():
+        while True:
+            try:
+                p = todo.get_nowait()
+            except queue.Empty:
+                return
+            item = {k: {"file": byid[p[k]]["file"], "line": str(byid[p[k]]["line"] or ""), "claim": claim(byid[p[k]])}
+                    for k in ("a", "b")}
+            try:
+                r = gate.classify(SHADOW, {p["id"]: item}, ASK_SAME, LABELS_SAME, source=source,
+                                  caller="review-gate", timeout=10, attempts=1)
+                if r is None:  # flipped off mid-run
+                    out[p["id"]] = {"error": "off"}
+                    continue
+                a = r["items"][p["id"]]
+                out[p["id"]] = {"p": a["p"], "label": a["label"], "model": r.get("model"), "cost_usd": r["cost_usd"]}
+            except Exception as e:  # noqa: BLE001 — a pair Jev did not answer is Opus's
+                if isinstance(e, gate.GateError) and ": refused: " in str(e):
+                    refused.append(p["id"])  # a guarded repo: the gate sent nothing
+                out[p["id"]] = {"error": str(e)[:200]}
+
+    # Daemon threads and a total deadline: a hung TypeSafe must not hold up /finish, and Opus
+    # answers every pair anyway (unfinished pairs are logged as "deadline" and stay Opus's).
+    ts = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+    for t in ts:
+        t.start()
+    end = time.time() + SHADOW_DEADLINE
+    for t in ts:
+        t.join(max(0, end - time.time()))
+    if refused:
+        return {}, "%s skipped: %s is not sent to %s" % (who, source, VENDOR_NAME.get(row["provider"], row["provider"]))
+    late = [p["id"] for p in pairs if p["id"] not in out]
+    res = dict(out)
+    for k in late:
+        res[k] = {"error": "deadline"}
+    return res, ("%s: %d pair(s) past the %d s deadline" % (who, len(late), SHADOW_DEADLINE) if late else None)
+
+
+# ---------- merge: what the log line measures (S-E) ----------
+
+
+def diff_size(repo, base):
+    """{added, removed} lines against base, doc files left out; None when the diff fails."""
+    p = subprocess.run(["git", "-C", repo, "diff", "--numstat", "%s...HEAD" % base], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None
+    a = r = 0
+    for line in p.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3 or not parts[0].isdigit() or DOC_RE.search(parts[2].rstrip("}")):
+            continue
+        a, r = a + int(parts[0]), r + int(parts[1])
+    return {"added": a, "removed": r, "base": base}
+
+
+def _assistant(path, need=None):
+    """The assistant records of one transcript; with `need`, only lines holding that text."""
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return
+    with fh:
+        for line in fh:
+            if '"assistant"' not in line or (need and need not in line):
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            model = (d.get("message") or {}).get("model")
+            if d.get("type") == "assistant" and model and model != "<synthetic>" and d.get("timestamp"):
+                yield d
+
+
+# Skills whose agents review a branch rather than build it: /finish spawns the reviewers, and the
+# forked /code-review runs as general-purpose under its own skill name (review 2026-10-05).
+REVIEW_SKILLS = {"finish", "code-review"}
+
+
+def _home(cwd):
+    """The main checkout a record's cwd belongs to: a worktree under .claude/worktrees/ counts as its repo."""
+    return cwd.split("/.claude/worktrees/", 1)[0].rstrip("/") if cwd else None
+
+
+def built_by(branch, home=None):
+    """The models that built `branch`, from its transcripts (see the module docstring), or None.
+    With `home` (the repo's main checkout), only records whose cwd is in that repo count: branch
+    names repeat across repos (11 of 420 did on 2026-10-05)."""
+    if not branch or branch == "HEAD":
+        return None
+    m = re.search(r"\d{4}-\d{2}-\d{2}", branch)
+    try:
+        since = time.mktime(time.strptime(m.group(0), "%Y-%m-%d")) - 2 * 86400 if m else time.time() - 30 * 86400
+    except ValueError:
+        since = time.time() - 30 * 86400
+    need = json.dumps(branch)  # a prefilter only; the parsed gitBranch decides
+    mains, subs = [], []
+    for env, default in TRANSCRIPTS:
+        root = os.path.expanduser(os.environ.get(env) or default)
+        for f in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+            try:
+                if os.path.getmtime(f) < since:
+                    continue
+            except OSError:
+                continue
+            (subs if os.path.basename(os.path.dirname(f)) == "subagents" else mains).append(f)
+    main, timeline = {}, {}
+    for f in mains:
+        if not any(True for _ in _assistant(f, need)):
+            continue
+        # The whole session, every branch: a subagent belongs to the branch its parent was on when
+        # it started, and a parent that stepped onto another branch in between was not on this one.
+        for d in _assistant(f):
+            if d.get("isSidechain") or (home and _home(d.get("cwd")) != home):
+                continue
+            timeline.setdefault(d.get("sessionId"), []).append((d["timestamp"], d.get("gitBranch")))
+            if d.get("gitBranch") == branch:
+                main[d.get("requestId") or d.get("uuid")] = d["message"]["model"]
+    for t in timeline.values():
+        t.sort()
+
+    def parent_on(sid, ts):
+        last = None
+        for t, b in timeline.get(sid, ()):
+            if t > ts:
+                break
+            last = b
+        return last == branch
+
+    agents = {}
+    for f in subs:
+        recs = list(_assistant(f))
+        if not recs or (home and _home(recs[0].get("cwd")) != home):
+            continue
+        first = min(d["timestamp"] for d in recs)
+        if not (any(d.get("gitBranch") == branch for d in recs) or parent_on(recs[0].get("sessionId"), first)):
+            continue
+        try:
+            meta = json.load(open(f[:-len(".jsonl")] + ".meta.json"))
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("attributionSkill") in REVIEW_SKILLS or any(d.get("attributionSkill") in REVIEW_SKILLS for d in recs):
+            continue
+        aid = recs[0].get("agentId") or os.path.basename(f)
+        a = agents.setdefault(aid, {"type": meta.get("agentType") or recs[0].get("attributionAgent") or "?", "calls": {}})
+        for d in recs:
+            a["calls"][d.get("requestId") or d.get("uuid")] = d["message"]["model"]
+    per_main = {}
+    for model in main.values():
+        per_main[model] = per_main.get(model, 0) + 1
+    per_agent = {}
+    for a in agents.values():
+        key = (a["type"], "+".join(sorted(set(a["calls"].values()))))
+        x = per_agent.setdefault(key, {"type": key[0], "model": key[1], "agents": 0, "calls": 0})
+        x["agents"] += 1
+        x["calls"] += len(a["calls"])
+    return {"main": per_main, "agents": sorted(per_agent.values(), key=lambda x: (x["type"], x["model"]))}
+
+
+def by_severity(items, keep=lambda g: True):
+    out = {"S1": 0, "S2": 0, "S3": 0, "S?": 0}
+    for s, g in items:
+        if keep(g):
+            out[{2: "S1", 1: "S2", 0: "S3"}.get(s, "S?")] += 1
+    return out
+
+
+# ---------- merge ----------
+
+
+def exists_note(repo, f):
+    if not repo or f["file"] in ("?", ""):
+        return None
+    path = os.path.join(repo, f["file"])
+    if not os.path.isfile(path):
+        return "cited file not in the worktree"
+    if f["line"]:
+        with open(path, errors="replace") as fh:
+            n = sum(1 for _ in fh)
+        if f["line"] > n:
+            return "cited line %d is past the end (%d lines)" % (f["line"], n)
+    return None
+
+
+def merge(rev_text, cr_text, repo, use_model=True, use_shadow=True, base="main"):
+    t0 = time.time()
+    notes = []
+    R, seen = parse_reviewer(rev_text)
+    C = parse_code_review(cr_text)
+    if C is None:
+        notes.append("the /code-review report has no JSON list; read it in full")
+        C = []
+    if not R and rev_text.strip():
+        notes.append("no reviewer finding parsed (no `verdict:` line); read its report in full")
+    for i, f in enumerate(R, 1):
+        f.update(id="R%d" % i, src="reviewer", file=norm(repo, f["file"]))
+    for i, f in enumerate(C, 1):
+        f.update(id="C%d" % i, src="code-review", file=norm(repo, f["file"]))
+    allf = R + C
+    byid = {f["id"]: f for f in allf}
+    pairs = [{"id": "%s~%s" % (r["id"], c["id"]), "a": r["id"], "b": c["id"]}
+             for r in R for c in C if r["file"] == c["file"]]
+
+    sev, same, cost, model_ok = {}, {}, 0.0, False
+    source = os.path.basename(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip().rstrip("/")
+                              .rsplit("/.git", 1)[0]) if repo else None
+    row = None
+    if use_model and allf:
+        try:
+            row = gate.resolve("review-gate.merge")
+            if row is None:
+                notes.append("merge model off in settings/models.json: lists unmerged, severity unknown")
+        except gate.GateError as e:
+            notes.append("merge model not run (%s): lists unmerged, severity unknown" % str(e)[:160])
+    with cf.ThreadPoolExecutor(2) as ex:
+        fj = ex.submit(shadow, byid, pairs, source) if use_shadow else None
+        if row:
+            try:
+                sev, same, cost = ask_merge(allf, pairs, repo, row)
+                model_ok = True
+            except Exception as e:  # noqa: BLE001 — fall back to the two lists, said so
+                notes.append("merge model failed (%s): lists unmerged, severity unknown" % str(e)[:160])
+        jev, jev_note = fj.result() if fj else ({}, None)
+    if jev_note:  # stderr, not a ⚠: a pair Jev did not answer is Opus's, so the parent need not see it
+        print("review-gate: " + jev_note, file=sys.stderr)
+    taken = took(jev)
+    decided = dict(same, **taken)
+    if taken and not model_ok:
+        # the fallback notes above say "lists unmerged": with Jev's pairs folded in, not quite
+        notes = [n.replace("lists unmerged,", "lists unmerged but for Jev's confident pairs,") for n in notes]
+        notes.append("Jev's confident pairs merged all the same (%d of %d)" % (len(taken), len(pairs)))
+
+    parent = {f["id"]: f["id"] for f in allf}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for p in pairs:
+        try:
+            if float(decided.get(p["id"], 0)) >= SAME:
+                parent[find(p["b"])] = find(p["a"])
+        except (TypeError, ValueError):
+            pass
+    groups = {}
+    for f in allf:
+        groups.setdefault(find(f["id"]), []).append(f)
+
+    def s_of(f):
+        try:
+            return int(sev.get(f["id"]))
+        except (TypeError, ValueError):
+            return -1
+
+    items = []
+    for g in groups.values():
+        s = max(s_of(f) for f in g)
+        wrong = any(f.get("verdict") == "WRONG" for f in g)
+        items.append((-s, not wrong, -len(g), g[0]["file"], g[0]["line"] or 0, g))
+    items.sort(key=lambda t: t[:5])
+
+    out = []
+    head = "Merged review — %d finding(s): %d from the reviewer, %d from /code-review, %d merged" % (
+        len(items), len(R), len(C), len(allf) - len(items))
+    if model_ok:
+        head += " · %s $%.3f" % (model_label(row), cost)
+    if taken:
+        head += " · Jev decided %d of %d pair(s)" % (len(taken), len(pairs))
+    out.append(head)
+    for n in notes:
+        out.append("⚠ " + n)
+    out.append("")
+    for k, t in enumerate(items, 1):
+        g = t[-1]
+        s = -t[0]
+        lab = {2: "S1", 1: "S2", 0: "S3"}.get(s, "S?")
+        loc = g[0]["file"] + (":%d" % g[0]["line"] if g[0]["line"] else "")
+        both = "reviewer + code-review" if len({f["src"] for f in g}) == 2 else g[0]["src"]
+        out.append("%d. %s · %s · %s" % (k, lab, loc, both))
+        for f in g:
+            tag = (" [%s]" % f["verdict"]) if f.get("verdict") else ""
+            where = "" if f is g[0] else " (%s%s)" % (f["file"], ":%d" % f["line"] if f["line"] else "")
+            if f.get("cites"):
+                where = " (cites %s)" % f["cites"]
+            out.append("   - %s%s%s: %s" % (f["src"], tag, where, claim(f)))
+            if f.get("evidence"):
+                out.append("     evidence: " + f["evidence"])
+            if f.get("fix"):
+                out.append("     fix: " + f["fix"])
+            note = exists_note(repo, f)
+            if note:
+                out.append("     ⚠ " + note)
+        if both == "code-review":
+            out.append("     (no evidence line: check it against the code before fixing)")
+    groups = [(-t[0], t[-1]) for t in items]
+    _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, time.time() - t0, groups, base, taken)
+    return "\n".join(out)
+
+
+def took(jev):
+    """{pair id: p} for the pairs Jev decides: answered by a measured version (TAKES), confident."""
+    out = {}
+    for k, v in jev.items():
+        p = v.get("p")
+        if v.get("model") in TAKES and isinstance(p, (int, float)) and not CONFIDENT[0] <= p <= CONFIDENT[1]:
+            out[k] = p
+    return out
+
+
+def _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, secs, groups=(), base="main", taken=None):
+    taken = taken or {}
+    try:
+        branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() if repo else None
+        git_common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip() if repo else ""
+        try:
+            models = built_by(branch, git_common.rstrip("/").rsplit("/.git", 1)[0] if git_common else None)
+        except Exception as e:  # noqa: BLE001 — a transcript we cannot read must not lose the line
+            models = {"error": str(e)[:200]}
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "repo": repo, "branch": branch,
+               "project": os.path.basename(git_common.rstrip("/").rsplit("/.git", 1)[0]) if git_common else None,
+               "diff": diff_size(repo, base) if repo else None,
+               "findings": by_severity(groups),
+               "wrong": by_severity(groups, lambda g: any(f.get("verdict") == "WRONG" for f in g)),
+               "models": models,
+               "reviewer": len(R), "code_review": len(C), "opus_ok": model_ok, "opus_usd": round(cost, 5),
+               "jev_usd": round(sum(v.get("cost_usd") or 0 for v in jev.values()), 6), "secs": round(secs, 1),
+               "jev_took": len(taken),
+               "pairs": [{"id": p["id"], "opus": same.get(p["id"]), "jev": jev.get(p["id"], {}).get("p"),
+                          "took": "jev" if p["id"] in taken else "opus" if p["id"] in same else None,
+                          "jev_label": jev.get(p["id"], {}).get("label"),
+                          "jev_model": jev.get(p["id"], {}).get("model"), "jev_error": jev.get(p["id"], {}).get("error"),
+                          "a": claim(byid[p["a"]])[:300], "b": claim(byid[p["b"]])[:300]} for p in pairs]}
+        log = log_path()
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        with open(log, "a") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print("review-gate: log not written (%s)" % e, file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("plan")
+    p.add_argument("--base", default="main")
+    p.add_argument("--repo", default=os.getcwd())
+    p.add_argument("--json", action="store_true")
+    m = sub.add_parser("merge")
+    m.add_argument("--reviewer", required=True)
+    m.add_argument("--code-review", required=True)
+    m.add_argument("--repo", default=os.getcwd())
+    m.add_argument("--no-model", action="store_true")
+    m.add_argument("--no-shadow", action="store_true")
+    m.add_argument("--base", default="main")
+    a = ap.parse_args()
+    repo = git(a.repo, "rev-parse", "--show-toplevel").strip() or a.repo
+    if a.cmd == "plan":
+        try:
+            r = plan(repo, a.base)
+        except gate.GateError as e:
+            print("review-gate: plan refused: %s" % e, file=sys.stderr)
+            return 1
+        print(json.dumps(r)) if a.json else print_plan(r)
+        return 0
+    texts = []
+    for f in (a.reviewer, a.code_review):
+        try:
+            texts.append(open(f, errors="replace").read() if f != "-" else sys.stdin.read())
+        except OSError as e:
+            print("⚠ cannot read %s (%s): nothing merged; read both reports in full" % (f, e.strerror))
+            return 0
+    print(merge(texts[0], texts[1], repo, not a.no_model, not a.no_shadow, a.base))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

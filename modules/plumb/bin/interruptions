@@ -1,0 +1,624 @@
+#!/usr/bin/env python3
+"""Every time a session took the owner's attention, and whether it had to.
+
+    interruptions [--days 7] [--json] [--list predictable|all] [--no-memo] [--scope <scope>]
+    interruptions --days 0            # all history
+
+The owner, 2026-10-10: "include decisions from ask question sessions … add to our core metrics …
+minimize unnecessary interruptions: where the outcome could have been predicted"; then "trust
+this workspace? … click on some permissions … they're all attention grabbers"; then "pasting
+stuff to terminal, and asking me to log in and do something counts too". The channels:
+
+  ask         an AskUserQuestion call — one row per question in it. From the transcript archive
+              (~/projects/transcripts) and every login dir's live transcripts (~/.claude*/projects),
+              de-duplicated by tool_use id (forks copy records).
+  memo        a D-item in a doc (`➤ Answer:`) that reached the owner, labelled by
+              bench/decisions/corpus.py — the parser /keel uses — over every repo under ~/projects.
+  handoff     a reply that hands work to the owner's hands (same transcripts, one row per message):
+              `paste` — a "Do this now" block with a fenced command; `login` — a paste or a
+              hand-back that asks the owner to log in, sign in or authorize; `window` — a session for the owner
+              to start in a fresh window (a blocked /finish's launcher line, a pickup, `claude` on a
+              login; the owner's "distractions", 2026-10-11); `handback` — a reply ending
+              in the WAITING line (hooks/common.py's parser). A WAITING line that asks for D-items
+              without a paste block is the memo channel's, not counted here twice.
+  repeat      a reply sent round again by a Stop hook's block — one more model run, and a second
+              look from the owner (the owner, 2026-10-11: "when you show me something twice, you spend twice my
+              attention budget, and spend an extra model run"). Same transcripts, one row per block:
+              `whole` — bin/paste-paths asked for the reply again ("and resend it"); `lines` — only the
+              corrected lines ("do not resend it"); `other` — another Stop hook's block;
+              `unattended` — a block in a run bin/dispatch started (its run record, this Mac) or a
+              `/finish … --unattended` prompt (either Mac), where block_reason resends whole and
+              nobody watched: not in the total, like relay (the transcript holds no CLAUDE_UNATTENDED).
+              The reply a block sends round adds no hand-off row: its repeat row is that second look.
+  permission  a permission dialog for a tool (hooks/attention.py's log on PermissionRequest;
+              before the hook existed, sessionpipe's outbox). AskUserQuestion's own dialog is the
+              ask channel's and is left out.
+  notice      any other Notification but "waiting for your input" and the permission dialog's
+              repeat — an auto-mode proposal, an elicitation, a login message.
+  trust       not an event: the repos still untrusted per login dir (bin/trust-projects --check).
+              The trust dialog fires no hook, so the count is the dialogs still waiting to open.
+
+"Predictable" is read for ask and memo only, from their own records: the owner took the
+recommendation unchanged. An ask question with no "(Recommended)" option is counted apart — it
+broke the rule that every decision comes with a pick. A memo item counts once it demonstrably
+reached the owner (corpus `known`). The other channels are counted, not judged: each is a candidate
+for a standing permission, a verb the session runs itself, or a login done once per machine.
+
+`--list predictable` prints the predictable rows, `--list all` every row, newest first, for
+Aurora's dream (question 5).
+
+The fence (knowledge-layers S4): a row from a confidential scope's session, doc or repo (the core's
+gather_fence, judged by the cwd, the transcript and the doc it came from) is counted and never
+quoted — its question, answer, note and file blanked, its project `(confidential)`, and left out of
+`--list`; so is an untrusted repo of one in the trust count. `--scope <scope>` keeps that scope's
+rows alone, quoted, a confidential scope's own included. Read-only, bar trust-projects --check (also read-only). Python 3.9,
+stdlib only. The memo channel takes about 30 s (git history of every doc); --no-memo skips it.
+"""
+import argparse
+import collections
+import datetime as dt
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def _core_hooks():
+    """The folder `import common` reads. In regatta's plumb module, the core's hooks/ found by
+    lib/find_core.py (the checkout, the config dir's `home`, the plugin's installPath); in the
+    overlay, hooks/ beside bin/, whose common.py is the core's source shim (regatta-modules
+    C2). One body for both homes, so the move to modules/plumb is a pure copy."""
+    root = Path(__file__).resolve().parent.parent
+    if (root / "lib" / "find_core.py").is_file():
+        sys.path.insert(0, str(root / "lib"))
+        import find_core
+        return find_core.hooks()
+    return str(root / "hooks")
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))  # attention.py, this module's
+sys.path.insert(0, _core_hooks())
+import attention  # noqa: E402  CHANNELS: the class's one definition, and the log's writer
+import common  # noqa: E402  ending(), asks_answers(), fenced(): the WAITING line's one parser
+
+HOME = Path.home()
+BIN = Path(__file__).resolve().parent
+PROJECTS = Path(os.environ.get("INTERRUPTIONS_PROJECTS") or common.PROJECTS)
+# test_interruptions.sh points these at fixtures
+SOURCES = [Path(p) for p in os.environ["INTERRUPTIONS_SOURCES"].split(":")] if os.environ.get("INTERRUPTIONS_SOURCES") \
+    else [PROJECTS / "transcripts"] + sorted(HOME.glob(".claude*/projects"))
+ATTENTION = attention.LOG_DIR
+OUTBOX = Path(os.environ.get("INTERRUPTIONS_OUTBOX") or HOME / ".local/state/sessionpipe/outbox/claude-code")
+# login dirs for the trust count: "" = the default login (~/.claude.json); unset in tests
+def _parked():
+    """Login dirs whose row in the account registry says `enabled: false` (a parked login, since
+    2026-10-07): no session opens there, so its untrusted repos are no dialog waiting."""
+    try:
+        reg = json.load(open(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json"))
+        return {os.path.expanduser(a.get("home") or "") for a in reg.get("accounts", [])
+                if isinstance(a, dict) and a.get("enabled") is False}
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+LOGINS = os.environ["INTERRUPTIONS_LOGINS"].split(":") if "INTERRUPTIONS_LOGINS" in os.environ \
+    else [""] + sorted(str(p) for p in HOME.glob(".claude-*")
+                       if (p / ".claude.json").is_file() and str(p) not in _parked())
+RUNS = Path(os.environ.get("INTERRUPTIONS_RUNS") or HOME / "Library/Logs/claude-weekly/run-seed-runs")
+CORPUS = BIN.parent / "bench" / "decisions" / "corpus.py"
+# folders under the projects folder that are no repo: the archive, the core's log dir when it sits there
+NOT_REPOS = {"transcripts", "tmp", "scratchpad"} | ({common.LOG_DIR.name} if common.LOG_DIR.parent == PROJECTS else set())
+REC = re.compile(r"\(\s*recommended\s*\)", re.I)
+MEMO_KIND = {"accepted-done": "recommended", "accepted-answered": "recommended",
+             "accepted+note": "recommended", "accepted+question": "question", "overruled": "overruled"}
+# bin/paste-paths' marker for a paste block, as a heading or a bold lead — a mention in prose
+# ("put it in a Do this now block") is not one
+DO_THIS_NOW = re.compile(r"^\s*(?:#+\s*|\*\*|__)?do this now\b", re.I)
+# the verbs only: "login" the noun ("the work login", "login dir") is house vocabulary
+LOGIN = re.compile(r"\b(?:log in|sign in|auth login|re-?authenticate|re-?auth|authori[sz]e[ds]?)\b|(?<![\w/])/login\b", re.I)
+# a session for the owner to start in a fresh window (the owner, 2026-10-11: a blocked /finish's external
+# line, "record all similar steps as distractions"): the launcher, a pickup, a claude on some login
+WINDOW = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:claude(?=\s+['\"/-])|cc\s+\w\b|autofinish-run\b|pickup\s+open\b"
+                    r"|account\s+run\b)")
+FRESH_WINDOW = re.compile(r"\b(?:fresh|new)\s+(?:terminal\s+)?(?:window|tab)\b", re.I)
+STOP_FEEDBACK = "Stop hook feedback:"  # how Claude Code writes a Stop hook's block into the transcript (2.1.29x, read 2026-10-11)
+# PermissionRequest hooks run side by side: one that answers allow means no dialog was shown.
+# hooks/worktree_allow.py answers these two (its matcher in bootstrap.sh --hooks).
+AUTO_APPROVED = {"EnterWorktree", "ExitWorktree"}
+QUESTION_CHANNELS = ("ask", "memo")
+OTHER_CHANNELS = ("handoff", "repeat", "permission", "notice")
+assert set(QUESTION_CHANNELS + OTHER_CHANNELS + ("relay", "trust")) == set(attention.CHANNELS)
+
+
+def project_of(cwd, path=None):
+    """The repo a session ran in: the first folder under ~/projects in its cwd, else the archive's folder."""
+    try:
+        return Path(str(cwd).replace("~", str(HOME), 1)).relative_to(PROJECTS).parts[0]
+    except (ValueError, IndexError, TypeError):
+        pass
+    for src in SOURCES if path else ():
+        try:
+            return path.relative_to(src).parts[0]
+        except ValueError:
+            continue
+    return "?"
+
+
+def stamp(s):
+    try:
+        return dt.datetime.fromisoformat((s or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def row(channel, ts, project, session, question, kind, recommended="", answer=None, note="", where=()):
+    """One row; `where` the paths it came from (a cwd, a transcript, a doc), for the fence alone —
+    fenced() reads it and drops it before any output."""
+    return {"channel": channel, "ts": ts, "date": dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d"),
+            "project": project, "session": session, "question": question, "recommended": recommended,
+            "answer": answer, "note": note, "kind": kind, "_where": [str(w) for w in where if w]}
+
+
+def cwd_path(cwd):
+    """A record's cwd as a path the fence can judge (`~` the home folder), else None."""
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    return str(HOME) + cwd[1:] if cwd == "~" or cwd.startswith("~/") else cwd
+
+
+CONFIDENTIAL = "(confidential)"
+
+
+def fenced(rows, fence, scope):
+    """The rows the fence lets out (knowledge-layers S4): under `scope` its own rows only; without, a
+    confidential scope's row stays, so every count holds, with nothing of its text — question,
+    pick, answer, note, file — and its project `(confidential)`. Drops each row's `_where`."""
+    out = []
+    for r in rows:
+        v = fence(*r.pop("_where", ()))
+        if v == "quote":
+            out.append(r)
+        elif v == "fenced" and not scope:
+            out.append(dict(r, project=CONFIDENTIAL, session="", question="", recommended="",
+                            answer=None, note="", fenced=True))
+    return out
+
+
+def classify(q, answer):
+    labels = [o.get("label", "") for o in q.get("options") or []]
+    rec = {l for l in labels if REC.search(l)}
+    if answer is None:
+        return "declined"
+    # multiSelect answers arrive comma-joined; a label may itself contain commas, so match labels
+    # in the answer, longest first, and call it free text if anything is left over
+    chosen, rest = set(), answer.strip()
+    for l in sorted(labels, key=len, reverse=True):
+        if l and l in rest:
+            chosen.add(l)
+            rest = rest.replace(l, "", 1)
+    if not chosen or re.sub(r"[\s,]+", "", rest):
+        return "free-text"
+    if not rec:
+        return "unranked"
+    return "recommended" if chosen == rec else "other-option"
+
+
+def handoff_kind(text):
+    """paste, login, window, handback or None for one reply's text."""
+    raws = text.splitlines()
+    inside = common.fenced(raws)
+    block = []  # the paste block: the first fenced block after the heading
+    for i, (l, f) in enumerate(zip(raws, inside)):
+        if not f and DO_THIS_NOW.match(l):
+            start = next((j for j in range(i + 1, len(raws)) if inside[j]), None)
+            if start is not None:
+                end = next((j for j in range(start + 1, len(raws)) if not inside[j]), len(raws))
+                block = raws[start:end]
+            break
+    kind, line, problem = common.ending(text)
+    if problem and problem[0] == "after" and common.closing_kind(problem[1]) == "waiting":
+        kind, line = "waiting", common.bare(problem[1])
+    waiting = kind == "waiting"
+    if waiting and not block and common.asks_answers(text):
+        return None  # D-items: the memo channel's
+    if not (block or waiting):
+        return None
+    # what the owner is asked to do lives in the closing line and the block, not the reply's prose
+    if LOGIN.search("\n".join(block + [line or ""])):
+        return "login"
+    if any(WINDOW.search(l) for l in block) or FRESH_WINDOW.search(line or ""):
+        return "window"
+    return "paste" if block else "handback"
+
+
+def _paste_paths():
+    p = common.tool("paste-paths")  # keel's (G14)
+    if not p:
+        raise FileNotFoundError("keel not installed")
+    loader = importlib.machinery.SourceFileLoader("paste_paths", str(p))
+    spec = importlib.util.spec_from_loader("paste_paths", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def _keel():
+    """bin/keel as a module: ask_parts, the AskUserQuestion reader `keel light --write` shares (light B1)."""
+    p = common.tool("keel")  # keel's (G14), as paste-paths above
+    if not p:
+        raise FileNotFoundError("keel not installed")
+    loader = importlib.machinery.SourceFileLoader("keel", str(p))
+    spec = importlib.util.spec_from_loader("keel", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def _ask_parts(r):
+    """keel's ask_parts, kept as the fallback for an unloadable bin/keel (the reader is keel's; this copy
+    only keeps the weekly figure alive, as PP's literals do below)."""
+    content = (r.get("message") or {}).get("content")
+    out = []
+    for b in content if isinstance(content, list) else []:
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion":
+            out.append(("use", b.get("id"), b.get("input") or {}))
+        elif isinstance(b, dict) and b.get("type") == "tool_result":
+            tur = r.get("toolUseResult")
+            if isinstance(tur, dict) and ("answers" in tur or "questions" in tur):
+                out.append(("result", b.get("tool_use_id"), tur))
+    return out
+
+
+try:  # keel is 6,000 lines that change often: its error is not this metric's end (finish review, 2026-10-19)
+    KEEL = _keel()
+    KEEL.ask_parts  # a keel from before light B1 has no reader: the copy below stands in, said once
+except Exception as e:
+    print("interruptions: bin/keel unreadable (%s: %s); its ask_parts taken from the copy here" % (type(e).__name__, e),
+          file=sys.stderr)
+    KEEL = type("KEEL", (), {"ask_parts": staticmethod(_ask_parts)})
+
+try:  # block_reason's two marker phrases, read from their one definition
+    PP = _paste_paths()
+except Exception as e:  # paste-paths is big and changes often: its error is not this metric's end
+    print("interruptions: paste-paths unreadable (%s: %s); its phrases taken as literals" % (type(e).__name__, e),
+          file=sys.stderr)
+    PP = type("PP", (), {"REPEAT_WHOLE": "resend it: ", "REPEAT_LINES": "do not resend it"})
+
+
+def dispatched_sessions():
+    """Session ids of every run bin/dispatch started on this Mac — seeds and launchers alike, all with
+    CLAUDE_UNATTENDED set, so block_reason resends whole there and nobody is watching."""
+    out = set()
+    for f in glob.glob(str(RUNS / "*.json")):
+        try:
+            sid = json.load(open(f)).get("session")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if sid:
+            out.add(str(sid))
+    return out
+
+
+def repeat_kind(text):
+    """whole, lines or other for one Stop hook block's text (bin/paste-paths' block_reason)."""
+    if PP.REPEAT_LINES in text:
+        return "lines"
+    return "whole" if PP.REPEAT_WHOLE in text else "other"
+
+
+def transcript_rows(since):
+    uses, answers, replies, blocks, unattended, resent = {}, {}, {}, {}, dispatched_sessions(), set()
+    for src in SOURCES:
+        if not src.is_dir():
+            continue
+        for p in src.rglob("*.jsonl"):
+            try:
+                if since and p.stat().st_mtime < since:
+                    continue
+                fh = open(p, encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            after_block = None  # the last Stop block's time in this file: the next reply is its resend
+            with fh:
+                for line in fh:
+                    # cheap filter first: the archive is gigabytes and most lines are tool output
+                    if '"AskUserQuestion"' not in line and '"answers"' not in line \
+                            and "WAITING FOR YOU" not in line and "his now" not in line.lower() \
+                            and STOP_FEEDBACK not in line and "--unattended" not in line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    msg = r.get("message") or {}
+                    content = msg.get("content")
+                    if r.get("type") == "user" and not r.get("isMeta"):
+                        # the launcher's prompt, typed (`/finish <branch> --unattended`) or tagged
+                        # (<command-name>/finish…<command-args>… --unattended, the shape of 12 real launcher runs, review 2026-10-11)
+                        head = (content if isinstance(content, str) else " ".join(
+                            str(b.get("text", "")) for b in content or [] if isinstance(b, dict)))[:400]
+                        if re.search(r"(?:^|>)\s*/finish\b", head) and "--unattended" in head:
+                            unattended.add(r.get("sessionId"))
+                    if r.get("type") == "user" and r.get("isMeta") and not r.get("isSidechain"):
+                        text = content if isinstance(content, str) else "\n".join(
+                            str(b.get("text", "")) for b in content or [] if isinstance(b, dict))
+                        if text.startswith(STOP_FEEDBACK):  # a fork copies the record under the same uuid
+                            blocks.setdefault(r.get("uuid") or text, (r, text[len(STOP_FEEDBACK):].strip(), p))
+                            after_block = stamp(r.get("timestamp"))
+                            continue
+                    if not isinstance(content, list):
+                        continue
+                    for kind, key, val in KEEL.ask_parts(r):
+                        if kind == "use":
+                            uses.setdefault(key, (r, val, p))
+                        elif isinstance(val.get("answers"), dict):
+                            answers[key] = (val["answers"], val.get("annotations") or {})
+                    for b in content:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "text" and r.get("type") == "assistant" and not r.get("isSidechain"):
+                            # one row per reply: a fork copies the record under the same uuid
+                            key = r.get("uuid") or msg.get("id")
+                            replies.setdefault(key, (r, b.get("text") or "", p))
+                            ts = stamp(r.get("timestamp"))
+                            if after_block is not None and ts is not None and 0 <= ts - after_block < 900:
+                                # the resend of a hand-off already counted: the repeat row counts this
+                                # second look, so it adds no hand-off row (review: counted three times)
+                                resent.add(key)
+                            after_block = None
+    rows = []
+    for tid, (r, inp, p) in uses.items():
+        ts = stamp(r.get("timestamp"))
+        if ts is None or (since and ts < since):
+            continue
+        got, notes = answers.get(tid, ({}, {}))
+        for q in inp.get("questions") or []:
+            text = q.get("question", "")
+            ans = got.get(text) if tid in answers else None
+            if isinstance(ans, list):   # a multiSelect answer may come back as a list, not comma-joined
+                ans = ", ".join(str(x) for x in ans)
+            note = (notes.get(text) or {}).get("notes") or "" if isinstance(notes, dict) else ""
+            rows.append(row("ask", ts, project_of(r.get("cwd"), p), (r.get("sessionId") or "")[:8], text,
+                            classify(q, ans), " / ".join(o.get("label", "") for o in q.get("options") or []
+                                                         if REC.search(o.get("label", ""))), ans, note,
+                            where=(cwd_path(r.get("cwd")), p)))
+    for key, (r, text, p) in replies.items():
+        if key in resent:
+            continue
+        ts = stamp(r.get("timestamp"))
+        if ts is None or (since and ts < since):
+            continue
+        k = handoff_kind(text)
+        if k:
+            ck, cline, _ = common.ending(text)
+            last = cline if ck == "waiting" and cline else [l for l in text.strip().splitlines() if l.strip()][-1]
+            rows.append(row("handoff", ts, project_of(r.get("cwd"), p), (r.get("sessionId") or "")[:8],
+                            common.bare(last)[:300], k, where=(cwd_path(r.get("cwd")), p)))
+    for _, (r, text, p) in blocks.items():
+        ts = stamp(r.get("timestamp"))
+        if ts is None or (since and ts < since):
+            continue
+        rows.append(row("repeat", ts, project_of(r.get("cwd"), p), (r.get("sessionId") or "")[:8],
+                        text[:300], "unattended" if r.get("sessionId") in unattended else repeat_kind(text),
+                        where=(cwd_path(r.get("cwd")), p)))
+    return rows
+
+
+def attention_rows(since):
+    """permission and notice rows: the hook's log, and sessionpipe's outbox for the days before it."""
+    # the outbox fills in what the hook's log lacks: a session the log never saw (before the hook,
+    # or a login whose settings lack it) — per session, not one cut-off for every login
+    rows, logged = [], set()
+    for f in sorted(glob.glob(str(ATTENTION / "*.jsonl"))):
+        for line in open(f, encoding="utf-8", errors="replace"):
+            try:
+                a = json.loads(line)
+            except ValueError:
+                continue
+            ts = stamp(a.get("ts"))
+            if ts is None:
+                continue
+            if a.get("session") and a.get("event") in ("PermissionRequest", "Notification"):
+                logged.add(a["session"])
+            if since and ts < since:
+                continue
+            ev, typ, tool = a.get("event"), a.get("type") or "", a.get("tool") or ""
+            if ev == "PermissionRequest" and tool != "AskUserQuestion" and tool not in AUTO_APPROVED:
+                rows.append(row("permission", ts, project_of(a.get("cwd")), a.get("session") or "",
+                                ("%s %s" % (tool, a.get("detail") or "")).strip(), tool, where=(cwd_path(a.get("cwd")),)))
+            elif ev == "Notification" and typ in attention.NOTICE_TYPES:
+                rows.append(row("notice", ts, project_of(a.get("cwd")), a.get("session") or "",
+                                a.get("detail") or "", typ or "?", where=(cwd_path(a.get("cwd")),)))
+            elif ev == "Relay" and typ in attention.RELAY_KINDS:
+                # The logged cwd is bin/ask's, not the run's the relay settled, so the row has no
+                # path of its own: fenced wherever a scope is confidential (S4 review, 2026-10-22).
+                rows.append(row("relay", ts, project_of(a.get("cwd")), a.get("session") or "",
+                                a.get("detail") or "", typ))
+    for f in sorted(glob.glob(str(OUTBOX / "*.jsonl"))):
+        for line in open(f, encoding="utf-8", errors="replace"):
+            if '"attention.needed"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            ts = stamp(e.get("time"))
+            if ts is None or (since and ts < since):
+                continue
+            d, s = e.get("data") or {}, e.get("session") or {}
+            ev, msg = (e.get("harness") or {}).get("event"), d.get("message") or ""
+            proj, sess, where = project_of(s.get("cwd")), (s.get("id") or "")[:8], (cwd_path(s.get("cwd")),)
+            if sess and sess in logged:
+                continue
+            if ev == "PermissionRequest" and d.get("tool") not in ("AskUserQuestion",) + tuple(AUTO_APPROVED):
+                rows.append(row("permission", ts, proj, sess, msg, d.get("tool") or "?", where=where))
+            elif ev == "Notification" and d.get("kind") != "idle" and not msg.startswith("Claude needs your permission"):
+                rows.append(row("notice", ts, proj, sess, msg, d.get("kind") or "?", where=where))
+    return rows
+
+
+def trust_waiting(fence=lambda *p: "quote", scope=None):
+    """{login: [untrusted repo, …]} — each one a trust dialog the next session there opens on. A
+    confidential scope's repo is `(confidential)` (counted, not named), and under `scope` the
+    other scopes' repos are left out (the fence, as fenced())."""
+    out = {}
+    tp = common.tool("trust-projects")  # lighthouse's (G13); without it, no trust row
+    if not tp:
+        return out
+    for login in LOGINS:
+        env = dict(os.environ)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        if login:
+            env["CLAUDE_CONFIG_DIR"] = login
+        try:
+            r = subprocess.run([str(tp), "--check"], capture_output=True, text=True,
+                               timeout=60, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        name = Path(login).name if login else ".claude"
+        repos = [l.split(None, 1)[1] for l in r.stdout.splitlines() if l.strip().startswith("untrusted ")]
+        verdicts = [(x, fence(cwd_path(x.strip()))) for x in repos]
+        out[name] = [x.replace(str(HOME), "~") if v == "quote" else CONFIDENTIAL
+                     for x, v in verdicts if v == "quote" or v == "fenced" and not scope]
+    return out
+
+
+def memo_rows(since):
+    """D-item rows, or None when the corpus could not be read (the other channels still count)."""
+    try:
+        return _memo_rows(since)
+    except Exception as e:  # corpus.py and bin/keel are big and change often: one error is not number 6's end
+        print("interruptions: memo channel unavailable: %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return None
+
+
+def _memo_rows(since):
+    loader = importlib.machinery.SourceFileLoader("corpus", str(CORPUS))
+    spec = importlib.util.spec_from_loader("corpus", loader)
+    corpus = importlib.util.module_from_spec(spec)
+    loader.exec_module(corpus)
+    corpus.ROOT = str(PROJECTS)
+    corpus.DIRS = tuple(sorted(d.name for d in PROJECTS.iterdir()
+                               if d.is_dir() and d.name not in NOT_REPOS and not d.name.startswith(".")))
+    items, _ = corpus.build(corpus.load_memo())
+    rows = []
+    for it in items:
+        if not it.get("known") or it["kind"] not in MEMO_KIND:
+            continue
+        # when it took the owner's attention: the answer, else the ask (a UTC date)
+        ts = it.get("answered_ts") or dt.datetime.strptime(it["rec_date"], "%Y-%m-%d").replace(
+            tzinfo=dt.timezone.utc).timestamp()
+        if since and ts < since:
+            continue
+        rows.append(row("memo", ts, it["repo"], it["file"], "%s %s" % (it["id"], it["title"] or ""),
+                        MEMO_KIND[it["kind"]], it["recommendation"], it["final"],
+                        where=(PROJECTS / it["file"] if it.get("file") else None,)))   # corpus: relative to its ROOT
+    return rows
+
+
+def summarise(rows, days, trust):
+    # relay rows are not in the total: an answered one never reached the owner, an escalated one
+    # reaches the owner through another channel (hooks/attention.py, RELAY_KINDS)
+    out = {"days": days, "total": sum(1 for r in rows if r["channel"] != "relay" and r["kind"] != "unattended"),
+           "channels": {}}
+    for ch in QUESTION_CHANNELS + OTHER_CHANNELS + ("relay",):
+        rs = [r for r in rows if r["channel"] == ch]
+        kinds = collections.Counter(r["kind"] for r in rs)
+        c = out["channels"][ch] = {"n": len(rs), "kinds": dict(kinds.most_common()),
+                                   "per_week": round(len(rs) * 7 / days, 1) if days else None}
+        if ch in QUESTION_CHANNELS:
+            ranked = sum(n for k, n in kinds.items() if k != "unranked")
+            # the share that had a pick and where the owner took it unchanged
+            c["predictable_pct"] = round(100 * kinds["recommended"] / ranked) if ranked else None
+        if not days:
+            # all history: each channel over its own span — the transcripts reach back further
+            # than the first `➤ Answer:` doc, so one shared span would understate a newer channel
+            ts = [r["ts"] for r in rs]
+            span = max(1.0, (max(ts) - min(ts)) / 86400) if ts else 0
+            c["span_days"] = round(span)
+            c["per_week"] = round(len(ts) * 7 / span, 1) if span else None
+    q = [r for r in rows if r["channel"] in QUESTION_CHANNELS]
+    out["predictable"] = sum(1 for r in q if r["kind"] == "recommended")
+    ranked = [r for r in q if r["kind"] != "unranked"]  # as per channel: the ones that offered a pick
+    out["predictable_pct"] = round(100 * out["predictable"] / len(ranked)) if ranked else None
+    out["trust_waiting"] = trust
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="interruptions")
+    ap.add_argument("--days", type=int, default=7, help="window; 0 = all history")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--list", choices=("predictable", "all"))
+    ap.add_argument("--no-memo", action="store_true", help="skip the D-item channel (the slow one)")
+    ap.add_argument("--scope", help="that scope's rows alone (repos.json's scopes); without it a confidential "
+                                    "scope's rows are counted, never quoted")
+    a = ap.parse_args(argv)
+    try:
+        fence = common.gather_fence(a.scope)
+    except ValueError as e:
+        print("interruptions: %s" % e, file=sys.stderr)
+        return 2
+    since = (dt.datetime.now() - dt.timedelta(days=a.days)).timestamp() if a.days else 0
+    rows = transcript_rows(since) + attention_rows(since) + ([] if a.no_memo else memo_rows(since) or [])
+    rows = fenced(rows, fence, a.scope)
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    s = summarise(rows, a.days, trust_waiting(fence, a.scope))
+    if a.scope:
+        s["scope"] = a.scope
+    hidden = sum(1 for r in rows if r.get("fenced"))
+    if a.json:
+        s["rows"] = rows if a.list == "all" else [r for r in rows if r["kind"] == "recommended"] if a.list else []
+        print(json.dumps(s, indent=1))
+        return 0
+    if a.list:
+        for r in rows:
+            if a.list == "predictable" and r["kind"] != "recommended" or r.get("fenced"):
+                continue
+            print("%s  %-10s %-12s %-12s %s%s" % (r["date"], r["channel"], r["project"][:12], r["kind"][:12],
+                                                 r["question"][:110].replace("\n", " "),
+                                                 "  → " + r["answer"][:60].replace("\n", " ") if r["answer"] else ""))
+        if hidden:
+            print("(%d rows of a confidential scope: counted, not listed — its own pass reads them)" % hidden)
+        return 0
+    window = "all history" if not a.days else "last %d days" % a.days
+    span = " (own span)" if not a.days else ""
+    print("Interruptions — %s%s (bin/interruptions)\n" % (window, ", scope " + a.scope if a.scope else ""))
+    print("| questions | asked | per week%s | took the recommendation | other option | own answer | declined | no pick offered |" % span)
+    print("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for ch in QUESTION_CHANNELS:
+        c = s["channels"][ch]
+        k = c["kinds"]
+        print("| %s | %d | %s | %d (%s%%) | %d | %d | %d | %d |" % (
+            "AskUserQuestion" if ch == "ask" else "memo D-items", c["n"], "–" if c["per_week"] is None else c["per_week"],
+            k.get("recommended", 0), "–" if c["predictable_pct"] is None else c["predictable_pct"],
+            k.get("other-option", 0) + k.get("overruled", 0), k.get("free-text", 0) + k.get("question", 0),
+            k.get("declined", 0), k.get("unranked", 0)))
+    print("\n| outside the questions | count | per week%s | by kind |\n| --- | --- | --- | --- |" % span)
+    names = {"handoff": "hand-offs: paste, log in, a fresh window, do it by hand",
+             "repeat": "replies sent round again by a Stop hook (whole: shown twice; lines: corrections only; "
+                       "unattended: not in the total)",
+             "permission": "permission dialogs (tools)",
+             "notice": "other notices"}
+    for ch in OTHER_CHANNELS:
+        c = s["channels"][ch]
+        kinds = ", ".join("%s %d" % (k, n) for k, n in list(c["kinds"].items())[:6]) or "–"
+        print("| %s | %d | %s | %s |" % (names[ch], c["n"], "–" if c["per_week"] is None else c["per_week"], kinds))
+    r = s["channels"]["relay"]
+    print("| relayed to a manager, not in the total: answered without the owner · escalated | %d | %s | %d · %d |" % (
+        r["n"], "–" if r["per_week"] is None else r["per_week"],
+        r["kinds"].get("answered", 0), r["kinds"].get("escalated", 0)))
+    t = s["trust_waiting"]
+    print("| trust dialogs waiting (untrusted repos, per login) | %d | – | %s |" % (
+        sum(len(v) for v in t.values()), ", ".join("%s %d" % (k, len(v)) for k, v in t.items()) or "–"))
+    if hidden:
+        print("\n%d of these rows are a confidential scope's: counted, never quoted." % hidden)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

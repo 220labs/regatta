@@ -1,0 +1,1491 @@
+#!/usr/bin/env python3
+"""sheep — sessionpipe on this Mac, with the vault gated out. Stdlib, Python 3.9.
+
+    sheep gate [--dry-run] [--no-sink | --sink]  gate every sessionpipe hook entry, forget private sessions, then write the sink
+    sheep check                     gated / ungated / absent per settings file, the sinks, the outbox, config.json,
+                                    the control daemon
+    sheep control [--dry-run] [--folder DIR]...
+                                    control.json's folders (every repo bar the private ones) and name (this Mac's
+                                    sessions' machine); unpaired, it prints the pair line for the owner; refuses a private folder
+    sheep forget-private [--dry-run]  ask every sink to delete a private session found in the outbox
+    sheep audit                     read-only: every session on spacesheep.dev whose cwd is private (exit 1 on one)
+    sheep receiver-check            is there a sessionpipe receiver to run on the home server yet?
+    sheep receiver                  not built: step 7 (E4) writes it once receiver-check passes
+    sheep url <url>...              each spacesheep link at the local mirror's address when one runs, else as given
+
+Design: docs/record/orchestration-proposal-2026-10-02.md, E1 (section 9) and D1 (section 13): sessionpipe
+at tier 2 to spacesheep from both Macs, the vault, the transcript archive, the guarded repos and
+Drive's _secrets never leaving. The gate itself is hooks/sheep_gate.py, which also holds the one
+definition of "private" (PRIVATE_REPOS); this verb wires it in and keeps it wired. The chart is
+docs/sheep.md.
+
+What `check` holds (exit 1 on any): every entry gated in every login dir; no private session in
+the outbox; any http(s) sink is exactly one — spacesheep.dev, unpaused, at an effective tier (its
+tier, capped by the receiver's max_tier) of 2 or less; config.json's update_check false (gate writes
+it and `machine` on their own, before the forget and the sink, so neither a refusal nor a missing
+key leaves them unset). It names, without failing, a `machine` other than this Mac's board name,
+and notes, counted in its first line and shown by bootstrap.sh even when it passes: no http sink
+at all (nothing leaves, nothing reaches the board — the R2 phase), the R2 day's file
+(r2-review.jsonl) still on disk, and a control daemon that logged `refused (mode)` since its last
+start (0.5.0: one failed `claude --help` read refuses every headless turn after it;
+`launchctl kickstart -k gui/$(id -u)/org.sessionpipe.control` restarts it). `audit` pages
+`spacesheep sessions list` (100 a page, the CLI's cap) — the board holds both Macs' sessions, so
+it is the one place a leak from either shows; it never deletes (`sessionpipe forget` is the owner's).
+
+What sessionpipe does that this works around (its 0.5.0 source, read 2026-10-03):
+- `sessionpipe install` writes one entry per event into every Claude config dir's settings.json
+  (~/.claude, $CLAUDE_CONFIG_DIR, and each ~/.claude[-_.]* holding projects/ or settings.json)
+  with the command `"<data>/sessionpipe-hook" claude-code <Event>`, and recognises its own
+  entries by a regex anchored at the END of the command. So the gated form
+  `python3 "<sheep_gate.py>" "<data>/sessionpipe-hook" claude-code <Event>` is still "ours" to
+  sessionpipe: `uninstall` removes it cleanly, and `install`/`update` replace it with the
+  ungated form (R1) — after either, run `sheep gate` at once. `sync.py` names an ungated entry
+  at every session start, and `gate` runs `forget-private` before it writes the sink.
+- **`sessionpipe status` and `doctor` call every gated file "stale"** (they want the exact entry
+  they write) and `doctor` says to run `sessionpipe install` again — the one command that
+  removes the gate. "stale" is the gate working: never answer it with `install`.
+- **A session's title on spacesheep is the one the VS Code panel shows**: the worker reads the
+  transcript's `custom-title` (a rename) over its `ai-title` (Claude Code's own), and falls back
+  to the first prompt only when neither exists — nothing to configure. Not "none first-ask" any
+  more, as 2026-10-07's 60 outbox sessions read: the board on 2026-10-16 held 907 sessions, 545
+  titled — 42 of those by the first ask — and 362 untitled. The gate facts below (CLAUDE_EVENTS,
+  the OURS regex, wantsTranscript, forget) were re-read unchanged on sessionpipe 0.7.0's source
+  the same day (the inventory's reading; this Mac still runs 0.5.0).
+- **Backfill does not pass through the gate**: it reads ~/.claude/projects directly and queues a
+  `session.backfill` row (cwd, title) for every session of the last N days, the vault's
+  included. A bare `sessionpipe install` backfills 30 days. So: always `install --backfill 0`,
+  never `sessionpipe backfill`; `forget-private` finds and deletes such rows from the outbox.
+- An install with no sink above tier 0 is "lean": it skips PreToolUse and PostToolUseFailure.
+  `gate` adds every missing event of EVENTS in gated form, its command copied from an entry
+  sessionpipe wrote (read back, never predicted), the shape sessionpipe's own: matcher "" on
+  tool and permission events, timeout 5, PermissionRequest 130. So the sink can follow the
+  install and no second install — no ungated window — is ever needed.
+- Sinks live in sessionpipe's config.json (0600; $SESSIONPIPE_CONFIG, else
+  $XDG_CONFIG_HOME|~/.config/sessionpipe/config.json). `sessionpipe sink add --token` would put
+  the token on a command line, so `gate` writes the sink there itself: name `spacesheep.dev`,
+  https://spacesheep.dev, tier 2 (its well-known says max_tier 2, bearer auth). The token is
+  SPACESHEEP_SESSIONS_KEY, a Sessions-only key: the environment, else this repo's .env
+  (anchored on this script; else <overlay>/.env) with `the overlay.<host>.env` beside its
+  target winning, parsed by bin/secrets' own reader. It is never printed. With no key the sink
+  is left alone and said so. `gate` writes no sink while an entry is ungated, the gate file is
+  missing, or a private session is still in the outbox. It sets two more keys first, in a write of their own
+  (2026-10-16): `update_check: false` — from 0.6 sessionpipe updates its own daemon and re-runs
+  `install`, which ungates every entry (R1), and that flag is the one switch that stops it — and
+  `machine` (the laptop / the build Mac from hooks/common.py's host_name(), else that name itself): unset,
+  sessionpipe names the Mac by os.hostname(), a DHCP name whenever the network hands one out
+  (`Mac-225` and `Mac-129` split the board).
+- `--no-sink` is step 8's first run (R2: a day of tier-2 events read here before anything
+  leaves). With no tier-2 sink sessionpipe never builds a transcript event at all
+  (`wantsTranscript`, cli.js 0.5.0), so a sinkless outbox shows no turn text to read: instead
+  `--no-sink` writes R2_SINK, a `file:` sink at tier 2 into sessionpipe's state dir — local, the
+  day's events go into that JSONL. It refuses while an unpaused http(s) sink exists (that one
+  sends regardless). While R2_SINK is there a plain `gate` stays local too — sync.py's "run
+  sheep gate" must not ship early — and only `gate --sink` writes the spacesheep sink, dropping
+  R2_SINK in the same write and removing the file it wrote (a day of turn text, which
+  sessionpipe's file sink leaves 0644).
+- `sessionpipe forget claude-code <id>` sends `session.forgotten` to every unpaused sink, prints
+  `✗ <sink>` for a refusal, and deletes the outbox file either way, exit 0. So success here is
+  "no ✗ and no paused sink"; an id is written to `sheep-forget-pending.json` in sessionpipe's
+  state dir before the call and leaves it only on success, so a refused forget is retried.
+- The reference receiver: npm `sessionpipe-receiver` 0.5.0 is a placeholder whose CLI prints
+  "this command lands in a later milestone", and ghcr.io/micmmakarov/sessionpipe-receiver
+  refuses an anonymous pull (2026-10-03) — R8 has fired; step 7 waits on upstream (W6). Upstream
+  moved to the spacesheep-dev org (github.com/spacesheep-dev/sessionpipe), so receiver-check
+  probes the image under both names (RECEIVER_IMAGES).
+
+A gated entry whose gate file is missing counts as UNGATED: python3 exits 2 on a missing script,
+which erases prompts and blocks every tool. `gate` refuses to write one (the primary checkout
+has no hooks/sheep_gate.py until this launches there). settings.json is read, changed and written
+under bin/claude-settings' lock, with its backup-first, atomic writer.
+
+Paths (tests override): $SHEEP_GATE (else <overlay>/hooks/sheep_gate.py — the primary
+checkout, never a worktree that will be removed), $SHEEP_SESSIONPIPE (else `sessionpipe` on PATH,
+else ~/.local/bin/sessionpipe), $SHEEP_SPACESHEEP (else `spacesheep` on PATH), $SESSIONPIPE_STATE /
+$XDG_STATE_HOME for the outbox and the daemon's log, $SHEEP_ENV_FILE for the .env, $SHEEP_HOST.
+`sheep control` (docs/session-listen-2026-10-13.md, B1): the folders sessionpipe's control daemon may
+run a session in, and its name, kept by a file write the daemon reloads — never by `pair`, which needs
+a passkey tap and is the owner's in an attended session (D3; hooks/secrets_guard.py denies it to an agent):
+`control` only prints the line. Its notes stand above `cmd_control`. Never `sessionpipe connect`,
+`install` or `spacesheep machine on`: each rewrites the gated hook entries.
+
+Tests: hooks/test_hooks.sh, "sheep". $SHEEP_PROJECTS, $SHEEP_LAUNCH_AGENTS and $SHEEP_LAUNCHCTL point
+control at a scratch tree.
+"""
+import datetime as dt
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import urllib.error
+import urllib.request
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HOME = Path.home()
+
+
+def _legacy():
+    """The overlay's checkout (`REGATTA_LEGACY`, else the config dir's `legacy` file: the core's
+    legacy_root, read here without loading the core, as GATE is fixed at import), or None."""
+    v = os.environ.get("REGATTA_LEGACY")
+    if not v:
+        cfg = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+        try:
+            v = next((l.strip() for l in (cfg / "legacy").read_text(encoding="utf-8-sig").splitlines() if l.strip()), "")
+        except (OSError, UnicodeDecodeError):
+            v = ""
+    return Path(v).expanduser() if v else None
+
+
+# The hook command's path: the overlay's shim while there is one (its primary checkout, the path every
+# settings file already names), else this module's own file.
+GATE = Path(os.environ.get("SHEEP_GATE") or next(
+    (p for p in [(_legacy() or HERE) / "hooks" / "sheep_gate.py"] if _legacy() and p.is_file()),
+    HERE.parent / "hooks" / "sheep_gate.py"))
+_gate = SourceFileLoader("sheep_gate", str(HERE.parent / "hooks" / "sheep_gate.py")).load_module()
+
+# sessionpipe 0.5.0's CLAUDE_EVENTS, in its order (core/src/adapters/claude-code.ts).
+EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+          "PermissionRequest", "Notification", "Stop", "SubagentStart", "SubagentStop",
+          "PreCompact", "PostCompact", "SessionEnd", "StopFailure"]
+# sessionpipe's own test for "an entry we wrote", ported from claude-shaped.ts.
+OURS = re.compile(r'(?:sessionpipe[^"\n]*[\\/]hook\.js|[\\/]sessionpipe-hook)"?\s+[a-z][a-z-]*\s+[A-Za-z]+\s*$')
+TAIL = re.compile(r"\s+claude-code\s+[A-Za-z]+\s*$")
+SINK = {"name": "spacesheep.dev", "url": "https://spacesheep.dev", "tier": 2, "pii": False}
+KEY = "SPACESHEEP_SESSIONS_KEY"
+KEEP_BACKUPS = 5
+# Upstream moved from Misha's account to the spacesheep-dev org (github.com/spacesheep-dev/sessionpipe,
+# seen 2026-10-16); an image may appear under either name, so receiver-check probes both.
+RECEIVER_IMAGES = ("spacesheep-dev/sessionpipe-receiver", "micmmakarov/sessionpipe-receiver")
+RECEIVER_NPM = "sessionpipe-receiver"
+# What `gate` keeps in sessionpipe's config.json beside the sink (2026-10-16):
+# - update_check false: from 0.6 sessionpipe updates its own daemon and re-runs `install`, which
+#   rewrites every entry ungated (R1); config.json's update_check is the one switch that stops it.
+# - machine: the board's name for this Mac. Unset, sessionpipe takes os.hostname() (machineName,
+#   cli.js 0.5.0), which is the DHCP name whenever the network hands one out — `Mac-225` and
+#   `Mac-129` split one Mac on the board. The names are the ones the board and docs already use.
+# `keel/machines`, one `<host>:<board name>` per line; a host it does not name shows as itself.
+# sessionpipe's control daemon (`sessionpipe connect`, paired 2026-10-14): its log, its start line,
+# and the 0.5.0 bug where one failed `claude --help` read refuses every headless turn after it
+# ("refused (mode)") until the daemon restarts.
+DAEMON_LOG = ("control", "daemon.log")
+DAEMON_UP = re.compile(r"\scontrol daemon \S+ up\b")
+DAEMON_KICK = "launchctl kickstart -k gui/$(id -u)/org.sessionpipe.control"
+AUDIT_PAGE = 100  # the spacesheep CLI refuses --limit above 100 (lib/inspection.js, 1.30.0)
+AUDIT_MAX_PAGES = 200
+# The spacesheep mirror (CLI 1.27+, `spacesheep mirror on`): spacesheep.dev itself at localhost, so
+# a link opens in a VS Code tab (Simple Browser, through the user setting
+# "workbench.externalUriOpeners": {"localhost:4280": "simpleBrowser.open"}) instead of Chrome.
+# Read from the CLI's lib/mirror.js (spacesheep-cli main, 1.30.0, 2026-10-11): a running mirror
+# writes <config>/mirror.json {pid, port, site} and removes it on exit — the CLI's own `deploy`
+# reads that file to print a page's local address, so this reads it too rather than probing the
+# port (another program on 4280 is not a mirror, and `/` answers only after a round trip to
+# spacesheep.dev). The map is the CLI's addressMap: spacesheep.dev/X → localhost:<port>/X,
+# <uuid>.spacesheep.app → <uuid>.localhost:<port>. Committed docs keep spacesheep.dev links:
+# localhost means nothing on the phone or on GitHub; only what goes into chat is mapped.
+SITE_RE = re.compile(r"^https://spacesheep\.dev(?=[/?#]|$)")
+APP_RE = re.compile(r"^https://([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.spacesheep\.app(?=[/?#]|$)")
+LOCAL_RE = re.compile(r"^http://(?:([0-9a-f-]{36})\.)?localhost:(\d+)(?=[/?#]|$)")
+FLAGS = {"gate": {"--dry-run", "--no-sink", "--sink"}, "check": set(), "forget-private": {"--dry-run"},
+         "audit": set(), "receiver-check": set(), "receiver": set(), "control": {"--dry-run"}}
+
+
+class Refused(Exception):
+    pass
+
+
+def say(line=""):
+    print(line, flush=True)
+
+
+def _load(name, path):
+    return SourceFileLoader(name, str(path)).load_module()
+
+
+def _common():
+    """The regatta core's common.py: host_name(), and tool() for a peer module's file (lib/find_core.py: the checkout this module sits in, else the config dir's `home`, else the plugin's installPath; never a copy). No core is an ImportError the callers' own guards take."""
+    # Loaded once: fence_mark and scan() call this per line, and find_core reads the home file
+    # and installed_plugins.json each time (1,521 lookups in one `keel open`, review of B4).
+    if "common" in sys.modules:
+        return sys.modules["common"]
+    lib = str(HERE.parent / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import find_core
+    try:
+        hooks = find_core.hooks()
+    except SystemExit:
+        raise ImportError("sheep: the regatta core is missing")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import common
+    return common
+
+
+def _sheep_cmd():
+    """How a message names this tool: the overlay's shim while it has one (its allow rules name it), else this file."""
+    p = (_legacy() or HERE.parent) / "bin" / "sheep"
+    import pwd
+    s = str(p if _legacy() and p.is_file() else Path(__file__).resolve())
+    for home in (str(HOME), pwd.getpwuid(os.getuid()).pw_dir):   # the login's own when a suite moved HOME
+        if home and s.startswith(home.rstrip("/") + "/"):
+            return "~" + s[len(home.rstrip("/")):]
+    return s
+
+
+def _claude_settings():
+    """claude-settings' writer and lock (lighthouse's, regatta-modules G11): found through the
+    core's tool(); without it the verbs that write settings refuse in one line, and the pages,
+    check and audit still read."""
+    p = _common().tool("claude-settings")
+    if not p:
+        raise Refused("claude-settings (lighthouse) is not installed — settings are not written; "
+                      "check and audit still read")
+    return _load("claude_settings", p)
+
+
+# --- where things are -------------------------------------------------------------------------
+
+def mirror_port():
+    """The running mirror's port, from the CLI's mirror.json when its pid is alive, else None."""
+    d = os.environ.get("SPACESHEEP_CONFIG_DIR") or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "spacesheep"
+    try:
+        s = json.loads((Path(d) / "mirror.json").read_text())
+        pid, port, site = int(s["pid"]), int(s["port"]), str(s.get("site") or "https://spacesheep.dev")
+    except Exception:  # absent, unreadable or malformed: no mirror
+        return None
+    if pid <= 0 or site.rstrip("/") != "https://spacesheep.dev":
+        return None  # kill(0 or -1) always succeeds; a mirror of another site (a dev server) is not spacesheep.dev
+    try:
+        # any failure, EPERM included, is "not running", as the CLI's readStatus has it: the mirror
+        # runs as this user, so EPERM means a stale file whose pid another user's process now holds
+        os.kill(pid, 0)
+    except Exception:
+        return None
+    return port
+
+
+def local_url(url, port=None):
+    """`url` at the local mirror when one runs (or at `port`), else unchanged; non-spacesheep links pass."""
+    port = port or mirror_port()
+    if not port:
+        return url
+    m = APP_RE.match(url)
+    if m:
+        return "http://%s.localhost:%d%s" % (m.group(1), port, url[m.end():])
+    m = SITE_RE.match(url)
+    return "http://localhost:%d%s" % (port, url[m.end():] or "/") if m else url
+
+
+def chat_url(url, port=None):
+    """`url` as chat hands it to the owner — `sheep url` and memo's chat_page both: local_url, except in
+    a Remote Control run (CLAUDE_CODE_ENTRYPOINT=sdk-cli, read on the phone) or an unattended one
+    (CLAUDE_UNATTENDED, read by nobody), where localhost opens nothing and the https link stays."""
+    if os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli":
+        return url
+    return local_url(url, port)
+
+
+def web_url(url, port=None):
+    """The inverse: an address on the running mirror (or on `port`) back to spacesheep.dev /
+    spacesheep.app; anything else unchanged — a localhost link with no mirror behind it is dead,
+    and stays a localhost link for the caller to refuse."""
+    m = LOCAL_RE.match(url)
+    if not m or int(m.group(2)) != (port or mirror_port()):
+        return url
+    rest = url[m.end():]
+    return ("https://%s.spacesheep.app%s" % (m.group(1), rest)) if m.group(1) else "https://spacesheep.dev" + (rest or "/")
+
+
+def claude_dirs():
+    """sessionpipe's own discovery (claudeDirs), so the gate covers every file it writes."""
+    out = []
+    def add(d):
+        if d:
+            r = Path(d).expanduser().resolve()
+            if r not in out:
+                out.append(r)
+    add(HOME / ".claude")
+    add(os.environ.get("CLAUDE_CONFIG_DIR"))
+    try:
+        for e in sorted(HOME.iterdir()):
+            if e.is_dir() and re.match(r"^\.claude[-_.]", e.name) and \
+                    ((e / "projects").exists() or (e / "settings.json").exists()):
+                add(e)
+    except OSError:
+        pass
+    return [d for i, d in enumerate(out) if i == 0 or d.exists()]
+
+
+def config_file():
+    if os.environ.get("SESSIONPIPE_CONFIG"):
+        return Path(os.environ["SESSIONPIPE_CONFIG"]).resolve()
+    return Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "sessionpipe" / "config.json"
+
+
+def state_dir():
+    if os.environ.get("SESSIONPIPE_STATE"):
+        return Path(os.environ["SESSIONPIPE_STATE"]).resolve()
+    return Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "sessionpipe"
+
+
+def sessionpipe_bin():
+    for c in (os.environ.get("SHEEP_SESSIONPIPE"), shutil.which("sessionpipe"),
+              str(HOME / ".local" / "bin" / "sessionpipe"), "/opt/homebrew/bin/sessionpipe"):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def spacesheep_bin():
+    for c in (os.environ.get("SHEEP_SPACESHEEP"), shutil.which("spacesheep"), "/opt/homebrew/bin/spacesheep"):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+_HOST = []
+
+
+def host():
+    """This Mac's short name, read once per run: common.host_name() spawns scutil, and env_value,
+    machine_name and check each ask (review 2026-10-16: about six spawns a gate)."""
+    if os.environ.get("SHEEP_HOST"):
+        return os.environ["SHEEP_HOST"]
+    if not _HOST:
+        _HOST.append(_common().host_name())
+    return _HOST[0]
+
+
+def machine_name():
+    """This Mac's name on the board: the laptop / the build Mac, else the stable LocalHostName itself."""
+    h = host()
+    machines = dict(l.split(":", 1) for l in _common().config_lines("keel/machines") or [] if ":" in l)
+    return machines.get(h, h)
+
+
+def kept_settings():
+    """The config.json keys `gate` keeps whatever the sink (MACHINES' comment says why)."""
+    return {"update_check": False, "machine": machine_name()}
+
+
+def ensure_kept(dry):
+    """Write kept_settings() into config.json on their own, before any sink: a missing key or a
+    refused forget must not leave update_check on (review 2026-10-16). Returns a line, or None
+    when nothing changes."""
+    c = read_config()
+    drift = kept_drift(c)
+    if not drift:
+        return None
+    if not dry:
+        c.update(kept_settings())
+        write_config(c)
+        if kept_drift(read_config()):
+            raise Refused(f"wrote {config_file()} but a re-read lacks {', '.join(kept_settings())}")
+    return f"config: {'would set' if dry else 'set'} {kept_words(drift)}"
+
+
+def env_value(key):
+    """The environment, else the .env (host file first), parsed by bin/secrets' reader."""
+    if os.environ.get(key):
+        return os.environ[key]
+    secrets = _load("secrets_tool", _common().tool("secrets"))  # the core's bin/secrets
+    for env in (os.environ.get("SHEEP_ENV_FILE"), _common().CONFIG / "regatta" / ".env", (_legacy() or HERE.parent) / ".env"):
+        if not env or not os.path.lexists(str(env)):
+            continue
+        real = Path(env).resolve()
+        files = ([real.with_name(f"{real.stem}.{host()}.env")] if real.suffix == ".env" else []) + [real]
+        for f in files:
+            if not f.exists():
+                continue
+            try:
+                v = secrets.read_keys(f).get(key)
+            except Exception as exc:  # secrets.Fail: offline in Drive, no Full Disk Access
+                raise Refused(f"can't read {f.name}: {exc}")
+            if v:
+                return v
+        return None
+    return None
+
+
+# --- settings.json ----------------------------------------------------------------------------
+
+GATED = re.compile(r'^python3 "([^"]*sheep_gate\.py)" ')
+
+
+def gate_prefix():
+    return f'python3 "{GATE}" '
+
+
+def bare(cmd):
+    return GATED.sub("", cmd)
+
+
+def gated(cmd):
+    """The command behind this gate; one behind a gate at another path is moved to this one."""
+    return gate_prefix() + bare(cmd)
+
+
+def is_gated(cmd):
+    """Behind this gate, and the gate file is there: a missing script makes python3 exit 2."""
+    return cmd == gated(cmd) and GATE.is_file()
+
+
+def _cmds(g):
+    return [h for h in g.get("hooks") or [] if isinstance(h, dict) and isinstance(h.get("command"), str)]
+
+
+def ours(group):
+    return isinstance(group, dict) and isinstance(group.get("hooks"), list) and \
+        any(OURS.search(h["command"]) for h in _cmds(group))
+
+
+def survey(cfg):
+    """{event: "gated" | "ungated" | "absent"} over EVENTS and any other event sessionpipe hooks."""
+    hooks = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
+    out = {ev: "absent" for ev in EVENTS}
+    for ev, groups in hooks.items():
+        for g in groups if isinstance(groups, list) else []:
+            if not ours(g):
+                continue
+            bad = any(not is_gated(h["command"]) for h in _cmds(g) if OURS.search(h["command"]))
+            out[ev] = "ungated" if bad or out.get(ev) == "ungated" else "gated"
+    return out
+
+
+def counts(s):
+    return {k: sum(v == k for v in s.values()) for k in ("gated", "ungated", "absent")}
+
+
+def read_settings(path):
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    cfg = json.loads(raw)
+    if not isinstance(cfg, dict):
+        raise Refused(f"{path} is not a JSON object — not touched")
+    return cfg
+
+
+def write_settings(cs, path, cfg):
+    """bin/claude-settings' writer: a 0600 backup first, atomic, the file's own mode kept, the
+    backups pruned to the newest 5 (they hold env values; bootstrap.sh prunes the same glob)."""
+    if path.exists():
+        cs.write_private(path.with_name(f"{path.name}.bak-{dt.datetime.now():%Y%m%d%H%M%S}"),
+                         path.read_bytes())
+    cs.write_atomic(path, cfg)
+    for old in sorted(path.parent.glob(path.name + ".bak-*"))[:-KEEP_BACKUPS]:
+        old.unlink()
+
+
+def seed_command():
+    """sessionpipe's own command, bare and without its `claude-code <Event>` tail, read back from
+    the first Claude config dir it hooked; None while it hooked none."""
+    for d in claude_dirs():
+        try:
+            cfg = read_settings(d / "settings.json")
+        except (OSError, ValueError, Refused):
+            continue
+        hooks = cfg.get("hooks") if cfg and isinstance(cfg.get("hooks"), dict) else {}
+        for gs in hooks.values():
+            for g in gs if isinstance(gs, list) else []:
+                for h in _cmds(g) if ours(g) else []:
+                    if OURS.search(h["command"]) and TAIL.search(h["command"]):  # claude-code's own, not another adapter's
+                        return TAIL.sub("", bare(h["command"]))
+    return None
+
+
+def seed_missing(base):
+    """The executable a command runs, when it is not there; checked before any file is written."""
+    exe = re.match(r'^"([^"]+)"', base or "")
+    return None if exe and Path(exe.group(1)).exists() else (exe.group(1) if exe else base)
+
+
+def gate_file(path, dry, seed=None):
+    """Gate every sessionpipe entry and add the missing events; returns (changes, survey) —
+    the survey as the file stands after the write, or as it stands now on a dry run. A file
+    sessionpipe never hooked is left alone unless `seed` (seed_command()) is given: a login dir
+    made after `sessionpipe install` (a second login dir, 2026-10-06) then gets all of EVENTS, gated,
+    without a second install and its ungated window — the file created when the dir holds
+    projects/ but no settings.json, as sessionpipe's own install would."""
+    if not path.parent.is_dir():
+        return [], None  # ~/.claude is in claude_dirs() even when absent: never create it
+    cs = _claude_settings()
+    with cs.Lock(path.parent):  # the lock claude-settings' apply takes beside this file
+        cfg = read_settings(path)
+        if cfg is None:
+            if not (seed and (path.parent / "projects").is_dir()):
+                return [], None
+            cfg = {}  # a login dir with sessions but no settings.json yet (bin/account links projects/ only)
+        before = survey(cfg)
+        if "hooks" in cfg and not isinstance(cfg["hooks"], dict):
+            return [], before  # not Claude Code's shape: never overwritten
+        hooks = cfg.get("hooks") or {}
+        mine = [h["command"] for gs in hooks.values() if isinstance(gs, list)
+                for g in gs if ours(g) for h in _cmds(g) if OURS.search(h["command"])]
+        if not mine and not seed:
+            return [], before  # sessionpipe never hooked any file: nothing of ours to add
+        changes = []
+        for ev, groups in hooks.items():
+            for g in groups if isinstance(groups, list) else []:
+                for h in _cmds(g) if ours(g) else []:
+                    if OURS.search(h["command"]) and h["command"] != gated(h["command"]):
+                        h["command"] = gated(h["command"])
+                        changes.append(f"gated {ev}")
+        base = TAIL.sub("", bare(mine[0])) if mine else seed  # read back from what sessionpipe wrote
+        for ev in EVENTS:
+            if not isinstance(hooks.get(ev, []), list):
+                continue  # a malformed event value is left as it is
+            if not any(ours(g) for g in hooks.get(ev) or []):
+                exe = re.match(r'^"([^"]+)"', base)
+                if not exe or not Path(exe.group(1)).exists():
+                    raise Refused(f"{exe.group(1) if exe else base} is missing — "
+                                  "run `sessionpipe install --backfill 0` first")
+                e = {"matcher": ""} if re.search(r"Tool|Permission", ev) else {}
+                e["hooks"] = [{"type": "command", "command": gated(f"{base} claude-code {ev}"),
+                               "timeout": 130 if ev == "PermissionRequest" else 5}]
+                hooks.setdefault(ev, []).append(e)
+                changes.append(f"added {ev}")
+        cfg["hooks"] = hooks
+        if not changes or dry:
+            return changes, before
+        write_settings(cs, path, cfg)
+        return changes, survey(read_settings(path))  # the re-read, not the write, is the report
+
+
+# --- sessionpipe's config.json ----------------------------------------------------------------
+
+def read_config():
+    f = config_file()
+    if not f.exists():
+        return {}
+    try:
+        c = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"{f} is unreadable ({exc}) — not touched")
+    if not isinstance(c, dict):
+        raise Refused(f"{f} is not a JSON object — not touched")
+    return c
+
+
+def write_config(c):
+    f = config_file()
+    f.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = f.with_name(f"{f.name}.tmp.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(c, indent=2) + "\n")  # sessionpipe's writeConfig format
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, f)
+
+
+def sinks_of(c):
+    return [s for s in c.get("sinks") or [] if isinstance(s, dict)]
+
+
+def ensure_sink(dry):
+    token = env_value(KEY)
+    if not token:
+        return f"sink: {KEY} is empty in .env — no sink written (docs/record/orchestration-proposal-2026-10-02.md, Do this now, item 3)"
+    c = read_config()
+    sinks = sinks_of(c)
+    prev = next((s for s in sinks if s.get("name") == SINK["name"]), None)
+    want = dict(prev or {}, **SINK, token=token)
+    want.pop("token_in", None)  # a keychain copy would win over the file; the .env is the record
+    r2 = any(s.get("name") == "r2-local" for s in sinks)
+    if prev == want and not r2:
+        return f"sink: {SINK['name']} at tier {SINK['tier']}, already current"
+    if not dry:
+        c["sinks"] = [s for s in sinks if s.get("name") not in (SINK["name"], "r2-local")] + [want]
+        write_config(c)
+        if not any(s.get("name") == SINK["name"] and s.get("token") == token for s in sinks_of(read_config())):
+            raise Refused(f"wrote {config_file()} but a re-read lacks the sink")
+    line = f"sink: {SINK['name']} at tier {SINK['tier']} {'would be ' if dry else ''}{'updated' if prev else 'added'} (token from .env)"
+    return line + ("; " + drop_r2_file(dry) if r2 else "")
+
+
+def kept_drift(c):
+    """{key: wanted value} for each of kept_settings() that config.json `c` does not hold yet."""
+    return {k: v for k, v in kept_settings().items() if c.get(k) != v}
+
+
+def kept_words(d):
+    return ", ".join(f"{k} {json.dumps(v)}" for k, v in d.items())
+
+
+def drop_r2_file(dry):
+    """The R2 day's events (--no-sink's file sink): gone with the sink that wrote them. Turn text at
+    tier 2, left 0644 by sessionpipe's writer (the live one, 2026-10-16) — no reason to keep it."""
+    f = Path(r2_sink()["url"][len("file:"):])
+    if not f.exists():
+        return "r2-local dropped"
+    if dry:
+        return f"r2-local and {f} would be removed"
+    f.unlink()
+    return f"r2-local dropped, {f} removed"
+
+
+def sink_lines():
+    out = []
+    for s in sinks_of(read_config()):
+        tier = effective_tier(s)
+        tier = "?" if tier is None else tier
+        key = "token in config" if s.get("token") else f"token in {s['token_in']}" if s.get("token_in") else "no token"
+        out.append(f"sink {s.get('name')}: {s.get('url')} tier {tier}, {key}" + (f", PAUSED {s['paused']}" if s.get("paused") else ""))
+    return out
+
+
+# --- the outbox ------------------------------------------------------------------------------
+
+def pending_file():
+    return state_dir() / "sheep-forget-pending.json"
+
+
+def read_pending():
+    try:
+        p = json.loads(pending_file().read_text(encoding="utf-8"))
+        return p if isinstance(p, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_pending(p):
+    f = pending_file()
+    f.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if p:
+        f.write_text(json.dumps(p, indent=2) + "\n", encoding="utf-8")
+    elif f.exists():
+        f.unlink()
+
+
+def transcript_index():
+    """{session id: the folder its transcript is filed under}, over every Claude config dir, the
+    first dir winning — built once per call. A glob per outbox file per login dir was most of
+    `check`'s 4-8 s with 1,500 outbox files and three login dirs (2026-10-16)."""
+    idx = {}
+    for d in claude_dirs():
+        try:
+            folders = [e for e in os.scandir(d / "projects") if e.is_dir()]
+        except OSError:
+            continue
+        for e in folders:
+            try:
+                names = os.listdir(e.path)
+            except OSError:
+                continue
+            for n in names:
+                if n.endswith(".jsonl"):
+                    idx.setdefault(n[:-len(".jsonl")], e.name)
+    return idx
+
+
+def private_sessions():
+    """[(session id, reason)]: every claude-code outbox file whose session is private, and every
+    id a refused forget left pending."""
+    base = state_dir() / "outbox" / "claude-code"
+    out = dict(read_pending())
+    index = None  # built on the first file that needs it: an empty outbox costs no scan
+    for f in sorted(base.glob("*.jsonl")) if base.is_dir() else []:
+        sid = f.name[:-len(".jsonl")]
+        cwd = None
+        try:
+            with f.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        j = json.loads(line)
+                    except ValueError:
+                        continue
+                    s = j.get("session") if isinstance(j, dict) else None
+                    cwd = s.get("cwd") if isinstance(s, dict) and isinstance(s.get("cwd"), str) else None
+                    if cwd:
+                        break
+        except OSError:
+            continue
+        why = _gate.private_reason(cwd=cwd)
+        if not why:
+            index = transcript_index() if index is None else index
+            folder = index.get(sid)
+            why = _gate._slug_reason(folder) if folder else None
+        if why:
+            out.setdefault(sid, why)
+    return sorted(out.items())
+
+
+# --- verbs -----------------------------------------------------------------------------------
+
+def r2_sink():
+    return {"name": "r2-local", "url": f"file:{state_dir() / 'r2-review.jsonl'}", "tier": 2, "pii": False}
+
+
+def has_r2_sink():
+    return any(s.get("name") == "r2-local" for s in sinks_of(read_config()))
+
+
+def ensure_r2_sink(dry):
+    """--no-sink's local tier-2 sink (docstring). Refuses beside a sink that leaves the Mac."""
+    c = read_config()
+    leaving = [str(s.get("name") or s.get("url")) for s in http_sinks(c) if not s.get("paused")]
+    if leaving:
+        return 1, (f"sink: no local sink written (--no-sink) — {', '.join(leaving)} is already configured and "
+                   "events leave through it; `sessionpipe sink remove <name>` to keep them here")
+    want = r2_sink()
+    have = any(s == want for s in sinks_of(c))
+    if not dry and not have:
+        c["sinks"] = [s for s in sinks_of(c) if s.get("name") != "r2-local"] + [want]
+        write_config(c)
+    line = ("sink: r2-local at tier 2, already current" if have else
+            f"sink: r2-local {'would be ' if dry else ''}written, tier 2, local")
+    return 0, line + f" — events stay here, in {want['url'][5:]}"
+
+
+def cmd_gate(dry, no_sink=False, sink=False):
+    if not no_sink and not sink and has_r2_sink():
+        say("r2-local is configured: staying local (R2's read is not done) — `sheep gate --sink` writes spacesheep")
+        no_sink = True
+    if not GATE.is_file():
+        raise Refused(f"{GATE} does not exist — every hook behind it would exit 2; "
+                      "launch the branch that adds it (or pull main) first")
+    probe = subprocess.run([sys.executable, str(GATE)], input=b"{}", capture_output=True, timeout=20)
+    if probe.returncode != 0:
+        raise Refused(f"{GATE} exits {probe.returncode} on an empty event — nothing written")
+    total = {"gated": 0, "ungated": 0, "absent": 0}
+    hooked = False
+    seed = seed_command()
+    if seed and seed_missing(seed):
+        raise Refused(f"{seed_missing(seed)} is missing — nothing written; reinstall sessionpipe, "
+                      "then `sheep gate` at once (an install rewrites every entry ungated)")
+    for d in claude_dirs():
+        path = d / "settings.json"
+        changes, s = gate_file(path, dry, seed)
+        if s is None:
+            continue
+        c = counts(s)
+        if c["gated"] or c["ungated"] or changes:
+            hooked = True
+            for k in total:
+                total[k] += c[k]
+        verb = "would change" if dry else "changed"
+        say(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent"
+            + (f" — {verb}: {', '.join(changes)}" if changes else ""))
+    if not hooked:
+        say("sessionpipe is not installed here — `sessionpipe install --backfill 0` first (no sink yet), then `sheep gate`")
+        return 1
+    if total["ungated"] and not dry:
+        raise Refused("an entry is still ungated after the write — no sink written")
+    kept = ensure_kept(dry)  # before the forget and the sink: neither a refusal nor a missing key skips it
+    if kept:
+        say(kept)
+    rc = cmd_forget(dry)
+    if rc and not dry:
+        say("sink: not written — a private session is still in the outbox")
+        return rc
+    if not no_sink:
+        say(ensure_sink(dry))
+        return rc
+    r2rc, line = ensure_r2_sink(dry)
+    say(line)
+    return rc or r2rc
+
+
+def hook_totals():
+    """(totals, lines, files hooked, unreadable, dark) over every Claude config dir — check's body,
+    and what hooks/sync.py reads at session start (R1). `dark`: config dirs sessionpipe never
+    hooked while another is hooked — their sessions never report; counted only then, since with
+    none hooked sessionpipe is simply not installed."""
+    lines, total, files, unreadable = [], {"gated": 0, "ungated": 0, "absent": 0}, 0, 0
+    dark = []
+    for d in claude_dirs():
+        path = d / "settings.json"
+        try:
+            cfg = read_settings(path)
+        except (OSError, ValueError, Refused) as exc:
+            lines.append(f"{path}: unreadable — {exc}")
+            unreadable += 1
+            continue
+        if cfg is None:
+            if (d / "projects").is_dir():
+                dark.append(path)  # sessions run here and none report
+            continue
+        c = counts(survey(cfg))
+        if not (c["gated"] or c["ungated"]):
+            dark.append(path)
+            continue
+        files += 1
+        for k in total:
+            total[k] += c[k]
+        lines.append(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent")
+    if not files:
+        dark = []
+    for path in dark:
+        lines.append(f"{path}: never hooked — its sessions do not report (sheep gate adds them)")
+    return total, lines, files, unreadable, dark
+
+
+HTTP_URL = re.compile(r"https?://")
+
+
+def http_sinks(c):
+    """The sinks that leave the Mac (a `file:` sink stays on it)."""
+    return [s for s in sinks_of(c) if HTTP_URL.match(str(s.get("url") or ""))]
+
+
+def effective_tier(s):
+    """The sink's tier capped by the receiver's max_tier; a max_tier of 0 is 0, not "unset"."""
+    try:
+        mt = s.get("max_tier")
+        return min(int(s.get("tier") or 0), 3 if mt is None else int(mt))
+    except (TypeError, ValueError):
+        return None
+
+
+def sink_problem(c):
+    """Why config.json's sinks are not D1's — exactly one http(s) sink, spacesheep.dev, unpaused,
+    at an effective tier of 2 or less — or None. No http sink at all is not a failure (nothing
+    leaves: the R2 phase, a Mac with no key yet); check makes that a note."""
+    leaving = http_sinks(c)
+    if not leaving:
+        return None
+    others = [str(s.get("name") or s.get("url")) for s in leaving
+              if s.get("name") != SINK["name"] or str(s.get("url") or "").rstrip("/") != SINK["url"]]
+    if others or len(leaving) > 1:
+        return (f"{len(leaving)} http sinks ({', '.join(str(s.get('name') or s.get('url')) for s in leaving)}) — "
+                f"D1 is exactly one, {SINK['name']} at {SINK['url']}; `sessionpipe sink remove <name>` the rest")
+    s = leaving[0]
+    if s.get("paused"):
+        return f"{SINK['name']} is PAUSED ({s['paused']}) — nothing reaches the board and no forget reaches it"
+    tier = effective_tier(s)
+    if tier is None or tier > SINK["tier"]:
+        return f"{SINK['name']} at tier {tier if tier is not None else '?'} — above D1's {SINK['tier']}, tool input and output would leave"
+    return None
+
+
+def daemon_refusing():
+    """True when sessionpipe's control daemon logged `refused (mode)` after its last start line."""
+    try:
+        lines = (state_dir().joinpath(*DAEMON_LOG)).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    starts = [i for i, l in enumerate(lines) if DAEMON_UP.search(l)]
+    return any("refused (mode)" in l for l in lines[(starts[-1] + 1) if starts else 0:])
+
+
+def r2_leftover():
+    """A line when the R2 day's file is still on disk with no r2-local sink to need it, or is
+    readable by others while one does; else None."""
+    f = Path(r2_sink()["url"][len("file:"):])
+    try:
+        st = f.stat()
+    except OSError:
+        return None
+    mode = st.st_mode & 0o777
+    if not has_r2_sink():
+        return (f"{f} is still here ({st.st_size / 1e6:.1f} MB of tier-2 turn text, mode {mode:o}) with no "
+                f"r2-local sink — R2's read is done; `rm` it (`gate --sink` would have)")
+    if mode != 0o600:
+        return f"{f} is mode {mode:o}, not 600 — its turn text is readable by other users; chmod 600 it"
+    return None
+
+
+def cmd_check():
+    """First line is the summary bootstrap.sh --check prints; exit 1 on anything ungated, an
+    unreadable settings file, a config dir never hooked, a private session in the outbox, sinks
+    other than D1's (sink_problem), update_check not false, or a control daemon with a private
+    folder, a stale plist or a name the tab does not know. Notes never fail it: counted in the
+    first line, each printed below (bootstrap.sh shows them on a pass too) — the R2 file left
+    behind, no http sink at all, a refusing control daemon."""
+    total, lines, files, unreadable, dark = hook_totals()
+    priv = private_sessions()
+    cfg = read_config() if files else {}
+    sink_bad = sink_problem(cfg) if files else None
+    update_on = bool(files) and cfg.get("update_check") is not False
+    notes = [r2_leftover()]
+    if files and not http_sinks(cfg):
+        notes.append(f"no {SINK['name']} sink — nothing leaves this Mac and its sessions do not reach the board "
+                     "(D1 wants one: `sheep gate --sink` once R2's read is done)")
+    if daemon_refusing():
+        notes.append("the control daemon refused a headless turn (mode) since its last start — sessionpipe "
+                     f"0.5.0 keeps refusing after one failed `claude --help` read; restart it: {DAEMON_KICK}")
+    notes = [n for n in notes if n]
+    try:
+        cs = control_state()
+        clines, cprob = control_lines(cs)
+        cpaired = cs["paired"]
+    except Refused as exc:
+        clines, cprob, cpaired = [], [f"control: {exc}"], True  # an unreadable control.json is worth saying
+    if not files and not cpaired:
+        clines = []  # sessionpipe not installed and never paired: nothing to say
+    if not files:
+        head = "sessionpipe hooks: none installed"
+    else:
+        head = f"sessionpipe hooks: {total['gated']} gated"
+        if total["ungated"]:
+            head += f", {total['ungated']} UNGATED — run {_sheep_cmd()} gate"
+        if dark:
+            head += (f", {len(dark)} login dir{'' if len(dark) == 1 else 's'} NEVER HOOKED — "
+                     f"its sessions do not report; run {_sheep_cmd()} gate")
+        if total["absent"]:
+            head += f", {total['absent']} absent (sheep gate adds them)"
+    if unreadable:
+        head += f", {unreadable} settings file(s) UNREADABLE"
+    if priv:
+        head += f", {len(priv)} PRIVATE session(s) in the outbox"
+    if sink_bad:
+        head += ", sinks WRONG"
+    if update_on:
+        head += ", update_check ON"
+    if cprob:
+        head += f", control: {len(cprob)} problem{'' if len(cprob) == 1 else 's'}"
+    if notes:
+        head += f", {len(notes)} note(s)"
+    say(head)
+    for line in lines + (sink_lines() if files else []) + clines + cprob:
+        say("  " + line)
+    if priv:
+        say(f"  outbox: {len(priv)} private session(s) — run {_sheep_cmd()} forget-private")
+    if sink_bad:
+        say(f"  sinks: {sink_bad}")
+    if update_on:
+        say(f"  update_check is {json.dumps(cfg.get('update_check', True))} in {config_file()} — sessionpipe 0.6+ "
+            f"updates itself and re-runs `install`, which ungates every entry; {_sheep_cmd()} gate sets it false")
+    if files and cfg.get("machine") != machine_name():
+        say(f"  machine is {json.dumps(cfg.get('machine'))}, not {json.dumps(machine_name())} — the board names this Mac "
+            "by its DHCP hostname meanwhile; sheep gate sets it")
+    for n in notes:
+        say("  note: " + n)
+    return 1 if total["ungated"] or unreadable or dark or priv or sink_bad or update_on or cprob else 0
+
+
+def cmd_forget(dry):
+    priv = private_sessions()
+    if not priv:
+        say("outbox: no private session")
+        return 0
+    if dry:
+        for sid, why in priv:
+            say(f"would forget {sid} ({why})")
+        return 0
+    sp = sessionpipe_bin()
+    if not sp:
+        say(f"outbox: {len(priv)} private session(s), and no sessionpipe binary to forget them with")
+        return 1
+    paused = [s.get("name") for s in sinks_of(read_config()) if s.get("paused")]
+    if paused:  # sessionpipe skips a paused sink silently, then deletes the outbox file anyway
+        say(f"outbox: {len(priv)} private session(s), and sink(s) {', '.join(map(str, paused))} paused — "
+            "a forget would never reach them; unpause first (`sessionpipe sink list`)")
+        return 1
+    rc, pending = 0, read_pending()
+    for sid, why in priv:
+        pending[sid] = why
+        write_pending(pending)  # before the call: sessionpipe deletes the outbox file either way
+        try:
+            r = subprocess.run([sp, "forget", "claude-code", sid], capture_output=True, text=True, timeout=60)
+            out, code = r.stdout + r.stderr, r.returncode
+        except subprocess.TimeoutExpired:
+            out, code = "timed out after 60 s", 1
+        ok = code == 0 and "✗" not in out
+        if ok:
+            pending.pop(sid, None)
+            write_pending(pending)
+        say(f"{'forgot' if ok else 'FAILED to forget (kept pending, retried next run)'} {sid} ({why})")
+        for line in out.splitlines():
+            say("  " + line.strip())
+        rc |= 0 if ok else 1
+    return rc
+
+
+def board_sessions():
+    """Every session spacesheep.dev holds, both Macs', through the CLI's own `sessions list`
+    (read-only; its JSON is {sessions: [...], next_offset: N | null}, cwd `~`-relative)."""
+    ss = spacesheep_bin()
+    if not ss:
+        raise Refused("no spacesheep CLI on PATH — nothing to read the board with")
+    rows, offset = [], 0
+    for _ in range(AUDIT_MAX_PAGES):
+        try:
+            r = subprocess.run([ss, "sessions", "list", "--limit", str(AUDIT_PAGE), "--offset", str(offset)],
+                               capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            raise Refused(f"spacesheep sessions list --offset {offset} timed out after 60 s")
+        if r.returncode:
+            raise Refused(f"spacesheep sessions list --offset {offset} exited {r.returncode}: "
+                          + ((r.stderr or r.stdout).strip().splitlines() or [""])[-1])
+        try:
+            page = json.loads(r.stdout)
+        except ValueError:
+            raise Refused(f"spacesheep sessions list --offset {offset} printed no JSON")
+        got = [s for s in page.get("sessions") or [] if isinstance(s, dict)] if isinstance(page, dict) else []
+        rows += got
+        nxt = page.get("next_offset") if isinstance(page, dict) else None
+        if not got or not isinstance(nxt, int) or nxt <= offset:
+            return rows
+        offset = nxt
+    raise Refused(f"more than {AUDIT_MAX_PAGES * AUDIT_PAGE} sessions — stopped paging; raise AUDIT_MAX_PAGES")
+
+
+def cmd_audit():
+    """Read-only: every board session whose cwd the gate calls private, i.e. one that leaked (or
+    left before the gate knew its folder). Exit 1 on a hit, 0 on none."""
+    rows = board_sessions()
+    hits = []
+    for s in rows:
+        cwd = s.get("cwd") if isinstance(s.get("cwd"), str) else None
+        why = _gate.private_reason(cwd=cwd) if cwd else None
+        if why:
+            hits.append((s, why))
+    for s, why in hits:
+        say(f"PRIVATE on the board: {s.get('source')}:{s.get('session_id')} on {s.get('machine')}, cwd {s.get('cwd')} ({why})")
+    say(f"board: {len(rows)} session(s) read, {len(hits)} private"
+        + (" — the deletion is `sessionpipe forget claude-code <id>` per session, run by the owner" if hits else ""))
+    return 1 if hits else 0
+
+
+def _get(url, headers=None, timeout=15):
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except Exception as e:
+        return 0, str(e).encode()
+
+
+def receiver_status():
+    """[(ok, line)]: the container image under each name and the npm package, all read anonymously."""
+    out = []
+    for image in RECEIVER_IMAGES:
+        st, body = _get(f"https://ghcr.io/token?scope=repository:{image}:pull")
+        tok = ""
+        try:
+            tok = json.loads(body).get("token", "") if st == 200 else ""
+        except ValueError:
+            pass
+        st, _ = _get(f"https://ghcr.io/v2/{image}/manifests/latest", {
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json"})
+        out.append((st == 200, f"image ghcr.io/{image}:latest: "
+                    + ("pullable" if st == 200 else f"not pullable anonymously (HTTP {st})")))
+    st, body = _get(f"https://registry.npmjs.org/{RECEIVER_NPM}/latest")
+    try:
+        meta = json.loads(body) if st == 200 else {}
+    except ValueError:
+        meta = {}
+    if not meta.get("version"):
+        out.append((False, f"npm {RECEIVER_NPM}: not found (HTTP {st})"))
+        return out
+    st, tgz = _get(meta.get("dist", {}).get("tarball", ""), timeout=30)
+    cli = ""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tgz), mode="r:gz") as t:
+            cli = t.extractfile("package/dist/cli.js").read().decode("utf-8", "replace")
+    except Exception:
+        pass
+    placeholder = "lands in a later milestone" in cli   # sessionpipe's own words, matched as it prints them
+    out.append((bool(cli) and not placeholder, f"npm {RECEIVER_NPM} {meta['version']}: "
+                + ("a placeholder — its CLI says the receiver lands in a later milestone" if placeholder
+                   else "has a CLI — read its README before step 7" if cli else "no dist/cli.js in the tarball")))
+    return out
+
+
+def cmd_receiver_check():
+    res = receiver_status()
+    for ok, line in res:
+        say(("ok  " if ok else "--  ") + line)
+    if any(ok for ok, _ in res):
+        say("a receiver exists upstream: step 7 (E4) can write `sheep receiver` and the home server's README")
+        return 0
+    say("no receiver to run yet: step 7 waits on upstream (proposal W6, R8)")
+    return 1
+
+
+def cmd_receiver():
+    cmd_receiver_check()
+    say("sheep receiver: not built — step 7 (E4) writes its run line from the receiver's own docs, "
+        "through the home server's tier gate")
+    return 1
+
+
+# --- the control daemon (docs/session-listen-2026-10-13.md, B1) --------------------------------
+#
+# What sessionpipe does that this follows (its 0.5.0 cli.js, read 2026-10-15):
+# - control.json sits beside config.json (`controlFile`), 0600, {name, folders, mode, receivers,
+#   limits?}; a receiver may hold its token. This rewrites only `name` and `folders` and keeps
+#   every other key byte-for-byte as JSON, written the way `writePrivate` does (tmp, rename, 0600).
+# - The daemon watches the file every 5 s and swaps in the new config (`reload`): its folder test
+#   (`allowed`, a real-path prefix, so a repo's worktrees are inside it) changes at once. The
+#   receiver hears the name and folders only in a hello, every 10 min (`HELLO_EVERY_MS`), and
+#   `reload` sends none — so a changed name restarts the agent (`launchctl kickstart -k`), the
+#   fix the laptop's name trap needed (section 8).
+# - A session's spacesheep page names its machine by `machineName`: config.json's `machine`,
+#   else the hostname minus .local/.lan/.home. `pair` names the daemon `--name`, else the existing
+#   control.json's `name`, else config.json's `machine`, else os.hostname() with the suffix (cli.js
+#   ~5608; pair() ~5202 keeps cfg.name), so a re-pair keeps the name; only a first pair with no
+#   `--name` and no `machine` takes the hostname, and the tab then says "<Mac> isn't listening
+#   yet" — so the name written here is machineName's rule, ported.
+# - The plist (`serviceFiles`) runs `<node> <cli.js> control run`, cli.js by its real path; it
+#   is not repaired by `install` or `update` (README, L8). A plist whose cli is not the installed
+#   one, or whose node is gone, is stale: only `pair` again (a passkey tap) rewrites it.
+CONTROL_LABEL = "org.sessionpipe.control"
+CONTROL_RECEIVER = "spacesheep.dev"
+
+
+def control_file():
+    return config_file().parent / "control.json"
+
+
+def read_control():
+    """control.json as a dict, None when absent; Refused when unreadable (never rewritten)."""
+    f = control_file()
+    if not f.exists():
+        return None
+    try:
+        c = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"{f} is unreadable ({exc}) — not touched")
+    if not isinstance(c, dict):
+        raise Refused(f"{f} is not a JSON object — not touched")
+    return c
+
+
+def write_control(c):
+    f = control_file()
+    tmp = f.with_name(f"{f.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(c, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, f)
+
+
+def paired(c):
+    return isinstance(c, dict) and isinstance(c.get("receivers"), list) and len(c["receivers"]) > 0
+
+
+def control_name():
+    """What this Mac's sessions register under on spacesheep — sessionpipe's machineName, which is
+    config.json's `machine`. `gate` writes that key from machine_name() (2026-10-16), so before a
+    gate has run the daemon takes the name the gate will write, and check's machine line says
+    the sessions lag; never os.hostname(), the DHCP name that split the board."""
+    try:
+        m = read_config().get("machine")
+    except Refused:
+        m = None
+    return str(m)[:80] if m else machine_name()
+
+
+def projects_root():
+    return Path(os.environ.get("SHEEP_PROJECTS") or HOME / "projects")
+
+
+def folder_private(path):
+    """Why a folder may never be in control.json, or None. An allow-list (review gate S1, 2026-10-16):
+    a folder whose real path lies inside projects_root() — a repo, a repo group, a folder in one —
+    and none of hooks/sheep_gate.py's private, the one definition (PRIVATE_REPOS as a path part,
+    case-folded; _secrets; ~/projects, ~ and their ancestors), for the folder itself; nor a
+    PRIVATE_REPOS repo inside it (the gate's broad rule knows only the real ~/projects, not
+    $SHEEP_PROJECTS); nor, for a folder that is no repo itself (films, oss, taken whole), a private
+    name among its subfolders to depth 3. The deny-list alone passed a folder that CONTAINS Drive's
+    _secrets — the vault's parent, ~/Library — and the daemon's allowed() is a real-path prefix, so
+    a session could have started anywhere below it."""
+    why = _gate.private_reason(str(path))
+    if why:
+        return why
+    root = projects_root()
+    if not covers([root], path):
+        return f"{path} is not inside {root}: the daemon runs sessions only in the repos there"
+    if os.path.realpath(str(path)) == os.path.realpath(str(root)):
+        return f"{path} is {root} whole, and with it every private repo"
+    try:
+        for name in _gate.PRIVATE_REPOS:
+            inner = root / name
+            if inner.exists() and covers([str(path)], inner):
+                return f"{path} holds {inner}"
+    except OSError:
+        pass
+    if not os.path.lexists(os.path.join(str(path), ".git")):
+        hit = _private_below(str(path), 3)
+        if hit:
+            return f"{path} holds {hit}, a folder with a private name"
+    return None
+
+
+def _private_below(top, depth):
+    """The first folder or link under top, at most depth levels down, whose name is private
+    (sheep_gate.private_part), else None. scandir, symlinks never followed (the daemon judges a
+    session's real path, so a link out of the group is not inside it, and a loop is not walked);
+    a repo's .git and node_modules are not descended — the cost is a few hundred entries a group."""
+    stack = [(top, 1)]
+    while stack:
+        d, level = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                is_dir = e.is_dir(follow_symlinks=False)
+                link = e.is_symlink()
+            except OSError:
+                continue
+            if (is_dir or link) and _gate.private_part(e.name):
+                return e.path
+            if is_dir and level < depth and e.name not in (".git", "node_modules"):
+                stack.append((e.path, level + 1))
+    return None
+
+
+def covers(folders, path):
+    """path lies under one of folders by real path, as the daemon's allowed() decides."""
+    try:
+        r = os.path.realpath(str(path))
+    except OSError:
+        return False
+    for f in folders:
+        rf = os.path.realpath(str(f))
+        if r == rf or r.startswith(rf.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def repo_folders():
+    """Every folder sessions may run in: each child of ~/projects that is a git repo, or that
+    holds repos (films, oss — taken whole), bar the private and guarded ones. Sorted by name."""
+    out, root = [], projects_root()
+    try:
+        kids = sorted(root.iterdir(), key=lambda p: p.name.casefold())
+    except OSError:
+        return []
+    for d in kids:
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        # a repo or group first, so a folder with no repo (tmp) costs no private walk
+        if ((d / ".git").exists() or any((s / ".git").exists() for s in _subdirs(d))) and not folder_private(d):
+            out.append(str(d))
+    return out
+
+
+def _subdirs(d):
+    try:
+        return [s for s in d.iterdir() if s.is_dir() and not s.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def launch_agent():
+    return Path(os.environ.get("SHEEP_LAUNCH_AGENTS") or HOME / "Library" / "LaunchAgents") / f"{CONTROL_LABEL}.plist"
+
+
+def plist_stale():
+    """Why the daemon's plist will not run the installed sessionpipe, None when it will, '' when
+    there is no plist (pair --no-service, or not paired)."""
+    import plistlib
+    f = launch_agent()
+    if not f.exists():
+        return ""
+    try:
+        args = plistlib.loads(f.read_bytes()).get("ProgramArguments") or []
+    except Exception as exc:
+        return f"{f} is unreadable ({exc})"
+    if len(args) < 2:
+        return f"{f} names no cli"
+    node, cli = str(args[0]), str(args[1])
+    if not os.path.exists(node):
+        return f"its node {node} is gone"
+    sp = sessionpipe_bin()
+    if not sp:
+        return "sessionpipe is not installed"
+    if os.path.realpath(cli) != os.path.realpath(sp):
+        return f"it runs {cli}, not the installed {os.path.realpath(sp)}"
+    return None
+
+
+def control_state():
+    """One read of the control side, for check, sync.py and control itself."""
+    c = read_control()
+    s = {"paired": paired(c), "conf": c, "name": control_name()}
+    if not s["paired"]:
+        return s
+    folders = [f for f in c.get("folders") or [] if isinstance(f, str)]
+    s["folders"] = folders
+    whys = [(f, folder_private(f)) for f in folders]  # once a folder: the group walk is not free
+    s["private"] = [(f, why) for f, why in whys if why]
+    s["missing"] = [f for f in folders if not os.path.isdir(f)]
+    s["unlisted"] = [Path(f).name for f in repo_folders() if not covers(folders, f)]
+    s["stale"] = plist_stale()
+    s["misnamed"] = c.get("name") != s["name"]
+    return s
+
+
+def receivers_text(c):
+    out = []
+    for r in c.get("receivers") or []:
+        if isinstance(r, dict):
+            host = re.sub(r"^https?://", "", str(r.get("url") or r.get("control") or "?")).split("/")[0]
+            out.append(f"{host} (machine {r.get('machine', '?')})")
+    return ", ".join(out) or "none"
+
+
+def control_notes():
+    """sync.py's start note on a paired Mac: a repo the daemon cannot run a session in, a stale
+    plist, a private folder, a name the tab does not know. Quiet when unpaired or all is well."""
+    s = control_state()
+    if not s["paired"]:
+        return []
+    out = []
+    if s["private"]:
+        out.append(f"⚠ sessionpipe control: private folder{'s' if len(s['private']) > 1 else ''} "
+                   f"{', '.join(f for f, _ in s['private'])} — run {HERE / 'sheep'} control")
+    if s["unlisted"]:
+        out.append(f"sessionpipe control: {', '.join(s['unlisted'])} not in its folders, so the Session tab "
+                   f"cannot reach {'it' if len(s['unlisted']) == 1 else 'them'} — run {HERE / 'sheep'} control")
+    if s["misnamed"]:
+        out.append(f"⚠ sessionpipe control is named {s['conf'].get('name')!r}, this Mac's sessions {s['name']!r}: "
+                   f"the tab says it isn't listening — run {HERE / 'sheep'} control")
+    if s["stale"]:
+        out.append(f"⚠ sessionpipe control daemon is stale ({s['stale']}): the owner re-pairs it, a passkey tap — "
+                   f"{pair_line(s['name'], [], s['conf'].get('mode', 'safe'))}")
+    return out
+
+
+def control_lines(s):
+    """(lines, problems) for check: problems fail it — a private folder, a stale plist, a name the
+    tab does not know; the rest is said and passes."""
+    if not s["paired"]:
+        return ["control: not paired here (sheep control prints the pair line)"], []
+    c, lines, problems = s["conf"], [], []
+    lines.append(f"control: paired as {c.get('name')}, mode {c.get('mode', 'safe')}, "
+                 f"{len(s['folders'])} folders, receivers {receivers_text(c)}")
+    for f, why in s["private"]:
+        problems.append(f"control folder PRIVATE: {f} — {why}; run {_sheep_cmd()} control")
+    if s["misnamed"]:
+        problems.append(f"control named {c.get('name')!r} but this Mac's sessions register as {s['name']!r}: "
+                        f"the tab says it isn't listening — run {_sheep_cmd()} control")
+    if s["stale"]:
+        problems.append(f"control daemon STALE: {s['stale']} — re-pair (sessionpipe control pair "
+                        f"{CONTROL_RECEIVER} --mode {c.get('mode', 'safe')} --name {s['name']}: the owner's, a passkey tap)")
+    if s["stale"] == "":
+        lines.append("control: no launchd agent — the daemon runs only by hand (`sessionpipe control run`)")
+    if s["missing"]:
+        lines.append(f"control folder missing: {', '.join(s['missing'])} (sheep control drops it)")
+    if s["unlisted"]:
+        lines.append(f"control: not in its folders: {', '.join(s['unlisted'])} (sheep control adds them)")
+    return lines, problems
+
+
+def pair_line(name, folders, mode="auto"):
+    """The line the owner pastes: every value shell-quoted (a folder may hold a space)."""
+    q = shlex.quote
+    return " ".join([f"sessionpipe control pair {CONTROL_RECEIVER} --mode {q(mode)} --name {q(name)}"] +
+                    [f"--folder {q(f)}" for f in folders])
+
+
+def cmd_control(dry, adds):
+    """Write control.json's folders and name from this Mac's repos; refuse a private folder."""
+    for a in adds:
+        p = os.path.abspath(os.path.expanduser(a))
+        why = folder_private(p)
+        if why:
+            raise Refused(f"refused: {why} — a private folder never goes into control.json")
+        if not os.path.isdir(p):
+            raise Refused(f"refused: {p} is not a folder")
+    want = repo_folders()
+    c, name = read_control(), control_name()
+    if not paired(c):
+        say("control: not paired on this Mac. The owner pairs it in an attended session (a passkey tap, link valid 10 min; an agent's run is denied):")
+        extra = [os.path.abspath(os.path.expanduser(a)) for a in adds]
+        say("  " + pair_line(name, want + [p for p in extra if not covers(want, p)]))
+        return 1
+    old = [f for f in c.get("folders") or [] if isinstance(f, str)]
+    # by real path, as the daemon's allowed() reads them: an old folder inside a wanted one, or the
+    # same folder spelled another way, is covered already and dropped
+    keep = [f for f in old if not covers(want, f) and os.path.isdir(f) and not folder_private(f)]
+    new = want + keep
+    for a in adds:
+        p = os.path.abspath(os.path.expanduser(a))
+        if not covers(new, p):
+            new.append(p)
+    dropped = [f for f in old if f not in new]
+    added = [f for f in new if f not in old]
+    renamed = c.get("name") != name
+    say(f"control: paired with {receivers_text(c)}, mode {c.get('mode', 'safe')}")
+    say(f"  name: {name}" + (f" (was {c.get('name')!r})" if renamed else ""))
+    say(f"  folders: {len(new)}" + (f", added {', '.join(Path(f).name for f in added)}" if added else "")
+        + (f", dropped {', '.join(dropped)}" if dropped else ""))
+    if not (added or dropped or renamed):
+        say("  nothing to change")
+        return 0
+    if dry:
+        say("  (dry run: nothing written)")
+        return 0
+    c["folders"], c["name"] = new, name
+    write_control(c)
+    say(f"  wrote {control_file()} — the daemon reloads it within 5 s")
+    if renamed and plist_stale() is None:
+        lc = os.environ.get("SHEEP_LAUNCHCTL") or "launchctl"
+        r = subprocess.run([lc, "kickstart", "-k", f"gui/{os.getuid()}/{CONTROL_LABEL}"],
+                           capture_output=True, text=True)
+        say("  restarted the daemon so its hello carries the name" if r.returncode == 0 else
+            f"  the daemon did not restart ({(r.stderr or r.stdout).strip() or r.returncode}): "
+            f"launchctl kickstart -k gui/{os.getuid()}/{CONTROL_LABEL}")
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        say(__doc__.split("\n\n")[1] if argv else __doc__)
+        return 0 if argv else 2
+    verb, rest = argv[0], argv[1:]
+    if verb == "url":
+        if not rest:
+            say("sheep url: give one or more links")
+            return 2
+        port = mirror_port()
+        for u in rest:
+            say(chat_url(u, port))
+        return 0
+    if verb not in FLAGS:
+        say(f"sheep: unknown verb {verb!r} — sheep --help")
+        return 2
+    adds = []
+    if verb == "control":  # --folder takes a value
+        left = []
+        it = iter(rest)
+        for a in it:
+            if a == "--folder":
+                v = next(it, None)
+                if not v:
+                    say("sheep control: --folder needs a folder")
+                    return 2
+                adds.append(v)
+            else:
+                left.append(a)
+        rest = left
+    extra = [a for a in rest if a not in FLAGS[verb]]
+    if extra:
+        say(f"sheep {verb}: unknown argument(s) {' '.join(extra)} — sheep --help")
+        return 2
+    dry, no_sink = "--dry-run" in rest, "--no-sink" in rest
+    if verb == "gate" and no_sink and "--sink" in rest:
+        say("sheep gate: --no-sink and --sink together — pick one")
+        return 2
+    try:
+        return {"gate": lambda: cmd_gate(dry, no_sink, "--sink" in rest), "check": cmd_check, "forget-private": lambda: cmd_forget(dry),
+                "audit": cmd_audit, "receiver-check": cmd_receiver_check, "receiver": cmd_receiver,
+                "control": lambda: cmd_control(dry, adds)}[verb]()
+    except Exception as exc:  # Refused, claude-settings' lock, a bad file: one line, never a traceback
+        say(f"sheep {verb}: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    import signal
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `sheep check | head -1` ends quietly
+    sys.exit(main(sys.argv[1:]))

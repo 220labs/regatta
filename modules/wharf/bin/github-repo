@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""github-repo — give a new local repo its GitHub twin, the moment it is created.
+
+  github-repo <path> [--name NAME] [--owner ORG] [--dry-run]
+
+The owner, 2026-09-26: "anything that creates a new repo should also create it on GitHub." Every
+creator calls this right after its first commit: /new-project (step 4) and a pipeline repo's
+scripts/split-production.sh. In order, each step read back rather than assumed:
+
+  1. <path> is a repo with a `main` branch holding a commit, and no origin (an origin off
+     GitHub is refused). Only main is pushed; claude/* branches follow by the hook's push.
+     An adopted repo whose origin is already the owner's — read back from GitHub, with a main
+     there — skips to steps 5b and 6 (2026-10-07), and is not registered unless 5b took.
+     Its merge policy and pre-push guard are bin/repos --github --apply's and --hooks'.
+  2. The owner is the registry's home repo's (the checkout repos.json sits in), and the token must be that account's:
+     GitHub creates a repo under whoever asks, so the other Mac's machine account would make it in
+     the wrong place. There it stops and prints the line to run on the laptop.
+     --owner ORG puts the repo in an org that account belongs to instead (an employer's,
+     2026-10-18). An org repo is an employer's: it is cloned on the laptop only and the machine
+     account is not invited (the rules on working with the owner "Hosts": each employer gets its own VM;
+     only the owner's own and the ventures' repos stay on both Macs). Adding the other Mac to its hosts later makes
+     bin/repos --github --apply invite it, but the other Mac's repos --clone accepts only an invitation
+     from the slug's owner, so it would still not clone — that is for the VM design to settle.
+     Its registration is reviewed, not mechanical (knowledge-commit). Hard limit: an org on
+     GitHub Free refuses branch protection on a private repo (HTTP 403, an employer's org,
+     2026-10-18), so ci_settings reports it on every run and the pre-push guard is main's only
+     protection there. allow_auto_merge off does not make automerge wait: with no required check
+     pending, `gh pr merge --auto` merges at once (docs/ci-automerge-rollout-2026-10-06.md), so
+     such a repo's PRs carry `hold` until protection holds.
+  3. POST /user/repos (or /orgs/ORG/repos): private, rebase merge only, head deleted on merge
+     (bin/repos MERGE_POLICY). A repo of that name that already exists is adopted only if it is empty.
+  4. origin = the clone URL GitHub returned; the first push of `main` (the one push of main an
+     agent makes: the remote was empty a moment ago, so nothing there can be overwritten).
+     Then, where that main carries templates/code/.github's automerge.yml, what automerge
+     needs: the `hold` label, main protected per .github/main-protection.json, and
+     .github/repo-settings.json (allow_auto_merge) — common.ci_settings, as repos --github
+     --apply sets them, with its refusals (no protection without check.yml).
+  5. The pre-push guard from templates/code/git-hooks/pre-push, as bin/repos --hooks installs it.
+  5b. repos.json's machine_account (the other Mac's login) invited with push — not for --owner;
+     bin/repos --clone on the other Mac accepts it. Until then the other Mac cannot clone the repo.
+  6. A line in the layer's repos.json, launched through knowledge-commit --open/--in like any
+     layer change, so both machines' bin/repos know it (hosts: both, the laptop only for
+     --owner; a Remote Control host on each by default, bin/rc-hosts).
+
+--dry-run says what it would do and does nothing. Stdlib only; token and API from hooks/common.py.
+"""
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MOD = Path(__file__).resolve().parent.parent  # this module, wharf (B6)
+sys.path.insert(0, str(MOD / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+
+PROJECTS = common.PROJECTS  # the core's `projects` key, as cloned_repos() reads it
+MERGE_POLICY = common.MERGE_POLICY
+# The hosts a new repo clones on, each Mac's short name (the config dir's `wharf/hosts`, one per
+# line; the overlay writes both Macs'). Absent, this host alone, said once where an overlay should
+# have written it: a repo registered on fewer hosts than meant is only a later `hosts` edit.
+HOSTS = common.config_lines("wharf/hosts") or [common.host_name()]
+if not common.config_lines("wharf/hosts") and common.legacy_root():
+    print(f"github-repo: no wharf/hosts in {common.CONFIG} — new repos register on {HOSTS[0]} only "
+          "(the overlay's bootstrap.sh --config writes it)", file=sys.stderr)
+# The registry through the core's one reader (C3). Its home repo — the checkout the file really
+# sits in, whose owner creates and where a new line goes — is read from the link, never named.
+# Read at load, refused only in main(): a caller that loads this file as a module never dies of it.
+REGISTRY = common.repos_json()
+REGISTRY_REPO = REGISTRY.resolve().parent.name if REGISTRY else None
+try:
+    machine = json.loads(REGISTRY.read_text()).get("machine_account") if REGISTRY else None
+except (OSError, ValueError):
+    machine = None  # a missing or broken file: main() names it
+
+
+def git(repo, *args, env=None):
+    import os
+    e = dict(os.environ, **(env or {}))
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=120, env=e)
+
+
+def say(msg):
+    print(f"github-repo: {msg}")
+
+
+def main():
+    if not REGISTRY:
+        sys.exit(f"github-repo: no registry — set CLAUDE_REPOS_JSON, or link one at {common.CONFIG / 'wharf' / 'repos.json'}")
+    args = sys.argv[1:]
+    dry = "--dry-run" in args
+    name = None
+    if "--name" in args:
+        i = args.index("--name")
+        name = args[i + 1] if i + 1 < len(args) else sys.exit("github-repo: --name needs a value")
+        args = args[:i] + args[i + 2:]
+    org = None
+    if "--owner" in args:
+        i = args.index("--owner")
+        org = args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") \
+            else sys.exit("github-repo: --owner needs a value")
+        args = args[:i] + args[i + 2:]
+    paths = [a for a in args if not a.startswith("--")]
+    if len(paths) != 1:
+        sys.exit(__doc__)
+    repo = Path(paths[0]).expanduser().resolve()
+    top = git(repo, "rev-parse", "--show-toplevel").stdout.strip()
+    if not top or Path(top).resolve() != repo:
+        sys.exit(f"github-repo: {repo} is not the top of a git repo")
+    # Only main is pushed, whatever is checked out: a production split off on 2026-09-25 sat on
+    # its claude/* first-cut branch with main beside it.
+    if git(repo, "rev-parse", "-q", "--verify", "refs/heads/main").returncode:
+        sys.exit(f"github-repo: {repo} has no main branch with a commit — commit first, then call this")
+    origin = git(repo, "remote", "get-url", "origin").stdout.strip()
+    adopted = common.repo_slug(origin) if origin else None
+    if origin and not adopted:
+        sys.exit(f"github-repo: {repo} already has an origin off GitHub ({origin}) — nothing to do")
+    name = adopted.split("/")[1] if adopted else (name or repo.name)
+    if not re.match(r"^[A-Za-z0-9._-]+$", name):
+        sys.exit(f"github-repo: '{name}' is not a GitHub repo name — pass --name")
+
+    try:
+        reg = json.loads(REGISTRY.read_text())["repos"]
+    except (OSError, ValueError, KeyError) as e:
+        sys.exit(f"github-repo: the registry {REGISTRY} is unreadable ({type(e).__name__}) — fix it, then call this")
+    if REGISTRY_REPO not in reg:
+        sys.exit(f"github-repo: the registry {REGISTRY} does not sit in a checkout it lists ({REGISTRY_REPO}) — "
+                 "link it to that checkout's repos.json")
+    # The account that creates: the registry repo's owner. It used to be "the one owner every repo has",
+    # which a first org repo in repos.json would have broken for every later repo (2026-10-18).
+    owner = reg[REGISTRY_REPO]["github"].split("/")[0]
+    if org and org.lower() == owner.lower():
+        org = None  # --owner <the registry's owner> is the default, not an org
+    where = org or owner
+    hosts = [common.LAPTOP] if org else HOSTS
+    # GitHub logins are case-insensitive: compare them so
+    if adopted and adopted.split("/")[0].lower() != where.lower():
+        sys.exit(f"github-repo: {repo} already has an origin ({adopted}) — not {where}'s, nothing to do")
+    import os
+    if os.environ.get("CLAUDE_HOOK_NO_GITHUB"):
+        sys.exit("github-repo: CLAUDE_HOOK_NO_GITHUB is set — GitHub is not spoken to")
+    tok = common.token()
+    st, me = common.api("GET", "/user", tok=tok) if tok else (0, None)
+    login = (me or {}).get("login")
+    if login != owner:
+        again = " ".join([str(repo)] + (["--name", name] if name != repo.name else []) + (["--owner", org] if org else []))
+        sys.exit(f"github-repo: this machine's GitHub token is {login or 'missing'}, not {owner} — a repo is "
+                 f"created under whoever asks. Run on the laptop: {MOD}/bin/github-repo {again}")
+    key = str(repo.relative_to(PROJECTS)) if PROJECTS in repo.parents else None
+    if key and key in reg:
+        sys.exit(f"github-repo: repos.json already lists {key} — its GitHub repo should exist: bin/repos --clone")
+    if adopted:
+        # An adopted repo with its GitHub twin already: only the machine account and the
+        # registration are missing (2026-10-07; it used to stop here, unregistered).
+        if not key:
+            sys.exit(f"github-repo: {repo} already has an origin ({adopted}) — outside ~/projects, nothing to do")
+        # Read back, never assumed from the URL (review, 2026-10-14): a typo or a repo never
+        # pushed registered anyway, and both Macs' repos --clone then failed on it.
+        st, found = common.api("GET", f"/repos/{adopted}", tok=tok)
+        if st != 200 or str(((found or {}).get("owner") or {}).get("login")).lower() != where.lower():
+            sys.exit(f"github-repo: origin {adopted} does not read back on GitHub (HTTP {st}) — fix the origin, or remove it to create the repo")
+        if not git(repo, "ls-remote", "origin", "refs/heads/main").stdout.strip():
+            sys.exit(f"github-repo: {adopted} has no main on GitHub — push main first, then run this again")
+        if dry:
+            say((f"would invite {machine} to {adopted} and " if not org else "would ")
+                + f"register {key} in repos.json (hosts: {', '.join(hosts)})")
+            return
+        if not org and not invite(adopted, tok):
+            sys.exit(f"github-repo: {key} not registered — the other Macs could not clone it until {machine} is invited")
+        # GitHub's spelling of the slug, not what was typed (logins compare case-insensitively)
+        return register(key, found.get("full_name") or adopted, name, hosts)
+
+    slug = f"{where}/{name}"
+    st, found = common.api("GET", f"/repos/{slug}", tok=tok)
+    if dry:
+        say(f"would {'adopt the existing empty' if st == 200 else 'create private'} {slug}, set rebase-only, "
+            f"push main ({git(repo, 'rev-list', '--count', 'main').stdout.strip()} commits), "
+            + ("set automerge's settings (hold label, protection, allow_auto_merge), "
+               if git(repo, "cat-file", "-e", f"main:{common.AUTOMERGE_YML}").returncode == 0 else "")
+            + "install pre-push" + ("" if org else f", invite {machine}")
+            + (f", register {key} in repos.json (hosts: {', '.join(hosts)})" if key else ""))
+        return
+    if st == 200:
+        if found.get("size", 0) or common.api("GET", f"/repos/{slug}/commits?per_page=1", tok=tok)[0] == 200:
+            sys.exit(f"github-repo: {slug} already exists with content — refusing to push into it")
+        created = found
+    else:
+        st, created = common.api("POST", f"/orgs/{org}/repos" if org else "/user/repos",
+                                 {"name": name, "private": True, **MERGE_POLICY}, tok=tok)
+        if st != 201:
+            sys.exit(f"github-repo: GitHub refused to create {slug} (HTTP {st}: {(created or {}).get('message')})")
+    st, created = common.api("PATCH", f"/repos/{slug}", MERGE_POLICY, tok=tok)
+    off = [k for k, v in MERGE_POLICY.items() if (created or {}).get(k) != v]
+    if st != 200 or off:
+        say(f"⚠ {slug}: merge policy not confirmed ({', '.join(off) or f'HTTP {st}'}) — bin/repos --github --apply")
+    settled = created if st == 200 and isinstance(created, dict) else None  # else ci_settings reads it
+    url = (created or {}).get("clone_url") or f"https://github.com/{slug}.git"
+    git(repo, "remote", "add", "origin", url)
+    push = git(repo, "push", "-q", "-u", "origin", "main", env={"GIT_PUSH_OK": "1"})
+    if push.returncode:
+        sys.exit(f"github-repo: {slug} exists, origin set, but the push failed: {push.stderr.strip()[:200]}")
+    remote = git(repo, "ls-remote", "origin", "refs/heads/main").stdout.split()
+    if not remote or remote[0] != git(repo, "rev-parse", "main").stdout.strip():
+        sys.exit(f"github-repo: pushed, but origin's main does not read back as this main — check {url}")
+    say(f"{slug} created, private, rebase-only; main pushed ({remote[0][:7]})")
+
+    # CI and automerge settings, now that main on GitHub carries the workflows: protection that
+    # names `check` before check.yml is there would hold every PR, so it comes after the push.
+    # The same helper as bin/repos --github --apply, reading the main just pushed (it read back
+    # as origin's above), with its refusals: nothing for a repo without automerge.yml.
+    def on_main(path):
+        r = git(repo, "show", f"main:{path}")
+        return r.stdout if r.returncode == 0 else None
+    bad, ci = common.ci_settings(slug, on_main, tok=tok, apply=True, repo=settled)
+    if ci:
+        say(("⚠ " if bad else "") + ci + (f" — then {MOD}/bin/repos --github --apply" if bad else ""))
+
+    hook = repo / ".git" / "hooks" / "pre-push"
+    # A dangling link is no guard, and writing through it fails: a studio repo's .git came with
+    # pre-push → scripts/git-hooks/pre-push, a folder studio never had (2026-09-26 — the crash
+    # left it created and pushed but unregistered).
+    if hook.is_symlink() and not hook.exists():
+        hook.unlink()
+    if not hook.exists():
+        hook.write_bytes((MOD / "templates" / "code" / "git-hooks" / "pre-push").read_bytes())
+        hook.chmod(0o755)
+        say("pre-push guard installed")
+
+    if not org:
+        invite(slug, tok)
+    if not key:
+        say(f"{repo} is outside ~/projects — not registered in repos.json")
+        return
+    register(key, (created or {}).get("full_name") or slug, name, hosts)
+
+
+def invite(slug, tok):
+    """The machine account a collaborator with push — invited here, accepted by bin/repos --clone
+    on the other Mac. Without it the other Mac's clone reads "Repository not found" (nine repos, 2026-10-07)."""
+    if not machine:
+        return True
+    st, _ = common.api("PUT", f"/repos/{slug}/collaborators/{machine}", {"permission": "push"}, tok=tok)
+    say(f"{machine} invited to {slug} with push" if st in (201, 204)
+        else f"⚠ {machine} NOT invited to {slug} (HTTP {st}) — bin/repos --github --apply")
+    return st in (201, 204)
+
+
+def register(key, slug, name, hosts=HOSTS):
+    kc = common.tool("knowledge-commit")  # G6: atlas's, an optional peer
+    if not kc:
+        say(f"⚠ knowledge-commit not installed (atlas) — add {key} to {REGISTRY} by hand")
+        return
+    slugname = re.sub(r"[^a-z0-9-]+", "-", f"repo-{name}".lower()).strip("-")
+    wt = subprocess.run([str(kc), REGISTRY_REPO, "--open", slugname], capture_output=True, text=True).stdout.strip()
+    if not wt:
+        say(f"⚠ could not open a {REGISTRY_REPO} worktree to register {key} — add it to repos.json by hand")
+        return
+    path = Path(wt) / "repos.json"
+    text = path.read_text()
+    line = f'    {json.dumps(key)}: {{"github": {json.dumps(slug)}, "hosts": {json.dumps(hosts)}}}'
+    new, n = re.subn(r"\n  \}\n\}\s*$", ",\n" + line + "\n  }\n}\n", text, count=1)
+    if not n:  # `repos` is not the file's last block: the fix is the repo-regatta branch's, unlaunched
+        say(f"⚠ repos.json in {wt} does not end with the repos block — add {key} to it by hand")
+        return
+    json.loads(new)  # the hand-aligned file stays valid JSON, or nothing is written
+    path.write_text(new)
+    launch = subprocess.run([str(kc), REGISTRY_REPO, "--in", wt, "-m", f"repos.json: {key} → {slug} (github-repo)"],
+                          capture_output=True, text=True)
+    say(f"registered {key} in repos.json: " + (launch.stdout.strip().splitlines() or ["?"])[-1]
+        if launch.returncode == 0 else f"⚠ repos.json line written in {wt} but NOT launched: {launch.stderr.strip()[-200:]}")
+
+
+if __name__ == "__main__":
+    main()

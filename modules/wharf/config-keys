@@ -1,0 +1,5 @@
+# wharf's private values that are a refusal when absent (README, "Private values"; the rest
+# have a default): `regatta check` reports each one missing where an overlay is installed, or
+# unreadable. ci-provider refuses --to <the self-hosted kind> and --runner on them itself.
+wharf/ci-runner-ssh
+wharf/ci-runner-labels

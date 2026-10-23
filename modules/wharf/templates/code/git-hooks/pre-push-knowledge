@@ -1,0 +1,46 @@
+#!/bin/sh
+# The knowledge repos' variant of git-hooks/pre-push (the vault only since 2026-09-26, when
+# the layer moved onto the worktree workflow — bootstrap.sh installs and compares it there). These two repos have no branch flow: main IS the working
+# branch, edited on both machines, and the only reason they exist is to be identical
+# everywhere. So their hooks push main themselves — vault_commit.py at session end,
+# knowledge-commit after a deliberate commit (docs/repo-sync-2026-09-22.md, D5).
+#
+# What this still refuses, from anyone but the owner (GIT_PUSH_OK=1, or VS Code's Push button):
+#   * main that is NOT a fast-forward — the remote tip must be an ancestor of what is pushed.
+#     A hook can pull --rebase; it may never overwrite what the other machine sent.
+#   * any deletion;
+#   * every other ref: branches other than claude/**, tags, notes.
+# THE CHECK READS STDIN, NOT THE COMMAND LINE — one line per ref: <local ref> <local sha>
+# <remote ref> <remote sha>. Test with: bash the overlay's hooks/test_hooks.sh
+[ "${GIT_PUSH_OK:-}" = "1" ] && exit 0
+[ "${VSCODE_GIT_COMMAND:-}" = "push" ] && exit 0
+
+refused=''
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ -z "$remote_ref" ] && continue
+	case "$local_sha" in
+		*[!0]*)
+			case "$remote_ref" in
+				refs/heads/claude/*) ;;
+				refs/heads/main)
+					case "$remote_sha" in
+						*[!0]*)
+							git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null \
+								|| refused="$refused  $remote_ref (not a fast-forward: pull --rebase first)
+" ;;
+					esac ;;
+				*) refused="$refused  $remote_ref
+" ;;
+			esac
+			;;
+		*) refused="$refused  $remote_ref (deletion)
+" ;;
+	esac
+done
+
+[ -z "$refused" ] && exit 0
+
+printf 'refusing this push (knowledge repo): main moves forward only, and only main or claude/**.\n\n' >&2
+printf 'Not allowed here:\n%s\n' "$refused" >&2
+printf 'The owner pushes anything with:  GIT_PUSH_OK=1 git push  — or VS Code'"'"'s Push button.\n' >&2
+exit 1

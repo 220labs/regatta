@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""tend — what a session start does to its repo's claude/* worktrees, for every repo on this host.
+
+  tend [<checkout>…]            run hooks/sync.py's tend (`sync.py --tend`) in each repo of
+                                repos.json cloned here (or the checkouts given): fetch, fast-forward
+                                a clean main, commit and push a dead session's dirty worktree,
+                                remove a clean landed one, archive landed and empty branches, prune gone
+  tend --dry-run [<checkout>…]  `sync.py --worktrees` in each instead: what the pass would do to
+                                each worktree, and why — acts on nothing (the R5 probe)
+  tend --list                   the checkouts a bare `tend` visits, one per line
+
+Why (docs/record/aurora-sequence-2026-10-04.md E1, E2): sync.py tends only the repo a session
+opens plus the two knowledge repos, so a repo nobody opens keeps its dead worktrees forever —
+The home repo's `unattended-deny` sat dirty four days, the other Mac's 11 parked worktrees had no session
+at all. The tend itself is sync.py's, proven at every start; this only supplies the trigger.
+Only the tend: `sync.py --tend` is sync() and the landed-worktree lock for one repo, without
+the rest of a session start — no declared user settings, no `secrets check --fix` (launchd
+cannot read Drive's _secrets), no sessionpipe check, no second pass over the knowledge repos
+(the record's open feedback, 2026-10-05). Zero tokens. sync.py's own 10-minute marker makes a
+second run within it a no-op, and it keeps its rules: a worktree a live session, a fresh lock
+or a recent write holds is never touched.
+
+Callers: bin/weekly-run before Aurora's sessions (laptop), bin/health after its fast-forward
+(the other Mac, behind HEALTH_TEND). Each repo gets TEND_TIMEOUT seconds (600: what Claude Code gives the same pass as a hook —
+a first push can take ~85 s, and a kill between sync.py's commit and its sync-unpushed marker
+leaves a commit nothing retries); one that runs out or fails costs only itself and prints `FAILED <repo>: <why>`. Exit 1 when any repo failed, so the
+caller can post one bulletin line; 0 otherwise. TEND_SYNC replaces the sync.py command for the
+suite (a real tend would push the real repos). Stdlib only.
+"""
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+MOD = Path(__file__).resolve().parent.parent  # this module, wharf: sync.py is its hook (B6)
+sys.path.insert(0, str(MOD / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+
+TIMEOUT = float(os.environ.get("TEND_TIMEOUT") or 600)  # sync.py's budget as a hook (its TEND_BUDGET note)
+OPTIONS = ("--dry-run", "--list")
+
+
+def tend(repo, dry):
+    """(ok, lines) for one repo."""
+    sync = shlex.split(os.environ.get("TEND_SYNC") or f"python3 {shlex.quote(str(MOD / 'hooks' / 'sync.py'))}")
+    cmd = sync + (["--worktrees", str(repo)] if dry else ["--tend", str(repo)])
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, cwd=str(repo),
+                           capture_output=True, text=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, [f"FAILED {repo.name}: no answer within {TIMEOUT:g} s — what it did so far stands"]
+    except OSError as exc:
+        return False, [f"FAILED {repo.name}: {exc}"]
+    if r.returncode:
+        return False, [f"FAILED {repo.name}: exit {r.returncode}: {(r.stderr or r.stdout).strip()[-200:]}"]
+    if dry:
+        return True, r.stdout.rstrip().splitlines()
+    # The hook speaks JSON: systemMessage for the owner, additionalContext for the model; the first
+    # is the one that says what moved. A hook fault comes back as a systemMessage too.
+    try:
+        out = json.loads(r.stdout) if r.stdout.strip() else {}
+    except ValueError:
+        out = {"systemMessage": r.stdout.strip()}
+    msg = (out.get("systemMessage") or "").lstrip("⇣ ").strip()
+    if msg.startswith("⚠ sync hook failed"):
+        return False, [f"FAILED {repo.name}: {msg}"]
+    if any("⚠" in line and "failed" in line for line in msg.splitlines()):
+        # a step inside the pass failed (the worktree pass, a commit, the branch report) — the
+        # rest of the message stands, but the repo was not fully tended
+        return False, [f"FAILED {repo.name}: {msg}"]
+    # sync.py names the repo itself ("the home repo: main +1 from origin"); a quiet one says nothing
+    return True, [msg if msg.startswith(f"{repo.name}:") else f"{repo.name}: {msg or 'nothing to say'}"]
+
+
+def main():
+    args = sys.argv[1:]
+    bad = [a for a in args if a.startswith("-") and a not in OPTIONS]
+    if bad:  # `--dryrun` would otherwise run the writing pass over every repo
+        sys.exit(f"tend: unknown option {bad[0]}\n" + __doc__.split("\n\n")[0])
+    dry = "--dry-run" in args
+    paths = [Path(a).expanduser().absolute() for a in args if not a.startswith("--")] or common.cloned_repos()
+    if not paths:  # a broken repos.json must not pass for a clean tend
+        sys.exit(f"FAILED tend: no repos — {common.repos_json() or 'the registry (CLAUDE_REPOS_JSON, or wharf/repos.json in the config dir)'} unreadable, or none cloned here")
+    if "--list" in args:
+        print("\n".join(str(p) for p in paths))
+        return
+    failed = []
+    for repo in paths:
+        ok, lines = tend(repo, dry)
+        print("\n".join(lines), flush=True)
+        if not ok:
+            failed.append(repo.name)
+    if failed:
+        print(f"FAILED tend: {', '.join(failed)}")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

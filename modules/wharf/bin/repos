@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""repos — where every shared repo stands on this machine, and clone the missing ones.
+
+  repos                 status: for each repo in repos.json — present, main vs origin,
+                        dirty files, agent branches not on origin, live worktrees, hook state,
+                        and CI on origin/main (templates/code/.github is the pattern; a knowledge
+                        repo wants check only): `ci ok`, `ci lacks automerge.yml`, `NO CI`; for a
+                        knowledge repo `ci has automerge.yml (D2: check only)`; for a repo
+                        bin/ci-provider moved to CircleCI `ci ok (circleci)`,
+                        `ci has automerge.yml (never arms under circleci)` or
+                        `NO CI (circleci, no .circleci/config.yml)`
+                        (a check.yml on main is read as Actions CI, whatever ci.json says: Actions
+                        runs it); `ci: no origin/main`; `ci: ci-provider unloadable (<error>)`
+  repos --clone         bring this host up to repos.json: on the other Mac first accept the machine
+                        account's pending invitations to repos listed here (from the owner only),
+                        then clone the missing repos with the pre-push guard in each, trust every
+                        repo in every Claude Code config dir here (bin/trust-projects) and load
+                        the missing Remote Control hosts (bin/rc-hosts, which never restarts a
+                        running one). The owner, 2026-10-07: "make all these settings part of
+                        starting/adopting a project" — /new-project runs it on both Macs.
+  repos --fetch         status after a fetch of every clone (slower, but the numbers are current)
+  repos --hooks         put the current pre-push template into every clone whose copy differs
+                        (a symlinked hook is the repo's own scripts/git-hooks/ file and is left
+                        for its branch to launch). The status line's "hook DIFFERS" is the cue:
+                        the template changed on 2026-09-25 and nine copies were stale at once.
+  repos --github [--apply]
+                        each repo's merge settings on GitHub against the one policy: rebase merge
+                        only (no merge commits, no squash) and the head branch deleted on merge
+                        (The owner, 2026-09-26: "all our GitHub PRs merged with the rebase option"),
+                        and the machine account a collaborator with push (or invited).
+                        A repo whose main on GitHub carries .github/workflows/automerge.yml is
+                        also checked for what automerge needs: allow_auto_merge and the rest of
+                        .github/repo-settings.json, main protected with main-protection.json's
+                        required contexts, and a `hold` label (common.ci_settings; a knowledge
+                        repo is only reported, D2); main requiring no check beside automerge.yml
+                        is a HAZARD. --apply sets any repo that differs and invites the account,
+                        but never protection or allow_auto_merge where main lacks check.yml or
+                        main-protection.json requires no check or one no job in check.yml has;
+                        allow_auto_merge off while main requires no check; never automerge on a
+                        knowledge repo; a 403/404 is reported. The owner's token: the laptop. A
+                        new repo is caught here.
+  repos --branches [--fetch] [--scope <scope>] [<checkout>…]
+                        idle claude/* branches, per repo (or for the checkouts given): those
+                        already on main (sync.py archives them at session start), probably
+                        launched (with the owner's `pickup review` line), those that never launched, with
+                        age, files and PR, and the live archives with their restore lines. The same list sync.py compresses into the session-start note;
+                        Aurora's dream reads it weekly. hooks/branches.py has the proofs. Then
+                        what autofinish ended the last 7 days: `autofinished` (launched as #N)
+                        and `stopped` (at a gate, never started, or died) — bin/autofinish's header.
+                        The fence (knowledge-layers S4, the core's gather_fence): a confidential
+                        scope's repo is one line with its counts — no name, branch, PR or path —
+                        and is never classified or reaped from here; `--scope <scope>` lists that
+                        scope's repos alone, a confidential one's in full (its own pass).
+  repos --branches --classify [--reap] [--fetch] [<checkout>…]
+                        then one line per idle branch not launched: empty (when it is reaped), or
+                        its case C1–C6 with the facts — patches on main, share of lines on main,
+                        files missing, idle days, PR, carries pointer, last asked
+                        (docs/record/branch-reaping-2026-10-04.md section 5). Read-only but for git's
+                        object store (merge-tree writes trees no ref names). --reap archives C1
+                        and C2 through the session start's archive(), under its guards — the
+                        weekly job's one write; C3–C6 are a list, never acted on (D3 = B).
+
+Reads the registry, repos.json (common.repos_json(): $CLAUDE_REPOS_JSON, else the regatta config
+dir's wharf/repos.json, which an overlay links to its own); a repo lives at ~/projects/<name>. One command answers
+"is everything pushed?" before a lid closes (docs/record/repo-sync-2026-09-22.md). Stdlib only.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MOD = Path(__file__).resolve().parent.parent  # this module, wharf: its hooks/ and templates/ (B6)
+sys.path.insert(0, str(MOD / "hooks"))
+sys.path.insert(1, str(MOD / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import branches  # noqa: E402
+import common  # noqa: E402
+
+PROJECTS = common.PROJECTS  # the core's `projects` key; not the checkout's parent: from a worktree that is .claude/worktrees
+TEMPLATES = MOD / "templates" / "code" / "git-hooks"
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+
+
+def registry():
+    """repos.json, parsed — through the core's one reader (C3), never a path beside this file."""
+    p = common.repos_json()
+    if not p:
+        sys.exit(f"repos: no registry — set CLAUDE_REPOS_JSON, or link one at {common.CONFIG / 'wharf' / 'repos.json'}")
+    try:
+        return json.loads(p.read_text())
+    except OSError as e:   # a dangling link: the core returns it, so the read refuses here
+        sys.exit(f"repos: the registry {p} cannot be read — {e.strerror}")
+
+
+def load():
+    return registry()["repos"]
+
+
+def machine_account():
+    return registry().get("machine_account")
+
+
+def ssh_works():
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T", "git@github.com"],
+                           capture_output=True, text=True, timeout=15)
+        return "successfully authenticated" in (r.stderr + r.stdout)
+    except Exception:
+        return False
+
+
+def status(name, spec, fetch):
+    repo = PROJECTS / name
+    host = common.host_name()
+    if not (repo / ".git").is_dir():
+        wanted = host in spec.get("hosts", [])
+        return f"{name:<11} {'MISSING here (repos --clone)' if wanted else 'not cloned here, by choice'}"
+    if fetch:
+        git(repo, "fetch", "-q", "--prune", "origin")
+    head = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip() or "detached"
+    counts = git(repo, "rev-list", "--left-right", "--count", "main...origin/main")
+    if counts.returncode == 0:
+        ahead, behind = (int(x) for x in counts.stdout.split())
+        main = "main = origin" if not ahead and not behind else \
+            f"main {'+' + str(ahead) + ' ahead' if ahead else ''}{' ' if ahead and behind else ''}{str(behind) + ' behind' if behind else ''}"
+    else:
+        main = "no origin/main"
+    dirty = len(git(repo, "status", "--porcelain").stdout.splitlines())
+    held = set(re.findall(r"^branch refs/heads/(\S+)$", git(repo, "worktree", "list", "--porcelain").stdout, re.M))
+    unpushed = []
+    for line in git(repo, "for-each-ref", "--format=%(refname:short)|%(upstream:short)|%(upstream:track)",
+                    "refs/heads/claude/").stdout.splitlines():
+        b, up, track = line.split("|")
+        if not up:
+            unpushed.append(f"{b} (never pushed)")
+        elif "ahead" in track:
+            unpushed.append(f"{b} {track}")
+    hook = repo / ".git" / "hooks" / "pre-push"
+    template = TEMPLATES / ("pre-push-knowledge" if spec.get("knowledge") else "pre-push")
+    hook_state = "hook ok" if hook.is_file() and hook.read_bytes() == template.read_bytes() else \
+        ("hook DIFFERS" if hook.is_file() else "NO pre-push hook")
+    ci = f"twin of {spec['twin_of']}" if spec.get("twin_of") else ci_state(repo, spec)  # its CI is the publish's
+    parts = [f"on {head}", main, f"{dirty} dirty" if dirty else "clean", hook_state, ci]
+    live = sorted(h for h in held if h != head)  # the primary checkout's own branch is not a worktree
+    if live:
+        parts.append("worktrees: " + ", ".join(live))
+    if unpushed:
+        parts.append("not on origin: " + ", ".join(unpushed))
+    return f"{name:<11} " + " · ".join(parts)
+
+
+CI_FILES = (".github/workflows/check.yml", ".github/workflows/automerge.yml")
+
+
+# This module's own ci-provider, beside this file: a sibling, never a peer, so never searched for
+# through common.tool(), which could find another copy or none (review 2026-10-21, 13). Through
+# the overlay's source shim __file__ is this file's own path, so the sibling is this module's too.
+CI_PROVIDER = Path(__file__).resolve().parent / "ci-provider"
+
+
+def ci_provider():
+    """bin/ci-provider as a module, for its provider_from: which CI a repo is on has one
+    definition, so `repos` and `ci-provider REPO` cannot disagree (review 2026-10-19, 5). Missing
+    or raising, it raises, and ci_state says `ci: ci-provider unloadable (…)`: never None, which
+    would read every repo as on Actions."""
+    global _CI_PROVIDER
+    if _CI_PROVIDER is None:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("ci_provider", str(CI_PROVIDER))
+        spec = importlib.util.spec_from_loader("ci_provider", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        _CI_PROVIDER = module   # only once loaded: a failure is retried, and said, per repo
+    return _CI_PROVIDER
+
+
+_CI_PROVIDER = None
+
+
+def ci_state(repo, spec):
+    """Whether origin's main carries templates/code/.github's CI (docs/ci-automerge-rollout-2026-10-06.md).
+    Read from origin/main, not the checkout: GitHub runs what is there. A knowledge repo wants
+    check.yml only — its reviewed PR path keeps the review as the gate (D2). Only that the files
+    exist: whether the check asserts anything is the repo's own AGENTS.md. A check.yml on main is
+    Actions CI whatever ci.json says, as Actions runs it; without one, which CI is bin/ci-provider's
+    provider_from, read on origin/main. Each file is read once (review 2026-10-19, second pass, D)."""
+    if git(repo, "rev-parse", "-q", "--verify", "origin/main").returncode != 0:
+        return "ci: no origin/main"  # local main would say "ok" for a repo GitHub runs nothing in
+
+    seen = {}
+
+    def on_main(f):
+        if f not in seen:
+            r = git(repo, "show", f"origin/main:{f}")
+            seen[f] = r.stdout if r.returncode == 0 else None
+        return seen[f]
+    has = [on_main(f) is not None for f in CI_FILES]
+    if spec.get("knowledge") and has[1]:
+        return "ci has automerge.yml (D2: check only)"
+    if not has[0]:
+        try:
+            provider = ci_provider().provider_from(on_main)[0]
+        except Exception as e:  # a status line per repo, never a crash of the whole listing
+            return f"ci: ci-provider unloadable ({type(e).__name__}: {e})"
+        if provider == "circleci":
+            # its check runs on CircleCI, from the one file CircleCI reads; automerge (Actions)
+            # waits for a check.yml run, so the switch refused it
+            if on_main(".circleci/config.yml") is None:
+                return "NO CI (circleci, no .circleci/config.yml)"
+            return "ci has automerge.yml (never arms under circleci)" if has[1] else "ci ok (circleci)"
+    want = CI_FILES[:1] if spec.get("knowledge") else CI_FILES
+    missing = [Path(f).name for f, h in zip(CI_FILES, has) if f in want and not h]
+    if not missing:
+        return "ci ok"
+    return "NO CI" if CI_FILES[0] in want and not has[0] else "ci lacks " + ", ".join(missing)
+
+
+def clone(name, spec):
+    repo = PROJECTS / name
+    host = common.host_name()
+    if (repo / ".git").is_dir() or host not in spec.get("hosts", []):
+        return None
+    url = f"git@github.com:{spec['github']}.git" if ssh_works() else f"https://github.com/{spec['github']}.git"
+    r = subprocess.run(["git", "clone", "-q", url, str(repo)], capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        return f"{name}: clone failed — {(r.stderr.strip().splitlines() or ['?'])[-1]}"
+    template = TEMPLATES / ("pre-push-knowledge" if spec.get("knowledge") else "pre-push")
+    dest = repo / ".git" / "hooks" / "pre-push"
+    dest.write_bytes(template.read_bytes())
+    dest.chmod(0o755)
+    return f"{name}: cloned from {url}, pre-push guard installed"
+
+
+def install_hooks(repos):
+    """Refresh each clone's .git/hooks/pre-push from its template. A symlinked hook is a repo
+    carrying the file in git (scripts/git-hooks/pre-push, the home repo's pattern), and main is not
+    written by hand: the template goes onto a claude/* branch in its own worktree, is pushed,
+    and a pull request is opened for the owner — the same road as any other change there."""
+    for name, spec in repos.items():
+        repo = PROJECTS / name
+        if not (repo / ".git").is_dir():
+            continue
+        template = TEMPLATES / ("pre-push-knowledge" if spec.get("knowledge") else "pre-push")
+        dest = repo / ".git" / "hooks" / "pre-push"
+        if dest.is_symlink() and not dest.exists():
+            dest.unlink()  # dangling: no guard at all, and nothing in git to branch from
+        if dest.is_symlink():
+            target = dest.resolve()
+            if target.exists() and target.read_bytes() == template.read_bytes():
+                print(f"  {name}: ok (symlink → {target.relative_to(repo)})")
+            else:
+                print(f"  {name}: {hook_branch(repo, target, template)}")
+            continue
+        if dest.is_file() and dest.read_bytes() == template.read_bytes():
+            print(f"  {name}: ok")
+            continue
+        dest.write_bytes(template.read_bytes())
+        dest.chmod(0o755)
+        print(f"  {name}: installed")
+
+
+def hook_branch(repo, target, template):
+    """The template onto a branch of `repo`, pushed, with a PR; one line saying how far it got."""
+    import datetime as dt
+    try:
+        rel = target.relative_to(repo)
+    except ValueError:
+        return f"symlink points outside the repo ({target}); left alone"
+    want = template.read_text()
+    # Already on its way? On origin/main (the checkout just has not pulled), or on a local
+    # claude/* branch (a PR is open, or waiting to be) — then a second branch would only make
+    # a duplicate pull request.
+    git(repo, "fetch", "-q", "origin")
+    has_origin = git(repo, "rev-parse", "--verify", "-q", "origin/main").returncode == 0
+    if has_origin and git(repo, "show", f"origin/main:{rel.as_posix()}").stdout == want:
+        return "launched on origin/main; the checkout pulls it at the next session start"
+    for b in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/claude/").stdout.split():
+        if git(repo, "show", f"{b}:{rel.as_posix()}").stdout == want:
+            return f"already on branch {b} — launch it"
+    topic = f"claude/{common.host_name()}/{dt.date.today():%Y-%m-%d}-pre-push"
+    wt = repo / ".claude" / "worktrees" / "pre-push"
+    if wt.exists():
+        return f"worktree {wt.relative_to(repo)} already exists; finish or remove it first"
+    if git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{topic}").returncode == 0:
+        return f"branch {topic} already exists; launch or delete it first"
+    # From origin/main where there is one, so the PR carries only this file and not commits
+    # sitting unpushed on the local main; --no-track, or the branch would track main and a
+    # VS Code Sync would push it there — the very accident the 2026-09-25 template stops.
+    base = "origin/main" if has_origin else "main"
+    r = git(repo, "worktree", "add", "-q", "--no-track", "-b", topic, str(wt), base)
+    if r.returncode:
+        return f"worktree add failed: {r.stderr.strip()[-160:]}"
+    (wt / rel).write_bytes(template.read_bytes())
+    (wt / rel).chmod(0o755)
+    git(wt, "add", str(rel))
+    r = git(wt, "commit", "-q", "-m", "Pre-push guard: the current template from wharf\n\n"
+            "Refreshed by `repos --hooks`; byte-identical to templates/code/git-hooks/pre-push.\n\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>")
+    if r.returncode:
+        return f"commit failed: {r.stderr.strip()[-160:]}"
+    if git(repo, "remote", "get-url", "origin").returncode != 0:
+        return f"committed on {topic} (no origin: nothing to push)"
+    r = git(wt, "push", "-q", "-u", "origin", topic)
+    if r.returncode:
+        return f"committed on {topic}; push failed: {r.stderr.strip()[-160:]}"
+    # A draft, like every agent's PR: a ready one from a claude/* branch launches itself where
+    # .github/workflows/automerge.yml is on main, and this one is for the owner to read first.
+    pr = subprocess.run(["gh", "pr", "create", "--draft", "--base", "main", "--head", topic,
+                         "--title", "Pre-push guard: the current template from wharf",
+                         "--body", "Refreshed by `repos --hooks`; byte-identical to "
+                                   "wharf's templates/code/git-hooks/pre-push."],
+                        cwd=wt, capture_output=True, text=True, timeout=60)
+    url = (pr.stdout.strip().splitlines() or [""])[-1]
+    return f"on {topic}, pushed" + (f", PR {url}" if pr.returncode == 0 else f"; PR not opened: {pr.stderr.strip()[-120:]}")
+
+
+def branch_report(checkouts, fetch, classify=False, reap=False, fence=None, scope=None):
+    """The groups for each checkout, in full. Read-only — archiving is sync.py's, at session
+    start — except `--reap`, below. `fence` (the core's gather_fence): a fenced checkout is
+    counted on one line and nothing else, one outside `scope` left out."""
+    for repo in checkouts:
+        verdict = fence(Path(repo).expanduser()) if fence else "quote"
+        if verdict == "outside" or verdict == "fenced" and scope:
+            continue
+        repo = Path(repo).expanduser().resolve()
+        if not (repo / ".git").exists():
+            print(f"{repo}: not a git checkout" if verdict == "quote" else "a confidential scope's repo: not a git checkout")
+            continue
+        if fetch and git(repo, "remote", "get-url", "origin").returncode == 0:
+            git(repo, "fetch", "-q", "--prune", "origin")
+        if verdict == "fenced":
+            # The weekly reap runs unscoped, so a fenced repo is still fetched, classified and
+            # reaped here; only what is printed is held back (S4 review, 2026-10-22).
+            if classify or reap:
+                prs = branches.open_prs(repo, strict=True)
+                _, maybe, pending = branches.survey(repo, prs=prs or {}, reaping=True, reviews=True)
+                classify_repo(repo, maybe + pending, prs, reap)
+            print(fenced_line(repo))
+            continue
+        prs = branches.open_prs(repo, strict=True)
+        done, maybe, pending = branches.survey(repo, prs=prs or {}, reaping=classify or reap, reviews=True)
+        print(repo.name)
+        print(branches.report(repo, done, maybe, pending))
+        for line in autofinish_groups(repo):
+            print(line)
+        if classify or reap:
+            print("\n".join(classify_repo(repo, maybe + pending, prs, reap)))
+
+
+def fenced_line(repo):
+    """One line for a confidential scope's checkout: its idle branches counted from git alone (no
+    PR lookup, no review read), nothing named — its own scope's pass lists them (S4)."""
+    done, maybe, pending = branches.survey(repo, prs={})
+    return (f"a confidential scope's repo — {len(done) + len(maybe) + len(pending)} idle claude/* branches "
+            f"(launched {len(done)}, probably launched {len(maybe)}, not on main {len(pending)}): "
+            "counted, not listed; its own pass lists them (--scope)")
+
+
+def autofinish_groups(repo, now=None):
+    """Two groups from the runs autofinish ended in this repo — the lines E1's runner appends to
+    <common git dir>/claude/autofinished (bin/autofinish's header) — latest per branch, the last
+    ARCHIVE_TTL_DAYS: `autofinished` (launched as #N) and `stopped` (stopped at a gate, never
+    started, or its runner died), the stopped ones being the owner's or the next session's again. Nothing when none ran."""
+    import datetime
+    cdir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    if not cdir:
+        return []
+    since = (now or time.time()) - branches.ARCHIVE_TTL_DAYS * 86400
+    latest = {}
+    for e in common.autofinished(cdir):
+        try:
+            t = datetime.datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if t >= since:
+            latest[e["branch"]] = e
+    when = lambda e: e["ts"][:16].replace("T", " ")  # noqa: E731
+    launched = [e for e in latest.values() if e["outcome"] in common.LAUNCHED_OUTCOMES]
+    stopped = [e for e in latest.values() if e["outcome"] not in common.LAUNCHED_OUTCOMES]
+    lines = []
+    if launched:
+        lines.append(f"  autofinished ({len(launched)}) — launched by the launcher, the last {branches.ARCHIVE_TTL_DAYS} days:")
+        lines += [f"    {e['branch']} — launched as {e['detail'] or '#?'} ({when(e)})" for e in launched]
+    if stopped:
+        lines.append(f"  stopped ({len(stopped)}) — autofinish stopped; the branch waits for a session or "
+                     f"{common.OWNER_NAME or 'the owner'}:")
+        def what(e):
+            d = e["detail"] or "?"
+            if e["outcome"] == "stopped":
+                return f"at {d}"
+            if e["outcome"] == "died":  # `<tip7> <line>`, worded as common.autofinished_phrase does
+                tip, _, last = d.partition(" ")
+                return f"died before an outcome at {tip}" + (f": {last}" if last else "")
+            return f"never started: {d}"
+        lines += [f"    {e['branch']} — {what(e)} ({when(e)})" for e in stopped]
+    return lines
+
+
+REAP_REASON = {"C1": "superseded: every commit's patch and every added line are on main",
+               "C2": "superseded: patches on main, content moved"}  # == branches.superseded()'s
+
+
+def classify_repo(repo, idle, prs, reap):
+    """docs/record/branch-reaping-2026-10-04.md section 5 and E9: one line per idle branch that is not
+    launched — its case (C1–C6), or `empty` — with the facts the weekly judge reads; C7 (live)
+    only counted. With `reap`, C1 and C2 go through branches.archive() under the session start's
+    guards: no worktree, no fresh lock, no carries pointer, idle REAP_AFTER, a GitHub copy only once GitHub said its
+    PR is WIP: or absent. That reaches the repos no session opens (granddad, studio: section 8)
+    and is the only place C2 is acted on. C3–C6 are never touched (D3 = B, the owner 2026-10-04:
+    a drop verdict has no exit but main absorbing the work; the bestiary first cuts stay)."""
+    main = branches.main_branch(repo)
+    tgt = branches.target(repo, main)
+    closed = branches.closed_prs(repo)
+    lines, live, now = [f"  classified ({len(idle)} idle, not launched):"], 0, time.time()
+    for b in idle:
+        if b.empty:
+            reason, task, ttl, clock = branches.reap_reason(b)
+            idle_s = now - clock
+            when = (f"reaped in {int((ttl - idle_s) // 86400) + 1} d" if idle_s < ttl
+                    else "reaped at the next session start in this repo")
+            lines.append(f"    empty · {b.name} · {reason}, idle {int(idle_s // 86400)} d — {when}"
+                         + (f" · task \"{task}\"" if task else ""))
+            continue
+        if not tgt:
+            continue
+        case, facts = branches.classify(repo, b, tgt, closed, now)
+        if case == "C7":
+            live += 1
+            continue
+        line = branches.classify_line(b, case, facts)
+        if reap and case in ("C1", "C2"):
+            held = ("a worktree holds it" if b.worktree is not None else "its lock is fresh" if b.live
+                    else "a carries pointer names it" if b.carried else branches.reap_guard(b, prs))
+            if held:
+                line += f" — not archived: {held}"
+            else:
+                ok, phrase = branches.archive(repo, b, REAP_REASON[case])
+                line += f" — archived: {phrase}" if ok else f" — not archived: {phrase}"
+        lines.append(f"    {line}")
+    if live:
+        lines.append(f"    {live} touched within {branches.REAP_AFTER // 86400} days (C7 live), not listed")
+    if len(lines) == 1:
+        lines.append("    none")
+    return lines
+
+
+# The policy is common.MERGE_POLICY. Six repos still allowed merge commits and squash, without
+# delete-on-merge, until 2026-09-26.
+MERGE_POLICY = common.MERGE_POLICY
+# The hosts that clone as the machine account: every Mac `wharf/hosts` names but the laptop,
+# whose commits are the owner's own (`regatta/laptop`). None without the key: no invitation
+# is checked, as on an install with no machine account.
+MACHINE_HOSTS = [h for h in (common.config_lines("wharf/hosts") or []) if h != common.LAPTOP]
+
+
+def collaborator(slug, tok, apply, knowledge=False):
+    """The machine account has push on slug, or an invitation waiting. An uninvited repo is one
+    The other Mac cannot clone — "Repository not found" (writing and eight more, 2026-10-07): repos
+    created by github-repo before it invited. Returns (1 when it is still neither, a note for the
+    repo's one line — empty when all is well). A knowledge repo is reported, never written: --apply
+    writes nothing there (D2)."""
+    m = machine_account()
+    if not m:
+        return 0, ""
+    st, perm = common.api("GET", f"/repos/{slug}/collaborators/{m}/permission", tok=tok)
+    if st == 200 and (perm or {}).get("permission") in ("write", "admin"):
+        return 0, ""
+    st, inv = common.api("GET", f"/repos/{slug}/invitations", tok=tok)
+    # an invitation expires after 7 days: an expired one counts as none, so --apply sends anew
+    if st == 200 and isinstance(inv, list) and any((i.get("invitee") or {}).get("login") == m
+                                                   and not i.get("expired") for i in inv):
+        return 0, f"{m} invited, not yet accepted — repos --clone on the other Mac accepts it"
+    if not apply or knowledge:
+        return 1, f"{m} has no push" + (" — knowledge repo, invite by hand" if knowledge
+                                        else " — repos --github --apply invites it")
+    st, _ = common.api("PUT", f"/repos/{slug}/collaborators/{m}", {"permission": "push"}, tok=tok)
+    return (0, f"{m} invited with push") if st in (201, 204) else (1, f"{m} NOT invited (HTTP {st})")
+
+
+def accept_invitations(repos):
+    """On the host whose token is the machine account (the other Mac): accept its pending invitations
+    to repos listed in repos.json, sent by their owner — nothing else. The owner's side is
+    collaborator() on the laptop; this is the half only the invitee can do."""
+    m = machine_account()
+    tok = common.token()
+    if not tok or not m:
+        return
+    st, me = common.api("GET", "/user", tok=tok)
+    if st != 200 or not isinstance(me, dict) or me.get("login") != m:
+        return
+    listed = {spec["github"]: name for name, spec in repos.items() if spec.get("github")}
+    st, inv = common.api("GET", "/user/repository_invitations", tok=tok)
+    if st != 200 or not isinstance(inv, list):
+        # an error body is a dict: iterated, it crashed --clone before any clone (review, 2026-10-07)
+        print(f"  invitations for {m} unreadable (HTTP {st}) — clones below may say \"Repository not found\"")
+        return
+    for i in inv:
+        slug = (i.get("repository") or {}).get("full_name")
+        if slug not in listed or (i.get("inviter") or {}).get("login") != slug.split("/")[0]:
+            continue
+        st, _ = common.api("PATCH", f"/user/repository_invitations/{i['id']}", tok=tok)
+        print(f"  {listed[slug]}: " + (f"{m} accepted the invitation" if st == 204 else f"invitation NOT accepted (HTTP {st})"))
+
+
+def trust_and_host():
+    """Trust every repo under ~/projects in each Claude Code config dir here — the default and
+    each ~/.claude-<x> login (bin/account; trust is per config dir) — then load the missing
+    Remote Control hosts. A host runs on the default dir; another login's session in a new
+    repo would still stop at the dialog without its own entry."""
+    dirs = [None] + sorted(str(p.parent) for p in Path.home().glob(".claude-*/.claude.json"))
+    trust, rc = common.tool("trust-projects"), common.tool("rc-hosts")
+    for d in dirs:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        if d:
+            env["CLAUDE_CONFIG_DIR"] = d
+        if not trust:  # G8: lighthouse's tool, an optional peer
+            print("  trust: skipped — trust-projects not installed (lighthouse); each new repo asks once")
+            break
+        r = subprocess.run([str(trust)], capture_output=True, text=True, env=env)
+        # every line but a plain "trusted …", and the exit code: a LOST entry or a failed dir
+        # read as success behind "35/36 trusted" (review, 2026-10-14)
+        lines = [l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+        label = Path(d).name if d else "~/.claude"
+        for l in ([l for l in lines[:-1] if not l.startswith("trusted ")] + lines[-1:]) or ["?"]:
+            print(f"  trust ({label}): {l}")
+        if r.returncode:
+            print(f"  trust ({label}): FAILED (exit {r.returncode}) — run {trust} again")
+    if not rc:  # G2: wharf-runs' tool, an optional peer
+        print("  rc: skipped — rc-hosts not installed (wharf-runs); no Remote Control hosts loaded")
+        return
+    r = subprocess.run([str(rc)], capture_output=True, text=True)
+    for line in (r.stdout + r.stderr).splitlines():
+        if not line.lstrip().startswith(("ok ", "skip ")):
+            print(line)
+
+
+def github_settings(repos, apply):
+    tok = common.token()
+    if not tok:
+        sys.exit("repos: no GitHub token — GH_TOKEN, ~/.git-credentials or `gh auth token`")
+    bad = 0
+    for name, spec in repos.items():
+        slug = spec.get("github")
+        if not slug:
+            continue
+        if spec.get("twin_of"):
+            # bin/opensource publish owns a public twin's main; its settings are not this policy's
+            print(f"  {name:<16} twin of {spec['twin_of']} — not checked")
+            continue
+        st, cur = common.api("GET", f"/repos/{slug}", tok=tok)
+        if st != 200:
+            print(f"  {name:<16} unreadable (HTTP {st})")
+            bad += 1
+            continue
+        # the machine account is the other Mac's: push where the other Mac clones, nowhere else (an employer
+        # org's repo is laptop-only, bin/github-repo --owner; 2026-10-18)
+        c_bad, c_note = (collaborator(slug, tok, apply, bool(spec.get("knowledge")))
+                         if set(MACHINE_HOSTS) & set(spec.get("hosts", [])) else (0, ""))
+        bad += c_bad
+        off = {k: v for k, v in MERGE_POLICY.items() if cur.get(k) != v}
+        if not off:
+            line = "ok — rebase only, delete on merge"
+        elif apply:
+            st, res = common.api("PATCH", f"/repos/{slug}", MERGE_POLICY, tok=tok)
+            res = res if st == 200 and isinstance(res, dict) else {}
+            still = {k: v for k, v in MERGE_POLICY.items() if res.get(k) != v}
+            line = "set: " + ", ".join(off) if not still else f"NOT set (HTTP {st}): " + ", ".join(still)
+            bad += bool(still)
+            cur = res or cur
+        else:
+            line = "DIFFERS: " + ", ".join(f"{k}={cur.get(k)}" for k in off) + " — repos --github --apply"
+            bad += 1
+        # CI and automerge, for a repo whose main carries automerge.yml — read through the API, so
+        # it is GitHub's main, not this clone's last fetch (plain `repos` reads the clone)
+        ci_bad, ci = common.ci_settings(slug, common.contents_reader(slug, cur.get("default_branch") or "main", tok),
+                                        tok=tok, apply=apply, knowledge=bool(spec.get("knowledge")), repo=cur)
+        bad += ci_bad
+        print(f"  {name:<16} {line}" + (f" · {ci}" if ci else "") + (f" · {c_note}" if c_note else ""))
+    sys.exit(1 if bad else 0)
+
+
+def main():
+    args = sys.argv[1:]
+    repos = load()
+    if "--branches" in args:
+        fetch = "--fetch" in args
+        scope = args[args.index("--scope") + 1] if "--scope" in args[:-1] else None
+        if "--scope" in args and (not scope or scope.startswith("--")):
+            sys.exit("repos: --scope needs a scope's name")
+        try:
+            fence = common.gather_fence(scope)
+        except ValueError as e:
+            sys.exit(f"repos: {e}")
+        paths = [a for i, a in enumerate(args) if not a.startswith("--") and not (i and args[i - 1] == "--scope")]
+        if not paths:
+            paths = common.cloned_repos()
+        branch_report(paths, fetch, "--classify" in args, "--reap" in args, fence, scope)
+        return
+    if "--hooks" in args:
+        install_hooks(repos)
+        return
+    if "--github" in args:
+        github_settings(repos, "--apply" in args)
+    if "--clone" in args:
+        accept_invitations(repos)
+        for name, spec in repos.items():
+            note = clone(name, spec)
+            if note:
+                print("  " + note)
+        trust_and_host()
+    fetch = "--fetch" in args or "--clone" in args
+    print(f"repos on {common.host_name()}" + (" (fetched)" if fetch else " (as last fetched; --fetch for current)"))
+    for name, spec in repos.items():
+        print("  " + status(name, spec, fetch))
+
+
+if __name__ == "__main__":
+    main()

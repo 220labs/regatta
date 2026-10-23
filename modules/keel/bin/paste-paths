@@ -1,0 +1,1277 @@
+#!/usr/bin/env python3
+"""paste-paths — a command the owner is asked to paste must carry absolute paths.
+
+  paste-paths FILE.md [FILE.md …]     one line per offending command, exit 1 if any; exit 0 clean
+  paste-paths --self-test             the built-in cases (tests/paste-paths.sh runs it)
+  paste-paths --stop-hook             Stop hook (stdin JSON): the turn's last reply — paste blocks,
+                                      bare PR numbers, vscode:// links, relative or
+                                      file:// file links (absolute only), owed-lists
+                                      whose items say no "checked:", a reply asking D-items (a
+                                      D-list, or a WAITING line naming them) without its doc's
+                                      hand-over line (`keel line`) or with no doc at all,
+                                      a closing line that is not last,
+                                      not word for word, or missing from a /finish that landed,
+                                      a WAITING line that asks for a go on an event the session
+                                      can watch, or names a command without its Do-this-now block,
+                                      a session handed to the owner to start (/pickup … --fresh, a
+                                      prompt to paste) where dispatch could start it
+                                      — blocks once with the reason
+
+The rule (the overlay's rules, "How to talk"): a relative path in a paste block resolves
+in whichever checkout the owner's shell is in — a file on an unmerged branch is not at the main
+checkout's path at all. Said twice (2026-09-24, an scp of a wrapper; 2026-09-25, a doc's
+`sh macos/…/install.sh` run in the main checkout), so this is the mechanism: /finish runs it
+over the .md files a branch changed, and every hit is an open item.
+
+What is read: only fenced code blocks (``` … ```), so prose that mentions a path is never a
+hit. A block line is split on | || && ; into commands; a leading `$ ` prompt is dropped, a
+line starting with # is a comment. A command offends when its verb is one of
+    sh bash zsh python python3 source . cd exec
+or starts with ./ or ../, and one of its arguments is a relative path: it contains a / (or,
+for cd, is anything at all) and starts with none of  /  ~  $  -  or a URL scheme. `ssh host
+'sh scripts/x'` is deliberately not a hit — that path is the remote's, and `ssh` is not in
+the verb list. False negatives are accepted; a hit is for a human to read, not to auto-fix.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import sys
+
+VERBS = {"sh", "bash", "zsh", "python", "python3", "source", ".", "cd", "exec"}
+SPLIT = re.compile(r"\s*(?:\|\||&&|\||;)\s*")
+
+
+def relative(arg: str, verb: str) -> bool:
+    if arg.startswith(("/", "~", "$", "-")) or "://" in arg:
+        return False
+    if verb == "cd":
+        return True
+    return "/" in arg
+
+
+def offends(command: str) -> bool:
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    # skip leading VAR=value assignments
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        words = words[1:]
+    if not words:
+        return False
+    verb, args = words[0], words[1:]
+    if verb.startswith(("./", "../")):
+        return True
+    if verb not in VERBS:
+        return False
+    return any(relative(a, verb) for a in args)
+
+
+def scan(text: str):
+    """Yield (line number, line) for every offending command in the fenced blocks of text."""
+    lines = text.splitlines()
+    for n, (raw, inside) in enumerate(zip(lines, _common().fenced(lines)), 1):
+        if not inside or _common().fence_opener(raw):
+            continue  # outside a block, or a fence line (an inner ``` in a ```` block is no command either)
+        line = raw.strip()
+        if line.startswith("$ "):
+            line = line[2:]
+        if not line or line.startswith("#"):
+            continue
+        if any(offends(c) for c in SPLIT.split(line) if c):
+            yield n, raw.strip()
+
+
+CASES = [  # (block line, offends?)
+    ("sh scripts/test.py --check", True),
+    ("sh /opt/projects/house/scripts/test.py --check", False),
+    ("python3 scripts/ha.py errors 20", True),
+    ("python3 /opt/projects/house/scripts/ha.py errors 20", False),
+    ("$ sh macos/vscode-remote/install.sh", True),
+    ("pbpaste | sh macos/vscode-remote/install.sh --remote-token", True),
+    ("pbpaste | sh /opt/projects/house/macos/vscode-remote/install.sh --remote-token", False),
+    ("cd scripts && python3 test.py", True),
+    ("cd /opt/projects/house && python3 scripts/test.py", True),
+    ("cd ~/projects/house", False),
+    ("./scripts/install_git_hooks.sh", True),
+    ("ssh nas 'sh scripts/x.sh'", False),
+    ("ssh -t buildbox-ssh /opt/sam/.local/bin/claude setup-token", False),
+    ("git diff main -- unraid/notes.md", False),
+    ("# sh scripts/test.py", False),
+    ("VSCODE_REMOTE_SETTINGS=$HOME/x sh macos/vscode-remote/install.sh", True),
+    ("source ~/.zshenv", False),
+    ("bash ~/projects/overlay/hooks/test_checkpoint.sh", False),
+    ("python3 -c 'print(1)'", False),
+]
+
+OWED_CASES = [  # (reply, unchecked items)
+    ("**Still owed by you:**\n- Delete the key.\n- Paste prompt 2.", 2),
+    ("**Still owed by you:**\n- Delete the key. checked: key absent in settings.json\n- Paste. not checked: costly — ask?", 0),
+    ("Carried forward, all recorded in the doc:\n\n1. The key paste.\n   checked: test -e says missing\n2. .env.example waits.", 1),
+    ("**Still owed:** delete the TypeSafe key from settings.json", 1),
+    ("Nothing carried forward.\nNo open items.", 0),
+    ("## Open items carried forward\n- jev-followups seed — checked: branch has one commit", 0),
+    ("The owed list should say how each item was checked.\n- a bullet about something else", 0),
+    ("## Summary\n\n- Shipped: x\n- Manual steps still owed by Sam: none\n- Open items carried forward: none\n- Learnings: y", 0),
+    ("- **Still owed by you:** clearing the upstairs dock\n- **Not yet seen live:** the toast", 1),
+    ("**Manual steps owed:** none. The shell command is pasted and reloaded.", 0),
+    ("**Still owed by you:**\n- Delete the key.\n  - checked: grep says present, still owed", 0),
+    ("No open items carried forward.\n\n- Shipped A\n- Shipped B", 0),
+    ("What changed:\n- Carried forward the fix to main\n- Added two tests.", 0),
+]
+
+def self_test() -> int:
+    bad = 0
+    for line, want in CASES:
+        got = bool(list(scan("```bash\n" + line + "\n```\n")))
+        mark = "ok  " if got == want else "FAIL"
+        bad += got != want
+        print(f"{mark}  {'hit' if want else 'clean'}: {line}")
+    prose = list(scan("Run `sh scripts/test.py` first.\n"))
+    print(("ok  " if not prose else "FAIL") + "  prose outside a fence is never read")
+    bad += bool(prose)
+    for reply, want in OWED_CASES:
+        got = len(owed_unchecked(reply))
+        mark = "ok  " if got == want else "FAIL"
+        bad += got != want
+        print(f"{mark}  owed: {want} unchecked in {reply.splitlines()[0][:50]!r}")
+    total = len(CASES) + 1 + len(OWED_CASES)
+    print(f"{total - bad} of {total} pass")
+    return 1 if bad else 0
+
+
+# --stop-hook: the same scan over the turn's last reply, plus PR links, at every Stop.
+# Why (dream 2026-09-27 P9, weekly 2026-09-29): seven prompts in five sessions asked again for
+# absolute paths and openable PR links after the rule was promoted and this script built — it
+# ran over /finish digests only, and three of the four path corrections were chat.
+BARE_PR = re.compile(r"(?<![\w\[/])PR\s*#\d+\b|(?<![\w\[/#])#\d+\s+\((?:WIP|PR)")
+VSCODE_LINK = re.compile(r"\]\(vscode://")
+
+
+def _outside_fences(text: str):
+    """(line, outside a fenced block) — hooks/common.py's one fence rule."""
+    lines = text.splitlines()
+    for raw, inside in zip(lines, _common().fenced(lines)):
+        yield raw, not inside
+
+
+def prose_only(text: str) -> str:
+    return "\n".join(re.sub(r"`[^`]*`", "", raw) for raw, keep in _outside_fences(text) if keep)
+
+
+def load_entries(transcript: str) -> list:
+    entries = []
+    try:
+        with open(transcript, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):  # a bare JSON scalar made every reader raise .get
+                    entries.append(obj)
+    except OSError:
+        pass
+    return entries
+
+
+def last_reply(transcript, entries=None) -> str:
+    """The assistant text written since the last human prompt, oldest first."""
+    entries = load_entries(transcript) if entries is None else entries
+    texts = []
+    for e in reversed(entries):
+        msg = e.get("message") or {}
+        content = msg.get("content")
+        if e.get("type") == "user":
+            if isinstance(content, str) or not any(
+                    isinstance(c, dict) and c.get("type") == "tool_result" for c in content or []):
+                break
+            continue
+        if e.get("type") == "assistant" and isinstance(content, list):
+            texts.extend(c.get("text", "") for c in reversed(content)
+                         if isinstance(c, dict) and c.get("type") == "text")
+    return "\n".join(reversed(texts))
+
+
+# Owed-lists (docs/record/owed-check-2026-10-02.md, the owner's D1–D4): a list headed "still owed", "owed by
+# the owner/you", "carried forward" … must say per item how it was checked — the owner routinely does these
+# without saying so, or in another session on another branch (four wrong items in one recap,
+# 2026-10-02). The hook reads form, not truth; `bin/owed <marker>` is the cheap probe.
+OWED_HEAD_FORM = (
+    r"^\s*(?:#{1,6}\s*|[-*•]\s+|\d+[.)]\s+)?(?:\*\*)?\s*(?:[^\s*]+\s+)?"
+    r"(?:still owed|owed by (?:the owner|you|me%s)|manual steps (?:still )?owed|carried forward|open items carried)")
+
+
+def owed_head():
+    """OWED_HEAD_FORM with the owner's name (`regatta/owner`) beside "you" and "me": `owed by \\w+`
+    read a "rent owed by tenant" bullet as an owed list (the scrubs' integration review)."""
+    try:
+        name = _common().OWNER_NAME
+    except ImportError:
+        name = ""
+    return re.compile(OWED_HEAD_FORM % ("|" + re.escape(name) if name else ""), re.I)
+OWED_ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+OWED_OK = re.compile(r"\bchecked:|\bnot checked\b", re.I)
+
+
+NOTHING = re.compile(r"^(?:none|nothing|no\b|n/a)", re.I)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def owed_unchecked(text: str) -> list[str]:
+    """Items under an owed heading that carry neither `checked:` nor `not checked`.
+
+    A heading takes the list after it only when it reads as a heading: it starts with # or,
+    stars and spaces stripped, ends with a colon (15 of 17 real ones, review 2026-10-02).
+    Otherwise — "- **Still owed by you:** clear the dock" — the line is its own item, and
+    "none" / "nothing" after the colon is no item at all."""
+    lines, bad, i = text.splitlines(), [], 0
+    while i < len(lines):
+        line = lines[i][:200]
+        low = line.lower()
+        if ("owed" not in low and "carried" not in low) or not owed_head().match(line):
+            i += 1
+            continue
+        head, i, items = lines[i], i + 1, []
+        bare = head.strip().strip("*").strip()
+        if head.lstrip().startswith("#") or bare.endswith(":"):
+            if i < len(lines) and not lines[i].strip():
+                i += 1  # one blank line between heading and list
+            base = None
+            while i < len(lines) and lines[i].strip():
+                cur = lines[i]
+                if OWED_ITEM.match(cur) and (base is None or _indent(cur) <= base):
+                    base = _indent(cur) if base is None else base
+                    items.append(cur)
+                elif items and cur[:1].isspace():
+                    items[-1] += " " + cur.strip()  # a continuation or a sub-bullet
+                else:
+                    break
+                i += 1
+        else:
+            rest = head.split(":", 1)[1].strip(" *") if ":" in head else ""
+            if rest and not NOTHING.match(rest):
+                items = [head]
+        bad += [it.strip()[:60] for it in items if not OWED_OK.search(it)]
+    return bad
+
+
+# The hand-over line (the owner, 2026-10-07: "It should apply to every single message that asks for Dx
+# to be answered … in every repo I work on"). A reply that asks the owner D-items (common.asks_answers:
+# `➤ Answer:` in its prose, or a WAITING line naming a D-item) carries the doc's one line,
+#   [course](…) | [github](…) | [space](…) — [<file name>](<absolute path>#L1)
+# exactly as `keel line <doc>` prints it; bin/keel's line_findings is the one reader, so this
+# hook demands only what `keel line` can print. Which doc: the branch doc the reply's items come
+# from when there is one (the same id with a mostly shared title or answer — same id alone is too
+# weak, every doc has a D1), else any .md the reply links. One doc's line is enough: a digest
+# quoting a design doc's D-list. A nested set's `keel line <entry>` prints a line per file (entry S8, 2026-10-15):
+# the line of the doc whose items the reply asks is the one that counts, so a component's
+# items with only the entry's line still block. A D-list with no doc at all still blocks for that (the owner,
+# 2026-10-04: "hand me the docs EVERY SINGLE TIME you remind me of Dx answers"; four replies in
+# one session asked D1–D4 with no doc to answer in). History: from 2026-10-02 this demanded the
+# local file and GitHub's edit URL (orchestration-build: "Once again you didn't give me a way to
+# open the doc to answer your D questions"); the shape the owner set on 2026-10-04/05 lived only in
+# one project's memory until 2026-10-07. checkpoint.py's answer_link_block asks the same line of
+# a turn that wrote D-items without asking, and stands back when the reply asks (one block).
+WORD = re.compile(r"[a-z0-9][a-z0-9'-]{3,}")
+MD_LINK = re.compile(r"\]\(<([^>]+)>\)|\]\(([^)\s]+)\)")
+
+
+def _memo():
+    """bin/keel as a module: its item_match is the one definition of a D-item."""
+    import importlib.util
+    import os
+    from importlib.machinery import SourceFileLoader
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keel")
+    loader = SourceFileLoader("memo_for_paste_paths", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def _items(memo, text: str) -> dict:
+    """{id: words of title + answer} for the items that carry an `➤ Answer:` line. Line by line
+    with memo's item_match, not memo.parse: a reply joins every message since the prompt, and
+    parse refuses an id seen twice (a list restated before and after a tool call)."""
+    items, cur = {}, None
+    for line, keep in _outside_fences(text):
+        if not keep:
+            continue
+        m = memo.item_match(line)
+        if m:
+            title, rest = memo.split_title(m.group("rest"))
+            cur = ("D" + m.group("n"), set(WORD.findall((title + " " + rest.split(memo.ANSWER)[0]).lower())))
+        if cur and memo.ANSWER in line:
+            words = cur[1] | set(WORD.findall(line.split(memo.ANSWER, 1)[1].lower()))
+            items[cur[0]] = items.get(cur[0], set()) | words
+            cur = None
+    return items
+
+
+def _same(a: set, b: set) -> bool:
+    """Two shared words at least, and half the shorter side: one word ("session") matched a
+    chat-only D3 to two docs in the replay of orchestration-build's transcript (2026-10-02).
+    A terse item restated word for word ("Merge now? yes") matches on equality."""
+    return (bool(a) and a == b) or len(a & b) >= max(2, (min(len(a), len(b)) + 1) // 2)
+
+
+def _git(top: str, *args: str) -> str:
+    import subprocess
+    r = subprocess.run(["git", "-C", top, "-c", "core.quotePath=false", *args],
+                       capture_output=True, text=True, timeout=10)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def branch_docs(cwd: str):
+    """(top, branch, {path in repo: (absolute path, text)}) for the .md files with answer lines
+    this branch changed since main — committed, staged, unstaged or untracked: a doc written this
+    turn is not committed yet, Stop hooks run in parallel. Untracked first: checkpoint's
+    `git add -A` may stage it in between, and `git diff <base>` then lists it."""
+    import os
+    top = _git(cwd, "rev-parse", "--show-toplevel").strip()
+    if not top:
+        return top, "", {}
+    main = "main"
+    try:
+        with open(os.path.join(top, ".claude", "workflow.json"), encoding="utf-8") as fh:
+            main = json.load(fh).get("main") or main
+    except (OSError, ValueError, AttributeError):
+        pass
+    base = _git(top, "merge-base", "HEAD", main).strip()
+    if not base:
+        return top, "", {}
+    rels = _git(top, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.md").split("\0")
+    rels += _git(top, "diff", "-z", "--name-only", "--diff-filter=d", base, "--", "*.md").split("\0")
+    docs = {}
+    for rel in dict.fromkeys(r for r in rels if r):
+        path = os.path.join(top, rel)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, ValueError):  # gone, or not UTF-8: that doc only
+            continue
+        if "➤ Answer:" in text:
+            docs[rel] = (path, text)
+    branch = _git(top, "symbolic-ref", "-q", "--short", "HEAD").strip()
+    return top, branch, docs
+
+
+# A file link is absolute, always. Each client resolves a relative one from its own root, and in
+# a worktree session the two differ (2026-10-04, one session, both seen): the VS Code panel from
+# the window's folder — its log, "Could not open /Users/…/the overlay/docs/a.md" five times for
+# `docs/a.md`, the primary on main lacking the branch's doc — and Remote Control on the phone from
+# the session's current directory — "Can't read this file: .claude/worktrees/<topic>/docs/a.md",
+# the spelling that had just opened in VS Code. The owner: "This is getting ridiculous." The start
+# folder (the transcript's first `cwd`) marks a real session; fixtures without one keep the old rule.
+SCHEME = re.compile(r"^[A-Za-z][\w+.-]*:(?!\d)")  # https:, tel:, message: — `x.md:12` is a file
+INERT = re.compile(r"^(?:file|computer)://")  # do nothing in the VS Code panel (lessons/claude-code.md)
+
+
+def start_dir(entries: list) -> str:
+    for e in entries:
+        if e.get("cwd"):
+            return str(e["cwd"])
+    return ""
+
+
+def link_findings(reply: str, root: str, cwd: str = "") -> list[str]:
+    """One finding naming every relative or file:// markdown link in the reply's prose, each with
+    its absolute spelling where the file exists — from the session's worktree (the git top of
+    `cwd`; a `cd` moves cwd itself) first, then cwd, then `root` — its #L12 or :12 kept. One, so
+    the block reason's cut at six findings never drops another check (it blocks only once)."""
+    import os
+    from urllib.parse import unquote
+    if not root:
+        return []
+    top = _git(cwd, "rev-parse", "--show-toplevel").strip() if cwd and os.path.isdir(cwd) else ""
+    bad = []
+    for m in MD_LINK.finditer(prose_only(reply)):
+        raw = unquote(m.group(1) or m.group(2))
+        if not INERT.match(raw) and (raw.startswith(("#", "/")) or SCHEME.match(raw)):
+            continue
+        path = INERT.sub("", raw)
+        tail = re.search(r"(#.*|:\d+(?::\d+)?)$", path)
+        t = os.path.expanduser(path[:tail.start()] if tail else path)
+        if not t:
+            continue
+        bases = ("",) if t.startswith("/") else (top, cwd, root)
+        fix = next((os.path.normpath(os.path.join(b, t)) for b in bases
+                    if (b or t.startswith("/")) and os.path.exists(os.path.join(b, t))), "")
+        bad.append(f"({raw}) -> " + (f"({fix}{tail.group(0) if tail else ''})" if fix else "no such file"))
+    bad = list(dict.fromkeys(bad))
+    if not bad:
+        return []
+    return [f"{len(bad)} file link(s) that will not open — VS Code and Remote Control resolve a "
+            f"relative link from different folders and ignore file://, so write the bare absolute "
+            f"path: " + "; ".join(bad[:8]) + (" …" if len(bad) > 8 else "")]
+
+
+def _linked_docs(reply: str, cwd: str) -> list:
+    """Existing .md files the reply's prose links, absolute paths first-seen order; a relative
+    link resolved from the session's worktree (link_findings names it as a fault anyway)."""
+    import os
+    from urllib.parse import unquote
+    top = _git(cwd, "rev-parse", "--show-toplevel").strip() if cwd and os.path.isdir(cwd) else ""
+    out = []
+    for m in MD_LINK.finditer(prose_only(reply)):
+        t = re.sub(r"(#.*|:\d+(?::\d+)?)$", "", unquote(m.group(1) or m.group(2)))
+        t = os.path.expanduser(INERT.sub("", t))
+        if not t.endswith(".md") or SCHEME.match(t):
+            continue
+        t = t if t.startswith("/") else os.path.join(top or cwd or "", t)
+        if os.path.isfile(t) and os.path.realpath(t) not in out:
+            out.append(os.path.realpath(t))
+    return out
+
+
+def handover_findings(reply: str, cwd: str, root: str = "") -> list[str]:
+    import os
+    if not _common().asks_answers(reply):
+        return []
+    # git and bin/keel each may fail (a git timeout, a memo that does not load); the no-doc finding
+    # below is git-free and must still fire then — a chat-only D-list is the case the owner asked for
+    # "EVERY SINGLE TIME" (review 2026-10-09)
+    memo, docs = None, []
+    try:
+        memo = _memo()
+    except Exception as err:
+        print(f"paste-paths: hand-over line: bin/keel: {err}", file=sys.stderr)
+    if memo and cwd and os.path.isdir(cwd):
+        try:
+            top, _, branch_md = branch_docs(cwd)
+            asked = _items(memo, reply)
+            ranked = []
+            for rel, (path, text) in (branch_md.items() if asked else ()):
+                doc = _items(memo, text)
+                hits = [i for i, w in asked.items() if i in doc and _same(w, doc[i])]
+                if hits:
+                    ranked.append((len(hits), rel, path, hits))
+            ranked.sort(key=lambda r: -r[0])
+            docs = [(path, rel, hits) for _, rel, path, hits in ranked]
+        except Exception as err:
+            print(f"paste-paths: hand-over line: branch docs: {err}", file=sys.stderr)
+    if not docs:
+        linked = _linked_docs(reply, cwd)
+        asking = [d for d in linked if "➤ Answer:" in _read(d)]
+        docs = [(d, d, []) for d in (asking or linked)]
+    if not docs:
+        return ["the reply asks the owner D-items but hands no doc — end it with the line "
+                "python3 " + _cmd("keel") + " line <doc> prints; if no doc exists, write one in "
+                "docs/<topic>-<date>.md on this claude/* branch first (shape: agents/architect.md). "
+                "A D-list never lives only in chat, and every reply that reminds the owner of open D-items "
+                "hands that same doc"]
+    if memo is None:
+        return []
+    worst = None
+    for path, shown, hits in docs:
+        try:
+            probs = memo.line_findings(reply, path)
+        except Exception as err:  # the doc vanished, git trouble: that doc only
+            probs = [f"its line could not be checked ({err})"]
+        if not probs:
+            return []
+        if worst is None:
+            worst = (path, shown, hits, probs)
+    path, shown, hits, probs = worst
+    where = f"{', '.join(hits)} come from {shown}" if hits else f"the reply hands {shown}"
+    return [f"{where}, but its hand-over line is not right: " + "; ".join(probs[:4])
+            + f" — run python3 {_cmd('keel')} line {shlex.quote(path)} and put the one line "
+            "it prints in the reply as it is (course | github | space — file; stderr says why a part is "
+            "missing — say that in the reply instead of inventing the link; the course link is the doc's spacesheep "
+            "page — run `keel sheep wait <doc>` as a background shell when the session should go on after "
+            "the owner's Save or comments there, its exit wakes the session — or keel serve's where the doc has no "
+            "page: start `keel serve <doc>` in the background first and `keel line` reuses it; skill /keel)"]
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, ValueError):
+        return ""
+
+
+# Closing lines (docs/record/orchestration-proposal-2026-10-02.md, step 10: A1, A2). The session bench
+# (2026-10-02) found two /finish runs that improvised their ending — a ship emoji last, and
+# `HOUSEHOLD: … FINISHED` after the fixed line — and every model read both as "waiting". The
+# skill said "the very last thing said"; this makes it so. The table lives in hooks/common.py.
+# Keyed on the turn, not on /finish's `finishing` marker: /finish removes the marker before it
+# writes its report, and the report is the reply that must end right.
+COMMAND = re.compile(r"<command-name>/?([\w:-]+)</command-name>")
+
+
+def _common():
+    """The regatta core's common.py (lib/find_core.py: the checkout this module sits in, else the config dir's `home`, else the plugin's installPath; never a copy). No core is an ImportError the callers' own guards take."""
+    # Loaded once: fence_mark and scan() call this per line, and find_core reads the home file
+    # and installed_plugins.json each time (1,521 lookups in one `keel open`, review of B4).
+    if "common" in sys.modules:
+        return sys.modules["common"]
+    import os
+    lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import find_core
+    try:
+        hooks = find_core.hooks()
+    except SystemExit:
+        raise ImportError("paste-paths: the regatta core is missing")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import common
+    return common
+
+
+def _cmd(name, absolute=False):
+    """How a message names a peer tool: the overlay's copy while the overlay has one (the account
+    dirs' allow rules name that path), else the module's through tool(), else the bare name; under
+    `~` unless `absolute` (a paste block's paths are absolute)."""
+    try:
+        c = _common()
+        old = c.legacy_root()
+        p = old / "bin" / name if old and (old / "bin" / name).is_file() else c.tool(name)
+    except ImportError:
+        p = None
+    if not p:
+        return name
+    if absolute:
+        return str(p)
+    import os
+    import pwd
+    s = str(p)
+    for home in (os.path.expanduser("~"), pwd.getpwuid(os.getuid()).pw_dir):   # the login's own when HOME moved
+        if home and s.startswith(home.rstrip("/") + "/"):
+            return "~" + s[len(home.rstrip("/")):]
+    return s
+
+
+def owner_named(text):
+    """The Stop hook's message with the owner's name (`regatta/owner`) where it says "the owner";
+    unchanged without one."""
+    try:
+        name = _common().OWNER_NAME
+    except ImportError:
+        name = ""
+    if not name:
+        return text
+    return text.replace("The owner", name).replace("the owner", name)
+
+
+# "I agree with your proposals, /finish" (7 real prompts) — at the end only, so "don't /finish
+# yet" is not one; a model's own Skill call to finish counts too.
+FINISH_ASKED = re.compile(r"(?:^|\s)/finish(?:\s+--?\S+)*\s*$")
+MARKER_TOUCH = re.compile(r"\btouch\b[^;&|\n]*claude/finishing")  # a real Phase 2, not a mention
+WAITS = re.compile(r"\b(?:waiting (?:for|on)|still running|in the background)\b", re.I)
+# A WAITING line that hands the owner a "go" to send once something observable happens: the session
+# watches that itself (the overlay's rules "How to talk"; the owner, 2026-10-04, "ALWAYS"). The
+# event must sit in a condition clause (once/when/after…), so an approval go beside a finished fact
+# ("the check passed; say go to merge") passes, and so does a wait on time ("once the week resets").
+# Accepted misses and false blocks: "answer `go`", "tell me to go on"; a step only the owner can do
+# ("say go once pairing is done") blocks too — rephrase it as the step itself.
+# `resum[e]`: the same word, spelled so the publish gate's substring scan never reads it as a repo name
+_GO = r"\b(?:say|type|send|reply)\b(?:\W{0,4}|\s+with\W{0,4})(?:go|continue|resum[e]|proceed)\b"
+_COND = r"\b(?:once|when|after|until|as soon as)\b"
+_EVENT = (r"\b(?:merge[sd]?|merging|land(?:s|ed|ing)?|launch(?:es|ed)?|finish(?:es|ed)?|complete[sd]?|is complete"
+          r"|(?:is|it's|are) done|deploy(?:s|ed)|(?:on|in) main|(?:turns?|is|goes) green"
+          r"|(?:check|checks|ci|tests?|suite|build)\s+(?:has\s+)?pass(?:es|ed))\b")
+WAIT_GO = re.compile(_GO + r"[^.;—]*?" + _COND + r"[^.;—]*?" + _EVENT + "|"
+                     + _COND + r"[^.;—]*?" + _EVENT + r"[^.;—]*?" + _GO, re.I)
+GO_NEGATED = re.compile(r"\b(?:no need to|don't|do not|never|without)\s+(?:\w+\s+){0,2}"
+                        r"(?:say|type|send|reply)\b", re.I)
+
+
+# A WAITING line that names a command still owes the Do-this-now block (2026-10-04): a session
+# put `/finish` only in its WAITING line, the owner missed the block every other session gives, and
+# nothing checked core.md's rule. A slash command — not a path (`~/x`, `a/b`, a URL's `//`).
+SLASH_COMMAND = re.compile(r"(?<![\w/~.])/[a-z][\w-]*(?::[a-z][\w-]*)?(?![\w/]|\.\w)")  # a colon only before a plugin's name
+DO_THIS_NOW = re.compile(r"do this now", re.I)
+FENCED = re.compile(r"^\s*(```|~~~)[^\n]*\n(.*?)^\s*\1", re.S | re.M)
+
+
+def in_do_this_now(text: str, command, word=None) -> bool:
+    """True when the first fenced block after a "Do this now" heading carries `command` (or
+    matches the compiled `word`)."""
+    word = word or re.compile(r"(?<![\w/])" + re.escape(command) + r"(?![\w-])")
+    for head in DO_THIS_NOW.finditer(text):
+        fence = FENCED.search(text, head.end())
+        if fence and word.search(fence.group(2)):
+            return True
+    return False
+
+
+# A /finish that stops on a ⚠ gate and waits for the owner hands over the line that finishes it from
+# outside: the lander, run in a fresh Terminal window (the owner, 2026-10-11: "when blocking a finish,
+# don't forget to give me a line to run in a fresh window to do external finish"). Without it the
+# unblock is a hunt for the worktree and the verb. skills/finish, "The closing line".
+# Every way the skill words a stop: unattended `⚠ step 4 — …`, attended `⚠ 2 open items before
+# this branch can be finished`, Gate 0's `⚠ Gate — …` (code review, 2026-10-11).
+STOP_STEP = re.compile(r"⚠\s*(?:step\s+\d|gate\b|\d+\s+open\s+items?\b)", re.I)
+# a turn continued after a stop ("drop item 2, go") has no /finish prompt: its text or its Bash says it
+# skills/finish says launch since the rename's S4; a reply written before it says land
+FINISH_TEXT = re.compile(r"/finish\b|can be finished|\bland(?:ed|ing)?\b|\blaunch(?:es|ed|ing)?\b", re.I)
+FINISH_BASH = re.compile(r"review-gate|claude/finishing|\bbin/pr\b|\bmemo\s+pull\b")
+EXTERNAL_FINISH = re.compile(r"\bbin/autofinish-run\s+['\"]?/")
+
+
+def external_finish_findings(text: str, command=None, bash=()) -> list:
+    if not STOP_STEP.search(text) or in_do_this_now(text, None, EXTERNAL_FINISH):
+        return []
+    if not (command == "finish" or FINISH_TEXT.search(text) or any(FINISH_BASH.search(b) for b in bash)):
+        return []
+    return ["a /finish stopped on a ⚠ gate gives the owner the line that finishes it from outside, "
+            "to run in a fresh Terminal window once the WAITING item is settled: under a "
+            "**Do this now** heading at the top, fenced, `" + _cmd("autofinish-run", absolute=True) + " "
+            "<this worktree's absolute path>` (from another Mac, prefixed `ssh <its alias>`, with that "
+            "Mac's paths) — skills/finish, \"The closing line\""]
+
+
+def turn_facts(entries: list) -> tuple:
+    """(command, bash, last, background) for the turn that just ended: the slash command that
+    started it ('finish' — also for one asked at a prompt's end or through the Skill tool; None
+    otherwise), every Bash command it ran, the text of its last message, and whether it started
+    a background task. The turn starts at the owner's own prompt: a record with `origin.kind` other
+    than human (a background task's notification) is not one."""
+    bash, last, skill, background = [], None, None, False
+    for e in reversed(entries):
+        content = (e.get("message") or {}).get("content")
+        if e.get("type") == "assistant" and isinstance(content, list):
+            texts = [str(c.get("text", "")) for c in content if isinstance(c, dict) and c.get("type") == "text"]
+            if last is None and texts:
+                last = "\n".join(texts)
+            for c in content:
+                if not (isinstance(c, dict) and c.get("type") == "tool_use"):
+                    continue
+                args = c.get("input") or {}
+                if c.get("name") == "Bash":
+                    bash.append(str(args.get("command", "")))
+                if c.get("name") == "Agent" or args.get("run_in_background"):
+                    background = True
+                if c.get("name") == "Skill" and args.get("skill") in ("finish", "evacuate"):
+                    skill = args.get("skill")
+        elif e.get("type") == "user" and not e.get("isMeta"):  # isMeta: a skill's body, hook feedback
+            if (e.get("origin") or {}).get("kind", "human") != "human":
+                continue
+            if isinstance(content, str):
+                text = content
+            else:
+                parts = [c for c in content or [] if isinstance(c, dict)]
+                if any(c.get("type") == "tool_result" for c in parts):
+                    continue
+                text = " ".join(str(c.get("text", "")) for c in parts if c.get("type") == "text")
+            m = COMMAND.search(text)
+            command = m.group(1) if m else skill or ("finish" if FINISH_ASKED.search(text.strip()) else None)
+            return command, bash, last or "", background
+    return skill, bash, last or "", background
+
+
+def wait_go_findings(line: str) -> list[str]:
+    if not WAIT_GO.search(line) or GO_NEGATED.search(line):
+        return []
+    return ["the WAITING line asks the owner to say go once something happens that this session can "
+            "watch — wait on it yourself: Bash run_in_background, timeout 7200000 (2 h at most; "
+            "longer is a `/todo handoff`), `until s=$(gh pr view N --json state -q .state) && "
+            "[ \"$s\" != OPEN ]; do sleep 60; done; echo \"$s\"` — a gh failure keeps it polling; "
+            "carry on at MERGED, stop at CLOSED (the overlay's rules 'How to talk')"]
+
+
+# The two waits, kept apart (the owner, 2026-10-20): WAITING FOR YOU is an ask, WAITING FOR SOMETHING
+# says the owner has nothing to do — the session waits on its own reviewers, check or poll and carries
+# on by itself. A WAITING FOR YOU line that says it asks nothing takes the other line; a WAITING FOR
+# SOMETHING line that asks — a D-item (one cited in parentheses is decided), a manual step, a go —
+# takes the WAITING FOR YOU line, so the quiet line never hides an ask.
+# "nothing to do but pick A or B" still asks: a qualifier after it keeps the line an ask.
+NOTHING_ASKED = re.compile(r"\bnothing (?:for you )?to do\b(?!\s*(?:but|except|until|unless|once|then)\b)"
+                           r"|\bnothing for you\b(?!\s*(?:but|except|until|unless|once|then)\b)", re.I)
+# A word joined to another by - / . is a name ("paste-paths.sh"), and "D3's build" is work, not an ask.
+_NAME_RE = re.compile(r"\w+(?:[-/.]\w+)+")
+
+
+def asks_owner(line: str) -> bool:
+    common = _common()
+    plain = _NAME_RE.sub("", re.sub(r"`[^`]*`", "", line))
+    return bool(common.ASK_DITEM_RE.search(re.sub(r"\([^()]*\)|\bD\d+['’]s\b", "", plain))
+                or common.ASK_MANUAL_RE.search(plain)
+                or (re.search(_GO, line, re.I) and not GO_NEGATED.search(line)))
+
+
+# What makes a WAITING FOR SOMETHING line an ask: a verb the owner would do (verb forms only — "login",
+# "approval" and a D-number name work; "merge" is the event a line waits on), "you"/"your", the
+# owner's name, or a go. Narrower than
+# asks_owner on purpose: there a miss pushes an ask under the quiet line, here a false hit blocks
+# a line that asks nothing (reviewer-high, 2026-10-20).
+_OWNER_VERB_RE = re.compile(r"\b(?:log in|sign in|approve|paste|click|tap|press|pick|choose|answer|decide)(?![\w-])"
+                            r"|\byour?\b", re.I)
+
+
+def pending_asks(line: str) -> bool:
+    common = _common()
+    what = line.split(" — ", 1)[-1]   # the what only: the line's own address names the owner
+    plain = _NAME_RE.sub("", re.sub(r"`[^`]*`", "", what))
+    owner = common.OWNER_NAME and re.search(r"\b%s\b" % re.escape(common.OWNER_NAME), plain, re.I)
+    return bool(_OWNER_VERB_RE.search(plain) or owner
+                or (re.search(_GO, line, re.I) and not GO_NEGATED.search(line)))
+
+
+def two_waits_findings(kind: str, line: str) -> list[str]:
+    common = _common()
+    if kind == "pending" and pending_asks(line):
+        return [f"the WAITING FOR SOMETHING line says the owner has nothing to do, and this one asks the owner "
+                f"for something — end on `{common.WAITING_PREFIX}<what, in one line>` instead"]
+    if kind == "waiting" and NOTHING_ASKED.search(line) and not (asks_owner(line) or pending_asks(line)):
+        return [f"the WAITING FOR YOU line is an ask, and this one says there is nothing to do — if it "
+                f"asks the owner nothing, end on `{common.PENDING_PREFIX}<what it waits on, in one line>`; "
+                f"if it does, say the ask"]
+    return []
+
+
+def closing_findings(reply: str, command=None, bash=(), last=None, background=False) -> list[str]:
+    """`reply`: the turn's text; `last`: its final message, the one that must end right."""
+    common = _common()
+    kind, line, problem = common.ending(reply if last is None else last)
+    waiting = f"`{common.WAITING_PREFIX}<what, in one line>`"
+    pending = f"`{common.PENDING_PREFIX}<what it waits on, in one line>`"
+    if problem and problem[0] == "after":
+        out = [f"a closing line is the very last thing said — only links may follow it: move "
+               f"`{common.bare(problem[1])[:70]}…` to the end, after anything else"]
+        if common.closing_kind(problem[1]) == "waiting":  # blocked once only: say all of it now
+            out += wait_go_findings(common.bare(problem[1]))
+            out += external_finish_findings(reply if last is None else last, command, bash)
+        out += two_waits_findings(common.closing_kind(problem[1]), common.bare(problem[1]))
+        return out
+    if problem:
+        return [f"`{common.bare(problem[1])[:70]}` is not one of the fixed closing lines — use one "
+                f"word for word: the skill's own, {waiting}, or {pending} when the owner has "
+                f"nothing to do"]
+    if kind == "pending":
+        out = two_waits_findings(kind, line)
+        if out:
+            return out
+    if kind == "waiting":
+        text = reply if last is None else last
+        import os  # a command never exists at the root; `/tmp` does
+        missing = [c for c in dict.fromkeys(c.rstrip("-") for c in SLASH_COMMAND.findall(line))
+                   if not os.path.exists(c) and not in_do_this_now(text, c)]
+        out = wait_go_findings(line) + two_waits_findings(kind, line)  # collected: the hook blocks only once
+        if missing:
+            out.append(f"the WAITING line asks the owner to run {', '.join(f'`{c}`' for c in missing)} — "
+                    f"put it in a **Do this now** block too, the command alone in a fenced block "
+                    f"under that heading, at the top (me/core.md: anything to paste or run)")
+        out += external_finish_findings(text, command, bash)
+        if out:
+            return out
+    # /finish past Phase 1 (it touched the marker this turn — a continued "go" turn included — or
+    # reports what shipped) and /evacuate, bar a LEAVE OPEN verdict, end on /finish's own line;
+    # a stop that needs the owner ends on the WAITING line instead. A stop that waits on its own
+    # background task (the check suite, a reviewer) is not an ending: the notification continues it.
+    owes = (any(MARKER_TOUCH.search(b) for b in bash)
+            or (command == "finish" and "Shipped:" in reply)
+            or (command == "evacuate" and "LEAVE OPEN" not in reply))
+    tail = (last if last is not None else reply).strip().splitlines()[-1:] or [""]
+    if background and kind is None and WAITS.search(tail[0]):
+        owes = False
+    if owes and kind not in ("waiting", "pending", "relayed") and line not in common.FINISH_LINES:
+        fixed = " / ".join(f"`{l}`" for l in common.FINISH_LINES)
+        return [f"/{command or 'finish'} ends with one of its closing lines, on its own, as the "
+                f"very last thing said: {fixed} — or {waiting} when the next move is the owner's, "
+                f"{pending} when the session carries on by itself "
+                f"(skills/finish, \"The closing line\")"]
+    return []
+
+
+# A finished step starts the next one itself. the overlay's rules, "How to talk", as of
+# D1 (2026-10-05, docs/record/run-seed-launch-2026-10-05.md, answer C): a build step "starts the next
+# itself (`dispatch --next`), each fresh, never a prompt to paste; `pickup next` only where
+# dispatch refuses (not `physical: none`), or it names what it waits on". The owner, 2026-10-04, after
+# a step ended "paste into a fresh session": "I actually don't have time to copy-paste prompts for
+# you." A reply that hands the owner a session to start — a prompt, a `/pickup … --fresh`, or a
+# `pickup next` tab — is blocked once where dispatch would take the branch (workflow repo,
+# `physical: none`); naming dispatch — done, or why not: an answer or the owner's identity needed, or
+# what it waits on — is the way through.
+FRESH_PICKUP = re.compile(r"/pickup\b[^\n`]*?\s--fresh\b")
+# A session to start, not prose that happens to say "new tab" (review of 2026-10-05: "Open the PR
+# in a new tab", "open a new window on the overlay", "Enter the code in the new window" were blocked).
+# Re-review of 2026-10-05 also passes "Paste the URL into a new tab", "Type your password in the new
+# window", "when you start a fresh session" and "I updated the next step's prompt". So: pasting or
+# typing into a fresh/new session or conversation, or a Claude Code / VS Code tab or window;
+# starting or opening one the same way when it names the app; a bare "fresh session" only as an
+# instruction (the verb opens the sentence, or follows "then"/"and"/"please"); "the next step's
+# prompt" only as one handed over ("exact prompt", or "prompt is / below / :").
+_APP = r"(?:claude(?:\s+code)?|vs\s*code)\s+"
+_INTO = r"\b(?:(?:into|in)\s+)?(?:a|the)\s+(?:fresh|new)\s+"
+_LEAD = r"(?:^|[.!?:;]\s+|\n\s*(?:[-*]\s+|\d+\.\s+)?|\b(?:then|and|please)\s+)"
+PASTE_SESSION = re.compile(
+    r"\b(?:paste|type)\b[^.\n]{0,60}?" + _INTO + r"(?:" + _APP + r"(?:session|tab|window|conversation)|session|conversation)\b"
+    r"|\b(?:start|open|run|begin)\b[^.\n]{0,60}?" + _INTO + _APP + r"(?:session|tab|window|conversation)\b"
+    r"|" + _LEAD + r"(?:start|open|run|begin)\b[^.\n]{0,60}?\b(?:(?:into|in)\s+)?(?:a|the)\s+fresh\s+(?:session|conversation)\b"
+    r"|\bnext step'?s exact prompt\b|\bnext step'?s prompt(?:\s+is\b|\s*:|\s+below\b)", re.I)
+# Named run-seed until 2026-10-05, a unique token; "dispatch" is an ordinary word, so a turn's Bash
+# counts only when it ran the script (not `grep -rn dispatch`), and the reply only when it names it
+# (dispatch, dispatched, dispatch's — not "dispatcher"). The old name still counts: the shim runs it.
+DISPATCH = re.compile(r"\bdispatch(?:ed|'s)?(?![-\w])|\brun-seed(?!-rc)", re.I)  # not dispatch-rename
+DISPATCH_RAN = re.compile(r"\b(?:dispatch|run-seed)(?![-\w])\s+(?:'|\"|--|claude/)")  # not `cat bin/dispatch`
+# `pickup next` (the owner's D6–D7) answers `continue`, `seeded` or `tab`. Since D1 it decides the
+# split itself: where dispatch takes the repo it seeds the stage and runs `dispatch --next`, and
+# opens a tab ("press Enter in the new tab") only where dispatch refuses. So a turn that ran it
+# handed nothing to the owner that this hook should block, whichever verdict it printed.
+PICKUP_NEXT = re.compile(r"\bpickup['\"]?\s+next\b")
+BRANCH = re.compile(r"\bclaude/[\w.-]+(?:/[\w.-]+)+")
+REPO_FLAG = re.compile(r"--repo[= ]+['\"]?((?:~|\$HOME|/)[^\s'\"`]+)")
+REPO_WINDOW = re.compile(r"\bin an? `?([\w.-]+)`? window\b")
+
+
+def handoff_repo(reply: str, hit: str, cwd: str, root: str) -> tuple:
+    """(cwd, root) for seedable(): the repo the handoff names, else the one holding the branch it
+    names, else this session's. A /todo handoff to household from a the overlay session is a project's to
+    judge — dispatch refuses it there (not `physical: none`), so the /pickup line is the only way."""
+    import os
+    projects = os.path.join(os.path.expanduser("~"), "projects")
+    m = REPO_FLAG.search(hit) or REPO_FLAG.search(reply)
+    if m:
+        return os.path.expanduser(m.group(1).replace("$HOME", "~")), ""
+    m = REPO_WINDOW.search(reply)
+    if m and os.path.isdir(os.path.join(projects, m.group(1))):
+        return os.path.join(projects, m.group(1)), ""
+    b = BRANCH.search(hit)
+    if b:
+        here = [d for d in (cwd, root) if d and os.path.isdir(d)]
+        has = lambda d: bool(_git(d, "rev-parse", "--verify", "--quiet", "refs/heads/" + b.group(0))
+                             or _git(d, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + b.group(0)))
+        if not any(has(d) for d in here):
+            try:
+                names = sorted(os.listdir(projects))
+            except OSError:
+                names = []
+            for n in names:
+                d = os.path.join(projects, n)
+                if os.path.isdir(os.path.join(d, ".git")) and has(d):
+                    return d, ""
+    return cwd, root
+
+
+def seedable(cwd: str, root: str = "") -> bool:
+    """The checkout dispatch would start a branch in: on the worktree workflow and its contract
+    saying `physical: none` — the same two gates as pickup seed and dispatch's physical_ok."""
+    import os
+    for d in (cwd, root):
+        top = _git(d, "rev-parse", "--show-toplevel").strip() if d and os.path.isdir(d) else ""
+        if not top:
+            continue
+        # the worktree's own copy, else the primary's: an opt-in kept in repos.json is written
+        # untracked into the primary checkout only (hooks/sync.py overlay_workflow)
+        common_dir = _git(d, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        primary = os.path.dirname(common_dir) if common_dir.endswith("/.git") else top
+        opted = None
+        for wf_root in (top, primary):
+            try:
+                with open(os.path.join(wf_root, ".claude", "workflow.json"), encoding="utf-8") as fh:
+                    opted = json.load(fh).get("checkpoint") is True
+                break
+            except (OSError, ValueError, AttributeError):
+                continue
+        if not opted:
+            return False
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            try:
+                with open(os.path.join(top, name), encoding="utf-8") as fh:
+                    phys = next((l for l in fh if l.startswith("- physical:")), None)
+            except OSError:
+                continue
+            if phys is not None:
+                return phys.startswith("- physical: none")
+        return False
+    return False
+
+
+def handoff_findings(reply: str, command=None, bash=(), cwd: str = "", root: str = "") -> list[str]:
+    if command in ("pickup", "move", "later") or DISPATCH.search(reply) or any(DISPATCH_RAN.search(b) for b in bash):
+        return []  # the owner asked to pick one up; or the reply ran dispatch or says why not
+    if any(PICKUP_NEXT.search(b) for b in bash):
+        return []  # continue, seeded (dispatch --next) or a tab where dispatch refuses: all D1's
+    m = FRESH_PICKUP.search(reply) or PASTE_SESSION.search(prose_only(reply))
+    if not m:
+        return []
+    # the line the hit sits on: a /todo handoff names its repo and branch there
+    line = reply[reply.rfind("\n", 0, m.start()) + 1:].split("\n", 1)[0] if m.re is FRESH_PICKUP else m.group(0)
+    where = handoff_repo(reply, line, cwd, root)
+    if not seedable(*where):
+        return []  # dispatch refuses that repo: a tab (pickup next) or a /pickup line is the way
+    flag = f" --repo {primary_of(*where)}" if primary_of(*where) else ""
+    return [f"this hands the owner a session to start (`{m.group(0).strip()[:60]}`) — a finished step starts "
+            f"the next one itself: commit its brief as docs/handoff/<date>-<topic>.md on the branch, then "
+            f"`bash {_cmd('dispatch')} '<branch>' --next{flag}` (Bash timeout 300000; a fresh "
+            f"follow-up: `pickup seed <topic> --file <brief> --no-start` first) and leave the worktree "
+            f"(ExitWorktree, keep). If the next step needs the owner (an answer, the owner's identity) or waits on "
+            f"something, say so in a line naming dispatch and what it waits on"]
+
+
+def primary_of(cwd: str, root: str = "") -> str:
+    """The primary checkout of the repo seedable() judged: what dispatch's --repo wants (its default
+    is the overlay's, so a hint without it would send another repo's branch there)."""
+    import os
+    for d in (cwd, root):
+        common = _git(d, "rev-parse", "--path-format=absolute", "--git-common-dir").strip() if d and os.path.isdir(d) else ""
+        if common:
+            return os.path.dirname(common.rstrip("/")) if common.rstrip("/").endswith(".git") else ""
+    return ""
+
+
+def stop_findings(text: str) -> list[str]:
+    found = [f"relative path in a paste block: {line}" for _, line in scan(text)]
+    unfenced = "\n".join(l for l, keep in _outside_fences(text) if keep)
+    owed = owed_unchecked(unfenced)
+    if owed:
+        found.append(f'{len(owed)} owed item(s) without a check — each needs "checked: <how> → '
+                     f'<result>" or "not checked: <why> — ask?" (skills/finish step 10; the cheap probe is '
+                     f"python3 {_cmd('owed')} '<marker>'): " + " | ".join(owed[:3])
+                     + (" …" if len(owed) > 3 else ""))
+    prose = prose_only(text)
+    found += [f"bare PR number (write [repo#N (summary)](https://github.com/…/pull/N)): {m.group(0).strip()}"
+              for m in BARE_PR.finditer(prose)]
+    if VSCODE_LINK.search(text):
+        found.append("a vscode:// link — the chat blanks it; use the plain https URL")
+    return found
+
+
+# session-asks R2 (docs/session-asks-2026-10-09.md, B4): a dispatched run with a manager never hands
+# the owner an interruption — the WAITING line, or a Do-this-now step (a paste, a login, a press-Enter:
+# the owner, 2026-10-10, "asking me to log in and do something counts too") — it relays it. Allowed when
+# bin/ask recorded that nobody was there to relay to (ask.json, verdict none or unreachable).
+def _peer(name, as_name):
+    """A peer module's file loaded as a module, found through the core's tool() (regatta-modules
+    G9, G24): asklib.py and surfaces.py are helm's, dispatch-rc wharf-runs'. None when it is not
+    here — the check that needs it is skipped, never the rest of the Stop lint."""
+    p = _common().tool(name)
+    if not p:
+        return None
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader(as_name, str(p)).load_module()
+
+
+def _ask_cmd():
+    """bin/ask's path for the lines that name it: the overlay's shim where one is installed, else
+    helm's (tool()), else its bare name. Each account dir's allow rules name the overlay's bin/ask;
+    a rule for helm's module path arrives only with a manual bootstrap.sh --hooks, and tool() finds
+    helm's first once it shares this checkout (B12; dispatch's run prompt does the same)."""
+    c = _common()
+    old = c.legacy_root()
+    if old and (old / "bin" / "ask").is_file():
+        return str(old / "bin" / "ask")
+    return str(c.tool("ask") or "bin/ask")
+
+
+def _asklib():
+    """asklib.py as a module: standing_manager() is the one "this Mac runs a manager" test."""
+    return _peer("asklib.py", "asklib")
+
+
+def standing(env=None):
+    """This Mac's standing manager's ctx fields (manager_host, manager_name …) when a relay from this
+    run goes to it, else None (stray-manager M5, B1 ii): a run with no DISPATCH_MANAGER, or one whose
+    manager has ended. asklib.resolve decides, the one resolution bin/ask relay and relay() use, so
+    this hook and the relay never disagree (review gate, 2026-10-16: this returned None whenever
+    DISPATCH_MANAGER was set, though relay sent a gone manager's run to the standing one). Never
+    raises: no record is today's behaviour."""
+    import os
+    env = os.environ if env is None else env
+    # the skipper under its new name or the old one (rename S5 writes both until S8, reads both forever)
+    ctx = {"manager": env.get("DISPATCH_SKIPPER") or env.get("DISPATCH_MANAGER") or None,
+           "manager_host": env.get("DISPATCH_SKIPPER_HOST") or env.get("DISPATCH_MANAGER_HOST") or None}
+    try:
+        lib = _asklib()
+        if lib is None:  # no helm: no standing manager to relay to (G24)
+            return None
+        out = lib.resolve(ctx)[0]
+    except Exception:
+        return None
+    return out if out.get("standing") else None
+
+
+def autofinish_start(cwd: str, session: str) -> bool:
+    """This session is autofinish's own `/finish <branch> --unattended` start: the worktree's run
+    record (<git dir>/claude/autofinish.json, which bin/autofinish-run writes before the start, with
+    the session id it starts under) names it. dispatch --start gives such a run no manager and
+    no mark in its environment (CLAUDE_UNATTENDED=dispatch, as any run), so the record is the mark;
+    checkpoint.py's prompt note tells its runner apart the same way."""
+    import os
+    if not cwd or not session:
+        return False
+    gd = _git(cwd, "rev-parse", "--absolute-git-dir").strip() if os.path.isdir(cwd) else ""
+    try:
+        rec = _common().autofinish_run(os.path.join(gd, "claude")) if gd else None
+    except Exception:
+        return False
+    return bool(rec) and rec.get("session") == session
+
+
+def ask_verdict(cwd: str, session: str = "", standing_name=None):
+    """bin/ask's verdict for THIS session (ask.json's `session`), or None: a verdict an earlier run
+    of the same worktree left would let a later run hand the owner its ask (finding 9). A `none` recorded
+    while no manager ran is void once the Mac's standing manager runs (M5): the run relays again."""
+    import os
+    gd = _git(cwd, "rev-parse", "--absolute-git-dir").strip() if cwd else ""
+    try:
+        d = json.load(open(os.path.join(gd, "claude", "ask.json"))) if gd else None
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict) or not session or d.get("session") != session:
+        return None
+    if d.get("verdict") == "none" and standing_name:
+        return None
+    return d.get("verdict")
+
+
+def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> list:
+    import os
+    env = os.environ if env is None else env
+    if not env.get("CLAUDE_UNATTENDED"):
+        return []
+    # a WAITING line counts only when it asks something of the owner: dispatch's own refusals end a
+    # run on one too (finding 7; hooks/common.py unrelayed_ask). Read first: the rest (asklib's
+    # load, its registry walk, scutil) runs only on the rare turn that asks, not every Stop.
+    what = _common().unrelayed_ask(reply, last)
+    if not what:
+        return []
+    # autofinish's start is no manager's run (stray-manager M1 c, M3): its asks are landings, which
+    # a manager never performs, so they go to the owner as before the seam
+    own = env.get("DISPATCH_SKIPPER") or env.get("DISPATCH_MANAGER")
+    if not own and autofinish_start(cwd, session):
+        return []
+    sm = standing(env)
+    if not own and not sm:
+        return []
+    if ask_verdict(cwd, session, sm) in ("none", "unreachable"):
+        return []
+    # named as bin/ask relay's RELAYED line names it when that is where the ask goes
+    who = (f"a manager (this Mac's standing one, manager · {sm.get('manager_host')})" if sm
+           else "a manager (DISPATCH_MANAGER)")
+    return [f"this run has {who}, so what it would hand the owner — {what} — goes "
+            f"to the manager instead: write it in the doc as an item (a D-item, or a Do-this-now item "
+            f"naming what it unblocks), commit, run `{_ask_cmd()} relay <doc> <Dn>`, park what rests "
+            f"on it, build the rest, and end on the line it prints (RELAYED TO …, or the WAITING line "
+            f"when it finds nobody)"]
+
+
+def _rc():
+    """dispatch-rc as a module (wharf-runs'): its same() is the one "this run is still running" test."""
+    return _peer("dispatch-rc", "dispatch_rc")
+
+
+def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str = "", alive=None,
+                     listen_row=None) -> list:
+    """A watched session with a live dispatched run that can reach it over Talk, and no listener:
+    start one — a process a hook spawns wakes nobody; only the model's own background shell does
+    (B4). Only runs that can use one (finding 8): the record has a plan_space (the Talk address),
+    `ask.listen` is talk, and the run's claude is alive (dispatch-rc's same()).
+
+    Once per listener gap, not per turn: a marker (in the git dir, else under the asks queue dir)
+    says the reminder was given; a listener seen running clears it. So when a listener exits on a
+    wake and the turn ends with none restarted while a run is still live, the manager is told once
+    more (second review, 2026-10-11) — and a manager that never starts one hears it once."""
+    import glob, os
+    env = os.environ if env is None else env
+    if env.get("CLAUDE_UNATTENDED") or not session:
+        return []
+    # The id `bin/ask listen` accepts is CLAUDE_CODE_SESSION_ID (it refuses any other, M1 b), and
+    # dispatch records that same variable as a run's manager; the hook's session_id can differ from
+    # it after /clear, a continue or a fork. So a run is this session's under either id, and the
+    # reminder names the one listen takes (review gate, 2026-10-16).
+    listen_id = env.get("CLAUDE_CODE_SESSION_ID") or session
+    ids = {session, listen_id}
+    if listen_row is None:
+        surfaces = _peer("surfaces.py", "surfaces")
+        if surfaces is None:  # no helm: no Talk listener to remind of (G24)
+            return []
+        listen_row = surfaces.row("ask.listen")
+    if listen_row != "talk":
+        return []
+    runs = runs or os.path.join(os.path.expanduser("~"), "Library/Logs/claude-weekly/run-seed-runs")
+    cand = []
+    for f in glob.glob(os.path.join(runs, "*.json")):
+        try:
+            st = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if isinstance(st, dict) and st.get("manager") in ids and st.get("plan_space") and not st.get("ended"):
+            cand.append(st)
+    if not cand:
+        return []
+    if alive is None:
+        rc = _rc()
+        if rc is None:  # no wharf-runs: no run can be told alive (G9)
+            return []
+        alive = rc.same
+        cand = [rc.typed(st) for st in cand]   # a pid written as a string (records before 2026-10-11) still reads as live
+    kids = [st.get("topic") or "?" for st in cand if alive(st)]
+    if not kids:
+        return []
+    gd = _git(cwd, "rev-parse", "--absolute-git-dir").strip() if cwd else ""
+    qdir = env.get("ASK_QUEUE_DIR") or os.path.join(os.path.expanduser("~"), "Library/Logs/claude-weekly/asks")
+    marker = os.path.join(gd, "claude", "ask-listen-nagged.%s" % session) if gd else \
+        os.path.join(qdir, "listen-nagged.%s" % session)
+    if listening is None:
+        import subprocess
+        r = subprocess.run(["pgrep", "-f", f"(ask listen|talk listen).*{listen_id}"], capture_output=True, text=True)
+        listening = r.returncode == 0
+    if listening:
+        try:
+            os.unlink(marker)  # the next gap gets its one reminder
+        except OSError:
+            pass
+        return []
+    if os.path.exists(marker):
+        return []
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+    except OSError:
+        return []  # no marker, no reminder: never one every turn
+    return [f"you manage {len(kids)} live run(s) ({', '.join(kids[:3])}) that relay their asks to you over "
+            f"Talk: start `{_ask_cmd()} listen --session {listen_id}` as a background shell "
+            f"(run_in_background) so a relay wakes you, then end the turn as you meant to (said once until a listener runs)"]
+
+
+def stop_hook() -> int:
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return 0
+    if data.get("stop_hook_active"):  # blocked once already: let it stop, never loop
+        return 0
+    entries = load_entries(str(data.get("transcript_path", "")))
+    # Both sources, unioned: neither alone is the turn's text (2026-10-07, review of this change).
+    # The transcript holds every assistant message since the prompt, which the checks need — 287
+    # of 473 turns since 2026-10-05 wrote text in two or more messages, so a paste block or a
+    # D-list before the last one would otherwise be invisible — but the file is written
+    # independently of this hook and can still lack the turn's LAST message when it runs
+    # (hooks/checkpoint.py's write_last_reply learned that first). The Stop payload carries that
+    # last message and nothing earlier ("Text content of the last assistant message before
+    # stopping", 2.1.293's own schema, read 2026-10-07), already trimmed and absent when empty.
+    # So: the file for the turn, the payload for its tail, appended only when the file does not
+    # already end with it — a no-op otherwise, since both join a message's text blocks with "\n"
+    # (endswith, not `in`: a session that quotes its own closing line earlier in the turn would
+    # otherwise suppress the append and lose exactly the check this exists for). The gate blocked
+    # 137 replies between 2026-10-04 and 2026-10-07, 15 of them for a D-list with no doc, and at
+    # least four D-lists in chat still passed: the lag is intermittent, not a dead check.
+    reply = last_reply("", entries)
+    tail = str(data.get("last_assistant_message") or "")
+    if tail and not reply.rstrip().endswith(tail):
+        lines = reply.splitlines()
+        if lines and _common().fenced(lines + tail.splitlines())[len(lines)]:
+            # The file stopped inside a fenced block (1 turn in 473, measured), which would swallow
+            # the tail and silence every check that reads prose only. Close it with the fence that
+            # opened it, so the tail is read as the prose it is.
+            c = _common()
+            lines.append(next((c.fence_opener(l) for l in reversed(lines) if c.fence_opener(l)), "```"))
+        reply = "\n".join(lines + tail.splitlines()) if lines else tail
+    found = stop_findings(reply)
+    cwd, root = str(data.get("cwd") or ""), start_dir(entries)
+    facts = (None, (), tail or None, False)  # a turn_facts raise still leaves the ending judgeable
+    try:
+        facts = turn_facts(entries)
+        if tail:  # turn_facts' third element is the transcript's copy of the final message, and the
+            # closing-line check judges that copy alone — stale, it both false-blocks a reply that
+            # ends right and waves through one that does not. The command, the turn's bash and the
+            # background flag come from earlier entries, which are already written.
+            facts = (facts[0], facts[1], tail, facts[3])
+        found += closing_findings(reply, *facts)
+    except Exception as err:  # a bad table or transcript: say nothing rather than block wrongly
+        print(f"paste-paths: closing line: {err}", file=sys.stderr)
+    try:
+        handoff = handoff_findings(reply, facts[0], facts[1], cwd, root)
+        if handoff:  # dispatch replaces the Do-this-now block a WAITING line's /pickup would owe
+            found = handoff + [f for f in found if not f.startswith("the WAITING line asks the owner to run `/pickup`")]
+    except Exception as err:  # git trouble: say nothing rather than block wrongly
+        print(f"paste-paths: handoff: {err}", file=sys.stderr)
+    try:  # first: the found[:6] cut below must never drop a D-list's line (one block only)
+        found = handover_findings(reply, cwd, root) + found
+        sid = str(data.get("session_id") or "")
+        found = ask_findings(reply, facts[2], cwd, session=sid) + found
+    except Exception as err:  # git or memo trouble: say nothing rather than block wrongly
+        print(f"paste-paths: hand-over line: {err}", file=sys.stderr)
+    # Its own try (regatta-modules G9): a peer that raises costs this reminder, never the hand-over
+    # line or the relay check above.
+    try:
+        found = manager_findings(str(data.get("session_id") or ""), cwd=cwd) + found
+    except Exception as err:
+        print(f"paste-paths: manager: {err}", file=sys.stderr)
+    links = []
+    try:
+        links = link_findings(reply, root, cwd)
+    except Exception as err:  # a path oddity: say nothing rather than block wrongly
+        print(f"paste-paths: file links: {err}", file=sys.stderr)
+    if found or links:
+        print(json.dumps({"decision": "block", "reason": owner_named(block_reason(reply, found, links))}))
+    return 0
+
+
+def block_reason(reply: str, found: list, links: list, env=None) -> str:
+    """The Stop block's message: only the corrected lines, or — two cases — the whole reply again.
+
+    A full resend puts the same answer on screen twice: twice the owner's attention for one answer, and
+    the copies often look identical (the owner, 2026-10-07: "why did you respond twice?"; 2026-10-11:
+    "updated lines only", every finding, not only links). bin/interruptions counts each block as
+    its `repeat` channel, by which form it asked for. The turn's LAST message is what the
+    machinery reads — bin/autofinish's reply_veto (a closing `?` or WAITING line) and
+    checkpoint.py's last-reply file (the checkpoint's commit summary when none was written: after a
+    short form it is the correction, which /finish's rewrite replaces) — so the short form ends
+    with the reply's ending, corrected where a fix is about the ending (the closing line, the
+    WAITING line, the hand-over line: most blocks are). Resent whole: a fix at the TOP — a paste
+    block or a Do-this-now block, as the owner copies the block at the top, not a patch below it
+    (review of the first version) — and every block in a run nobody watches (CLAUDE_UNATTENDED,
+    set by bin/dispatch): the lander and a manager's relay read the last message alone, and a
+    repeat there costs no attention (review of this change). The correction itself is not
+    re-checked (stop_hook_active)."""
+    import os
+    env = os.environ if env is None else env
+    head = ("Before stopping, fix these in your reply (the overlay's rules 'How to talk'; "
+            "owed items: skills/finish step 10)")
+    top = any("paste block" in f or "do this now" in f.lower() for f in found)
+    if env.get("CLAUDE_UNATTENDED") or top:
+        return head + " and " + REPEAT_WHOLE + "; ".join((found + links)[:6])
+    return (head + ". Your reply is already on screen, so " + REPEAT_LINES + ": send only the lines "
+            "these fixes change or add, corrected, then end with the reply's ending — its closing "
+            "line, or its last paragraph if that asked the owner anything, and any links after it — "
+            "last, corrected if a fix is about that ending, else repeated unchanged: "
+            + "; ".join((found + links)[:6]))
+
+
+# The two forms' marker phrases: bin/interruptions' repeat_kind reads them back from transcripts
+# (its `repeat` channel), and test_interruptions.sh feeds it this function's real output.
+REPEAT_WHOLE, REPEAT_LINES = "resend it: ", "do not resend it"
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 2 if not argv else 0
+    if argv == ["--self-test"]:
+        return self_test()
+    if argv == ["--stop-hook"]:
+        try:
+            return stop_hook()
+        except Exception as err:  # never wedge a session
+            print(f"paste-paths: {err}", file=sys.stderr)
+            return 0
+    hits = 0
+    for path in argv:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as err:
+            print(f"paste-paths: {path}: {err}", file=sys.stderr)
+            return 2
+        for n, line in scan(text):
+            print(f"{path}:{n}: {line}")
+            hits += 1
+    if hits:
+        print(f"paste-paths: {hits} relative path(s) in paste blocks — spell them out absolute", file=sys.stderr)
+    return 1 if hits else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
