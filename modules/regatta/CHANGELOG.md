@@ -9,6 +9,9 @@
 - `scope_yard(name)` and `scope_yards()` (skipper-resilience S2, 2026-10-22): a scope's `yard`, the
   host that drives its ships, `None` for absent or `null`; `regatta check` prints one row per scope,
   its yard or none, and counts a yard `lighthouse/hosts` does not list as a finding.
+- `repo_key` and `scope_of_repo` (skipper-modes S1, S6): a path or key to its registry key, and the
+  scope that lists it with its data (`mode`, `berths`); `regatta check` names a scope's berth that no
+  repo is cloned on, or berths that are no list.
 - A third waiting line, `PENDING_PREFIX` (`THIS SESSION IS WAITING FOR SOMETHING — <what>`), a
   `pending` kind in `CLOSING`: the session waits on its own work and carries on by itself, so the
   owner has nothing to do. It is no ask (`unrelayed_ask`, `asks_answers` skip it); keel's Stop lint

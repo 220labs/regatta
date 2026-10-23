@@ -92,6 +92,16 @@ check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yard("y"), com
   "studio None None None None" "scope_yard() (skipper-resilience S2): a host; null, absent, empty or no such scope: None"
 check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yards(), common.scope_yards(path="/no/such"))')" "{'y': 'studio'} {}" \
   "  scope_yards(): only the scopes with one; an unreadable registry: none"
+echo "a scope's data (skipper-modes S1, S6): repo_key, scope_of_repo, the berths check"
+printf '{"repos": {"a": {"hosts": ["h1", "h2"]}, "g/x": {"hosts": ["h1"]}}, "scopes": {"s1": {"repos": ["a"], "berths": ["h2", "h1"], "mode": "dnd"}, "s2": {"repos": ["g/*"], "berths": ["h9"]}, "s3": {"repos": [], "berths": "h1"}}}\n' > "$T/sc.json"
+check "$(py "print(common.repo_key(str(common.PROJECTS.joinpath('a', '.claude', 'worktrees', 't'))), common.repo_key('g/x'), common.repo_key('/elsewhere/a'))")" \
+  "a g/x /elsewhere/a" "repo_key: a worktree is its checkout's key; a key as given; a path outside the projects folder as given"
+check "$(CLAUDE_REPOS_JSON="$T/sc.json" py "n, s = common.scope_of_repo('a'); print(n, s.get('mode'), s.get('berths'), common.scope_of_repo('g/x')[0], common.scope_of_repo('nope'))")" \
+  "s1 dnd ['h2', 'h1'] s2 (None, {})" "scope_of_repo: by name or glob, the scope's own data; none for a repo in no scope"
+out=$(CLAUDE_REPOS_JSON="$T/sc.json" "$RG" check 2>&1)
+echo "$out" | grep -q -- "--  registry: scope s2's berths name h9, which no repo is cloned on"; check $? 0 "regatta check: a berth no repo is cloned on is named"
+echo "$out" | grep -q -- "--  registry: scope s3's berths is a list of host names"; check $? 0 "  and berths that are no list"
+echo "$out" | grep -q -- "scope s1"; check $? 1 "  a scope whose berths are all known hosts is not"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"

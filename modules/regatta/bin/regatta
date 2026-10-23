@@ -19,6 +19,7 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
 Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
 PATH, so `/usr/bin/pr` or an installed `helm` would win over a module's (the design's C1).
 """
+import json
 import os
 import shlex
 import sys
@@ -213,6 +214,28 @@ def yard_rows():
     return bad
 
 
+def berth_problems():
+    """The registry's `scopes.<name>.berths` (skipper-modes S6): a list of host names, each one a host
+    some repo of the registry is cloned on — the names come from the registry itself, never a list
+    here. A typo would place every run of the scope nowhere."""
+    p = common.repos_json()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p else {}
+    except (OSError, ValueError):
+        return []
+    known = {h for r in (d.get("repos") or {}).values() if isinstance(r, dict) for h in r.get("hosts") or []}
+    out = []
+    for name, sc in (d.get("scopes") or {}).items():
+        b = sc.get("berths") if isinstance(sc, dict) else None
+        if b is None:
+            continue
+        if not isinstance(b, list) or not all(isinstance(h, str) and h for h in b):
+            out.append("registry: scope %s's berths is a list of host names" % name)
+        elif set(b) - known:
+            out.append("registry: scope %s's berths name %s, which no repo is cloned on" % (name, ", ".join(sorted(set(b) - known))))
+    return out
+
+
 def check():
     """Each item of the config dir: ok, or what is wrong with it. Exit 1 on any finding."""
     bad = 0
@@ -251,6 +274,9 @@ def check():
         print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
         bad += 1
     bad += yard_rows()
+    for problem in berth_problems():
+        print("  --  %s" % problem)
+        bad += 1
     print("core: %s" % (root or "not in a checkout"))
     return 1 if bad else 0
 

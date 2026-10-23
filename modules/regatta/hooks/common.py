@@ -434,6 +434,45 @@ def gather_fence(scope=None, path=None, home=None):
         return "quote"
     return fence
 
+def repo_key(repo):
+    """REPO as a registry key: a path under PROJECTS made relative to it (a worktree's path is its
+    main checkout's key), anything else as given; None for nothing."""
+    if not repo:
+        return None
+    s = str(repo)
+    if not s.startswith("/"):
+        return s
+    # as written first (a checkout linked into the projects folder keeps its key), then both resolved
+    for p, base in ((Path(os.path.normpath(s)), PROJECTS), (Path(s).resolve(), PROJECTS.resolve())):
+        wt = p.parts.index(".claude") if ".claude" in p.parts else None
+        if wt is not None and p.parts[wt + 1:wt + 2] == ("worktrees",):
+            p = Path(*p.parts[:wt])
+        try:
+            return str(p.relative_to(base))
+        except ValueError:
+            continue
+    return s
+
+
+def scope_of_repo(repo, path=None):
+    """(name, scope) of the registry's first scope whose `repos` list REPO — a key, or a path under
+    PROJECTS — each entry a key or a glob, as `scopes` reads them; (None, {}) when none does or the
+    registry does not read. What a scope carries beyond its repos (`mode`, `berths`: skipper-modes
+    S1, S6) is data, read here once for every module."""
+    import fnmatch
+    key = repo_key(repo)
+    p = path or repos_json()
+    try:
+        scopes = json.loads(Path(p).read_text(encoding="utf-8")).get("scopes") if p and key else None
+    except (OSError, ValueError, AttributeError):
+        return None, {}
+    for name, sc in (scopes or {}).items() if isinstance(scopes, dict) else ():
+        if isinstance(sc, dict) and any(isinstance(m, str) and (m == key or (any(c in m for c in "*?[") and fnmatch.fnmatchcase(key, m)))
+                                        for m in sc.get("repos") or []):
+            return name, sc
+    return None, {}
+
+
 API = "https://api.github.com"
 _host = None
 
