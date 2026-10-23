@@ -110,9 +110,10 @@ Spawn the head with the brief, in the foreground: the next step reads its doc.
   `Gate: memo — light refused: <why>` where it would (the doc's Gate line, else under the
   `Written by` paragraph). Either way the full path follows.
 - **`--yolo`**, only when the owner typed it, and over `--light` when both are: `keel yolo <doc>
-  --dry-run`, then `keel yolo <doc>`. It is all or nothing: every open item `Reversible: yes`, it
-  takes them all; else it stops at the first that is not (exit 3), writes nothing, and the whole
-  list goes the full path — as a ready proposal's `Build:` D1 always does.
+  --dry-run`, then `keel yolo <doc>`. It goes all the way (skipper modes, D1): every open item's
+  bare pick is taken, `Reversible: no` and unmarked items included. It stops (exit 3), writes
+  nothing, and the whole list goes the full path only at an item with no pick, a conditional pick
+  or a reopened one.
 
 **Unattended** (a dispatched run, `CLAUDE_UNATTENDED` set): never the questionnaire — the check
 refuses it (C4). The full path's hand-over is the run's relay (`ask relay <doc> <Dn>`), and the
