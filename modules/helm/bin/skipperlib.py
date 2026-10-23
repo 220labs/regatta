@@ -948,15 +948,17 @@ def tasks_of(pid):
 
 def needs(pid, tasks=None):
     """(needs a skipper, [ids of open blocks that wait on the owner]): a ship needs its scope's skipper
-    while any block is open that is not the owner's alone. TASKS: the merged tasks when the caller has
-    them already (helm skipper --ships)."""
+    while any block is open that is not the owner's alone — or one `helm send` sent and no skipper has
+    picked up yet (S7: the sender waits on that pickup, whoever the block itself waits on). TASKS: the
+    merged tasks when the caller has them already (helm skipper --ships)."""
     try:
         tasks = tasks if tasks is not None else tasks_of(pid)
     except (FileNotFoundError, ValueError):
         return False, []
     live = [t for t in tasks if t["status"] not in helmlib.ENDED]
     owner = [t["id"] for t in live if waits_on_owner(t, pid)]
-    return len(owner) < len(live), owner
+    # S7: a task helm send sent and no skipper has picked up needs one, whoever its block waits on
+    return len(owner) < len(live) or any(t.get("send") == "sent" for t in live), owner
 
 
 def took(scope, session):

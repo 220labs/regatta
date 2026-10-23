@@ -75,6 +75,11 @@ Read `README.md` first. For an agent:
   A screen is quit by `<pid>.<name>`: `-S <name>` is a prefix match. One window: a launch waits up to
   TAKE_WITHIN and fails after it. No S5 road reads a scope from a path — a scope's glob spans `/` and
   would take a worktree path; the mode of a question is read by the scope's anchor key.
+- `helm send` (`bin/sendlib.py`, skipper-resilience S7) commits to a `claude/*` branch and pushes it,
+  and reaches the yard over ssh: its cases run on a scratch origin and a stub `HARNESS_SSH` that plays the
+  yard (its own config dir, a stand-in wharf), never a real alias. The caller reads the yard's store only
+  through that ssh. A `sent` lives in the task's `send` field, never in `status`, which wharf drives; a
+  listener's tests set `HELM_LISTEN_PARENT`, as the sidecar's set `HELM_HOLD_PARENT`.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)
   REGATTA_LEGACY=/nonexistent` on a Mac (2026-10-22). A Linux runner is untried.

@@ -155,11 +155,18 @@ GUARDED = tuple(_sheep_gate.PRIVATE_REPOS) if _sheep_gate else _fallback_repos()
 # O_APPEND keeps whole lines apart below PIPE_BUF; a longer report has its free text shrunk (append_event)
 MAX_LINE = 4000
 MIN_BURN = 600  # seconds of a task's history before its burn rate is extrapolated
+# A task `helm send` handed to a scope's skipper (skipper-resilience S7, bin/sendlib.py): who sent it and
+# when, from the yard's `helm send --mark`, and when its scope's skipper first took the ship (leaselib.take).
+# state() derives `send` from them — "sent" until the pickup, then "picked up" — and leaves `status`
+# alone: wharf drives the block's status whoever holds the lease, and a `sent` there would read as a
+# stage of the block (the page's colours, the S7 stall's `planned`) rather than of the hand-over.
+SENT_FIELDS = ("sent_by", "sent_at", "sent_from", "picked_up_at", "picked_up_by")
+SEND_ONLY = set(SENT_FIELDS) | {"task", "t", "lease_gen", "plan"}   # every key a mark or a pickup event has
 # The free-text fields append_event may shrink, longest first, to fit a line under MAX_LINE bytes
 SHRINK = ("progress", "summary", "recommended", "title", "waiting_for", "by", "owner", "branch", "pr", "check")
 # What a line keeps when shrinking the free text was not enough (long lists of owned paths, say)
 ESSENTIAL = ("task", "status", "t", "session", "host", "harness", "ask", "answered", "from", "plan", "repo",
-             "eta", "cost", "parked", "via")
+             "eta", "cost", "parked", "via") + SENT_FIELDS
 
 
 def plans_root():
@@ -568,7 +575,7 @@ def state(pid, at=None):
                        "cost": None, "progress": None, "started": None, "updated": None, "parked": [],
                        "parked_at": None, "asks": [], "session": t.get("session"), "host": None, "harness": None,
                        "check": t.get("check"), "waiting_for": None, "milestone": t.get("milestone"),
-                       "blueprint": _block_fields(t)}
+                       "blueprint": _block_fields(t), **dict.fromkeys(SENT_FIELDS)}
     asks = {}
     for e in evs:
         name = e.get("task")
@@ -579,7 +586,7 @@ def state(pid, at=None):
                                     "status": "planned", "eta": None, "eta_by": None, "cost_est": None, "cost": None,
                                     "progress": None, "started": None, "updated": None, "parked": [], "parked_at": None,
                                     "asks": [], "session": None, "host": None, "harness": None, "check": None,
-                                    "waiting_for": None, "milestone": None, "blueprint": None})
+                                    "waiting_for": None, "milestone": None, "blueprint": None, **dict.fromkeys(SENT_FIELDS)})
         if _guarded_repo(e.get("repo")):
             t["guarded_event"] = True  # K6: one event from a guarded repo guards the whole task
         st = e.get("status")
@@ -589,6 +596,11 @@ def state(pid, at=None):
             t["status"] = st
         for k in ("progress", "session", "host", "harness", "branch", "pr", "check", "waiting_for"):
             if e.get(k):
+                t[k] = e[k]
+        if e.get("sent_at") and not e.get("picked_up_at") and t.get("picked_up_at") and e["sent_at"] > t["picked_up_at"]:
+            t["picked_up_at"] = t["picked_up_by"] = None   # sent again after a pickup (a hand-back, a rejoin): a new send
+        for k in SENT_FIELDS:
+            if e.get(k) and not (k.startswith("picked_up") and t.get(k)):   # the first pickup is the send's pickup
                 t[k] = e[k]
         if doer(e):
             t["by"] = doer(e)
@@ -624,7 +636,8 @@ def state(pid, at=None):
                 a["answered"] = e.get("t")
                 a["answer_from"] = e.get("from")
             t["parked"] = [p for p in t["parked"] if not e["answered"].endswith("#" + p)]
-        t["updated"] = e.get("t")
+        if not set(e) <= SEND_ONLY:   # a send's mark or pickup is not the task's own news (the board's ages)
+            t["updated"] = e.get("t")
     for a in asks.values():
         t = tasks.get(a["task"])
         if t is None:
@@ -646,6 +659,7 @@ def state(pid, at=None):
         t["overrun"] = bool(t["eta"] and t["status"] not in ENDED and at > float(t["eta"]))
         t["guarded"] = _guarded_repo(t.get("repo")) or bool(t.pop("guarded_event", False))
         t["owner"] = t["by"]   # the field's old name, for a page whose script predates S5 (until S8)
+        t["send"] = ("picked up" if t.get("picked_up_at") else "sent") if t.get("sent_by") else None
     totals = {"cost": sum(t["cost"] or 0 for t in tasks.values()),
               "est_to_go": sum(t["est_to_go"] or 0 for t in tasks.values()),
               "open_asks": sum(1 for t in tasks.values() for a in t["asks"] if a["open"])}
@@ -718,6 +732,10 @@ def public(st):
                          for b in t.get("blockers") or []]
     for t in out["tasks"]:
         t.pop("tail", None)
+        # a send's sender (a session id), its host and the lease holder (`skipper · <scope>`, often a
+        # confidential repo's name) stay on this Mac, as an ask's `to` does; `send` and its times leave
+        for k in ("sent_by", "sent_from", "picked_up_by"):
+            t.pop(k, None)
         for a in t.get("asks") or []:
             # a path on this Mac, a session id and a host (S5's re-hail and deaf rule read them): no
             # reader of the copy needs them

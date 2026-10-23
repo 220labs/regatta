@@ -78,6 +78,12 @@ check "$out" "no login (lighthouse's account is not installed)
 no trust check (wharf-runs' dispatch-rc is not installed)
 []" "S5's skipper without lighthouse or wharf-runs: a refusal naming each, no traceback; no lease, no line"
 
+printf -- '---\nship: x\n---\n' > "$T/bp.md"
+out=$("$S/modules/helm/libexec/helm" send "$T/bp.md" 2>&1); check "$?" "2" "S7's helm send without wharf-runs: refused, exit 2 …"
+check "$out" "helm send: refused: wharf-runs' blueprintlib.py is not here: a blueprint cannot be read (install wharf-runs)" "  … in one line"
+out=$("$S/modules/helm/libexec/helm" send --text "a task" --repo "$T/repo" 2>&1); check "$?" "2" "  --text too"
+check "$out" "helm send: refused: wharf-runs' blueprintlib.py is not here: a blueprint cannot be read (install wharf-runs)" "    the same line"
+
 echo "the core gone: the libraries raise or step aside, the CLIs say one line"
 N="$T/nocore"; mkdir -p "$N"; cp -R "$H" "$N/"; rm -f "$T/config/legacy"
 check "$(python3 -c "import sys; sys.path.insert(0, '$N/helm/bin'); import asklib; print(asklib._common(), asklib._peer('sheep'))" 2>/dev/null)" \
