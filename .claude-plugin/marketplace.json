@@ -21,14 +21,19 @@
       "description": "The public door: name-check and /name to name a project, helloworld to publish it through a privacy scan."
     },
     {
+      "name": "wharf",
+      "source": "./modules/wharf",
+      "description": "One session, one worktree: the checkpoint hook and its lock, the landing (/finish, /evacuate, /todo), the review gate and the pull request tool, the repo registry's tools, session forks and status, and seven agents."
+    },
+    {
       "name": "wharf-runs",
       "source": "./modules/wharf-runs",
-      "description": "Unattended runs across a fleet of Macs: Orca kept to the registry's scopes on each (needs a `scopes` tool, not yet published), and the Macs paired."
+      "description": "Unattended runs across a fleet of Macs: dispatch a seeded branch now, later or on another Mac; the lander that finishes idle branches; pickup and move between Macs; one harness over Claude Code, Codex and Orca, and hail to reach a live session; Orca kept to the registry's scopes."
     },
     {
       "name": "plumb",
       "source": "./modules/plumb",
-      "description": "Measure: crew-report, the owner's own time per project each week, beside the model cost."
+      "description": "Measure: model usage and cost, interruptions, the tier hint and the owner's own time per project."
     },
     {
       "name": "sextant",
@@ -44,6 +49,16 @@
       "name": "aurora",
       "source": "./modules/aurora",
       "description": "Aurora Borealis, the night job: the weekly loop's branches, charts and dream sections, and /embark, the Monday sitting."
+    },
+    {
+      "name": "keel",
+      "source": "./modules/keel",
+      "description": "Decisions batched in one doc, answered inline and taken back as commits: the D-list, its form and page, the Stop-hook reply lint, the session gate."
+    },
+    {
+      "name": "helm",
+      "source": "./modules/helm",
+      "description": "Project management: a large idea broken into ships, blocks and tasks; the skippers and their tick, the asks an unattended run relays instead of asking, and the board."
     }
   ]
 }

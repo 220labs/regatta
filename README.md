@@ -26,7 +26,10 @@ module needs the core.
 | [`atlas`](modules/atlas/README.md) | Writes down what was learnt, where the next agent looks |
 | [`helloworld`](modules/helloworld/README.md) | Names a project and publishes it behind a privacy scan |
 | [`plumb`](modules/plumb/README.md) | Counts your time per project and what the agents cost |
+| [`keel`](modules/keel/README.md) | Puts the questions that need you in one document and takes your answers back |
+| [`wharf`](modules/wharf/README.md) | Gives each agent its own branch and lands its work through review |
 | [`wharf-runs`](modules/wharf-runs/README.md) | Starts agents on work while nobody is at the keyboard |
+| [`helm`](modules/helm/README.md) | Breaks a large idea into steps and keeps the agents on them moving |
 | [`aurora`](modules/aurora/README.md) | Reads the week overnight and suggests what to change |
 
 ## Install
@@ -39,6 +42,6 @@ In Claude Code: `claude plugin marketplace add 220labs/regatta`, then
 
 ## Check
 
-`claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/atlas/tests/check.sh`
+`claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || [ ! -f modules/wharf-runs/bin/dispatch ] || bash modules/helm/tests/check.sh; }`
 
 Licence: MIT (`LICENSE`).
