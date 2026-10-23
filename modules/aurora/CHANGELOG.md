@@ -13,6 +13,10 @@
   and `--end`, and pickup's `--start`/`--launch`/`--force` out. The job exports `WEEKLY_RUN=sextant`,
   which soundings' two refusals read and pickup and dispatch enforce (the run is in `auto` mode, where
   an allow rule refuses nothing). A rehearsal's stand-in reads both lists as `WEEKLY_ALLOWED` / `WEEKLY_DENIED`.
+- `weekly-run aurora <cwd> --due` (knowledge-layers S7, 2026-10-22): the dry run as the clock's Orca
+  precheck — the same plan, exit 3 when no section is due or the host is skipped, so a quiet night is
+  `skipped_precheck` and starts no session. `--dry-run` keeps exit 0.
+  A refusal under `--due` exits 0, so the run it lets start logs and posts it (the landing review).
 - The per-scope pass (knowledge-layers S5, 2026-10-22): `/aurora dream --scope <scope>`
   (`sections/dream-scope.md`) reads one scope with S4's `--scope` readers and writes the scope's
   dream in its anchor's `dreams/` and its generalised lines in the vault's

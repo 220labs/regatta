@@ -65,6 +65,7 @@ echo "skip-hosts"
 rm "$REGATTA_CONFIG/aurora/skip-hosts"
 out=$("$W" aurora "$T" --dry-run); check $? 1 "no aurora/skip-hosts beside an overlay: refused"
 echo "$out" | grep -q "refused: no .*aurora/skip-hosts"; check $? 0 "  naming the key"
+"$W" aurora "$T" --due >/dev/null; check $? 0 "  --due on a refusal: exit 0, so the run Orca starts logs and posts it (a failed precheck is a silent skip)"
 check "$(WEEKLY_ANY_HOST=1 "$W" aurora "$T" --dry-run | head -1 | cut -c1-6)" "aurora" "  WEEKLY_ANY_HOST runs anyway"
 rm "$REGATTA_CONFIG/legacy"
 "$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "no key and no overlay: no host is skipped"
@@ -72,6 +73,7 @@ host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; p
 printf 'elsewhere\n%s\n' "$(printf %s "$host" | tr a-z A-Z)" > "$REGATTA_CONFIG/aurora/skip-hosts"
 out=$("$W" aurora "$T" --dry-run); check $? 0 "this host listed (in capitals): exit 0"
 check "$(echo "$out" | grep -c "skipped: aurora does not run on $host")" 1 "  skipped, said once"
+"$W" aurora "$T" --due >/dev/null; check $? 3 "  --due on a skipped host: exit 3, the clock's precheck starts no session"
 "$W" aurora "$T"; check "$(grep -c "skipped: aurora does not run on $host" "$T/logs/$(date +%F)-aurora.log")" 1 "  a real run logs it and starts nothing"
 printf '\xEF\xBB\xBF%s \r\n' "$host" > "$REGATTA_CONFIG/aurora/skip-hosts"
 "$W" aurora "$T" --dry-run | grep -q "skipped: aurora does not run on $host"; check $? 0 "  a BOM, a trailing space and CRLF still match"
@@ -95,6 +97,11 @@ echo "$out" | grep -qE '^  5 dream +due .* must be on vlt main'; check $? 0 "  d
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=12 "$W" aurora "$V" --dry-run)
 echo "$out" | grep -q "nothing due tonight"; check $? 0 "a Sunday before 20:00: nothing due"
 check "$(ls "$T/logs" | grep -c tried)" 0 "  a dry run records nothing"
+echo "the clock's precheck (--due, knowledge-layers S7)"
+AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --due >/dev/null; check $? 0 "a night with a section due: exit 0, the run starts"
+AURORA_TODAY=2026-10-18 AURORA_HOUR=12 "$W" aurora "$V" --due >/dev/null; check $? 3 "nothing due: exit 3, Orca records skipped_precheck"
+check "$(ls "$T/logs" | grep -c tried)" 0 "  the precheck records nothing"
+"$W" sextant "$V" --due >/dev/null; check $? 0 "sextant: no plan of its own, always due when it fires"
 
 echo "a night without wharf: the tend and the classify fail their steps, the dream lands"
 # The stand-in session writes the dream and commits it, as the section would.
