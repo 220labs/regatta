@@ -101,7 +101,7 @@ check "$(CLAUDE_REPOS_JSON="$T/sc.json" py "n, s = common.scope_of_repo('a'); pr
 out=$(CLAUDE_REPOS_JSON="$T/sc.json" "$RG" check 2>&1)
 echo "$out" | grep -q -- "--  registry: scope s2's berths name h9, which no repo is cloned on"; check $? 0 "regatta check: a berth no repo is cloned on is named"
 echo "$out" | grep -q -- "--  registry: scope s3's berths is a list of host names"; check $? 0 "  and berths that are no list"
-echo "$out" | grep -q -- "scope s1"; check $? 1 "  a scope whose berths are all known hosts is not"
+echo "$out" | grep -q -- "scope s1's berths"; check $? 1 "  a scope whose berths are all known hosts is not (its yard row is another line)"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"
