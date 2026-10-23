@@ -201,10 +201,17 @@ tools+=("Bash(ls:*)" "Bash(grep:*)" "Bash(date:*)" "Bash(wc:*)"
 # caller's with the lists changed, --force crosses an account's rules, --account picks another login
 # and its reset, --note puts the caller's words in the run's prompt, --background lets it spawn
 # unwatched, --end stops another run). The core's form, the module's own path (sextant's, found as every
-# peer is), then the layer's, each written out: the overlay's test_hooks.sh greps this file for
-# `bin/<tool> <verb>:*` per call /sextant makes, and for these two shapes. The core's form twice, as the
+# peer is), then the layer's, each written out: aurora's suite (tests/aurora.sh) matches every call
+# /sextant types against these lists, and counts both shapes; the layer's forms go once nothing types them. The core's form twice, as the
 # layer's: absolute, and with $HOME as `~` (a skill in the layer writes it so).
 if [ "$job" = sextant ]; then
+  # /sextant lives in sextant's module since B13: its `where` from its base directories (the module's,
+  # the config dir's link), pinned as aurora's are, and the two reads it types through the core
+  sx=$([ -n "$REG" ] && python3 "$REG" has sextant 2>/dev/null) || sx=""
+  for sb in ${sx:+"$sx/skills/sextant"} "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/sextant"; do
+    tools+=("Bash($sb/../../libexec/sextant-run where)")
+  done
+  tools+=("Bash($REG usage-report numbers:*)" "Bash($REG which:*)")
   q=$(tool soundings); regs=("$REG"); [[ "$REG" == "$HOME"/* ]] && regs+=("~${REG#"$HOME"}")
   for r in "${regs[@]}"; do
     for v in next list brief mark refresh; do tools+=("Bash($r soundings $v:*)"); done
