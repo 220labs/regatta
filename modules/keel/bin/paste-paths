@@ -5,7 +5,8 @@
   paste-paths --self-test             the built-in cases (tests/paste-paths.sh runs it)
   paste-paths --stop-hook             Stop hook (stdin JSON): the turn's last reply — paste blocks,
                                       bare PR numbers, vscode:// links, relative or
-                                      file:// file links (absolute only), owed-lists
+                                      file:// file links (absolute only), links to a local
+                                      .html page (publish it as a space), owed-lists
                                       whose items say no "checked:", a reply asking D-items (a
                                       D-list, or a WAITING line naming them) without its doc's
                                       hand-over line (`keel line`) or with no doc at all,
@@ -371,6 +372,13 @@ def branch_docs(cwd: str):
 # folder (the transcript's first `cwd`) marks a real session; fixtures without one keep the old rule.
 SCHEME = re.compile(r"^[A-Za-z][\w+.-]*:(?!\d)")  # https:, tel:, message: — `x.md:12` is a file
 INERT = re.compile(r"^(?:file|computer)://")  # do nothing in the VS Code panel (lessons/claude-code.md)
+# A local web page has no link that opens: VS Code's tab shows "Forbidden. File does not reside
+# within a trusted folder." for a page in the Downloads folder, and Remote Control on the phone renders no
+# local page (the owner's screenshot, 2026-10-22: "links don't work. fix it now, and for future"). The
+# reply sends it with SendUserFile, which renders in the panel and on the phone and goes nowhere
+# else, or links the page keel publishes where the repo may be mirrored. Any line anchor counts:
+# `#L1` is the house style for every file link, so an exemption for one let the same link through.
+PAGE = re.compile(r"\.html?$", re.I)
 
 
 def start_dir(entries: list) -> str:
@@ -384,15 +392,24 @@ def link_findings(reply: str, root: str, cwd: str = "") -> list[str]:
     """One finding naming every relative or file:// markdown link in the reply's prose, each with
     its absolute spelling where the file exists — from the session's worktree (the git top of
     `cwd`; a `cd` moves cwd itself) first, then cwd, then `root` — its #L12 or :12 kept. One, so
-    the block reason's cut at six findings never drops another check (it blocks only once)."""
+    the block reason's cut at six findings never drops another check (it blocks only once, and
+    block_reason keeps every link finding); a second names every link to a local .html page,
+    which no path spelling opens (PAGE): an absolute or file:// one, or a relative one that exists."""
     import os
     from urllib.parse import unquote
-    if not root:
-        return []
     top = _git(cwd, "rev-parse", "--show-toplevel").strip() if cwd and os.path.isdir(cwd) else ""
-    bad = []
+    bad, pages = [], []
     for m in MD_LINK.finditer(prose_only(reply)):
         raw = unquote(m.group(1) or m.group(2))
+        bare = os.path.expanduser(re.sub(r"(?:[#?].*|:\d+(?::\d+)?)$", "", INERT.sub("", raw)))
+        if ((INERT.match(raw) or not SCHEME.match(raw)) and not raw.startswith("//")
+                and PAGE.search(bare)
+                and (bare.startswith("/") or any(b and os.path.exists(os.path.join(b, bare))
+                                                 for b in (top, cwd, root)))):
+            pages.append(f"({raw})")
+            continue
+        if not root:  # the relative-file rule needs the start folder; the page rule above does not
+            continue
         if not INERT.match(raw) and (raw.startswith(("#", "/")) or SCHEME.match(raw)):
             continue
         path = INERT.sub("", raw)
@@ -404,12 +421,19 @@ def link_findings(reply: str, root: str, cwd: str = "") -> list[str]:
         fix = next((os.path.normpath(os.path.join(b, t)) for b in bases
                     if (b or t.startswith("/")) and os.path.exists(os.path.join(b, t))), "")
         bad.append(f"({raw}) -> " + (f"({fix}{tail.group(0) if tail else ''})" if fix else "no such file"))
-    bad = list(dict.fromkeys(bad))
-    if not bad:
-        return []
-    return [f"{len(bad)} file link(s) that will not open — VS Code and Remote Control resolve a "
-            f"relative link from different folders and ignore file://, so write the bare absolute "
-            f"path: " + "; ".join(bad[:8]) + (" …" if len(bad) > 8 else "")]
+    bad, pages = list(dict.fromkeys(bad)), list(dict.fromkeys(pages))
+    out = []
+    if bad:
+        out.append(f"{len(bad)} file link(s) that will not open — VS Code and Remote Control resolve a "
+                   f"relative link from different folders and ignore file://, so write the bare absolute "
+                   f"path: " + "; ".join(bad[:8]) + (" …" if len(bad) > 8 else ""))
+    if pages:
+        out.append(f"{len(pages)} link(s) to a local web page, which opens nowhere — VS Code's tab "
+                   f"refuses a page outside a trusted folder and the phone renders no local page: "
+                   f"send it, or the images it shows, with SendUserFile (it renders in the panel and "
+                   f"on the phone), or, where the repo may be mirrored, link the page keel publishes: "
+                   + "; ".join(pages[:8]) + (" …" if len(pages) > 8 else ""))
+    return out
 
 
 def _linked_docs(reply: str, cwd: str) -> list:
@@ -1240,12 +1264,12 @@ def block_reason(reply: str, found: list, links: list, env=None) -> str:
             "owed items: skills/finish step 10)")
     top = any("paste block" in f or "do this now" in f.lower() for f in found)
     if env.get("CLAUDE_UNATTENDED") or top:
-        return head + " and " + REPEAT_WHOLE + "; ".join((found + links)[:6])
+        return head + " and " + REPEAT_WHOLE + "; ".join(found[:6] + links)
     return (head + ". Your reply is already on screen, so " + REPEAT_LINES + ": send only the lines "
             "these fixes change or add, corrected, then end with the reply's ending — its closing "
             "line, or its last paragraph if that asked the owner anything, and any links after it — "
             "last, corrected if a fix is about that ending, else repeated unchanged: "
-            + "; ".join((found + links)[:6]))
+            + "; ".join(found[:6] + links))
 
 
 # The two forms' marker phrases: bin/interruptions' repeat_kind reads them back from transcripts

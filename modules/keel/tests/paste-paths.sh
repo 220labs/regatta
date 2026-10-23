@@ -290,6 +290,11 @@ tl_ "$T/v1b.jsonl" $'See [the doc](.claude/worktrees/wt/docs/wt-only.md).'
 check "$(sw_ "$T/v1b.jsonl" | grep -c "(.claude/worktrees/wt/docs/wt-only.md) -> (/[^)]*/wt/docs/wt-only.md)")" 1 "links: relative to the window's folder blocks too (Remote Control reads it from the worktree)"
 tl_ "$T/v1c.jsonl" $'[a](docs/wt-only.md#L2), [b](docs/wt-only.md:2), [c](file:///etc/hosts), [d](computer:///etc/hosts)'
 check "$(sw_ "$T/v1c.jsonl" | grep -c '4 file link(s).*wt-only.md#L2).*wt-only.md:2).*(file:///etc/hosts) -> (/etc/hosts)')" 1 "links: one finding for all; the line number kept; file:// and computer:// are inert"
+tl_ "$T/v1pg.jsonl" $'[page](/Users/x/Downloads/eval/index.html), [p2](computer:///tmp/a.htm#top), [p3](/Users/x/r.html#L1), [ok](https://spacesheep.dev/@x/y), [mirror](http://localhost:4280/@x/y/index.html), [proto](//cdn.example.com/a.html), [doc](/etc/hosts)'
+check "$(sw_ "$T/v1pg.jsonl" | grep -c '3 link(s) to a local web page.*SendUserFile.*(/Users/x/Downloads/eval/index.html); (computer:///tmp/a.htm#top); (/Users/x/r.html#L1)')" 1 "links: a local .html page blocks with the SendUserFile fix, #L1 included; a URL, //host and a plain file pass"
+check "$(sw_ "$T/v1pg.jsonl" | grep -c 'file link(s) that will not open')" 0 "links: a page link is not also counted as a bad file link"
+tl_ "$T/v1pt.jsonl" $'[typo](docs/nope.html)'
+check "$(sw_ "$T/v1pt.jsonl" | grep -c '(docs/nope.html) -> no such file')" 1 "links: a relative .html that does not exist is a bad file link, not a page"
 tl_ "$T/v1d.jsonl" $'[call](tel:+15550100), [mail](message:%3Cid%3E), [js](javascript:void(0)), [h](~/no-such-file-xyz)'
 check "$(sw_ "$T/v1d.jsonl" | grep -c '1 file link(s).*(~/no-such-file-xyz) -> no such file')" 1 "links: other URI schemes pass; ~ is expanded"
 tl_ "$T/v1e.jsonl" "$(printf '[x%s](docs/n%s.md) ' 1 1 2 2 3 3 4 4 5 5 6 6 7 7)"$'\n\n- **D9 — Reap seeds after a fortnight.**\n  ➤ Answer: fourteen days idle.'
