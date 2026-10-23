@@ -11,6 +11,18 @@
   the run record), a post that was refused or could not reach the session spends none. An end on any flagged
   API-error turn (a rate limit and the others too, though never nudged) reads `idle N min, its last turn ended on an API error`, which the harness reports `failed` and `--yolo`
   does not launch from. Cases in `test_dispatch.sh` and `test_harness.sh`.
+- `wharf apply --yard` (skipper-resilience S2, 2026-10-22): a ship is laid on its scope's yard
+  (`common.scope_yard`), pinned `{repo, branch, rel, digest}` from the committed and pushed blueprint
+  (`push it first` otherwise), compiled on the yard or re-run there over its ssh alias with `--pinned`
+  and `--laid-by` (who laid it, read on the caller: ssh carries no environment); those two flags are
+  refused under a local session or `CLAUDE_UNATTENDED`, and a `laid_by.depth` past dispatch's cap. The
+  pinned text is kept as the plan's `blueprint-<ship>.md`, so the tick drives it with no checkout; a pin
+  another plan still drives is refused, naming it, and the tick drives one plan per pin. The fence: a
+  plain apply (and `--watch`) of a ship whose scope has a yard is refused, off the yard and on it; a
+  scope with no yard is refused nothing. Where the repo's scope has a yard, a block's `host:` must be
+  some scope's yard. Blueprints take `merge: yes|no` and `sent_by`, and `skipper: scope` names no
+  session until the lease; the keel's merge is recorded as plan.json's `merge: {value, why}`. `--gen` is
+  taken for S4. Cases in `test_wharf.sh` with a stub ssh and a scratch origin.
 - `wharf` start fixes (skipper-resilience S1, 2026-10-22), found by the yard probe: `start_orca` trusts the
   picked login's config dir first, as dispatch does (`dispatch-rc trusted`, then lighthouse's
   `trust-projects`, read back; still untrusted is one failed start); a worktree git just made that Orca's
