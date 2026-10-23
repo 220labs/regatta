@@ -1399,8 +1399,733 @@ kill $PARENT 2>/dev/null
 check "$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --stand-down 2>&1; echo "rc=$?")" \
   "helm skipper --stand-down: a skipper session's own verb — no CLAUDE_CODE_SESSION_ID here
 rc=1" "  a plain shell has no skipper to stand down"
-"$LX/helm" skipper --start dock > /dev/null 2>&1; check "$?" "2" "--start is not S4's (S5 adds it)"
 unset ASK_MANAGER_DIR
+
+echo "the scope skipper (skipper-resilience S5): --start, the runner, the tick's pass, the hand-overs"
+# Stubs only: launchctl, screen, claude, account, dispatch-rc, trust-projects and the spacesheep CLI
+# record what they were asked; nothing loads a real job, starts a real claude or screen, or leaves
+# the Mac. A fresh store, registry and manager dir, so S4's leases above are not this block's.
+S5="$T/s5"; mkdir -p "$S5/bin" "$S5/la" "$S5/mgr" "$S5/st" "$S5/q" "$S5/cfg/acct-a" "$S5/cfg/acct-b" "$S5/cfg/acct-c"
+export PLANS_DIR="$S5/plans" ASK_MANAGER_DIR="$S5/mgr" STALLS_STATE_DIR="$S5/st" STALLS_LOG="$S5/stalls.jsonl" \
+       ASK_QUEUE_DIR="$S5/q" ASK_NO_KEY_FILES=1 HELM_LAUNCH_DIR="$S5/la" HELM_LAUNCHCTL="$S5/bin/launchctl" \
+       HELM_SCREEN="$S5/bin/screen" HELM_CLAUDE="$S5/bin/claude" HELM_ACCOUNT="$S5/bin/account" \
+       HELM_DISPATCH_RC="$S5/bin/dispatch-rc" HELM_TRUST="$S5/bin/trust-projects" MEMO_SHEEP_BIN="$S5/bin/spacesheep" \
+       CLAUDE_REPOS_JSON="$S5/repos.json" PLAN_PROJECTS_ROOT="$S5/projects" HELM_SCREENDIR="$S5/screens"
+mkdir -p "$S5/projects/dockrepo" "$S5/projects/sib" "$S5/projects/third" "$S5/projects/fourth"
+cat > "$CLAUDE_REPOS_JSON" <<'EOF'
+{"repos": {"dockrepo": {}, "sib": {}, "third": {}, "fourth": {}},
+ "scopes": {"dock": {"repos": ["dockrepo", "sib"], "yard": "testhost"}, "solo": {"repos": ["third"], "yard": "testhost"},
+            "four": {"repos": ["fourth"], "yard": "testhost", "confidential": true}}}
+EOF
+# the screens `screen -ls` lists: dock's, a scope whose name extends dock's, solo's (a quit must name the pid)
+printf 'There are screens on:\n\t111.skipper-dock\t(Detached)\n\t222.skipper-dockyard\t(Detached)\n\t333.skipper-solo\t(Detached)\n3 Sockets in /x.\n' > "$S5/screen.ls"
+cat > "$S5/bin/launchctl" <<EOF
+#!/bin/sh
+echo "\$*" >> "$S5/lc.calls"
+[ "\$1" = list ] && cat "$S5/lc.list" 2>/dev/null
+exit 0
+EOF
+cat > "$S5/bin/screen" <<EOF
+#!/bin/sh
+echo "\$* SCREENDIR=\$SCREENDIR" >> "$S5/screen.calls"
+echo "screen \$*" >> "$S5/lc.calls"
+[ "\$1" = -ls ] && { cat "$S5/screen.ls"; exit 1; }   # screen -ls exits non-zero even when it lists
+exit 0
+EOF
+# claude: `auth status` answers from the config dir (a .out file there: not signed in); a session
+# writes its argv, its cwd and the environment the runner gave it, then exits
+cat > "$S5/bin/claude" <<EOF
+#!/bin/bash
+if [ "\$1 \$2" = "auth status" ]; then
+  echo "auth \${CLAUDE_CONFIG_DIR:-default}" >> "$S5/claude.calls"
+  if [ -e "\${CLAUDE_CONFIG_DIR:-/nonexistent}/.out" ]; then echo '{"loggedIn": false, "authMethod": "none"}'; exit 1; fi
+  echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exit 0
+fi
+echo "session" >> "$S5/claude.calls"
+{ printf '%s\n' "\$@"; } > "$S5/claude.argv"
+{ echo "cwd=\$PWD"; env | grep -E '^(SKIPPER_|HELM_HOLD_PARENT|CLAUDE_|DISPATCH_)' | sort; echo "pid=\$\$"; } > "$S5/claude.env"
+EOF
+# account: picks and deny lists from a fixture (repo key → label; label → the keys it denies)
+cat > "$S5/bin/account" <<EOF
+#!/usr/bin/env python3
+import json, os, sys
+fx = json.load(open("$S5/acct.json"))
+key = lambda p: os.path.relpath(os.path.realpath(p), os.path.realpath("$S5/projects"))
+if sys.argv[1] == "pick":
+    k = key(sys.argv[3]); open("$S5/acct.calls", "a").write("pick %s\n" % k)
+    lab = fx["picks"].get(k)
+    if not lab:
+        print(json.dumps({"account": None, "skipped": [["acct-a", "its week is full"]]})); sys.exit(3)
+    print(json.dumps({"account": lab, "env": {"CLAUDE_CONFIG_DIR": "$S5/cfg/" + lab}})); sys.exit(0)
+if sys.argv[1] == "limits":
+    rows = [{"label": l, "provider": "claude", "eligible": l not in fx.get("ineligible", []), "env": {"CLAUDE_CONFIG_DIR": "$S5/cfg/" + l}}
+            for l in ("acct-a", "acct-b", "acct-c")]
+    print(json.dumps(rows)); sys.exit(0)
+if sys.argv[1] == "allowed":
+    if os.path.exists("$S5/acct.crash"):
+        raise RuntimeError("the registry is half-written")   # a traceback, exit 1: no answer at all
+    lab = os.path.basename(os.environ.get("CLAUDE_CONFIG_DIR", "default")); k = key(sys.argv[2])
+    if k in fx["deny"].get(lab, []):
+        print("%s is off %s (accounts.json deny list)" % (k, lab)); sys.exit(1)
+    sys.exit(0)
+sys.exit(2)
+EOF
+cat > "$S5/bin/dispatch-rc" <<EOF
+#!/usr/bin/env python3
+import os, sys
+assert sys.argv[1] == "trusted"
+if os.path.exists("$S5/rc.crash"):
+    raise RuntimeError("dispatch-rc half-written")
+open("$S5/trust.calls", "a").write("trusted %s %s\n" % (os.path.basename(sys.argv[2]), os.path.basename(sys.argv[4])))
+sys.exit(0 if os.path.exists(os.path.join(sys.argv[4] or "$S5/cfg/default", ".trusted")) else 1)
+EOF
+cat > "$S5/bin/trust-projects" <<EOF
+#!/usr/bin/env python3
+import os
+d = os.environ.get("CLAUDE_CONFIG_DIR") or "$S5/cfg/default"
+open("$S5/trust.calls", "a").write("trust-projects %s\n" % os.path.basename(d))
+if not os.path.exists(os.path.join(d, ".untrustable")):
+    open(os.path.join(d, ".trusted"), "w").close()
+EOF
+cat > "$S5/bin/spacesheep" <<EOF
+#!/bin/sh
+echo "\$* CLAUDE_CODE_SESSION_ID=\$CLAUDE_CODE_SESSION_ID" >> "$S5/sheep.calls"
+[ -e "$S5/sheep.fail" ] && { echo '{"error": "the service is away"}'; exit 1; }
+echo '{"uuid": "sp-dock", "url": "https://example.invalid/s/sp-dock"}'
+EOF
+chmod +x "$S5/bin/"*
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-b", "third": "acct-c"}, "deny": {}}' > "$S5/acct.json"
+SK() { env -u CLAUDE_CODE_SESSION_ID python3 - "$B" "$@" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import skipperlib
+fn, args = sys.argv[2], sys.argv[3:]
+if fn == "ensure":
+    print("\n".join(skipperlib.ensure(args[0] == "act", "the suite")))
+elif fn == "fails":
+    print(len(skipperlib.consecutive_failures(skipperlib.starts(args[0]))))
+elif fn == "needs":
+    print(skipperlib.needs(args[0]))
+elif fn == "open":
+    print(len(skipperlib.open_asks(args[0])))
+elif fn == "open_refs":
+    print(sorted(a["ref"] for _, a in skipperlib.open_asks(args[0])))
+elif fn == "launch":   # a launched line as start() writes it (STALLS_NOW backdates it)
+    skipperlib.log_start(args[0], "launched", args[1], job=skipperlib.job_label(args[0], args[1]), by="tick")
+elif fn == "log":      # any starts-log line: scope event start [session]
+    skipperlib.log_start(args[0], args[1], args[2], **({"session": args[3]} if len(args) > 3 else {}))
+elif fn == "deaf":     # deaf() on the ship's lease, now
+    import leaselib, time
+    print(skipperlib.deaf(args[0], leaselib.read(args[0]), time.time()))
+elif fn == "fails_of":  # consecutive_failures over the lines given as JSON
+    print(len(skipperlib.consecutive_failures(json.loads(args[0]))))
+elif fn == "alive":    # record_alive on a record given as JSON
+    print(skipperlib.record_alive(json.loads(args[0])))
+elif fn == "stop":     # the tick's stop (by="tick")
+    print("\n".join(skipperlib.stop(args[0], "the suite", by="tick")))
+PY
+}
+# an ask's relay event as bin/ask relay writes it since S5: who it went to, by which road, the doc where it is
+askev() { python3 - "$B" "$@" <<'PY'
+import os, sys, time
+sys.path.insert(0, sys.argv[1]); import helmlib
+pid, task, ref, to, backend, ago = sys.argv[2:8]
+to_host = sys.argv[8] if len(sys.argv) > 8 else None
+helmlib.append_event(pid, {"task": task, "status": "relayed" if to else "waiting", "ask": ref, "summary": "which one",
+                           "reversible": "yes", "recommended": "A", "backend": backend, "session": "run-9", "repo": "/x/dockrepo",
+                           "doc": os.environ.get("ASKEV_DOC") or "/x/dockrepo/.claude/worktrees/q/" + ref.split("#")[0],
+                           "to": to or None, "to_host": to_host, "reply_flags": " --to-account /acct/run --space sp-run",
+                           "mode": os.environ.get("ASKEV_MODE") or None, "t": time.time() - float(ago), "plan": pid})
+PY
+}
+rec() { python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(r.get(sys.argv[2]))' "$S5/mgr/testhost-$1.json" "$2"; }
+st5() { grep -c "\"event\": \"$2\"" "$S5/mgr/testhost-$1.starts.jsonl" 2>/dev/null | tr -d ' '; }
+LP="$PLANS_DIR"
+# a ship of a scope the yard holds, with one open block (needs a skipper unless the block is a person's)
+lay() { "$HM" $SHIP "$1" --id "$1" > /dev/null; "$HM" task "$1" "${3:-b1}" ${4:+--kind human $BY sam} > /dev/null; ll yard "$1" "$2" > /dev/null; }
+# a registry record for a session, its pid live (a sleep) unless given
+regi() { printf '{"pid": %d, "sessionId": "%s", "name": "skipper-x", "status": "%s", "updatedAt": 2}' "$2" "$1" "${3:-busy}" > "$T/sess/$1.json"; }
+# a skipper record as the runner writes it, by hand
+mkrec() { printf '{"session": "%s", "name": "skipper · %s", "scope": "%s", "account": "acct-a", "host": "testhost", "started": %s, "pid": %d, "space": null, "gen": null, "start": "%s"}' \
+            "$2" "$1" "$1" "$4" "$3" "${5:-20260101-000000-abcd}" > "$S5/mgr/testhost-$1.json"; }
+now() { python3 -c 'import time; print(int(time.time()))'; }
+# a stand-in claude pid (a sleep, disowned: a stop ends some of them, and no job notice follows); all ended at the block's end
+SLEEPS=""
+nap() { sleep 300 & NAP=$!; disown $NAP; SLEEPS="$SLEEPS $NAP"; }
+
+echo "  no lease, no record: the tick is what it was before S5"
+check "$(SK ensure act)" "" "  skipperlib.ensure on an empty store: no line, nothing started"
+check "$("$LX/helm" tick --dry-run 2>&1 | grep -c 'skipper')" "0" "  helm tick --dry-run: no skipper line"
+check "$([ -e "$S5/lc.calls" ] && echo called || echo none)" "none" "  launchctl never called"
+check "$(STALLS_DEADLINE=$(( $(now) + 10 )) python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls_tick; print(stalls_tick.ensure_skippers("armed"))' "$B")" "[]" \
+  "  the tick's pass near its kill time on an empty host: not even the deadline's line"
+
+echo "  --start and --stop"
+out=$("$LX/helm" skipper --start dock 2>&1); check "$?" "1" "--start inside a session (CLAUDE_CODE_SESSION_ID): refused, exit 1"
+has "$out" "refused inside a session" "  saying so"
+out=$("$LX/helm" skipper --stop dock 2>&1); check "$?" "1" "--stop inside a session: refused, exit 1"
+check "$([ -e "$S5/lc.calls" ] && echo called || echo none)" "none" "  nothing booted out or loaded"
+# an unattended caller (a dispatched run, the skipper itself) and a session that dropped its variables: refused too
+out=$(env -u CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED=skipper "$LX/helm" skipper --start dock 2>&1); check "$?" "1" "--start under CLAUDE_UNATTENDED: refused"
+has "$out" "refused in an unattended caller (CLAUDE_UNATTENDED=skipper)" "  saying so"
+out=$(env -u CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED=dispatch "$LX/helm" skipper --stop dock 2>&1); check "$?" "1" "--stop under CLAUDE_UNATTENDED: refused"
+printf '{"pid": %d, "sessionId": "typing-1", "status": "busy"}' $$ > "$T/sess/$$.json"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start dock 2>&1); check "$?" "1" "--start below a live session whose variables were dropped (env -u): refused"
+has "$out" "refused below a live session (pid $$ in the registry)" "  by the process tree, not the environment"
+rm -f "$T/sess/$$.json"
+check "$([ -e "$S5/lc.calls" ] && echo called || echo none)" "none" "  and nothing loaded by any of them"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start nosuch 2>&1); check "$?" "1" "--start of a scope the registry lacks: refused"
+has "$out" "no scope nosuch in the registry" "  naming it"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start dock --dry-run); check "$?" "0" "--start --dry-run: exit 0"
+has "$out" "<string>-D</string>" "  prints the plist (screen -D -m)"
+check "$(ls "$S5/la" | wc -l | tr -d ' ')/$(grep -c -e bootstrap -e bootout -e quit "$S5/lc.calls" 2>/dev/null || :)" "0/0" "  and writes, loads and boots out nothing (launchctl list alone)"
+check "$([ -d "$S5/screens" ] && echo made || echo untouched)" "untouched" "  nor makes dispatch's screen dir"
+mkdir -p "$S5/screens"; chmod 700 "$S5/screens"
+# an older start of the scope: a plist and a label launchd still lists; another scope's left alone
+OLD=dev.regatta.helm.skipper-dock-20260101-000000-abcd
+touch "$S5/la/$OLD.plist" "$S5/la/dev.regatta.helm.skipper-dockyard-20260101-000000-abcd.plist"
+printf -- '-\t0\t%s\n-\t0\tdev.regatta.helm.skipper-dock-20260102-000000-beef\n' "$OLD" > "$S5/lc.list"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start dock); check "$?" "0" "--start: exit 0"
+NEW=$(ls "$S5/la" | sed -n 's/^\(dev.regatta.helm.skipper-dock-[0-9]\{8\}-[0-9]\{6\}-[0-9a-f]\{4\}\)\.plist$/\1/p')
+check "$(echo "$NEW" | grep -c .)" "1" "  one per-start plist for the scope"
+has "$out" "started skipper · dock: $NEW" "  named by its start id"
+pl=$(python3 -c 'import plistlib, sys, json; d = plistlib.load(open(sys.argv[1], "rb")); print(json.dumps([d["Label"], d.get("RunAtLoad"), "KeepAlive" in d, "LaunchOnlyOnce" in d, d["ProgramArguments"][1:6], d["ProgramArguments"][6].endswith("/libexec/skipper-run"), d["ProgramArguments"][7], d["EnvironmentVariables"].get("CLAUDE_REPOS_JSON") == sys.argv[2]]))' "$S5/la/$NEW.plist" "$CLAUDE_REPOS_JSON")
+check "$pl" "[\"$NEW\", true, false, false, [\"-D\", \"-m\", \"-S\", \"skipper-dock\", \"/bin/bash\"], true, \"dock\", true]" \
+  "  RunAtLoad, no KeepAlive, no LaunchOnlyOnce; screen -D -m -S skipper-dock /bin/bash skipper-run dock <id>; the overrides carried"
+calls=$(cat "$S5/lc.calls")
+has "$calls" "bootout gui/$(id -u)/$OLD" "  an older label's plist booted out"
+has "$calls" "bootout gui/$(id -u)/dev.regatta.helm.skipper-dock-20260102-000000-beef" "  and one launchd still lists"
+hasnt "$calls" "skipper-dockyard" "  another scope's label left alone"
+check "$([ -e "$S5/la/$OLD.plist" ] && echo kept || echo removed)" "removed" "  its plist removed"
+hasnt "$calls" "222.skipper-dockyard -X quit" "  nor its screen, whose name extends dock's (the quit names the pid: -S alone is a prefix)"
+q=$(echo "$calls" | grep -n 'screen -S 111.skipper-dock -X quit' | head -1 | cut -d: -f1)
+b=$(echo "$calls" | grep -n "bootstrap gui/$(id -u) $S5/la/$NEW.plist" | head -1 | cut -d: -f1)
+check "$([ -n "$q" ] && [ -n "$b" ] && [ "$q" -lt "$b" ] && echo before || echo "q=$q b=$b")" "before" "  the screen quit before the new job is bootstrapped"
+has "$(cat "$S5/screen.calls")" "SCREENDIR=$S5/screens" "  in the jobs' socket dir (HELM_SCREENDIR here)"
+check "$(st5 dock launched)" "1" "  the starts log: one launched"
+rm -f "$S5/lc.list" "$S5/la/dev.regatta.helm.skipper-dockyard-"*; : > "$S5/lc.calls"
+
+echo "  the runner (libexec/skipper-run, with /usr/bin/python3): login, sign-in, trust, page, record, claude"
+lay rs1 dock
+# the runner runs only the start just launched, so each case launches its own first (NOLAUNCH: none)
+run5() { [ -n "${NOLAUNCH:-}" ] || SK launch "${1:-dock}" "${2:-20260103-000000-0001}"
+         env -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT=cli DISPATCH_SHIP=leak DISPATCH_REPO=/leak bash "$LX/skipper-run" "${1:-dock}" "${2:-20260103-000000-0001}" > "$S5/run.out" 2>&1; echo $?; }
+rm -f "$S5/cfg/acct-a/.trusted"
+touch "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0001.plist"
+check "$(run5)" "0" "the runner execs claude (the stub exits 0)"
+check "$([ -e "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0001.plist" ] && echo kept || echo removed)" "removed" \
+  "  its own plist removed first: a RunAtLoad plist left behind would start a skipper at the next login"
+check "$(sed -n 1p "$S5/acct.calls")" "pick dockrepo" "  the anchor's pick first"
+check "$(cat "$S5/trust.calls" | tr '\n' ',')" "trusted dockrepo acct-a,trust-projects acct-a,trusted dockrepo acct-a," "  the anchor untrusted: trust-projects on the picked login, read back"
+check "$(rec dock account)/$(rec dock name)/$(rec dock space)/$(rec dock gen)/$(rec dock start)" "acct-a/skipper · dock/sp-dock/None/20260103-000000-0001" \
+  "  the record: the login, the name, the Talk page as space, gen null, the start"
+SID=$(rec dock session)
+has "$(cat "$S5/sheep.calls")" "CLAUDE_CODE_SESSION_ID=$SID" "  the page deployed stamped with the new session's id"
+argv=$(cat "$S5/claude.argv")
+check "$(sed -n 1p "$S5/claude.argv" | cut -c1-40)" "You are skipper · dock, the skipper of s" "  claude's first word is the brief"
+has "$argv" "--session-id
+$SID
+--remote-control
+skipper · dock
+-n
+skipper-dock
+--permission-mode
+auto
+--model
+claude-sonnet-5-5
+--effort
+high
+--disallowedTools
+AskUserQuestion" "  then the session id, Remote Control, the name, auto mode, Sonnet high, no AskUserQuestion"
+has "$argv" "skipper --hold --scope dock --once" "  the brief: --hold --once first"
+env5=$(cat "$S5/claude.env")
+has "$env5" "cwd=$(cd "$S5/projects/dockrepo" && pwd -P)" "  cwd the anchor's checkout"
+has "$env5" "CLAUDE_CONFIG_DIR=$S5/cfg/acct-a" "  on the picked login"
+has "$env5" "SKIPPER_ACCOUNT=acct-a
+SKIPPER_SCOPE=dock" "  SKIPPER_SCOPE and SKIPPER_ACCOUNT (the lease's account)"
+check "$(sed -n 's/^HELM_HOLD_PARENT=//p' "$S5/claude.env")" "$(rec dock pid)" "  HELM_HOLD_PARENT is the record's pid, which exec made claude's"
+check "$(sed -n 's/^pid=//p' "$S5/claude.env")" "$(rec dock pid)" "  (the stub claude runs as that very pid)"
+hasnt "$env5" "CLAUDE_CODE_" "  no CLAUDE* marker handed down (the entrypoint, the session id)"
+has "$env5" "CLAUDE_UNATTENDED=skipper" "  CLAUDE_UNATTENDED=skipper: every guard for a person's yes reads it as unattended"
+check "$(grep -c '"event": "recorded"' "$S5/mgr/testhost-dock.starts.jsonl")/$(grep '"event": "recorded"' "$S5/mgr/testhost-dock.starts.jsonl" | grep -c "$SID")" "1/1" \
+  "  the starts log names the start's session when the record is written"
+# the runner writes its own log: under `screen -D -m` its stdout is the screen's terminal, and the
+# plist's StandardOutPath holds only screen's own output
+lg=$(cat "$S5/mgr/skipper-dock.log" 2>/dev/null)
+has "$lg" "skipper-run dock, start 20260103-000000-0001, on testhost" "  the runner's lines go to skipper-<scope>.log itself"
+has "$lg" "record $S5/mgr/testhost-dock.json; claude" "  up to the record and the exec"
+hasnt "$env5" "DISPATCH_" "  no run variable either"
+rm -f "$S5/mgr/testhost-dock.json"; : > "$S5/acct.calls"; : > "$S5/trust.calls"; : > "$S5/sheep.calls"
+# the anchor's pick is denied by a sibling: the sibling's pick, which every repo allows
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-b"}, "deny": {"acct-a": ["sib"]}}' > "$S5/acct.json"
+touch "$S5/cfg/acct-b/.trusted"
+check "$(run5 dock 20260103-000000-0005)" "0" "a sibling denies the anchor's pick: the runner still starts"
+check "$(cat "$S5/acct.calls" | tr '\n' ',')" "pick dockrepo,pick sib," "  it picks for the denying repo next"
+check "$(rec dock account)" "acct-b" "  and runs on that pick"
+has "$(cat "$S5/claude.env")" "CLAUDE_CONFIG_DIR=$S5/cfg/acct-b" "  claude on it"
+check "$(cat "$S5/sheep.calls" | grep -c -- '--space sp-dock')" "1" "  the scope's page redeployed, not a new one"
+rm -f "$S5/mgr/testhost-dock.json" "$S5/claude.argv"
+# nothing fits: the refusal names each denial, a failed start the tick reads at once
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-b"}, "deny": {"acct-a": ["sib"], "acct-b": ["dockrepo"], "acct-c": ["sib"]}}' > "$S5/acct.json"
+touch "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0002.plist"
+check "$(run5 dock 20260103-000000-0002)" "1" "no login every repo allows: the runner refuses, exit 1"
+check "$([ -e "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0002.plist" ] && echo kept || echo removed)" "removed" "  a refused start leaves no plist"
+has "$(cat "$S5/run.out")" "skipper won't start: no login every repo of dock allows (acct-a denies sib, acct-b denies dockrepo, acct-c denies sib)" "  the spec's line, each denial named"
+check "$([ -e "$S5/mgr/testhost-dock.json" ] && echo record || echo none)/$([ -e "$S5/claude.argv" ] && echo claude || echo none)" "none/none" "  no record, no claude"
+check "$(python3 -c 'import json, sys; ls = [json.loads(x) for x in open(sys.argv[1])]; r = ls[-1]; print(r["event"], r["start"])' "$S5/mgr/testhost-dock.starts.jsonl")" "refused 20260103-000000-0002" "  the starts log: refused, by its start id"
+check "$(lev rs1 "skipper won't start")" "1" "  and a 'skipper won't start' event on the scope's ship"
+# signed out: refused at once, nothing else tried
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-a"}, "deny": {}}' > "$S5/acct.json"
+touch "$S5/cfg/acct-a/.out"; : > "$S5/trust.calls"
+check "$(run5 dock 20260103-000000-0003)" "1" "a login that is not logged in: refused, exit 1"
+has "$(cat "$S5/run.out")" "skipper won't start: acct-a is not logged in" "  the line names the login"
+check "$(cat "$S5/trust.calls" | wc -l | tr -d ' ')/$([ -e "$S5/claude.argv" ] && echo claude || echo none)" "0/none" "  no trust step, no claude, no other login tried"
+rm -f "$S5/cfg/acct-a/.out" "$S5/cfg/acct-a/.trusted"; touch "$S5/cfg/acct-a/.untrustable"
+check "$(run5 dock 20260103-000000-0004)" "1" "still untrusted after trust-projects: refused"
+has "$(cat "$S5/run.out")" "skipper won't start: untrusted ($S5/cfg/acct-a)" "  untrusted (<dir>)"
+rm -f "$S5/cfg/acct-a/.untrustable"; touch "$S5/cfg/acct-a/.trusted"
+check "$(SK fails dock)" "3" "  three refusals in a row counted"
+# `account allowed` crashing (a traceback, exit 1) is no denial: "could not tell", naming no login as denying
+touch "$S5/acct.crash"
+check "$(run5 dock 20260103-000000-0006)" "1" "account allowed crashes: refused, exit 1"
+has "$(cat "$S5/run.out")" "skipper won't start: acct-a: could not tell whether the login may work in" "  as could not tell"
+hasnt "$(cat "$S5/run.out")" "denies" "  never as a denial"
+rm -f "$S5/acct.crash"
+# the start must be the one just launched: never one launchd loads again, one already judged, or one never launched
+check "$(NOLAUNCH=1 run5 dock 20260103-000000-0009)" "1" "a start id never launched: the runner refuses"
+has "$(cat "$S5/run.out")" "won't run: start 20260103-000000-0009 is not in the starts log" "  saying so"
+check "$(NOLAUNCH=1 run5 dock 20260103-000000-0002)" "1" "  a start already judged (refused above): refused"
+has "$(cat "$S5/run.out")" "judged already (refused)" "  saying so"
+STALLS_NOW=$(( $(now) - 400 )) SK launch dock 20260103-000000-0007
+touch "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0007.plist"
+check "$(NOLAUNCH=1 run5 dock 20260103-000000-0007)" "1" "  a start launched 400 s ago (a reload at login): refused"
+has "$(cat "$S5/run.out")" "s old — only a start just launched runs" "  saying how old"
+check "$([ -e "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0007.plist" ] && echo kept || echo removed)/$([ -e "$S5/claude.argv" ] && echo claude || echo none)" \
+  "removed/none" "  its plist removed all the same, and no claude"
+check "$(SK fails dock)" "4" "  (those three logged nothing: the count is the four refusals)"
+# no Talk page: refused — the skipper's only ear is ask listen on Talk, and nothing on the file road wakes it
+touch "$S5/sheep.fail"; rm -f "$S5/space.calls"
+check "$(run5 dock 20260103-000000-000a)" "1" "the Talk page will not deploy: refused, exit 1"
+has "$(cat "$S5/run.out")" "skipper won't start: no Talk page (" "  saying so"
+has "$(cat "$S5/run.out")" "a skipper with no Talk page hears nothing" "  and why"
+check "$([ -e "$S5/mgr/testhost-dock.json" ] && echo record || echo none)/$([ -e "$S5/claude.argv" ] && echo claude || echo none)" "none/none" "  no record, no claude"
+rm -f "$S5/sheep.fail"
+check "$(SK fails dock)" "5" "  counted as a failed start"
+# a third login every repo allows: the picks run out (the anchor's pick denies sib, sib's denies the
+# anchor), and the walk's other rows are tried before refusing
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-b"}, "deny": {"acct-a": ["sib"], "acct-b": ["dockrepo"]}}' > "$S5/acct.json"
+touch "$S5/cfg/acct-c/.trusted"; rm -f "$S5/claude.argv"
+check "$(run5 dock 20260103-000000-000b)" "0" "the anchor's pick and sib's pick each deny one repo: a third login is tried"
+check "$(rec dock account)" "acct-c" "  and the one every repo allows runs it"
+rm -f "$S5/mgr/testhost-dock.json" "$S5/claude.argv"
+# the runner's own deadline: a minute inside TAKE_WITHIN, it writes no record that late
+STALLS_NOW=$(( $(now) - 250 )) SK launch dock 20260103-000000-000c
+check "$(NOLAUNCH=1 run5 dock 20260103-000000-000c)" "1" "a runner 250 s after its launch: refused before the record"
+has "$(cat "$S5/run.out")" "past its own 240s" "  saying so"
+check "$([ -e "$S5/mgr/testhost-dock.json" ] && echo record || echo none)" "none" "  no record a pass could meet half-judged"
+# a crashed `dispatch-rc trusted` is "could not tell", never "untrusted"
+touch "$S5/rc.crash"
+check "$(run5 dock 20260103-000000-000d)" "1" "dispatch-rc trusted crashes: refused"
+has "$(cat "$S5/run.out")" "could not tell whether" "  as could not tell"
+hasnt "$(cat "$S5/run.out")" "untrusted (" "  never as untrusted"
+rm -f "$S5/rc.crash"
+echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-a"}, "deny": {}}' > "$S5/acct.json"
+# an exec failure: the record removed, the failure logged, the plist gone
+touch "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0008.plist"
+check "$(HELM_CLAUDE="$S5/bin/no-claude" run5 dock 20260103-000000-0008)" "1" "claude will not exec: refused, exit 1"
+has "$(cat "$S5/run.out")" "skipper won't start: claude did not start" "  saying so"
+check "$([ -e "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0008.plist" ] && echo kept || echo removed)/$([ -e "$S5/mgr/testhost-dock.json" ] && echo record || echo none)" \
+  "removed/none" "  no plist, no record left"
+
+echo "  the stall road: three failed starts are the class \`skipper won't start\`"
+ws=$(env -u CLAUDE_CODE_SESSION_ID python3 - "$B" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import stalls, time
+s = stalls.judge_skippers("testhost", time.time())
+print(len(s), s[0]["class"], s[0]["action"], s[0]["key"], s[0]["repo"], s[0]["guarded"], stalls.column(dict(s[0])), stalls.title(s[0], time.time()))
+PY
+)
+check "$ws" "1 skipper won't start raise ['testhost', 'skipper', 'dock'] dockrepo False Needs Sam skipper · dock · skipper won't start (8 failed starts in a row)" \
+  "  one raised stall, for the owner, keyed by scope, its repo the scope's anchor"
+out=$(SK ensure act); has "$out" "skipper · dock: won't start: 8 failed starts in a row" "  the tick starts none past the third"
+check "$(env -u CLAUDE_CODE_SESSION_ID python3 - "$B" <<'PY'
+import sys, time; sys.path.insert(0, sys.argv[1]); import stalls, skipperlib
+def broken(host=None):
+    raise RuntimeError("the starts log will not read")
+skipperlib.wont_start_stalls = broken
+notes = []
+print(stalls.judge_skippers("testhost", time.time(), notes), "class not judged (RuntimeError" in notes[0])
+PY
+)" "[] True" "  a read that fails: no stall of the class, and a note that says so (never silent)"
+check "$(grep -c bootstrap "$S5/lc.calls")" "0" "  nothing loaded"
+# the owner's start by hand: try again (the count restarts), and the class clears once a start takes
+: > "$S5/lc.calls"
+env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start dock > /dev/null
+check "$(SK fails dock)/$(grep -c bootstrap "$S5/lc.calls")" "0/1" "  --start by hand from a shell: loaded, and the failure count starts over"
+# …and the tick then has its three: the hand start's own failure is not one of them
+check "$(SK fails_of '[{"event": "failed", "start": "a"}, {"event": "launched", "start": "h", "by": "hand"}, {"event": "failed", "start": "h"}, {"event": "failed", "start": "b"}, {"event": "failed", "start": "c"}]')" \
+  "2" "  after a hand start that failed, two tick failures count two (not three)"
+
+echo "  the tick's pass: a start per scope with work, none for a held lease"
+rm -rf "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"*
+lay rs2 solo
+rm -rf "$S5/screens"
+out=$(SK ensure act)
+has "$out" "started skipper · dock" "a ship the yard holds with an open block: its scope's skipper started"
+has "$out" "started skipper · solo" "  every scope with work, one each"
+check "$(grep -c bootstrap "$S5/lc.calls")" "2" "  two jobs loaded, one per scope"
+check "$([ -d "$S5/screens" ] && echo made || echo missing)" "made" "  the jobs' SCREENDIR made by the start (screen cannot make it)"
+out=$(SK ensure act)
+has "$out" "skipper · dock: waits: start" "  the next pass: no second start while the first has no outcome"
+check "$(grep -c bootstrap "$S5/lc.calls")" "2" "  nothing more loaded"
+out=$(SK ensure dry); hasnt "$out" "started" "  a dry pass starts nothing"
+# the owner stops a tick start by hand before it took a ship: its end, never a failed start later
+env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --stop dock --why "the suite" > /dev/null
+out=$(STALLS_NOW=$(( $(now) + 400 )) SK ensure dry)
+hasnt "$out" "skipper · dock: would record failed start" "a tick start stopped by hand before it took: not judged a failed start"
+# one malformed record costs its own scope's pass, never the others'
+echo '{"session": "sk-m", "pid": 1, "started": {"at": 1}, "start": "x"}' > "$S5/mgr/testhost-dock.json"
+out=$(SK ensure dry)
+has "$out" "skipper · dock: the pass failed (TypeError" "a record whose started is no number: that scope's pass fails, one line"
+has "$out" "skipper · solo" "  and the next scope is still judged"
+rm -f "$S5/mgr/testhost-dock.json"
+# a dry pass with no start pending prints the spec's line
+rm -f "$S5/mgr/"*
+has "$(SK ensure dry)" "would start skipper · dock (rs1)" "  a dry pass: \`would start skipper · <scope>\`"
+has "$("$LX/helm" tick --dry-run 2>&1)" "would start skipper · dock" "  helm tick --dry-run prints it too"
+# a live skipper that took the ship: no start, and the start's verdict is `took`
+nap; SP=$NAP
+mkrec dock sk-1 $SP "$(now)" 20260104-000000-0001; regi sk-1 $SP
+CLAUDE_CODE_SESSION_ID=sk-1 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+: > "$S5/lc.calls"
+out=$(SK ensure act); hasnt "$out" "skipper · dock: started" "a live skipper holding the scope's ship: no start"
+check "$(grep -c bootstrap "$S5/lc.calls")" "1" "  (only solo's skipper is started)"
+check "$(grep -c '"event": "took"' "$S5/mgr/testhost-dock.starts.jsonl")" "1" "  the start's verdict: took"
+check "$(SK fails dock)" "0" "  and the failure count is zero"
+# --stop --dry-run stops nothing and says what it would
+: > "$S5/lc.calls"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --stop dock --dry-run); check "$?" "0" "--stop --dry-run: exit 0"
+has "$out" "would hand rs1 to the yard" "  says it would hand the ship back"
+has "$out" "would quit screen 111.skipper-dock" "  and quit its screen"
+has "$out" "would stop skipper · dock (by hand): rs1" "  and stop it"
+check "$(lf rs1 holder)/$([ -e "$S5/mgr/testhost-dock.json" ] && echo kept || echo deleted)/$(grep -c -e bootout -e quit "$S5/lc.calls")" \
+  "skipper · dock/kept/0" "  and does none of it: the lease held, the record kept, nothing booted out or quit"
+# --start while a skipper holds the scope's ships: stopped as --stop stops it, its ships back to the yard first
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --start dock); check "$?" "0" "--start over a live skipper: exit 0"
+has "$out" "stopped skipper · dock (replaced by start " "  the live one stopped first"
+check "$(lf rs1 holder)/$([ -e "$S5/mgr/testhost-dock.json" ] && echo kept || echo deleted)" "yard/deleted" "  its ship back to the yard, its record deleted"
+has "$out" "started skipper · dock" "  then the new job"
+# one window: a launch 295 s old with no record waits (it is not failed until past 300 s), never relaunched
+rm -f "$S5/mgr/testhost-dock.json"; : > "$S5/lc.calls"
+STALLS_NOW=$(( $(now) - 295 )) SK launch dock 20260104-000000-00a1
+out=$(SK ensure act)
+has "$out" "skipper · dock: waits: start 20260104-000000-00a1 launched 29" "a launch 295 s old, no record: waits"
+check "$(grep -c -e bootstrap -e bootout "$S5/lc.calls")" "0" "  neither booted out nor relaunched"
+# a record whose claude is up but not yet in the registry (it registers after the exec): young, it waits
+nap; SY=$NAP
+mkrec dock sk-y $SY "$(( $(now) - 60 ))" 20260104-000000-00a1
+out=$(SK ensure act); has "$out" "skipper · dock: waits: start 20260104-000000-00a1 is" "a live pid not yet registered, 60 s old: waits"
+hasnt "$out" "failed start" "  never a failed start"
+mkrec dock sk-y $SY "$(( $(now) - 400 ))" 20260104-000000-00a1
+out=$(SK ensure act); has "$out" "stopped skipper · dock (failed start: no ship taken in 6m" "  400 s old and still no ship: a failed start"
+# a registry record left over a reboot names a pid another process holds now: its start tells them apart
+nap; SPS=$NAP
+printf '{"pid": %d, "sessionId": "sk-ps", "status": "busy", "procStart": "%s"}' $SPS "$(TZ=UTC LC_ALL=C ps -o lstart= -p $SPS | xargs)" > "$T/sess/sk-ps.json"
+RJ="{\"pid\": $SPS, \"session\": \"sk-ps\"}"   # set apart: bash 3.2 brace-expands a {a, b} nested in "$(…)" (AGENTS.md)
+check "$(SK alive "$RJ")" "True" "record_alive: the registry's procStart is this process's start (UTC)"
+printf '{"pid": %d, "sessionId": "sk-ps", "status": "busy", "procStart": "Mon Jan  1 00:00:00 2001"}' $SPS > "$T/sess/sk-ps.json"
+check "$(SK alive "$RJ")" "False" "  a pid whose start is not the registry's: not the skipper (never signalled)"
+rm -f "$T/sess/sk-ps.json"
+# the same test for session_ancestor: a record a crash left over a reboot, naming the pid a shell now
+# holds, never refuses the verbs from that shell (the fix review of the fifth finish review)
+check "$(env -u CLAUDE_CODE_SESSION_ID python3 - "$B" "$T/sess" <<'PY'
+import json, os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import skipperlib
+p = os.getppid(); f = os.path.join(sys.argv[2], "%d.json" % p)
+start = subprocess.run(["ps", "-o", "lstart=", "-p", str(p)], env=dict(os.environ, TZ="UTC", LC_ALL="C"),
+                       capture_output=True, text=True).stdout.strip()
+out = []
+for ps in ("Mon Jan  1 00:00:00 2001", start):
+    json.dump(dict(pid=p, sessionId="sk-anc", status="busy", procStart=ps), open(f, "w"))
+    out.append(skipperlib.session_ancestor() == p)
+os.remove(f)
+print(out)
+PY
+)" "[False, True]" "session_ancestor: a registry record whose procStart is not the pid's start is no session; its own start is"
+# the tick's pass under CLAUDE_UNATTENDED, or below a session: `would …`, nothing done
+mkdir -p "$STALLS_STATE_DIR"
+out=$(env -u CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED=skipper python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls_tick; print("\n".join(stalls_tick.ensure_skippers("armed")))' "$B")
+has "$out" "would start skipper · dock" "an armed pass in an unattended caller: would start, never starts"
+has "$out" "nothing done — helm skipper the tick's pass: refused in an unattended caller" "  saying why"
+: > "$S5/lc.calls"
+
+echo "  a failed start: a live pid and a record, no ship taken in 5 minutes"
+lay rs3 solo
+nap; SQ=$NAP
+mkrec solo sk-2 $SQ "$(( $(now) - 400 ))" 20260104-000000-0002; regi sk-2 $SQ
+: > "$S5/lc.calls"
+out=$(SK ensure act)
+has "$out" "stopped skipper · solo (failed start: no ship taken in 6m" "the stuck start is a failed start, and is stopped"
+check "$([ -e "$S5/mgr/testhost-solo.json" ] && echo kept || echo deleted)" "deleted" "  its record deleted"
+has "$(cat "$S5/lc.calls")" "screen -S 333.skipper-solo -X quit" "  its screen quit, by pid and name"
+check "$(python3 -c 'import json, sys; ls = [json.loads(x) for x in open(sys.argv[1])]; print([l["event"] for l in ls if l.get("start") == "20260104-000000-0002"])' "$S5/mgr/testhost-solo.starts.jsonl")" \
+  "['failed', 'stopped']" "  the starts log: failed, then stopped"
+for _ in 1 2 3 4 5 6 7 8; do kill -0 $SQ 2>/dev/null || break; sleep 0.25; done
+check "$(kill -0 $SQ 2>/dev/null && echo alive || echo ended)" "ended" "  the claude its record names ended"
+hasnt "$out" "started skipper · solo" "  no start in the pass that stopped it"
+# a start that took a ship and stood down before any armed pass saw its record: took, never a failure
+nap; SR=$NAP; regi sk-8 $SR
+STALLS_NOW=$(( $(now) - 400 )) SK launch solo 20260104-000000-0003
+SK log solo recorded 20260104-000000-0003 sk-8
+CLAUDE_CODE_SESSION_ID=sk-8 HELM_HOLD_PARENT=$SR "$LX/helm" skipper --hold --scope solo --once > /dev/null
+out=$(SK ensure act)
+hasnt "$out" "record failed start 20260104-000000-0003" "a start whose record is gone, but whose session took a ship: no failure"
+check "$(python3 -c 'import json, sys; print([l["event"] for l in map(json.loads, open(sys.argv[1])) if l.get("start") == "20260104-000000-0003"])' "$S5/mgr/testhost-solo.starts.jsonl")" \
+  "['launched', 'recorded', 'took']" "  its verdict: took, read from the session the runner logged"
+# the tick replaces only what it started: ships a live session holds with no record (a hold by hand) stay its own
+lay rs5 solo
+out=$(SK ensure act)
+has "$out" "started skipper · solo" "a ship the yard holds beside ships a recordless session holds: a start"
+check "$(lf rs2 session)/$(lf rs3 session)" "sk-8/sk-8" "  the recordless holder's ships left to it (the tick's start stops no one)"
+# …nor do the tick's stops: they hand back only what the record's session holds
+lay rs6 solo
+nap; S9=$NAP; mkrec solo sk-9 $S9 "$(now)" 20260104-000000-00b1; regi sk-9 $S9
+CLAUDE_CODE_SESSION_ID=sk-9 HELM_HOLD_PARENT=$S9 "$LX/helm" skipper --hold --scope solo --once > /dev/null
+out=$(SK stop solo)
+has "$out" "rs6 back to the yard" "the tick's stop: the record's session's ship back to the yard"
+check "$(lf rs2 session)/$(lf rs3 session)/$(lf rs6 holder)" "sk-8/sk-8/yard" "  the recordless holder's ships left to it"
+# a start that takes a ship and then crashes is a failed start, though it took: no endless restarts
+sleep 0 & DEADP=$!; wait $DEADP
+nap; SC=$NAP
+CLAUDE_CODE_SESSION_ID=sk-c HELM_HOLD_PARENT=$SC "$LX/helm" skipper --hold --scope solo --once > /dev/null
+mkrec solo sk-c $DEADP "$(( $(now) - 120 ))" 20260104-000000-00c1; regi sk-c $DEADP
+SK log solo took 20260104-000000-00c1 sk-c
+out=$(SK ensure act)
+has "$out" "stopped skipper · solo (its claude has ended (session sk-c))" "a skipper that took a ship and ended 2 minutes in: stopped"
+check "$(grep '20260104-000000-00c1' "$S5/mgr/testhost-solo.starts.jsonl" | grep -c '"event": "failed"')" "1" "  and logged a failed start, its took notwithstanding"
+check "$(SK fails_of '[{"event": "took", "start": "a"}, {"event": "failed", "start": "a"}, {"event": "took", "start": "b"}, {"event": "failed", "start": "b"}]')" \
+  "2" "  two such starts count two: a took the start later failed never ends the run of failures"
+# the pass that logs a third failure starts no fourth
+lay f1 four
+SK log four refused 20260109-000000-000a; SK log four refused 20260109-000000-000b
+STALLS_NOW=$(( $(now) - 400 )) SK launch four 20260109-000000-000c
+: > "$S5/lc.calls"
+out=$(SK ensure act)
+has "$out" "skipper · four: record failed start 20260109-000000-000c: the runner wrote no record in 5m" "a launch with no record in 5 minutes: its failure logged"
+has "$out" "skipper · four: won't start: 3 failed starts in a row" "  and in the same pass, no fourth start"
+check "$(grep -c 'bootstrap.*skipper-four' "$S5/lc.calls")" "0" "  nothing of four's loaded"
+# the stall of a guarded or confidential scope is a guarded card (its failure text names repo keys and logins)
+check "$(env -u CLAUDE_CODE_SESSION_ID python3 -c 'import sys, time; sys.path.insert(0, sys.argv[1]); import stalls; print([(s["key"][2], s["guarded"]) for s in stalls.judge_skippers("testhost", time.time()) if s["key"][2] == "four"])' "$B")" \
+  "[('four', True)]" "four's stall (a confidential scope): guarded"
+mv "$LP/f1/skipper.json" "$LP/f1/skipper.json.off"
+check "$(env -u CLAUDE_CODE_SESSION_ID python3 -c 'import sys, time; sys.path.insert(0, sys.argv[1]); import stalls; print([s["key"][2] for s in stalls.judge_skippers("testhost", time.time())])' "$B" | grep -c four)" \
+  "0" "  no live ship of the scope left: no stall"
+mv "$LP/f1/skipper.json.off" "$LP/f1/skipper.json"
+has "$(STALLS_NOW=$(( $(now) + 3700 )) SK ensure dry)" "would start skipper · four" "three failures an hour old: the tick tries once more (a week out, a blip pass by themselves)"
+"$HM" report f1 --task b1 --status done > /dev/null
+check "$(env -u CLAUDE_CODE_SESSION_ID python3 -c 'import sys, time; sys.path.insert(0, sys.argv[1]); import stalls; print([s["key"][2] for s in stalls.judge_skippers("testhost", time.time())])' "$B" | grep -c four)" \
+  "0" "  a scope whose ships need no skipper any more: no stall"
+
+echo "  stand-down and the belt: a ship waiting only on the owner needs nobody"
+rm -rf "$PLANS_DIR" "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"* "$STALLS_STATE_DIR/skippers.json"
+lay ow1 dock h1 human
+check "$(SK needs ow1)" "(False, ['h1'])" "a ship whose one open block is a person's: needs no skipper"
+out=$("$LX/helm" skipper --ships dock)
+has "$out" "the owner's alone (h1)" "  --ships says whose it is"
+has "$out" "nothing needs skipper · dock" "  and gives the stand-down line"
+check "$(SK ensure act)" "" "  the tick starts no skipper for it"
+"$HM" task ow1 b2 > /dev/null
+hasnt "$("$LX/helm" skipper --ships dock)" "nothing needs skipper" "  with a session block open: no stand-down line"
+check "$(SK needs ow1)" "(True, ['h1'])" "  and it needs one"
+# --escalate marks one open question as the owner's: by its Dn, checked against the ship's open questions
+askev ow1 b2 docs/e.md#D3 "" file 10
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --escalate ow1 D9 2>&1); check "$?" "1" "--escalate of a question the ship has not open: refused"
+has "$out" "D9 names no open question of ship ow1 — open: docs/e.md#D3" "  listing the open ones"
+n0=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib; print(sum(len(t["asks"]) for t in helmlib.state("ow1")["tasks"]))' "$B")
+check "$n0" "1" "  and no phantom ask made"
+out=$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --escalate ow1 D3); check "$?" "0" "--escalate D3: exit 0"
+has "$out" "ow1 docs/e.md#D3: escalated to the owner (task b2)" "  the ref found from its Dn"
+check "$(tail -1 "$LP/ow1/events.jsonl" | python3 -c 'import json, sys; print(sorted(json.load(sys.stdin)))')" \
+  "['ask', 'escalated', 'plan', 't', 'task', 'via']" "  its event stamps no session, host, repo, status or progress on the run's task"
+check "$(SK needs ow1)" "(False, ['b2', 'h1'])" "  a block whose only open question is escalated is the owner's too"
+# the old progress text sticks to the task: a later question on it is still the skipper's
+"$HM" report ow1 --task b2 --status waiting --progress "escalated D3 to the owner" > /dev/null
+askev ow1 b2 docs/e.md#D4 "" file 5
+check "$(SK needs ow1)" "(True, ['h1'])" "  a later question D4 on the same block: it needs a skipper again (no sticky progress)"
+"$HM" report ow1 --task b2 --status done > /dev/null
+# the 30-minute belt: a healthy skipper, nothing to hold
+nap; SP=$NAP
+mkrec dock sk-3 $SP "$(now)" 20260105-000000-0001; regi sk-3 $SP
+printf '{"t": 1, "event": "took", "start": "20260105-000000-0001"}\n' > "$S5/mgr/testhost-dock.starts.jsonl"
+"$HM" $SHIP done1 --id done1 > /dev/null; ll yard done1 dock > /dev/null
+CLAUDE_CODE_SESSION_ID=sk-3 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+T0=$(now)
+# an idle mark an earlier skipper left when it stood down by itself (2 h ago): never this start's
+mkdir -p "$STALLS_STATE_DIR"; printf '{"dock": {"idle_since": %d, "start": "20260104-000000-0001"}}' $((T0 - 7200)) > "$STALLS_STATE_DIR/skippers.json"
+out=$(STALLS_NOW=$T0 SK ensure act); hasnt "$out" "stopped" "the belt: idle for less than 30 minutes, kept (an earlier start's idle mark not inherited)"
+check "$(python3 -c 'import json, sys; print("idle_since" in json.load(open(sys.argv[1]))["dock"])' "$STALLS_STATE_DIR/skippers.json")" "True" "  its idle time noted"
+out=$(STALLS_NOW=$((T0 + 1860)) SK ensure act)
+has "$out" "stopped skipper · dock (no ship has needed it for 31m)" "  31 minutes on: --stop by the tick"
+check "$(lf ow1 holder)/$(lf done1 holder)" "yard/yard" "  its ships back to the yard first"
+check "$([ -e "$S5/mgr/testhost-dock.json" ] && echo kept || echo deleted)" "deleted" "  its record deleted"
+# the daily hand-over: older than 24 h at the 04:00 pass
+"$HM" task done1 b9 > /dev/null
+nap; SP=$NAP
+# tomorrow's 04:10 and 02:10, local: the record 27 h old now, so past 24 h at both
+T4=$(python3 -c 'import time; t = time.localtime(time.time() + 86400); print(int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 4, 10, 0, 0, 0, -1))))')
+T2=$(python3 -c 'import time; t = time.localtime(time.time() + 86400); print(int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 2, 10, 0, 0, 0, -1))))')
+mkrec dock sk-4 $SP "$(( $(now) - 97200 ))" 20260106-000000-0001; regi sk-4 $SP
+CLAUDE_CODE_SESSION_ID=sk-4 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+out=$(STALLS_NOW=$T2 SK ensure act); hasnt "$out" "stopped" "the daily hand-over: past 24 h at 02:10, kept"
+out=$(STALLS_NOW=$T4 SK ensure act); has "$out" "stopped skipper · dock (the daily hand-over (" "  past 24 h at the 04:00 pass: stopped"
+has "$out" "h old at the 04:00 pass)" "  saying when"
+check "$(lf done1 holder)" "yard" "  its ship back to the yard"
+
+echo "  deaf: a relay unanswered 15 minutes while the session sits idle"
+rm -rf "$PLANS_DIR" "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"* "$STALLS_STATE_DIR/skippers.json" "$S5/q/"*
+lay df1 dock
+nap; SP=$NAP
+mkrec dock sk-5 $SP "$(now)" 20260107-000000-0001; regi sk-5 $SP idle
+CLAUDE_CODE_SESSION_ID=sk-5 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+g5=$(lf df1 gen)
+# the holder took the ship 20 minutes ago
+python3 - "$LP/df1" <<'PY'
+import json, sys, time
+d = sys.argv[1]; r = json.load(open(d + "/skipper.json")); r["since"] = time.time() - 1200
+open(d + "/skipper.json", "w").write(json.dumps(r))
+PY
+# questions that never woke this holder are never its deafness: one relayed to another live session,
+# one to a session on another Mac (its registry is not readable here: it may be live), and one this
+# holder got only by the file road (it waits for a prompt an idle session never gets) — that one is
+# re-hailed instead, and its queued re-hail is a try, never heard
+nap; OT=$NAP; regi other-1 $OT busy
+askev df1 b1 docs/q.md#D2 other-1 talk 960
+askev df1 b1 docs/q.md#D5 far-1 talk 960 otherhost
+askev df1 b1 docs/q.md#D3 sk-5 file 960
+# nor the owner's: one answered already in its doc (keel's form or GitHub reach the doc, not the
+# ship's events), one held in mode dnd (the board's owner column)
+printf '# Doc\n\n**D6 — which?** Reversible: yes\n➤ Recommended: A\n➤ Answer:\nA, thanks\n' > "$S5/q6.md"
+ASKEV_DOC="$S5/q6.md" askev df1 b1 docs/q6.md#D6 sk-5 talk 960
+ASKEV_MODE=dnd askev df1 b1 docs/q.md#D8 sk-5 talk 960
+check "$(SK open_refs df1)" "['docs/q.md#D2', 'docs/q.md#D3', 'docs/q.md#D5']" "the questions a skipper may answer: never one answered in its doc, nor one held in mode dnd"
+out=$(SK ensure act); hasnt "$out" "deaf" "16 minutes idle on questions relayed elsewhere, queued, answered in the doc or held: not deaf"
+hasnt "$out" "re-hailed df1 docs/q6.md#D6" "  the answered one is not re-hailed"
+hasnt "$out" "re-hailed df1 docs/q.md#D2" "  the other live session's question is not re-hailed here"
+hasnt "$out" "re-hailed df1 docs/q.md#D5" "  nor one relayed to a session on another Mac"
+has "$out" "re-hailed df1 docs/q.md#D3 to skipper · dock at gen $g5: queued" "  the one it got only by the file road: re-hailed"
+has "$(SK ensure act)" "re-hailed df1 docs/q.md#D3 to skipper · dock at gen $g5: queued" "  and again next pass: a queued re-hail is a try, not a delivery"
+check "$(SK deaf df1)" "None" "  still not deaf: a queued line wakes nobody"
+python3 - "$B" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import helmlib
+for d in ("D3", "D5"):
+    helmlib.append_event("df1", {"task": "b1", "answered": "docs/q.md#" + d, "from": "skipper-dock", "plan": "df1"})
+PY
+# a question relayed by Talk in mode ask (the brief leaves it carded), the ship raised to default since:
+# heard in an owner mode is not heard now — never deaf on it, re-hailed in the mode it is judged in
+ASKEV_MODE=ask askev df1 b1 docs/q.md#D9 sk-5 talk 960
+hasnt "$(SK open_refs df1)" "docs/q.md#D9" "a relay in mode ask: the owner's, not the skipper's"
+"$HM" mode df1 default > /dev/null
+has "$(SK open_refs df1)" "docs/q.md#D9" "  the ship raised to default: the skipper's"
+check "$(SK deaf df1)" "None" "  never deaf on it: the holder heard it in mode ask, as one to leave carded"
+has "$(SK ensure act)" "re-hailed df1 docs/q.md#D9 to skipper · dock at gen $g5" "  re-hailed instead"
+has "$(grep 'q.md#D9\|D9 — ' "$S5/q/sk-5.jsonl")" "mode: default" "  tagged with the mode it is judged in"
+python3 - "$B" "$LP/df1/plan.json" <<'PY'
+import json, sys; sys.path.insert(0, sys.argv[1]); import helmlib
+helmlib.append_event("df1", {"task": "b1", "answered": "docs/q.md#D9", "from": "skipper-dock", "plan": "df1"})
+d = json.load(open(sys.argv[2])); d.pop("mode", None); open(sys.argv[2], "w").write(json.dumps(d))
+PY
+askev df1 b1 docs/q.md#D1 sk-5 talk 0
+out=$(SK ensure act); hasnt "$out" "deaf" "a relay to the holder by Talk just sent: not deaf yet"
+# the relay 16 minutes old
+python3 - "$LP/df1" <<'PY'
+import json, sys, time
+d = sys.argv[1]; ls = [json.loads(x) for x in open(d + "/events.jsonl")]
+for l in ls:
+    if l.get("ask") == "docs/q.md#D1":
+        l["t"] = time.time() - 960
+open(d + "/events.jsonl", "w").write("".join(json.dumps(l) + "\n" for l in ls))
+PY
+regi sk-5 $SP busy
+check "$(SK deaf df1)" "None" "  16 minutes, the session busy (working a turn): not deaf"
+out=$(SK ensure act); hasnt "$out" "deaf" "  …and the pass hands nothing over"
+regi sk-5 $SP idle
+check "$(SK deaf df1)" "df1 docs/q.md#D1 unanswered 16m, the session idle" "  16 minutes, the session idle: deaf"
+regi sk-5 $SP waiting
+out=$(SK ensure act)
+has "$out" "hand df1 to the yard: lapsed: deaf (df1 docs/q.md#D1 unanswered 16m, the session waiting)" \
+  "  16 minutes stopped at a dialog (the registry's waiting): deaf too, never kept till 04:00"
+check "$(lf df1 holder)/$(lf df1 gen)" "yard/$((g5 + 1))" "  the ship the yard's, gen + 1"
+check "$(lev df1 'lease lapsed')" "1" "  one 'lease lapsed' event"
+has "$out" "stopped skipper · dock (its lease was handed over)" "  and the deaf skipper stopped"
+check "$(grep '20260107-000000-0001' "$S5/mgr/testhost-dock.starts.jsonl" | grep '"event": "failed"' | grep -c 'its lease was handed over, ')" "1" \
+  "  a hand-over within 30 minutes of the start is a failed start: a skipper that never works its ships is no endless restart"
+
+echo "  failover: a lapse handed to the yard, the next skipper re-hailed once per (question, gen)"
+rm -rf "$S5/mgr/"*; : > "$S5/lc.calls"
+nap; SP=$NAP
+mkrec dock sk-6 $SP "$(now)" 20260108-000000-0001; regi sk-6 $SP busy
+CLAUDE_CODE_SESSION_ID=sk-6 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+g6=$(lf df1 gen)
+check "$(lev df1 'taken by')" "1" "the next skipper takes it from the yard: 'taken by'"
+out=$(SK ensure act)
+has "$out" "re-hailed df1 docs/q.md#D1 to skipper · dock at gen $g6: queued" "  the open question, asked of the holder before, re-hailed to it"
+has "$(cat "$S5/q/sk-6.jsonl")" "\"text\": \"ASK " "  as an ASK line (ask listen wakes on it)"
+has "$(cat "$S5/q/sk-6.jsonl")" "D1 — which one — Reversible: yes — Recommended: A" "  the question as relay carries it"
+has "$(cat "$S5/q/sk-6.jsonl")" "--task b1 --to-account /acct/run --space sp-run --plan df1" "  its reply keeps the relay's road back, fenced by the ship's lease (--plan)"
+has "$(cat "$S5/q/sk-6.jsonl")" "answer /x/dockrepo/.claude/worktrees/q/docs/q.md D1" "  its reply names the doc where it is (the run's worktree, the relay's doc)"
+hasnt "$out" "re-hailed df1 docs/q.md#D2" "  the question another live session holds: not re-hailed"
+check "$(python3 -c 'import json, sys; print([(r["question"], r["gen"]) for r in json.load(open(sys.argv[1]))["relayed"] if r["gen"] == int(sys.argv[2])])' "$LP/df1/plan.json" "$g6")" \
+  "[('docs/q.md#D1', $g6)]" "  keyed (question, gen) in the plan's relayed list"
+has "$(SK ensure act)" "re-hailed df1 docs/q.md#D1" "  queued is a try: the next pass hails again (try 2)"
+has "$(SK ensure act)" "re-hailed df1 docs/q.md#D1" "  (try 3)"
+out=$(SK ensure act); hasnt "$out" "re-hailed" "  three tries per (question, gen), then nothing more"
+# the lease lapses (its sidecar gone): handed to the yard, the skipper stopped
+python3 - "$LP/df1/skipper.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]; r = json.load(open(p)); r["until"] = time.time() - 5
+open(p, "w").write(json.dumps(r))
+PY
+out=$(SK ensure act)
+has "$out" "hand df1 to the yard: lease lapsed (gen $g6, sk-6)" "a lapsed lease: the pass hands it to the yard"
+check "$(lf df1 holder)/$(lf df1 gen)" "yard/$((g6 + 1))" "  gen + 1, the yard's"
+check "$(lev df1 'lease lapsed')" "2" "  one more 'lease lapsed' event"
+has "$out" "stopped skipper · dock (its lease was handed over)" "  its skipper stopped"
+nap; SP=$NAP
+mkrec dock sk-7 $SP "$(now)" 20260108-000000-0002; regi sk-7 $SP busy
+CLAUDE_CODE_SESSION_ID=sk-7 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+check "$(lf df1 gen)" "$((g6 + 2))" "  the next skipper holds it at gen + 2"
+out=$(SK ensure act)
+has "$out" "re-hailed df1 docs/q.md#D1 to skipper · dock at gen $((g6 + 2))" "  and hears the open question again, at its own gen"
+check "$(SK open df1)" "2" "the open questions a skipper may answer: listed (D1, D2)"
+# an escalation is marked on the ask: a later report of the block's status never un-escalates it
+out=$(CLAUDE_CODE_SESSION_ID=other-9 "$LX/helm" skipper --escalate df1 D1 2>&1); check "$?" "4" "--escalate from a session that holds no lease of the ship: fenced, exit 4"
+CLAUDE_CODE_SESSION_ID=sk-7 "$LX/helm" skipper --escalate df1 docs/q.md#D1 > /dev/null; check "$?" "0" "  from the holder, by its full ref: exit 0"
+"$HM" report df1 --task b1 --status running --progress "building on" > /dev/null
+check "$(SK open df1)" "1" "  D1 escalated, then the block reported running: D1 stays the owner's"
+# the tick's hand-backs are compare-and-swap: a ship moved since the pass read it is left as it is
+check "$(python3 - "$B" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import leaselib
+r = leaselib.read("df1")
+out = []
+for args, kw in (((r["gen"] - 1, r["session"]), {}), ((r["gen"], "someone-else"), {}), ((r["gen"], r["session"]), {"only_lapsed": True})):
+    try:
+        leaselib.hand_back("df1", *args, why="the suite", **kw)
+        out.append("moved")
+    except leaselib.Refused:
+        out.append("left")
+print(out, leaselib.read("df1")["holder"])
+PY
+)" "['left', 'left', 'left'] skipper · dock" "hand_back: a stale gen, another session, a renewed lease asked as lapsed — each left as it is"
+# skipper-modes S1: a task in mode ask is the owner's to answer — never re-hailed to a skipper, never its deafness
+python3 - "$LP/df1/plan.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["tasks"]["b1"]["mode"] = "ask"; open(p, "w").write(json.dumps(d))
+PY
+check "$(SK open df1)" "0" "  its task in mode ask: not the skipper's (no re-hail, no deaf clock)"
+kill $SLEEPS 2>/dev/null
+unset PLANS_DIR ASK_MANAGER_DIR STALLS_STATE_DIR STALLS_LOG ASK_QUEUE_DIR ASK_NO_KEY_FILES HELM_LAUNCH_DIR HELM_LAUNCHCTL \
+      HELM_SCREEN HELM_CLAUDE HELM_ACCOUNT HELM_DISPATCH_RC HELM_TRUST MEMO_SHEEP_BIN CLAUDE_REPOS_JSON HELM_SCREENDIR
+export PLANS_DIR="$T/plans" PLAN_PROJECTS_ROOT="$T/projects-root"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

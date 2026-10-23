@@ -828,6 +828,38 @@ def tick(dry_run=False, peer=True):
 CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SITE
 
 
+# ---------------------------------------------------------------------------- the scopes' skippers (skipper-resilience S5)
+
+def ensure_skippers(mode_now):
+    """The pass over the scopes' skippers (bin/skipperlib.py's ensure, after wharf's pass): lines. It
+    acts only when the tick is armed past its dry hours and its caller passes `helm skipper --start`'s
+    own refusal (skipperlib.session_refusal: no session, none directly above it, no CLAUDE_UNATTENDED) — a
+    session typing `helm tick` must not get round it by calling it in-process — and otherwise prints
+    `would …`. A host with no lease and no
+    skipper record prints nothing: the tick is what it was before S5. TICK_STARTS is not this
+    pass's (one start per scope per pass is its own limit). A failure is one line, never the tick's."""
+    if os.environ.get("PLAN_NO_SKIPPERS"):
+        return []
+    try:
+        import skipperlib
+        if not skipperlib.scopes_here():
+            return []   # no lease, no record: not even the deadline's line (a host as before S5)
+        try:
+            dl = float(os.environ.get("STALLS_DEADLINE") or 0)
+        except ValueError:
+            dl = 0
+        if dl and dl - time.time() < 40:
+            return ["skippers: skipped — %ds before the tick's kill time" % max(0, dl - time.time())]
+        # --start's own refusal, asked first: a session (and its direct descendants) and any
+        # unattended caller (CLAUDE_UNATTENDED: a dispatched run, the skipper itself) get `would …`
+        refused = skipperlib.session_refusal("the tick's pass") if mode_now == "armed" else None
+        act = mode_now == "armed" and not refused
+        why = None if act else (refused or "the tick is %s" % mode_now)
+        return skipperlib.ensure(act, why)
+    except Exception as e:   # noqa: BLE001 — a skipper's fault costs its lines, never the stalls' pass
+        return ["skippers: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
+
+
 def summary(line):
     a = line.get("action")
     if a == "retry":

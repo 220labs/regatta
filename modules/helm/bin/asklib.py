@@ -197,18 +197,20 @@ def manager_dir():
     return Path(os.environ.get("ASK_MANAGER_DIR") or _home() / "Library/Logs/claude-weekly/manager")
 
 
-def standing_manager(host=None):
+def standing_manager(host=None, scope=None):
     """This Mac's standing manager as the ctx fields relay() needs, or None (stray-manager M5, B1).
-    The record is `<manager_dir>/<host>.json`, `{session, name, plan, space, account, host, started,
-    pid}`, which bin/manager's runner writes (B2, waiting for the two-week count, D1-A); it is live
-    when its pid is alive and the registry's record of its session has a live pid too — a crashed
-    manager leaves a record that reads as none. No record, the case until B2: None, and every
-    caller does what it did before the seam."""
+    With a scope, the scope's skipper instead (skipper-resilience S5): `<manager_dir>/<host>-<scope>.json`,
+    which bin/skipperlib.py's runner writes just before it becomes claude. Without, the record is
+    `<manager_dir>/<host>.json`, `{session, name, plan, space, account, host, started, pid}`, which
+    bin/manager's runner was to write (stray-manager B2, superseded by the scope skippers: read, never
+    written). Either is live when its pid is alive and the registry's record of its session has a live
+    pid too — a crashed one leaves a record that reads as none. No record: None, and every caller does
+    what it did before the seam."""
     h = host or this_host()
     if not h:
         return None
     try:
-        rec = json.loads((manager_dir() / ("%s.json" % h)).read_text())
+        rec = json.loads((manager_dir() / ("%s-%s.json" % (h, scope) if scope else "%s.json" % h)).read_text())
     except (OSError, ValueError):
         return None
     sid = rec.get("session") if isinstance(rec, dict) else None
@@ -217,9 +219,40 @@ def standing_manager(host=None):
     reg = registry(sid)
     if not reg or not pid_alive(reg.get("pid")):
         return None
-    return {"manager": sid, "manager_host": h, "space": rec.get("space"), "plan": rec.get("plan"),
-            "manager_account": rec.get("account") or "", "manager_name": rec.get("name") or "manager · %s" % h,
-            "standing": True}
+    out = {"manager": sid, "manager_host": h, "space": rec.get("space"), "plan": rec.get("plan"),
+           "manager_account": rec.get("account") or "",
+           "manager_name": rec.get("name") or ("skipper · %s" % scope if scope else "manager · %s" % h), "standing": True}
+    if scope:
+        out["scope"] = scope
+    return out
+
+
+def ship_scope(plan):
+    """The scope of PLAN's lease (plans/<id>/skipper.json, skipper-resilience S4), or None: a ship with
+    no lease, one that does not read, or no plan. A road, never a fence: anything unreadable is no
+    scope, and the relay goes where it went before S5."""
+    if not plan:
+        return None
+    try:
+        # lazily, and from beside this file: keel's Stop lint and ask_guard load it alone, by path
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        import leaselib
+        rec = leaselib.read(plan)
+    except Exception:   # noqa: BLE001 — Unreadable, no core, a bad id: no scope
+        return None
+    return rec.get("scope") if rec else None
+
+
+def scope_skipper(plan=None):
+    """The live skipper of the scope whose lease PLAN (else $DISPATCH_SHIP / $DISPATCH_PLAN) holds, as
+    standing_manager() gives it, or None. Only a leased ship's relay goes to a scope skipper: its
+    lifetime, its re-hail and its deaf rule all count leased ships' questions, so a relay for any
+    other run stays the Mac's standing manager's, or nobody's (the third review of S5). No path is
+    read for a scope: a scope's glob would take a worktree whose name it matches."""
+    plan = plan or os.environ.get("DISPATCH_SHIP") or os.environ.get("DISPATCH_PLAN")
+    scope = ship_scope(plan)
+    return standing_manager(scope=scope) if scope else None
 
 
 def resolve(ctx):
@@ -228,19 +261,30 @@ def resolve(ctx):
     its own is the standing manager's), and manager_state of the result. A remote or live manager
     stays. The run's own plan, if any, keeps its events; the Talk address is the standing manager's
     page. bin/ask relay resolves once and hands both to relay(), so the registry is read once a
-    manager and the host once a run (review gate, 2026-10-16: it was twice and up to four times)."""
+    manager and the host once a run (review gate, 2026-10-16: it was twice and up to four times).
+    The scope's skipper comes first (skipper-resilience S5) for a relay about a ship its scope leases
+    (ctx["plan"]); the Mac's standing manager after it. A skipper's own relay (SKIPPER_SCOPE, which its
+    runner sets) goes to neither: its escalation is the owner's, and a skipper relaying to itself
+    would wake only itself."""
     if ctx.get("standing"):
-        return ctx, ("live", "this Mac's standing manager")
+        return ctx, ("live", "this Mac's standing manager" if not ctx.get("scope") else "the scope's skipper")
     st = manager_state(ctx) if ctx.get("manager") else ("gone", "no manager (DISPATCH_SKIPPER unset)")
     if st[0] != "gone":
         return ctx, st
-    sm = standing_manager()  # live by its own test: its pid and its session's registry pid
+    if os.environ.get("SKIPPER_SCOPE"):
+        return ctx, ("gone", "a skipper's own ask goes to the owner (skipper · %s relays to no skipper)" % os.environ["SKIPPER_SCOPE"])
+    # each live by its own test: its pid and its session's registry pid
+    sk = scope_skipper(ctx.get("plan"))
+    if sk and sk.get("manager") == ctx.get("session"):
+        sk = None
+    sm = sk or standing_manager()
     if not sm:
         return ctx, st
     out = dict(ctx)
     out.update({k: v for k, v in sm.items() if k != "plan"})
     out["plan"] = ctx.get("plan") or sm.get("plan")
-    return out, ("live", "this Mac's standing manager")
+    out["stand_in"] = True   # put in for the caller's missing manager: relay() reads it (the file road)
+    return out, ("live", "the scope's skipper" if sm.get("scope") else "this Mac's standing manager")
 
 
 def with_standing(ctx):
@@ -530,6 +574,17 @@ def relay(ctx, text, order, dry=False, resolved=None):
     # reads, and the file queue in a prompt that never comes). A remote one: Talk alone.
     if alive == "gone":
         return None, "none", "no live manager: %s" % why, tried
+    # a scope's skipper resolve() put in for a caller's missing manager never reads the file queue
+    # (it hears its `ask listen` and a SendMessage): a file line waits for a prompt it never gets and
+    # is marked relayed, so that road is skipped for it, and a caller that pinned no other road gets
+    # `none` — the board (the fifth finish review of S5: wharf's file road for a yard-held scope
+    # ship). A caller that names the skipper itself (the re-hail) keeps its roads: it counts a file
+    # line as a try, never a delivery.
+    if ctx.get("scope") and ctx.get("stand_in") and "file" in order:
+        tried.append(("file", "the scope's skipper never reads the file queue"))
+        order = [n for n in order if n != "file"]
+        if not order:
+            return None, "none", "the scope's skipper never reads the file queue, the one road this relay takes", tried
     for name in order:
         b = BACKENDS.get(name)
         if not b:

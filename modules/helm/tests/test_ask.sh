@@ -148,6 +148,39 @@ printf '{"pid": %d, "sessionId": "sm-1", "name": "manager", "status": "idle", "m
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: none" "  a record whose session has ended: none, the WAITING line as before"
 rm -f "$SMD/testhost.json" "$T/sess/sm-1.json"
+
+echo "skipper-resilience S5: a leased ship's ask goes to its scope's skipper before the Mac's standing manager"
+printf '{"session": "sk-d", "name": "skipper · dock", "scope": "dock", "pid": %d, "space": null, "account": ""}' $$ > "$SMD/testhost-dock.json"
+printf '{"session": "sm-1", "name": "manager · testhost", "pid": %d, "space": "sp-m", "account": ""}' $$ > "$SMD/testhost.json"
+live sk-d skipper-dock; live sm-1 manager
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; s = asklib.standing_manager(scope='dock'); print(s['manager'], s['manager_name'], s['scope'], s['standing'])")" "sk-d skipper · dock dock True" \
+  "standing_manager(host, scope): the scope's record, <host>-<scope>.json"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.standing_manager()['manager'], asklib.standing_manager(scope='nosuch'))")" "sm-1 None" "  without a scope, <host>.json as before; a scope with no record: None"
+# the road is the ship's lease, never a path: the scope a ship's skipper.json names
+"$HM" $SHIP s5 --id s5p > /dev/null; "$HM" $SHIP s5x --id s5q > /dev/null
+python3 -c "import sys; sys.path.insert(0, '$B'); import leaselib; leaselib.write_yard('s5p', 'dock', 'testhost', 'laid by the suite')"
+out=$(env "$E_SHIP"=s5p "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "RELAYED TO skipper · dock — D1" "a run of a ship leased in the scope, no manager of its own: relayed to the scope's skipper"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; a = [x for t in helmlib.state('s5p')['tasks'] for x in t['asks']][-1]; print(a.get('to'), a['doc'] == '$(pwd -P)/docs/demo-2026-10-10.md' or a['doc'] == '$PWD/docs/demo-2026-10-10.md', 'doc' in [k for t in helmlib.public(helmlib.state('s5p'))['tasks'] for x in t['asks'] for k in x])")" \
+  "sk-d True False" "  the ship's event names who it went to and the doc where it is (the re-hail's reply); the public copy drops the path"
+out=$(env "$E_SHIP"=s5q "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "RELAYED TO manager · testhost — D1" "  a ship with no lease: never the scope's skipper (its rules count leased ships only) — the standing manager"
+out=$(env "$E_SHIP"=s5p SKIPPER_SCOPE=dock CLAUDE_CODE_SESSION_ID=sk-d "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "verdict: none" "  the skipper's own relay (SKIPPER_SCOPE): to no skipper and no standing manager"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …its escalation ends on the WAITING line, the owner's"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; print([x for t in helmlib.state('s5p')['tasks'] for x in t['asks']][-1].get('to'))")" "sk-d" \
+  "  …and writes no ship event: the run's ask still names its skipper (the re-hail never sends a skipper its own escalation)"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; r = asklib.relay(dict(manager=None, session=None, plan='s5p'), 'ASK x', ['file']); print(r[1], r[3][0][0])")" "none file" \
+  "  a relay pinned to the file road, resolved to the scope's skipper: none, never a queue it does not read"
+printf '{"pid": %d, "sessionId": "sk-d", "name": "skipper-dock", "status": "idle", "cwd": "/a", "updatedAt": 2}' $$ > "$T/sess/sk-d.json"
+out=$(env "$E_SHIP"=s5p "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "file: skipped — the scope's skipper never reads the file queue" "  bin/ask relay to the scope's skipper with no Talk and no socket: never the file road"
+check "$(ls "$ASK_QUEUE_DIR"/sk-d.jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" "  …nothing queued for it"
+live sk-d skipper-dock
+printf '{"pid": %d, "sessionId": "sk-d", "name": "skipper-dock", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/sk-d.json"
+out=$(env "$E_SHIP"=s5p "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "RELAYED TO manager · testhost — D1" "  the scope's skipper gone (its session ended): the standing manager"
+rm -f "$SMD/testhost.json" "$SMD/testhost-dock.json" "$T/sess/sm-1.json" "$T/sess/sk-d.json"
 check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.classify('Message via spacesheep.dev (sessionpipe control, signed on the sender\\'s device)\\nD1: A')[0])")" "CHAT" \
   "K3: a keyed line carrying the daemon's frame text is CHAT — the label is by door, never by text"
 
@@ -236,7 +269,14 @@ CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from 
 check "$?" "0" "  one of the owner's routes carries the owner's word: it passes"
 CLAUDE_UNATTENDED=dispatch CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from x --source "Sam's form" --no-send --dry-run > /dev/null 2>&1
 check "$?" "1" "  …but not from an unattended caller: --source is a flag any run types (landing review 12)"
+# skipper-resilience S5: the scope skipper runs with CLAUDE_UNATTENDED=skipper — in mode ask it answers nothing
+CLAUDE_UNATTENDED=skipper CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from skipper-dock --source "Sam's form" --no-send --dry-run > /dev/null 2>&1
+check "$?" "1" "  a skipper (CLAUDE_UNATTENDED=skipper) typing one of the owner's routes: refused"
+CLAUDE_UNATTENDED=skipper CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from skipper-dock --source "yes item" --no-send --dry-run > /dev/null 2>&1
+check "$?" "1" "  a skipper's yes item in mode ask: refused"
 "$HM" mode p1 --task build --clear > /dev/null
+CLAUDE_UNATTENDED=skipper CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from skipper-dock --source "yes item" --no-send --dry-run > /dev/null 2>&1
+check "$?" "0" "  out of mode ask, a skipper's yes item passes: answering R5's yes items is its job"
 AJ="$(git rev-parse --absolute-git-dir)/claude/ask.json"; cp "$AJ" "$T/ask.json.orig"
 python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); [r.update(mode="ask") for r in d["asks"] if r.get("item") == "D1"]; json.dump(d, open(sys.argv[1], "w"))' "$AJ"
 CLAUDE_CODE_SESSION_ID=no-ship-here "$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from coding-7 --source "yes item" --no-send --dry-run > "$T/a13.out" 2>&1

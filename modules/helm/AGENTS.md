@@ -42,10 +42,39 @@ Read `README.md` first. For an agent:
   ship again. `--stand-down` signals only a live process named `claude` (a test's stand-in parent is
   a link named `claude` to `sleep`), and hands each ship back through `leaselib.stand_down()`, which
   re-checks the holder under the plan's lock. The holder's own session passes the fence before
-  `SKIPPER_GEN` is read, as gens are per ship. Not built here, and S5's: a relay for a leased ship
-  still goes to the run's skipper or the standing manager, not the lease holder
-  (`asklib.standing_manager(host, scope)`); `wharf apply --watch --launch` sets no `DISPATCH_SHIP`, so
-  its launches are not fenced.
+  `SKIPPER_GEN` is read, as gens are per ship. A relay for a leased ship reaches the lease holder
+  since S5 (the bullet below); `wharf apply --watch --launch` sets no `DISPATCH_SHIP`, so its
+  launches are not fenced.
+- The scope skipper (`bin/skipperlib.py`, `libexec/skipper-run`, skipper-resilience S5) loads a
+  LaunchAgent and starts a real `claude`: its tests stub every tool (`HELM_LAUNCHCTL`,
+  `HELM_LAUNCH_DIR`, `HELM_SCREEN`, `HELM_SCREENDIR`, `HELM_CLAUDE`, `HELM_ACCOUNT`, `HELM_DISPATCH_RC`, `HELM_TRUST`,
+  `MEMO_SHEEP_BIN`) and run with no `CLAUDE_CODE_SESSION_ID`, which `--start` and `--stop` refuse.
+  The tick's pass (`stalls_tick.ensure_skippers`) acts only armed and outside a session, and a host
+  with no lease file and no skipper record must print no line of it: a line there is a regression.
+  No scope `login` key is read or written (S3: `account pick` pins one hard); the runner chooses a
+  login every repo of the scope allows (`account allowed`). The leases' and events' clock is
+  `helmlib.now()`; `STALLS_NOW` pins only the record's age, the belt and the 04:00 hour. A relay
+  goes to the scope's skipper (`asklib.standing_manager(host, scope)`) only for a ship that scope
+  leases (`asklib.scope_skipper`: the ship's skipper.json, never a path) and only when the run has
+  no live skipper of its own; one that names a live `DISPATCH_SKIPPER` keeps it, lease holder or
+  not. A scope's skipper never reads the file queue: `asklib.relay` skips that road when `resolve()`
+  hands it a relay in place of a missing manager (the ctx's `stand_in`; the re-hail keeps the road,
+  as a try). Test a relay rule through `bin/ask relay` too: it passes relay() a ctx already resolved,
+  which a raw-ctx case never exercises (the fifth finish review's fix review). A skipper's own relay (`SKIPPER_SCOPE`) goes to no skipper and writes no ship event: its
+  escalation is the owner's. The
+  brief starts the sidecar once and stands down on its exit 4 (the note above); a task in mode `ask`
+  is never re-hailed to the skipper nor counted toward its deafness. The skipper runs with
+  `CLAUDE_UNATTENDED=skipper` (every person's-yes guard reads it so); its runner deletes its own
+  plist first, runs only the start just launched, writes its own log (inside `screen -D -m` its
+  stdout is the screen's) and refuses a start with no Talk page. `--start`/`--stop` and the tick's
+  acting pass refuse a session, a direct descendant of one (the registry's `<pid>.json`; a double
+  fork re-parents to launchd and is not seen, so this backs the next rule, never replaces it) and any
+  `CLAUDE_UNATTENDED` caller. Only Talk wakes a skipper: a re-hail goes by `talk`, else `file` (a try,
+  never a delivery; never `sendmessage`), and deafness counts only Talk (a run's relay, a re-hail).
+  Escalation is marked on the ask by `helm skipper --escalate PLAN REF`, which checks the ref.
+  A screen is quit by `<pid>.<name>`: `-S <name>` is a prefix match. One window: a launch waits up to
+  TAKE_WITHIN and fails after it. No S5 road reads a scope from a path — a scope's glob spans `/` and
+  would take a worktree path; the mode of a question is read by the scope's anchor key.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)
   REGATTA_LEGACY=/nonexistent` on a Mac (2026-10-22). A Linux runner is untried.

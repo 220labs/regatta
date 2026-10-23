@@ -1,0 +1,22 @@
+#!/bin/bash
+# skipper-run SCOPE START_ID — the scope skipper's job (skipper-resilience S5), the program of the
+# one-shot launchd job `helm skipper --start` loads, inside `screen -D -m -S skipper-<scope>`.
+# dispatch's runner shape (wharf-runs' runner_text) without the cap or the lock: every CLAUDE*
+# variable a caller could hand down is stripped but the two that say which login runs it (a child
+# marker turns transcript saving off), and every run variable — a skipper is no run of anyone's.
+# Then bin/skipperlib.py's `run` picks the login, checks it is signed in, trusts the anchor, makes
+# the Talk page, writes the record and execs claude, so the pid it records is claude's own.
+# Anchored on its own path, never the caller's cwd.
+set -u
+[ $# = 2 ] || { echo "usage: skipper-run SCOPE START_ID (helm skipper --start's job)" >&2; exit 2; }
+here="$(cd "$(dirname "$0")/.." && pwd)"
+# CLAUDE_REPOS_JSON is the core's registry override, not Claude Code's: kept, or a job carrying it
+# (a test's, an overlay's) would read another registry than the start that wrote it
+for v in $(env | sed -n 's/^\(CLAUDE[A-Z_]*\)=.*/\1/p'); do
+  case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_REPOS_JSON) ;; *) unset "$v";; esac
+done
+unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_DEPTH DISPATCH_SKIPPER DISPATCH_MANAGER \
+  DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK \
+  ASK_ACCOUNT ASK_SESSION DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO SKIPPER_GEN
+# /usr/bin/python3, as the poll's job runs: a Homebrew python moves under an upgrade
+exec "${HELM_PYTHON:-/usr/bin/python3}" "$here/bin/skipperlib.py" run "$1" "$2"

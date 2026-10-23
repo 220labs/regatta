@@ -2,7 +2,8 @@
 """ask_guard — the Claude Code adapter of session-asks (docs/session-asks-2026-10-09.md R2, R4, R6; B4).
 
     ask_guard.py pretool   PreToolUse on AskUserQuestion: in an unattended run (CLAUDE_UNATTENDED,
-                           which only bin/dispatch sets) deny it with the relay instruction. Nobody
+                           which bin/dispatch and the scope skipper's runner set) deny it with the
+                           relay instruction (the skipper has the tool disallowed as well). Nobody
                            watches a run, and in auto mode Claude Code's classifier would answer it
                            — a decision nobody made.
     ask_guard.py prompt    UserPromptSubmit: print the file backend's relays queued for this session
@@ -33,14 +34,23 @@ def queue_dir():
 
 
 def standing_name():
-    """This Mac's standing skipper's name (bin/asklib.standing_manager, stray-manager M5), or None.
-    Read only here, on an unattended run's AskUserQuestion; any fault is today's text."""
+    """(name, of a scope?) of the skipper an ask from here goes to, or (None, False): the live skipper
+    of the scope whose lease the run's ship holds (skipper-resilience S5: $DISPATCH_SHIP's lease), else
+    this Mac's standing one (bin/asklib.standing_manager, stray-manager M5) — the order asklib.resolve
+    relays in, which never relays a skipper's own ask to a skipper. Read only here, on an unattended
+    run's AskUserQuestion; any fault is today's text."""
+    if os.environ.get("SKIPPER_SCOPE"):
+        return None, False
     try:
         from importlib.machinery import SourceFileLoader
-        sm = SourceFileLoader("asklib", str(C / "bin" / "asklib.py")).load_module().standing_manager()
-        return sm and sm.get("manager_name")
+        lib = SourceFileLoader("asklib", str(C / "bin" / "asklib.py")).load_module()
+        sk = lib.scope_skipper()
+        if sk:
+            return sk.get("manager_name"), True
+        sm = lib.standing_manager()
+        return (sm and sm.get("manager_name")), False
     except Exception:
-        return None
+        return None, False
 
 
 def run_mode():
@@ -71,8 +81,9 @@ def pretool(data):
     # the run's skipper under its new name or the old one (rename S5 writes both until S8; a run
     # started before it carries only DISPATCH_MANAGER)
     own = os.environ.get("DISPATCH_SKIPPER") or os.environ.get("DISPATCH_MANAGER")
-    sm = None if own else standing_name()
+    sm, scoped = (None, False) if own else standing_name()
     who = ("your skipper (DISPATCH_SKIPPER)" if own else
+           "its scope's skipper (%s)" % sm if sm and scoped else
            "this Mac's skipper (%s)" % sm if sm else "nobody (no skipper): the owner sees it on the board")
     reason = ("This is an unattended run: nobody watches it, so AskUserQuestion is denied. Write the question "
               "as a D-item in the doc you are writing (Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer:), "
