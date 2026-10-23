@@ -28,6 +28,8 @@ no `TODO.md` gets one on the first `add`.
   session's work or is really a design question.
 - `/todo handoff <topic> — <task>` — a follow-up that earns a session of its own, handed over
   as a branch the next session starts from (below).
+- `/todo handoff <topic> — <task> --send` — the same branch, sent to its repo's scope skipper on
+  the scope's yard instead of a dispatched run, so it outlives this session (below).
 
 ## A follow-up found mid-session: here, handoff, or a line
 
@@ -96,6 +98,26 @@ open '<branch>' --fresh` opens the pre-filled tab, the one place one is left. En
 `… not dispatched, waits on <what>; start it with dispatch '<branch>' --next
 --repo ~/projects/<repo>` (in a refused repo: `/pickup '<branch>' --fresh` in a <repo> window) — the
 full name: a bare topic can match another branch.
+
+**`--send`** (skipper-resilience S7): the seed as above, then in place of `dispatch`
+
+```
+helm send '<branch>' --detach --lay-timeout 150 [--repo ~/projects/<repo>]
+```
+
+always with `--repo` (a branch name repeats across repos; the bracket is only its exempted form) and
+a Bash timeout of 300000: `--lay-timeout` keeps the lay, with its probes, inside the tool's (the lay's
+own ceiling is 20 minutes). It rewrites the branch's blueprint to `skipper: scope` and `sent_by:`
+this session (one commit, pushed), lays it on the scope's yard with `wharf apply --yard`, and returns
+at `LAID on <yard>, plan <id>, block <b> — pickup by the tick`: the yard's tick drives the block and
+starts the scope's skipper, which hears its questions — the task is safe on the yard from there, whatever
+becomes of this session. Never `--listen` here: its pickup wait (10 minutes) outlasts the tool's
+timeout. By exit code: 0, or 4 (`is LAID on`, only its mark refused) — sent, never dispatch it too;
+2 (`refused`: a repo in no scope, a scope with no yard — `scopes set <scope> --yard` names the fix —,
+this Mac being the yard, no alias) or 5 (`NOT LAID`) — nothing laid: `dispatch` as above; any other
+exit — read the output before doing anything. End the turn with one line:
+`Follow-up sent: <topic> — <branch> (<repo>); laid on <yard>, plan <id>`.
+
 A `--next` from a run that is a block of a ship (its `DISPATCH_SHIP` (or `DISPATCH_PLAN`) and `DISPATCH_TASK` name a block
 with a successor in the plan's blueprint) starts nothing: it names the blueprint's next block and
 leaves the start to `wharf apply`. Any other `--next` — a handoff's seed, the ship's last block — runs as before.
