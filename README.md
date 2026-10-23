@@ -5,20 +5,29 @@
 
 # Regatta
 
-An open-source Business-as-Code framework that puts wind into your project's sails: run your
-business at agentic speed, and get to the finish first. Happy landings!
+**Regatta is an open framework for a business run by agents. You make the decisions; the agents
+do the rest.**
 
-Regatta is one Claude Code plugin marketplace with one plugin per module, each installable on its
-own. Every module needs the core.
+For a founder or a small team with more ideas than hours. Say an idea into your phone; agents
+weigh it against your goals, plan it, build it and ship it, then count what happened and write
+down what was learnt. You see only the questions that need you, in one document, each with a
+recommendation, and every answer is kept with your name on it.
 
-| Module | What it is |
+Public Beta: several small businesses already run on it unattended, for the people who started
+them. The 220 Labs team supports integrations and pilots, big and small: get in touch at
+[220labs.dev/regatta](https://220labs.dev/regatta/).
+
+It runs on Claude Code. Each module is a plugin of its own: take one, or all of them. Every
+module needs the core.
+
+| Module | What it does |
 | --- | --- |
-| [`regatta`](modules/regatta/README.md) | the core: the shared library, the model gate, cost, the secrets check and the `regatta` CLI |
-| [`atlas`](modules/atlas/README.md) | knowledge with three lifecycles: the bulletin (`/share`), promotion (`/promote`), the vault commit, the docs map and routines kept in git |
-| [`helloworld`](modules/helloworld/README.md) | the public door: name a project (`name-check`, `/name`), then publish it through a privacy scan (`helloworld`) |
-| [`plumb`](modules/plumb/README.md) | measure: `crew-report`, the owner's own time per project each week, beside the model cost |
-| [`wharf-runs`](modules/wharf-runs/README.md) | runs across a fleet of Macs: `orca-host` keeps Orca on each Mac to the registry's scopes and pairs the Macs |
-| [`aurora`](modules/aurora/README.md) | Aurora Borealis, the night job: the weekly loop's sections (branches, charts, dream) run while the owner sleeps, and `/embark`, the Monday sitting |
+| [`regatta`](modules/regatta/README.md) | The shared base every module stands on |
+| [`atlas`](modules/atlas/README.md) | Writes down what was learnt, where the next agent looks |
+| [`helloworld`](modules/helloworld/README.md) | Names a project and publishes it behind a privacy scan |
+| [`plumb`](modules/plumb/README.md) | Counts your time per project and what the agents cost |
+| [`wharf-runs`](modules/wharf-runs/README.md) | Starts agents on work while nobody is at the keyboard |
+| [`aurora`](modules/aurora/README.md) | Reads the week overnight and suggests what to change |
 
 ## Install
 
