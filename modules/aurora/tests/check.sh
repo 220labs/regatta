@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# aurora's check: weekly-run and install.sh, then week-digest's fence, under a scratch HOME and config dir (no network, no claude).
+# aurora's check: weekly-run and install.sh, then week-digest's fence and scope-pass (one scope's pass), under a scratch HOME and config dir (no network, no claude).
 #   bash modules/aurora/tests/check.sh
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"
 rc=0
-for s in aurora week-digest; do
+for s in aurora week-digest scope-pass; do
   echo "== $s"
   bash "$D/$s.sh" || rc=1
 done
