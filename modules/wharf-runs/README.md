@@ -14,11 +14,12 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/hail` | a pointer delivered to any session `harness` names — Claude Code's inbox socket (only to one idle 60 s or more, read back from the receiver), `codex queue` by thread, Orca's mailbox, a peer Mac over ssh, else helm's Talk and file roads; `--when idle` keeps a subscription that `hail subs --fulfil` sends |
 | `bin/wharf`, `blueprintlib.py` | a ship's blueprint checked and applied, block by block (`wharf check`, `wharf apply`) |
 | `bin/rc-hosts` | one Remote Control host per registry repo on this Mac |
+| `bin/yard-node`, `node/` | the yard node: a hypervisor host (Ubuntu 24.04 autoinstall, an Incus preseed) and its agent guest's `#cloud-config`, rendered from the config dir and driven over `ssh <alias> incus …` (`render`, `apply`, `launch`, `snap`, `check`) |
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
 | `hooks/cold_prompt.py` | a typed `/finish` in a cold or expensive session handed to a fresh run instead |
 
 `orca-serve-agent` is private until the same scrub (off `.helloworld/allowlist.txt`), though written
-as if public. The rows after it moved in with the build's B7 step and stay private until a wharf-runs
+as if public. So are `yard-node`, its `node/` templates and their suite (the yard node's S2). The rows after it moved in with the build's B7 step and stay private until a wharf-runs
 scrub: their text still names the owner's own layout. They find the core as wharf does
 (`lib/core_path.py`) and every peer through `common.tool()`: wharf (a hard edge: `branches`,
 `checkpoint`, `session_status`), keel, plumb's `tier_check`, lighthouse's `account` and the
@@ -48,6 +49,7 @@ the tools here will find.
   | --- | --- | --- |
   | `wharf-runs/orca-pairs` | `<host>:<peer>` — PEER's Orca is an environment of HOST's; `check` expects exactly these | no Mac pairs |
   | `wharf-runs/ssh` | `<peer>:<ssh alias>` — how `orca-host --on PEER` reaches it | `--on` knows no peer |
+  | `wharf-runs/node/*` | the yard node's values, one per line: `ssh`, `name`, `user`, `ssh-keys`, `tailscale` (`<role>:<address>`), `logins`, `size`, `pool`, `orca-release` (`yard-node`'s header) | `yard-node` names the missing key, exit 2 |
   | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on | `org.regatta.orca-serve` |
   | `wharf-runs/serve-label-previous` | an older label `orca-serve-agent` boots out and removes first, so one agent serves | none |
   | `wharf-runs/brake-label` | the launchd job the studio brake stops (SIGSTOP), first non-blank line; a `wharf` start waits while that job's process is stopped, as it does while the brake's sentinel file (`.studio-brake` in the home folder) exists | only the file brakes |

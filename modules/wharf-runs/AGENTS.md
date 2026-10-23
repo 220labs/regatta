@@ -35,4 +35,11 @@ Read `README.md` first: it is the chart. For an agent:
   receiver, never from the socket, which answers nothing. Its suite, `tests/test_hail.sh`, posts to
   fake inboxes only. The peer bundle embeds sources with `ascii()`: Python 3.9 reading a long
   non-ASCII line from stdin fails "Non-UTF-8 code".
+- `yard-node` and `node/` (the yard node's design, S2, 2026-10-22) drive a live host over
+  `ssh <alias> incus …`: in a session `render`, `check` and `--dry-run` only, unless the owner asked.
+  Every private value is a line under `${REGATTA_CONFIG}/wharf-runs/node/`; a template placeholder
+  is `@@NAME@@`, and one alone on its line becomes one line per value. `agent.user-data.yaml` names
+  nothing of Incus (its suite greps for it): the same file boots a cloud instance. All four files and
+  `tests/node.sh` are private-first until the wharf-runs scrub, off `.helloworld/allowlist.txt`,
+  though written as if public; the suite replays both word scans on them.
 - check: `bash modules/wharf-runs/tests/check.sh`.
