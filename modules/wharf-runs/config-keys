@@ -2,3 +2,5 @@
 # where an overlay is installed, or unreadable.
 wharf-runs/orca-pairs
 wharf-runs/ssh
+# Not listed: wharf-runs/node/* (bin/yard-node's docstring) — only a Mac that drives a yard node
+# has them, so naming them here would report them missing on every other Mac.
