@@ -23,6 +23,23 @@
   some scope's yard. Blueprints take `merge: yes|no` and `sent_by`, and `skipper: scope` names no
   session until the lease; the keel's merge is recorded as plan.json's `merge: {value, why}`. `--gen` is
   taken for S4. Cases in `test_wharf.sh` with a stub ssh and a scratch origin.
+- `bin/clock` (knowledge-layers S7, 2026-10-22): the calendar moves to Orca's scheduler. `schedule NAME
+  --run LINE --trigger …` writes one Orca automation whose prompt is LINE under clock's fixed head, on
+  `--model haiku`, in the neutral workspace (`wharf-runs/clock-workspace`), its grace the job's window
+  (daily 180 min, weekly 1440), never Orca's 720; `--launchd` writes the plist instead (the OS form kept).
+  A launcher line is `dispatch …`, or `clock fire NAME -- weekly-run …` for a job longer than a Bash call
+  (`fire`: a RunAtLoad job in the user's `Caches/clock/fire` folder, never `LaunchAgents`, launchd owning it, through claude-host where
+  allowed). `check` fails an agent-run calendar job still on launchd (the script jobs listed in
+  `wharf-runs/clock-scripts`, a dated one-shot excepted), an automation off that shape, a confidential
+  scope's pass without `--account <its login>`, a repo or scope the registry lacks, a declared job
+  (`wharf-runs/clock-jobs`) with no automation, and a torn registry; `list` reads both Macs (the paired
+  Orca, the peer's launchd over ssh); `board` writes one page, helm's model. `rc-hosts --agents` judges
+  each automation's launcher line (OUTSIDE when it names a script outside the primary checkout).
+  `tests/test_clock.sh`, stand-ins only. Private until a scrub of its own.
+  The landing review (2026-10-23): a `#`, a gated flag given twice, `--start DIR` and weekly-run's cwd
+  no longer pass the confidential gate, and weekly-run `--scope` of a confidential scope is refused; the
+  reload waits out bootout; a peer's rows are notes and `--environment` needs `--workspace`; `check
+  --json` is one document; `--replace` creates first; rc-hosts' automation notes are tagged `note`.
 - `wharf` start fixes (skipper-resilience S1, 2026-10-22), found by the yard probe: `start_orca` trusts the
   picked login's config dir first, as dispatch does (`dispatch-rc trusted`, then lighthouse's
   `trust-projects`, read back; still untrusted is one failed start); a worktree git just made that Orca's

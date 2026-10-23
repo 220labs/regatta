@@ -43,4 +43,11 @@ Read `README.md` first: it is the chart. For an agent:
   `tests/node.sh` are private-first until a scrub of their own (the module's of 2026-10-22 came
   before them), off `.helloworld/allowlist.txt`,
   though written as if public; the suite replays both word scans on them.
+- `clock` (knowledge-layers S7) changes a live scheduler with `schedule` and `fire`: in a session,
+  `list`, `check`, `board` and `--dry-run` only, unless the owner asked for the job. It is private-first
+  like `yard-node` (off the allowlist until a scrub of its own) and written as if public: hosts, labels, the workspace and
+  the script-job list are `wharf-runs/clock-*` config keys (its header). Its suite,
+  `tests/test_clock.sh`, runs against stand-ins for orca, launchctl, ssh and scutil only. Its scrub also owes
+  the defaults without an overlay (`clock-scripts` empty reads the modules' own script jobs as
+  agent-run), the fixture's `buildbox` names and a stand-in for the peer's `launchctl list` (S7 landing review).
 - check: `bash modules/wharf-runs/tests/check.sh`.

@@ -59,6 +59,16 @@ case "\$1" in
 esac
 EOF
 printf '#!/bin/sh\ncat "%s/kids/$2" 2>/dev/null\n' "$T" > "$T/stub/pgrep"
+# orca: the clock's automations for --agents (bin/clock), from $T/autos.json; none by default, so no
+# case reads this Mac's real Orca
+cat > "$T/stub/orca" <<EOF
+#!/bin/sh
+case "\$*" in
+  "automations list"*) printf '{"ok": true, "result": {"automations": %s}}\n' "\$(cat "$T/autos.json" 2>/dev/null || echo '[]')";;
+  *) printf '{"ok": true, "result": {"runs": []}}\n';;
+esac
+EOF
+chmod +x "$T/stub/orca"; export ORCA_HOST_CLI="$T/stub/orca"
 printf '#!/bin/sh\necho "$*" >> "%s/opened"\n' "$T" > "$T/stub/open"   # never System Settings for real
 printf '#!/bin/sh\necho laptop\n' > "$T/stub/scutil"
 # ps: a process's start (-o lstart= -p PID, from $T/lstart-PID; none: unreadable) and the table
@@ -495,6 +505,40 @@ check "$(RC --agents --fix)" "1" "someone else's job starting claude bare counts
 has "$T/out" "BARE     com.example.bare: starts claude itself, whose path every update replaces (not a job under org.example.claude" "…and is left to a hand"
 check "$(pargs com.example.bare)" "$HOME/.local/bin/claude -p hi" "…never rewritten"
 rm -f "${LA:?}/com.example.bare.plist"
+# the clock's Orca automations (knowledge-layers S7): Orca launches the run, never bare; what its one
+# launcher line starts must be the primary checkout's script. clock is private-first: the public twin
+# has none, so the block runs only beside it
+if [ -f "$B/clock" ]; then
+HEAD=$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("c", sys.argv[1]); s=u.spec_from_loader("c", l); c=u.module_from_spec(s); l.exec_module(c); print(c.PROMPT_HEAD)' "$B/clock")
+python3 - "$T/autos.json" "$HEAD" "$P" "$HOME" <<'PY'
+import json, sys
+out, head, p, home = sys.argv[1:]
+mk = lambda n, line: {"id": n, "name": n, "prompt": head + "\n\n" + line}
+json.dump([mk("night", p + "/clock fire aurora -- " + p + "/weekly-run aurora " + home),
+           mk("pass", p + "/dispatch claude/x --repo r --account a"),
+           mk("free", "Tidy the docs")], open(out, "w"))
+PY
+check "$(RC --agents)" "0" "automations whose lines name the primary's scripts: green"
+has "$T/out" "ok       automation night: Orca starts its run; weekly-run is the primary checkout's" "…a fired job named"
+has "$T/out" "ok       automation pass: Orca starts its run; dispatch is the primary checkout's" "…a dispatch line named"
+hasnt "$T/out" "automation free" "…a prompt not in the clock's shape is clock check's, not this check's"
+python3 - "$T/autos.json" "$HEAD" "$HOME" <<'PY'
+import json, sys
+out, head, home = sys.argv[1:]
+json.dump([{"id": "wt", "name": "wt", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/dispatch claude/x"},
+           {"id": "bare", "name": "bare", "prompt": head + "\n\ndispatch claude/x"},
+           {"id": "fc", "name": "fc", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/clock fire aurora -- " + home + "/projects/overlay/bin/weekly-run aurora " + home}], open(out, "w"))
+PY
+check "$(RC --agents)" "1" "an automation launching another copy's dispatch, or firing through another clock, counts, once ready"
+has "$T/out" "OUTSIDE  automation wt: launches dispatch from outside $P" "…named OUTSIDE"
+has "$T/out" "note     automation bare: dispatch named without a path" "…a pathless line is a note"
+has "$T/out" "OUTSIDE  automation fc: fires through" "…a fire through another checkout's clock named OUTSIDE"
+echo '[]' > "$T/autos.json"
+printf '#!/bin/sh\nexit 1\n' > "$T/stub/orca.down"; chmod +x "$T/stub/orca.down"
+check "$(ORCA_HOST_CLI="$T/stub/orca.down" RC --agents)" "0" "Orca unread: a note, never a failure"
+has "$T/out" "note     Orca automations: not read" "…said"
+hasnt "$T/out" "--       Orca automations" "…in no line the overlay's bootstrap.sh --check counts as a pending LaunchAgent"
+fi
 mkplist org.example.claude.dispatch.x.z.202611010900 "$P/dispatch" claude/z
 rm -f "${G:?}"
 check "$(RC --agents)" "0" "before this Mac's sitting, a bare job is a note, never a failure (the laptop's check must not stop on it)"
