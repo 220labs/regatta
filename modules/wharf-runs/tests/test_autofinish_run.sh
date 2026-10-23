@@ -10,6 +10,7 @@ unset CLAUDE_UNATTENDED RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LO
       DISPATCH_MAX_DEPTH DISPATCH_MAX_RUNS DISPATCH_MAX_H AUTOFINISH_DISPATCH AUTOFINISH_ACCOUNT \
       ACCOUNTS_FILE ACCOUNT_NOW ACCOUNT_CLAUDE CLAUDE_CODE_OAUTH_TOKEN
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
+unset DISPATCH_SHIP DISPATCH_PLAN   # a ship's block running this suite: --by ship would read it as one (S6)
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 # the regatta core's hooks/ (common.py), found as the tools find it (lib/core_path.py); wharf's peers by its tool()
 CORE="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; print(core_path.hooks() or "")' "$B/../lib")"
@@ -20,6 +21,8 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 has()   { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" 2>/dev/null | tail -20; fails=$((fails+1)); fi; }
 hasnt() { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  FAIL $3: found [$2]"; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
+# a pinned blueprint is read by PyYAML, installed per user on these Macs: keep its site when HOME moves (--by ship, S6)
+export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export HOME="$T/home"; mkdir -p "$HOME"
 export ACCOUNTS_FILE="$T/no-accounts.json"   # no registry unless a case names one: the default is the config dir's lighthouse/accounts.json, the real one (B9)
 export CLAUDE_CONFIG_DIR="$HOME/.claude"   # kept for the session: it names the account
@@ -772,6 +775,124 @@ check "$(CLAUDE_UNATTENDED=dispatch mauto)" "mode default — a taken answer nev
 modefix default
 check "$(mauto)" "mode default — a taken answer never lands there (yolo-veto D1)" "  a ship lowered to default: held, the standing yes is for no mode only"
 rm -f "$MRUNS/zz-mode.json"
+echo "  a ship launch is judged by held_slice too: the keel's yes predates the diff (S6's finish review)"
+shipland() { python3 - "$B/autofinish-run" "$W" "$R" "$BR" "$1" "$2" <<'PYSL'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish_run_sl", sys.argv[1]).load_module()
+class Af:
+    LAND_MODES = ("yolo", "dnd")
+    def landing_mode(self, branch, repo): return (None if sys.argv[6] == "-" else sys.argv[6],)
+    def held_slice(self, repo, wt, main, mode): return "gated under %s" % mode
+m._lander = (lambda: None) if sys.argv[5] == "absent" else (lambda: Af())
+t = type("T", (), {"path": sys.argv[2], "primary": sys.argv[3], "branch": sys.argv[4]})()
+print(m.landing(t, "ship", "C")[0])
+PYSL
+}
+check "$(shipland af -)" "gated under yolo" "a --by ship launch with no landing mode: held_slice under yolo (the gates, autofinish_exclude, in_place)"
+check "$(shipland af dnd)" "gated under dnd" "  a ship in dnd: dnd's held slice"
+check "$(shipland absent -)" "the lander's judge did not load (bin/autofinish)" "  the lander absent: held, never merged unjudged"
+
+echo "--hold: the keel's no (skipper-resilience S6), whatever the mode"
+next_tip "s6: hold"
+af --dry --hold > "$T/out" 2>&1; check "$?" "0" "--hold --dry"
+has "$T/out" "/finish\ $BR\ --unattended\ --hold --session-id" "  /finish <branch> --unattended --hold"
+has "$T/out" '"hold": "the keel holds it (--hold)"' "  the state's hold says the keel holds it"
+check "$(undeny_merge "$T/out")" "0" "  bin/pr merge stays denied"
+af --dry --hold --merge > "$T/out" 2>&1; check "$?" "2" "--hold with --merge: refused"
+has "$T/out" "ask opposite things" "  saying why"
+af --dry --digest "$(printf '%064d' 0)" > "$T/out" 2>&1; check "$?" "2" "--digest without --by ship: refused"
+SKIPPER_SCOPE=dock af --dry --merge > "$T/out" 2>&1; check "$?" "2" "--merge from a skipper (SKIPPER_SCOPE): refused as an unattended run is"
+has "$T/out" "SKIPPER_SCOPE=dock" "  naming it"
+
+echo "--by ship: the keel's yes, read again from the plan store (S6)"
+if [ -z "$LB" ]; then echo "  --   skipped: helm's helmlib.py is not installed here"; else
+  export PLANS_DIR="$T/shipplans"
+  # the tick's caller: no session id; the suite's af() is a session's
+  afs() { env -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION=1 "$B/autofinish-run" "$W" "$@"; }
+  # shipfix <plan> <ship> <front-matter line> <laid mode> <keel merge> <block branch>: a pinned ship as --yard records it; prints the digest
+  # the pin's repo is the registry key of the suite's repo, as --yard pins it; "elsewhere" names another repo
+  RKEY=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.repo_key(sys.argv[2]))' "$CORE" "$R")
+  shipfix() { python3 - "$LB" "$B" "$RKEY" "$@" <<'PYS'
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[2])
+import helmlib, blueprintlib
+rkey = sys.argv[3]
+pid, ship, extra, laid, keel, branch = sys.argv[4:10]
+if len(sys.argv) > 10:
+    rkey = sys.argv[10]
+helmlib.new_plan(pid, ship)
+copy = os.path.join(str(helmlib.plan_dir(pid)), "blueprint-%s.md" % ship)
+text = ("---\nship: %s\nrepo: demo\ncreated: 2026-10-05\n%sblocks:\n  - id: demo\n    provider: orca\n    agent: claude\n"
+        "    branch: %s\n---\n## demo\nTask: t\nTier: worker\nWhy: w\nStart here: s\nDone means: d\nNot this: n\n") % (
+        ship, extra.replace("\\n", "\n"), branch)
+open(copy, "w").write(text)
+d = blueprintlib.digest(blueprintlib.load(copy, key=rkey))
+p = helmlib.load_plan(pid)
+p.setdefault("blueprints", {})[ship] = {"file": copy, "digest": d, "pin": {"repo": rkey, "branch": "b", "rel": "r.md", "digest": d},
+                                        "laid_by": {"mode": laid, "depth": 0, "session": None, "host": "h", "t": 1},
+                                        "merge": {"value": keel, "why": "default" if keel == "yes" else "keel"}}
+helmlib.save_plan(p)
+print(d)
+PYS
+}
+  DY=$(shipfix sy ship-yes '' attended yes "$BR")
+  DN=$(shipfix sn ship-no 'merge: no\n' attended yes "$BR")
+  DU=$(shipfix su ship-un '' unattended yes "$BR")
+  DK=$(shipfix sk ship-keel '' attended no "$BR")
+  DB=$(shipfix sb ship-other '' attended yes claude/laptop/2026-10-05-other)
+  DR=$(shipfix sr ship-repo 'sent_by: x\n' attended yes "$BR" elsewhere)
+  check "$(printf '%s\n' "$DY" "$DN" "$DU" "$DK" "$DB" "$DR" | sort -u | grep -c '^[0-9a-f]\{64\}$')" "6" "(the fixture: six ships, six digests)"
+  afs --dry --merge --by ship --digest "$DY" > "$T/out" 2>&1; check "$?" "0" "the tick's --merge --by ship --digest at an attended, merge-yes pin: accepted"
+  has "$T/out" "/finish\ $BR\ --unattended\ --merge" "  the prompt carries --merge"
+  check "$(undeny_merge "$T/out")" "1" "  bin/pr merge lifted"
+  afs --dry --merge --by ship > "$T/out" 2>&1; check "$?" "2" "  without --digest: refused"
+  has "$T/out" "--by ship needs --digest D" "    saying so"
+  for env_ in CLAUDE_CODE_SESSION_ID=s-1 CLAUDE_UNATTENDED=dispatch SKIPPER_SCOPE=dock DISPATCH_DEPTH=1 DISPATCH_SHIP=sy DISPATCH_PLAN=sy; do
+    # --hold, not --merge (which refuses CLAUDE_UNATTENDED and SKIPPER_SCOPE on its own, above), and no session id
+    # of the suite's own (a /finish runs this check inside one): --by ship's own check, naming the marker it read
+    env -u CLAUDE_CODE_SESSION_ID "$env_" "$B/autofinish-run" "$W" --dry --by ship --hold > "$T/out" 2>&1
+    check "$?" "2" "  from a caller that is not the tick ($env_): refused"
+    has "$T/out" "is the yard's tick's, and this caller is " "    saying whose it is"
+    has "$T/out" "$env_" "    naming $env_"
+  done
+  afs --dry --by ship > "$T/out" 2>&1; check "$?" "2" "--by ship with neither --merge nor --hold: refused"
+  has "$T/out" "the tick's landing call: --merge --digest D, or --hold" "  saying so"
+  afs --dry --by ship --hold --digest "$DY" > "$T/out" 2>&1; check "$?" "2" "  --digest with --hold: refused (it goes with --merge)"
+  afs --dry --by ship --hold > "$T/out" 2>&1; check "$?" "0" "the tick's --by ship --hold: accepted, no digest asked"
+  has "$T/out" "/finish\ $BR\ --unattended\ --hold --session-id" "  /finish --unattended --hold"
+  check "$(undeny_merge "$T/out")" "0" "  bin/pr merge denied"
+  afs --dry --merge --by ship --digest "$DR" > "$T/out" 2>&1; check "$?" "2" "a pin of another repo whose block branch has this name: refused"
+  has "$T/out" "is not in ship ship-repo of plan sr's repo elsewhere" "  saying so (a branch name repeats across repos)"
+  afs --dry --merge --by ship --digest "$DN" > "$T/out" 2>&1; check "$?" "2" "a digest whose blueprint says merge: no: refused"
+  has "$T/out" "blueprint says merge: no" "  saying so"
+  afs --dry --merge --by ship --digest "$DU" > "$T/out" 2>&1; check "$?" "2" "laid_by unattended: refused"
+  has "$T/out" "was laid unattended" "  saying so"
+  afs --dry --merge --by ship --digest "$DK" > "$T/out" 2>&1; check "$?" "2" "the keel said no (--no-merge): refused"
+  has "$T/out" "keel said no" "  saying so"
+  afs --dry --merge --by ship --digest "$DB" > "$T/out" 2>&1; check "$?" "2" "a ship whose blocks do not own this branch: refused"
+  has "$T/out" "is no block branch of ship ship-other" "  saying so"
+  afs --dry --merge --by ship --digest "$(printf '%064d' 7)" > "$T/out" 2>&1; check "$?" "2" "a digest no ship here is pinned at: refused"
+  echo tampered >> "$T/shipplans/sy/blueprint-ship-yes.md"
+  afs --dry --merge --by ship --digest "$DY" > "$T/out" 2>&1; check "$?" "2" "a pinned copy no longer at its digest: refused"
+  has "$T/out" "is not at" "  saying so"
+  echo "  the keel's hold is sticky: a later launch of the worktree keeps it"
+  next_tip "s6: sticky hold"
+  STUB_REPLY="$T/held.txt" afs --rule C --by ship --hold > /dev/null 2>&1; ended
+  check "$(field hold)" "the keel holds it (--hold)" "a real --by ship --hold start: the state's hold"
+  next_tip "s6: the sweep's retry"
+  af --dry --by sweep --rule A > "$T/out" 2>&1
+  has "$T/out" "held at a ready PR — the keel holds it (--hold)" "  the sweep's next start on the worktree: still held"
+  has "$T/out" "--unattended\ --hold --session-id" "    /finish --unattended --hold"
+  af --dry --merge > "$T/out" 2>&1
+  hasnt "$T/out" "--hold --merge" "  a person's --merge beside the keel's hold: no --merge in the prompt"
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["hold"] = "mode ask — nothing lands by itself"; json.dump(d, open(sys.argv[1], "w"))' "$STATE"
+  next_tip "s6: the keel's hold under another hold"
+  af --dry --by sweep --rule A > "$T/out" 2>&1
+  has "$T/out" "held at a ready PR — the keel holds it (--hold)" "  a hold recorded for another reason first: the keel's own key keeps it"
+  rm -f "$STATE"   # the keel's hold is this fixture's alone: the cases below start from a worktree with no launch
+  unset PLANS_DIR; unset -f afs shipfix
+fi
 
 echo "the sessions open on the branch are told, by the run's own session (the owner, 2026-10-18)"
 next_tip "notify"; : > "$T/claude.calls"

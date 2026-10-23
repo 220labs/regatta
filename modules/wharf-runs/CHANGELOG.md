@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- The yard's relays and landing call (skipper-resilience S6, 2026-10-22). A `skipper: scope` ship's
+  Orca question is hailed to the scope's skipper while it holds the ship's lease (`hail <session> --kind
+  ask --when idle --no-file`, its Talk page as `HAIL_SPACE`), in place of S5's Talk relay: a pointer naming
+  the plan, the block and the question id, with the read and reply commands, under hail's 400 characters;
+  the question's own words stay in Orca. A hail no road takes, or a ship the yard holds, is carded on the
+  board, never the file queue a scope skipper never reads; a ship with a named skipper keeps its file
+  relay. `hail --no-file` skips the file road, and a `--when idle` subscription keeps it and the page it
+  was made under, so the tick's `hail subs --fulfil` posts there. On a
+  scope's yard, the tick's `wharf apply --once --all` launches a `launch: finish` block whose predecessor
+  ended: `autofinish-run <wt> --merge --by ship --digest <pin>` when the keel said merge, else `--by ship --hold`;
+  off a yard, or from a session, a dispatched run, a skipper or a ship's block, the block is raised as
+  before. `autofinish-run --by ship` takes the keel's yes only from the tick (refused under a session id,
+  `CLAUDE_UNATTENDED`, `SKIPPER_SCOPE`, a dispatch depth or a ship's env) and only when the pinned copy at
+  `--digest` does not say `merge: no`, the ship was laid attended, the keel did not say no and the worktree is
+  in the pin's repo on one of the ship's block branches; `--hold` holds any launch at a ready PR (`/finish …
+  --unattended --hold`), and the keel's hold sticks to the worktree's later launches (a sweep retry of a run
+  that died); a held launch carries no `--merge`, and `--merge` is refused under `SKIPPER_SCOPE` as under
+  `CLAUDE_UNATTENDED`. A `--by ship` launch is judged by the lander's `held_slice` (under `yolo` when the ship
+  has no landing mode), so the launcher's gates and the repo's `autofinish_exclude`/`in_place` still hold it,
+  and the keel's hold is its own state key (`keel_hold`), so a launch another rule held first keeps it.
+  A hail that becomes a `--when idle` subscription is carded on the board as well. Cases in `test_wharf.sh`,
+  `test_autofinish_run.sh` and `test_hail.sh`.
 - `dispatch-rc watch` nudges a run whose last turn ended on an API error (2026-10-22: an unattended
   `/finish` ended on `API Error: Connection dropped (ECONNRESET)`, sat idle, and was ended 11 minutes
   later with its work committed and its check still running). A session idle a minute on a `server_error`

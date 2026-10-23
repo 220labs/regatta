@@ -1056,6 +1056,66 @@ out=$(W "$WH" apply "$QC" --plan wp --once)
 has "$out" "question msg_qc2 → the board, as waiting" "  a yard-held scope ship's question with a live skipper: the board, never the file road"
 check "$(wc -l < "$QF" | tr -d ' ')" "$n0" "  still nothing queued"
 rm -f "$T/wplans/wp/skipper.json" "$T/mgrdir/testhost-tdock.json"
+echo "  S6: a scope ship's question is hailed to the skipper holding its lease, a pointer on its page, never the file road"
+cat > "$WS/hail" <<'SH'
+#!/bin/sh
+# hail REF --kind ask --when idle --no-file --text T --json: records its argv and the page it was handed
+printf '%s\n' "$*" >> "$HAIL_CALLS"; printf 'HAIL_SPACE=%s\n' "${HAIL_SPACE:-}" >> "$HAIL_CALLS"
+printf '{"road": "%s", "verdict": "%s", "target": "%s"}\n' "${STUB_HAIL_ROAD:-talk}" "${STUB_HAIL_VERDICT:-queued}" "$1"
+SH
+chmod +x "$WS/hail"; : > "$T/hail.calls"
+# qadd <ship> <block> <message id> <body>: a worker's unread question in that ship's Run
+qadd() { python3 - "$WS/state.json" "$(pj "p['tasks']['$2']['orca_dispatches'][0]")" "$(pj "p['blueprints']['$1']['orca_run']")" "$3" "$4" <<'PY'
+import json, sys
+p, d, r, mid, body = sys.argv[1:]; st = json.load(open(p))
+st["messages"].append({"id": mid, "run_id": r, "type": "question", "from_handle": "dispatch:" + d, "subject": "Question",
+                       "body": body, "read": 0, "created_at": "2026-10-22T16:07:00Z"})
+json.dump(st, open(p, "w"))
+PY
+}
+# lease <holder>: the plan's lease held by the scope's skipper (its session and pid) or by the yard
+lease() { python3 - "$T/wplans/wp/skipper.json" "$SKP" "$1" <<'PY'
+import json, sys, time
+sk = sys.argv[3] == "skipper"
+json.dump({"holder": "skipper · tdock" if sk else "yard", "scope": "tdock", "host": "testhost", "account": None, "gen": 3 if sk else 4,
+           "since": time.time(), "until": time.time() + 900 if sk else None,
+           "session": "skipper-0000-4000-8000-000000000000" if sk else None, "pid": int(sys.argv[2]) if sk else None, "why": "the suite"},
+          open(sys.argv[1], "w"))
+PY
+}
+lease skipper
+printf '{"session": "skipper-0000-4000-8000-000000000000", "name": "skipper · tdock", "scope": "tdock", "pid": %s, "space": "sp-tdock"}' "$SKP" > "$T/mgrdir/testhost-tdock.json"
+HW() { W env WHARF_HAIL="$WS/hail" HAIL_CALLS="$T/hail.calls" HAIL_SPACE=sp-stray "$WH" apply "$@"; }
+n0=$(wc -l < "$QF" | tr -d ' ')
+qadd asks3 qc msg_qc3 "Delete the old branch?"
+out=$(HW "$QC" --plan wp --once)
+has "$out" "question msg_qc3 → hailed to skipper · tdock (queued via talk)" "the lease holder's skipper: the question is hailed to its session"
+has "$(cat "$T/hail.calls")" "skipper-0000-4000-8000-000000000000 --kind ask --when idle --no-file --text Orca question msg_qc3 from asks3/qc in plan wp (dispatch " \
+  "  hail <its session> --kind ask --when idle --no-file, naming the question, the ship and block, the plan"
+has "$(cat "$T/hail.calls")" " — reply: orca orchestration reply --id msg_qc3 " "  with the reply verb"
+has "$(cat "$T/hail.calls")" "HAIL_SPACE=sp-tdock" "  on its record's page, never the caller's HAIL_SPACE"
+hasnt "$(cat "$T/hail.calls")" "Delete the old branch" "  the worker's words stay in Orca: a pointer, not the question"
+check "$(python3 -c 'import sys; l = open(sys.argv[1]).readline(); print(len(l.split(" --text ", 1)[1].rsplit(" --json", 1)[0]) <= 400)' "$T/hail.calls")" "True" "  under hail's 400 characters"
+check "$(wc -l < "$QF" | tr -d ' ')" "$n0" "  no file line"
+HW "$QC" --plan wp --once > /dev/null; check "$(grep -c -- '--text' "$T/hail.calls")" "1" "  a second pass: not hailed again"
+qadd asks3 qc msg_qc4 "Which suite?"
+out=$(STUB_HAIL_VERDICT=unreachable HW "$QC" --plan wp --once)
+has "$out" "question msg_qc4 → the board, as waiting (the hail to skipper · tdock was not taken: unreachable via talk)" "a hail no road took: the board, never the file road"
+check "$(wc -l < "$QF" | tr -d ' ')" "$n0" "  still no file line"
+qadd asks3 qc msg_qc6 "Still there?"
+out=$(STUB_HAIL_ROAD=subs HW "$QC" --plan wp --once)
+has "$out" "question msg_qc6 → hailed to skipper · tdock (queued via subs)" "a hail that became a --when idle subscription: hailed"
+has "$(W "$HM" state wp | python3 -c "import json,sys; print([t['progress'] for t in json.load(sys.stdin)['tasks'] if t['id'] == 'qc'][0])")" \
+  "Orca question msg_qc6: hailed once skipper · tdock is idle" "  and carded, so a row the fulfil drops never loses it"
+lease yard; qadd asks3 qc msg_qc5 "And then?"
+out=$(HW "$QC" --plan wp --once)
+check "$(grep -c -- '--text' "$T/hail.calls")" "3" "the yard holds the ship, its skipper live: no hail"
+has "$out" "question msg_qc5 → the board, as waiting (no live skipper holds the ship's lease)" "  the board"
+qadd asks qa msg_qa2 "Which branch now?"
+out=$(HW "$QA" --plan wp --once)
+check "$(grep -c -- '--text' "$T/hail.calls")" "3" "a ship with a named skipper: no hail"
+has "$out" "question msg_qa2 → the skipper's next prompt" "  its file relay, as before"
+rm -f "$T/wplans/wp/skipper.json" "$T/mgrdir/testhost-tdock.json"; unset -f qadd lease HW
 kill $SKP 2>/dev/null; unset ASK_QUEUE_DIR ASK_MANAGER_DIR
 
 echo "  the Yard rules ride in the spec, never in the digest"
@@ -1471,8 +1531,62 @@ print([r for r in rows["plan"] if r[0] == "update"])
 PY
 )" "[]" "  settled: the plan's tasks match the pin's key, no update row on the next pass"
 
+echo "  the yard's landing call (S6): the tick's --once --all launches a launch: finish block on the yard, --merge --by ship or --hold"
+# two launch ships, each naming its own branch's worktree (launch_wt); a stub autofinish-run records the call.
+# YWS: the repo's worktree folder, beside the fixture's own (spelled once, where the publish gate has it reviewed)
+YWS=$(dirname "$YW")
+for x in ym yh; do gt "$YR" worktree add -q "$YWS/$x" -b "claude/testhost/2026-10-22-$x"; done
+lblock() { printf '%s' '  - id: launch-'"$1"'\n    depends_on: ['"$1"']\n    provider: shell\n    command: "true"\n    launch: finish\n    branch: claude/testhost/2026-10-22-'"$2"'\n'; }
+YM=$(ybp ymerge yardrepo '' "$(shellblock yma)$(lblock yma ym)"); YHD=$(ybp yhold yardrepo '' "$(shellblock yha)$(lblock yha yh)")
+pushed launch-ships
+Y "$WH" apply --yard "$YM" --plan ypm > /dev/null 2>&1; Y "$WH" apply --yard "$YHD" --plan yph --no-merge > /dev/null 2>&1
+check "$(yp ypm "p['blueprints']['ymerge']['merge']['value']") $(yp yph "p['blueprints']['yhold']['merge']['value']")" "yes no" "(the fixture: one ship the keel said merge, one --no-merge)"
+check "$(Y "$HM" state ypm | python3 -c "import json,sys; print([t['status'] for t in json.load(sys.stdin)['tasks'] if t['id'] == 'launch-yma'][0])")" "waiting" \
+  "  the lay's own passes: the launch raised for the skipper, as before (no launch dict there)"
+YT() { YH env -u CLAUDE_CODE_SESSION_ID WHARF_AUTOFINISH_RUN="$WS/afrun" AFRUN_CALLS="$YD/afrun.calls" WHARF_DISPATCH_RC="$WS/drc" "$@"; }
+: > "$YD/afrun.calls"
+out=$(YT env CLAUDE_UNATTENDED=dispatch "$WH" apply --once --all 2>&1)
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "on the yard, a dispatched run's --once --all (CLAUDE_UNATTENDED): no launch"
+out=$(YT env CLAUDE_CODE_SESSION_ID=s-1 "$WH" apply --once --all 2>&1)
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "  a session's: no launch"
+out=$(YT env SKIPPER_SCOPE=dock "$WH" apply --once --all 2>&1)
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "  a skipper's: no launch"
+out=$(YT env DISPATCH_SHIP=ypm "$WH" apply --once --all 2>&1)
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "  a ship's block (its env): no launch"
+out=$(Y env -u CLAUDE_CODE_SESSION_ID WHARF_AUTOFINISH_RUN="$WS/afrun" AFRUN_CALLS="$YD/afrun.calls" WHARF_DISPATCH_RC="$WS/drc" "$WH" apply --once --all 2>&1)
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "  off the yard, from a tick-like shell: no launch"
+out=$(YT "$WH" apply --once --all --dry-run 2>&1)
+has "$out" "would start the launch: $WS/afrun $YWS/ym --merge --by ship --digest $(yp ypm "p['blueprints']['ymerge']['pin']['digest']")" \
+  "the yard's tick, dry: the merge ship's launch with --merge --by ship --digest <its pin>"
+has "$out" "would start the launch: $WS/afrun $YWS/yh --by ship --hold" "  the --no-merge ship's with --by ship --hold"
+check "$(wc -c < "$YD/afrun.calls" | tr -d ' ')" "0" "  a dry pass starts nothing"
+out=$(YT "$WH" apply --once --all 2>&1); check "$?" "0" "the yard's tick: exit 0"
+check "$(grep -c . "$YD/afrun.calls")" "2" "  both launches started"
+has "$(cat "$YD/afrun.calls")" "$YWS/ym --merge --by ship --digest $(yp ypm "p['blueprints']['ymerge']['pin']['digest']")" "  merge yes: --merge --by ship --digest"
+has "$(cat "$YD/afrun.calls")" "$YWS/yh --by ship --hold" "  merge no: --by ship --hold"
+hasnt "$(cat "$YD/afrun.calls")" "--session" "  no session: the tick has none"
+check "$(Y "$HM" state ypm | python3 -c "import json,sys; print([t['progress'] for t in json.load(sys.stdin)['tasks'] if t['id'] == 'launch-yma'][0])")" \
+  "launch started: autofinish-run $YWS/ym --merge --by ship" "  the plan says how it was launched"
+check "$(Y python3 - "$B/wharf" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_s6", sys.argv[1]).load_module()
+print(w.tick_caller({}), w.tick_caller({"DISPATCH_DEPTH": "0"}), w.tick_caller({"DISPATCH_DEPTH": "1"}),
+      w.tick_caller({"CLAUDE_UNATTENDED": "x"}), w.tick_caller({"DISPATCH_PLAN": "p"}))
+PY
+)" "None None DISPATCH_DEPTH=1 CLAUDE_UNATTENDED is set DISPATCH_PLAN is set" "tick_caller: the tick is the caller with none of the markers"
+check "$(Y env CLAUDE_REPOS_JSON="$YD/noyard.json" HARNESS_HOST=yardhost python3 - "$B/wharf" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_s6b", sys.argv[1]).load_module()
+print(w.yard_launch("ypm", "ymerge", None))
+PY
+)" "None" "  a scope with no yard: no launch dict on any host, today's raise"
+for x in ym yh; do gt "$YR" worktree remove --force "$YWS/$x"; done
+unset -f YT lblock
+
 # the tick on the yard: a pinned ship read from the plan's copy, with its branch on no checkout here
-touch "$HOME/.studio-brake"; Y "$WH" apply --yard "$Y3" --plan yp3 > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
+touch "$HOME/.studio-brake";Y "$WH" apply --yard "$Y3" --plan yp3 > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
 check "$(grep -c y3 "$YD/yout")" "0" "a ship laid under the brake: compiled, its block not started"
 gt "$YR" worktree remove --force "$YW"; gt "$YR" branch -q -D "$YBR"
 out=$(YH "$WH" apply --once --all 2>&1); check "$?" "0" "  its branch checked out nowhere, the yard's tick: exit 0"
