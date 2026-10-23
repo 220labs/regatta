@@ -2,9 +2,10 @@
 
 Sextant is Regatta's strategy module: what you are aiming at, which ideas get you there, and which
 of them get built. Today it holds its **ideas intake, Sparks** — ideas in, one note per idea out,
-filed where the strategy reads them — and **`/sounding`**, which tests an idea before anything is
-built. The strategy half (goals, priorities and budgets, candidates
-and a queue) joins this same plugin later; there is never a separate Sparks plugin.
+filed where the strategy reads them — **`/sounding`**, which tests an idea before anything is
+built, and **`/sextant`**, the weekly pass that audits the layer against the world and starts the
+soundings the owner queued. The rest of the strategy half (goals, priorities and budgets in a North
+Star, candidates) joins this same plugin later; there is never a separate Sparks plugin.
 
 | Piece | What it does |
 | --- | --- |
@@ -15,10 +16,14 @@ and a queue) joins this same plugin later; there is never a separate Sparks plug
 | `bench/redaction/` | can a classifier find what a memo should not put in git? Five arms over an invented corpus |
 | `skills/sounding/` | `/sounding <idea> [--light] [--yolo]`: one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`) sounds the idea — a Landscape of what exists, a one-line Verdict — and the doc reaches the owner in full, as a chat questionnaire or with its reversible picks taken unattended |
 | `agents/sounder.md` | the sounder: an architect for an idea outside any repo — a venture, a pitch, a tool to build or adopt — held to the ventures README's four gates, with a money flow and a smallest test; private until the architects' shared body is scrubbed |
-| `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled |
+| `skills/sextant/` | `/sextant`: the weekly pass — research what changed, review the layer against it, adopt the small things, log the rest with verdicts, measure, and start the queued soundings (step 2c); unattended once a week |
+| `libexec/sextant-run` | `where` (the paths `/sextant` uses: the core's CLI, atlas's layer and vault, the ideas pool, plumb's usage reports, the owner's name) and `run` (the weekly job's own runner when aurora is not installed); off PATH, `regatta sextant-run …` |
+| `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled, the queue's and the weekly job's suites |
 
 Install, from a clone (the shell and launchd face): `sh modules/sextant/install.sh --check` says
-what is found, `--launcher` builds and schedules the job, `--remove` takes it out. As a plugin:
+what is found, `--launcher` builds and schedules Sparks' job, `--remove` takes it out;
+`--schedule` loads the weekly `/sextant` job (`--dry-run` prints its plist first, `--unschedule`
+takes it out). As a plugin:
 `claude plugin marketplace add <this repo>`, then `claude plugin install sextant@regatta` (it
 needs the core, `regatta`); the plugin puts `sparks`, `redactions` and `soundings` on the Bash PATH.
 
@@ -83,6 +88,30 @@ dropped notes and a friend's count like the owner's. An architect agent runs it 
 With `"sparks": "off"` in an optional `regatta/peers.json` in the config dir (`$REGATTA_PEERS`) it reads nothing and
 says so in one line.
 
+## The weekly pass, `/sextant`
+
+Once a week (Monday 02:00 unless the installer says otherwise) launchd starts `/sextant`
+unattended in atlas's layer. It reads the previous entry first, so findings compound: research
+along a fixed checklist, a verdict per finding (ADOPT, at most three, made in a worktree of their
+own and launched reviewed; PROPOSE for the owner; WATCH; REJECT), the ideas backstop (2b), the
+sounding queue (2c), the numbers, then one entry, `sextant/<date>.md`, launched through a pull
+request. Every path it uses comes from `libexec/sextant-run where`: nothing in the skill names an
+owner, a host or a folder.
+
+Who runs it (the design's G29): **with aurora installed**, its `weekly-run sextant <layer>` — the
+allow and deny lists the unattended session runs under, the check that the entry launched, the
+retry on an unreachable API. **Without aurora**, this module's own runner, `sextant-run run`:
+narrower on purpose, since it carries none of weekly-run's writer guards — it allows the queue's
+reading verbs, the numbers and `knowledge-commit`, and denies every writer that starts work.
+`install.sh --plist` prints the job for an installer that loads its own agents; its knobs (label,
+log, the weekly-run path, the folder, the slot) are in the script's header.
+
+Step 2c starts a queued sounding through three peers: wharf-runs' `pickup seed` and `dispatch
+--at reset --if-room`, and keel (the sounding's own hand-over). **With any of them absent** — or
+under the own runner — `soundings next` gives each candidate one `by hand` line instead of
+commands: the `/sounding` the owner would type, and the `soundings mark … launched` that records
+it (the design's G27). The pass carries that line to the triage file; nothing is started.
+
 ## Optional peers
 
 Each is found through the core's `common.tool()`; absent, the pass says so in one line and the
@@ -93,6 +122,9 @@ note is still filed.
 | atlas (`knowledge-commit`) | commits the notes in the vault they were written to | "vault commit: atlas not installed" |
 | lighthouse (`publish`) | `"publish": "vault"` copies what the pass wrote to a shared drive | "publish: lighthouse not installed" |
 | a messenger (any command) | `notify`: a text to the owner | no texts |
+| aurora (`weekly-run`) | runs the weekly `/sextant` with its lists, launch check and retry | the module's own runner, which starts no work |
+| wharf-runs (`pickup`, `dispatch`), keel | step 2c seeds and schedules a queued sounding | `soundings next` prints the owner's line instead |
+| atlas (`knowledge-commit`, its layer and vault keys) | `/sextant`'s worktrees, its launch, where it works | `where` says MISSING and the pass stops |
 
 The model for each call is a row in the core's gate table (`sparks.shape`, `sparks.route`,
 `sparks.redact`). The core's default table has none of them, so a pass waits ("no row for

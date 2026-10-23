@@ -20,7 +20,10 @@ Sextant's step 2c reads `next`: it seeds each candidate (`pickup seed`) and sche
 reads the week when the run fires (`--if-room`: autofinish's week_tight; `tight` or `none` refuses),
 since a run at the reset spends the next week, not this one. A run refused then leaves its branch a
 seed: once the week it was scheduled for is past, `refresh` puts the entry back to `queued` with its
-branch, and `next` then gives only the dispatch (the seed is made once).
+branch, and `next` then gives only the dispatch (the seed is made once). A launch runs three peers,
+`pickup` and `dispatch` (wharf-runs) and `keel`: with one not installed, or SOUNDINGS_BY_HAND set
+(sextant's own runner, which schedules nothing), `next` gives each candidate one `by hand` line instead
+of commands — the `/sounding` the owner would type and the `mark … launched` that records it (G27).
 
 Two caps, both counted here: at most three dispatched in seven days (WEEK_MAX), and never more than
 five open (OPEN_MAX) — scheduled by Sextant or launched by hand, earlier weeks' included, until the
@@ -315,10 +318,32 @@ def cmd_list(a):
         print(f"  {e.get('state', '?'):9} {e['slug']}{'  ' + extra if extra else ''}")
 
 
+PEERS = (("pickup", "wharf-runs"), ("dispatch", "wharf-runs"), ("keel", "keel"))  # what an unattended launch runs (G27)
+
+
+def by_hand():
+    """Why `next` gives the owner's line instead of commands, or None: a peer the launch runs is not
+    installed (found as every peer is, the core's tool()), or the caller set SOUNDINGS_BY_HAND (sextant's
+    own runner, which schedules nothing). Without the core, the peers are absent too."""
+    if os.environ.get("SOUNDINGS_BY_HAND"):
+        return os.environ["SOUNDINGS_BY_HAND"]
+    try:  # the core alone, as projects() finds it: loading all of Sparks would blame its errors on the core
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import find_core  # noqa: PLC0415
+        sys.path.insert(0, find_core.hooks())
+        import common  # noqa: PLC0415
+        tool = common.tool
+    except (ImportError, SystemExit, AttributeError):
+        return "the regatta core is not found, so neither are pickup, dispatch and keel"
+    gone = [f"{n} ({m})" for n, m in PEERS if not tool(n)]
+    return ", ".join(gone) + (" is" if len(gone) == 1 else " are") + " not installed" if gone else None
+
+
 def cmd_next(a):
     d = load()
     week, opened = counts(d)
     room = max(0, min(WEEK_MAX - week, OPEN_MAX - opened))
+    hand = by_hand()
     out, held = [], []
     for e in sorted((e for e in d["entries"] if e.get("state") == "queued"), key=lambda e: e.get("added") or ""):
         repo, why = gates(e["slug"])
@@ -338,12 +363,24 @@ def cmd_next(a):
                         f"pickup seed {topic} --file <scratch>/{topic}.md --repo {repo} --no-start",
                         f"dispatch <the branch pickup printed> --repo {repo} --at {at} --if-room",
                         f"soundings mark {e['slug']} scheduled --branch <the branch> --at {at} --repo {repo}"]
-        out.append({"slug": e["slug"], "repo": str(repo), "topic": topic, "at": at, "commands": commands})
+        o = {"slug": e["slug"], "repo": str(repo), "topic": topic, "at": at, "commands": commands}
+        if hand:  # nothing this caller could run: the one line the owner would type, launch now and its record
+            o["commands"] = []
+            if e.get("branch"):  # seeded already: that seed is the one to start, never a second branch
+                o["by_hand"] = (f"{hand} — the owner starts the seed {e['branch']} in {repo} (pickup), "
+                                f"then soundings mark {e['slug']} launched --branch {e['branch']} --repo {repo}")
+            else:
+                o["by_hand"] = (f"{hand} — the owner types: /sounding {proposals_dir() / (e['slug'] + '.md')}, "
+                                f"then soundings mark {e['slug']} launched --branch <its branch> --repo {repo}")
+        out.append(o)
     if a.json:
         print(json.dumps({"week": week, "open": opened, "room": room, "dispatch": out, "held": held}, indent=2))
         return
     print(f"room: {room} ({cap_words(week, opened)})")
     for o in out:
+        if o.get("by_hand"):
+            print(f"by hand {o['slug']}: {o['by_hand']}")
+            continue
         print(f"dispatch {o['slug']} → {o['repo']} at {o['at']}")
         for c in o["commands"]:
             print(f"    {c}")

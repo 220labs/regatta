@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- New skill: `/sextant` (B13), moved in from the overlay and scrubbed as it moved — no owner,
+  host or folder: its paths come from `libexec/sextant-run where`, every peer runs as `<regatta>
+  <tool> …`. Step 2c's calls (`soundings`, `pickup seed`, `dispatch`) go through the core's CLI.
+- New tool: `libexec/sextant-run` (B13) — `where`, the skill's placeholders, and `run`, the weekly
+  job's own runner when aurora is absent (G29): claude with the queue's reading verbs, every writer
+  that starts work denied, capped at three hours.
+- `install.sh --plist`, `--schedule [--dry-run]`, `--unschedule` (B13, G29): the weekly `/sextant`
+  job — aurora's `weekly-run sextant` when it is installed, else the own runner; behind wharf-runs'
+  launcher when it answers for the program. `--check` names the runner and the launch's peers.
+- `soundings next` (G27): with `pickup`, `dispatch` or `keel` not installed, or SOUNDINGS_BY_HAND
+  set, one `by hand` line per candidate — the `/sounding` the owner would type and its `mark …
+  launched` — instead of commands.
 - New tool: `bin/soundings` (the Sounding's S7) — the queue of proposals the owner chose to have
   sounded: `add` (the owner's pick, refused to an unattended run; `--now` records a launch now),
   `next` (three gates, three a week, five open, the `reset` / `reset+30` / `reset+60` stagger and the

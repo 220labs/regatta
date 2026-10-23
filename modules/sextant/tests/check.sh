@@ -4,7 +4,8 @@
 # through common.tool(), G37), the launcher template compiled once with its two defines, and
 # install.sh's syntax. The suite needs macOS (`say`, `afconvert`): elsewhere it is skipped with one
 # printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish). The
-# sounding queue's suite (tests/soundings.sh) runs everywhere.
+# sounding queue's suite (tests/soundings.sh) and the weekly job's (tests/schedule.sh: install.sh's
+# plist with and without aurora, the module's own runner) run everywhere.
 # `sparks --help` prints its usage and an unknown argument exits 2 before anything runs (both
 # checked below); a bare `sparks` is still a live pass on the Mac's own config.
 #   bash modules/sextant/tests/check.sh            SPARKS_SUITE=0 skips the suite (about 6 min)
@@ -77,6 +78,12 @@ else echo "  skipped: keel is not installed here (its module is private until it
 # the sounding queue (the Sounding's S7): scratch dirs and git only, any OS
 bash "$D/tests/soundings.sh" | tail -1; ok "${PIPESTATUS[0]}" "the sounding queue's suite (tests/soundings.sh)"
 python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings --help prints its usage"
+# /sextant (B13): its frontmatter, and the weekly job and the module's own runner (G29), any OS
+SX="$D/skills/sextant/SKILL.md"
+head -3 "$SX" | grep -q '^name: sextant$' && grep -q '^disable-model-invocation: true$' "$SX"; ok $? "skills/sextant: named, and never invoked by the model"
+grep -q 'libexec/sextant-run where' "$SX"; ok $? "  its paths come from sextant-run where"
+python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])" "$D/libexec/sextant-run"; ok $? "libexec/sextant-run parses"
+bash "$D/tests/schedule.sh" | tail -1; ok "${PIPESTATUS[0]}" "the weekly job's suite (tests/schedule.sh)"
 sh -n "$D/install.sh"; ok $? "install.sh parses"
 sh "$D/install.sh" --bogus >/dev/null 2>&1; [ $? = 2 ]; ok $? "install.sh refuses an unknown verb"
 exit $rc
