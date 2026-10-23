@@ -166,4 +166,33 @@ echo '{broken' > "$T/bad.json"
 SOUNDINGS_QUEUE="$T/bad.json" S list >/dev/null 2>&1; check $? 1 "an unreadable queue is refused, never overwritten"
 check "$(cat "$T/bad.json")" "{broken" "  left as it was"
 
+echo "G27: the launch's peers absent — the owner's line, never a stack trace"
+# From a copy of the core and this module alone (AGENTS.md's "peer absent" trap: common.tool() searches
+# modules/*/ first, so the checkout's own wharf-runs and keel would be found).
+NP="$T/np"; mkdir -p "$NP/.claude-plugin" "$NP/modules" "$T/np-cfg" "$T/np-cc"
+cp "$D/../../.claude-plugin/marketplace.json" "$NP/.claude-plugin/"
+cp -R "$D/../regatta" "$D" "$NP/modules/"; rm -rf "$NP/modules/sextant/.git"
+export SOUNDINGS_QUEUE="$T/g27.json"
+prop g ready "$T/calm"; S add g >/dev/null
+npS() { env -u REGATTA_HOME -u REGATTA_LEGACY -u SOUNDINGS_BY_HAND REGATTA_CONFIG="$T/np-cfg" CLAUDE_CONFIG_DIR="$T/np-cc" \
+          python3 "$NP/modules/sextant/bin/soundings" "$@" 2>&1; }
+out=$(npS next); check $? 0 "next exits 0 with pickup, dispatch and keel absent"
+check "$(printf '%s\n' "$out" | grep -c '^by hand g: ')" 1 "  one line for the candidate"
+has "$out" "pickup (wharf-runs), dispatch (wharf-runs), keel (keel) are not installed" "  naming each absent peer and its module"
+has "$out" "the owner types: /sounding $T/pool/proposals/g.md, then soundings mark g launched --branch <its branch> --repo $T/calm" "  and the line the owner would type"
+check "$(printf '%s\n' "$out" | grep -cE 'Traceback|pickup seed|^dispatch ')" 0 "  no stack trace, no command it could not run"
+check "$(npS next --json | python3 -c 'import json,sys; o=json.load(sys.stdin)["dispatch"][0]; print(o["commands"], "by_hand" in o)')" "[] True" "  --json: no commands, a by_hand line"
+out=$(SOUNDINGS_BY_HAND="sextant's own runner schedules nothing" S next)
+has "$out" "by hand g: sextant's own runner schedules nothing — the owner types: /sounding" "SOUNDINGS_BY_HAND (the own runner): the same line, the peers present or not"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["entries"][0]["branch"]="claude/x/sounding-g"; json.dump(d, open(f, "w"))' "$T/g27.json"
+out=$(npS next)
+has "$out" "the owner starts the seed claude/x/sounding-g in $T/calm (pickup), then soundings mark g launched --branch claude/x/sounding-g" "a seeded entry: its seed named, never a second /sounding"
+check "$(printf '%s\n' "$out" | grep -c '/sounding ')" 0 "  no fresh /sounding line"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["entries"][0].pop("branch"); json.dump(d, open(f, "w"))' "$T/g27.json"
+if python3 "$D/../regatta/bin/regatta" which pickup >/dev/null 2>&1 && python3 "$D/../regatta/bin/regatta" which keel >/dev/null 2>&1; then
+  out=$(env -u SOUNDINGS_BY_HAND python3 "$D/bin/soundings" next)
+  has "$out" "pickup seed sounding-g --file" "the peers present (this checkout): the commands, as before"
+else echo "  skip  the peers are not in this checkout (keel and wharf-runs are private until their scrub)"; fi
+export SOUNDINGS_QUEUE="$T/pool/soundings.json"
+
 echo; [ "$fails" = 0 ] && echo "soundings: all passed" || { echo "soundings: $fails FAILED"; exit 1; }

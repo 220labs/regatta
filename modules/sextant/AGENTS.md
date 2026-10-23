@@ -19,4 +19,13 @@ Read `README.md` first: it is the chart. For an agent:
   case in `tests/sparks.sh`.
 - A rebuilt launcher loses its Full Disk Access and Notes grants: change `launcher.c.in` only
   when the change is worth a person re-granting it.
+- `/sextant` (B13) names no path of its own: every value comes from `libexec/sextant-run where`,
+  every tool of another module runs as `<regatta> <tool> …`. Aurora's `weekly-run` builds the
+  unattended run's allow list from the commands the skill types, and aurora's suite matches them:
+  a new `<regatta>` call in the skill needs its rule there (`modules/aurora/bin/weekly-run`).
+- A launch peer absent (`pickup`, `dispatch`, `keel`) is `soundings next`'s `by hand` line, never a
+  command that fails (G27); its case runs from a copy of the core and this module alone
+  (`tests/soundings.sh`, the root AGENTS.md's "peer absent" trap).
+- `libexec/` is what a live job runs (the weekly plist without aurora; `where`, which every weekly
+  run calls): it is on the root `autofinish_exclude`.
 - check: `bash modules/sextant/tests/check.sh`.

@@ -1,7 +1,7 @@
 {
   "name": "sextant",
   "version": "0.1.0",
-  "description": "Strategy: head towards your North Star. Today its ideas intake, Sparks: voice memos, written notes and Apple Notes in, one note per idea out, filed where the strategy reads them.",
+  "description": "Strategy: head towards your North Star. The weekly /sextant pass, /sounding, and the ideas intake, Sparks: voice memos, written notes and Apple Notes in, one note per idea out, filed where the strategy reads them.",
   "author": { "name": "220 Labs" },
   "dependencies": ["regatta"]
 }

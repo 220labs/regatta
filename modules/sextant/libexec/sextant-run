@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""sextant-run — where /sextant's things are, and the module's own weekly runner. Stdlib, Python 3.9.
+
+    sextant-run where               one `<name> <value>` line each — module, regatta, layer, layer-name,
+                                    vault, vault-name, ideas, logs, reports, projects, owner: the
+                                    placeholders /sextant uses. Exit 3 when the layer or the vault is
+                                    MISSING; any other non-zero is a crash, "could not tell".
+    sextant-run run <cwd> [--dry-run]
+                                    /sextant unattended in <cwd>, without aurora (the design's G29): what
+                                    `install.sh --schedule` runs when aurora's weekly-run is not installed.
+                                    --dry-run prints the claude call and both lists, and runs nothing.
+
+Kept off PATH (libexec, the design's C1): the skill runs it from its own base directory
+(`<base directory>/../../libexec/sextant-run where`), the plist by its path, a person as
+`regatta sextant-run …`.
+
+**where.** The layer and the vault are atlas's two knowledge repos, read through atlas's own reader
+(its `lib/atlaslib.py`, found as `regatta has atlas` finds the module), never a copy of its rules:
+atlas absent, both are MISSING. `ideas` is Sparks' pool (its `pool_dirs()`), the folder the sounding
+queue and the proposals live in. `logs` is the core's log dir, `reports` plumb's
+daily usage reports (its `local_reports`, read through usage-report's own config reader; MISSING
+when plumb is absent), `projects` and `owner` the core's keys (the owner defaults to "the owner").
+
+**run** is the fallback, not the owner's Macs' path: there aurora's `weekly-run sextant` runs the job
+(its lists, its launch check, its retry). This runner is deliberately narrower, since it carries none
+of weekly-run's writer guards: claude in auto mode with the queue's reading verbs, the numbers and
+`knowledge-commit` allowed, and every writer that starts work denied — no `pickup`, no `dispatch`, no
+`soundings add` or `mark`. It exports SOUNDINGS_BY_HAND, so `soundings next` prints the line the owner
+would type for each candidate instead of commands it could not run (G27). The run is capped
+(SEXTANT_CAP seconds, 10800: three hours, as weekly-run's), its process group ended at the cap, as
+weekly-run's `capped` ends one (the group, not the leader). A host `aurora/skip-hosts` lists is
+skipped, as weekly-run skips it: two Macs writing the same entry conflict on push.
+
+Environment: SEXTANT_CLAUDE stands in for claude (a bash line; it sees SEXTANT_ALLOWED and
+SEXTANT_DENIED, one rule per line — the tests); SEXTANT_LOG_DIR over the core's log dir; SEXTANT_CAP.
+"""
+import datetime
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+MOD = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(MOD / "lib"))
+import find_core  # noqa: E402
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+REG = Path(common.__file__).resolve().parent.parent / "bin" / "regatta"
+# Whole seconds, else the default: a stray value must not crash `where`, which every pass calls
+CAP = int(os.environ["SEXTANT_CAP"]) if os.environ.get("SEXTANT_CAP", "").isdigit() else 10800
+MISSING_RC = 3  # where's refusal; 1 is any uncaught error (AGENTS.md Traps)
+BY_HAND = "sextant's own runner schedules nothing: aurora's weekly-run holds the writers' guard"
+
+
+def atlas():
+    """atlas's reader as a module, or None when atlas is not installed."""
+    m = common.module_path("atlas")
+    f = m / "lib" / "atlaslib.py" if m else None
+    if not f or not f.is_file():
+        return None
+    return SourceFileLoader("atlaslib", str(f)).load_module()
+
+
+def ideas():
+    """Sparks' pool, the first topic-split notes folder its configs name, or None."""
+    argv, sys.argv = sys.argv, ["sparks"]
+    try:
+        return (SourceFileLoader("sparks", str(MOD / "bin" / "sparks")).load_module().pool_dirs() or [None])[0]
+    except (Exception, SystemExit):
+        return None
+    finally:
+        sys.argv = argv
+
+
+def reports():
+    """plumb's daily usage reports folder, through usage-report's own config reader, or None."""
+    f = common.tool("usage-report")
+    if not f:
+        return None
+    try:
+        return SourceFileLoader("usage_report", str(f)).load_module().load_config().get("local_reports")
+    except (Exception, SystemExit):
+        return None
+
+
+def skipped():
+    """This host's name when `aurora/skip-hosts` lists it, else None (weekly-run's rule, case-blind)."""
+    skips = [l.lower() for l in common.config_lines("aurora/skip-hosts") or []]
+    host = common.host_name() if skips else None
+    return host if host and host.lower() in skips else None
+
+
+def where():
+    a = atlas()
+    rows = [("module", MOD), ("regatta", REG)]
+    for role in ("layer", "vault"):
+        k, p = (a.key(role), a.repo(role)) if a else (None, None)
+        rows += [(role, p or "MISSING"), (role + "-name", k[0] if k else role)]
+    rows += [("ideas", ideas() or "MISSING"), ("logs", Path(os.environ.get("SEXTANT_LOG_DIR") or common.LOG_DIR)),
+             ("reports", reports() or "MISSING"), ("projects", common.PROJECTS), ("owner", common.config_line("regatta/owner") or "the owner")]
+    return rows
+
+
+def lists():
+    """(allowed, denied) for the unattended run: the skill's reads and records, never a writer that starts work."""
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    allowed = ["Read", "Write", "Edit", "Glob", "Grep", "Agent", "WebSearch", "WebFetch", "EnterWorktree"]
+    # where, as the skill writes it from its base directory: the module's, and a config dir's link
+    allowed += ["Bash(%s/../../libexec/sextant-run where)" % sb for sb in (MOD / "skills" / "sextant", cfg / "skills" / "sextant")]
+    for t in ("knowledge-numbers", "knowledge-commit", "usage-report numbers", "soundings next", "soundings list",
+              "soundings refresh", "which"):
+        allowed.append("Bash(%s %s:*)" % (REG, t))
+    # No `git -C` or `git branch`: either prefix would pass a push or a branch delete past the deny
+    # below, and this runner has no wharf hooks behind it (the skill reads history from its worktree)
+    allowed += ["Bash(%s:*)" % c for c in ("ls", "grep", "date", "wc", "git log", "git diff", "git rev-list")]
+    # The writers by the shapes that run them, not by the word: a grep of dispatch's logs (G3) or a
+    # commit message naming one must still pass
+    denied = ["Bash(git push:*)", "Bash(git * push*)", "Bash(gh:*)", "Bash(ssh:*)", "Bash(*soundings add*)",
+              "Bash(*soundings mark*)"]
+    for w in ("pickup", "dispatch"):
+        denied += ["Bash(%s:*)" % w, "Bash(*regatta %s*)" % w, "Bash(*bin/%s*)" % w]
+    denied += ["Bash(*regatta pr *)", "Bash(*bin/pr *)"]
+    return allowed, denied
+
+
+def capped(argv, cwd, env, log):
+    """The run in a process group of its own, ended whole at CAP; its exit code, or None when capped.
+    weekly-run's `capped`, ported (its reviews of 2026-10-05 and 2026-10-21): the handlers go in
+    before the Popen, so a TERM in between is held, not lost with the group running on; the end
+    polls the group, not the leader (caffeinate exits on TERM while a child that ignores it lives),
+    then SIGKILLs what is left; a signal's grace is 15 s, inside launchd's 20 s ExitTimeOut, and a
+    second signal never restarts it."""
+    pg, pending = None, []
+
+    def end(grace):
+        try:
+            os.killpg(pg, signal.SIGTERM)
+            until = time.monotonic() + grace
+            while time.monotonic() < until:
+                try:  # reap the leader: a zombie still counts as the group
+                    os.waitpid(pg, os.WNOHANG)
+                except ChildProcessError:
+                    pass
+                try:
+                    os.killpg(pg, 0)  # ProcessLookupError once the whole group is gone
+                except PermissionError:  # macOS: a group of one zombie, between its exit and the reap
+                    pass
+                time.sleep(0.2)
+            os.killpg(pg, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def reraise(sig):
+        signal.signal(sig, signal.SIG_DFL)
+        os.kill(os.getpid(), sig)
+
+    def passed(sig, _frame):
+        if pg is None:  # before the group exists: held, passed on once it does
+            pending.append(sig)
+            return
+        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(s, signal.SIG_IGN)
+        end(15)
+        reraise(sig)
+
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(s, passed)
+    if pending:
+        reraise(pending[0])
+    with open(log, "a", encoding="utf-8") as out:
+        try:
+            p = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            if pending:
+                reraise(pending[0])
+            raise
+    pg = p.pid
+    if pending:
+        passed(pending[0], None)
+    try:
+        return p.wait(CAP)
+    except subprocess.TimeoutExpired:
+        end(float(os.environ.get("SEXTANT_CAP_GRACE") or 30))
+        return None
+
+
+def run(cwd, dry):
+    allowed, denied = lists()
+    stand_in = os.environ.get("SEXTANT_CLAUDE")
+    cl = ["claude"]
+    rc_hosts = common.tool("rc-hosts")  # wharf-runs' launcher, when it may start claude (weekly-run asks the same)
+    if rc_hosts and not stand_in:
+        r = subprocess.run([sys.executable, str(rc_hosts), "--launcher", "claude"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            cl = [r.stdout.strip(), "claude"]
+    argv = cl + ["-p", "/sextant", "--permission-mode", "auto", "--allowedTools", *allowed,
+                 "--disallowedTools", *denied, "--output-format", "text"]
+    log = Path(os.environ.get("SEXTANT_LOG_DIR") or common.LOG_DIR).expanduser() / (
+        "%s-sextant.log" % datetime.date.today().isoformat())
+
+    def say(line):
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%H:%M"), line))
+
+    host = skipped()
+    if host:
+        if not dry:
+            say("skipped: /sextant does not run on %s (aurora/skip-hosts)" % host)
+        print("skipped: /sextant does not run on %s (aurora/skip-hosts)" % host)
+        return 0
+    if not Path(cwd).is_dir():
+        say("refused: %s is not a folder" % cwd)
+        print("sextant-run: %s is not a folder" % cwd, file=sys.stderr)
+        return 1
+    if dry:
+        print("sextant-run: /sextant in %s, sextant's own runner (aurora's weekly-run not used)" % cwd)
+        print("claude: %s" % ("SEXTANT_CLAUDE (a stand-in)" if stand_in else " ".join(cl)))
+        print("allowed:\n  " + "\n  ".join(allowed))
+        print("denied:\n  " + "\n  ".join(denied))
+        return 0
+    if not stand_in and not shutil.which(cl[0]):
+        say("refused: claude is not on PATH (%s)" % os.environ.get("PATH", ""))
+        print("sextant-run: claude is not on PATH", file=sys.stderr)
+        return 1
+    env = dict(os.environ, WEEKLY_RUN="sextant", SOUNDINGS_BY_HAND=BY_HAND)
+    if stand_in:
+        env.update(SEXTANT_ALLOWED="\n".join(allowed), SEXTANT_DENIED="\n".join(denied))
+        argv = ["bash", "-c", stand_in]
+    elif shutil.which("caffeinate"):
+        argv = ["caffeinate", "-i"] + argv
+    say("start /sextant in %s (sextant's own runner; cap %d s)" % (cwd, CAP))
+    rc = capped(argv, cwd, env, log)
+    if rc is None:
+        say("FAILED: capped at %d s, the run ended" % CAP)
+        return 1
+    say("ENDED rc=%d" % rc)
+    return 0 if rc == 0 else 1
+
+
+def main(args):
+    if args == ["where"]:
+        rows = where()
+        for k, v in rows:
+            print("%s %s" % (k, v))
+        return MISSING_RC if any(k in ("layer", "vault") and v == "MISSING" for k, v in rows) else 0
+    if len(args) in (2, 3) and args[0] == "run" and args[2:] in ([], ["--dry-run"]):
+        return run(args[1], args[2:] == ["--dry-run"])
+    if args in (["-h"], ["--help"]):
+        print(__doc__.split("\n\n")[1])
+        return 0
+    print("usage: sextant-run where | run <cwd> [--dry-run]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
