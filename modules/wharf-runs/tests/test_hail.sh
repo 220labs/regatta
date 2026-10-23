@@ -225,6 +225,10 @@ has "$T/talk.log" "sp-1 s-pipe-0005 HAIL event from tester" "Talk addressed to t
 STUB_FILE_OK=1 H s-pipe-0005 --text look --json > "$T/r.json"
 check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('file', 'queued')" "no page: the file queue"
 has "$T/file.log" "s-pipe-0005 HAIL event from tester" "the file line names the session"
+STUB_FILE_OK=1 H s-pipe-0005 --text nofile --no-file --json > "$T/r.json"; check "$?" 3 "--no-file, no page: unreachable, the file road skipped (S6: a scope's skipper never reads it)"
+hasnt "$T/file.log" "nofile" "  no file line"
+HAIL_SPACE=sp-1 STUB_FILE_OK=1 H s-pipe-0005 --text nofile2 --no-file --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('talk', 'queued')" "  with a page: Talk, as before"
 H s-pipe-0005 --text look --json > "$T/r.json"; check "$?" 3 "no road at all: exit 3"
 check "$(jget "$T/r.json" 'd["verdict"], len(d["tried"])')" "('unreachable', 3)" "unreachable, each road tried named"
 HAIL_ASKLIB="$T/none.py" H s-pipe-0005 --text look --json > "$T/r.json"
@@ -325,6 +329,31 @@ posted "$T/ack2.log" > "$T/frames"; has "$T/frames" "HAIL event from tester — 
 check "$(wc -l < "$SUBS" | tr -d ' ')" "0" "the row is dropped"
 H s-idle-0001 --text now --when idle --json > "$T/r.json"
 check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('socket', 'delivered')" "--when idle on an idle session sends now"
+echo "  a subscription keeps the page it was made under (skipper-resilience S6: wharf's relay to a scope's skipper)"
+entry 1 s-busy-0002 busy 5 ack2
+HAIL_SPACE=sp-9 H s-busy-0002 --text "Orca question m1" --kind ask --when idle --no-file --json > "$T/r.json"; check "$?" 0 "subscribed under HAIL_SPACE: exit 0"
+check "$(jget "$SUBS" 'd["space"], d["kind"], d["no_file"]')" "('sp-9', 'ask', True)" "  the row records the page, the kind and --no-file"
+: > "$SUBS"
+python3 - "$SUBS" <<'PY'
+import json, sys, time
+r = {"id": "sp1", "at": int(time.time()), "ref": "s-ended-98", "target": "s-ended-98", "host": "here", "kind": "ask",
+     "text": "x", "frame": "HAIL ask from tester — x", "space": "sp-9"}
+nf = {"id": "nf1", "at": int(time.time()), "ref": "s-ended-97", "target": "s-ended-97", "host": "here", "kind": "ask",
+      "text": "x", "frame": "HAIL ask from tester — nf", "no_file": True}
+open(sys.argv[1], "w").write(json.dumps(r) + "\n")
+open(sys.argv[1] + ".nf", "w").write(json.dumps(nf) + "\n")
+PY
+: > "$T/file.log"
+: > "$T/talk.log"
+HAIL_SPACE=sp-other H subs --fulfil --json > "$T/f.json"; check "$?" 0 "fulfil of a row with a page, its target gone: exit 0"
+check "$(jget "$T/f.json" 'd[0]["road"], d[0]["verdict"]')" "('talk', 'queued')" "  Talk took it"
+has "$T/talk.log" "sp-9 s-ended-98 HAIL ask from tester — x" "  on the row's page, not the fulfilling process's HAIL_SPACE"
+hasnt "$T/talk.log" "sp-other" "  sp-other never used"
+mv "$SUBS.nf" "$SUBS"
+STUB_FILE_OK=1 H subs --fulfil --json > "$T/f.json"; check "$?" 3 "a --no-file row, its target gone and no page: exit 3"
+check "$(jget "$T/f.json" 'd[0]["sub"], d[0]["verdict"]')" "('nf1', 'unreachable')" "  unreachable: the file road skipped"
+hasnt "$T/file.log" "nf" "    no file line"
+entry 1 s-busy-0002 idle 120 ack2
 # a target that ends, and a row past its time
 python3 - "$SUBS" <<'PY'
 import json, sys, time
