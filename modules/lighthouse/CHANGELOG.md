@@ -11,9 +11,14 @@
 - `health` reads the Orca serve agent: on a Mac with its LaunchAgent, launchd's pid for the label
   (`wharf-runs/serve-label`) and `orca orchestration run-list` answering, one line a day; a missing
   pid or a list that does not answer is posted once, under its own state file.
+- beacon hands a visitor to a person when they ask (2026-10-22): with a relaying sink the bot hears
+  a request for a person in any language and its reply says the people are busy and asks for an
+  address; the chat takes it in the conversation, Skip beside Send, and the address is read from a
+  sentence too. A hand-off with an address files an issue and opens a topic; without one, the topic
+  alone. New config key `person_ask`, the chat's own line for "Talk to a person".
 - beacon's `telegram` sink, two-way (2026-10-22): every form send, chat hand-off ("Talk to a person"
-  in the widget) and mail to the site's address is one issue and one forum topic in the people's
-  Telegram group; their reply in the topic reaches the visitor's chat panel while it polls, else
+  in the widget) and mail to the site's address is a forum topic in the people's Telegram group,
+  and an issue (a chat hand-off only when the visitor left an address); their reply in the topic reaches the visitor's chat panel while it polls, else
   their mailbox (Resend) with a `Reply-To` whose token is an HMAC of the conversation, and the
   visitor's mail reply comes back to the same topic. New: the Conversation Durable Object, the
   routes `/chat/handoff`, `/chat/say`, `/chat/poll` and `/telegram`, the Worker's email handler
