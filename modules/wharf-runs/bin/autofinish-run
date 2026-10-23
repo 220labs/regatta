@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """autofinish-run — a fresh, unattended `/finish` on one claude/* worktree, and how it ended.
 
-    autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|typed|yolo|dnd|chain] [--merge] [--session ID] [--dry]
+    autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|typed|yolo|dnd|chain|ship] [--merge | --hold]
+                   [--digest D] [--session ID] [--dry]
     autofinish-run notify [WORKTREE]      the run's own session: whom to message, and the text (below)
 
 E1 of docs/autofinish-design-2026-10-02.md (D13): the runner. Whoever decides that a branch should
@@ -31,7 +32,29 @@ So is any caller with CLAUDE_UNATTENDED set (exit 2): every dispatched run has i
 pass `bin/*` unseen, so a run the sweep started could otherwise launch another that merges. The label
 is all that is checked otherwise, the caller's word that a person said yes. A chain relaunch of a
 `--merge` run does not carry it, nor a sweep retry of one that died: either stops at the PR. --session: the caller's own session (E7's hook
-passes the panel's), never a lock holder it is refused for.
+passes the panel's), never a lock holder it is refused for. A skipper (SKIPPER_SCOPE set) is refused
+--merge as an unattended run is: its yes is the keel's, carried as `--by ship`, never its own word.
+
+A ship's launch (skipper-resilience S6; the yard component's "The merge default"): the yard's tick
+(`wharf apply --once --all` on a scope's yard, bin/wharf's start_launch) launches a ship's `launch:
+finish` block with `--merge --by ship --digest D` when the keel said merge, else `--hold`. `--by ship`
+stands for a person's yes given at the keel — the owner's attended `wharf apply --yard`, whose blueprint
+said `merge: yes` or nothing — so this re-reads it rather than trusting the label: D must be the pin
+of exactly one un-ended ship on this Mac (plans/<id>/plan.json, helm's helmlib), its pinned copy
+(plans/<id>/blueprint-<ship>.md, the committed text the yard read from origin) must be at D and not
+say `merge: no`, the plan must record `laid_by.mode: attended` and no keel `merge: no`, and the
+worktree must be in the pin's repo, on a block branch of that ship (a branch name alone repeats
+across repos). `--by ship --hold` is the tick's launch where the keel said no: the same caller
+refusal, no digest asked, nothing merged. The caller must be the tick, not a session: it
+is refused under CLAUDE_UNATTENDED, SKIPPER_SCOPE, CLAUDE_CODE_SESSION_ID, a DISPATCH_DEPTH past 0 or
+a ship's own env (DISPATCH_SHIP, DISPATCH_PLAN: a block's command), exit 2 — launchd's tick has none
+of them, and every dispatched run, skipper and block has one (the checkpoint hook denies a run that
+strips CLAUDE_UNATTENDED). The mode still holds a ship launch in `ask`: `ship` is no person's label to
+landing(). --hold: the caller holds the landing at a ready PR (the keel's no), whatever the mode —
+the prompt gains `--hold` (finish_prompt), `bin/pr merge` stays denied, and the state's `hold` says
+`the keel holds it (--hold)`; with --merge it is refused, the two ask opposite things. That hold is
+sticky: any later launch of the worktree (a sweep retry of a run that died, a chain) keeps it, since
+only the keel could lift it. A launch the ladder holds carries no `--merge` into its prompt.
 
 A ship's lease (skipper-resilience S4): when DISPATCH_SHIP (or the older DISPATCH_PLAN) names a ship
 that has one here (plans/<id>/skipper.json, helm's bin/leaselib.py), the caller's generation is
@@ -219,9 +242,11 @@ START_LOCK = STATE + ".lock"
 WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
-OPTIONAL_KEYS = ("merge", "hold")   # written only when set: a launch without --merge or a hold keeps the file it always had
+OPTIONAL_KEYS = ("merge", "hold", "keel_hold")   # written only when set: a launch without --merge or a hold keeps the file it always had
 LAND_BY = ("yolo", "dnd")   # the mode launches (skipper-modes S3b): `--by` names the mode, plan.json decides
-MERGE_BY = ("override", "typed")   # whose yes --merge may carry: a person's (the header)
+PERSON_BY = ("override", "typed")   # a person's own launch: mode ask does not hold it (landing())
+MERGE_BY = PERSON_BY + ("ship",)   # whose yes --merge may carry: a person's, or the keel's for a ship (the header)
+SHIP_HOLD = "the keel holds it (--hold)"   # the state's `hold` for a --hold launch (S6)
 REFUSED = common.REFUSED   # the gate of a start dispatch refused before any session; was "not-launched"
 REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
 DIED = "died"
@@ -736,18 +761,26 @@ def landing(t, by, rule):
         with no mode at all (a run from before the mode) in a `"merge": "auto"` repo keeps its standing
         yes (E12), and only from a caller without CLAUDE_UNATTENDED: a lowered mode is a mode, and a run
         typing `--by yolo` is no person (landing review 3, 4c);
+      - a ship launch (`--by ship`, the keel's yes): held_slice as a mode launch, under `yolo` when the
+        ship has no landing mode — the yes was given to a blueprint before any diff, so the launcher's
+        gates and the repo's `autofinish_exclude`/`in_place` still hold it (S6's finish review);
       - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host)."""
     af = _lander()
     if af is None:
-        return ("the lander's judge did not load (bin/autofinish)" if by in LAND_BY or rule == "M" else None), None
+        return ("the lander's judge did not load (bin/autofinish)"
+                if by in LAND_BY or rule == "M" or by == "ship" else None), None
     mode = af.landing_mode(t.branch, t.primary or None)[0]  # with the repo, as the sweep's verdict reads it
-    person = by in MERGE_BY and not os.environ.get("CLAUDE_UNATTENDED")
+    # `ship` is the keel's yes to merge, not a person at the keyboard: mode ask holds it too
+    person = by in PERSON_BY and not os.environ.get("CLAUDE_UNATTENDED")
     if mode == "ask" and not person:
         return "mode ask — nothing lands by itself", mode
-    if by not in LAND_BY and rule != "M":
+    if by not in LAND_BY and rule != "M" and by != "ship":
         return None, mode
-    eff = mode if mode in af.LAND_MODES else ("yolo" if by == "yolo" and mode is None and merge_auto(t)
-                                              and not os.environ.get("CLAUDE_UNATTENDED") else mode)
+    if by == "ship":
+        eff = mode if mode in af.LAND_MODES else "yolo"
+    else:
+        eff = mode if mode in af.LAND_MODES else ("yolo" if by == "yolo" and mode is None and merge_auto(t)
+                                                  and not os.environ.get("CLAUDE_UNATTENDED") else mode)
     try:
         return af.held_slice(t.primary, t.path, main_of(t), eff), mode
     except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
@@ -1261,15 +1294,111 @@ def lease_refusal(dry):
     return leaselib.fence(ship, "autofinish-run", record=not dry)
 
 
+# who may type `--by ship` (S6, the header's "A ship's launch"): the yard's tick, never a session. Each
+# name marks a caller that is not it — a session, a dispatched run, a skipper, a ship's block
+SHIP_NOT_TICK = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_UNATTENDED", "SKIPPER_SCOPE", "DISPATCH_SHIP", "DISPATCH_PLAN")
+
+
+def ship_caller_refusal(environ=None):
+    """None when the caller may carry the keel's yes (`--by ship`), else why not: the flag stands for a
+    person's yes, so an unattended caller is refused it (AGENTS.md's trap), and the tick under launchd
+    is the one caller with none of these set."""
+    env = os.environ if environ is None else environ
+    for n in SHIP_NOT_TICK:
+        if env.get(n):
+            return "--by ship is the yard's tick's, and this caller is not it (%s=%s)" % (n, str(env[n])[:40])
+    depth = (env.get("DISPATCH_DEPTH") or "0").strip()
+    if depth != "0":
+        return "--by ship is the yard's tick's, and this caller is a dispatched run (DISPATCH_DEPTH=%s)" % depth[:10]
+    return None
+
+
+def _helm_and_blueprints():
+    """(helmlib, blueprintlib) — helm's, found as lease_refusal finds leaselib, and this module's own —
+    or raises ImportError naming what is missing."""
+    lib = common.tool("helmlib.py")
+    if not lib:
+        raise ImportError("helm's helmlib.py is not installed")
+    if str(lib.parent) not in sys.path:
+        sys.path.append(str(lib.parent))
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import helmlib
+    import blueprintlib
+    return helmlib, blueprintlib
+
+
+def same_repo(path, key):
+    """True when PATH (a checkout, a task's repo) is the repo registry KEY names: the keys equal, or, for a
+    repo outside the projects folder (a key that is its own absolute path), the same folder resolved."""
+    mine = common.repo_key(path)
+    if not mine or not key:
+        return False
+    if mine == key:
+        return True
+    return mine.startswith("/") and key.startswith("/") and os.path.realpath(mine) == os.path.realpath(key)
+
+
+def ship_refusal(t, digest):
+    """None when DIGEST pins one un-ended ship on this Mac whose keel said merge and whose blocks own
+    T's branch, else why the keel's yes cannot be read (the header's "A ship's launch")."""
+    if not digest or not re.match(r"^[0-9a-f]{64}$", digest):
+        return "--by ship needs --digest D, the ship's pinned digest (64 hex)"
+    try:
+        helmlib, blueprintlib = _helm_and_blueprints()
+    except Exception as e:  # noqa: BLE001 — what cannot be read is no yes
+        return "--by ship: the keel's yes cannot be read (%s)" % e
+    hits = []
+    for pid in helmlib.list_plans():
+        p = helmlib.load_plan(pid) or {}
+        for name, rec in sorted((p.get("blueprints") or {}).items()):
+            pin = rec.get("pin") if isinstance(rec, dict) else None
+            if isinstance(pin, dict) and pin.get("digest") == digest and not rec.get("ended"):
+                hits.append((pid, name, rec, p))
+    if not hits:
+        return "--by ship: no un-ended ship on this Mac is pinned at %s" % digest[:12]
+    if len(hits) > 1:
+        return "--by ship: %d ships are pinned at %s (%s) — which keel said yes cannot be told" % (
+            len(hits), digest[:12], ", ".join("%s/%s" % (h[0], h[1]) for h in hits))
+    pid, name, rec, plan = hits[0]
+    where = "ship %s of plan %s" % (name, pid)
+    try:
+        bp = blueprintlib.load(rec.get("file") or "", key=rec["pin"].get("repo"), accepted=(digest,))
+    except Exception as e:  # noqa: BLE001 — BlueprintError, OSError: the pinned text is the yes
+        return "--by ship: %s's pinned copy does not read (%s)" % (where, str(e)[:160] or type(e).__name__)
+    if blueprintlib.digest(bp) != digest:
+        return "--by ship: %s's pinned copy %s is not at %s" % (where, rec.get("file"), digest[:12])
+    if blueprintlib.merge_of(bp["meta"]) == "no":
+        return "--by ship: %s's blueprint says merge: no at %s" % (where, digest[:12])
+    mode = (rec.get("laid_by") or {}).get("mode") if isinstance(rec.get("laid_by"), dict) else None
+    if mode != "attended":
+        return "--by ship: %s was laid %s, and only an attended lay is a person's yes" % (where, mode or "by nobody recorded")
+    keel = rec.get("merge") if isinstance(rec.get("merge"), dict) else {}
+    if keel.get("value") == "no":
+        return "--by ship: %s's keel said no (merge no: %s)" % (where, keel.get("why"))
+    if not same_repo(t.primary, rec["pin"].get("repo")):
+        return "--by ship: %s is not in %s's repo %s" % (t.path, where, rec["pin"].get("repo"))
+    here = helmlib.host()
+    tasks = plan.get("tasks") or {}
+    mine = {blueprintlib.branch_of(bp, st, here) for st in bp["blocks"]}
+    mine |= {x.get("seeded_branch") for k, x in tasks.items() if isinstance(x, dict) and x.get("ship") == name
+             and (not x.get("repo") or same_repo(x["repo"], rec["pin"].get("repo")))}
+    if t.branch not in mine - {None}:
+        return "--by ship: %s is no block branch of %s" % (t.branch, where)
+    return None
+
+
 def main(argv):
     if argv[:1] == ["notify"]:
         return notify(argv[1:])
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
     ap.add_argument("worktree")
     ap.add_argument("--rule", choices="ABCDELM", default="C")
-    ap.add_argument("--by", choices=("sweep", "override", "typed", "yolo", "dnd", "chain"), default="override")
+    ap.add_argument("--by", choices=("sweep", "override", "typed", "yolo", "dnd", "chain", "ship"), default="override")
     ap.add_argument("--merge", action="store_true",
-                    help="carry the owner's /finish --merge into the run (--by override|typed only)")
+                    help="carry the owner's /finish --merge into the run (--by override|typed, or ship with --digest)")
+    ap.add_argument("--hold", action="store_true", help="stop at a ready PR whatever the mode: the keel's no (S6)")
+    ap.add_argument("--digest", metavar="D", help="--by ship's: the ship's pinned digest, whose keel said merge")
     ap.add_argument("--session", metavar="ID", help="the caller's own session: its lock is no refusal")
     ap.add_argument("--dry", action="store_true")
     args = ap.parse_args(argv)
@@ -1277,10 +1406,23 @@ def main(argv):
         print("autofinish-run: --merge needs a person's yes, so --by %s (not %s) only" % (" or ".join(MERGE_BY), args.by),
               file=sys.stderr)
         return 2
-    if args.merge and os.environ.get("CLAUDE_UNATTENDED"):
-        print("autofinish-run: --merge needs a person's yes, and this caller is an unattended run (CLAUDE_UNATTENDED=%s)"
-              % os.environ["CLAUDE_UNATTENDED"], file=sys.stderr)
+    for n in ("CLAUDE_UNATTENDED", "SKIPPER_SCOPE"):
+        if args.merge and os.environ.get(n):
+            print("autofinish-run: --merge needs a person's yes, and this caller is an unattended run (%s=%s)"
+                  % (n, os.environ[n]), file=sys.stderr)
+            return 2
+    if args.merge and args.hold:
+        print("autofinish-run: --merge and --hold ask opposite things: one of them", file=sys.stderr)
         return 2
+    if args.digest and not (args.by == "ship" and args.merge):
+        print("autofinish-run: --digest goes with --merge --by ship", file=sys.stderr)
+        return 2
+    if args.by == "ship":
+        why = ship_caller_refusal() or (None if args.merge or args.hold else
+                                        "--by ship is the tick's landing call: --merge --digest D, or --hold")
+        if why:
+            print("autofinish-run: %s" % why, file=sys.stderr)
+            return 2
     why = lease_refusal(args.dry)
     if why:
         print("autofinish-run: %s" % why, file=sys.stderr)
@@ -1290,6 +1432,11 @@ def main(argv):
     if bad:
         print("autofinish-run: %s: %s" % (args.worktree, bad), file=sys.stderr)
         return 2
+    if args.by == "ship" and args.merge:
+        why = ship_refusal(t, args.digest)
+        if why:
+            print("autofinish-run: %s" % why, file=sys.stderr)
+            return 2
     # --dry writes nothing, the start lock included: it only says what a start would meet
     held = None if args.dry else take_start_lock(t)
     if not args.dry and not held:
@@ -1361,9 +1508,18 @@ def start(t, args):
     by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in LAND_BY else args.by
     via = " via=chain" if args.by == "chain" else ""
     hold, mode = landing(t, by, args.rule)
+    # the keel's no (S6): a mode that would merge is not asked, and a later launch of this worktree —
+    # the sweep's retry of a held run that died starts `--by sweep`, no --hold — keeps it. Its own key,
+    # not the text of `hold`: a launch that another rule held first (mode ask) records that rule's
+    # reason, and the keel's no must outlive it (S6's finish review)
+    keel_hold = bool(args.hold or (prev or {}).get("keel_hold") or (prev or {}).get("hold") == SHIP_HOLD)
+    if keel_hold and not hold:
+        hold = SHIP_HOLD
+    if hold and args.merge:
+        args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
-          "merge": args.merge, "hold": hold}
+          "merge": args.merge, "hold": hold, "keel_hold": keel_hold}
     cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")

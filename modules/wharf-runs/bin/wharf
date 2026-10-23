@@ -11,7 +11,12 @@ docs/orchestration-orca-2026-10-15.md, its section 4 Q2 table; the owner's D1-A:
         blocks completed — pass after pass until a pass acts on nothing. --once is one pass and
         never the first compile (the tick's form). --dry-run is B6's: the diff, nothing written.
     wharf apply --once --all [--dry-run]
-        The tick's (`helm tick`): one pass over every ship with a Run, in every plan on this Mac.
+        The tick's (`helm tick`): one pass over every ship with a Run, in every plan on this Mac. On a
+        scope's yard, from the tick itself (no session, no dispatched run, no skipper, no ship's
+        block: tick_caller()), a ship's `launch: finish` block whose predecessor ended is launched
+        (skipper-resilience S6): `autofinish-run <wt> --merge --by ship --digest <the pin's>` when
+        plan.json's `merge` says yes, else `--by ship --hold`, at most 2 launches at once in its repo. Off a
+        yard, or from any other caller, the block is raised for the skipper as before.
     wharf apply --yard <blueprint.md> [--plan ID] [--no-merge] [--gen N] [--json]
         Lay a ship on its scope's yard (skipper-resilience S2): the blueprint as committed and pushed,
         pinned {repo, branch, rel, digest} and read there from origin/<branch>:<rel>, its text kept in
@@ -42,7 +47,13 @@ What a pass does besides the diff's rows (yard-smooth): a block it ends — Orca
 worker reported failed and its done_when holds all the same — has its worktree lock marked handed
 over and its worker stopped (`worker-stop`); a block Orca put back to ready is not started again
 when its done_when holds; each question a ship's worker asked the coordinator is relayed once to
-the skipper (the file queue its next prompt prints, else the plan's `waiting` report).
+the skipper (the file queue its next prompt prints, else the plan's `waiting` report). A
+`skipper: scope` ship's question is hailed instead (S6) to the scope's skipper while it holds the
+lease (helm's skipper, S5): `hail <its session> --kind ask --when idle --no-file` with HAIL_SPACE its
+Talk page, a pointer naming the plan, the block and the question id (the question's text stays in
+Orca: the pointer says how to read it), under hail's 400 characters. Never the file road, which a
+scope skipper never reads: a hail no road took, or a ship no live skipper holds, is carded on the
+board.
     wharf status [<blueprint.md> | <ship>] [--plan ID] [--json]
         Where each block stands: the plan's status, Orca's Task, its newest Dispatch. Reads only.
     wharf status --orphans [--json]
@@ -142,6 +153,9 @@ PASSES = 10          # an apply's passes at most; a pass that acts on nothing en
 SHELL_TIMEOUT = 300  # a shell block's own timeout_seconds wins; over ~500 s it starts only from an attended apply (the tick has 600 s)
 SESSION_START = 400  # what a session start may take: worker-start's 300 s and its 90 s wait, or pickup seed
 TICK_STARTS = 2      # session starts per tick, every ship together: no run cap counts them yet (bin/harness)
+HAIL_TEXT_MAX = 400  # bin/hail's TEXT_MAX: a hail's text is a pointer, and hail refuses a longer one
+HAIL_TIMEOUT = 120   # one hail: its socket readback (HAIL_READBACK_S) and a Talk post, well inside the tick
+HAIL_TAKEN = ("delivered", "queued", "held")   # what hail exits 0 for: a road took it (held: posted, unread yet)
 
 
 def _mod(name, path):
@@ -1399,7 +1413,8 @@ class Ship:
         if busy is not None and busy >= most:
             return "raised: %s%d runs busy, dispatch's cap is %d (dispatch --status): the launch waits for one to end" % (
                 "queued — its last start was refused by the run cap; " if refused else "", busy, most)
-        argv = [os.environ.get("WHARF_AUTOFINISH_RUN") or str(HERE / "autofinish-run"), str(wt)] + (["--session", me] if me else [])
+        call = self.merge_flags()
+        argv = [os.environ.get("WHARF_AUTOFINISH_RUN") or str(HERE / "autofinish-run"), str(wt)] + (["--session", me] if me else []) + call
         if self.dry:
             return "would start the launch: %s" % " ".join(shlex.quote(x) for x in argv)
         e, crash = self.intent("launch", sid, task=task, tip=tip)
@@ -1411,8 +1426,24 @@ class Ship:
         self.settle(e, crash, {"id": tip}, None if rc == 0 else tail[-300:])
         if rc:
             return "not started: autofinish-run exit %d: %s" % (rc, (tail.splitlines() or [""])[-1][:200])
-        report(self.pid, sid, "running", "launch started: autofinish-run %s" % wt)
-        return "started the launch of %s (autofinish-run%s)" % (br, ", session %s" % me[:8] if me else "")
+        how = (" " + " ".join(call[:3])) if call else ""
+        report(self.pid, sid, "running", "launch started: autofinish-run %s%s" % (wt, how))
+        return "started the launch of %s (autofinish-run%s%s)" % (br, how, ", session %s" % me[:8] if me else "")
+
+    def merge_flags(self):
+        """The landing call a yard launch carries (S6; the yard component's "The merge default"): the
+        keel's merge as plan.json's `merge: {value, why}` records it (wharf apply --yard's
+        merge_value) — yes: `--merge --by ship --digest <the pin's digest>`, which autofinish-run
+        checks against the pinned copy and `laid_by` before it believes it; no, or nothing recorded
+        (an unpinned ship the yard drives: no keel was asked), or no pinned digest: `--by ship --hold`, a ready PR
+        for the owner's tap. --watch's launch (no `yard` in the dict) carries neither, as before."""
+        if not (self.launch or {}).get("yard"):
+            return []
+        m = self.rec.get("merge") if isinstance(self.rec.get("merge"), dict) else {}
+        pin = self.rec.get("pin") if isinstance(self.rec.get("pin"), dict) else {}
+        if m.get("value") == "yes" and pin.get("digest"):
+            return ["--merge", "--by", "ship", "--digest", pin["digest"]]
+        return ["--by", "ship", "--hold"]   # the tick's own label: a hold launch is no person's override
 
     # -- a worker's question ---------------------------------------------------------------------
 
@@ -1421,14 +1452,19 @@ class Ship:
         adapter's questions(): `check --peek --types question`, never a consuming check), relayed
         once to the skipper with the block id and the text: the file queue its next prompt prints
         (hooks/ask_guard.py; asklib's file backend, bin/ask relay's road) when the skipper is live
-        here, else the plan's `waiting` report the board shows; for a `skipper: scope` ship, Talk to
-        the scope's skipper (its only ear), else the board (skipper-resilience S5). Recorded in the ship's `relayed`,
+        here, else the plan's `waiting` report the board shows. A `skipper: scope` ship's question is
+        hailed to the scope's skipper while it holds the lease (skipper-resilience S6; S5 sent it by
+        Talk): `hail <its session> --kind ask --when idle --no-file`, its page as HAIL_SPACE, a pointer
+        (hail_question) — never the file road, which a scope skipper never reads, and the board when no
+        road takes it or no live skipper holds the ship. Recorded in the ship's `relayed`,
         so a second pass never relays it again (rename S3's msg_5107b77a14a6 sat 30 min unread)."""
         if not run or not coord:
             return []
         qs = orca().questions(None, run, coord)
         if qs is None:
             return [("orca", "failed", None, "the Run's questions unread (check --peek)")]
+        sk = self.scope_skipper()
+        scoped = (self.bp["meta"].get("skipper") or self.bp["meta"].get("manager")) == "scope"
         st_now = plan_status(self.pid)
         by_did = {d: sid for sid, t in (self.p.get("tasks") or {}).items() if sid in self.bp["by_id"]
                   for d in t.get("orca_dispatches") or []}
@@ -1443,25 +1479,36 @@ class Ship:
                     "--body \"<text>\" --run %s --from %s" % (self.bp["meta"]["repo"], self.bp["name"], sid, q["id"],
                                                            q.get("dispatch"), text[:500], q["id"], run, coord))
             if self.dry:
-                rows.append(("orca", "relay", sid, "would relay question %s to %s" % (q["id"], skipper(self.bp, self.pid) or "the board")))
+                rows.append(("orca", "relay", sid, "would %s question %s to %s" % (
+                    ("hail", q["id"], sk["name"]) if sk else ("relay", q["id"], skipper(self.bp, self.pid) or "the board"))))
                 continue
             import asklib
             who = skipper(self.bp, self.pid)
-            if (self.bp["meta"].get("skipper") or self.bp["meta"].get("manager")) == "scope":
-                # skipper-resilience S5: a `skipper: scope` ship's holder is its scope's skipper, which
-                # hears only Talk (its `ask listen`) — a file line waits for a prompt it never gets. Talk
-                # on the lease holder's own page, else the board, whoever holds it (the yard, a lapsed
-                # lease: `who` is None, and the file road would reach a live skipper that never reads
-                # it; the fifth finish review); S6 moves every relay to hail.
-                sm = asklib.scope_skipper(self.pid) if who else None
-                if sm and sm.get("manager") == who:
-                    name, verdict, detail, _ = asklib.relay(dict(sm, session=None, plan=self.pid), line, ["talk"])
+            if scoped:
+                # a `skipper: scope` ship's holder is its scope's skipper, which hears its inbox and its
+                # `ask listen`, never a file line (S5's fifth finish review): hailed while it holds the
+                # lease (sk), else the board, whoever holds it — the yard, a lapsed lease
+                left = time_left()
+                if sk and left is not None and left < HAIL_TIMEOUT + 30:
+                    # a kill mid-hail would leave it unrecorded and hailed twice: the next pass asks
+                    rows.append(("orca", "relay", sid, "question %s: not hailed — %ds before the tick's kill time" % (q["id"], max(0, left))))
+                    continue
+                if sk:
+                    verdict, detail, road = self.hail_question(sk, sid, q, run, coord)
+                    if verdict in HAIL_TAKEN:
+                        if road == "subs":
+                            # a subscription the fulfil may yet drop (its target ended, 72 h): carded too,
+                            # so the question is never lost to a row nobody reads
+                            report(self.pid, sid, "waiting", "Orca question %s: hailed once %s is idle" % (q["id"], sk["name"]))
+                        verdict, detail = "hailed", "%s (%s)" % (sk["name"], detail)
+                    else:
+                        verdict, detail = "none", "the hail to %s was not taken: %s" % (sk["name"], detail)
                 else:
-                    name, verdict, detail = None, "none", "no live skipper holds the ship's lease"
+                    verdict, detail = "none", "no live skipper holds the ship's lease"
             else:
                 name, verdict, detail, _ = asklib.relay({"manager": who, "session": None, "plan": self.pid}, line, ["file"])
-            if verdict == "sent":
-                how = "the scope skipper's Talk (%s)" % detail
+            if verdict == "hailed":
+                how = "hailed to %s" % detail
             elif verdict == "queued":
                 how = "the skipper's next prompt (%s)" % detail
             else:
@@ -1471,6 +1518,61 @@ class Ship:
             self.save()
             rows.append(("orca", "relay", sid, "question %s → %s" % (q["id"], how)))
         return rows
+
+    def scope_skipper(self):
+        """The skipper a `skipper: scope` ship's questions are hailed to, or None: the live skipper of
+        the scope the ship's lease names (helm's asklib.scope_skipper: S5's `<host>-<scope>.json`, its pid
+        and its session's registry pid alive), and only while it is the lease's holder (skipper()) — the
+        yard's hold or a lapsed lease hails nobody. {session, name, space}. Read once per pass; a
+        ship with a named skipper has none here (its file relay, as before)."""
+        if (self.bp["meta"].get("skipper") or self.bp["meta"].get("manager")) != "scope":
+            return None
+        who = skipper(self.bp, self.pid)
+        if not who:
+            return None
+        try:
+            import asklib
+            sm = asklib.scope_skipper(self.pid)
+        except Exception:  # noqa: BLE001 — a record that will not read is no skipper here
+            return None
+        if not sm or sm.get("manager") != who:
+            return None
+        return {"session": who, "name": sm.get("manager_name") or "the scope's skipper", "space": sm.get("space")}
+
+    def question_pointer(self, sid, q, run, coord):
+        """The hail's text: where the question is and how to answer it, never the worker's words — a
+        hail is a pointer (its K13, 400 characters), and the question's text is Orca's to show. The read
+        clause goes first when it does not fit; None when even the bare pointer does not."""
+        head = "Orca question %s from %s/%s in plan %s (dispatch %s)" % (q["id"], self.bp["name"], sid, self.pid, q.get("dispatch"))
+        read = " — read: orca orchestration check --terminal %s --run %s --peek --types question" % (coord, run)
+        reply = " — reply: orca orchestration reply --id %s --body \"<text>\" --run %s --from %s" % (q["id"], run, coord)
+        for text in (head + read + reply, head + reply):
+            if len(text) <= HAIL_TEXT_MAX:
+                return text
+        return None
+
+    def hail_question(self, sk, sid, q, run, coord):
+        """(verdict, how, road) of one `hail <the skipper's session> --kind ask --when idle --no-file` (S6):
+        the socket when it sits idle on this Mac, a subscription while it works, else Talk on its page
+        (HAIL_SPACE, the record's `space`) — hail's own order, less the file road, which a scope skipper
+        never reads. verdict None when hail could not be asked at all; the caller then cards it."""
+        text = self.question_pointer(sid, q, run, coord)
+        if text is None:
+            return None, "the pointer is over %d characters" % HAIL_TEXT_MAX, None
+        argv = [os.environ.get("WHARF_HAIL") or str(HERE / "hail"), sk["session"], "--kind", "ask", "--when", "idle",
+                "--no-file", "--text", text, "--json"]
+        env = dict(os.environ)
+        env.pop("HAIL_SPACE", None)   # the skipper's page, never one this process was handed
+        if sk.get("space"):
+            env["HAIL_SPACE"] = sk["space"]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=HAIL_TIMEOUT, env=env)
+            d = json.loads(r.stdout or "{}")
+        except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+            return None, "hail: %s" % type(e).__name__, None
+        if not isinstance(d, dict) or not d.get("verdict"):
+            return None, "hail exit %d: %s" % (r.returncode, ((r.stderr or "").strip().splitlines() or ["no record"])[-1][:160]), None
+        return d["verdict"], "%s via %s%s" % (d["verdict"], d.get("road") or "-", (": " + str(d["why"])[:120]) if d.get("why") else ""), d.get("road")
 
     # -- done_when ------------------------------------------------------------------------------
 
@@ -2049,6 +2151,52 @@ def tick_fence(f, pid):
     return None
 
 
+def tick_caller(environ=None):
+    """None when this process is the yard's tick — launchd's `ask poll` running `helm tick`, or the
+    owner's own shell — else what it is instead. Only the tick's --once --all hands a ship its launch
+    (S6), because the launch carries the keel's yes to merge (`--by ship`) and a flag that stands for a
+    person's yes refuses an unattended caller (AGENTS.md's trap): a session (CLAUDE_CODE_SESSION_ID), a
+    dispatched run (CLAUDE_UNATTENDED, DISPATCH_DEPTH past 0), a skipper (SKIPPER_SCOPE) or a ship's
+    block (its env, helmlib.ENV_NAMES) running `wharf apply --once --all` gets today's raise instead.
+    autofinish-run checks the same names again (its ship_caller_refusal): this only keeps the pass
+    from asking for what would be refused."""
+    env = os.environ if environ is None else environ
+    for n in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_UNATTENDED", "SKIPPER_SCOPE") + tuple(helmlib.ENV_NAMES["ship"]):
+        if env.get(n):
+            return "%s is set" % n
+    if (env.get("DISPATCH_DEPTH") or "0").strip() != "0":
+        return "DISPATCH_DEPTH=%s" % env["DISPATCH_DEPTH"]
+    return None
+
+
+def ship_scope(bp=None, rec=None):
+    """(scope, yard) of a ship: its pin's registry key when pinned (the yard never resolves a caller's
+    path), else its blueprint's repo; (None, None) when the registry does not say."""
+    pin = (rec or {}).get("pin")
+    if isinstance(pin, dict) and pin.get("repo"):
+        scope = common.scope_of_key(pin["repo"])
+        return scope, (common.scope_yard(scope) if scope else None)
+    if bp is None:
+        return None, None
+    _, scope, yard = blueprintlib.scope_yard_of(bp["meta"]["repo"])
+    return scope, yard
+
+
+def yard_launch(pid, name, path):
+    """The launch dict the tick's pass hands ship NAME of plan PID (S6, the yard component's "The
+    `--once --all` pass launches"): --watch's default of 2 launches at once, no session (the tick has
+    none), and `yard` naming the scope, which start_launch reads to add the landing call
+    (Ship.merge_flags). None off the ship's yard, so its `launch: finish` block is raised as before; a
+    registry that does not read is None too: which host is the yard cannot be told."""
+    if common.registry_unreadable():
+        return None
+    rec = ((helmlib.load_plan(pid) or {}).get("blueprints") or {}).get(name) or {}
+    scope, yard = ship_scope(None if isinstance(rec.get("pin"), dict) else load_blueprint(path, pid), rec)
+    if not yard or yard != harness().machine():
+        return None
+    return {"launches": 2, "session": None, "yard": scope}
+
+
 def cmd_apply(a):
     if (a.no_merge or a.gen is not None) and not a.yard:
         raise SystemExit("wharf apply: --no-merge and --gen go with --yard")
@@ -2061,6 +2209,8 @@ def cmd_apply(a):
             raise SystemExit("wharf apply --all is the tick's: --once with it")
         rc = 0
         _cache["tick"] = 0   # session starts this tick, every ship together (TICK_STARTS)
+        # S6: only the tick itself launches, and only on a ship's own yard (yard_launch)
+        tick = tick_caller() is None
         for pid, f, name, held, pinned in ships_with_runs():
             if held:
                 say_once(pid, name, True, "wharf apply --once: plan %s's %s is a pin plan %s drives already — not driven twice "
@@ -2075,7 +2225,8 @@ def cmd_apply(a):
                 if why:
                     say_once(pid, name, True, "wharf apply --once: plan %s's %s: %s" % (pid, name, why), a.dry_run)
                     continue
-                rc = max(rc, apply_ship(pid, f, dry=a.dry_run, once=True, quiet=True))
+                launch = yard_launch(pid, name, f) if tick else None
+                rc = max(rc, apply_ship(pid, f, dry=a.dry_run, once=True, quiet=True, launch=launch))
             except SystemExit as e:
                 say_once(pid, name, True, "wharf apply --once: %s (plan %s): exit %s" % (f, pid, e.code if isinstance(e.code, int) else e.code or ""))
                 rc = max(rc, e.code if isinstance(e.code, int) else 2)
