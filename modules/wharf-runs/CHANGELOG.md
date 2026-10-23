@@ -46,6 +46,22 @@
   and refuses a run past it, refused not queued; a reading it cannot take goes ahead, said. One row
   per check in `headroom.jsonl`. Six runs had left a 16 GB host thrashing with four slots still free.
   `tests/test_headroom.sh`, Linux from a stand-in /proc. Private until the scrub.
+- The skipper-modes landing review (2026-10-22): yolo holds `autofinish_exclude` and `in_place`
+  too — it lands all the way bar what judges a landing and what every session's hooks run; a deployed
+  dnd or yolo branch starts by rule M, not L (its taken docs and its held slice read); in mode `ask`
+  rule D never stands a due doc; a `"merge": "auto"` repo's standing yes covers a yolo launch with no
+  mode, from a caller without CLAUDE_UNATTENDED, only. dispatch: the unattended raise check bars on
+  the target branch's mode (and the ship's task before it writes), `--yolo` is written to plan.json
+  as `--mode yolo` is, a dry run asks berth with `--no-log`, and a cancel never sshes the Mac to
+  itself. `wharf apply`: a refused blueprint mode stays refused (`mode_refused` in plan.json), and
+  the helm tick's `--once` apply counts as unattended. berth: a torn registry is refused (exit 3);
+  one load key set without `log` beside an unset one is enforced; the landing starts its log-only
+  week, a dated TODO item ends it. Under `WEEKLY_RUN`, `--mode` is refused like every other flag.
+- Default-path changes, intended (skipper-modes S6b, S1): berth's pick is the default host of a
+  plain `dispatch` (one more ssh to a peer and a `dispatch: berth —` line on stderr).
+- Every run record and launchd plist carries the mode: `DISPATCH_MODE` and `task_mode`, `default`
+  when nobody set one.
+- `autofinish-run --dry` prints a `mode …:` line before the account line.
 - `bin/hail` and `hail subs` (Lookout and Hail, S2, 2026-10-21): one verb that delivers a pointer to any
   session `harness` names — Claude Code's inbox socket (S1's wire: an `auth` line with the key file's
   `peerToken`, then the `user` line; only to a session idle 60 s or more, re-read before the post;
@@ -66,6 +82,23 @@
   (default `org.regatta.orca-serve`), an older one from `wharf-runs/serve-label-previous`; the owner's
   own labels live in the overlay's config. New `--dry-run` prints the label, the plist and the commands.
 
+- Landing on the mode's ladder (skipper-modes S3b; the owner: "dnd: I want to automerge as well"):
+  autofinish's rule M starts a branch whose sent task is in `dnd` or `yolo` whatever its shape,
+  `taken` docs included; `held_slice` names what a dnd landing holds at a ready PR (money in the prose,
+  a physical repo, `autofinish_exclude`, a path the public twin publishes, a deleted data file, a
+  yolo-taken answer) and what every mode holds (the launcher's own gates). `autofinish-run` reads the
+  mode from plan.json itself — `--by` grants nothing — gains `--by dnd`, `--rule M`, `--hold`, the
+  state's `hold` and gate `held`; mode `ask` holds every launch but a person's. dispatch launches a
+  dnd run too (`--by dnd`), reads the mode again at launch, and refuses an unattended `--mode` or
+  `--yolo` that raises the caller's mode; `wharf apply` records no raised blueprint mode unattended.
+- Skipper modes (S1, S3, S6b; docs/skipper-modes-2026-10-21.md): `dispatch --mode
+  default|ask|dnd|yolo` (the plist's DISPATCH_MODE, the record's `task_mode`, read again at fire time
+  with plan.json first; `--yolo` is mode yolo) and its prompt gate per mode; a blueprint's `mode:`,
+  recorded once by `wharf apply`, which resolves a decision gate as taken in dnd or yolo where
+  nothing is held. `berth` (private-first): the host by the scope's `berths`, slots and load,
+  log-only while a key ends `log`, a row in berth.jsonl; `dispatch --on auto` the default,
+  `--slots`, peers by their `wharf-runs/ssh` alias; `host: auto` on a claude-code block; config-keys
+  gain `wharf-runs/load-max` and `load-margin`.
 - The wharf rename's S6 (2026-10-20), carried from the overlay: the launch word in `/later`, `/move`
   ("the arrival" for a move's own landing) and `/pickup`.
 - `test_wharf` finds helm's console and the old `bin/plan` each where it lives: `libexec/helm` in helm's
