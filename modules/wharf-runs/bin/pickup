@@ -828,7 +828,7 @@ def carry_transcript(b, root, wt, notes, dry):
         new_id = str(uuid.uuid4())
         dest, title, n = fork_transcript(copy, PROJECTS / slug(root), new_id, origin=p.get("host"))
     # Their paths → ours: the worktree first (its folder may be named differently here), then
-    # the projects folder. Whole path components only, so `…/unraid` never rewrites `…/unraid-2`.
+    # the projects folder. Whole path components only, so `…/tools` never rewrites `…/tools-2`.
     pairs = [(p["worktree"], str(wt))] if p.get("worktree") else []
     if p.get("home"):
         pairs.append((p["home"] + "/projects", str(Path.home() / "projects")))
@@ -3007,8 +3007,8 @@ def write_pin(wt, pin):
 
 
 def rewrite(text, pairs):
-    """Each (theirs, ours) in order, whole path components only — `…/unraid` never rewrites
-    `…/unraid-2`. Most specific first: the later, wider pairs see only what is left."""
+    """Each (theirs, ours) in order, whole path components only — `…/tools` never rewrites
+    `…/tools-2`. Most specific first: the later, wider pairs see only what is left."""
     for theirs, ours in pairs:
         if theirs and theirs != ours:
             text = re.sub(re.escape(theirs) + r"(?![\w.-])", lambda m: ours, text)

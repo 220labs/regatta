@@ -823,8 +823,8 @@ has "$T/out" "EnterWorktree $R/.claude/worktrees/beta" "its first message says w
 check "$(grep -c . "$IT")" "7" "the original there is untouched"
 rm -f "$IH/.claude/sessions/$$.json"
 
-echo "a branch named for this machine, continued on the other (2026-09-30, topaz-runner-service)"
-# Made here, then worked on under an the build Mac host: its commit names the session by its claude.ai
+echo "a branch named for this machine, continued on the other (2026-09-30, a memo in another repo)"
+# Made here, then worked on on the build Mac: its commit names the session by its claude.ai
 # URL, and the transcript sits in a sibling repo's project folder there. The name no longer
 # decides which machine is read.
 HM=$PICKUP_HOST

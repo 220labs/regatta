@@ -652,17 +652,17 @@ PY
 )" "2 2 2 ok" "unattended: no Orca worker or Codex run (no run cap counts them yet); claude-code through dispatch still"
 
 echo "orca --account: a Claude worker on a login Orca cannot select, in a terminal of ours (docs/orca-accounts-2026-10-16.md)"
-# a stand-in bin/account: pick → claude-g on its own dir; limits → the row asked for; every call logged
+# a stand-in bin/account: pick → acct-b on its own dir; limits → the row asked for; every call logged
 cat > "$T/account" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
 open(os.environ["STUB_ACCOUNT_CALLS"], "a").write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1] == "pick":
     if os.environ.get("STUB_ACCOUNT_SHORT"):
-        print(json.dumps({"account": None, "skipped": [["claude-g", "ship s stays on claude-g and waits: 5h 60% > 50%"]]})); sys.exit(3)
+        print(json.dumps({"account": None, "skipped": [["acct-b", "ship s stays on acct-b and waits: 5h 60% > 50%"]]})); sys.exit(3)
     if os.environ.get("STUB_ACCOUNT_CODEX"):
         print(json.dumps({"account": "codex-x", "provider": "codex", "env": {"CODEX_HOME": "/c"}, "skipped": []})); sys.exit(0)
-    print(json.dumps({"account": "claude-g", "env": {"CLAUDE_CONFIG_DIR": "/orca data/g"}, "skipped": []}))
+    print(json.dumps({"account": "acct-b", "env": {"CLAUDE_CONFIG_DIR": "/orca data/acct-b"}, "skipped": []}))
 elif sys.argv[1] == "limits":
     lab = sys.argv[2]
     print(json.dumps([{"label": lab, "here": lab != "claude-gone", "denied": "shop" if lab == "acct-c" else None,
@@ -676,13 +676,13 @@ H run --harness orca --repo "$T/scratch" --name acct --prompt "reply DONE" --acc
   --model sonnet --effort high --json > "$T/oa.json" 2>"$T/err"
 check "$?" 0 "run --harness orca --account auto --ship: exits 0"
 has "$STUB_ACCOUNT_CALLS" "pick --repo $T/scratch --json --ship shop/b7 --no-pin" "  the login is bin/account's pick, for the ship, not pinned yet"
-has "$STUB_ACCOUNT_CALLS" "ships --pin shop/b7 claude-g" "  pinned once the worker started"
+has "$STUB_ACCOUNT_CALLS" "ships --pin shop/b7 acct-b" "  pinned once the worker started"
 check "$(awk '/pick --repo/ {p=NR} /ships --pin/ {q=NR} END {print (p && q > p) ? "after" : "before"}' "$STUB_ACCOUNT_CALLS")" "after" "  the pin after the pick"
-has "$STUB_ORCA_CALLS" "terminal create --worktree id:repo-1::$STUB_ORCA_WS/$TODAY-acct --title $TODAY-acct --command env -u CLAUDE_CODE_OAUTH_TOKEN 'CLAUDE_CONFIG_DIR=/orca data/g' claude --model sonnet --effort high" \
+has "$STUB_ORCA_CALLS" "terminal create --worktree id:repo-1::$STUB_ORCA_WS/$TODAY-acct --title $TODAY-acct --command env -u CLAUDE_CODE_OAUTH_TOKEN 'CLAUDE_CONFIG_DIR=/orca data/acct-b' claude --model sonnet --effort high" \
     "  a terminal in the worktree runs claude on that login's dir, model and effort on its command line"
 check "$(grep -c 'worker-start.*--terminal term_own_' "$STUB_ORCA_CALLS")" 2 "  worker-start --terminal: refused once (agent not yet known), then taken"
 check "$(grep 'worker-start' "$STUB_ORCA_CALLS" | grep -c -- '--agent\|--model')" 0 "  no --agent or --model beside --terminal (Orca refuses them)"
-check "$(jget "$T/oa.json" 'd["account"]')" "claude-g" "  the record names the login"
+check "$(jget "$T/oa.json" 'd["account"]')" "acct-b" "  the record names the login"
 OWN=$(jget "$T/oa.json" 'd["native"]["own_terminal"]')
 check "$(jget "$T/own.json" 'd')" "['$OWN']" "  the terminal recorded as this adapter's own"
 H stop "$(jget "$T/oa.json" 'd["session_id"]')" --harness orca --json > "$T/os2.json" 2>"$T/err"
@@ -698,7 +698,7 @@ check "$(grep -c 'ships --pin' "$STUB_ACCOUNT_CALLS")" 1 "  a named login with n
 : > "$STUB_ORCA_CALLS"
 STUB_ACCOUNT_SHORT=1 H run --harness orca --repo "$T/scratch" --name acct5 --prompt x --account auto --ship s > /dev/null 2>"$T/err"
 check "$?" 1 "no login may run it (the ship's waits): exit 1"
-has "$T/err" "ship s stays on claude-g and waits" "  saying why"
+has "$T/err" "ship s stays on acct-b and waits" "  saying why"
 check "$(grep -c 'worktree create' "$STUB_ORCA_CALLS")" 0 "  nothing made in Orca first"
 H run --harness orca --repo "$T/scratch" --name acct6 --prompt x --account acct-c > /dev/null 2>"$T/err"; check "$?" 2 "a login whose deny list names the repo: refused"
 H run --harness orca --repo "$T/scratch" --name acct7 --prompt x --account claude-gone > /dev/null 2>"$T/err"; check "$?" 2 "a login not on this Mac: refused"

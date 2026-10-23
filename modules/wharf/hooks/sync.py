@@ -478,7 +478,7 @@ def remove_merged(repo, main, path, name, gitdir, deadline, dry=False):
         proof = branches.prove(repo, b, tgt)
     if tip and not proof and time.monotonic() < deadline and not os.environ.get("CLAUDE_HOOK_NO_GITHUB"):
         # The file proof fails once main edits the same files again — the usual state of a
-        # worktree left a day after its merge (the home repo's unraid-mgmt, PR #7). GitHub knows better.
+        # worktree left a day after its merge (a home-automation repo). GitHub knows better.
         slug = branches.common.repo_slug(git(repo, "remote", "get-url", "origin").stdout.strip())
         pr = branches.common.merged_pr(slug, name, tip) if slug else None
         if pr:

@@ -99,7 +99,7 @@ CASES = [  # (block line, offends?)
     ("./scripts/install_git_hooks.sh", True),
     ("ssh nas 'sh scripts/x.sh'", False),
     ("ssh -t buildbox-ssh /opt/sam/.local/bin/claude setup-token", False),
-    ("git diff main -- unraid/notes.md", False),
+    ("git diff main -- homelab/notes.md", False),
     ("# sh scripts/test.py", False),
     ("VSCODE_REMOTE_SETTINGS=$HOME/x sh macos/vscode-remote/install.sh", True),
     ("source ~/.zshenv", False),

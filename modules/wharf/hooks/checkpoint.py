@@ -1954,7 +1954,7 @@ def publish(state, branch, session, force=False):
 
 # ---- a doc that asks the owner something ------------------------------------------------------
 # Why (2026-09-28): a session on the other Mac rendered for hours on the pre-filled answers of
-# pipeline's topaz-retime memo, because the owner's real answers sat uncommitted on the laptop's
+# a memo in another repo, because the owner's real answers sat uncommitted on the laptop's
 # `main`, where the old rule (a doc merged to main before asking) had put the doc. Answers now
 # travel as commits on the doc's own branch (`/keel`, D2 of docs/feedback-2026-09-29.md):
 # a commit that adds answer lines (or any line to a doc that has them) is pushed now, not in

@@ -83,7 +83,7 @@ memo"). The owner answers in GitHub's web editor on the branch the memo lives on
 `pull` brings the commit home. The answers travel as a git commit, so they survive a worktree
 being removed and reach the other Mac without anything going to `main`. The checkpoint hook
 pushes a turn that adds answer lines at once and makes sure the reply carries `line`'s output
-(hooks/checkpoint.py, 2026-09-29) — the Topaz incident of 2026-09-28, where the other Mac
+(hooks/checkpoint.py, 2026-09-29) — the incident of 2026-09-28, where the other Mac
 rendered for hours on pre-filled answers while the owner's real ones sat uncommitted on this one's
 `main`, is what that closes.
 
@@ -386,7 +386,7 @@ LAYER = (_config_lines("atlas/layer") or [""])[0]
 
 def item_match(line):
     """ITEM_RE, minus the prose it would otherwise take. A wrapped sentence can start a line with
-    "D2." (pipeline's topaz-runner-service memo, 2026-09-30: a phantom D2 ahead of the real one
+    "D2." (a memo in another repo, 2026-09-30: a phantom D2 ahead of the real one
     took the form's D2 key, and the owner's saved D2 came back empty). Every real "." or ":" decision
     in the repos opens with `**`; none is untitled."""
     m = ITEM_RE.match(line)
@@ -3089,8 +3089,8 @@ def memo_files(root):
     *.md, repos up to four levels under root (repo_roots; two until 2026-10-10, which hid
     films/productions/<group>/<slug>), and a worktree's copy when its checkout's own does not exist
     (a memo not launched yet; one row per doc however many worktrees hold it, the newest). Shared by
-    `list` and `open`, so both see the same files. Top level since 2026-09-29: pipeline's
-    topaz-retime memo sat at the repo root, and this list never showed it (docs/feedback-2026-09-29.md, R5)."""
+    `list` and `open`, so both see the same files. Top level since 2026-09-29: a memo in another
+    repo sat at the repo root, and this list never showed it (docs/feedback-2026-09-29.md, R5)."""
     root = Path(root)
     seen = set()
     wt = {}  # (repo path, path after the worktree) → (mtime, path, label): the newest copy wins
