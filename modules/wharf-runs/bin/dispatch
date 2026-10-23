@@ -308,14 +308,10 @@ for k, v in out.items():
     print("%s=%s" % (k, shlex.quote(v)))
 CORE
 )"
-# Where an overlay is installed the run prompt names its shims, as before B12: each account dir's
-# allow rules name the overlay's bin/ask and bin/plan (bin/plan until rename S8), and rules for this
-# module's paths arrive only with a manual bootstrap.sh --hooks — a run refused its report stalls its
-# ship (S5 review; the overlay's 913cb0f2). tool() finds helm's module first once it shares this checkout.
-if [ -n "$legacy" ]; then
-  [ -x "$legacy/bin/ask" ] && p_ask="$legacy/bin/ask"
-  if [ -x "$legacy/bin/plan" ]; then p_helm="$legacy/bin/plan"; elif [ -x "$legacy/bin/helm" ]; then p_helm="$legacy/bin/helm"; fi
-fi
+# The run prompt names helm's own files, which tool() finds (bin/ask, libexec/helm), since B14a
+# (2026-10-23): until then it named the overlay's shims, the paths each account dir's allow rules
+# named. The overlay's bootstrap.sh --hooks writes rules for the module paths since that step, and it
+# runs on both Macs before this lands — a run refused its report stalls its ship (S5 review).
 # DISPATCH_ASK, DISPATCH_HELM: the tests' stand-ins; set but empty is "not installed" (G22's case)
 [ -n "${DISPATCH_ASK+x}" ] && p_ask="$DISPATCH_ASK"
 [ -n "${DISPATCH_HELM+x}" ] && p_helm="$DISPATCH_HELM"

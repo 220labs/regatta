@@ -48,8 +48,8 @@ def env_name(role):
     return lines[2] if len(lines) > 2 and lines[2].isidentifier() else ENV[role]
 
 
-def overlay():
-    return (CONFIG / "legacy").exists()
+def overlay():   # the core's overlay_installed(): B14a's marker, or legacy until B14b drops it
+    return (CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()
 
 
 def repo(role):

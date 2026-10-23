@@ -71,8 +71,8 @@ PY
     exit $rc
     ;;
   --schedule)
-    if [ -e "$cfg/legacy" ] && [ -z "${WHARF_RUNS_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "wharf-runs: an overlay is installed here ($cfg/legacy): it schedules the sweep itself; not loading a second job" >&2
+    if { [ -e "$cfg/legacy" ] || [ -e "$cfg/regatta/overlay" ]; } && [ -z "${WHARF_RUNS_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "wharf-runs: an overlay is installed here ($cfg/legacy or $cfg/regatta/overlay): it schedules the sweep itself; not loading a second job" >&2
       exit 1
     fi
     [ -f "$here/bin/autofinish" ] || { echo "wharf-runs: no bin/autofinish in $here — nothing to schedule" >&2; exit 1; }

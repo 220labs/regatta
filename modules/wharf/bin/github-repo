@@ -62,7 +62,7 @@ MERGE_POLICY = common.MERGE_POLICY
 # line; the overlay writes both Macs'). Absent, this host alone, said once where an overlay should
 # have written it: a repo registered on fewer hosts than meant is only a later `hosts` edit.
 HOSTS = common.config_lines("wharf/hosts") or [common.host_name()]
-if not common.config_lines("wharf/hosts") and common.legacy_root():
+if not common.config_lines("wharf/hosts") and common.overlay_installed():
     print(f"github-repo: no wharf/hosts in {common.CONFIG} — new repos register on {HOSTS[0]} only "
           "(the overlay's bootstrap.sh --config writes it)", file=sys.stderr)
 # The registry through the core's one reader (C3). Its home repo — the checkout the file really

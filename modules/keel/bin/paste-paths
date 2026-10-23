@@ -953,15 +953,18 @@ def _peer(name, as_name):
 
 
 def _ask_cmd():
-    """bin/ask's path for the lines that name it: the overlay's shim where one is installed, else
-    helm's (tool()), else its bare name. Each account dir's allow rules name the overlay's bin/ask;
-    a rule for helm's module path arrives only with a manual bootstrap.sh --hooks, and tool() finds
-    helm's first once it shares this checkout (B12; dispatch's run prompt does the same)."""
+    """bin/ask's path for the lines that name it: helm's (tool()), else the overlay's shim where one
+    is installed, else its bare name. Since B14a (2026-10-23) each account dir's allow rules name
+    helm's module path, which the overlay's bootstrap.sh --hooks writes (dispatch's run prompt does
+    the same); until then they named the shim, which came first here."""
     c = _common()
+    p = c.tool("ask")
+    if p:
+        return str(p)
     old = c.legacy_root()
     if old and (old / "bin" / "ask").is_file():
         return str(old / "bin" / "ask")
-    return str(c.tool("ask") or "bin/ask")
+    return "bin/ask"
 
 
 def _asklib():

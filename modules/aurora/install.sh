@@ -51,8 +51,8 @@ case "${1:-}" in
     exit $rc
     ;;
   --schedule)
-    if [ -e "$cfg/legacy" ] && [ -z "${AURORA_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "aurora: an overlay is installed here ($cfg/legacy): it schedules the night itself; not loading a second job" >&2
+    if { [ -e "$cfg/legacy" ] || [ -e "$cfg/regatta/overlay" ]; } && [ -z "${AURORA_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "aurora: an overlay is installed here ($cfg/legacy or $cfg/regatta/overlay): it schedules the night itself; not loading a second job" >&2
       exit 1
     fi
     vault=$(where vault)

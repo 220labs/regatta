@@ -53,7 +53,7 @@ def paths():
 
 def missing():
     """The `atlas/<role>` keys an overlay should have written and did not (a `legacy` file in the
-    config dir marks one); empty without an overlay, where no key is owed."""
-    if not (_config() / "legacy").is_file():
+    config dir marks one, or since B14a its `regatta/overlay`); empty without an overlay, where no key is owed."""
+    if not ((_config() / "regatta" / "overlay").is_file() or (_config() / "legacy").is_file()):   # B14a's marker, or legacy
         return []
     return [f"atlas/{r}" for r in ROLES if not _lines(r)]

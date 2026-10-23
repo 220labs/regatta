@@ -144,7 +144,7 @@ def config_map(key):
     "not paired with PEER" line would silently vanish from `check`. Names are lower-cased, as
     `pair PEER` names an environment; an ssh alias is kept as written."""
     lines, why = common.config_read(key)
-    if why or (lines is None and (common.CONFIG / "legacy").exists()):
+    if why or (lines is None and common.overlay_installed()):
         raise OrcaError(f"{common.CONFIG / key} {why or 'missing'} — run your overlay's bootstrap.sh --config")
     out = {}
     for line in lines or []:

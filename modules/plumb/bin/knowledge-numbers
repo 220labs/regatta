@@ -77,7 +77,7 @@ def knowledge_repo(key):
     that read it then say not measured, and the overlay's absent key is one line on stderr."""
     items = common.config_lines(key) or []
     if len(items) < 2:
-        if (common.CONFIG / "legacy").exists():
+        if common.overlay_installed():
             print("knowledge-numbers: no %s in %s — its numbers are not measured" % (key, common.CONFIG), file=sys.stderr)
         return None, None
     env = os.environ.get(items[2]) if len(items) > 2 else None
