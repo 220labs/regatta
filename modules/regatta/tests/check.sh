@@ -87,6 +87,11 @@ check "$(SP 'f = common.gather_fence(path="'"$T/torn.json"'"); print(f("'"$PJ/o/
 check "$(SP '
 try: common.gather_fence("half", path="'"$T/torn.json"'")
 except ValueError as e: print("refused")')" "refused" "  and a scope asked of it: ValueError"
+printf '{"repos": {"a": {}}, "scopes": {"y": {"repos": ["a"], "yard": "studio"}, "n": {"repos": [], "yard": null}, "x": {"repos": []}, "e": {"repos": [], "yard": ""}}}\n' > "$T/yards.json"
+check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yard("y"), common.scope_yard("n"), common.scope_yard("x"), common.scope_yard("e"), common.scope_yard("nope"))')" \
+  "studio None None None None" "scope_yard() (skipper-resilience S2): a host; null, absent, empty or no such scope: None"
+check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yards(), common.scope_yards(path="/no/such"))')" "{'y': 'studio'} {}" \
+  "  scope_yards(): only the scopes with one; an unreadable registry: none"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"
@@ -245,6 +250,21 @@ for k in $(cat "$ROOT"/modules/*/config-keys 2>/dev/null | grep -v '^#'); do
 done
 out=$("$RG" check); check "$?" 0 "  with them written: exit 0"
 rm -r "$T/config/wharf-runs" "$T/config/legacy"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
+# the yard rows (skipper-resilience S2): one per scope, its yard or none, a host lighthouse/hosts does not list a finding
+mkdir -p "$T/config/lighthouse"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"
+printf '{"repos": {"a": {}, "b": {}, "c": {}},\n "scopes": {"one": {"file": "o", "repos": ["a"], "yard": "studio"}, "two": {"file": "t", "repos": ["b"], "yard": null}, "three": {"file": "h", "repos": ["c"]}}}\n' > "$T/yd.json"
+out=$("$RG" check); check "$?:$(echo "$out" | grep -c ' yard: ')" "0:0" "  no registry: no yard rows"
+out=$(CLAUDE_REPOS_JSON="$T/yd.json" "$RG" check); check "$?" 0 "  every yard a listed host or none: exit 0"
+check "$(echo "$out" | grep -c '^  ok  scope [a-z]* yard: ')" 3 "  one row per scope"
+echo "$out" | grep -qx "  ok  scope one yard: studio"; check $? 0 "    a yard by its host"
+echo "$out" | grep -qx "  ok  scope two yard: none"; check $? 0 "    null: none"
+echo "$out" | grep -qx "  ok  scope three yard: none"; check $? 0 "    absent: none"
+sed 's/"studio"/"nowhere"/' "$T/yd.json" > "$T/yd2.json"
+out=$(CLAUDE_REPOS_JSON="$T/yd2.json" "$RG" check); check "$?" 1 "  a yard lighthouse/hosts does not list: exit 1"
+echo "$out" | grep -qx -- "  --  scope one yard: nowhere is not a host lighthouse/hosts lists (laptop, studio)"; check $? 0 "    it names the scope, the host and the list"
+head -c 30 "$T/yd.json" > "$T/yd3.json"
+out=$(CLAUDE_REPOS_JSON="$T/yd3.json" "$RG" check); check "$?:$(echo "$out" | grep -c ' yard: ')" "1:0" "  a torn registry: exit 1, no row read from it"
+rm -r "$T/config/lighthouse"
 
 echo "the gate's table"
 G="$M/bin/gate"

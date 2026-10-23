@@ -228,8 +228,9 @@ def guarded_repos():
 # Scopes — the groups of repos in the registry's `scopes` (wharf's bin/scopes writes their
 # workspace files). A scope flagged `"confidential": true` is a node nothing outside it reads
 # (knowledge-layers design D3, 2026-10-20), and its `login` is the account label its runs start
-# on (`account pick --repo`). These are the one reader of both keys: the fence, the passes,
-# sheep_gate and bin/scopes all ask here, never repos.json themselves.
+# on (`account pick --repo`); its `yard` is the host that drives its ships (skipper-resilience S2).
+# These are the one reader of those keys: the fence, the passes, sheep_gate, wharf and bin/scopes
+# all ask here, never repos.json themselves.
 
 def scope_registry(path=None):
     """(repos, scopes) from the registry — `path`, else repos_json(); ({}, {}) when it cannot be
@@ -290,6 +291,22 @@ def scope_login(name, path=None):
     s = scope_registry(path)[1].get(name) or {}
     v = s.get("login") if isinstance(s, dict) else None
     return v if isinstance(v, str) and v else None
+
+
+def scope_yard(name, path=None):
+    """The host scope `name`'s ships are driven from (its `yard`: the one Mac whose tick drives them
+    and where `wharf apply --yard` lays them), or None — absent and `null` alike, so a scope with no
+    yard keeps today's plain apply."""
+    s = scope_registry(path)[1].get(name) or {}
+    v = s.get("yard") if isinstance(s, dict) else None
+    return v if isinstance(v, str) and v else None
+
+
+def scope_yards(path=None):
+    """{name: host} for each scope with a yard (scope_yard's rule); {} when none has one."""
+    scopes = scope_registry(path)[1]
+    out = {n: s.get("yard") for n, s in scopes.items() if isinstance(s, dict)}
+    return {n: v for n, v in out.items() if isinstance(v, str) and v}
 
 
 def confidential_roots(path=None):
