@@ -6,6 +6,9 @@
   reader may do with an item, by the paths it came from — `quote`, `fenced` (a confidential scope's:
   count it, never quote it) or `outside` (not the scope asked for); a scope's folders matched by
   path or by slug folder name under any `projects/`; an unreadable registry fences everything.
+- `scope_yard(name)` and `scope_yards()` (skipper-resilience S2, 2026-10-22): a scope's `yard`, the
+  host that drives its ships, `None` for absent or `null`; `regatta check` prints one row per scope,
+  its yard or none, and counts a yard `lighthouse/hosts` does not list as a finding.
 - A third waiting line, `PENDING_PREFIX` (`THIS SESSION IS WAITING FOR SOMETHING — <what>`), a
   `pending` kind in `CLOSING`: the session waits on its own work and carries on by itself, so the
   owner has nothing to do. It is no ask (`unrelayed_ask`, `asks_answers` skip it); keel's Stop lint

@@ -190,6 +190,29 @@ def module_problems():
     return out
 
 
+def yard_rows():
+    """One row per scope of the registry: its yard (common.scope_yard), or none. A yard is a host
+    `lighthouse/hosts` lists — the fleet's one list of Macs — else it is a finding: `wharf apply
+    --yard` would send ships to a host nothing else here knows. → the number of findings. No
+    registry, no rows; a registry that does not read is one finding, its rows skipped."""
+    p = common.repos_json()
+    if not p:
+        return 0
+    if common.registry_unreadable():
+        print("  --  scopes: %s does not read, so no scope's yard is checked" % p)
+        return 1
+    hosts = common.config_lines("lighthouse/hosts") or []
+    bad = 0
+    for name in common.scope_registry()[1]:
+        yard = common.scope_yard(name)
+        if yard and yard not in hosts:
+            print("  --  scope %s yard: %s is not a host lighthouse/hosts lists (%s)" % (name, yard, ", ".join(hosts) or "it lists none"))
+            bad += 1
+        else:
+            print("  ok  scope %s yard: %s" % (name, yard or "none"))
+    return bad
+
+
 def check():
     """Each item of the config dir: ok, or what is wrong with it. Exit 1 on any finding."""
     bad = 0
@@ -227,6 +250,7 @@ def check():
     for problem in problems:   # the private values (README): each one the core or its module refuses
         print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
         bad += 1
+    bad += yard_rows()
     print("core: %s" % (root or "not in a checkout"))
     return 1 if bad else 0
 
