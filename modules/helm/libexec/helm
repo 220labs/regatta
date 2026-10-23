@@ -45,6 +45,14 @@
     helm skipper --stop SCOPE [--why W] [--dry-run]   # the tick's belt: its ships back to the yard, its screen
                                      #   quit, its record deleted, its jobs booted out; refused inside a session;
                                      #   --dry-run says what it would do and does none of it
+    helm skipper --line PLAN [BLOCK]             # the block's state in one line, the grammar helm send's listener
+                                     #   pulls (S7); `ended: …` once it has
+    helm send <blueprint.md | claude/branch> [--scope S] [--plan ID] [--listen | --detach] [--no-merge] [--every MIN] [--json]
+    helm send --text "<task>" --repo R [--topic T] [--tier T] [--model M] [--effort E] [...]
+                                     # a task handed to its scope's skipper (S7, bin/sendlib.py): pinned, laid on the
+                                     #   yard over ssh, then the pickup's wait; PICKED UP says the session may close
+    helm send --listen PLAN [BLOCK] [--every MIN] | --release [PLAN [BLOCK]] | --status [--json]
+                                     # the listener (one pull, then exit), its kill, this session's sends
 
 ship: a noun here (one launch or feature); the merge is a launch. A task is a block's execution (a
 block is its description in a blueprint; `wharf apply` makes one task per block, naming it with
@@ -736,8 +744,8 @@ def done_when_arg(text):
 # ---------------------------------------------------------------------------- the skipper (skipper-resilience S4, S5)
 # The lease is bin/leaselib.py's; these are the skipper session's own verbs on it, and S5's --start and
 # --stop (the tick's, bin/skipperlib.py: they load a plist, so the allow rule names the session verbs one
-# by one and never these); S7 adds --line. A lease's refusal exits leaselib.REFUSED_EXIT (4), as every
-# fenced verb does; a refused start or stop exits 1.
+# by one and never these); S7's --line, the state helm send's listener pulls. A lease's refusal exits
+# leaselib.REFUSED_EXIT (4), as every fenced verb does; a refused start or stop exits 1.
 
 def cmd_skipper(a):
     import leaselib
@@ -764,7 +772,23 @@ def cmd_skipper(a):
             print("helm skipper --escalate: %s" % e, file=sys.stderr)
             return 1
         return 0
-    raise SystemExit("helm skipper: one of --hold, --renew, --ships, --status, --stand-down, --start, --stop")
+    if a.line:
+        return skipper_line(a)
+    raise SystemExit("helm skipper: one of --hold, --renew, --ships, --status, --stand-down, --start, --stop, --escalate, --line")
+
+
+def skipper_line(a):
+    """S7: one line per block of PLAN (or BLOCK), as helm send's listener prints it on the sender's Mac."""
+    import sendlib
+    if len(a.line) > 2:
+        raise SystemExit("helm skipper --line PLAN [BLOCK]")
+    try:
+        lines, _ = sendlib.line(a.line[0], a.line[1] if len(a.line) > 1 else None)
+    except sendlib.Refused as e:
+        print("helm skipper --line: %s" % e, file=sys.stderr)
+        return e.code
+    print("\n".join(lines))
+    return 0
 
 
 def skipper_start_stop(a):
@@ -800,14 +824,14 @@ def is_claude(pid):
     return os.path.basename(r.stdout.strip()) == "claude"
 
 
-def hold_parent():
-    """The pid the sidecar lives by: HELM_HOLD_PARENT (tests; a runner that knows it), else the nearest
-    ancestor named `claude` — the session's own process, whose death ends the sidecar; the background
-    shell between them may outlive it — else the parent process."""
-    raw = os.environ.get("HELM_HOLD_PARENT")
+def hold_parent(var="HELM_HOLD_PARENT", verb="helm skipper --hold"):
+    """The pid the sidecar (or helm send's listener: HELM_LISTEN_PARENT) lives by: VAR (tests; a runner
+    that knows it), else the nearest ancestor named `claude` — the session's own process, whose death
+    ends it; the background shell between them may outlive it — else the parent process."""
+    raw = os.environ.get(var)
     if raw:
         if not raw.isdigit():
-            raise SystemExit("helm skipper --hold: HELM_HOLD_PARENT=%r is no pid" % raw[:40])
+            raise SystemExit("%s: %s=%r is no pid" % (verb, var, raw[:40]))
         return int(raw)
     p = os.getppid()
     for _ in range(12):
@@ -955,7 +979,8 @@ def ship_row(leaselib, pid, rec):
     return {"plan": pid, "holder": rec["holder"], "gen": rec["gen"], "session": rec.get("session"), "pid": rec.get("pid"),
             "since": rec.get("since"), "until": rec.get("until"), "lapsed": leaselib.lapsed(pid, rec=rec),
             "open": len(live), "waiting": len(waiting), "waiting_on": [t["id"] for t in waiting],
-            "needs_skipper": need, "owner_only": owner}
+            "needs_skipper": need, "owner_only": owner,
+            "sent": [t["id"] for t in live if t.get("send") == "sent"]}   # S7: sent, not picked up
 
 
 def skipper_ships(a, leaselib):
@@ -970,7 +995,8 @@ def skipper_ships(a, leaselib):
             r["plan"], r["holder"], r["gen"],
             "  lapsed" if r["lapsed"] else ("  until %s" % helmlib.iso(r["until"])[11:16] if r["until"] else ""),
             r["open"], r["waiting"], (" (%s)" % ", ".join(r["waiting_on"])) if r["waiting_on"] else "",
-            "  — the owner's alone (%s)" % ", ".join(r["owner_only"]) if r["owner_only"] and not r["needs_skipper"] else ""))
+            "  — the owner's alone (%s)" % ", ".join(r["owner_only"]) if r["owner_only"] and not r["needs_skipper"] else "")
+            + ("  sent, not picked up (%s)" % ", ".join(r["sent"]) if r["sent"] else ""))
     # the brief's stand-down reads this line: on two reads 5 minutes apart, the skipper ends itself
     if not any(r["needs_skipper"] for r in rows):
         print("nothing needs skipper · %s: no open block but the owner's — stand down after a second read 5 minutes on" % a.ships)
@@ -980,7 +1006,7 @@ def skipper_ships(a, leaselib):
 def skipper_status(a, leaselib):
     """Every scope with a lease here: its S5 record (none until S5 writes one), who holds its ships, the
     holder's pid and whether it lives, the session, how many ships, since when."""
-    scopes, bad = {}, []
+    scopes, bad, alive_of = {}, [], {}
     for pid, rec in leaselib.leases():
         if isinstance(rec, Exception):
             bad.append({"plan": pid, "unreadable": str(rec)})
@@ -990,7 +1016,10 @@ def skipper_status(a, leaselib):
         h = s["holders"].setdefault((rec["holder"], rec.get("session")), {"holder": rec["holder"], "session": rec.get("session"), "pid": rec.get("pid"),
                                                     "alive": pid_alive(rec["pid"]) if rec.get("pid") else None,
                                                     "since": rec.get("since"), "ships": []})
-        h["ships"].append({"plan": pid, "gen": rec["gen"], "lapsed": leaselib.lapsed(pid, rec=rec)})
+        # per ship its own session and whether it lives on this host's registry: helm send's pickup reads
+        # it over ssh (S7), and two sessions under one holder name would share the holder's first
+        h["ships"].append({"plan": pid, "gen": rec["gen"], "lapsed": leaselib.lapsed(pid, rec=rec),
+                           "session": rec.get("session"), "session_alive": session_alive(rec.get("session"), alive_of)})
         if rec.get("since") is not None and (h["since"] is None or rec["since"] < h["since"]):
             h["since"] = rec["since"]   # since its first hold of the scope's ships
     out = []
@@ -1015,6 +1044,17 @@ def skipper_status(a, leaselib):
     for b in bad:
         print("  %s: %s" % (b["plan"], b["unreadable"]))
     return 0
+
+
+def session_alive(sid, cache):
+    """True when SID's registry record here names a live pid (asklib.registry; the pickup's test)."""
+    if not sid:
+        return False
+    if sid not in cache:
+        import asklib
+        reg = asklib.registry(sid)
+        cache[sid] = bool(reg) and pid_alive(reg.get("pid"))
+    return cache[sid]
 
 
 def skipper_stand_down(a, leaselib):
@@ -1071,6 +1111,28 @@ def skipper_stand_down(a, leaselib):
     return rc
 
 
+# ---------------------------------------------------------------------------- helm send (skipper-resilience S7)
+# bin/sendlib.py holds the verb; here only the forms. Exit codes are its own: 0 picked up (or laid,
+# detached), 3 not picked up in the wait (sendlib.NOT_PICKED; --mark: nothing to mark), 2 refused, 4 a
+# lease's refusal, 5 not laid (sendlib.NOT_LAID); 1 only a crash.
+
+def cmd_send(a):
+    import sendlib
+    try:
+        if a.mark:
+            return sendlib.mark(a)
+        if a.release:
+            return sendlib.release(a)
+        if a.status:
+            return sendlib.status(a)
+        if a.listen and not a.text and a.what and not Path(a.what[0]).is_file() and not a.what[0].startswith(("claude/", "origin/claude/")):
+            return sendlib.listen(a, hold_parent("HELM_LISTEN_PARENT", "helm send --listen"))
+        return sendlib.send(a)
+    except sendlib.Refused as e:
+        print("helm send: refused: %s" % e, file=sys.stderr)
+        return e.code
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="helm", description=__doc__.split("\n\n")[0])
     sp = ap.add_subparsers(dest="cmd")
@@ -1120,17 +1182,35 @@ def main(argv=None):
     g.add_argument("--arm", action="store_true"); g.add_argument("--disarm", action="store_true"); g.add_argument("--status", action="store_true")
     s.add_argument("--by", default=os.environ.get("USER") or "?", help="--arm: who armed it")
     sp.add_parser("backends"); sp.add_parser("list")
-    # the skipper's session verbs (S4), the tick's --start and --stop (S5); --line (S7) is not here yet
+    # the skipper's session verbs (S4), the tick's --start and --stop (S5), the listener's --line (S7)
     s = sp.add_parser("skipper"); g = s.add_mutually_exclusive_group(required=True)
     g.add_argument("--hold", action="store_true"); g.add_argument("--renew", metavar="PLAN")
     g.add_argument("--ships", metavar="SCOPE"); g.add_argument("--status", action="store_true")
     g.add_argument("--stand-down", dest="stand_down", action="store_true")
     g.add_argument("--start", metavar="SCOPE"); g.add_argument("--stop", metavar="SCOPE")
     g.add_argument("--escalate", nargs=2, metavar=("PLAN", "REF"))
+    g.add_argument("--line", nargs="+", metavar=("PLAN", "BLOCK"))
     s.add_argument("--scope"); s.add_argument("--once", action="store_true"); s.add_argument("--gen", type=int)
     s.add_argument("--json", action="store_true"); s.add_argument("--dry-run", dest="dry_run", action="store_true")
     s.add_argument("--why", help="--stop: the reason its record and the leases' events carry")
+    s = sp.add_parser("send"); s.add_argument("what", nargs="*", help="a blueprint file, a claude/* branch; PLAN [BLOCK] for --listen and --release")
+    s.add_argument("--text"); s.add_argument("--repo"); s.add_argument("--topic"); s.add_argument("--blueprint", help="REL on the branch, when it adds more than one")
+    s.add_argument("--tier"); s.add_argument("--model"); s.add_argument("--effort"); s.add_argument("--scope"); s.add_argument("--plan")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--listen", action="store_true"); g.add_argument("--detach", action="store_true")
+    g.add_argument("--release", action="store_true"); g.add_argument("--status", action="store_true")
+    g.add_argument("--mark", metavar="PLAN", help="the yard's half, over ssh: each open block's task sent")
+    s.add_argument("--no-merge", dest="no_merge", action="store_true"); s.add_argument("--every", type=float, default=5.0, help="minutes")
+    s.add_argument("--json", action="store_true"); s.add_argument("--gen", type=int)
+    s.add_argument("--lay-timeout", dest="lay_timeout", type=float, help="seconds the lay may take over ssh (HELM_SEND_LAY_TIMEOUT; 1200)")
+    s.add_argument("--by"); s.add_argument("--from", dest="from_host")
+    s.add_argument("--block", action="append", help="--mark: a block of the sent ship (repeated)")
     a = ap.parse_args(argv)
+    if a.cmd == "send":
+        try:
+            return cmd_send(a)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit("helm send: %s" % e)
     if a.cmd == "skipper":   # its own exit codes: 4 is a refusal by the lease
         try:
             return cmd_skipper(a)

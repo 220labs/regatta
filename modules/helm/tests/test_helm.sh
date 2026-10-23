@@ -59,7 +59,9 @@ export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" P
        STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 PLAN_NO_WHARF=1   # no wharf pass in a tick outside B7's own block, whose stub it reaches; the stall cards: no ssh to buildbox, no real repo's autofinished, no Orca app (B8's block turns its stub on)
 unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT \
-      SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
+      SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT \
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
+      HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first)
 export CLAUDE_CODE_SESSION_ID=mgr-1
 mkdir -p "$T/home" "$T/sess"
 cp "$TD/surfaces.json" "$T/surfaces.json"
@@ -2126,6 +2128,288 @@ kill $SLEEPS 2>/dev/null
 unset PLANS_DIR ASK_MANAGER_DIR STALLS_STATE_DIR STALLS_LOG ASK_QUEUE_DIR ASK_NO_KEY_FILES HELM_LAUNCH_DIR HELM_LAUNCHCTL \
       HELM_SCREEN HELM_CLAUDE HELM_ACCOUNT HELM_DISPATCH_RC HELM_TRUST MEMO_SHEEP_BIN CLAUDE_REPOS_JSON HELM_SCREENDIR
 export PLANS_DIR="$T/plans" PLAN_PROJECTS_ROOT="$T/projects-root"
+
+echo "helm send (skipper-resilience S7): three ways in, the lay over ssh, the pickup, the listener, --line"
+# A stub ssh (HARNESS_SSH) records its argv and runs the command here as the yard — `yardhost`, none of
+# the caller's session environment (ssh carries none), its own config dir, whose `home` is a stand-in
+# checkout: its wharf lays the ship into the scratch store as --yard would (the real lay is
+# test_wharf.sh's), its helm is this module's. The origin is a bare repo; the scratch store is the
+# yard's, read by the caller only through the stub. No real ssh, no real yard, no claude.
+S7="$T/s7"; mkdir -p "$S7/bin" "$S7/yhome/modules/wharf-runs/bin" "$S7/yhome/modules/helm/libexec" "$S7/ycfg" "$S7/mgr" "$S7/send"
+echo "$S7/yhome" > "$S7/ycfg/home"
+echo yardhost:yard-alias >> "$REGATTA_CONFIG/wharf-runs/ssh"   # the yard's alias, as wharf apply --yard reads it
+LP="$S7/plans"
+export PLANS_DIR="$S7/plans" ASK_MANAGER_DIR="$S7/mgr" CLAUDE_REPOS_JSON="$S7/repos.json" HARNESS_SSH="$S7/bin/ssh" \
+       HELM_SEND_DIR="$S7/send" HELM_SEND_POLL=0.2 HELM_SEND_WAIT=30 PICKUP_HOST=testhost \
+       GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+cat > "$CLAUDE_REPOS_JSON" <<'EOF'
+{"repos": {"sendrepo": {}, "nullrepo": {}, "loose": {}, "farrepo": {}},
+ "scopes": {"dock": {"repos": ["sendrepo"], "yard": "yardhost"}, "nul": {"repos": ["nullrepo"], "yard": null},
+            "far": {"repos": ["farrepo"], "yard": "farhost"}}}
+EOF
+cat > "$S7/bin/ssh" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$S7/ssh.calls"
+while [ \$# -gt 0 ]; do case "\$1" in -o) shift 2;; -*) shift;; *) break;; esac; done
+shift   # the alias
+exec env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS -u DISPATCH_DEPTH -u SKIPPER_GEN \\
+  REGATTA_CONFIG="$S7/ycfg" HARNESS_HOST=yardhost PLAN_HOST=yardhost sh -c "\$*"
+EOF
+printf '#!/bin/sh\n[ -n "${STUB_OLD_HELM:-}" ] && [ "$1" = send ] && { echo "helm: invalid choice: send" >&2; exit 2; }\nexec python3 "%s/helm" "$@"\n' "$LX" > "$S7/yhome/modules/helm/libexec/helm"
+# the yard's wharf, standing in: its argv kept; the pin read from origin and its digest checked (as
+# yard_compile does), the plan made with a task per block and the yard's lease at gen 0
+cat > "$S7/yhome/modules/wharf-runs/bin/wharf" <<EOF
+#!/usr/bin/env python3
+import json, os, re, subprocess, sys
+sys.path.insert(0, "$B")
+a = sys.argv[1:]
+open("$S7/wharf.calls", "a").write(json.dumps(a) + "\n")
+if os.environ.get("STUB_LAY_RC"):
+    print("wharf apply --yard: refused: the stub", file=sys.stderr); sys.exit(int(os.environ["STUB_LAY_RC"]))
+pin, pid = json.loads(a[a.index("--pinned") + 1]), a[a.index("--plan") + 1]
+text = subprocess.run(["git", "-C", "$S7/origin.git", "show", "%s:%s" % (pin["branch"], pin["rel"])], capture_output=True, text=True).stdout
+import helmlib, leaselib
+bl = str(helmlib.peer("blueprintlib.py").parent); sys.path.insert(0, bl)
+import blueprintlib
+bp = blueprintlib.load(pin["rel"], text=text, key=pin["repo"])
+if blueprintlib.digest(bp) != pin["digest"]:
+    print("wharf apply --yard: refused: digest", file=sys.stderr); sys.exit(2)
+if helmlib.load_plan(pid) is None:
+    subprocess.run(["$LX/helm", "ship", bp["name"], "--id", pid], check=True, stdout=subprocess.DEVNULL)
+have = set(t["id"] for t in helmlib.state(pid)["tasks"])   # a rejoin adds the ship's new blocks
+for s in bp["blocks"]:
+    if s["id"] not in have:
+        subprocess.run(["$LX/helm", "task", pid, s["id"], "--block", s["id"]], check=True, stdout=subprocess.DEVNULL)
+if leaselib.read(pid) is None:
+    leaselib.write_yard(pid, "dock", "yardhost", "laid by wharf apply --yard")
+print("wharf apply --yard: %s pinned at %s into plan %s on yardhost" % (pin["rel"], pin["digest"][:12], pid))
+if os.environ.get("STUB_APPLY_RC"):
+    print("wharf apply: Orca is not running here", file=sys.stderr); sys.exit(int(os.environ["STUB_APPLY_RC"]))
+EOF
+chmod +x "$S7/bin/ssh" "$S7/yhome/modules/wharf-runs/bin/wharf" "$S7/yhome/modules/helm/libexec/helm"
+gt() { git -C "$1" "${@:2}"; }
+mkdir -p "$S7/seed/.claude"; git init -q -b main "$S7/seed"
+echo '{"checkpoint": true}' > "$S7/seed/.claude/workflow.json"; printf '# sendrepo\n\n- physical: none\n' > "$S7/seed/AGENTS.md"
+gt "$S7/seed" add -A; gt "$S7/seed" commit -qm init
+git clone -q --bare "$S7/seed" "$S7/origin.git"
+SR="$HOME/projects/sendrepo"; mkdir -p "$HOME/projects"; git clone -q "$S7/origin.git" "$SR" 2>/dev/null
+BR=claude/testhost/2026-10-22-sendbp; WT="$SR/.claude/worktrees/sendbp"
+gt "$SR" worktree add -q "$WT" -b "$BR"; mkdir -p "$WT/docs/blueprints"
+brief7() { printf '## %s\nTask: build %s\nTier: worker\nWhy: the suite\nStart here: here\nDone means: done\nNot this: a landing\n' "$1" "$1"; }
+sbp() { { printf -- '---\nship: %s\nrepo: %s\ncreated: 2026-10-22\n%bblocks:\n  - id: %s\n    depends_on: []\n    provider: claude-code\n---\n' "$1" "$2" "${3:-}" "${4:-work}"
+          brief7 "${4:-work}"; } > "$WT/docs/blueprints/2026-10-22-$1.md"; echo "$WT/docs/blueprints/2026-10-22-$1.md"; }
+P1=$(sbp sendone sendrepo 'skipper: sess-x\n'); P2=$(sbp sendtwo sendrepo); PL=$(sbp sendloose loose); PN=$(sbp sendnull nullrepo)
+gt "$WT" add -A; gt "$WT" commit -qm blueprints; gt "$WT" push -q -u origin "$BR" 2>/dev/null
+calls() { cat "$S7/ssh.calls" 2>/dev/null; }
+pidof7() { python3 -c 'import json, sys; print(json.loads(sys.argv[1].splitlines()[-1])["plan"])' "$1"; }
+sf() { python3 - "$B" "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+pid, task, key = sys.argv[2:5]
+t = next(x for x in helmlib.state(pid)["tasks"] if x["id"] == task)
+print(t.get(key))
+PY
+}
+
+echo "  refused before anything is laid"
+echo "local edit" >> "$P2"; gt "$WT" commit -qam "not pushed" > /dev/null
+out=$("$LX/helm" send "$P2" 2>&1); check "$?" "2" "a committed blueprint not pushed: exit 2"
+has "$out" "push it first: the yard reads origin/$BR:docs/blueprints/2026-10-22-sendtwo.md" "  push it first"
+gt "$WT" reset -q --hard HEAD~1
+out=$("$LX/helm" send "$PL" 2>&1); check "$?" "2" "a repo in no scope: exit 2"
+has "$out" "loose is in no scope (scopes check)" "  says so"
+out=$("$LX/helm" send "$PN" 2>&1); check "$?" "2" "a scope with yard null: exit 2"
+has "$out" "scope nul has no yard (scopes set nul --yard HOST names one)" "  naming scopes set <s> --yard"
+out=$("$LX/helm" send "$BR" --repo "$SR" 2>&1); check "$?" "2" "a branch with four blueprints: exit 2"
+has "$out" "adds 4 blueprints (" "  counts them"
+has "$out" "name the blueprint (--blueprint <path>)" "  name the blueprint"
+mkdir -p "$S7/nullseed/.claude"; git init -q -b main "$S7/nullseed"; echo '{"checkpoint": true}' > "$S7/nullseed/.claude/workflow.json"
+gt "$S7/nullseed" add -A; gt "$S7/nullseed" commit -qm init; git clone -q --bare "$S7/nullseed" "$S7/null.git"
+git clone -q "$S7/null.git" "$HOME/projects/nullrepo" 2>/dev/null
+out=$("$LX/helm" send --text "a task with nowhere to go" --repo "$HOME/projects/nullrepo" 2>&1); check "$?" "2" "--text into a scope with no yard: exit 2"
+has "$out" "scope nul has no yard" "  refused"
+check "$(gt "$HOME/projects/nullrepo" branch --list 'claude/*' | wc -l | tr -d ' ')" "0" "  before pickup seeds a branch"
+check "$(calls | wc -l | tr -d ' ')" "0" "  no refusal reached the yard"
+
+echo "  --text: pickup seed --no-start, the blueprint as sent, the lay over the alias"
+out=$("$LX/helm" send --text "Fix the widget's frobnicator" --repo "$SR" --tier sr-worker --model opus --effort high --detach --json 2>"$S7/err"); rc=$?
+check "$rc" "0" "--text --detach: exit 0"
+TB="claude/testhost/$(date +%Y-%m-%d)-fix-the-widget-s-frobnicator"
+has "$(cat "$S7/err")" "seeded $TB in sendrepo" "  seeded through pickup, the topic from the text"
+TBP="docs/blueprints/$(date +%Y-%m-%d)-fix-the-widget-s-frobnicator.md"
+check "$(gt "$S7/origin.git" show "$TB:docs/handoff/$(date +%Y-%m-%d)-fix-the-widget-s-frobnicator.md" | grep -c "^Task: Fix the widget's frobnicator$")" "1" "  the brief on origin has the Task line"
+sent=$(gt "$S7/origin.git" show "$TB:$TBP")
+has "$sent" $'\nskipper: scope\n' "  the blueprint on origin: skipper: scope"
+has "$sent" 'sent_by: "mgr-1"' "  sent_by: this session"
+has "$sent" $'    provider: claude-code\n    tier: sr-worker\n    model: opus\n    effort: high\n' "  the block's tier, model and effort from the flags"
+check "$(gt "$S7/origin.git" log -1 --format=%s "$TB")" "Send: fix-the-widget-s-frobnicator to skipper · dock (helm send)" "  one Send: commit, pushed"
+check "$(gt "$SR" rev-parse "$TB")" "$(gt "$S7/origin.git" rev-parse "$TB")" "  this Mac's branch moved with it"
+has "$(calls)" "-o BatchMode=yes -o ConnectTimeout=10 yard-alias sh -s -- wharf apply --yard --pinned " "  wharf apply --yard over the yard's alias, with --pinned"
+has "$(calls)" " --laid-by " "  and --laid-by"
+TP=$(pidof7 "$out")
+check "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1].splitlines()[-1])["state"])' "$out")" "laid" "  --json: state laid"
+check "$(python3 -c 'import json, sys; a = json.loads(open(sys.argv[1]).readline()); l = json.loads(a[a.index("--laid-by") + 1]); print(l["mode"], l["session"], l["host"])' "$S7/wharf.calls")" \
+  "attended mgr-1 testhost" "  laid_by computed on the sender's Mac: attended, its session, its host"
+has "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1].splitlines()[-1])["line"])' "$out")" "LAID on yardhost, plan $TP, block fix-the-widget-s-frobnicator — pickup by the tick" "  the LAID line"
+check "$(sf "$TP" fix-the-widget-s-frobnicator send)/$(sf "$TP" fix-the-widget-s-frobnicator sent_by)" "sent/mgr-1" "  the yard marked the task sent, by this session (helm send --mark over ssh)"
+has "$(calls)" "sh -s -- helm send --mark $TP --by mgr-1 --from testhost" "  the mark ran over the alias"
+has "$("$LX/helm" skipper --ships dock)" "sent, not picked up (fix-the-widget-s-frobnicator)" "  --ships: sent, not picked up"
+check "$(SK needs "$TP")" "(True, [])" "  a ship with a task sent and not picked up needs a skipper"
+
+echo "  a blueprint file: skipper rewritten, --no-merge through, the pickup"
+: > "$S7/ssh.calls"
+sleep 300 & SKP=$!; disown $SKP
+regi sk-s7 $SKP busy
+"$LX/helm" send "$P1" --no-merge --listen > "$S7/send1.out" 2>&1 & SEND=$!
+for _ in $(seq 1 100); do grep -q "skipper --status" "$S7/ssh.calls" 2>/dev/null && break; sleep 0.1; done
+CLAUDE_CODE_SESSION_ID=sk-s7 HELM_HOLD_PARENT=$SKP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+wait $SEND; check "$?" "0" "picked up: exit 0"
+out=$(cat "$S7/send1.out")
+has "$out" "skipper: sess-x rewritten to scope" "  a skipper naming a session is rewritten, said"
+P1P=$(ls "$S7/send" | sed -n 's/^send-\(.*\)\.json$/\1/p' | while read -r p; do grep -q '"ship": "sendone"' "$S7/send/send-$p.json" && echo "$p"; done)
+has "$out" "PICKED UP by skipper · dock on yardhost, plan $P1P, block work — this session may close" "  the PICKED UP line"
+has "$out" "listen: run \`" "  --listen: the listener's line for the session"
+has "$out" "send --listen $P1P work\` as a background shell" "    naming the plan and the block"
+has "$(calls)" " --no-merge" "  --no-merge passed through to the lay"
+check "$(grep -c '^skipper: scope$' "$P1")" "1" "  the worktree's file moved with the branch (ff)"
+check "$(sf "$P1P" work send)/$(sf "$P1P" work picked_up_by)" "picked up/skipper · dock" "  the take wrote picked_up_at (leaselib.picked_up)"
+check "$(sf "$TP" fix-the-widget-s-frobnicator send)" "picked up" "  the --text ship too: the skipper took every yard-held ship of dock"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["state"])' "$S7/send/send-$P1P.json")" "picked up" "  the send's record: picked up"
+
+echo "  NOT PICKED UP, forced detach, a handoff branch"
+P3=$(sbp sendthree sendrepo); gt "$WT" add -A; gt "$WT" commit -qm three; gt "$WT" push -q origin "$BR" 2>/dev/null
+out=$(HELM_SEND_WAIT=1 "$LX/helm" send "$P3" 2>&1); rc=$?
+check "$rc" "3" "no skipper in the wait: exit 3, never 1 (a crash's)"
+has "$out" "NOT PICKED UP in 0 min — the yard holds it (gen 0); helm board on yardhost" "  the NOT PICKED UP line"
+P3P=$(ls "$S7/send" | sed -n 's/^send-\(.*\)\.json$/\1/p' | while read -r p; do grep -q '"ship": "sendthree"' "$S7/send/send-$p.json" && echo "$p"; done)
+check "$(lf "$P3P" holder)/$(lf "$P3P" gen)" "yard/0" "  the ship kept: the yard's, gen 0"
+# (a heredoc, not -c "…": bash 3.2 brace-expands the dict literals' {a, b} inside "$(…)", AGENTS.md's trap)
+check "$(python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sendlib
+ship = dict(plan="p", gen=1, session="s", session_alive=False)
+st = dict(scopes=[dict(holders=[dict(holder="skipper · dock", ships=[ship])])])
+print(sendlib.picked(st, "p", "dock"), sendlib.picked(dict(scopes=[dict(holders=[dict(holder="skipper · dock", ships=[dict(ship, session_alive=True)])])]), "p", "dock"))
+PY
+)" "None s" "  a lease at gen 1 whose session is dead on the yard is no pickup; alive, it is"
+P4=$(sbp sendfour sendrepo); gt "$WT" add -A; gt "$WT" commit -qm four; gt "$WT" push -q origin "$BR" 2>/dev/null
+: > "$S7/wharf.calls"
+out=$(CLAUDE_UNATTENDED=1 "$LX/helm" send "$P4" --listen 2>&1); check "$?" "0" "--listen under CLAUDE_UNATTENDED: --detach taken, exit 0"
+has "$out" "a dispatched run cannot listen (CLAUDE_UNATTENDED is set); sent with --detach" "  saying so"
+has "$out" "LAID on yardhost" "  returned at the first safe point"
+check "$(python3 -c 'import json, sys; a = json.loads(open(sys.argv[1]).readline()); print(json.loads(a[a.index("--laid-by") + 1])["mode"])' "$S7/wharf.calls")" "unattended" "  laid_by unattended: the ship never merges by its word"
+out=$(CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 "$LX/helm" send --listen "$P1P" work 2>&1); check "$?" "2" "the listener with background tasks off: refused, exit 2"
+has "$out" "a dispatched run cannot listen" "  saying so"
+printf 'Task: a handoff\nTier: worker\nWhy: w\nStart here: s\nDone means: d\nNot this: n\n' > "$S7/hb.md"
+( cd "$SR" && env -u CLAUDE_CODE_SESSION_ID python3 "$(peer pickup)" seed handed-off --file "$S7/hb.md" --no-start > /dev/null 2>&1 )
+HB="claude/testhost/$(date +%Y-%m-%d)-handed-off"
+out=$( cd "$SR" && "$LX/helm" send "$HB" --detach 2>&1 ); check "$?" "0" "a handoff branch (/todo handoff --send): exit 0"
+has "$out" "LAID on yardhost" "  laid"
+has "$(gt "$S7/origin.git" show "$HB:docs/blueprints/$(date +%Y-%m-%d)-handed-off.md")" $'\nskipper: scope\n' "  its one blueprint found and sent"
+out=$(STUB_LAY_RC=4 "$LX/helm" send "$HB" --repo "$SR" --detach 2>&1); check "$?" "5" "a lay that left nothing on the yard: exit 5, never 1 or 4"
+has "$out" "NOT LAID on yardhost: wharf apply --yard exit 4" "  NOT LAID"
+has "$out" "rejoins it if it went through after all" "  naming the plan to rejoin"
+P5=$(sbp sendfive sendrepo); gt "$WT" add -A; gt "$WT" commit -qm five; gt "$WT" push -q origin "$BR" 2>/dev/null
+out=$(STUB_APPLY_RC=3 "$LX/helm" send "$P5" --detach 2>&1); check "$?" "0" "a lay whose first apply fails after the plan is saved: laid, exit 0"
+has "$out" "LAID on yardhost" "  LAID"
+has "$out" "(its first apply exited 3)" "  saying how its first apply ended"
+P5P=$(ls "$S7/send" | sed -n 's/^send-\(.*\)\.json$/\1/p' | while read -r p; do grep -q '"ship": "sendfive"' "$S7/send/send-$p.json" && echo "$p"; done)
+check "$(sf "$P5P" work send)" "sent" "  recorded and marked as any laid send"
+P6=$(sbp sendsix sendrepo); gt "$WT" add -A; gt "$WT" commit -qm six; gt "$WT" push -q origin "$BR" 2>/dev/null
+out=$(STUB_OLD_HELM=1 "$LX/helm" send "$P6" --detach 2>&1); check "$?" "5" "a yard whose helm has no send: refused, exit 5"
+has "$out" "the yard yardhost's helm has no \`helm send\`" "  saying so"
+has "$out" "pull regatta there first" "  and the fix"
+check "$(gt "$S7/origin.git" show "$BR:docs/blueprints/2026-10-22-sendsix.md" | grep -c '^skipper: scope$')" "0" "  before the blueprint is rewritten or pushed"
+git init -q -b main "$HOME/projects/farrepo"
+out=$("$LX/helm" send --text "a task for a yard with no alias" --repo "$HOME/projects/farrepo" 2>&1); check "$?" "2" "--text to a yard this Mac has no alias for: exit 2"
+has "$out" "scope far's yard farhost has no ssh alias here" "  refused"
+check "$(gt "$HOME/projects/farrepo" branch --list 'claude/*' | wc -l | tr -d ' ')" "0" "  before pickup seeds a branch"
+"$HM" task "$P3P" extra > /dev/null
+u0=$(sf "$P3P" work updated)
+out=$(CLAUDE_CODE_SESSION_ID= "$LX/helm" send --mark "$P3P" --by s-9 --block work); check "$?" "0" "--mark --block: exit 0"
+check "$(sf "$P3P" work sent_by)/$(sf "$P3P" extra sent_by)" "s-9/None" "  only the sent ship's block is marked"
+check "$(sf "$P3P" work updated)" "$u0" "  a mark is no news of the task's own (its updated stays)"
+out=$(CLAUDE_CODE_SESSION_ID= "$LX/helm" send --mark "$P3P" --by s-9 --block nosuch 2>&1); check "$?" "3" "--mark with no open block to mark: exit 3, so the sender warns"
+has "$out" "no open block to mark named nosuch" "  saying so"
+out=$(STUB_APPLY_RC=3 "$LX/helm" send "$P5" --plan "$P5P" --detach 2>&1); check "$?" "5" "a failed lay into a rejoined plan: NOT LAID, exit 5 (the plan was there before)"
+has "$out" "NOT LAID on yardhost: wharf apply --yard exit 3" "  NOT LAID"
+P8=$(sbp sendeight sendrepo '' eight); gt "$WT" add -A; gt "$WT" commit -qm eight; gt "$WT" push -q origin "$BR" 2>/dev/null
+out=$(STUB_APPLY_RC=3 "$LX/helm" send "$P8" --plan "$P5P" --detach --lay-timeout 30 2>&1); check "$?" "0" "a rejoin that adds a new ship, its first apply failed: LAID, exit 0 (its blocks are new there)"
+has "$out" "LAID on yardhost, plan $P5P, block eight" "  LAID, its block named"
+has "$(tail -1 "$S7/wharf.calls")" "--plan" "  the lay ran (--lay-timeout taken)"
+out=$("$LX/helm" send "$P5" --plan 'a b' --detach 2>&1); check "$?" "2" "a bad --plan: refused, exit 2, before anything is committed"
+check "$(python3 - "$B" "$P1P" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+t = helmlib.public(helmlib.state(sys.argv[2]))["tasks"][0]
+print(sorted(k for k in ("sent_by", "sent_from", "picked_up_by") if k in t), t["send"], bool(t["picked_up_at"]))
+PY
+)" "[] picked up True" "K6: the public copy drops the sender, its host and the lease holder; keeps send and its times"
+
+echo "  the line (helm skipper --line), the listener, --release"
+L=$("$LX/helm" skipper --line "$P1P" work)
+check "$L" "sendone/work: planned, worker not started; 0 questions open; lease gen 1 held by skipper · dock" "--line: a block not started"
+check "$("$LX/helm" skipper --line "$P3P" work)" "sendthree/work: planned, sent, not picked up, worker not started; 0 questions open; lease gen 0 held by yard" "  sent, not picked up, the yard's"
+nap; WK=$NAP; regi wk-1 $WK busy
+"$HM" report "$P1P" --task work --status running --session wk-1 > /dev/null
+check "$("$LX/helm" skipper --line "$P1P" work)" "sendone/work: running, worker alive 0 min; 0 questions open; lease gen 1 held by skipper · dock" "  building: the worker alive"
+"$HM" report "$P1P" --task work --status relayed --ask docs/q.md#D1 --summary "which" --session wk-1 > /dev/null   # the worker asks
+has "$("$LX/helm" skipper --line "$P1P" work)" "relayed, worker alive 0 min; 1 question open, with skipper · dock;" "  a question open, with the holder"
+check "$("$LX/helm" skipper --line nosuch 2>&1; echo "rc=$?")" "helm skipper --line: no ship nosuch here
+rc=1" "  no such ship: exit 1"
+sleep 300 & LPAR=$!; disown $LPAR
+out=$(HELM_LISTEN_PARENT=$LPAR "$LX/helm" send --listen "$P1P" work --every 0.005); check "$?" "0" "the listener: one pull, exit 0"
+has "$out" "sendone/work: relayed, worker alive" "  prints the yard's line"
+has "$(calls)" "sh -s -- helm skipper --line $P1P work" "  pulled over the alias"
+out=$(HELM_LISTEN_PARENT=$LPAR "$LX/helm" send --listen "$P1P" nosuch --every 0.005); check "$?" "0" "the listener on a block the yard lacks: exit 0"
+has "$out" "ended: helm skipper --line: ship $P1P has no block nosuch" "  ended, not 'the next pull'"
+check "$(ls "$S7/send" | grep -c '\.pid$')" "0" "  its pid file gone with it"
+python3 - "$B" "$P1P" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event(sys.argv[2], {"task": "work", "status": "launched", "pr": "https://example.invalid/o/r/pull/12"})
+PY
+out=$(HELM_LISTEN_PARENT=$LPAR "$LX/helm" send --listen "$P1P" work --every 0.005)
+has "$out" "sendone/work: ended: launched #12" "  ended: launched #N"
+has "$out" "listener: ended — nothing more to pull" "  the listener says it stops"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["state"])' "$S7/send/send-$P1P.json")" "ended" "  the record: ended"
+"$HM" report "$P3P" --task work --status waiting --ask docs/q.md#D2 --summary "which" --session wk-1 > /dev/null
+CLAUDE_CODE_SESSION_ID= "$LX/helm" skipper --escalate "$P3P" D2 > /dev/null   # the yard holds it: a plain shell passes the fence
+has "$("$LX/helm" skipper --line "$P3P")" "sendthree/work: ended: raised to " "  raised to the owner"
+has "$("$LX/helm" skipper --line "$P3P")" " (holds docs/q.md#D2)" "    with its class: the question the owner holds (helm skipper --escalate)"
+HELM_LISTEN_PARENT=$LPAR "$LX/helm" send --listen "$TP" --every 5 > "$S7/l.out" 2>&1 & LIS=$!
+for _ in $(seq 1 50); do [ -e "$S7/send/send-$TP-fix-the-widget-s-frobnicator.pid" ] && break; sleep 0.1; done
+check "$(head -1 "$S7/send/send-$TP-fix-the-widget-s-frobnicator.pid")" "$LIS" "a listener writes its pid file, send-<plan>-<block>.pid"
+out=$("$LX/helm" send --status); has "$out" "$TP  fix-the-widget-s-frobnicator/fix-the-widget-s-frobnicator  laid  on yardhost (skipper · dock)  listener $LIS" "--status: this session's sends, the listener's pid"
+out=$("$LX/helm" send --release "$TP"); has "$out" "released $TP-fix-the-widget-s-frobnicator (pid $LIS)" "--release: killed by its pid file"
+for _ in $(seq 1 20); do kill -0 $LIS 2>/dev/null || break; sleep 0.1; done
+check "$(kill -0 $LIS 2>/dev/null && echo alive || echo gone)" "gone" "  the listener is gone"
+check "$([ -e "$S7/send/send-$TP-fix-the-widget-s-frobnicator.pid" ] && echo kept || echo removed)" "removed" "  and its pid file"
+sleep 300 & LP2=$!; disown $LP2
+HELM_LISTEN_PARENT=$LP2 "$LX/helm" send --listen "$TP" --every 5 > "$S7/l2.out" 2>&1 & LIS=$!
+sleep 0.5; kill $LP2
+for _ in $(seq 1 30); do kill -0 $LIS 2>/dev/null || break; sleep 0.1; done
+check "$(kill -0 $LIS 2>/dev/null && echo alive || echo gone)" "gone" "a listener ends with its session's claude"
+has "$(cat "$S7/l2.out")" "has ended — the listener with it" "  saying so"
+kill $LIS 2>/dev/null
+
+echo "  the fence: --mark on the yard by a session that does not hold the lease"
+out=$(CLAUDE_CODE_SESSION_ID=other-7 "$LX/helm" send --mark "$P1P" --by x 2>&1); check "$?" "4" "--mark from another session: exit 4"
+has "$out" "refused: lease at gen 1 held by skipper · dock — you are gen none" "  the lease's refusal line"
+check "$(lev "$P1P" refused | tr -d ' ')" "1" "  one 'refused' event, verb helm send"
+P7=$(sbp sendseven sendrepo); gt "$WT" add -A; gt "$WT" commit -qm seven; gt "$WT" push -q origin "$BR" 2>/dev/null
+w0=$(gt "$WT" rev-parse HEAD)
+out=$( cd "$SR" && "$LX/helm" send "$BR" --blueprint "${P7#"$WT/"}" --detach 2>&1 ); check "$?" "0" "a branch another worktree holds, sent by name from elsewhere: exit 0"
+has "$out" "/.claude/worktrees/sendbp pull --ff-only\` there brings" "  its worktree named, never moved (git's own path: /private on macOS)"
+check "$(gt "$WT" rev-parse HEAD)" "$w0" "  that worktree's HEAD untouched (one writer per worktree)"
+kill $SKP $WK $LPAR $SLEEPS 2>/dev/null
+unset PLANS_DIR ASK_MANAGER_DIR CLAUDE_REPOS_JSON HARNESS_SSH HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
+      PICKUP_HOST GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+export PLANS_DIR="$T/plans"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

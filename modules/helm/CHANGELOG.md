@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+skipper-resilience S7, `helm send`: a task handed to its scope's skipper.
+- `helm send <blueprint.md | claude/branch> | --text "<task>" --repo R` (bin/sendlib.py): a committed,
+  pushed blueprint, the one blueprint a handoff branch adds (`--blueprint` names one of several), or a
+  brief `pickup seed --no-start` commits with its one-block blueprint; the blueprint rewritten to
+  `skipper: scope` and `sent_by: <session>` (a --text block also its tier, model, effort) by one plumbing
+  commit, pushed, and read back from origin; then `wharf apply --yard` over the yard's ssh alias with
+  `--pinned`, `--laid-by`, and `--no-merge` when given. A repo in no scope, a scope with no yard (`scopes set <s> --yard`)
+  and a torn registry are refused before anything is seeded or laid.
+- The pickup: the yard's `helm skipper --status --json` polled every 30 s for 10 min — `PICKED UP … this
+  session may close` (exit 0) or `NOT PICKED UP` (exit 3, the ship the yard's; 1 is only a crash); `--detach` returns at
+  `LAID`. Under `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` or `CLAUDE_UNATTENDED` --detach is forced and
+  `laid_by` is unattended. A yard that does not answer, or whose helm has no `helm send`, is refused
+  before anything is seeded or rewritten; a lay that left nothing on the yard is `NOT LAID`, exit 5,
+  and one whose first apply failed after the plan was saved goes on as laid, saying so.
+- The listener, `helm send --listen PLAN [BLOCK]`: one pull of `helm skipper --line` after `--every` minutes
+  (5), then exit; ends with the session's claude; `--release` kills it by its pid file; `--status`.
+- `helm skipper --line PLAN [BLOCK]`: `<ship>/<block>: <status>, worker <alive|gone> N min; k questions open,
+  with <holder>; lease gen g held by <holder>`, or `ended: launched #N | failed: … | raised to <owner> (…)`.
+- The send on the plan: the yard's `helm send --mark` (fenced by the lease) gives each open task `sent_by`,
+  `sent_at`; `leaselib.take` writes `picked_up_at`; `state()` derives `send` (`sent` | `picked up`) and
+  leaves `status` to wharf; `skipperlib.needs` counts a task sent and not picked up; `--ships` names it.
+  `--status --json` gives each ship its session and whether it lives.
+
 skipper-resilience S5, the per-scope skipper.
 - `helm skipper --start SCOPE [--dry-run]` and `--stop SCOPE [--why W]`, both refused under
   `CLAUDE_CODE_SESSION_ID`: a one-shot launchd job per start (`dev.regatta.helm.skipper-<scope>-<start id>`,

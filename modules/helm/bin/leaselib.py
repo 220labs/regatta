@@ -5,8 +5,8 @@ acting verb (wharf apply --yard --plan, ask answer|relay --plan|apply --plan, he
 --renew|--stand-down, autofinish-run under DISPATCH_SHIP) checks the caller's generation against it
 through fence(): a former holder, or a session that never held the ship, is refused with one event
 and exit 4. Raw git, orca and gh are not fenced (the design's K1 count is that check). `helm send`
-(S7) is the one verb the design names that is not built yet: it calls fence(pid, "helm send") as
-the others do.
+(S7, bin/sendlib.py) calls fence(pid, "helm send") in its yard-side half, `helm send --mark`, as the
+others do; and take() is its pickup: a task the send marked `sent` gets `picked_up_at` at the take.
 
     {"holder": "yard" | "skipper · <scope>", "scope": "<scope>", "host": "<yard host>",
      "account": "<label>" | null, "gen": N, "since": <epoch>, "until": <epoch> | null,
@@ -146,6 +146,7 @@ def take(pid, scope, session, pid_, account=None):
                    pid=pid_, account=account, why="taken from the yard at gen %d" % cur["gen"])
         _save(pid, rec)
         _event(pid, "picked up by" if cur["gen"] == 0 else "taken by", rec)
+        picked_up(pid, rec)
     return rec
 
 
@@ -174,6 +175,20 @@ def hand_back(pid, gen, session, why, event="held by yard", only_lapsed=False):
         if only_lapsed and not lapsed(pid, rec=cur):
             raise Refused("%s: renewed since it was read — left as it is" % pid)
         return write_yard(pid, cur.get("scope"), cur.get("host") or helmlib.host(), why, event=event)
+
+
+def picked_up(pid, rec):
+    """The send's pickup (S7): every task of PID that `helm send` marked sent and nobody has picked up
+    yet gets one event with `picked_up_at` — the moment the scope's skipper holds the ship, which is
+    when the sender may close. A take after a hand-back finds none left. Never fails the take: a
+    state that does not read marks nothing, and the sender's wait reads the lease itself."""
+    try:
+        tasks = helmlib.state(pid)["tasks"]
+    except Exception:   # noqa: BLE001 — the take has happened; a mark it cannot make is not the take's failure
+        return []
+    return [helmlib.append_event(pid, {"task": t["id"], "picked_up_at": rec.get("since") or helmlib.now(),
+                                       "picked_up_by": rec.get("holder"), "lease_gen": rec.get("gen")})
+            for t in tasks if t.get("send") == "sent" and t["status"] not in helmlib.ENDED]
 
 
 def renew(pid, gen):
