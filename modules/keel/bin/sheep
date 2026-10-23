@@ -173,8 +173,11 @@ def _home():
 # until then), else the file beside this one. `gate` moves an entry behind the shim's path to this one
 # (gated()), so a run after the change re-points every settings file it writes.
 _HOME = _home()
+# The list is empty without a home: its element is built before the filter runs, so `_HOME / …` on
+# None raised at import and no caller could load this file on a machine with no `home` (CI, a
+# stranger's install; the checkpoint's mirror note fell back to the plain URL).
 GATE = Path(os.environ.get("SHEEP_GATE") or next(
-    (p for p in [_HOME / "modules" / "keel" / "hooks" / "sheep_gate.py"] if _HOME and p.is_file()),
+    (p for p in ([_HOME / "modules" / "keel" / "hooks" / "sheep_gate.py"] if _HOME else []) if p.is_file()),
     HERE.parent / "hooks" / "sheep_gate.py"))
 _gate = SourceFileLoader("sheep_gate", str(HERE.parent / "hooks" / "sheep_gate.py")).load_module()
 
