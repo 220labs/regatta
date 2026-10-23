@@ -1421,7 +1421,8 @@ class Ship:
         adapter's questions(): `check --peek --types question`, never a consuming check), relayed
         once to the skipper with the block id and the text: the file queue its next prompt prints
         (hooks/ask_guard.py; asklib's file backend, bin/ask relay's road) when the skipper is live
-        here, else the plan's `waiting` report the board shows. Recorded in the ship's `relayed`,
+        here, else the plan's `waiting` report the board shows; for a `skipper: scope` ship, Talk to
+        the scope's skipper (its only ear), else the board (skipper-resilience S5). Recorded in the ship's `relayed`,
         so a second pass never relays it again (rename S3's msg_5107b77a14a6 sat 30 min unread)."""
         if not run or not coord:
             return []
@@ -1445,8 +1446,23 @@ class Ship:
                 rows.append(("orca", "relay", sid, "would relay question %s to %s" % (q["id"], skipper(self.bp, self.pid) or "the board")))
                 continue
             import asklib
-            name, verdict, detail, _ = asklib.relay({"manager": skipper(self.bp, self.pid), "session": None, "plan": self.pid}, line, ["file"])
-            if verdict == "queued":
+            who = skipper(self.bp, self.pid)
+            if (self.bp["meta"].get("skipper") or self.bp["meta"].get("manager")) == "scope":
+                # skipper-resilience S5: a `skipper: scope` ship's holder is its scope's skipper, which
+                # hears only Talk (its `ask listen`) — a file line waits for a prompt it never gets. Talk
+                # on the lease holder's own page, else the board, whoever holds it (the yard, a lapsed
+                # lease: `who` is None, and the file road would reach a live skipper that never reads
+                # it; the fifth finish review); S6 moves every relay to hail.
+                sm = asklib.scope_skipper(self.pid) if who else None
+                if sm and sm.get("manager") == who:
+                    name, verdict, detail, _ = asklib.relay(dict(sm, session=None, plan=self.pid), line, ["talk"])
+                else:
+                    name, verdict, detail = None, "none", "no live skipper holds the ship's lease"
+            else:
+                name, verdict, detail, _ = asklib.relay({"manager": who, "session": None, "plan": self.pid}, line, ["file"])
+            if verdict == "sent":
+                how = "the scope skipper's Talk (%s)" % detail
+            elif verdict == "queued":
                 how = "the skipper's next prompt (%s)" % detail
             else:
                 report(self.pid, sid, "waiting", "Orca question %s: %s" % (q["id"], text[:200]))

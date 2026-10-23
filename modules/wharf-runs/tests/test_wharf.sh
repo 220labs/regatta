@@ -1016,6 +1016,46 @@ check "$(wc -l < "$QF" | tr -d ' ')" "1" "  a second pass: not relayed again"
 out=$(W "$WH" apply "$QB" --plan wp --once)
 has "$out" "question msg_qb1 → the board, as waiting" "a skipper not live here: the plan's waiting report instead"
 check "$(pst qb)" "qb=waiting" "  the board shows it waiting"
+# skipper-resilience S5: a `skipper: scope` ship's holder is its scope's skipper, which hears only
+# Talk — its question goes by Talk on the skipper's page or to the board, never into a file queue
+QC=$(mkbp asks3 '  - id: qc\n    provider: orca\n    agent: claude\n')
+skp "$QC" scope
+printf '%s\n' "$(brief qc "c" "c")" >> "$QC"
+W "$WH" apply "$QC" --plan wp > /dev/null
+python3 - "$WS/state.json" "$(pj "p['tasks']['qc']['orca_dispatches'][0]")" "$(pj "p['blueprints']['asks3']['orca_run']")" <<'PY'
+import json, sys
+p, dc, rc = sys.argv[1:]; st = json.load(open(p))
+st["messages"].append({"id": "msg_qc1", "run_id": rc, "type": "question", "from_handle": "dispatch:" + dc, "subject": "Question",
+                       "body": "Which scope?", "read": 0, "created_at": "2026-10-22T16:05:00Z"})
+json.dump(st, open(p, "w"))
+PY
+python3 - "$T/wplans/wp/skipper.json" "$SKP" <<'PY'
+import json, sys, time
+json.dump({"holder": "skipper · tdock", "scope": "tdock", "host": "testhost", "account": None, "gen": 1, "since": time.time(),
+           "until": time.time() + 900, "session": "skipper-0000-4000-8000-000000000000", "pid": int(sys.argv[2]), "why": "the suite"},
+          open(sys.argv[1], "w"))
+PY
+mkdir -p "$T/mgrdir"
+printf '{"session": "skipper-0000-4000-8000-000000000000", "name": "skipper · tdock", "scope": "tdock", "pid": %s, "space": null}' "$SKP" > "$T/mgrdir/testhost-tdock.json"
+n0=$(wc -l < "$QF" | tr -d ' ')
+out=$(W "$WH" apply "$QC" --plan wp --once)
+has "$out" "question msg_qc1 → the board, as waiting" "a scope ship's question with no Talk to its skipper: the board, never the file road"
+check "$(wc -l < "$QF" | tr -d ' ')" "$n0" "  nothing queued for a prompt the skipper never gets"
+# the yard holds the ship while the scope's skipper lives (the fifth finish review): `who` is None,
+# and the file road would still reach that skipper through the relay's own fallback
+python3 - "$WS/state.json" "$(pj "p['tasks']['qc']['orca_dispatches'][0]")" "$(pj "p['blueprints']['asks3']['orca_run']")" "$T/wplans/wp/skipper.json" <<'PY'
+import json, sys, time
+p, dc, rc, sk = sys.argv[1:]; st = json.load(open(p))
+st["messages"].append({"id": "msg_qc2", "run_id": rc, "type": "question", "from_handle": "dispatch:" + dc, "subject": "Question",
+                       "body": "Which yard?", "read": 0, "created_at": "2026-10-22T16:06:00Z"})
+json.dump(st, open(p, "w"))
+rec = json.load(open(sk)); rec.update(holder="yard", session=None, pid=None, gen=rec["gen"] + 1)
+json.dump(rec, open(sk, "w"))
+PY
+out=$(W "$WH" apply "$QC" --plan wp --once)
+has "$out" "question msg_qc2 → the board, as waiting" "  a yard-held scope ship's question with a live skipper: the board, never the file road"
+check "$(wc -l < "$QF" | tr -d ' ')" "$n0" "  still nothing queued"
+rm -f "$T/wplans/wp/skipper.json" "$T/mgrdir/testhost-tdock.json"
 kill $SKP 2>/dev/null; unset ASK_QUEUE_DIR ASK_MANAGER_DIR
 
 echo "  the Yard rules ride in the spec, never in the digest"
