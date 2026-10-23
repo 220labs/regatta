@@ -105,8 +105,9 @@ Lighthouse's second job is the people who meet a business from outside: beacon a
 visitors from the site's own pages (Claude Haiku, one Cloudflare Worker on the free plan) and
 hands what it cannot answer to the people behind the site: the contact form files each message
 as a GitHub issue, and with the `telegram` sink each form send, chat hand-off or mail to the
-site's address also opens a topic in the people's Telegram group, where their reply goes back to
-the visitor in the chat or by mail. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
+site's address opens a topic in the people's Telegram group (a chat hand-off files the issue only
+when the visitor left an address), where their reply goes back to the visitor in the chat or by
+mail. A visitor who asks the bot for a person is handed over the same way. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
 whose word list scans what it builds. beacon is private until its scrub: its chart is
 `beacon/README.md`, and none of its files is in the public twin yet.
 
