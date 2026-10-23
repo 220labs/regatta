@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Each scope pass's cost (knowledge-layers S5, 2026-10-22): `usage-report numbers` carries
+  `scope_passes` — sessions and the API-price proxy per scope, from the sessions whose prompt is
+  `/aurora dream --scope <scope>` — and `knowledge-numbers` prints it as one row (`--scope`: that
+  scope's alone).
 - Gather bounded (knowledge-layers S4, 2026-10-22): `interruptions` keeps a confidential scope's
   rows in every count with their text, file and project blanked (`(confidential)`), leaves them out
   of `--list`, and counts its untrusted repos unnamed; `knowledge-numbers` sums its repos into one
