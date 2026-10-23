@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `weekly-run sextant` (B13): `/sextant` moved into sextant's module — its `where` (`libexec/sextant-run
+  where`) allowed from the module's skill dir and the config dir's link, pinned as aurora's are, and
+  the two reads it types through the core (`usage-report numbers`, `which`). The overlay's case
+  matching /sextant's commands against these lists moved into this suite.
 - `weekly-run sextant` (the Sounding's S7, 2026-10-22): the step 2c allow rules — `soundings`' reading and
   bookkeeping verbs, `keel lint`, `pickup seed * --no-start` and `dispatch * --at reset[+30|+60] --if-room`
   (three literal tails), never `dispatch:*` — and the deny lines that keep `soundings add`, dispatch's

@@ -162,6 +162,68 @@ grep -qF 'keel lint:*)' "$T/sx-allow"; check $? 0 "  allowed: keel lint"
 check "$(grep -cE 'dispatch|soundings|pickup seed|keel lint' "$T/au-allow")" 0 "aurora's run gets none of them"
 check "$(grep -c 'dispatch' "$T/au-deny")" 0 "  nor the sextant's deny lines"
 
+echo "/sextant's commands against the sextant job's lists (moved from the overlay's suite with B13)"
+# What sextant's skill types (`<regatta> <tool> …`) matched against the lists the rehearsal above read,
+# the way a permission rule reads: `X:*` a prefix, else `*` any run of characters. A model of Claude
+# Code's matcher, not the matcher itself; the text checks above pin the lists. Under `auto`, `ask` means
+# the classifier decides; what refuses is a deny rule and dispatch's and pickup's own WEEKLY_RUN guards.
+perm() {  # perm <command> → allow | deny | ask, deny first as Claude Code orders them
+  python3 - "$T/sx-allow" "$T/sx-deny" "$1" <<'PY'
+import re, sys
+def rules(f):
+    return [l[5:-1] for l in open(f).read().splitlines() if l.startswith("Bash(") and l.endswith(")")]
+def hit(rule, cmd):
+    if rule.endswith(":*"):
+        return cmd == rule[:-2] or cmd.startswith(rule[:-2] + " ")
+    return re.fullmatch(".*".join(map(re.escape, rule.split("*"))), cmd, flags=re.S) is not None
+allow, deny, cmd = rules(sys.argv[1]), rules(sys.argv[2]), sys.argv[3]
+print("deny" if any(hit(r, cmd) for r in deny) else "allow" if any(hit(r, cmd) for r in allow) else "ask")
+PY
+}
+RG=$(wh regatta); BRS=claude/h/2026-10-25-sounding-x; PJ="$HOME/projects/x"
+check "$(perm "$RG dispatch $BRS --repo $PJ --at reset+30 --if-room")" allow "sextant 2c: the queue's dispatch, as /sextant types it, is allowed"
+check "$(perm "$L/bin/dispatch $BRS --repo $PJ --at reset --if-room")" allow "  and in the layer's form"
+check "$(perm "$RG dispatch $BRS --repo $PJ --at reset --if-room --yolo")" deny "  --yolo stays out (denied by name)"
+check "$(perm "$RG dispatch $BRS --yolo --at reset")" deny "  --yolo before --at too"
+check "$(perm "$RG dispatch --start go $PJ n --at reset")" deny "  --start stays out"
+check "$(perm "$RG dispatch $BRS --at reset --undeny Bash(gh:*)")" deny "  --undeny stays out"
+check "$(perm "$RG dispatch $BRS --repo $PJ")" ask "  a dispatch without --at reset is not pre-approved (no dispatch:*)"
+check "$(perm "$RG dispatch $BRS --at '2026-11-01 04:00'")" ask "  nor one at a clock time"
+check "$(perm "$RG dispatch $BRS --repo $PJ --at reset")" ask "  nor one without --if-room (R5)"
+check "$(perm "$RG dispatch $BRS --repo $PJ --at reset --at '2026-11-01 04:00' --if-room")" ask "  nor a second --at after the slot (dispatch refuses one before it)"
+check "$(perm "$RG dispatch $BRS --repo $PJ --at reset --if-room --headless")" ask "  nor anything after --if-room"
+check "$(perm "$RG dispatch $BRS --repo $PJ --account claude-x --at reset --if-room")" deny "  --account stays out"
+check "$(perm "$RG dispatch $BRS --repo $PJ --note hi --at reset --if-room")" deny "  --note stays out"
+check "$(perm "$RG dispatch $BRS --repo $PJ --background allow --at reset --if-room")" deny "  --background stays out"
+check "$(perm "$RG pickup seed sounding-x --file /tmp/b.md --repo $PJ --no-start")" allow "  pickup seed"
+check "$(perm "$RG pickup seed sounding-x --file /tmp/b.md --repo $PJ")" ask "  but not without --no-start (pickup refuses it under WEEKLY_RUN, F1)"
+check "$(perm "$RG pickup seed sounding-x --file /tmp/b.md --start --no-start")" deny "  --start stays out of pickup"
+check "$(perm "$RG pickup seed sounding-x --file /tmp/b.md --force --no-start")" deny "  --force too"
+check "$(perm "$RG pickup next")" ask "  …and no other pickup verb"
+check "$(perm "$RG keel lint --strict docs/x.md")" allow "  keel lint"
+check "$(perm "$RG soundings add x")" deny "  never soundings add (the owner's pick)"
+SK="$R/modules/sextant/skills/sextant/SKILL.md"
+if [ -f "$SK" ]; then
+  SXM=$(python3 "$RG" has sextant)
+  check "$(perm "$SXM/skills/sextant/../../libexec/sextant-run where")" allow "/sextant's where, from the module's skill dir"
+  check "$(perm "$HOME/.claude/skills/sextant/../../libexec/sextant-run where")" allow "  and from a config dir's link"
+  check "$(perm "$T/x/skills/sextant/../../libexec/sextant-run where")" ask "  never from another dir (pinned, as aurora's)"
+  # every `<regatta> <tool> [verb]` the skill types, filled out to the shape step 2c gives it
+  missing=""
+  while read -r c; do
+    case "$c" in
+      "pickup seed") cmd="$RG pickup seed sounding-x --file /tmp/b.md --repo $PJ --no-start" ;;
+      dispatch*) cmd="$RG dispatch $BRS --repo $PJ --at reset --if-room" ;;
+      *) cmd="$RG $c x" ;;
+    esac
+    [ "$(perm "$cmd")" = allow ] || missing="$missing [$c]"
+  done < <(grep -oE '<regatta> [a-z][a-z.-]*( [a-z][a-z-]*)?' "$SK" | sed 's/^<regatta> //' | sort -u)  # fenced lines too
+  check "${missing:-none}" none "every <regatta> call /sextant types is allowed"
+  check "$(grep -cE '~/|/bin/[a-z]' "$SK")" 0 "  and it types no path of its own (the core's CLI only)"
+else
+  echo "  skip  sextant's skill is not in this checkout"
+fi
+
 echo "a plain launchd environment (no REGATTA_HOME, no PATH but /usr/bin:/bin)"
 # launchd passes no REGATTA_CONFIG: the config dir is the default one under HOME.
 mkdir -p "$HOME/.config"; cp -R "$REGATTA_CONFIG" "$HOME/.config/regatta"
