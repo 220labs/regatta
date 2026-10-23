@@ -90,7 +90,9 @@ launcher posts it on the PR, and nothing retries on this tip. The report is the 
 11.3). The owner may be watching from the phone or the window `finish · <topic>` and may type: answer
 them as in any session. A launch with `autofinish-run --merge` carries the owner's `--merge` (the prompt ends
 `--unattended --merge`): step 11.4 then merges on the other Mac without asking, this branch's PR only.
-Nothing else differs.
+So does a ship's launch by the yard's tick (`autofinish-run --merge --by ship`: the keel's merge
+default, re-read from the pinned blueprint; skipper-resilience S6); where the keel said no, it
+launches `--hold` instead (below). Nothing else differs.
 
 **`--yolo`, `--dnd`, `--hold`** (with `--unattended` only; autofinish E12 and skipper-modes S3b —
 `bin/autofinish-run --by yolo|dnd`, or the sweep's rule M, started this launch). Some of the branch's
@@ -102,7 +104,7 @@ yours to judge: `autofinish-run` read the ship's mode from `plan.json` (only the
 held slice before it started you, and said so in the prompt. **Without `--hold`** — the mode is the
 yes: step 11 takes the laptop's path on any host, `bin/pr merge` included, and the report ends with
 the rollback line `pr merge` prints. **With `--hold`** — mode `ask`, the dnd slice (money, a physical
-repo, a public publish, a deletion of data, a gated path), or a mode lowered since: step 11.3 as `bin/pr
+repo, a public publish, a deletion of data, a gated path), a mode lowered since, or the keel's no (a ship's `--hold`, S6): step 11.3 as `bin/pr
 ready --hold --body-file <report>`, always `--hold` (automerge would otherwise launch what the owner never
 saw; harmless where none runs), no step 11.4 — `bin/pr merge` is denied to this run. The reason is
 `hold` in `<git dir>/claude/autofinish.json`; put it in the report's first line. Then `rm` the
@@ -519,7 +521,7 @@ session's work sharing the branch — note them; they're reported separately.
        just fetched it; skip when the branch is not on origin): if it fails, GitHub gained a
        commit after step 5 — stop, `rm` the `finishing` marker, and go back to step 5. The
        lease alone never catches it: the fetch in 11.1 moved the ref it compares against.
-    3. `pr ready --body-file <report>` — renames the PR from `WIP: …`
+    3. `pr ready --body-file <report>` (`--hold` in this `/finish`'s arguments: `pr ready --hold --body-file <report>`, then no 11.4) — renames the PR from `WIP: …`
        to the first commit's subject and puts the step-10 report in its body; opens the PR
        when the hook could not. No `gh` needed (a Mac may have none).
     4. **On the laptop (this host is `regatta/laptop`)** — the owner's `/finish` (typed,
