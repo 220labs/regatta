@@ -1045,7 +1045,13 @@ check "$(prun2 -m "Publish after $P_SHA")" 1 "publish --pr: a sha in the PR titl
 has "$T/out" "PR title: commit sha — $P_SHA" "  and named"
 check "$(prun2 -m "Publish for $P_REF")" 1 "publish --pr: a cross-repo ref in the PR title: refused"
 check "$(prun2)" 0 "publish --pr: the replay goes up without those bodies"
-TIPD=$(git -C "$PUB2" for-each-ref --sort=-creatordate --format='%(objectname)' refs/heads/claude/publish | head -1)
+# The branch this publish named ("Proposed <sha> as <branch>"), not the newest by creatordate: a
+# replayed tip carries its private commit's date, a squash the second it ran, so two publish branches
+# can tie there, and the earlier one came back (the twin's CI, 2026-10-23). --verify: a bare
+# rev-parse echoes a name it cannot resolve, and an empty range would pass the next case unread.
+proposed() { sed -n 's/^Proposed [0-9a-f]* as \(claude\/publish\/[^ ]*\) .*/\1/p' "$T/out" | tail -1; }
+check "$(proposed | grep -c '^claude/publish/.')" 1 "  the run named its branch"
+TIPD=$(git -C "$PUB2" rev-parse --verify -q "refs/heads/$(proposed)")
 check "$(git -C "$PUB2" log --format=%B "$P0..$TIPD" | grep -cE "$P_SHA|tool#|acme/tool/pull|$P_UUID|$P_SID")" 0 "  no public commit carries any of them"
 check "$(git -C "$PUB2" log -1 --format=%B "$TIPD" | sed '/^$/d' | tr '\n' '|')" \
       "Tool: 12|Signed-off-by: Film Maker <maker@example.org>|" "  the subject alone, then the gate's trailer"
@@ -1115,7 +1121,7 @@ has "$T/out" "${CE4:0:7}   fold: its tree has 1 finding(s)" "  a string the ref 
 has "$T/out" "${CE5:0:7} → Tool: sixty-two [carries 1 folded]" "  carried by the next that passes"
 has "$T/out" "${CE6:0:7}   private: no published file changed" "  the exemption's own commit publishes nothing"
 check "$(prun2 --topic exempted)" 0 "  publish --pr: the replay goes up"
-TIPE=$(git -C "$PUB2" rev-parse "claude/publish/$(TZ=UTC date +%F)-exempted")
+TIPE=$(git -C "$PUB2" rev-parse --verify -q "refs/heads/$(proposed)")
 check "$(git -C "$PUB2" log --reverse --format=%s "$TIPE~4..$TIPE" | tr '\n' '|')" \
       "Tool: fifty-nine|Tool: sixty|Docs: run it twice|Tool: sixty-two|" "  one public commit each, under their own subjects"
 leaked=0; for c in $(git -C "$PUB2" rev-list "$TIPE~4..$TIPE"); do
@@ -1226,9 +1232,12 @@ has "$T/out" "no commit on origin/main's line has the public main's tree" "  and
 has "$T/out" "publish --pr squashes, one commit" "  so a publish squashes"
 has "$T/out" "pending: not counted — no commit has the public main's tree" "  pending: not counted without a base"
 check "$(prun2)" 0 "publish --pr after a credit merged on GitHub: the span squashes"
-SQ=$(git -C "$PUB2" for-each-ref --sort=-creatordate --format='%(refname)' refs/heads/claude/publish | head -1)
+check "$(proposed | grep -c '^claude/publish/.')" 1 "  the run named its branch"
+SQ="refs/heads/$(proposed)"
 check "$(git -C "$PUB2" rev-list --count "$P9..$SQ")" 1 "  one commit on the new public main"
-check "$(git -C "$PUB2" log -1 --format=%s "$SQ")" "Publish $(TZ=UTC date +%F)" "  under the run's title"
+# The run's day, read from the branch it named (both come from one `today`): the suite's clock
+# can cross UTC midnight between the publish and this line.
+check "$(git -C "$PUB2" log -1 --format=%s "$SQ")" "Publish $(proposed | cut -d/ -f3 | cut -c1-10)" "  under the run's title"
 has "$T/gh.body" "squashed: no private commit has the public main's tree" "  the body says why"
 python3 "$B/helloworld" publish "$R2" --squash > "$T/out" 2>&1
 check "$?" 2 "--squash without --pr: a usage error"
