@@ -8,9 +8,10 @@ approve.
 
 | File | What it is |
 | --- | --- |
-| `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend and the classify (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, and checks each section's proof; `--dry-run` prints tonight's order; `weekly-run where` prints where things are |
+| `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend and the classify (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, and checks each section's proof; `--dry-run` prints tonight's order; `weekly-run where` prints where things are; `weekly-run aurora --scope <scope>` runs one scope's pass instead, from the scope's anchor and on its login |
 | `bin/week-digest` | what the owner typed this week, per project and session — the raw material the dream reads — and `--promote-tags`, the tagged lines; a confidential scope's counted, never quoted, `--scope` for one scope; read-only |
-| `skills/aurora/` | `/aurora`, and its `sections/`: `branches` (a verdict per idle branch code could not settle), `charts` (the layer's docs map and charts kept current, one PR), `dream` (one reviewed proposal for the always-loaded layer) |
+| `bin/scope-pass` | the code half of a scope's pass: `where` (what it reads and writes, and whether it may run), `check` (a confidential scope's draft names none of its repos, paths or words — `<anchor>/.claude/words.txt` holds the node's own), `record` (the dream on the anchor's main; the draft, checked, as the vault's inbox file with a `log.md` line; a hit holds the draft inside the anchor), `proof` |
+| `skills/aurora/` | `/aurora`, and its `sections/`: `branches` (a verdict per idle branch code could not settle), `charts` (the layer's docs map and charts kept current, one PR), `dream` (one reviewed proposal for the always-loaded layer), `dream-scope` (`/aurora dream --scope <scope>`: one scope's pass — its dream in the scope's knowledge repo, its generalised lines in the vault's `inbox/upstream/<scope>.md`, the only thing of a confidential scope the global dream reads) |
 | `skills/embark/` | `/embark`, the Monday sitting |
 | `install.sh` | `--check` what aurora finds; `--schedule` the nightly launchd job (21:00); `--remove` it |
 
@@ -41,6 +42,7 @@ an overlay is installed (the config dir's `legacy` file) and the key is absent, 
 | wharf | `tend`, `repos` (classify), `pr` (the charts PR), `branches.py` | that step fails with one line; the branches section gathers for itself |
 | wharf-runs | `rc-hosts --launcher` (a stable launcher for `claude`) | `claude` runs directly |
 | plumb | `knowledge-numbers`, `interruptions` (the dream's numbers) | the dream says the numbers are missing |
+| lighthouse | `account pick --repo` (the login a scope's pass runs on, `weekly-run aurora --scope`) | an open scope runs on the login it started on; a confidential one with a login does not run |
 | sextant | `weekly-run sextant <cwd>` runs `/sextant` until the sextant module ships its own runner | — |
 
 A peer is found through `regatta which <tool>` (the core's `common.tool()`): a module of the

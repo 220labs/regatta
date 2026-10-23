@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""scope-pass — the parts of a scope's weekly pass that code does (knowledge-layers S5). Stdlib, 3.9.
+
+    scope-pass where SCOPE [--day D]    what the pass reads and writes, one `<name> <value>` line each,
+                                        and `ready yes|no — why`; exit 1 when not ready, 2 no such scope
+    scope-pass check SCOPE [FILE]       exit 1, naming each line, where FILE (default: the pass's draft)
+                                        names a confidential scope's repos, paths or words
+    scope-pass record SCOPE [--day D]   land the pass: the dream on the anchor's main, in place; the
+                                        draft, checked, as the vault's inbox file with one log.md line,
+                                        by knowledge-commit
+    scope-pass proof SCOPE [--day D]    exit 0 when both are on their mains and the inbox file passes
+                                        check; 3 when record held the draft back; 4 when the inbox file
+                                        on the vault's main names the scope (LEAKED); 1 otherwise
+
+**The pass** (`/aurora dream --scope <scope>`, sections/dream-scope.md) is the global dream bounded
+to one scope of the registry: its Gather reads that scope alone (S4's `--scope` readers), and it
+writes two files, both in the node: the scope's dream, `<anchor>/dreams/<day>.md`, which stays there
+and may name anything in it, and the draft of its inbox file, `<anchor>/dreams/<day>-upstream.md`.
+The inbox file, `<vault>/inbox/upstream/<scope>.md`, is the only thing that leaves, and only record
+writes it, from the draft, once check passes: the vault's SessionEnd hook commits and pushes whatever
+lies in its in_place paths, so unchecked text written there would reach GitHub before any check ran
+(S5 landing review, 2026-10-22). It holds generalised lines the global dream reads as inbox (the design's D2-A: "nothing reads down into a
+confidential node; only generalised knowledge flows upstream"). The anchor is the scope's first repo,
+named, never a glob — its knowledge repo, `<scope>-knowledge` by convention (atlas's `knowledge-home`
+reads it the same way); `dreams/` must be in its `in_place` (`knowledge-home init` writes it), as
+the dream is a record written on its main.
+
+**check** is the mechanical half of "generalised": for a confidential scope, a line that names one
+of its repos (a registry key, its last segment, case-blind on word edges), a path of the scope's
+(the core's `scope_match`: checkouts, worktrees, transcripts, each login's project folder, `~`
+forms) or a word of the node's own list fails. The list is `<anchor>/.claude/words.txt`, one word
+per line, `#` comments: the node's names (clients, people, products) live in the node, never here.
+The anchor's own name is one, registered or not. The scope's name alone is not a hit, even where a
+repo or a word shares it: the inbox file is named by it and its heading carries it, by design. A
+confidential scope with no word list is not ready: an empty file (comments only) is the owner's
+deliberate "none". An open scope is read whole by the global dream anyway, so check passes it. An
+unreadable registry fails closed (exit 2).
+
+**record** runs check on the draft first. A hit holds the whole draft back: its text moves to
+`<anchor>/dreams/<day>-upstream-held.md`, the vault is not touched but for a log line that says
+`held` with a count and nothing else, and exit 1. A clean draft becomes the inbox file (the draft is
+removed; the dream's "Sent upstream" keeps its lines), and a clean record after a hold the same day
+replaces the held log line. Then it commits the dream (and the held file) on the anchor's main, those paths alone (in place, never pushed: the
+anchor's main moves on origin through its own flow); appends `- <day> dream --scope <scope>: …` to
+the vault's log.md once; and commits the inbox file and log.md through atlas's `knowledge-commit
+<vault-name>` (its straight form: in_place paths on main, pushed). `SCOPE_PASS_COMMIT` replaces that
+command for the suite. A session runs record as its Record step; weekly-run runs it again as a
+backstop when the session wrote the files and stopped. Calling it twice is safe.
+
+Read-only but for record. Nothing here names a scope, path or word of the owner's: the registry is
+read through the core (`common`), the vault through `weekly-run where`.
+"""
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "lib"))
+import find_core  # noqa: E402  the regatta core's hooks/; none: one line, exit 2
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  scope_registry, scope_members, scope_match, PROJECTS, tool
+
+PROG = "scope-pass"
+HELD = "-upstream-held"
+PATHLIKE = re.compile(r"(?:~|/)[^\s`'\"()<>\[\]{},;|]+")
+
+
+def die(msg, code=1):
+    print(f"{PROG}: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def arg(name, default=None):
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 >= len(sys.argv):
+            die(f"{name} needs a value", 2)
+        return sys.argv[i + 1]
+    return default
+
+
+def git(repo, *a):
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+
+
+def where_vault():
+    """(vault, vault-name) as weekly-run prints them — the one home for where the vault is."""
+    r = subprocess.run([str(HERE / "weekly-run"), "where"], capture_output=True, text=True)
+    kv = dict(l.split(" ", 1) for l in r.stdout.splitlines() if " " in l)
+    v = kv.get("vault", "MISSING")
+    return (None if v == "MISSING" else Path(v)), kv.get("vault-name") or "vault"
+
+
+def resolve(scope, day):
+    """Everything the pass needs, and why it is not ready (None when it is)."""
+    if common.registry_unreadable():
+        die(f"the registry {common.repos_json()} cannot be read — no scope can be (fails closed)", 2)
+    repos, scopes = common.scope_registry()
+    if scope not in scopes:
+        die(f"no scope {scope!r} in the registry — it has {', '.join(sorted(scopes)) or 'none'}", 2)
+    s = scopes[scope] if isinstance(scopes[scope], dict) else {}
+    members = [k for k in common.scope_members(s, repos) if k in repos]
+    listed = s.get("repos") if isinstance(s.get("repos"), list) else []
+    first = listed[0] if listed else None
+    anchor = first if isinstance(first, str) and not common.is_glob(first) else None
+    top = common.PROJECTS / anchor if anchor else None
+    vault, vname = where_vault()
+    conf = s.get("confidential") is True
+    words = top / ".claude" / "words.txt" if top else None
+    info = {
+        "scope": scope, "confidential": conf, "login": common.scope_login(scope), "members": members,
+        "anchor-name": anchor, "anchor": top, "dream": top / "dreams" / f"{day}.md" if top else None,
+        "draft": top / "dreams" / f"{day}-upstream.md" if top else None,
+        "vault": vault, "vault-name": vname,
+        "inbox": vault / "inbox" / "upstream" / f"{scope}.md" if vault else None,
+        "section": top / ".claude" / "scope-pass.md" if top else None,
+        "words": words if words and words.is_file() else None,
+    }
+    info["memory"] = (([top / "memory"] if top else []) if conf else
+                      [vault / "memory" / k.rsplit("/", 1)[-1] for k in members] if vault else [])
+    info["memory"] = [m for m in info["memory"] if m and m.is_dir()]
+    why = None
+    if not anchor:
+        why = f"scope {scope} has no anchor (its first repo, named, not a glob)"
+    elif not (top / ".git").exists():
+        why = f"its anchor {anchor} is not cloned here ({top})"
+    elif not vault:
+        why = "atlas's vault is not configured (weekly-run where)"
+    elif conf and not info["words"]:
+        why = (f"confidential, and {anchor} has no .claude/words.txt — check would hold its repos and paths "
+               f"but not its own names; an empty file (comments only) says there are none")
+    else:
+        wf = top / ".claude" / "workflow.json"
+        try:
+            w = json.loads(wf.read_text(encoding="utf-8")) if wf.is_file() else None
+        except (OSError, ValueError):
+            w = {}
+        main = (w or {}).get("main") or "main"
+        info["main"] = main
+        branch = git(top, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
+        in_place = [str(e).rstrip("/") for e in ((w or {}).get("in_place") or [])]
+        if w is not None and "dreams" not in in_place:
+            why = (f"dreams/ is not in {anchor}'s in_place ({wf}): the checkpoint hook denies the dream "
+                   f"on its main — `knowledge-home init {scope}` names the fix")
+        elif branch != main:
+            why = f"{top} is on {branch or 'a detached HEAD'}, not {main}: the dream is a record written on {main}"
+    info.setdefault("main", "main")
+    return info, why
+
+
+def terms(info):
+    """[(kind, term, regex)] that check refuses for a confidential scope."""
+    out, seen = [], set()
+
+    def add(kind, t):
+        t = t.strip()
+        if len(t) < 2 or t.lower() in seen:
+            return
+        seen.add(t.lower())
+        out.append((kind, t, re.compile(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", re.I)))
+    seen.add(info["scope"].lower())   # the file is named by it and its heading carries it
+    for k in info["members"] + ([info["anchor-name"]] if info["anchor-name"] else []):
+        add("repo", k)
+        add("repo", k.rsplit("/", 1)[-1])
+    if info["words"]:
+        for line in info["words"].read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.split("#", 1)[0]
+            if line.strip():
+                add("word", line)
+    return out
+
+
+def hits_in(info, text):
+    """[(line number, kind, term)] — what a confidential scope's inbox file may not say."""
+    if not info["confidential"]:
+        return []
+    ts, match = terms(info), common.scope_match(info["scope"])
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        for kind, t, rx in ts:
+            if rx.search(line):
+                out.append((n, kind, t))
+        for p in PATHLIKE.findall(line):
+            if match(p.rstrip(".:")):
+                out.append((n, "path", p))
+    return out
+
+
+def cmd_where(info, why):
+    for k in ("scope", "confidential", "login", "anchor-name", "anchor", "dream", "draft", "inbox", "section",
+              "words", "vault", "vault-name"):
+        v = info.get(k)
+        v = ("yes" if v else "no") if k == "confidential" else (v if v else ("none" if k in ("section", "words", "login") else "MISSING"))
+        print(f"{k} {v}")
+    print(f"members {' '.join(info['members']) or 'none'}")
+    for m in info["memory"] or ["none"]:
+        print(f"memory {m}")
+    print(f"ready {'no — ' + why if why else 'yes'}")
+    return 1 if why else 0
+
+
+def cmd_check(info, path):
+    p = Path(path) if path else info["draft"]
+    if not p or not p.is_file():
+        die(f"no file to check ({p})")
+    if not info["confidential"]:
+        print(f"open scope {info['scope']}: the global dream reads it whole — nothing to hold ({p})")
+        return 0
+    hits = hits_in(info, p.read_text(encoding="utf-8", errors="replace"))
+    for n, kind, t in hits:
+        print(f"{p}:{n}: names {kind} {t}")
+    if hits:
+        print(f"{len({n for n, _, _ in hits})} line(s) of {p} name confidential scope {info['scope']} — none of it may go upstream")
+        return 1
+    words = sum(1 for kind, _, _ in terms(info) if kind == "word")
+    print(f"clean: {p} names none of {info['scope']}'s {len(info['members'])} repo(s), its paths or its {words} word(s)")
+    return 0
+
+
+def count(path, rx):
+    try:
+        return sum(1 for l in path.read_text(encoding="utf-8", errors="replace").splitlines() if re.match(rx, l))
+    except OSError:
+        return 0
+
+
+def heading_ok(text, info, day):
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return first.startswith("# Upstream — ") and day in first
+
+
+def log_line(info, day, body):
+    """The pass's log.md line, once a day; a clean record replaces the day's held line."""
+    log = info["vault"] / "log.md"
+    key = f"- {day} dream --scope {info['scope']}:"
+    have = log.read_text(encoding="utf-8") if log.is_file() else ""
+    lines = have.splitlines()
+    mine = [i for i, l in enumerate(lines) if l.startswith(key)]
+    if mine and (body.startswith("held") or not lines[mine[-1]].startswith(f"{key} held")):
+        return
+    if mine:
+        lines[mine[-1]] = f"{key} {body}"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
+    log.write_text(have + ("" if not have or have.endswith("\n") else "\n") + f"{key} {body}\n", encoding="utf-8")
+
+
+def vault_commit(info, day, paths, what):
+    if not git(info["vault"], "status", "--porcelain", "--", *paths).stdout.strip():
+        return True   # already committed: a second record, or the backstop after the session's
+    kc = os.environ.get("SCOPE_PASS_COMMIT") or common.tool("knowledge-commit")
+    if not kc:
+        print(f"{PROG} record: atlas's knowledge-commit is not installed — {what} written, not committed", file=sys.stderr)
+        return False
+    r = subprocess.run([*str(kc).split(), info["vault-name"], "-m", f"Upstream: {info['scope']} {day}", *paths],
+                       cwd=str(info["vault"]), capture_output=True, text=True)
+    sys.stdout.write(r.stdout)
+    if r.returncode != 0:
+        print(f"{PROG} record: knowledge-commit {info['vault-name']} failed ({(r.stderr or r.stdout).strip()[-300:]}) — "
+              f"{what} written, not committed; the next records commit launches it", file=sys.stderr)
+        return False
+    return True
+
+
+def anchor_commit(info, day, rels):
+    top = info["anchor"]
+    git(top, "add", "--", *rels)
+    if git(top, "diff", "--cached", "--quiet", "--", *rels).returncode == 0:
+        return True   # already committed: a second record, or the backstop after the session's
+    r = git(top, "commit", "-q", "-m", f"Dream: {info['scope']} {day} (scope-pass record)", "--", *rels)
+    if r.returncode != 0:
+        print(f"{PROG} record: the commit in {top} failed — {(r.stderr or r.stdout).strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_record(info, why, day):
+    if why:
+        die(f"record: not ready — {why}")
+    dream, draft, inbox, top = info["dream"], info["draft"], info["inbox"], info["anchor"]
+    rel = f"inbox/upstream/{info['scope']}.md"
+    if not dream.is_file():
+        die(f"record: no dream at {dream} — the section writes it first")
+    if draft.is_file():
+        text = draft.read_text(encoding="utf-8", errors="replace")
+    elif inbox.is_file() and heading_ok(inbox.read_text(encoding="utf-8", errors="replace"), info, day):
+        text = inbox.read_text(encoding="utf-8", errors="replace")   # an earlier record moved it: finish its commits
+    else:
+        die(f"record: no draft at {draft} — the section writes it every week, a quiet one included")
+    if not heading_ok(text, info, day):
+        die(f"record: {draft} does not start with this pass's heading (`# Upstream — {info['scope']} — {day} …`)")
+    rels = [f"dreams/{day}.md"]
+    hits = hits_in(info, text)
+    if hits:
+        held = top / "dreams" / f"{day}{HELD}.md"
+        held.write_text(f"# Held upstream lines — {day}\n\n`scope-pass check` found {len(hits)} name(s) of this scope "
+                        f"in the draft, so none of it left the node. Rewrite the lines without them in "
+                        f"dreams/{day}-upstream.md and run `scope-pass record {info['scope']}` again, or leave them here.\n\n"
+                        + "".join(f"- line {n}: {kind} {t}\n" for n, kind, t in hits) + "\n---\n\n" + text, encoding="utf-8")
+        if draft.is_file():
+            draft.unlink()
+        else:   # the hit sat in the vault's inbox file (a record before this check knew a term): put back main's
+            old = git(info["vault"], "show", f"HEAD:{rel}")
+            if old.returncode == 0 and hits_in(info, old.stdout):   # already committed, likely pushed: no hold can undo it
+                print(f"LEAKED {rel} on {info['vault-name']}'s main names confidential scope {info['scope']} — "
+                      f"its text is in {held}; take it out of the vault's history", file=sys.stderr)
+                return 4
+            inbox.write_text(old.stdout, encoding="utf-8") if old.returncode == 0 else inbox.unlink()
+        ok = anchor_commit(info, day, rels + [f"dreams/{day}{HELD}.md"])
+        lines = len({n for n, _, _ in hits})
+        log_line(info, day, f"held — {lines} line(s) named the scope, nothing went upstream")
+        vault_commit(info, day, ["log.md"], "the log line")   # commits only what differs: a retry's line too
+        die(f"record: held — {lines} line(s) of the draft name confidential scope {info['scope']}; its text is in "
+            f"{held}{'' if ok else ' (uncommitted)'}, nothing went upstream")
+    if not anchor_commit(info, day, rels):
+        return 1
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(text, encoding="utf-8")
+    if draft.is_file():
+        draft.unlink()
+    p, u = count(dream, r"^P\d+\."), count(inbox, r"^U\d+\.")
+    log_line(info, day, f"{p} P-items in the scope's dream, {u} upstream line(s)")
+    if not vault_commit(info, day, [rel, "log.md"], "the inbox file"):
+        return 1
+    print(f"recorded: {top.name}'s dreams/{day}.md on its {info['main']}; {u} upstream line(s) in "
+          f"{info['vault-name']}'s {rel}")
+    return 0
+
+
+def cmd_proof(info, day):
+    top, rel = info["anchor"], f"inbox/upstream/{info['scope']}.md"
+    if not top or not info["vault"]:
+        print(f"MISSING the anchor or the vault for {info['scope']}")
+        return 1
+    # The vault's main first: a leak there is the one state that needs the owner at once, whatever the
+    # log or the anchor says.
+    r = git(info["vault"], "show", f"main:{rel}")
+    if r.returncode == 0 and hits_in(info, r.stdout):
+        print(f"LEAKED {rel} on {info['vault-name']}'s main names confidential scope {info['scope']} (scope-pass check)")
+        return 4
+    if git(top, "cat-file", "-e", f"{info['main']}:dreams/{day}.md").returncode != 0:
+        print(f"MISSING dreams/{day}.md on {top.name}'s {info['main']}")
+        return 1
+    landed = r.returncode == 0 and heading_ok(r.stdout, info, day)
+    log = git(info["vault"], "show", "main:log.md").stdout
+    if not landed and any(l.startswith(f"- {day} dream --scope {info['scope']}: held") for l in log.splitlines()):
+        print(f"HELD the draft of {info['scope']} {day}: it named the scope; its text is in {top.name}'s dreams/{day}{HELD}.md")
+        return 3
+    if not landed:
+        print(f"MISSING {rel} of {day} on {info['vault-name']}'s main")
+        return 1
+    print(f"LAUNCHED dreams/{day}.md on {top.name}'s {info['main']}, {rel} on {info['vault-name']}'s main")
+    return 0
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] not in ("where", "check", "record", "proof"):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    cmd, scope = sys.argv[1], sys.argv[2]
+    day = arg("--day") or dt.date.today().isoformat()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        die(f"--day {day}: not yyyy-mm-dd", 2)
+    info, why = resolve(scope, day)
+    if cmd == "where":
+        return cmd_where(info, why)
+    if cmd == "check":
+        rest = [a for a in sys.argv[3:] if not a.startswith("--") and a != arg("--day")]
+        return cmd_check(info, rest[0] if rest else None)
+    if cmd == "record":
+        return cmd_record(info, why, day)
+    return cmd_proof(info, day)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

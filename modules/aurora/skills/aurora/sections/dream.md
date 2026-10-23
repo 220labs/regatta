@@ -6,6 +6,10 @@ mechanism for every correction the owner had to repeat. Was the `/dream` skill u
 (the layer's docs/record/regatta-2026-10-03.md); `/aurora dream` runs it on its own, `--days N`
 widens the window. `<regatta>`, `<vault>` and the rest: the aurora skill's "Where things are".
 
+**With `--scope <scope>`** this file is not the one: read `sections/dream-scope.md` beside it and
+follow that instead — one scope's pass, its dream in the scope's anchor and its generalised lines
+in the vault's `inbox/upstream/<scope>.md` (knowledge-layers S5).
+
 The shape is Anthropic's "dreaming" for Managed Agents (the layer's DESIGN.md F2): read past sessions
 and the current memory, write a *reorganised* version for human approval, never edit the
 live layer directly. Here that means: **this section writes one proposal file and its

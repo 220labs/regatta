@@ -13,6 +13,22 @@
   and `--end`, and pickup's `--start`/`--launch`/`--force` out. The job exports `WEEKLY_RUN=sextant`,
   which soundings' two refusals read and pickup and dispatch enforce (the run is in `auto` mode, where
   an allow rule refuses nothing). A rehearsal's stand-in reads both lists as `WEEKLY_ALLOWED` / `WEEKLY_DENIED`.
+- The per-scope pass (knowledge-layers S5, 2026-10-22): `/aurora dream --scope <scope>`
+  (`sections/dream-scope.md`) reads one scope with S4's `--scope` readers and writes the scope's
+  dream in its anchor's `dreams/` and its generalised lines in the vault's
+  `inbox/upstream/<scope>.md`. `bin/scope-pass` does the code half: `where`, `check` (a confidential
+  scope's inbox file may name none of its repos, paths or `<anchor>/.claude/words.txt` words),
+  `record` (the dream committed on the anchor's main in place, the inbox file and one `log.md` line
+  through `knowledge-commit`; a hit holds the file inside the anchor), `proof`. `weekly-run aurora
+  --scope <scope>` runs it unattended from the anchor, on the scope's login through `account pick
+  --repo` (a confidential scope that cannot prove its seat does not run), records as a backstop and
+  logs `LAUNCHED`/`FAILED`; its bulletin lines are posted from the vault, never naming the anchor.
+  The landing review's fixes: the session writes its draft beside the dream, in the anchor, and only
+  `record` puts it in the vault, after `check` (the vault's SessionEnd hook pushes whatever lies in
+  its in_place paths); `proof` judges the vault's main first and says `LEAKED` (exit 4); a clean
+  record after a hold replaces the held log line; the scope's name is never a hit and the anchor's
+  is; a confidential scope without `words.txt` is not ready; the section never posts to the bulletin;
+  `account pick` must answer with the scope's login, and its reasons stay in the log.
 - Gather bounded (knowledge-layers S4, 2026-10-22): `week-digest` counts a confidential scope's
   sessions and never quotes them (the core's `gather_fence`; a torn registry quotes nothing),
   `--scope <scope>` reads that scope alone, and `--promote-tags` replaces the dream's raw

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # weekly-run <aurora|sextant> <cwd> — what launchd runs for the night loop (bootstrap.sh --schedule).
+# weekly-run aurora --scope <scope> [--dry-run] — one scope's pass, unattended (knowledge-layers S5;
+# below, at `scope=`).
 #
 # aurora runs nightly; `due` below names tonight's sections and a night with none due ends here,
 # before `claude` starts, so a quiet night costs nothing. AURORA_SECTIONS overrides the list
@@ -10,8 +12,8 @@
 # the classifier and checkpoint.py decide; the allowlist names the scripts the skills
 # call so the classifier is not asked about them, and test_hooks.sh pins the mode. No push by the
 # run (this script pushes the charts dry run's branch afterwards, charts_launch below), no
-# deploy, nothing outside the two knowledge repos written by intent — Aurora's dream section only
-# writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
+# deploy, nothing outside the two knowledge repos written by intent (a scope's pass: its anchor too,
+# the dream on the anchor's main) — Aurora's dream section only writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
 # then EnterWorktree: the same way every session reaches one — coding-on-workflow 3c, probed
 # under claude -p on 2026-09-26) and launches them with knowledge-commit --in.
 #
@@ -92,13 +94,25 @@ if [ "${1:-}" = where ]; then
   [ -n "$REG" ] && [ -n "$P" ]; exit
 fi
 
-job="${1:?aurora|sextant}"; cwd="${2:?cwd}"
-dry=""; [ "${3:-}" = --dry-run ] && dry=1
+job="${1:?aurora|sextant}"
+# `weekly-run aurora --scope <scope> [--dry-run]`: one scope's pass (knowledge-layers S5) instead of
+# the night — no tend, no classify, no due: the dream section alone, scoped, from the scope's anchor
+# (bin/scope-pass where finds it), on the scope's login when the registry names one, then
+# scope-pass record as a backstop and scope-pass proof as the night's LAUNCHED/FAILED line. Its
+# own log, $day-aurora-<scope>.log; what schedules it is the clock's (S7), not `due`.
+scope=""
+if [ "${2:-}" = --scope ]; then
+  scope="${3:-}"; cwd=""; dry=""; [ "${4:-}" = --dry-run ] && dry=1
+  [[ "$scope" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "weekly-run: --scope needs a scope name (letters, digits, . _ -)" >&2; exit 2; }
+  [ "$job" = aurora ] || { echo "weekly-run: --scope is aurora's (one scope's dream)" >&2; exit 2; }
+else
+  cwd="${2:?cwd}"; dry=""; [ "${3:-}" = --dry-run ] && dry=1
+fi
 sections=""
 if [ "$job" = dream ]; then job=aurora; sections="${AURORA_SECTIONS:-dream}"; fi  # the old plist (renamed 2026-10-03)
 [ "$job" = horizon ] && job=sextant  # the old launchd plist, until bootstrap.sh --schedule is re-run (renamed 2026-10-02)
 day=$(date +%Y-%m-%d)
-log="$LOGS/$day-$job.log"
+log="$LOGS/$day-$job${scope:+-$scope}.log"
 mkdir -p "$(dirname "$log")"
 say() { if [ -n "$dry" ]; then echo "$1"; else echo "$1" >> "$log"; fi; }
 # The core and the repos the job writes are required; their absence is one line, never a guess.
@@ -118,7 +132,10 @@ fi
 DOCS_INDEX=$(tool docs-index); BULLETIN=$(tool bulletin.py); KC=$(tool knowledge-commit)   # atlas
 TEND=$(tool tend); REPOS=$(tool repos); PR=$(tool pr)                                      # wharf
 post() {  # post <why> <text>: one bulletin line through atlas; without atlas, the log line alone says it
-  [ -n "$BULLETIN" ] && python3 "$BULLETIN" --post "$1" "$2" >/dev/null 2>&1; true
+  # From the vault in a scope's pass: the bulletin labels a line by its cwd, and every session reads
+  # it — the anchor's name is a confidential scope's repo (knowledge-layers S5).
+  # No vault to cd to: no line — never one from the anchor (S5 landing review).
+  [ -n "$BULLETIN" ] && ( { [ -z "$scope" ] || { [ -n "$P" ] && cd "$P"; }; } && python3 "$BULLETIN" --post "$1" "$2" ) >/dev/null 2>&1; true
 }
 # Hosts the loop never runs on (`aurora/skip-hosts` in the config dir, one per line; the owner's
 # overlay names the second Mac: two Macs each writing dreams/<date>.md in place conflict on push,
@@ -155,6 +172,22 @@ if [ -z "$P" ] || { [ "$job" = sextant ] && [ -z "$C" ]; }; then
   [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: atlas's layer or vault is not configured in $RCFG/atlas/. Log: $log"
   exit 1
 fi
+# A scope's pass runs from its anchor: the fence (lighthouse's secrets_guard) keeps a confidential
+# scope's paths from any other cwd, and the dream is a record on the anchor's main. Not ready — no
+# anchor here, dreams/ not in its in_place, its checkout off main — is one line and no session.
+if [ -n "$scope" ]; then
+  sp_where=$("$MOD/bin/scope-pass" where "$scope" 2>&1); sp_rc=$?
+  sp() { sed -n "s/^$1 //p" <<<"$sp_where" | head -1; }
+  if [ $sp_rc = 2 ]; then
+    say "$(date '+%H:%M') refused: ${sp_where##*$'\n'}"; exit 1
+  fi
+  if [ $sp_rc != 0 ]; then
+    say "$(date '+%H:%M') refused: scope $scope is not ready — $(sp ready | sed 's/^no — //')"
+    [ -z "$dry" ] && post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: not ready (scope-pass where $scope says why). Log: $log"
+    exit 1
+  fi
+  cwd=$(sp anchor); sp_login=$(sp login); sp_conf=$(sp confidential)
+fi
 # Each script twice: an overlay skill (/sextant) calls them as ~/<the layer's path>/…, and a
 # permission pattern is matched against the command text as written — the absolute form alone
 # matched nothing, so the first /dream (2026-09-16) ran with every Bash call denied. The second
@@ -165,7 +198,7 @@ tools=(Read Write Edit Glob Grep Agent)  # Agent: /sextant's reviewer before a g
 # it only reads.
 # Pinned to those base directories (the module's, the config dir's links), never `*/…`: a planted
 # weekly-run under any x/y/../../bin would match a wildcard and run unclassified (B10 review).
-tools+=("Bash($MOD/bin/weekly-run where)" "Bash($MOD/bin/week-digest:*)")
+tools+=("Bash($MOD/bin/weekly-run where)" "Bash($MOD/bin/week-digest:*)" "Bash($MOD/bin/scope-pass:*)")
 for sk in aurora embark; do
   for sb in "$MOD/skills/$sk" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$sk"; do
     tools+=("Bash($sb/../../bin/weekly-run where)")
@@ -313,7 +346,19 @@ plan() {
     printf '  %d %-8s %-7s %s\n' "$n" "$step" "$st" "$what"
   done
 }
-if [ "$job" = aurora ]; then
+# --scope --dry-run: the pass's steps; runs and records nothing.
+scope_plan() {
+  echo "aurora --scope $scope $day — one scope's pass (dry run: nothing runs, nothing is recorded)"
+  "$MOD/bin/scope-pass" proof "$scope" --day "$day" >/dev/null 2>&1 && echo "  already landed today: a real run ends at its proof"
+  if [ "$sp_login" = none ] || [ -z "$sp_login" ]; then echo "  1 login   the one this run starts on (the scope names none)"
+  else echo "  1 login   $sp_login, by account pick --repo $cwd"; fi
+  echo "  2 dream   claude -p \"/aurora dream --scope $scope\" from $cwd (confidential: $sp_conf)"
+  echo "  3 record  scope-pass record $scope if the session wrote its files and stopped, then scope-pass proof $scope"
+}
+if [ -n "$scope" ]; then
+  if [ -n "$dry" ]; then scope_plan; exit 0; fi
+  sections=dream   # never the tried files: those are the global dream's week
+elif [ "$job" = aurora ]; then
   sections="${sections:-${AURORA_SECTIONS:-$(due | tr '\n' ' ')}}"
   sections="$(set -f; in_order "$sections")"  # squeeze spaces; set -f: a `*` must not glob the cwd
   if [ -n "$dry" ]; then plan; exit 0; fi
@@ -332,7 +377,8 @@ case "$job" in
   sextant) repo="$C"; entry="sextant/$day.md" ;;
   aurora)  repo=""; entry=""
            # the dream's proposal is the entry that must launch; a night without it checks nothing
-           case " $sections " in *" dream "*) repo="$P"; entry="dreams/$day.md" ;; esac ;;
+           # (a scope's pass proves itself: scope_run)
+           [ -z "$scope" ] && case " $sections " in *" dream "*) repo="$P"; entry="dreams/$day.md" ;; esac ;;
   *)       repo=""; entry="" ;;
 esac
 # The days a check accepts: the run's start day, and today when the run crossed midnight — a
@@ -600,9 +646,98 @@ branches_check() {
   fi
 }
 
+# A scope's pass (knowledge-layers S5). The login first: a scope whose registry entry names one runs
+# there alone, through lighthouse's `account pick --repo <anchor>` (it picks that row or none, exit 3);
+# a confidential scope that cannot prove its seat — no account tool, no registry, no answer — does
+# not run, never on another seat. Then one session, the backstop record, and the proof. A bulletin
+# line names the scope and the log, never a repo of it: the bulletin is read by every session, and
+# account's reasons can name the anchor's key, so they go to the log alone.
+# WEEKLY_ACCOUNT replaces the account command for the suite.
+scope_refused() {  # $1: why the pass did not start, $2: account's detail, for the log alone
+  echo "FAILED scope $scope $day: $1${2:+ ($2)}"
+  post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: $1. Log: $log"
+}
+scope_account() {
+  local acct out rc line
+  [ -n "$sp_login" ] && [ "$sp_login" != none ] || { echo "== account: the one this run started on (scope $scope names none)"; return 0; }
+  acct=${WEEKLY_ACCOUNT:-$(tool account)}
+  if [ -n "$acct" ]; then out=$("$acct" pick --repo "$cwd" --json 2>&1); rc=$?; else out="lighthouse's account is not installed"; rc=127; fi
+  line=$(printf '%s' "$out" | python3 -c '
+import json, sys
+rc = int(sys.argv[1]); text = sys.stdin.read()
+try:
+    d = json.loads(text)
+except ValueError:
+    d = None
+if rc == 0 and isinstance(d, dict) and d.get("account"):
+    print("ok\x1f%s\x1f%s" % (d["account"], (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", "")))
+elif rc == 3 and isinstance(d, dict):
+    print("no\x1f\x1f" + "; ".join("%s: %s" % (l, w) for l, w in d.get("skipped") or []))
+else:
+    print("unknown\x1f\x1f" + (text.strip().splitlines() or ["no answer"])[-1][:160])
+' "$rc")
+  local verdict label dir
+  IFS=$'\x1f' read -r verdict label dir <<<"$line"
+  # pick finds the scope by the anchor itself and walks every row when it cannot (another scope
+  # listing the anchor first, its core import failing): an answer that is not the scope's login is
+  # no proof (S5 landing review).
+  if [ "$verdict" = ok ] && [ "$label" != "$sp_login" ]; then
+    dir="account pick chose $label"; verdict=unknown
+  fi
+  if [ "$verdict" = ok ]; then
+    if [ -n "$dir" ]; then
+      export CLAUDE_CONFIG_DIR="$dir"
+      tools+=("Bash($dir/skills/aurora/../../bin/weekly-run where)")  # the skill's form in the picked login
+    else unset CLAUDE_CONFIG_DIR; fi
+    echo "== account $label${dir:+ ($dir)}: scope $scope runs on $sp_login"; return 0
+  fi
+  if [ "$verdict" = no ]; then
+    scope_refused "its login $sp_login cannot run it now" "$dir"; return 1
+  fi
+  if [ "$sp_conf" = yes ]; then
+    scope_refused "confidential, and its login $sp_login could not be proved here — not run on another seat" "$dir"; return 1
+  fi
+  echo "== account: $sp_login unproved ($dir) — the one this run started on, as an open scope may"
+}
+scope_run() {
+  local d rc out why
+  for d in $(run_days); do
+    if out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); then echo "$out (already, before this run)"; return 0; fi
+  done
+  scope_account || return 1
+  snapshot
+  echo "== dream --scope $scope in $cwd"
+  run_claude "dream --scope $scope"; rc=$?
+  if api_retry "$rc"; then ran dream "$rc"; run_claude "dream --scope $scope"; rc=$?; fi
+  ran dream "$rc"
+  for d in $(run_days); do
+    out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
+    [ $rc = 1 ] || break
+    # wrote its files and stopped (or an earlier record moved the draft and its commit failed): record here
+    if [ -f "$cwd/dreams/$d.md" ] && { [ -f "$cwd/dreams/$d-upstream.md" ] || head -1 "$P/inbox/upstream/$scope.md" 2>/dev/null | grep -q -- "— $d"; }; then
+      echo "== the run left its files unrecorded — scope-pass record $scope --day $d"
+      "$MOD/bin/scope-pass" record "$scope" --day "$d" 2>&1
+      out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
+      break
+    fi
+  done
+  echo "$out"
+  case $rc in
+    0) return 0 ;;
+    3) why="its inbox file named the scope, so it was held inside the anchor and nothing went upstream" ;;
+    4) why="LEAKED: the inbox file on the vault's main names the scope — look now (scope-pass proof $scope)" ;;
+    *) why="its dream or inbox file is not on main$(cap_note dream)" ;;
+  esac
+  echo "FAILED scope $scope $day: $why"
+  post "Aurora's scope pass did not land" "weekly-run aurora --scope $scope $day: $why. Log: $log"
+  return 1
+}
+
 {
-  echo "== $(date) $job in $cwd"
-  if [ "$job" = aurora ]; then
+  echo "== $(date) $job${scope:+ --scope $scope} in $cwd"
+  if [ -n "$scope" ]; then
+    scope_run; exit $?
+  elif [ "$job" = aurora ]; then
     tend_step
     [[ " $sections " == *" branches "* ]] && classify_step
     # Each section is a session of its own, in the night's order: one that dies costs only
