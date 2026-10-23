@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `dispatch-rc watch` nudges a run whose last turn ended on an API error (2026-10-22: an unattended
+  `/finish` ended on `API Error: Connection dropped (ECONNRESET)`, sat idle, and was ended 11 minutes
+  later with its work committed and its check still running). A session idle a minute on a `server_error`
+  stand-in (the `isApiErrorMessage` flag or the `<synthetic>` model, never a text alone; not a rate limit, an
+  authentication failure or a safeguards flag) gets one post through the Claude Code adapter's `send()` (hail's
+  socket road, read back from the receiver) saying who sent it and why: one a turn, two a run (`nudges` in
+  the run record), a post that was refused or could not reach the session spends none. An end on any flagged
+  API-error turn (a rate limit and the others too, though never nudged) reads `idle N min, its last turn ended on an API error`, which the harness reports `failed` and `--yolo`
+  does not launch from. Cases in `test_dispatch.sh` and `test_harness.sh`.
 - `wharf` start fixes (skipper-resilience S1, 2026-10-22), found by the yard probe: `start_orca` trusts the
   picked login's config dir first, as dispatch does (`dispatch-rc trusted`, then lighthouse's
   `trust-projects`, read back; still untrusted is one failed start); a worktree git just made that Orca's
