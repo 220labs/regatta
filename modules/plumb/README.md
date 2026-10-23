@@ -1,8 +1,9 @@
 # plumb — measure
 
 Plumb measures: model usage and cost, interruptions, the tier hint, and the owner's own time per
-project. Today it holds one tool and one weekly job; usage-report and the rest arrive later in the
-module plan.
+project. crew-report and its weekly job are below; usage-report, interruptions, knowledge-numbers,
+the statusline, the tier hint (`hooks/tier_check.py`), the attention log (`hooks/attention.py`), the
+limits widget and the benches (`bench/`) read their private values as the next section says.
 
 ## crew-report
 
@@ -152,6 +153,24 @@ is read again only when it grew or changed, and the digest in the file name cove
 so editing `machine_prompts` starts a new file. No prompt text and no doc text or title is stored.
 Deleting the folder is always safe. Measured on a week of 1,800 transcript files (6 GB) on a loaded
 Mac: about 90 s with an empty cache, 6 s with a warm one.
+
+## Private values
+
+Nothing here names a host, a login, an account or a person. What is private reaches the module as
+files in the regatta config dir (`$REGATTA_CONFIG`, else `.config/regatta` in the home folder),
+written by whoever installs the modules (on the owner's Macs, the overlay's `bootstrap.sh --config`).
+plumb's own keys are under `plumb/`; the rest are the core's or a peer's, read here as their owner
+writes them. Each keeps the environment override it had; an override is never exported.
+
+| Key | What | Read by | Override | Absent |
+| --- | --- | --- | --- | --- |
+| `plumb/usage.json` | usage-report's settings: per host the renderer, its pulls, the notifier, the data folder; the NAS share, the reports folder, the plan (a link) | `usage-report` | `USAGE_CONFIG` | every host collects, none renders, pulls or sends; where the overlay is installed, one line on stderr |
+| `plumb/dispatch-host` | `<host>:<ssh alias>`, the Mac dispatch runs on, whose logs G3 reads | `knowledge-numbers` | — | the first line of `wharf-runs/ssh`, said on stderr; neither: G3 not measured |
+| `plumb/tier-rules` | where the tier table lives, as the tier hint names it (its words, one per line) | `tier_check.py` | — | "your model-routing rules" |
+| `regatta/log-dir` | the core's log folder: usage data, the attention log, the benches' data | every tool | `USAGE_DATA`, `ATTENTION_LOG_DIR`, `BENCH` | `~/.local/state/regatta` |
+| `regatta/projects`, `regatta/guarded` | the projects folder; the repos whose text never leaves the Mac (the core's) | `interruptions`, `knowledge-numbers`, the benches | `INTERRUPTIONS_PROJECTS`, `CORPUS_ROOT` | the home folder's `projects`; none guarded |
+| `atlas/layer`, `atlas/vault` | the two knowledge repos: name, checkout, the variable that moves it (atlas's) | `knowledge-numbers`, `usage-report` (the ratio's commit), `bench/decisions` | the variable the key names | their numbers say not measured; the ratio is written, not committed |
+| `lighthouse/accounts.json` | the login registry (lighthouse's) | `usage-report`, `interruptions`, `knowledge-numbers`, `tier_check.py` | `ACCOUNTS_FILE` | one login: the default config dir |
 
 ## How it runs weekly
 

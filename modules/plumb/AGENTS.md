@@ -11,9 +11,11 @@ Read `README.md` first. For an agent:
   or the entry format bumps `TranscriptCache.VERSION`, else a warm cache keeps answering with the
   old rule. Same for the word rules and `RenderCache`: a new rule gets a new `CACHE_FILE` name.
 - Every fixture is synthetic: never a real name, project, path or prompt, not even in a test
-  (this module is public). The files B8 moved in (all of `bin/` and `hooks/` but crew-report,
-  `widgets/`, `bench/`, `tests/usage-report.sh`, `tests/interruptions.sh`) are private until a
-  plumb scrub step: off `.helloworld/allowlist.txt`, and the rule binds them from then on. Private names, terms and paths come through the config file.
+  (this module is public, every file of it on `.helloworld/allowlist.txt` since the plumb scrub,
+  2026-10-22). Private names, terms and paths come through the config dir (README, "Private
+  values"); a suite writes its own (`REGATTA_CONFIG="$T/config"`), never this Mac's.
+- A run bound to its cases and the owner's repos is a record, not a bench: it goes to the private
+  repo's `docs/plumb/`, kept as written (the design run of 2026-10-04, the reviewer bench of 2026-09-29).
 - The core is found by `lib/find_core.py`; a peer (usage-report, keel, publish) through
   `common.tool()`, and its absence is a line in the report, never a stack trace. The suite pins
   each peer with `CREW_REPORT_<NAME>` (a stub, or `none`), never through the lookup.
