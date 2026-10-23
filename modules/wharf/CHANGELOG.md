@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `pr ready` and `pr merge` judge a `--by ship` run's gates and held slice again, as a sweep or mode
+  run's (skipper-resilience S6's finish review, 2026-10-23): the keel's yes predates the run's own edits.
 - `repos --branches` (knowledge-layers S4, 2026-10-22): a confidential scope's repo is one counted
   line — no name, branch, PR or path — and is never classified or reaped from there; `--scope
   <scope>` lists that scope's repos alone.

@@ -251,7 +251,7 @@ def refuse_sweep_gate(up, base, verb, hold=None):
     own edit into the held slice, stops it as a gate does (landing review 1)."""
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
     st = run_record(me)
-    if not st or st.get("by") not in ("sweep", "yolo", "dnd") or st.get("ended"):
+    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship") or st.get("ended"):
         return
     from importlib.machinery import SourceFileLoader
     found = common.tool("autofinish")
@@ -262,10 +262,13 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         _, _, problem, exclude = af.repo_config(primary, base)
         paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
         gate = af.touches_gate(primary, base, exclude, paths)
-        if not gate and not problem and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"):
+        if not gate and not problem and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
+                                         or st.get("by") == "ship"):
             mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)[0]
-            # autofinish-run's landing(): a yolo launch with no mode is E12's standing yes, judged at its start
-            eff = mode if mode in af.LAND_MODES else ("yolo" if mode is None and st.get("by") == "yolo" else mode)
+            # autofinish-run's landing(): a yolo launch with no mode is E12's standing yes, judged at its
+            # start; a ship launch with no landing mode is judged as yolo (S6's finish review)
+            eff = mode if mode in af.LAND_MODES else ("yolo" if (mode is None and st.get("by") == "yolo")
+                                                      or st.get("by") == "ship" else mode)
             try:
                 held = af.held_slice(primary, git("rev-parse", "--show-toplevel"), base, eff)
             except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
