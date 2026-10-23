@@ -1,0 +1,1740 @@
+#!/usr/bin/env python3
+"""dispatch-rc — the visible half of a dispatch run: its Terminal window, its end, its status.
+
+    dispatch-rc window STATE   open a Terminal window on the run's screen, titled "run · <topic>",
+                               on the claude desktop, where yabai tiles it (laptop only; bin/tiling)
+    dispatch-rc watch STATE    wait for the session to finish, then end it: once idle DISPATCH_IDLE
+                               (the prompt cache's hour) after it was first busy -> close the
+                               window, SIGTERM the claude process, quit the screen, log the session
+                               id. Never ends a busy session — bar one DISPATCH_MAX_H old (default
+                               8). A session idle a minute on a turn that ended on an API error
+                               (a server_error) is sent one post first, once a turn and twice a run
+                               (NUDGE_FRAME; an end on such a turn says so). Exit 3: never started
+                               — no prompt in its transcript within
+                               DISPATCH_START_WAIT, though it may read busy (a seeded dispatch
+                               retries once, visible; --start and --probe do not), 4: ended at the
+                               maximum lifetime.
+    dispatch-rc end TOPIC [REPO]
+                               end the live run of TOPIC now, busy or not (`dispatch --end`)
+    dispatch-rc end-warm BRANCH REPO [--dry-run]
+                               before autofinish launches BRANCH: end its warm runs; exit 3 when one
+                               is busy (D2 of docs/dispatch-warm-hour-2026-10-08.md)
+    dispatch-rc live [--no-reap] REPO TOPIC
+                               how many runs are busy, REPO's TOPIC and warm or waiting runs not
+                               counted (dispatch's run cap; parked());
+                               only the count on stdout, the reaping's lines on stderr
+    dispatch-rc reap           end every idle orphan (what live and status do on the way)
+    dispatch-rc tidy [--dry-run]
+                               close the Terminal windows nothing is behind any more: a run whose
+                               claude is gone, a "run · …" window with no run behind it, and a
+                               "✳ <name>" window pickup opened whose session is dead or idle past
+                               DISPATCH_IDLE — or idle after its work went to another machine
+                               (left_behind). Every 10 min from launchd — `schedule-tidy` installs
+                               it, `unschedule-tidy` removes it, `refresh-tidy` (each dispatch run)
+                               reinstalls an outdated one; log claude-weekly/tidy.log. Not
+                               "sweep": `autofinish --sweep` is the 10-minute launch pass, and one
+                               word for two jobs is one word too few.
+    dispatch-rc tidy-soon      tidy at about 1.5, 3.5 and 7.5 min from now, once each (a one-shot
+                               launchd job): what bin/dispatch runs when it hands a session's work
+                               to another machine, so its window goes about a minute after that
+                               turn ends, not at the next 10-minute pass (the owner, 2026-10-13: "close
+                               the terminal window as soon as dispatch succeeds")
+    dispatch-rc after REPO TOPIC
+                               wait while an earlier run of REPO's TOPIC is alive (a run scheduled
+                               from inside it fires before it ends), marking it so its watcher ends
+                               it after 1 min idle instead of 10; FAILED after DISPATCH_PREV_WAIT s
+    dispatch-rc ask-guard STATE
+                               a headless run's end (bin/dispatch run_headless): store on its record
+                               whether it handed the owner an ask past a live manager (session-asks R2)
+    dispatch-rc arrange        even out the tiles on the claude desktop (yabai's --balance)
+    dispatch-rc status         every run of the last 7 days: running/ended, last activity, session id,
+                               the VS Code link (what `dispatch --status` prints); ends an orphan
+                               (its watcher gone, claude still there) that is idle
+    dispatch-rc trusted REPO [--config-dir DIR]   exit 0 if REPO's workspace trust is accepted in DIR
+                               (default ~/.claude; rc-hosts' trusted(), work-account E5):
+                               an interactive session in an untrusted one stops at the trust dialog
+
+bin/dispatch starts the run (the owner, 2026-10-04: "How can I see these runs?", option C, "place it on
+another desktop in a grid with others"): an interactive `claude --remote-control` inside a
+detached `screen`, so the session shows on the phone (Remote Control), in VS Code's side panel
+(its transcript says entrypoint cli; the extension hides sdk-cli, i.e. every `claude -p`) and in a
+window the owner can type into. STATE is the run's JSON in ~/Library/Logs/claude-weekly/run-seed-runs/,
+written by dispatch and updated here.
+
+Why `open x.command` and not osascript: an Apple event to Terminal or System Events from a launchd
+job needs an Automation grant nobody is there to click (System Events timed out on exactly that,
+2026-10-04); `open` needs none, and yabai, which already holds Accessibility, finds and closes the
+window. The window's title is set by an escape sequence before `screen -x`. Where it opens: SIP
+stays on, so nothing moves a window between desktops (bin/tiling's header). `open -g` (since
+2026-10-07; the owner: "terminal windows just appear and close on desktop 5 without bugging me") never
+activates Terminal, and the window goes to the desktop Terminal is bound to — probed from VS Code
+with Desktop 2 in view: it opened on Desktop 5, tiled, and the view and VS Code's focus stayed put.
+Plain `open -a` activated Terminal, which switched the view to Desktop 5 or, from launchd, put the
+window on the desktop in view (D2 in docs/tiling-2026-10-05.md).
+The window closes itself when its screen session ends: yabai's --close answers 0 but does nothing to
+a window on a desktop out of view (probed 2026-10-07), so run windows outlived their runs and
+Terminal restored them after a reboot. The .command starts a closer detached from its tty (setsid:
+Terminal asks before closing a window with a process on it), then `exec`s `screen -x`; the closer
+waits for the session to be gone and closes the window with its tty and title (CLOSER). Inside
+Terminal's own process tree that Apple event needs no Automation grant (probed: no prompt, closed
+in 1 s). yabai's --close stays first, for a window in view.
+AeroSpace did this until 2026-10-05 (workspace 6, a hand-built grid); the owner replaced it with native
+desktops, and yabai's bsp makes the grid itself.
+Python 3.9, stdlib only. Session records are read with bin/rc-hosts' own record()/idle_hours().
+
+A pid is this run's only while its start time is the one recorded (`proc_start`, `ps -o lstart` in
+UTC, compared as bin/pickup's running() does): a pid reused after a crash or reboot is someone else's,
+and nothing here signals it (review of 2026-10-05). A record from before then has no start time:
+its claude is taken as alive when an rc run's session record still names its session.
+The watcher records its own pid and start: a run whose watcher is gone while claude is not — the
+shell that started dispatch ended, before runs went through launchd — is an orphan, ended by
+after() or status() once it has been idle as long as its watcher would have waited (idle_limit).
+A record whose claude is gone without an end is
+ignored: not live, not counted, shown as gone.
+"""
+import calendar
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import plistlib
+import re
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+HOME = os.path.expanduser("~")
+RUNS = os.path.join(HOME, "Library", "Logs", "claude-weekly", "run-seed-runs")  # the old name, kept (bin/dispatch's header)
+YABAI = os.environ.get("DISPATCH_YABAI", "/opt/homebrew/bin/yabai")
+SCREEN = os.environ.get("DISPATCH_SCREEN", "/usr/bin/screen")
+OPEN = os.environ.get("DISPATCH_OPEN", "open")
+TITLE = "run · "
+PICK = "\u2733 "   # pickup's own windows: `claude --name "<name>"` with no screen around it
+# seconds; the env overrides are for bin/test_dispatch.sh
+POLL = float(os.environ.get("DISPATCH_POLL", "15"))
+# A finished session is kept alive while its prompt cache is warm — the hour these sessions get —
+# because resuming one inside that hour is cheap, and past it a fresh session is the better buy
+# (the owner, 2026-10-06: "keep each session open while its cache is warm - anything else and it's better
+# to start a fresh one anyways"; it was 10 min until then, D1 of docs/sweep-cold-2026-10-06.md). The
+# window stays with it: the claude desktop is *for* these sessions and is not clutter — only a dead
+# or cold one is swept (the owner, same day, D2).
+IDLE = float(os.environ.get("DISPATCH_IDLE", "3600"))
+START_WAIT = float(os.environ.get("DISPATCH_START_WAIT", "300"))  # no prompt in its transcript by then: it is stuck
+CLOSE_WAIT = float(os.environ.get("DISPATCH_CLOSE_WAIT", "12"))  # for a window to close itself (CLOSER polls 5 s)
+FIND_WAIT = float(os.environ.get("DISPATCH_FIND_WAIT", "20"))  # for a new window to show in yabai
+NEXT_IDLE = float(os.environ.get("DISPATCH_NEXT_IDLE", "60"))  # idle, and the next run waits for it
+PREV_WAIT = float(os.environ.get("DISPATCH_PREV_WAIT", "7200"))  # checkpoint.py's OWNER_TTL
+# a session that never goes idle (stuck busy at a prompt, a loop) is ended at this age (review of
+# 2026-10-05: nothing ended one). Sleep is no longer held until then: hold_awake() drops caffeinate
+# the moment the session reads idle, so the warm hour above costs no wakefulness.
+MAX_S = float(os.environ.get("DISPATCH_MAX_H", "8")) * 3600
+# a session that handed its work to another machine (common.HANDOFFS) is done once it goes idle
+# within this long of the hand-off: that is the turn that did it. Idle later, it was used again since.
+HANDOFF_TURN = float(os.environ.get("DISPATCH_HANDOFF_TURN", "600"))
+# warm or waiting runs left out of the run cap, at most: past this, each further one counts again
+MAX_PARKED = int(os.environ.get("DISPATCH_MAX_PARKED", "6"))
+# a subagent or background task file written within this: work still runs under a "waiting" session
+QUIET_S = 30  # pickup's QUIET_S
+SCRATCH = os.environ.get("DISPATCH_SCRATCH_ROOT") or "/private/tmp/claude-%d" % os.getuid()
+NEVER_STARTED, MAX_AGE = 3, 4   # watch()'s exit codes dispatch acts on
+# A turn that ends on an API error (a dropped connection, a 5xx) leaves the session idle with its work
+# half done: an unattended /finish polling its check ended on "API Error: Connection dropped
+# (ECONNRESET)" at 12:28 on 2026-10-22, sat idle, and was ended at 12:39 with its work committed and
+# its check still running. One "continue" would have finished it, so the watcher sends one — at most
+# NUDGE_MAX a run, one a turn: "a single-shot command whose effect matters: verify, then retry once".
+NUDGE_MAX = int(os.environ.get("DISPATCH_NUDGE_MAX", "2"))
+# The error kinds a "continue" mends: a server_error is a failed call (a dropped connection, a 5xx). Not
+# a rate_limit (a minute's wait does not mend it), authentication_failed (nobody is logged in) or
+# invalid_request (the model's safeguards flagged the turn: a person's call) — the review of 2026-10-22
+# counted all four kinds in the transcripts. An allow-list, so a kind not yet seen is never pushed past.
+NUDGE_KINDS = ("server_error",)
+# What the session is told, once, in one place (a post from the receiver's side carries no sender: the
+# frame says who and why). %s: the error's kind and the first 60 characters of its text. Probed
+# 2026-10-22 on a dispatch --start run (rc, auto permission mode, unattended): delivered and acted on.
+NUDGE_FRAME = ("dispatch-rc watcher: your last turn ended on an API error (%s: %s). Nothing was sent by a person; "
+               "carry on with the task you were on, from where it stopped.")
+# the end reason's clause for such a turn; the adapter's _end_state and bin/dispatch's yolo_launch read
+# these words (a run ended on it stopped halfway: not a completion) — change the three together
+API_ERROR_END = "its last turn ended on an API error"
+
+
+def rc_hosts():
+    """bin/rc-hosts as a module: its record() and idle_hours() are the one reader of
+    ~/.claude/sessions/<pid>.json (the file has a dash, so a plain import cannot load it)."""
+    loader = importlib.machinery.SourceFileLoader("rc_hosts", os.path.join(HERE, "rc-hosts"))
+    spec = importlib.util.spec_from_loader("rc_hosts", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+RC = rc_hosts()
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
+import core_path  # noqa: E402 — finds the regatta core (C2); add() only: a missing core is the guard below
+core_path.add()
+# handoff(): a session that handed its work to another machine. Guarded: hooks/common.py is live at
+# save on the primary, and a broken one must not take the watcher, the cap count and tidy with it
+# (review 2026-10-10) — without it no window is closed early, which is the old behaviour.
+try:
+    import common  # noqa: E402
+except Exception:
+    common = None
+
+
+def proc_start(pid):
+    """`ps -o lstart` in UTC — the form bin/pickup's running() compares, and the registry's."""
+    try:
+        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                           env=dict(os.environ, TZ="UTC", LC_ALL="C"), timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return " ".join(r.stdout.split())
+
+
+def running(pid, start):
+    """bin/pickup's running(pid, procStart) — alive, and the start time is the recorded one — with
+    one difference: a `ps` that prints nothing for a live pid is no evidence either way, and counts
+    as the same process. pickup's reads it as another process; here that would end a live run as
+    an orphan, or let its watcher close it as exited (a test run of 2026-10-05 lost its first run
+    that way once in five)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    except OSError:
+        return False
+    if not start:
+        return True
+    now = proc_start(pid)
+    return not now or now == " ".join(start.split())
+
+
+_SAID = set()
+
+
+def yabai(*args):
+    try:
+        r = subprocess.run([YABAI, "-m", *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        r = subprocess.CompletedProcess(args, 1, "", str(e))
+    # to the log, once per message: a window-manager error explained a window never placed
+    # (2026-10-04), and find_window() polls 40 times
+    err = (r.stderr or "").strip()
+    if r.returncode != 0 and err and err not in _SAID:
+        _SAID.add(err)
+        say("yabai %s: %s" % (" ".join(args[:2]), err.splitlines()[0][:200]))
+    return r
+
+
+# dispatch wrote every value as a string until 2026-10-11, when its record() learnt these as numbers
+# (orchestration B2); records from before, and headless ones nothing rewrites, stay on disk as they
+# were. A dict in, the same dict out: bin/helm_render reads records itself, and a record read over
+# ssh is JSON text, not a path load() takes (chain-manager launch review, E0).
+# bin/dispatch's record() keeps the same list: change both together.
+INTS = ("pid", "started", "ended", "window", "watcher", "screen_pid", "idle", "depth", "probe", "yolo")
+
+
+def typed(st):
+    if not isinstance(st, dict):   # valid JSON that is no record: the caller's to skip
+        return st
+    for k in INTS:
+        if isinstance(st.get(k), str) and st[k].isdecimal():
+            st[k] = int(st[k])
+    return st
+
+
+def load(path):
+    with open(path) as f:
+        st = typed(json.load(f))
+    if not isinstance(st, dict):   # the loops over every record skip it on ValueError; one record's own caller raises
+        raise ValueError("%s: not a run record" % path)
+    return st
+
+
+def save(path, st):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=1)
+    os.replace(tmp, path)
+
+
+def say(msg):
+    print("%s %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def session_record(st):
+    """The record of THIS run's session, or None: a pid reused by another process has another id."""
+    try:
+        rec = RC.record(int(st["pid"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return rec if rec and rec.get("sessionId") == st.get("session") else None
+
+
+def same(st):
+    """This run's claude is still running: the pid alive with the recorded start time."""
+    pid = st.get("pid")
+    if not isinstance(pid, int):
+        return False
+    if st.get("proc_start"):
+        return running(pid, st["proc_start"])
+    # before 2026-10-05: no start time recorded
+    return alive(pid) and (st.get("mode") == "headless" or session_record(st) is not None)
+
+
+def descendants(pid):
+    """`ps` lines (pid, ppid, state, elapsed, command) of every process under PID, for the log of a
+    run that never started: which hook it is stuck in, and whether a zombie or a grandchild holds
+    it — what the build Mac's hangs of 2026-10-15 could not show after the fact."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,stat=,etime=,command="],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows = [l.split(None, 4) for l in out.splitlines()]
+    rows = [r for r in rows if len(r) >= 4 and r[0].isdigit() and r[1].isdigit()]
+    under, keep, grew = {str(pid)}, [], True
+    while grew:   # until a pass adds nothing: ps need not list a parent before its child
+        grew = False
+        for r in rows:
+            if r[1] in under and r[0] not in under:
+                under.add(r[0])
+                keep.append(r)
+                grew = True
+    # the command cut to its program and first argument, by base name: the hook's script names the
+    # hang, and the rest (paths, an MCP server's flags, a token) can reach a PR comment through
+    # autofinish-run's read_outcome, in a repo that may be published (review 2026-10-15)
+    def short(cmd):
+        return " ".join(os.path.basename(a) for a in cmd.split()[:2])
+    return [" ".join(r[:4] + [short(r[4] if len(r) > 4 else "")]) for r in keep]
+
+
+def watcher_gone(st):
+    """True when the run recorded a watcher and it is no longer running (None recorded: unknown)."""
+    w = st.get("watcher")
+    if not isinstance(w, int):
+        return False
+    return not running(w, st.get("watcher_start"))
+
+
+def orphan(st):
+    return st.get("mode") == "rc" and not st.get("ended") and watcher_gone(st) and same(st)
+
+
+def idle_limit(path, st):
+    """Seconds a run's session may sit idle before it is ended — its watcher's rule, and the orphan
+    reaper's (review of 2026-10-08: orphans were ended after 1 min, against D1's warm hour)."""
+    # a run whose caller waits for its watcher names its own, shorter idle (dispatch's --start):
+    # the warm hour is for a run a person may come back to
+    base = float(st.get("idle") or IDLE)
+    # the next run of this branch waits for this one (after()): its turn is over, so sooner; and a
+    # probe has said its "ok" once it is idle: no reason to keep it at all
+    if os.path.exists(path + ".next") or st.get("probe"):
+        return min(base, NEXT_IDLE)
+    # its work went to another machine in its last turn: nothing to come back to here
+    rec = session_record(st)
+    if left_behind(rec):
+        return min(base, NEXT_IDLE)
+    # a run nobody picks up again (its own `idle`: autofinish-run's /finish, a --yolo build) that is idle on
+    # its closing line has said its outcome: a minute, not ten. A stopped /finish held its
+    # worktree's lock those ten minutes, and the builder who had to fix what its review found could
+    # not write (wharf S5, 12:38-12:41, 2026-10-19). Busy, it is never ended: the watcher's own test
+    if st.get("idle") and said_its_end(st, rec):
+        return min(base, NEXT_IDLE)
+    return base
+
+
+_ENDS = {}   # transcript path → (size, said its end?): the watcher asks every POLL while idle
+
+
+def said_its_end(st, rec):
+    """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
+    fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
+    outcome from (read_outcome). A RELAYED line is no end: that run waits for its manager's answer
+    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it.
+    False whenever it cannot tell."""
+    if common is None or not rec or rec.get("status") != "idle" or not st.get("session"):
+        return False
+    path = transcript(st["session"])
+    try:
+        size = os.path.getsize(path) if path else None
+    except OSError:
+        size = None
+    if size is None:
+        return False
+    if _ENDS.get(path, (None,))[0] != size:
+        try:
+            _ENDS[path] = (size, common.ending(last_answer(st["session"]))[0] not in (None, "relayed", "pending"))
+        except Exception:  # noqa: BLE001 — a reader's fault keeps the ten minutes, never ends a run
+            _ENDS[path] = (size, False)
+    return _ENDS[path][1]
+
+
+def left_behind(rec):
+    """The hand-off record of a session whose last turn handed its work to another machine and saw
+    it take, now idle a minute or more; else None. The owner, 2026-10-08: "they just sit around doing
+    nothing. As long as it succeeded, I don't need to see it." Success is the writer's to prove
+    (common.handed_off): a move proved running there, a dispatch the other host scheduled. Idle
+    within HANDOFF_TURN of it: the turn that handed off is the one that ended; idle later, the
+    session was used again since, and the warm hour applies as to any other."""
+    if not rec or rec.get("status") != "idle" or common is None:
+        return None
+    h = common.handoff(rec.get("sessionId"))
+    if not h:
+        return None
+    idle_s = RC.idle_hours(rec) * 3600
+    since, at = time.time() - idle_s, h["at"]
+    if not (idle_s >= NEXT_IDLE and at - 5 <= since <= at + HANDOFF_TURN):
+        return None
+    # The owner typed into it after the hand-off and it went idle again inside HANDOFF_TURN: used again,
+    # so the warm hour (review 2026-10-10). No transcript found: not proved unused, so left alone.
+    p = last_prompt(rec.get("sessionId"))
+    return h if p is not None and p <= at + 5 else None
+
+
+_ERRS = {}   # transcript path → (size, the API-error turn or None): asked every POLL while idle
+_CLAUDE_CODE = []
+_NUDGE_SAID = set()
+
+
+def claude_code_adapter():
+    """bin/harness_adapters/claude_code.py as a module, or None: the one reader of a transcript's
+    last turn (_tail, _error_turn) and the one road that posts a prompt to a live session (send(),
+    hail's socket road), so neither is copied here. Loaded once, with its registry pointed at this
+    file's own (RC.SESSIONS): the watcher and the post must read one registry, whatever
+    ASK_SESSIONS_DIR says. A broken file means no nudge, as before."""
+    if not _CLAUDE_CODE:
+        mod = None
+        try:
+            f = os.path.join(HERE, "harness_adapters", "claude_code.py")
+            loader = importlib.machinery.SourceFileLoader("claude_code_adapter", f)
+            mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("claude_code_adapter", loader))
+            loader.exec_module(mod)
+            mod.sessions_dir = lambda: str(RC.SESSIONS)
+        except Exception as e:  # noqa: BLE001
+            say("nudge unavailable: %s did not load (%s)" % ("harness_adapters/claude_code.py", e))
+            mod = None
+        _CLAUDE_CODE.append(mod)
+    return _CLAUDE_CODE[0]
+
+
+def api_error_turn(sid):
+    """The adapter's _error_turn of session SID's transcript — {"at", "text", "kind", "flagged"} when
+    its last reply ended on an API error (the flag or the <synthetic> model: Claude Code's stand-in
+    for a failed call; a text alone is no mark) — else None, also whenever it cannot tell. A prompt
+    typed or a nudge delivered after it makes it the past. Cached by the file's size: asked every POLL
+    while a session sits idle."""
+    path = transcript(sid) if sid else None
+    try:
+        size = os.path.getsize(path) if path else None
+    except OSError:
+        size = None
+    mod = claude_code_adapter() if size is not None else None
+    if mod is None:
+        return None
+    if _ERRS.get(path, (None,))[0] != size:
+        try:
+            _ERRS[path] = (size, mod._error_turn(mod._tail(path)))
+        except Exception:  # noqa: BLE001 — a reader's fault means no nudge, never a dead watcher
+            _ERRS[path] = (size, None)
+    return _ERRS[path][1]
+
+
+def nudge_api_error(path, st, rec):
+    """The session sat idle (a minute or more: the caller's test) on a turn that ended in an API
+    error: post it NUDGE_FRAME once. True when the post took, read back from the session itself (the
+    receiver's transcript enqueued it or its registry turned busy: the socket answers nothing), so the
+    watcher keeps watching; False otherwise, and the old end applies at the idle limit.
+    One nudge a turn (the error entry's timestamp names the turn) and NUDGE_MAX a run, in the run's
+    record (`nudges`), only for a NUDGE_KINDS error. A post that wrote spends the slot, recorded before
+    the read-back so a crash never repeats it; one that was refused or could not reach the session
+    (a dry run asks first, send() re-reads the registry) spends none. The record is re-read, merged
+    into and saved from disk: `dispatch --end` may have written `ending` since this loop loaded it.
+    A probe has said its "ok" and a run that handed its work to another machine has nothing to
+    finish here. Not for the orphan reaper: its watcher is gone, nobody would be left to read the
+    effect or end the run."""
+    sid = st.get("session")
+    if len(st.get("nudges") or []) >= NUDGE_MAX:   # spent: no transcript lookup every POLL to the limit
+        return False
+    turn = api_error_turn(sid) if sid else None   # the cached test next (its lookup is a glob)
+    if not turn or turn["kind"] not in NUDGE_KINDS or not isinstance(st.get("pid"), int):
+        return False
+    if st.get("probe") or left_behind(rec):
+        return False
+    at = turn["at"]
+    cur = load(path)
+    if cur.get("ending") or cur.get("ended"):
+        return False
+    sent = list(cur.get("nudges") or [])
+    if at in sent or len(sent) >= NUDGE_MAX:
+        return False
+    mod = claude_code_adapter()
+    frame = NUDGE_FRAME % (turn["kind"], " ".join(turn["text"].split())[:60])
+    target = {"session_id": sid, "pid": st["pid"]}
+    try:
+        res = mod.send(None, target, {"frame": frame, "dry": True, "idle_s": int(NEXT_IDLE)})
+        if res.get("verdict") == "dry-run":
+            cur["nudges"] = st["nudges"] = sent + [at]
+            save(path, cur)
+            res = mod.send(None, target, {"frame": frame, "dry": False, "idle_s": int(NEXT_IDLE)})
+    except Exception as e:  # noqa: BLE001
+        res = {"verdict": "unreachable", "why": str(e)}
+    verdict = res.get("verdict")
+    if verdict == "delivered":
+        say("nudged session %s: its last turn ended on an API error (%s)" % (sid, turn["text"][:80]))
+        return True
+    if verdict in ("refused", "unreachable") and at in (st.get("nudges") or []):
+        # nothing was written to the socket: give the slot back (merged into the record as it is now)
+        cur = load(path)
+        cur["nudges"] = st["nudges"] = [n for n in cur.get("nudges") or [] if n != at]
+        save(path, cur)
+    if (sid, at, verdict) not in _NUDGE_SAID:   # once a turn, not every POLL
+        _NUDGE_SAID.add((sid, at, verdict))
+        say("nudge not delivered: %s (%s); session %s, its last turn ended on an API error (%s)"
+            % (verdict, res.get("why"), sid, turn["text"][:80]))
+    return False
+
+
+def reap_orphan(path, st):
+    """End an orphan once it has been idle as long as its watcher would have waited (idle_limit).
+    True when it was ended; a busy one is left."""
+    rec = session_record(st)
+    idle_s = RC.idle_hours(rec) * 3600 if rec else 0
+    limit = idle_limit(path, st)
+    # the watcher looked up once more: ending a watched run would take it from its watcher
+    if rec and rec.get("status") == "idle" and idle_s >= limit and watcher_gone(st):
+        close_window(st)   # before the process: see close_window
+        if end_session(st):
+            finish(path, st, "orphaned: its watcher was gone; idle %d min" % (idle_s // 60))
+            return True
+    return False
+
+
+def warm(st):
+    """A live run whose session has sat idle a minute or more: kept for its warm cache, and not
+    counted against DISPATCH_MAX_RUNS (the owner, D1 of docs/dispatch-warm-hour-2026-10-08.md: "of
+    course it shouldn't count"). The cap is against load and spend, which come from busy sessions.
+    The minute: a run that has just started may read idle before its first prompt is taken."""
+    rec = session_record(st)
+    return bool(rec) and rec.get("status") == "idle" and RC.idle_hours(rec) * 3600 >= 60
+
+
+def working_under(sid):
+    """A subagent or background task of session `sid` wrote within QUIET_S: work is still running
+    under it, whatever the session's own status says. Every login's config dir (.claude*), as a run
+    may be on any of them; the same test as pickup's busy_files."""
+    now = time.time()
+    files = glob.glob(os.path.join(HOME, ".claude*", "projects", "*", sid, "subagents", "*.jsonl"))
+    files += glob.glob(os.path.join(SCRATCH, "*", sid, "tasks", "*"))
+    for f in files:
+        try:
+            if abs(now - os.stat(f).st_mtime) < QUIET_S:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def parked(st):
+    """Not counted against DISPATCH_MAX_RUNS: warm (above), or waiting — Claude Code's third status,
+    a dialog, a permission prompt or a question open, `waitingFor` saying which (read in 2.1.294's
+    source). Nobody is there to answer an unattended run, so it can wait hours and spends nothing
+    meanwhile (the owner, 2026-10-08: "don't clog the pipeline"). Except while subagents still write:
+    2.1.296 says "waiting" when one subagent waits on a permission prompt and others keep working
+    (review of 2026-10-10) — that run still spends, so it counts. Only the count: a waiting run is
+    mid-turn, so end_warm still treats it as busy and does not launch under it. A fourth status,
+    "shell" (idle with a background shell running), counts as busy: the safe side."""
+    rec = session_record(st)
+    if warm(st):
+        return True
+    return bool(rec) and rec.get("status") == "waiting" and not working_under(rec.get("sessionId") or "")
+
+
+def live(skip_repo=None, skip_topic=None, reap=True):
+    """[(path, state)] of every run whose claude is this run's and not ended; idle orphans are
+    ended on the way unless reap is False (the count under dispatch's start lock: a reap waits up
+    to 20 s per run). Records of runs that died without an end fail same() and are skipped."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
+        try:
+            st = load(path)
+        except (OSError, ValueError):
+            continue
+        if st.get("ended") or (st.get("repo") == skip_repo and st.get("topic") == skip_topic):
+            continue
+        if not same(st):
+            continue
+        if reap and orphan(st) and reap_orphan(path, st):
+            continue
+        out.append((path, st))
+    return out
+
+
+def unfinished(repo, topic):
+    """after()'s view: REPO's TOPIC runs not yet ended whose claude or watcher still runs. A run
+    whose claude has exited is not gone until its watcher has quit the screen, freed the worktree
+    lock and written `ended` (re-review of 2026-10-05: the next run started in that gap)."""
+    out = dict(live())
+    for path in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
+        if path in out:
+            continue
+        try:
+            st = load(path)
+        except (OSError, ValueError):
+            continue
+        if not st.get("ended") and isinstance(st.get("watcher"), int) and not watcher_gone(st):
+            out[path] = st
+    return [(p, st) for p, st in sorted(out.items()) if st.get("repo") == repo and st.get("topic") == topic]
+
+
+def transcript(sid):
+    # every login's dir, as last_prompt: a login whose projects/ is not linked to ~/.claude's
+    # would otherwise hide its answer from the start test (review 2026-10-15)
+    hits = glob.glob(os.path.join(HOME, ".claude*", "projects", "*", sid + ".jsonl"))
+    return hits[0] if hits else None
+
+
+def last_prompt(sid):
+    """Epoch of the last prompt typed into session `sid` (a user entry that is no tool result), in
+    any login's config dir; 0 when it has none, None when no transcript is found."""
+    hits = glob.glob(os.path.join(HOME, ".claude*", "projects", "*", sid + ".jsonl"))
+    if not hits:
+        return None
+    last = None
+    try:
+        # errors="replace": a multibyte character half-written at the end of the file would
+        # otherwise raise out of the watcher, and a dead watcher frees no slot (review 2026-10-15)
+        with open(hits[0], errors="replace") as f:
+            for line in f:
+                if '"type":"user"' not in line or '"toolUseResult"' in line or '"tool_result"' in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("type") == "user" and not e.get("isMeta") and e.get("timestamp"):
+                    last = e["timestamp"]
+    except OSError:
+        return None
+    try:
+        return calendar.timegm(time.strptime(last[:19], "%Y-%m-%dT%H:%M:%S")) if last else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def replied(sid):
+    """The transcript holds an answer: the session was busy, whether or not a poll caught it."""
+    t = transcript(sid)
+    try:
+        with open(t, errors="replace") as f:
+            return any('"type":"assistant"' in line for line in f)
+    except (OSError, TypeError):
+        return False
+
+
+def last_turn(sid):
+    """When the session last said or heard something: the transcript's last user or assistant
+    entry. Not its mtime, which the shutdown rewrites (probed 2026-10-04: "0 min ago" for a run
+    idle 10 min)."""
+    t, last = transcript(sid), None
+    try:
+        with open(t) as f:
+            for line in f:
+                if '"type":"assistant"' in line or '"type":"user"' in line:
+                    try:
+                        last = json.loads(line).get("timestamp") or last
+                    except ValueError:
+                        pass
+    except (OSError, TypeError):
+        return None
+    if not last:
+        return None
+    return calendar.timegm(time.strptime(last[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+def screen_env(st):
+    return dict(os.environ, SCREENDIR=st["screendir"])
+
+
+def screen_target(st):
+    """`<pid>.<name>`: the name alone matches any screen of that name — a later run's, once this one
+    has ended (re-review of 2026-10-05). A record from before screen_pid has only the name."""
+    sp = st.get("screen_pid")
+    return "%s.%s" % (sp, st["screen"]) if sp else st["screen"]
+
+
+def yabai_windows():
+    """yabai's raw window list, or None when it did not answer — never [] for a failure: a query
+    that failed must not read as "the window is gone" (review of 2026-10-08)."""
+    r = yabai("query", "--windows")
+    if r.returncode != 0:
+        return None
+    try:
+        ws = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return ws if isinstance(ws, list) else None
+
+
+def run_windows():
+    """Terminal windows titled "run · …": [(id, title, space index)]."""
+    return [(w.get("id"), w.get("title", ""), w.get("space")) for w in yabai_windows() or []
+            if w.get("app") == "Terminal" and TITLE in w.get("title", "")]
+
+
+def terminal_windows():
+    """Every Terminal window yabai can see: [(id, title, space, subrole)]. run_windows() is the
+    "run · …" subset; a sweep needs the rest — pickup's windows, and the sheets below."""
+    return [(w.get("id"), w.get("title", ""), w.get("space"), w.get("subrole", ""))
+            for w in yabai_windows() or [] if w.get("app") == "Terminal"]
+
+
+def gone(wid):
+    """True only when yabai answered and lists no Terminal window `wid`; False when it is there or
+    yabai did not answer."""
+    ws = yabai_windows()
+    return ws is not None and wid not in {w.get("id") for w in ws if w.get("app") == "Terminal"}
+
+
+def fg_process(title):
+    """What a Terminal window runs, from its title: "<user> — <custom title> — <process> — 80×24"."""
+    parts = title.split(" — ")
+    if len(parts) > 1 and re.match(r"^\d+×\d+$", parts[-1].strip()):
+        parts = parts[:-1]
+    return parts[-1].split()[0] if parts and parts[-1].split() else ""
+
+
+SHELLS = {"-zsh", "zsh", "-bash", "bash", "-sh", "sh", "login"}
+
+
+def sessions_live():
+    """Every live Claude Code session on this machine, from ~/.claude/sessions. The record outlives
+    its process (a dead session's file stays), so each one is checked against `ps` the way same()
+    checks a run's claude. bin/rc-hosts reads these by pid, one host's children at a time; a sweep
+    has no pid to start from and reads them all."""
+    out = []
+    for p in sorted(glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json"))):
+        try:
+            with open(p) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec.get("pid"), int) and running(rec["pid"], rec.get("procStart")):
+            out.append(rec)
+    return out
+
+
+def window_session(title, records):
+    """The live session a pickup window belongs to: Claude Code's own name, which the window title
+    carries after "✳ ". Matched as a substring rather than parsed — the title also holds the whole
+    command line, and a name may contain anything — but bounded: the name ends the title or is
+    followed by " —", so "coding: tiling" never claims "coding: tiling-reboot" or "coding: foo
+    · acct-c" (review of 2026-10-08). The longest name wins. None: no live session has it."""
+    best = None
+    for rec in records:
+        name = rec.get("name")
+        if not name:
+            continue
+        rest = title.split(PICK + name, 1)
+        if len(rest) == 2 and (rest[1] == "" or rest[1].startswith(" —")):
+            if best is None or len(name) > len(best["name"]):
+                best = rec
+    return best
+
+
+def title_of(st):
+    """The window title: "run · <topic> · <repo>" since 2026-10-05 (two repos may run one topic);
+    a record from before has none and its window says "run · <topic>"."""
+    return st.get("title") or TITLE + st.get("topic", "?")
+
+
+def find_window(key, old=()):
+    """The newest Terminal window whose title holds KEY, then its end or Terminal's own " — …"
+    suffix — never a '-': topic "a" must not match "a-b". Newest: a window left by an earlier run of
+    the same topic (its close missed) has a lower id. OLD: ids that held KEY before this run's
+    window opened — the new one is titled a moment after it appears, and meanwhile an old one
+    matched alone (2026-10-07: two runs took windows Terminal restored after the reboot)."""
+    hits = []
+    for wid, title, _ in run_windows():
+        rest = title.split(key, 1)
+        if wid not in old and len(rest) == 2 and (rest[1] == "" or rest[1][0] in " —"):
+            hits.append(wid)
+    return max(hits) if hits else None
+
+
+def tiled_spaces():
+    """yabai's indexes of the spaces that tile (the claude desktop, bin/tiling)."""
+    r = yabai("query", "--spaces")
+    try:
+        return {s["index"] for s in json.loads(r.stdout or "[]") if s.get("type") == "bsp"}
+    except ValueError:
+        return set()
+
+
+def arrange():
+    """Even out the tiles where the run windows are: yabai's bsp splits each new window off the
+    last, so after a close or two the sizes drift; --balance makes them equal again."""
+    for idx in tiled_spaces() & {sp for _, _, sp in run_windows()}:
+        yabai("space", str(idx), "--balance")
+
+
+# The run window's closer, started by its .command before `exec screen -x` (header: why setsid, why
+# osascript is allowed). `exec`, because the tab must hold nothing but `screen`: Terminal's no-ask
+# list has screen and not bash, so a bash beside it would put a "terminate running processes?"
+# sheet on yabai's close of a window in view (review of 2026-10-08). The closer waits for the
+# screen *session* to be gone — never for the client: a detach (Ctrl-a d) or a failed attach keeps
+# the window (sweep-cold D2: a window goes only when its session is dead or cold). It matches the
+# window by tty and title, so a tty Terminal reuses for another window is never taken. Verify, then
+# retry once (rules/engineering.md): the close counts the windows that still match — visible ones
+# only, as a closed window stays in Terminal's list with `visible` false (probed 2026-10-07) — and a
+# second pass runs only when one is left; on 2026-10-07 one probe window of five stayed open, its
+# error unread (an Apple event timeout under load is the guess).
+# No single quote may appear in it: the .command passes it inside one.
+CLOSER = r"""import os, subprocess, sys, time
+if os.fork(): sys.exit(0)
+os.setsid()
+tty, target, title, screen = sys.argv[1:5]
+def alive():
+    out = subprocess.run([screen, "-ls", target], capture_output=True, text=True).stdout
+    return any(target in l and "Dead" not in l for l in out.splitlines())
+while alive(): time.sleep(5)
+mine = "every window whose visible is true and tty of selected tab is \"%s\" and name contains \"%s\"" % (tty, title)
+script = "tell application \"Terminal\"\nrepeat with w in (%s)\nclose w\nend repeat\ndelay 1\nreturn count of (%s)\nend tell" % (mine, mine)
+for _ in (1, 2):
+    time.sleep(1)
+    r = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip() == "0": break
+"""
+
+
+def command_text(st, title):
+    """The run window's .command: its title, the closer, then the attach by <pid>.<name> (a name
+    alone can match another run's screen of the same name)."""
+    target = screen_target(st)
+    return ("#!/bin/bash\n"
+            "printf '\\033]0;%s\\007'\n"                 # the title find_window matches on
+            "export SCREENDIR='%s'\n"
+            "/usr/bin/python3 -c '%s' \"$(tty)\" '%s' '%s' '%s' </dev/null >/dev/null 2>&1\n"
+            "exec %s -x %s\n" % (title, st["screendir"], CLOSER, target, title, SCREEN, SCREEN, target))
+
+
+def wait_window(title, old):
+    deadline = time.time() + FIND_WAIT
+    wid = find_window(title, old)
+    while wid is None and time.time() < deadline:
+        time.sleep(0.5)
+        wid = find_window(title, old)
+    return wid
+
+
+def detached(before):
+    """yabai holds no accessibility handle on Terminal: it can neither read titles nor tile. Seen
+    as this run's new window in view without one, or every Terminal window in view without one
+    (the reboot of 2026-10-06). One stray window without a handle — a leftover sheet — is not it:
+    that would restart yabai on every run (review of 2026-10-08). A window on a desktop out of view
+    lacks the handle normally: without the scripting addition yabai reaches it only in view."""
+    term = [w for w in yabai_windows() or [] if w.get("app") == "Terminal" and w.get("is-visible")]
+    blind = [w for w in term if not w.get("has-ax-reference", True)]
+    # "all blind" needs two windows or more: one lone blind window is as likely a stray sheet
+    return any(w["id"] not in before for w in blind) or (len(term) > 1 and len(blind) == len(term))
+
+
+def restart_yabai():
+    """Restart the service and wait until it answers; its ~/.yabairc re-runs bin/tiling apply."""
+    try:
+        subprocess.run([YABAI, "--restart-service"], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say("window: yabai --restart-service: %s" % e)
+        return
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        r = yabai("query", "--spaces")
+        if r.returncode == 0 and (r.stdout or "").strip().endswith("]"):
+            return
+        time.sleep(1)
+
+
+def window(path):
+    st = load(path)
+    cmd = os.path.join(os.path.dirname(st["runner"]), st["screen"] + ".command")
+    title = title_of(st)
+    with open(cmd, "w") as f:
+        f.write(command_text(st, title))
+    os.chmod(cmd, 0o755)
+    old = {wid for wid, title_, _ in run_windows() if title in title_}
+    before = {w["id"] for w in yabai_windows() or []}
+    try:   # `open` from a launchd job can hang on a LaunchServices prompt nobody sees
+        r = subprocess.run([OPEN, "-g", "-a", "Terminal", cmd], capture_output=True, text=True, timeout=20)
+        if r.returncode:
+            say("window: open failed (%s): %s" % (r.returncode, (r.stderr or "").strip()[:200]))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say("window: open did not return: %s" % e)
+        return 0
+    # Terminal titles the window when the escape sequence arrives, a moment after it appears
+    wid = wait_window(title, old)
+    if wid is None and detached(before):
+        # yabai lost Terminal's accessibility handle: after the reboot of 2026-10-06 it listed
+        # every Terminal window untitled and unmanaged (has-ax-reference false) and nine runs went
+        # untiled until it was restarted by hand. A restart re-attaches every app; once per window.
+        say("window: yabai is not attached to Terminal (a visible window with no AX reference); restarting yabai once")
+        restart_yabai()
+        wid = wait_window(title, old)
+    if wid is None:
+        # usual since `open -g`: on the claude desktop out of view yabai holds no handle on the window
+        # (probed 2026-10-07), so it reads no title; the window closes itself at the end all the same
+        say("window: %r not seen by yabai in %d s — expected while the claude desktop is out of view; "
+            "it closes itself when the run ends" % (title, FIND_WAIT))
+        return 0
+    st["window"] = wid
+    save(path, st)
+    space = next((sp for w, _, sp in run_windows() if w == wid), None)
+    if space in tiled_spaces():
+        arrange()
+        say("window: %r (id %s) tiled on space %s" % (title, wid, space))
+    else:   # nothing can move it there with SIP on: say so, the owner drags it once
+        say("window: %r (id %s) opened on space %s, not the claude desktop (expected from launchd "
+            "until the Ctrl-5 switch, D2 in docs/tiling-2026-10-05.md); drag it over in Mission Control" % (title, wid, space))
+    return 0
+
+
+def end_session(st):
+    """SIGTERM this run's claude — only when `ps` shows the pid with the recorded start time, both
+    non-empty: same()'s benefit of the doubt (an empty `ps`) never reaches a signal. A record from
+    before proc_start was recorded is never signalled. False when not signalled."""
+    pid, want = st.get("pid"), " ".join(str(st.get("proc_start") or "").split())
+    if not isinstance(pid, int) or not want or proc_start(pid) != want:
+        say("not signalling pid %s: not provably this run's claude (session %s)" % (pid, st.get("session")))
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return False
+    deadline = time.time() + 20
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.5)
+    return True
+
+
+def free_lock(st):
+    """The worktree lock checkpoint.py wrote for this run's session: a dead run's lock held the
+    next step out until it aged out (2 h; the next-step-autostart run of 2026-10-04)."""
+    wt = st.get("wt")
+    if not wt or not os.path.isdir(wt):
+        return
+    r = subprocess.run(["git", "-C", wt, "rev-parse", "--absolute-git-dir"], capture_output=True, text=True)
+    owner = os.path.join(r.stdout.strip(), "claude", "owner.json") if r.returncode == 0 else ""
+    try:
+        with open(owner) as f:
+            mine = json.load(f).get("session") == st.get("session")
+    except (OSError, ValueError):
+        return
+    if mine:
+        os.remove(owner)
+        say("freed the worktree lock of session %s" % st.get("session"))
+
+
+def terminal_close(ids):
+    """Close Terminal windows by id from inside Terminal: a .command opened with `open -g` (no focus,
+    no desktop switch) asks Terminal to close each id — an Apple event from Terminal's own process
+    tree needs no Automation grant — then closes its own window the closer's way. yabai cannot
+    close a window on a desktop out of view, and tidy runs from launchd, where an osascript to
+    Terminal would wait for a grant nobody clicks. Probed 2026-10-07 by hand: four windows on
+    Desktop 5 closed this way with Desktop 2 in view. Only for windows whose session is already
+    gone: a window still running something answers with the "terminate?" sheet. The window ids are
+    Terminal's own AppleScript ids (the same numbers, probed 2026-10-07). Returns the ids gone after.
+    Unlike yabai, this closes whatever id it is given, so callers pass only ids confirmed this pass
+    (tidy's `tried`), and here only those yabai lists right now as Terminal windows; nothing when
+    yabai does not answer (review of 2026-10-08: a pre-reboot id would have closed another window)."""
+    listed = yabai_windows()
+    if listed is None:
+        say("tidy: yabai not answering — no window closed through Terminal")
+        return set()
+    term = {w.get("id") for w in listed if w.get("app") == "Terminal"}
+    ids = [int(i) for i in ids if i in term]
+    if not ids:
+        return set()
+    path = os.path.join(HOME, "Library", "Caches", "run-seed", "tidy-close.command")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    script = ("tell application \\\"Terminal\\\"\\n"
+              "repeat with i in {%s}\\n"
+              "try\\nclose (every window whose id is (contents of i))\\nend try\\n"
+              "end repeat\\nend tell" % ", ".join(str(i) for i in ids))
+    with open(path, "w") as f:
+        f.write("#!/bin/bash\n"
+                "printf '\\033]0;tidy · closing\\007'\n"
+                "/usr/bin/python3 -c 'import os, subprocess, sys, time\n"
+                "if os.fork(): sys.exit(0)\n"
+                "os.setsid()\n"
+                "subprocess.run([\"/usr/bin/osascript\", \"-e\", \"%s\"])\n"
+                "time.sleep(1)\n"
+                "subprocess.run([\"/usr/bin/osascript\", \"-e\", \"tell application \\\"Terminal\\\" to close "
+                "(every window whose visible is true and tty of selected tab is \\\"%%s\\\" and name contains \\\"tidy · closing\\\")\" %% sys.argv[1]])\n"
+                "' \"$(tty)\" </dev/null >/dev/null 2>&1\n" % script)
+    os.chmod(path, 0o755)
+    try:
+        subprocess.run([OPEN, "-g", "-a", "Terminal", path], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say("tidy: could not open the closing window: %s" % e)
+        return set()
+    deadline = time.time() + 20
+    while time.time() < deadline and not all(gone(i) for i in ids):
+        time.sleep(1)
+    return {i for i in ids if gone(i)}
+
+
+def close_window(st, fresh=False):
+    """Close this run's Terminal window — before its claude is signalled, which is the whole point
+    of being its own function. Closing it takes only the `screen -x` client: the screen and the
+    claude inside it survive, detached (probed 2026-10-06), so this is safe to do first and the
+    session stays attachable if the rest fails. The other order does not work — once the shell has
+    exited, `shellExitAction = 2` keeps the window and yabai's close has failed with "could not
+    close window with id" (window 16350, 2026-10-05; reproduced 2026-10-06). Idempotent, and False
+    when the window would not go."""
+    if st.get("window_closed"):
+        return True
+    wid = st.get("window") or find_window(title_of(st))
+    if not wid:
+        return True
+    # a recorded id is the window's only while it is still a Terminal window with this title: window
+    # ids start over after a reboot, and a record from before one may name another app's window
+    # now (review of 2026-10-08). A title yabai cannot read (out of view) is given the benefit here
+    # only because yabai's own close does nothing out of view; terminal_close, which does, takes
+    # only ids tidy confirmed this pass (re-review of 2026-10-08).
+    # FRESH: the id was read from yabai in this same pass (tidy) — no reboot between, and the title
+    # may have just changed: a pickup window loses its "✳ <name>" once claude exits and reads only
+    # "<user> — 120×30" (seen 2026-10-08, the first tidy run), so only the app is checked.
+    w = next((x for x in yabai_windows() or [] if x.get("id") == wid), None)
+    if w is not None and (w.get("app") != "Terminal"
+                          or (not fresh and w.get("title") and title_of(st) not in w["title"])):
+        say("window %s is no longer %r (%s, %r): not closing it" % (wid, title_of(st), w.get("app"), w.get("title", "")[:60]))
+        return True
+    for _ in (1, 2):   # once, then once more: a verify-and-retry, never a loop
+        yabai("window", str(wid), "--close")
+        # yabai returns before Terminal has acted, so the window is looked for rather than waited
+        # out: a close that takes costs a tenth of a second, and only a refused one costs the
+        # second. The flat wait this replaces pushed dispatch's own start past 3 s (2026-10-06).
+        for _ in range(10):
+            time.sleep(0.1)
+            if gone(wid):
+                st["window_closed"] = int(time.time())
+                arrange()
+                return True
+    st["window_stuck"] = wid
+    seen = next((w for w in yabai_windows() or [] if w.get("id") == wid), {})
+    if not seen.get("is-visible", True):
+        # yabai's close does nothing to a window on a desktop out of view (probed 2026-10-07): not a
+        # sheet, and nobody need look for one (review of 2026-10-08)
+        say("window %s (%r) is on a desktop out of view, where yabai cannot close it; a run window "
+            "closes itself once its screen ends" % (wid, title_of(st)))
+    else:
+        say("window %s (%r) would not close: Terminal is most likely holding a \"terminate running "
+            "processes?\" sheet, which neither yabai nor AppleScript can dismiss — press Return on it "
+            "(tidy lists them)" % (wid, title_of(st)))
+    return False
+
+
+def finish(path, st, reason):
+    """After the claude process: the screen, the window, the lock, the record. Once: a run
+    ended by `--end` or an orphan reaper is not re-ended by its watcher."""
+    try:
+        if load(path).get("ended"):
+            return
+    except (OSError, ValueError):
+        pass
+    if st.get("screen"):
+        # the window before the screen (close_window's note): every caller has closed it already,
+        # this is the fallback for a path that did not
+        close_window(st)
+        subprocess.run([SCREEN, "-S", screen_target(st), "-X", "quit"], env=screen_env(st), capture_output=True)
+        wid = st.get("window_stuck")
+        if wid:
+            # yabai's close does nothing to a window on a desktop out of view (probed 2026-10-07),
+            # so close_window() reports it stuck; the window closes itself once its screen is gone
+            # (CLOSER, which looks every 5 s) — waited for here before it counts as stuck
+            deadline = time.time() + CLOSE_WAIT
+            while not gone(wid) and time.time() < deadline:
+                time.sleep(0.5)
+            if gone(wid):
+                st.pop("window_stuck", None)
+                st["window_closed"] = int(time.time())
+                arrange()
+                say("window %s closed itself once its screen ended" % wid)
+    free_lock(st)
+    guard = ask_guard(st)
+    if guard:   # recorded once, at the end, for --status and the overview's Blocked column
+        st["ask_guard"] = guard
+    st.update(ended=int(time.time()), end_reason=reason)
+    save(path, st)
+    say("ended session %s (%s)" % (st["session"], reason))
+
+
+def last_answer(sid):
+    """The session's last assistant text, for a probe's log line."""
+    text = ""
+    try:
+        with open(transcript(sid)) as f:
+            for line in f:
+                if '"type":"assistant"' not in line:
+                    continue
+                try:
+                    content = json.loads(line).get("message", {}).get("content")
+                except ValueError:
+                    continue
+                if isinstance(content, list):
+                    said = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+                    text = said.strip() or text
+    except (OSError, TypeError):
+        pass
+    return text
+
+
+def ask_guard(st):
+    """R2's harness-neutral guard (docs/session-asks-2026-10-09.md, B1): a run with a manager that
+    ended its last turn on the WAITING line, with no `bin/ask` record saying nobody was there to
+    relay to (`ask.json`, verdict none or unreachable), asked the owner past its manager. That is a
+    `failed` run, not an idle one — a Codex or cloud run has no Stop hook to refuse the line, so
+    the record is the guard. None when the run is fine or has no manager."""
+    if not st.get("manager") or not st.get("session"):
+        return None
+    text = last_answer(st["session"])
+    if not text:
+        return None
+    try:
+        from common import unrelayed_ask
+    except ImportError:
+        return None
+    # only a WAITING line that asks the owner something: dispatch's own refusals (run cap, depth, an
+    # account with no room) end a run on one too, and those are not asks (finding 7)
+    what = unrelayed_ask(text)
+    if not what:
+        return None
+    verdict = None
+    try:
+        gd = subprocess.run(["git", "-C", st.get("wt") or ".", "rev-parse", "--absolute-git-dir"],
+                            capture_output=True, text=True).stdout.strip()
+        d = json.load(open(os.path.join(gd, "claude", "ask.json"))) if gd else {}
+        # this run's verdict only: one an earlier run of the worktree left proves nothing (finding 9)
+        if isinstance(d, dict) and d.get("session") == st.get("session"):
+            verdict = d.get("verdict")
+    except (OSError, ValueError):
+        pass
+    if verdict in ("none", "unreachable"):
+        return None
+    return "failed: ended on %s with manager %s live and no bin/ask relay" % (what, st["manager"][:8])
+
+
+def store_ask_guard(path):
+    """`dispatch-rc ask-guard STATE`: a headless run ends in bin/dispatch's run_headless, not in
+    finish(), so its guard result is stored here, on its record (finding 10). Prints it."""
+    st = load(path)
+    guard = ask_guard(st)
+    if guard:
+        st["ask_guard"] = guard
+        save(path, st)
+        print(guard)
+    return 0
+
+
+_AWAKE = []   # the one caffeinate, held while the session is busy
+
+
+def hold_awake(want):
+    """Hold off the Mac's idle sleep only while the session is busy. A session kept warm for the
+    cache's hour (IDLE) has no work for this machine to stay awake for — the cache is Anthropic's,
+    not this laptop's — so the hour costs nothing. bin/dispatch wrapped the watcher in caffeinate
+    until 2026-10-06, which held sleep off for the whole run, idle included.
+
+    `-w` on this watcher's own pid, so no caffeinate can outlive it whatever happens here, and
+    every stream to /dev/null: one that inherits the caller's stdout holds that pipe open until it
+    exits, and a reader of it then waits for the caffeinate rather than the run — bin/test_dispatch
+    hung on exactly that, 2026-10-06. Kept in a module-level list, not passed around: the watcher's
+    `finally` has to stop the caffeinate that is live now, not the one it started with."""
+    if want:
+        if not _AWAKE or _AWAKE[0].poll() is not None:
+            try:
+                _AWAKE[:] = [subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL)]
+            except OSError as e:
+                say("caffeinate: %s (the Mac may sleep mid-run)" % e)
+                _AWAKE[:] = []
+        return
+    if _AWAKE and _AWAKE[0].poll() is None:
+        _AWAKE[0].terminate()
+    _AWAKE[:] = []
+
+
+def watch(path):
+    st = load(path)
+    # recorded so after() and status() can tell an orphan: claude running, its watcher gone
+    st.update(watcher=os.getpid(), watcher_start=proc_start(os.getpid()))
+    save(path, st)
+    start, busy = time.time(), False
+    started = st.get("started") or start
+    hold_awake(True)
+    try:
+        return watch_loop(path, st, start, busy, started)
+    finally:
+        hold_awake(False)
+
+
+def watch_loop(path, st, start, busy, started):
+    # the lifetime counts awake time: the Mac may sleep through the idle hour now, and a run idle
+    # across a night's sleep is not stuck (review of 2026-10-08). time.monotonic() is
+    # mach_absolute_time on macOS, which stands still while the Mac sleeps (Python and Apple docs;
+    # not probed). Before the watcher started, wall time — a few seconds.
+    awake0, before = time.monotonic(), max(0.0, start - started)
+    while True:
+        if not same(st):
+            # `dispatch --end` marks the record `ending` before its SIGTERM: its reason, not ours
+            return finish(path, st, load(path).get("ending") or "claude exited by itself") or 0
+        if before + time.monotonic() - awake0 >= MAX_S:
+            say("ending session %s: still not idle after %.1f h (DISPATCH_MAX_H)" % (st["session"], MAX_S / 3600))
+            close_window(st)   # before the process: see close_window
+            end_session(st)
+            finish(path, st, "max lifetime %.1f h" % (MAX_S / 3600))
+            return MAX_AGE
+        rec = session_record(st)
+        status = (rec or {}).get("status")
+        # "busy" alone is not a start: a session stuck in its UserPromptSubmit hooks reads busy
+        # with no prompt in its transcript, and was held as a live run for DISPATCH_MAX_H — three on
+        # the build Mac, 2026-10-15, at "running UserPromptSubmit hooks 7/8", and nothing fell back to
+        # the laptop (the overlay's dispatch-hang record of that day). The prompt's entry is the start.
+        if not busy and (replied(st["session"]) or (status == "busy" and last_prompt(st["session"]))):
+            busy = True
+            say("session %s busy" % st["session"])
+        idle_s = RC.idle_hours(rec) * 3600 if rec else 0
+        # idle: let the Mac sleep through the warm hour; busy again: hold it off again. A run with
+        # background tasks allowed reads idle while a background job still runs, and that job would
+        # stall in the sleep (review of 2026-10-08): it is held awake throughout. The default,
+        # `--background deny`, has no background job to stall.
+        hold_awake(status != "idle" or st.get("background") == "allow")
+        waited = os.path.exists(path + ".next")   # for the end's reason; idle_limit reads it too
+        limit = idle_limit(path, st)
+        # an API error ends the turn at once, and the warm cache is worth keeping: a minute idle
+        # (NEXT_IDLE), not the idle limit. The nudge is re-read before the post (send), and when it
+        # took the session is busy again: watch on. When it did not, the end below applies as before.
+        if busy and status == "idle" and idle_s >= NEXT_IDLE and nudge_api_error(path, st, rec):
+            time.sleep(POLL)
+            continue
+        if busy and status == "idle" and idle_s >= limit:
+            rec = session_record(st)   # re-read: a session that woke since is left alone
+            if rec and rec.get("status") == "idle" and RC.idle_hours(rec) * 3600 >= limit:
+                if st.get("probe"):
+                    say("probe answered: %s" % (last_answer(st["session"])[:200] or "(nothing)"))
+                # read before the process ends: its shutdown writes to the transcript. A run ended on an
+                # API error stopped halfway; the reason says so (API_ERROR_END)
+                turn = api_error_turn(st["session"])
+                errored = ", " + API_ERROR_END if turn and turn["flagged"] else ""
+                close_window(st)   # before the process: see close_window
+                end_session(st)
+                return finish(path, st, "idle %d min%s%s" % (idle_s // 60, ", the next run waiting" if waited else "", errored)) or 0
+        if not busy and time.time() - start >= START_WAIT:
+            # a dialog, a login prompt, a crash loop: what the screen shows goes to the log
+            snap = path + ".screen.txt"
+            subprocess.run([SCREEN, "-S", screen_target(st), "-p", "0", "-X", "hardcopy", snap],
+                           env=screen_env(st), capture_output=True)
+            time.sleep(1)
+            try:
+                with open(snap, errors="replace") as f:
+                    shown = [l.rstrip() for l in f if l.strip().strip("\0")]
+            except OSError:
+                shown = ["(no screen contents)"]
+            tree = descendants(st.get("pid")) if isinstance(st.get("pid"), int) else []
+            say("FAILED: never busy in %d s (no prompt in its transcript; registry: %s); the screen showed:"
+                "\n  %s\n  processes under claude:\n  %s"
+                % (START_WAIT, status or "no record", "\n  ".join(shown[-15:]), "\n  ".join(tree) or "(none)"))
+            close_window(st)   # before the process: see close_window
+            end_session(st)
+            finish(path, st, "never started")
+            return NEVER_STARTED
+        # merged into the record on disk: `--end` may have written to it since this loop read it
+        cur = load(path)
+        if cur.get("ended"):
+            return 0
+        cur["last_status"] = st["last_status"] = status or "no record"
+        save(path, cur)
+        time.sleep(POLL)
+
+
+def after(repo, topic):
+    """Return once no earlier run of REPO's TOPIC is alive. A run that schedules the next step on
+    its own branch (dispatch --next) is still in its last turn, or idle in its screen, when that
+    step fires; both would work in one worktree, and an interactive one holds the screen name."""
+    deadline, said, seen = time.time() + PREV_WAIT, False, {}
+    while True:
+        mine = unfinished(repo, topic)
+        if not mine:
+            if said:
+                say("the run before this one has ended (%s); starting" % "; ".join(gone_why(p, st) for p, st in seen.items()))
+            return 0
+        seen.update(mine)
+        for path, st in mine:
+            open(path + ".next", "a").close()   # its watcher reads it
+        if not said:
+            path, st = mine[0]
+            say("waiting for the run of %s started %s (claude %s, session %s) to end — this run "
+                "was scheduled while it ran" % (topic, time.strftime("%H:%M", time.localtime(st.get("started", 0))),
+                                               st.get("pid"), st.get("session")))
+            said = True
+        if time.time() >= deadline:
+            say("FAILED: the run of %s before this one is still going after %d min; not starting a "
+                "second (dispatch --status)" % (topic, PREV_WAIT // 60))
+            return 1
+        time.sleep(POLL)
+
+
+def gone_why(path, before):
+    """Why a run after() waited for counts as gone, for the log."""
+    try:
+        st = load(path)
+    except (OSError, ValueError) as e:
+        return "record unreadable: %s" % e
+    if st.get("ended"):
+        return "ended: %s" % st.get("end_reason", "?")
+    return "claude %s not running (start %s, now %s)" % (st.get("pid"), st.get("proc_start"), proc_start(st.get("pid")) or "-")
+
+
+def ago(epoch):
+    m = int((time.time() - epoch) // 60)
+    return "%d min ago" % m if m < 120 else "%.1f h ago" % (m / 60)
+
+
+def label_prefix():
+    """The launchd label prefix every dispatch job carries: `wharf-runs/label-prefix` (the overlay's
+    jobs keep the one they always had), else org.regatta.claude. Read through the core; where it
+    could not load (common is None), the file itself, so the tidier keeps its label either way."""
+    if common:
+        return common.config_line("wharf-runs/label-prefix") or "org.regatta.claude"
+    cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+    try:
+        with open(os.path.join(cfg, "wharf-runs", "label-prefix"), encoding="utf-8-sig") as f:
+            return next((l.strip() for l in f if l.strip()), "") or "org.regatta.claude"
+    except (OSError, ValueError):
+        return "org.regatta.claude"
+
+
+TIDIER = label_prefix() + ".dispatch-tidy"
+
+
+def primary_bin(name):
+    """The path a launchd job calls, never this file's own: a worktree is removed once it launches and
+    the job would be left calling a path that no longer exists (bin/tiling's install does the same).
+    Where an overlay is installed (the core's legacy_root) its shim, the path its jobs always named;
+    else this module's copy in the main checkout of the clone it sits in."""
+    old = common.legacy_root() if common else None
+    if old:
+        top = main_checkout(str(old)) or str(old)
+        if os.path.isfile(os.path.join(top, "bin", name)):
+            return os.path.join(top, "bin", name)
+    top = main_checkout(HERE)
+    if top:
+        main = os.path.join(top, os.path.relpath(HERE, os.path.dirname(os.path.dirname(os.path.dirname(HERE)))))
+        if os.path.isfile(os.path.join(main, name)):
+            return os.path.join(main, name)
+    return os.path.join(HERE, name)
+
+
+def main_checkout(path):
+    """The main checkout of the clone `path` is in (a linked worktree's too), or None."""
+    try:
+        gd = subprocess.run(["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return os.path.dirname(gd) if gd.endswith("/.git") else None
+
+
+TIDY_EVERY = 600
+TIDY_SOON = TIDIER + "-soon"
+
+
+def tidy_soon():
+    """Three tidy passes over the next minutes, in a launchd job of their own: a hand-off runs in a
+    Bash call of the session that is about to be closed, so nothing it starts may outlive it but a
+    job (bin/dispatch's header: no setsid on macOS). left_behind() wants the session idle NEXT_IDLE
+    after its last turn; the turn that handed off may run a few minutes more, hence three passes.
+    A second hand-off reloads the job and starts the three over. RunAtLoad only: the job stays
+    loaded and idle after, and at most re-runs three tidies at the next login — harmless."""
+    # only on a Mac that runs the tidier (schedule-tidy): it is opt-in per Mac, as refresh_tidy reads it
+    if not os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")):
+        return 0
+    lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
+    label = "gui/%d/%s" % (os.getuid(), TIDY_SOON)
+    plist = os.path.join(HOME, "Library", "LaunchAgents", TIDY_SOON + ".plist")
+    # behind claude-host once this Mac's sitting is done: the tidy's osascript to Terminal is then
+    # claude-host's one Automation grant, not /bin/sh's (docs/tcc-one-identity-2026-10-18.md)
+    prog = " ".join("'%s'" % w for w in RC.through([primary_bin("dispatch-rc")]))
+    waits = (int(NEXT_IDLE) + 30, 120, 240)
+    log = os.path.join(os.path.dirname(RUNS), "tidy.log")
+    os.makedirs(os.path.dirname(plist), exist_ok=True)
+    os.makedirs(os.path.dirname(RUNS), exist_ok=True)
+    subprocess.run([lc, "bootout", label], capture_output=True)
+    with open(plist, "wb") as f:
+        plistlib.dump({
+            "Label": TIDY_SOON,
+            "ProgramArguments": ["/bin/sh", "-c", "; ".join("sleep %d; %s tidy" % (w, prog) for w in waits)],
+            "EnvironmentVariables": tidier_plist()["EnvironmentVariables"],
+            "RunAtLoad": True, "ProcessType": "Background",
+            "StandardOutPath": log, "StandardErrorPath": log,
+        }, f)
+    r = subprocess.run([lc, "bootstrap", "gui/%d" % os.getuid(), plist], capture_output=True, text=True)
+    if r.returncode:   # bootout returns before the old job is gone: once more after a pause
+        time.sleep(2)
+        r = subprocess.run([lc, "bootstrap", "gui/%d" % os.getuid(), plist], capture_output=True, text=True)
+    if r.returncode:
+        say("tidy-soon: launchctl bootstrap failed (%s): %s — the 10-minute tidy closes it" % (r.returncode, (r.stderr or "").strip()[:160]))
+        return 1
+    return 0
+
+
+def tidier_plist():
+    return {
+        "Label": TIDIER,
+        "ProgramArguments": RC.through([primary_bin("dispatch-rc"), "tidy"]),   # tidy_soon's note
+        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin" % HOME},
+        # every 10 min (was hourly): a session that handed its work to another machine is closed
+        # within minutes of going idle, not up to an hour later (the owner, 2026-10-08)
+        "StartInterval": TIDY_EVERY, "ProcessType": "Background",
+        "StandardOutPath": os.path.join(os.path.dirname(RUNS), "tidy.log"),
+        "StandardErrorPath": os.path.join(os.path.dirname(RUNS), "tidy.log"),
+    }
+
+
+def schedule_tidy(install=True):
+    """The job every TIDY_EVERY (10 min since 2026-10-08). rc-hosts' own loader does the bootout, the wait for the label to go and the
+    bootstrap with one retry — the same dance, not a second copy of it."""
+    label = "gui/%d/%s" % (os.getuid(), TIDIER)
+    plist = os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")
+    if not install:
+        subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "bootout", label],
+                       capture_output=True)
+        if os.path.exists(plist):
+            os.remove(plist)
+        print("  tidier: removed")
+        return 0
+    os.makedirs(os.path.dirname(RUNS), exist_ok=True)
+    RC.load(TIDIER, tidier_plist())
+    print("  tidier: every %d min, windows whose session is gone, handed off, or idle %d min+ (%s)"
+          % (TIDY_EVERY // 60, IDLE // 60, os.path.join(os.path.dirname(RUNS), "tidy.log")))
+    return 0
+
+
+def refresh_tidy():
+    """Reinstall the tidier where it is installed and its plist is not this code's — so a change
+    to the job (its interval, 2026-10-08) reaches a Mac without anyone running schedule-tidy
+    there; the laptop has no ssh in from the build Mac. bin/dispatch calls it as each run starts: another
+    job, since a tidier reloading itself would be booted out mid-pass. Not installed: nothing (it
+    is opt-in per Mac); running now: next time."""
+    plist = os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")
+    try:
+        with open(plist, "rb") as f:
+            if plistlib.load(f) == tidier_plist():
+                return 0
+    except FileNotFoundError:
+        return 0
+    except Exception:
+        pass   # unreadable (a truncated XML plist raises expat's ExpatError, not a ValueError): write it again
+    lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
+    r = subprocess.run([lc, "print", "gui/%d/%s" % (os.getuid(), TIDIER)], capture_output=True, text=True)
+    if "\tstate = running" in r.stdout:
+        return 0
+    return schedule_tidy()
+
+
+def tidy(dry=False):
+    """One pass at a time: tidy-soon and the 10-minute tidier may fire together (review 2026-10-13),
+    and two passes closing the same windows would race. A held lock skips the pass, never waits."""
+    import fcntl
+    os.makedirs(os.path.dirname(RUNS), exist_ok=True)
+    lock = open(os.path.join(os.path.dirname(RUNS), ".tidy.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+    try:
+        return tidy_pass(dry)
+    finally:
+        lock.close()
+
+
+def tidy_pass(dry=False):
+    """Close the Terminal windows nothing is behind any more — the ancient ones (D2, D3 of
+    docs/sweep-cold-2026-10-06.md). Which of the two steps comes first depends on what the window
+    holds, and both orders were probed on 2026-10-06:
+
+      a run's window holds a `screen -x` client -> the window closes first and the session is
+      signalled after (close_window); a pickup window holds claude itself -> the session is
+      signalled first and the window closes after, because Terminal answers a close on a window
+      whose running process is not a shell with a "terminate running processes?" sheet, and
+      nothing here can dismiss one. Those already on screen are listed, never clicked."""
+    tried, records = set(), sessions_live()   # the window ids tidy decided to close
+    runs = []
+    for path in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
+        try:
+            runs.append((path, load(path)))
+        except (OSError, ValueError):
+            continue
+    # 1. a run whose claude is gone with no end recorded: every other reader ignores the record,
+    #    so nothing ever closed its window (window 16350, 2026-10-05)
+    for path, st in runs:
+        if st.get("ended") or st.get("mode") != "rc" or same(st):
+            continue
+        if not (st.get("window") or find_window(title_of(st))):
+            continue
+        print("  %s %s (%s): its claude is gone" % (
+            "would close" if dry else "closing   ", title_of(st), os.path.basename(st.get("repo", "?"))))
+        if not dry:
+            wid = st.get("window") or find_window(title_of(st))
+            # a recorded id may be from before a reboot: it joins `tried` (and so terminal_close)
+            # only when yabai shows it this pass as a Terminal window with this run's title
+            seen = next((x for x in yabai_windows() or [] if x.get("id") == wid), None)
+            confirmed = bool(seen and seen.get("app") == "Terminal" and seen.get("title")
+                             and title_of(st) in seen["title"])
+            close_window(st)
+            finish(path, st, "tidied: its claude was gone")
+            if confirmed:
+                tried.add(wid)
+    # 2. a "run · …" window no live run accounts for: a probe, a crash, a renamed topic
+    held = set()
+    for _, st in runs:
+        if not st.get("ended") and same(st):
+            wid = st.get("window") or find_window(title_of(st))
+            if wid:
+                held.add(wid)
+    for wid, title, _, _ in [(w, t, s, u) for w, t, s, u in terminal_windows() if TITLE in t]:
+        if wid in held:
+            continue
+        print("  %s %s (window %s): no run behind it" % ("would close" if dry else "closing   ", title[:70], wid))
+        if not dry:
+            close_window({"window": wid, "title": title}, fresh=True)
+            tried.add(wid)
+    # 3. pickup's own windows: here the window *is* the session (bin/pickup's open_in_terminal)
+    for wid, title, _, _ in terminal_windows():
+        if PICK not in title:
+            continue
+        rec = window_session(title, records)
+        if rec is None:
+            # no live session has this name — exited, or one that was never named (a claude started
+            # by hand): only a window whose title shows a bare shell is known to have exited. A
+            # window still running something is left alone: closing it raises the sheet whose
+            # default button, Terminate, would kill a live session (review of 2026-10-08)
+            if fg_process(title) not in SHELLS:
+                continue
+            why = "its session has exited"
+        else:
+            idle_s, h = RC.idle_hours(rec) * 3600, left_behind(rec)
+            if h:
+                why = "its work went to %s (%s %s), idle since" % (h.get("to"), h.get("what"), str(h.get("target") or "")[:40])
+            elif rec.get("status") != "idle" or idle_s < IDLE:
+                continue
+            else:
+                why = "idle %d min, past the cache's %d" % (idle_s // 60, IDLE // 60)
+        print("  %s %s (window %s): %s" % ("would close" if dry else "closing   ", title[:70], wid, why))
+        if dry:
+            continue
+        if rec is not None:
+            # read again right before the signal: the snapshot is from tidy's start, and a session
+            # the owner typed into since is busy now (watch_loop's own re-read); and end_session signals
+            # only a pid whose start time is the recorded one
+            one = {"pid": rec.get("pid"), "proc_start": rec.get("procStart"), "session": rec.get("sessionId")}
+            now = session_record(one)
+            if not now or now.get("status") != "idle" or (RC.idle_hours(now) * 3600 < IDLE and not left_behind(now)):
+                say("not ending session %s: it woke since tidy started" % rec.get("sessionId"))
+                continue
+            if not end_session(one):
+                continue
+            if alive(one["pid"]):
+                # end_session waits 20 s and returns either way: a claude still there would answer
+                # the window's close with the "terminate?" sheet (re-review of 2026-10-08)
+                say("session %s still running after SIGTERM: its window left for the next tidy" % rec.get("sessionId"))
+                continue
+        # fresh: the id is this pass's own, and the title has just changed with claude's exit
+        close_window({"window": wid, "title": title}, fresh=True)
+        tried.add(wid)
+    # 4. the sheets themselves: no title and no subrole. Nothing automatic closes one, so they are
+    #    named — a window a failed close left behind keeps every later close on it failing too.
+    # a window yabai holds no handle on reads untitled and without a subrole too — usual for one on a
+    # desktop out of view, and every window after the reboot of 2026-10-06: not a sheet (review of
+    # 2026-10-08)
+    blind = {w.get("id") for w in yabai_windows() or [] if not w.get("has-ax-reference", True)}
+    for wid, title, space, sub in terminal_windows():
+        if title or sub == "AXStandardWindow" or wid in blind:
+            continue
+        print("  stuck       Terminal window %s on desktop %s: a sheet with no title — neither yabai "
+              "nor AppleScript closes one; press Return on it" % (wid, space))
+    # what yabai could not close — out of view, most of them — Terminal closes itself; then count
+    # only what is gone (the first run, 2026-10-08, said "closed 5" of which three stayed open)
+    left = {i for i in tried if i and not gone(i)}
+    if left and not dry:
+        terminal_close(left)   # it does nothing when yabai does not answer
+    closed = {i for i in tried if i and gone(i)}
+    still = sorted(i for i in tried if i and i not in closed)
+    if closed or still:
+        print("  closed %d window(s) at %s%s" % (len(closed), time.strftime("%Y-%m-%d %H:%M"),
+              "; still open: %s" % ", ".join(map(str, still)) if still else ""))
+    return 0
+
+
+def status():
+    files = sorted(glob.glob(os.path.join(RUNS, "*.json")))
+    cutoff = time.time() - 7 * 86400
+    shown = 0
+    for path in files:
+        try:
+            st = load(path)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(st.get("started", 0), (int, float)) or st.get("started", 0) < cutoff:
+            continue   # a start that is no number even after typed() is no run to show
+        shown += 1
+        rec = session_record(st) if st.get("pid") and st.get("session") else None
+        running = not st.get("ended") and same(st)
+        if running and orphan(st) and reap_orphan(path, st):
+            st, running = load(path), False
+        last = last_turn(st.get("session", "-")) or st.get("started", 0)
+        if running and orphan(st):
+            state = ("orphaned (%s): its watcher is gone — ended once idle by the next --status, or "
+                     "dispatch --end %s" % ((rec or {}).get("status") or "?", st.get("topic")))
+        elif running:
+            state = "running (%s)" % ((rec or {}).get("status") or st.get("mode"))
+        elif st.get("ended"):
+            state = "ended %s (%s)" % (time.strftime("%m-%d %H:%M", time.localtime(st["ended"])),
+                                       st.get("end_reason", "?"))
+            if st.get("window_stuck"):   # D3: a window the close could not take, so the owner knows why it is still there
+                state += " · window %s would not close (a sheet: press Return on it)" % st["window_stuck"]
+        else:
+            state = "gone (no end recorded)"
+        guard = ask_guard(st) if st.get("manager") and not running else None
+        if guard:
+            state += " · " + guard
+        bg = " · background %s" % st["background"] if st.get("background") else ""   # dispatch --background
+        print("%-28s %s · %s%s" % (st.get("topic", "?"), os.path.basename(st.get("repo", "?")), state, bg))
+        print("    started %s, last activity %s, session %s" % (
+            time.strftime("%m-%d %H:%M", time.localtime(st.get("started", 0))), ago(last), st.get("session")))
+        if st.get("manager"):
+            print("    manager %s, plan %s%s" % (st["manager"][:8], (st.get("plan") or "-")[:8],
+                                               (", page " + st["plan_space"]) if st.get("plan_space") else ""))
+        if st.get("mode") == "headless":
+            print("    headless (claude -p): the side panel hides it; log %s" % st.get("log"))
+        else:
+            print("    vscode://anthropic.claude-code/open?session=%s" % st.get("session"))
+            if running:
+                print("    attach: SCREENDIR=%s screen -x %s" % (st["screendir"], st["screen"]))
+        if running:
+            print("    end it now: dispatch --end %s --repo %s" % (st.get("topic"), st.get("repo")))
+    if not shown:
+        print("no dispatch runs in the last 7 days")
+    return 0
+
+
+def end(topic, repo=None):
+    """`dispatch --end TOPIC [--repo DIR]`: end that live run now — busy or not; a person asked."""
+    runs = [(p, st) for p, st in live() if st.get("topic") == topic and (repo is None or st.get("repo") == repo)]
+    if not runs:
+        print("no live run of %s%s (dispatch --status)" % (topic, " in " + repo if repo else ""))
+        return 1
+    if len(runs) > 1:
+        print("%d live runs of %s — say which with --repo: %s" % (len(runs), topic, ", ".join(st.get("repo", "?") for _, st in runs)))
+        return 2
+    path, st = runs[0]
+    status = (session_record(st) or {}).get("status") or st.get("mode")
+    return end_run(path, st, "ended by dispatch --end (was %s)" % status)
+
+
+def end_warm(branch, repo, dry=False):
+    """Before autofinish launches BRANCH: end its warm runs (the owner, D2 of
+    docs/dispatch-warm-hour-2026-10-08.md: C — "autofinish ends the warm run first, then lands").
+    A seeded run is kept the cache's hour, autofinish launches at 40 min idle, and /finish must not
+    rewrite a branch under a session the owner may pick up again. Exit 3 when one of them is busy: then it is
+    not the launch's to end — autofinish's own state check skips a busy branch, so this is the
+    race where it woke in between."""
+    runs = [(p, st) for p, st in live(reap=not dry) if st.get("branch") == branch
+            and os.path.realpath(st.get("repo") or "") == os.path.realpath(repo)]
+    busy = [st for _, st in runs if not warm(st)]
+    if busy:
+        print("a run of %s is busy (session %s): not ending it, not launching" % (branch, busy[0].get("session")))
+        return 3
+    for path, st in runs:
+        print("%s the warm run of %s (session %s, window %r) before its launch"
+              % ("would end" if dry else "ending", branch, st.get("session"), title_of(st)))
+        if not dry and end_run(path, st, "ended for its landing (autofinish; D2 of dispatch-warm-hour)"):
+            return 1
+    return 0
+
+
+def end_run(path, st, reason):
+    """End one live run now: the reason in its record first, the window, the process, the rest."""
+    cur = load(path)
+    cur["ending"] = reason   # the watcher sees claude go and finishes first, with this reason
+    save(path, cur)
+    close_window(st)   # before the process: see close_window
+    if not end_session(st):
+        # not ended: the reason must not outlive the attempt, or a later exit of its own reads as it
+        cur = load(path)
+        cur.pop("ending", None)
+        save(path, cur)
+        return 1
+    finish(path, load(path), reason)
+    return 0
+
+
+if __name__ == "__main__":
+    verb = sys.argv[1] if len(sys.argv) > 1 else ""
+    if verb in ("window", "watch") and len(sys.argv) == 3:
+        sys.exit({"window": window, "watch": watch}[verb](sys.argv[2]))
+    if verb == "end-warm" and (len(sys.argv) == 4 or (len(sys.argv) == 5 and sys.argv[4] == "--dry-run")):
+        sys.exit(end_warm(sys.argv[2], sys.argv[3], dry=len(sys.argv) == 5))
+    if verb == "after" and len(sys.argv) == 4:
+        sys.exit(after(sys.argv[2], sys.argv[3]))
+    if verb == "live" and len(sys.argv) in (4, 5):
+        reap = sys.argv[2] != "--no-reap"
+        repo, topic = sys.argv[-2:]
+        out, sys.stdout = sys.stdout, sys.stderr   # say() from a reap must not join the count
+        try:
+            runs = live(repo, topic, reap)
+            n = len([1 for _, st in runs if not parked(st)])
+            # parked runs stop counting, but not without end: were every unattended run to stop at
+            # the same prompt, the sweep would start one per pass for 8 h (review 2026-10-10)
+            n += max(0, (len(runs) - n) - MAX_PARKED)
+        finally:
+            sys.stdout = out
+        print(n)
+        sys.exit(0)
+    if verb == "reap" and len(sys.argv) == 2:
+        live()
+        sys.exit(0)
+    if verb == "tidy" and len(sys.argv) in (2, 3) and set(sys.argv[2:]) <= {"--dry-run"}:
+        sys.exit(tidy("--dry-run" in sys.argv))
+    if verb == "tidy-soon" and len(sys.argv) == 2:
+        sys.exit(tidy_soon())
+    if verb == "refresh-tidy" and len(sys.argv) == 2:
+        sys.exit(refresh_tidy())
+    if verb in ("schedule-tidy", "unschedule-tidy") and len(sys.argv) == 2:
+        sys.exit(schedule_tidy(verb == "schedule-tidy"))
+    if verb == "end" and len(sys.argv) in (3, 4):
+        sys.exit(end(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None))
+    if verb == "trusted" and len(sys.argv) in (3, 5) and (len(sys.argv) == 3 or sys.argv[3] == "--config-dir"):
+        d = os.path.abspath(os.path.expanduser(sys.argv[4])) if len(sys.argv) == 5 and sys.argv[4] else None
+        cj = None if d is None or d == os.path.join(os.path.expanduser("~"), ".claude") else os.path.join(d, ".claude.json")
+        sys.exit(0 if RC.trusted(sys.argv[2], cj) else 1)
+    if verb == "ask-guard" and len(sys.argv) == 3:
+        sys.exit(store_ask_guard(sys.argv[2]))
+    if verb == "arrange":
+        sys.exit(arrange())
+    if verb == "status":
+        sys.exit(status())
+    sys.exit(__doc__)

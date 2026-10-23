@@ -1,0 +1,73 @@
+# Auto-merge for agents' pull requests: once one is out of draft, it merges itself (rebase, the
+# repo's only method) the moment the required `check` passes. Nobody taps Merge.
+# Only while `check` IS required (main-protection.json applied): with no required check pending,
+# `gh pr merge --auto` merges at once, before any check reports (gh's isImmediatelyMergeable;
+# 220labs.dev#1 merged 5 s before its check finished). Until protection is on, label `hold`.
+#
+# Which PRs: head branch `claude/*`, pushed to this repo (a fork's PR never qualifies: its token
+# is read-only, and the head-repo test says so first), not a draft, no `hold` label.
+# Drafts are the agents' work in progress (the session hook opens every PR as a draft and
+# `/finish` takes it out once the branch is curated), so "ready for review" is the signal.
+# Labelling `hold` takes auto-merge off again; removing it puts it back.
+#
+# What a merge sets in motion is this repo's `live:` line in AGENTS.md; where main is served or
+# deployed by itself, say so here. The check is the gate, and `hold` is the brake.
+# Pushing this file onto an open PR's own branch arms that PR too, and it launches itself.
+# GitHub must allow auto-merge for this to do anything: .github/repo-settings.json.
+# The merge is made with this workflow's token, so it starts no `check` run on `main` (GitHub
+# never chains workflows off GITHUB_TOKEN pushes); the PR's own run already checked that tree.
+name: automerge
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  automerge:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: arm or disarm auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.html_url }}
+          HOLD: ${{ contains(github.event.pull_request.labels.*.name, 'hold') }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$HOLD" = true ]; then
+            gh pr merge --disable-auto "$PR" || true
+            echo "hold: auto-merge off for $PR"
+          else
+            # check.yml skips drafts, and GitHub counts a skipped job as a passed check: armed while
+            # this head's newest check.yml run is the draft's skip, a PR just out of draft would
+            # merge unchecked. Wait (2 min at most) for one that is not skipped (a run whose jobs
+            # all skipped concludes `skipped`, whatever the jobs are called); none, no arming.
+            # A PR already closed has nothing to arm: check.yml runs on `closed`, so a `/finish`
+            # merging first leaves that skipped run newest on this head.
+            n=0
+            for _ in $(seq 24); do
+              state=$(gh pr view "$PR" --json state -q .state)
+              if [ "$state" != OPEN ]; then echo "nothing to arm: $PR is $state"; exit 0; fi
+              n=$(gh api "repos/$REPO/actions/workflows/check.yml/runs?head_sha=$SHA&per_page=1" \
+                -q '[.workflow_runs[] | select(.conclusion != "skipped")] | length')
+              [ "${n:-0}" -gt 0 ] && break
+              sleep 5
+            done
+            if [ "${n:-0}" -eq 0 ]; then
+              echo "not armed: $SHA has no check.yml run that is not skipped"; exit 1
+            fi
+            # a /finish that merged first leaves nothing to arm: that is a launch, not a failure
+            gh pr merge --auto --rebase "$PR" || gh pr view "$PR" --json state -q .state | grep -qx MERGED
+            echo "armed: $PR merges when the required check passes"
+          fi

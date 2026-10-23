@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# check — a checkout's AGENTS.md `check:` line, one script at a time, under one of N slots per Mac login.
+#
+#   bin/check [<checkout>] [--only <script>…] [--out <dir>]
+#
+# Start it with the Bash tool's run_in_background: a whole check of the overlay's size runs ~36 min, past one
+# Bash call's cap (10 min, the tool's maximum; AGENTS.md). Where background tasks are off (an unattended /finish), `nohup bin/check … --out
+# <dir> > <dir>.out 2>&1 &` in one call, then poll <dir>/summary until its last line starts DONE,
+# INTERRUPTED or REFUSED. Unattended (CLAUDE_UNATTENDED), the line is origin/main's, not the branch's,
+# and the first line says so (below). The log folder is printed as `logs: <dir>` (the first line,
+# attended); in it, one log per script (`01-test_checkpoint.sh.log`…) and `summary`, one line per
+# script as it ends —
+#   HH:MM rc=<exit code> <seconds>s <command>
+# then, unattended only, `ABSENT <command> …` and `UNRUN <command>` lines (below), then
+# `DONE <passed>/<total>`. Exit 0 only when every script passed; 1 when one failed; 3 when all passed
+# but a command was UNRUN; 2 for a usage error (no check line, an --only that names no script),
+# printed and, with --out, written to the summary as `REFUSED <why>`. A signal to check itself stops the
+# script it runs and ends the summary `INTERRUPTED <passed>/<total> by SIG<x>`, so a run cut short
+# never reads as a run that failed. A script killed from outside shows its rc: 137 is SIGKILL (what
+# macOS's low-memory killer sends), 143 SIGTERM — a kill, not a test that failed.
+#
+#   <checkout>   default: the git checkout the caller is in — this file lives in a module of the
+#                regatta clone (wharf-runs), not in the repo it checks, so its own path names no
+#                checkout to check (B7; it was the overlay's own). /finish passes the worktree it launches.
+#   --only       a subset, in the check line's order: each name matches a script by path, basename
+#                or basename without .sh (`--only bin/test_check.sh test_hooks`). Same slot rules.
+#   --out        the log folder; default $CHECK_LOGS (~/Library/Caches/check-runs)/<checkout>-<stamp>-<pid>
+#
+# Why the slots (2026-10-19): with five checks running on the laptop, Claude Code killed rename S3's
+# test_hooks and test_pickup for low memory (load averages 40–90 the day before), and the killed
+# suite read as a failed one — a built slice reported "failed". Before its first script, check takes
+# one of $CHECK_SLOTS (default 2, about what the laptop holds beside its sessions) slots per Mac login (under $HOME, so a second login has its own):
+# a directory $CHECK_SLOT_DIR (~/Library/Caches/check-slots)/slot-<i> made with mkdir (atomic), with
+# the holder's `pid`, `start` (its ps lstart, so a reused pid is not mistaken for the holder),
+# `checkout` and `since` inside; `pid` is written last, by rename, so a holder with a pid is whole.
+# A slot whose holder is dead is taken over; one with no pid older than 2 min (a crash between mkdir
+# and the write) too — bin/dispatch's take_lock pattern. A slot is given back at exit (any exit a
+# trap sees); a SIGKILLed holder's slot is reclaimed by the next waiter. Waiters queue in order of
+# arrival (a ticket in queue/, dead tickets dropped), print once that they wait and for whom, and
+# poll every $CHECK_SLOT_POLL seconds (default 5).
+# Not parallel inside one check: the scripts' timing tests assume they run alone (brief, 2026-10-19).
+set -u
+
+wt=""; out=""; only=(); mode=""; asked_only=""
+# a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
+refuse() {
+  echo "check: $1" >&2
+  [ -n "$out" ] && mkdir -p "$out" 2>/dev/null && echo "REFUSED $1" >> "$out/summary"
+  exit 2
+}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only) mode=only; asked_only=1; shift; continue ;;
+    --out) [ $# -ge 2 ] || refuse "--out needs a folder"; out="$2"; mode=""; shift 2; continue ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) refuse "unknown option $1" ;;
+  esac
+  if [ "$mode" = only ]; then only+=("$1")
+  elif [ -z "$wt" ]; then wt="$1"
+  else refuse "one checkout only (got $wt and $1)"; fi
+  shift
+done
+# an --only that named nothing, even one followed by --out, never runs the whole line
+[ -z "$asked_only" ] || [ ${#only[@]} -gt 0 ] || refuse "--only needs a script"
+[ -n "$wt" ] || wt="$(git rev-parse --show-toplevel 2>/dev/null)" || refuse "not in a git checkout: name the checkout to check"
+[ -d "$wt" ] || refuse "no such checkout: $wt"
+wt="$(cd "$wt" && pwd -P)"
+
+trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+# a `- check:` line's code (between its first pair of backticks), empty for prose
+code_of() { case "$1" in '- check: `'*'`'*) printf '%s\n' "$1" | sed 's/^- check: *`//; s/`.*$//' ;; esac; }
+# cmds=( the line's commands, split on ` && `, trimmed )
+split_line() {
+  cmds=(); local rest="$1" c
+  while :; do
+    case "$rest" in
+      *" && "*) c="${rest%% && *}"; rest="${rest#* && }" ;;
+      *) c="$rest"; rest="" ;;
+    esac
+    c="$(trim "$c")"; [ -n "$c" ] && cmds+=("$c")
+    [ -n "$rest" ] || break
+  done
+}
+
+# the check line: the first `- check:` in AGENTS.md.
+# Unattended (CLAUDE_UNATTENDED, which bin/dispatch sets for every launcher and seeded run) it comes from
+# origin/main (main without a remote, as the PR will merge onto it), never the branch's: the launcher's
+# Bash(<overlay>/bin/*) rule approves this script, so a branch that rewrote its own check line
+# would have it run unwatched — the hole autofinish-run's start_cmd keeps closed since the 2026-10-13
+# review (check-slots item 4, the skipper's answer of 2026-10-19). What that leaves out is said, never
+# dropped: a script main's line names that this branch lacks is ABSENT (forked before main added it, or
+# renamed here; the attended run would not have it either), and a command only the branch's line has is
+# UNRUN, exit 3 — /finish runs it by its own Bash call, where auto mode sees it (review, 2026-10-19).
+unatt=""; braw=""
+if [ -n "${CLAUDE_UNATTENDED:-}" ]; then
+  unatt=1
+  git -C "$wt" rev-parse --git-dir > /dev/null 2>&1 || refuse "unattended, and $wt is not a git checkout"
+  ref=origin/main; git -C "$wt" rev-parse -q --verify "$ref:AGENTS.md" > /dev/null 2>&1 || ref=main
+  raw=$(git -C "$wt" show "$ref:AGENTS.md" 2>/dev/null | grep -m1 '^- check:')
+  src="$ref:AGENTS.md"
+  [ -n "$raw" ] || refuse "unattended, and no \`- check:\` line in $src of $wt"
+  echo "check: unattended — the check line from $ref, not this branch's"
+  braw=$(grep -m1 '^- check:' "$wt/AGENTS.md" 2>/dev/null)
+else
+  raw=$(grep -m1 '^- check:' "$wt/AGENTS.md" 2>/dev/null); src="$wt/AGENTS.md"
+fi
+# prose (no code span) is run by hand, never handed to bash
+case "$raw" in '- check: `'*'`'*) ;; *) refuse "no \`- check:\` command line in $src (prose is run by hand)" ;; esac
+line=$(code_of "$raw")
+[ -n "$line" ] || refuse "no \`- check:\` line in $src"
+unrun=()
+if [ -n "$braw" ] && [ ${#only[@]} -eq 0 ] && [ -n "$(code_of "$braw")" ]; then
+  split_line "$line"; main_cmds=("${cmds[@]}")
+  split_line "$(code_of "$braw")"
+  for b in "${cmds[@]}"; do
+    hit=""; for m in "${main_cmds[@]}"; do [ "$b" = "$m" ] && { hit=1; break; }; done
+    [ -n "$hit" ] || unrun+=("$b")
+  done
+fi
+split_line "$line"
+# the script a command runs: its first word with a / or a .sh/.py ending, else its first word
+script_of() {
+  local w
+  for w in $1; do
+    case "$w" in */*|*.sh|*.py) printf '%s' "$w"; return ;; esac
+  done
+  printf '%s' "${1%% *}"
+}
+run=()
+for c in "${cmds[@]}"; do
+  c="$(trim "$c")"; [ -n "$c" ] || continue
+  if [ ${#only[@]} -eq 0 ]; then run+=("$c"); continue; fi
+  s="$(script_of "$c")"; b="$(basename "$s")"
+  for o in "${only[@]}"; do
+    case "$o" in "$s"|"$b"|"${b%.sh}"|"$c") run+=("$c"); break ;; esac
+  done
+done
+if [ ${#only[@]} -gt 0 ]; then
+  for o in "${only[@]}"; do
+    hit=""
+    for c in "${run[@]+"${run[@]}"}"; do
+      s="$(script_of "$c")"; b="$(basename "$s")"
+      case "$o" in "$s"|"$b"|"${b%.sh}"|"$c") hit=1; break ;; esac
+    done
+    [ -n "$hit" ] || refuse "--only $o: not in the check line of $src"
+  done
+fi
+[ ${#run[@]} -gt 0 ] || refuse "nothing to run"
+total=${#run[@]}
+
+[ -n "$out" ] || out="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/$(basename "$wt")-$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$out" || refuse "cannot make $out"
+out="$(cd "$out" && pwd -P)"; : > "$out/summary"
+echo "logs: $out"
+
+# --- the slot --------------------------------------------------------------------------------------
+sd="${CHECK_SLOT_DIR:-$HOME/Library/Caches/check-slots}"; n="${CHECK_SLOTS:-2}"; poll="${CHECK_SLOT_POLL:-5}"
+case "$n" in ''|*[!0-9]*|0) refuse "CHECK_SLOTS must be a number from 1 (got $n)" ;; esac
+mkdir -p "$sd/queue" || refuse "cannot make $sd"
+pstart() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | xargs; }
+me_start="$(pstart $$)"
+# an empty start would make this run's holder look dead to every other check
+[ -n "$me_start" ] || refuse "ps cannot read this run's start time"
+# a holder (slot dir or ticket file) is live when its pid runs and started when it said it did; a
+# ps that fails (fork pressure, the load the slots exist for) reads as live — fail closed, never a third run
+alive() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
+  local s; s="$(pstart "$1")"; [ -z "$s" ] || [ "$s" = "$2" ]
+}
+slot_live() {   # <slot> <its pid as read>
+  if [ -z "$2" ]; then [ -z "$(find "$1" -maxdepth 0 -mmin +2 2>/dev/null)" ]; return; fi
+  alive "$2" "$(cat "$1/start" 2>/dev/null)"
+}
+# take over a dead holder's slot, only if it still names the holder seen dead
+# (pid-less: still older than 2 min, so a fresh holder another waiter just made is left alone)
+reclaim() {   # <slot> <its pid as read>
+  [ "$(cat "$1/pid" 2>/dev/null)" = "$2" ] || return 0
+  [ -n "$2" ] || [ -n "$(find "$1" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0
+  rm -f "$1/pid" "$1/start" "$1/checkout" "$1/since" "$1/.DS_Store" "$1"/pid.* 2>/dev/null
+  rmdir "$1" 2>/dev/null || { echo "check: cannot reclaim $1 — a file in it is not a slot's; remove it" >&2; return 0; }
+  local w; if [ -n "$2" ]; then w="pid $2"; else w="a holder that never wrote its pid"; fi
+  echo "check: reclaimed $(basename "$1") from $w, no longer running"
+}
+held=""; ticket=""
+release() {
+  [ -n "$held" ] && [ "$(cat "$held/pid" 2>/dev/null)" = "$$" ] && {
+    rm -f "$held/pid" "$held/start" "$held/checkout" "$held/since" "$held/.DS_Store"; rmdir "$held" 2>/dev/null; }
+  held=""
+  [ -n "$ticket" ] && rm -f "$ticket"; ticket=""
+}
+child=""; passed=0
+on_signal() {
+  [ -n "$child" ] && kill -TERM -- "-$child" 2>/dev/null
+  echo "INTERRUPTED $passed/$total by SIG$1" >> "$out/summary"; echo "INTERRUPTED $passed/$total by SIG$1"
+  release; trap - EXIT; exit "$2"
+}
+trap release EXIT
+trap 'on_signal INT 130' INT; trap 'on_signal TERM 143' TERM; trap 'on_signal HUP 129' HUP
+
+stamp() { perl -MTime::HiRes=time -e 'printf "%017.6f", time' 2>/dev/null || printf '%010d.000000' "$(date +%s)"; }
+ticket="$sd/queue/$(stamp).$$"
+printf '%s\n%s\n%s\n' "$$" "$me_start" "$wt" > "$sd/queue/.t.$$" && mv "$sd/queue/.t.$$" "$ticket"
+said=""
+while :; do
+  free=()
+  for i in $(seq 1 "$n"); do
+    s="$sd/slot-$i"
+    if [ -d "$s" ]; then p=$(cat "$s/pid" 2>/dev/null); slot_live "$s" "$p" || reclaim "$s" "$p"; fi
+    [ -d "$s" ] || free+=("$s")
+  done
+  rank=0
+  for t in $(ls "$sd/queue" 2>/dev/null | sort); do
+    f="$sd/queue/$t"; [ "$f" = "$ticket" ] && break
+    { read -r tp; read -r ts; } 2>/dev/null < "$f" || { tp=""; ts=""; }
+    if alive "$tp" "$ts"; then rank=$((rank + 1)); else rm -f "$f"; fi
+  done
+  if [ "$rank" -lt "${#free[@]}" ]; then
+    for s in "${free[@]}"; do
+      if mkdir "$s" 2>/dev/null; then
+        printf '%s\n' "$me_start" > "$s/start"; printf '%s\n' "$wt" > "$s/checkout"; date '+%Y-%m-%d %H:%M:%S' > "$s/since"
+        # held only once the pid reads back as ours: a racing reclaimer may have removed the dir
+        printf '%s\n' "$$" > "$s/pid.$$" 2>/dev/null && mv "$s/pid.$$" "$s/pid" 2>/dev/null \
+          && [ "$(cat "$s/pid" 2>/dev/null)" = "$$" ] && { held="$s"; break; }
+      fi
+    done
+    [ -n "$held" ] && break
+  elif [ -z "$said" ]; then
+    who=""
+    for i in $(seq 1 "$n"); do
+      s="$sd/slot-$i"; [ -d "$s" ] || continue
+      who="$who; pid $(cat "$s/pid" 2>/dev/null || echo '?') $(cat "$s/checkout" 2>/dev/null) (since $(cat "$s/since" 2>/dev/null))"
+    done
+    if [ ${#free[@]} -eq 0 ]; then w="all $n taken${who:+:${who#;}}"; else w="${#free[@]} of $n free"; fi
+    echo "check: waiting for a slot — $w$([ "$rank" -gt 0 ] && echo "; $rank ahead in the queue")"
+    said=1
+  fi
+  sleep "$poll"
+done
+rm -f "$ticket"; ticket=""
+echo "check: $(basename "$held") of $n, $total script(s) in $wt"
+
+# --- the scripts, one at a time --------------------------------------------------------------------
+k=0
+for c in "${run[@]}"; do
+  s="$(script_of "$c")"
+  if [ -n "$unatt" ] && case "$s" in */*|*.sh|*.py) true ;; *) false ;; esac && [ ! -e "$wt/$s" ]; then
+    l="ABSENT $c — main's line names it, this branch has no $s"
+    echo "$l" >> "$out/summary"; echo "$l"; total=$((total - 1)); continue
+  fi
+  k=$((k + 1))
+  name="$(basename "$(script_of "$c")" | tr -c 'A-Za-z0-9._\n-' '_')"
+  log="$out/$(printf '%02d' "$k")-$name.log"
+  t0=$(date +%s)
+  # its own process group (set -m), so a signal to check stops the script and everything it started
+  set -m; (cd "$wt" && exec bash -c "$c") > "$log" 2>&1 < /dev/null &
+  child=$!; set +m; wait "$child"; rc=$?; child=""
+  [ "$rc" -eq 0 ] && passed=$((passed + 1))
+  l="$(date +%H:%M) rc=$rc $(( $(date +%s) - t0 ))s $c"
+  echo "$l" >> "$out/summary"; echo "$l"
+done
+for u in "${unrun[@]+"${unrun[@]}"}"; do echo "UNRUN $u" >> "$out/summary"; echo "UNRUN $u"; done
+release
+echo "DONE $passed/$total" >> "$out/summary"; echo "DONE $passed/$total"
+[ "$passed" -eq "$total" ] || exit 1
+[ ${#unrun[@]} -eq 0 ] || exit 3

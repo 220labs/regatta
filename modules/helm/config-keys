@@ -1,0 +1,5 @@
+# helm's private values (README, "Private values"): `regatta check` reports each one missing
+# where an overlay is installed, or unreadable.
+helm/people
+helm/talk-url
+helm/talk-hosts

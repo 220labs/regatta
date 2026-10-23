@@ -1,0 +1,117 @@
+#!/bin/bash
+# finish-stuck-rebase [<repo>] — end a rebase of `main` that stopped after its conflicts were
+# resolved and committed, when `git rebase --continue` refuses although nothing is unmerged
+# (the vault, 2026-10-10 23:30 → 2026-10-11; docs/autofinish-everything-2026-10-11.md D3). Built
+# for a primary where other sessions keep writing records in place: no step resets a file.
+#
+# HEAD must hold the last pick already done. The todo's remaining picks (only `pick` lines; any
+# other verb stops it) are replayed with `merge-tree` onto HEAD; the live copy of every file they
+# touch is three-way merged in a temp copy first — `--union` for the append-only records
+# (UNION below: both sides append after the same line, which a plain merge calls a conflict);
+# a pick whose replay conflicts only in UNION files is union-merged the same way. Any other
+# conflict stops it before anything changes. Then main moves (guarded by its old value),
+# HEAD attaches to main, the index is reread, the merged files are written — each re-merged if
+# a session wrote it meanwhile — and the rebase state goes last: while `rebase-merge` exists,
+# hooks/vault_commit.py leaves the repo alone. Default repo: the vault. The owner runs it:
+# the auto-mode classifier refuses a session every command that ends a rebase.
+set -euo pipefail
+UNION="bulletin.md log.md"
+# The default is the vault's primary checkout, atlas's `atlas/vault` key (its second line);
+# without the key the repo must be named.
+CFG="${REGATTA_CONFIG:-$HOME/.config/regatta}"
+VAULT=$(sed -n 2p "$CFG/atlas/vault" 2>/dev/null || true); VAULT="${VAULT/#\~/$HOME}"
+R="${1:-$VAULT}"
+[ -n "$R" ] || { echo "finish-stuck-rebase: name the repo — no atlas/vault in $CFG to default to" >&2; exit 2; }
+cd "$R"
+G=$(git rev-parse --absolute-git-dir)
+[ -d "$G/rebase-merge" ] || { echo "no rebase in progress in $R — nothing to do"; exit 0; }
+[ "$(cat "$G/rebase-merge/head-name")" = "refs/heads/main" ] || { echo "the rebase is not of main — stopped, nothing changed"; exit 1; }
+[ -z "$(git ls-files -u)" ] || { echo "unmerged entries left — stopped, nothing changed"; exit 1; }
+[ -z "$(git diff --cached --name-only)" ] || { echo "staged changes not yet committed — stopped, nothing changed"; exit 1; }
+other=$(grep -vE '^[[:space:]]*(#|$)' "$G/rebase-merge/git-rebase-todo" | grep -vE '^pick ' || true)
+[ -z "$other" ] || { echo "the todo has more than picks ($other) — stopped, nothing changed"; exit 1; }
+
+bak=$(mktemp -d "${TMPDIR:-/tmp}/finish-stuck-rebase.XXXXXX")
+echo "working copy and backups: $bak"
+base=$(git rev-parse HEAD)
+orig=$(cat "$G/rebase-merge/orig-head")
+new=$base
+for c in $(awk '$1 == "pick" {print $2}' "$G/rebase-merge/git-rebase-todo"); do
+  # A pick that conflicts only in UNION files is union-merged here too, not just in the live copy
+  # below: on the other Mac's vault (2026-10-15) 10 of 18 picks replayed and the 11th stopped on
+  # bulletin.md alone — both sides had appended after the same line, the case UNION exists for.
+  rc=0; out=$(git merge-tree --write-tree --name-only --merge-base "$c^" "$new" "$c") || rc=$?
+  [ "$rc" -le 1 ] || { echo "merge-tree failed on $c (exit $rc) — stopped, nothing changed"; exit 1; }
+  if [ "$rc" = 1 ]; then
+    idx="$bak/replay-index"; rm -f "$idx"
+    GIT_INDEX_FILE="$idx" git read-tree "$(printf '%s\n' "$out" | head -1)"
+    fixed=""
+    while IFS= read -r f; do                    # the conflicted paths, up to the blank line
+      [ -n "$f" ] || break
+      case " $UNION " in *" $f "*) ;; *) echo "conflict replaying $c in $f — stopped, nothing changed"; exit 1 ;; esac
+      git cat-file -e "$new:$f" 2>/dev/null && git cat-file -e "$c:$f" 2>/dev/null || { echo "conflict replaying $c in $f (deleted on one side) — stopped, nothing changed"; exit 1; }
+      git show "$new:$f" > "$bak/u.ours" 2>/dev/null || : > "$bak/u.ours"
+      git show "$c^:$f" > "$bak/u.base" 2>/dev/null || : > "$bak/u.base"
+      git show "$c:$f" > "$bak/u.theirs" 2>/dev/null || : > "$bak/u.theirs"
+      git merge-file --union -p "$bak/u.ours" "$bak/u.base" "$bak/u.theirs" > "$bak/u.merged" || { echo "conflict replaying $c in $f: union merge failed — stopped, nothing changed"; exit 1; }
+      GIT_INDEX_FILE="$idx" git update-index --cacheinfo "100644,$(git hash-object -w "$bak/u.merged"),$f"
+      fixed="$fixed $f"
+    done < <(printf '%s\n' "$out" | sed -n '2,$p')
+    [ -n "$fixed" ] || { echo "conflict replaying $c with no file named — stopped, nothing changed"; exit 1; }
+    tree=$(GIT_INDEX_FILE="$idx" git write-tree); rm -f "$idx"
+    echo "union-merged $(git rev-parse --short "$c"):$fixed"
+  else
+    tree=$out
+  fi
+  if [ "$tree" = "$(git rev-parse "$new^{tree}")" ]; then echo "skipped $(git rev-parse --short "$c"): already upstream"; continue; fi
+  new=$(GIT_AUTHOR_NAME="$(git log -1 --format=%an "$c")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$c")" \
+        GIT_AUTHOR_DATE="$(git log -1 --format=%aI "$c")" git commit-tree "$tree" -p "$new" -m "$(git log -1 --format=%B "$c")")
+  echo "replayed $(git rev-parse --short "$c") as $(git rev-parse --short "$new")"
+done
+
+git diff > "$bak/uncommitted.patch"
+touched=()
+while IFS= read -r -d '' f; do touched+=("$f"); done < <(git -c core.quotePath=false diff --name-only -z --no-renames "$base" "$new")
+
+merge_one() {  # <file> <live copy> → $bak/merged/<file>; non-zero on a conflict
+  local f="$1" live="$2" opt=""
+  case " $UNION " in *" $f "*) opt="--union" ;; esac
+  git show "$base:$f" > "$bak/base" 2>/dev/null || : > "$bak/base"
+  git show "$new:$f" > "$bak/new" 2>/dev/null || : > "$bak/new"
+  mkdir -p "$bak/merged/$(dirname "$f")"
+  git merge-file $opt -p "$live" "$bak/base" "$bak/new" > "$bak/merged/$f"
+}
+for f in ${touched[@]+"${touched[@]}"}; do      # every live file merged in a temp copy first
+  d=$(dirname "$f")                             # a file where a folder must go fails only after main moved
+  while [ "$d" != . ]; do
+    if { [ -e "$d" ] || [ -L "$d" ]; } && [ ! -d "$d" ]; then echo "$f: $d is a file in the live tree — stopped, nothing changed"; exit 1; fi
+    d=$(dirname "$d")
+  done
+  mkdir -p "$bak/live/$(dirname "$f")"
+  if [ -e "$f" ]; then cp -p "$f" "$bak/live/$f"; else : > "$bak/live/$f"; fi
+  merge_one "$f" "$bak/live/$f" || { echo "$f: the live file and the replayed lines overlap — stopped, nothing changed"; exit 1; }
+done
+
+[ "$(git rev-parse HEAD)" = "$base" ] || { echo "HEAD moved while this ran — stopped, nothing changed"; exit 1; }
+git update-ref refs/heads/main "$new" "$orig"
+# From here a failure leaves main moved and some files unwritten; a rerun cannot finish it (main is
+# no longer orig-head), and removing rebase-merge alone lets vault_commit commit the stale copies.
+trap 'echo "failed after main moved to $(git rev-parse --short "$new"): for each path in \`git diff --name-only $base $new\`, copy $bak/merged/<path> into the tree, or remove it if main lacks it; then rm -r $G/rebase-merge" >&2' ERR
+git symbolic-ref HEAD refs/heads/main
+for i in 1 2 3 4 5; do git read-tree "$new" 2>/dev/null && break; sleep 1; if [ "$i" = 5 ]; then git read-tree "$new"; fi; done
+skipped=""
+for f in ${touched[@]+"${touched[@]}"}; do
+  if [ -e "$f" ] && ! cmp -s "$f" "$bak/live/$f"; then   # a session wrote it meanwhile: merge that copy
+    cp -p "$f" "$bak/live/$f"
+    merge_one "$f" "$bak/live/$f" || { echo "$f: changed while this ran and now overlaps — main moved; markers in $bak/merged/$f, the live file untouched"; skipped="$skipped $f"; continue; }
+  fi
+  # A replayed pick can add a file in a folder the live tree lacks (memory/books/ on the other Mac,
+  # 2026-10-16: `cp` failed there after main had moved, leaving the rebase state behind).
+  if ! git cat-file -e "$new:$f" 2>/dev/null && [ ! -s "$bak/merged/$f" ]; then rm -f "$f"; else mkdir -p "$(dirname "$f")"; cp "$bak/merged/$f" "$f"; fi
+done
+# A skipped file keeps the rebase state, so vault_commit stays away until a person merges it; else it
+# would commit the live copy and drop the replayed lines from main (review, 2026-10-16).
+[ -z "$skipped" ] || { echo "main moved to $(git rev-parse --short main); resolve$skipped from $bak/merged, then rm -r $G/rebase-merge" >&2; exit 1; }
+rm -r "$G/rebase-merge"                         # last: the rebase's own state, as `rebase --quit` removes it
+echo "main is $(git rev-parse --short main), $(git rev-list --count "$orig..main") commits past the old main; uncommitted files kept"
+git status --short

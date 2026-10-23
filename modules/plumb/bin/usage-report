@@ -1,0 +1,1500 @@
+#!/usr/bin/env python3
+"""Where the Claude plan goes — a daily report, deterministic, zero tokens.
+
+    usage-report tick                 # launchd, every 15 min: sample limits; once a day, the report
+    usage-report sample               # record the plan's own percentages (5-hour, weekly, Fable, extra usage)
+    usage-report collect [--days N]   # per-call usage → this host's daily CSVs (default: the last 3 days)
+    usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
+    usage-report render [--day D]     # the Markdown report for local day D (default: yesterday)
+    usage-report line [--day D]       # the one line that goes by iMessage and into the 07:30 digest
+    usage-report numbers [--json]     # the weekly figures /sextant reads (via knowledge-numbers),
+                                      # with the tier mix, the review gate's WRONG per 100 lines and
+                                      # each scope pass's cost (`/aurora dream --scope`)
+    usage-report ratio [--write]      # the list→effective cost ratio; the tick writes and commits it weekly
+
+Design and the decisions behind it: the overlay's docs/record/usage-report-2026-09-22.md.
+
+Sources, all local files the tools already write — nothing here calls an API or reads a token:
+  - Claude Code transcripts, ~/.claude/projects/**.jsonl (subagents included) and the archive in
+    ~/projects/transcripts: one record per API call with model, effort, cwd, skill, agent id and
+    the four token counts. De-duplicated by requestId (uuid without one); streamed
+    replies log one call once per content block, and the record with the largest output count is
+    the final one. A fork (bin/fork_claude_session.py) copies its source's calls under its own
+    sessionId and says so in a `forked-from` record: its calls at or before that record's cutoff
+    are skipped — the source's host already counts them (teleport design E1, 2026-10-02).
+  - Cowork sessions run on this Mac (Claude app, local agent mode), audit.jsonl: same usage shape.
+    Cowork sessions run in the cloud (scheduled routines, remote sessions) leave no file here;
+    they show only as a share of the weekly budget, below.
+  - ~/.claude.json → cachedUsageUtilization: the /usage screen's own numbers, which Claude Code
+    re-fetches from /api/oauth/usage at most once a minute while any session runs (binary 2.1.280,
+    constant 60000 ms). Session %, weekly %, weekly Fable %, extra-usage state and spend, and the
+    week's split between Claude Code, Cowork and chats. This answered D3 without a token.
+    Since 2026-09-26 each sample also names the login (account id prefix, plan), and the report
+    splits by it once there is more than one: a Pro backup account beside the Max one.
+  - ~/Library/Application Support/Claude/plan-usage-history.json: the Claude app's own samples
+    every ~15 min since 2026-08-24 — 5-hour (fh), weekly (sd), extra usage (xu).
+
+"$" in this file is a proxy: API list price for the same tokens (claude-api skill table, cached
+2026-06-24). Anthropic does not publish how Max usage weighs models and cache reads; the plan's
+own percentages are the ground truth and are reported beside it. Every amount is shown as list and
+effective, "$1.33 ($0.03 effective)" (hooks/common.py cost_text; the owner, 2026-10-05).
+
+The ratio (the owner's method, 2026-10-04): the plan's price for a week ($200 ÷ 30.44 × 7 = $46) over the
+average list spend of the last four complete Monday–Sunday weeks on that plan, both hosts. The first
+render after a week ends, on the rendering host, writes it to the core's ratio file (`regatta/cost-ratio.json`
+in the config dir) and commits it with knowledge-commit in the vault (`atlas/vault`), so git holds one value per week and every Mac reads the
+same one. Plan, price and start date: config "plan" (DEFAULT_PLAN below). The spend counts Claude Code
+and local Cowork only: the Claude app's share of the plan is outside it, so effective reads a little high. `collect` checks the proxy
+against Claude Code's per-session `totalCostUSD` (cost-state records) and the report says how
+far apart they are.
+
+Hosts (D4): each Mac collects its own data into <data>/<host>/, host is a column everywhere, and
+one Mac renders. <data> is the NAS share (config "nas") when it is mounted, else the core's log dir
+(`regatta/log-dir`; outside every repo). Per-host settings — which Mac renders, what it pulls, how
+the line is sent — come from `plumb/usage.json` in the config dir ($USAGE_CONFIG wins), so nothing
+personal lives here (the sparks pattern).
+
+Stdlib only, Python 3.9. Exits 0 unless the setup is wrong; a failed send is logged, not retried.
+"""
+import argparse
+import csv
+import datetime as dt
+import glob
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+def _core_hooks():
+    """The folder `import common` reads. In regatta's plumb module, the core's hooks/ found by
+    lib/find_core.py (the checkout, the config dir's `home`, the plugin's installPath); in the
+    overlay, hooks/ beside bin/, whose common.py is the core's source shim (regatta-modules
+    C2). One body for both homes, so the move to modules/plumb is a pure copy."""
+    root = Path(__file__).resolve().parent.parent
+    if (root / "lib" / "find_core.py").is_file():
+        sys.path.insert(0, str(root / "lib"))
+        import find_core
+        return find_core.hooks()
+    return str(root / "hooks")
+
+
+sys.path.insert(0, _core_hooks())
+import common  # noqa: E402
+
+HOME = Path.home()
+# The settings file: $USAGE_CONFIG, else `plumb/usage.json` in the regatta config dir (the overlay
+# links it to its own copy). Absent, every host collects, none renders, pulls or sends.
+CONFIG = Path(os.environ.get("USAGE_CONFIG") or common.CONFIG / "plumb" / "usage.json").expanduser()
+
+# $/Mtok: input, output, cache read, cache write 5m, cache write 1h (claude-api skill, 2026-06-24;
+# platform.claude.com/docs/en/about-claude/pricing read 2026-10-12, sextant). Checked against Claude
+# Code's own totals by `collect` (calibration); a new model id falls back to Opus rates and is named
+# in the report.
+PRICES = {
+    "claude-fable-5-1": (10, 50, 0.25, 12.5, 20),
+    "claude-fable-5": (10, 50, 1.0, 12.5, 20),
+    "claude-opus-5-5": (4, 20, 0.2, 5, 8),
+    "claude-opus-5": (5, 25, 0.5, 6.25, 10),
+    # Sonnet 5.5's cache read halved to $0.10 (Claude Code 2.1.296, 2026-10-09; the pricing page agrees):
+    # the 2026-09-25 row had Sonnet 5's $0.20, and calibration read sonnet-5-5 +23.5 % on 2026-10-10.
+    "claude-sonnet-5-5": (2, 10, 0.1, 2.5, 4),
+    "claude-sonnet-5": (2, 10, 0.2, 2.5, 4),
+    # Haiku 5.5 (2026-10-07) is tiered: these are its prices for prompts up to 100k tokens; above
+    # that it is 5× (0.5, 2.5, 0.05, 0.625, 1). Its calls here are small (22k context on 10-10), so
+    # the low tier is the right row; a session that runs Haiku long reads low here.
+    "claude-haiku-5-5": (0.1, 0.5, 0.01, 0.125, 0.2),
+    "claude-haiku-4-5-20251001": (1, 5, 0.1, 1.25, 2),
+    "claude-haiku-4-5": (1, 5, 0.1, 1.25, 2),
+}
+DEFAULT_PRICE = PRICES["claude-opus-5"]
+
+# The plan the ratio prices (config "plan" overrides): Max 20x since 2026-09-16; weeks before ran on Pro
+# and would inflate the ratio. Pro fallback spend is in the same CSVs and is left in: it is small, and
+# the owner's method prices the week by the main plan alone.
+DEFAULT_PLAN = {"name": "Max 20x", "usd_month": 200, "since": "2026-09-16"}
+RATIO_WEEKS = 4
+DAYS_PER_MONTH = 365.25 / 12
+
+FIELDS = ["day", "host", "source", "session", "title", "project", "model", "effort", "skill", "agent",
+          "entry", "calls", "input", "output", "cache_read", "cache_write_5m", "cache_write_1h",
+          "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account"]
+# account: the registry label hooks/sync.py recorded for the session at its start
+# (<data>/<host>/accounts.jsonl, work-account E6); empty = before that existed = the primary.
+
+
+# ----------------------------------------------------------------------------- config
+
+def load_config():
+    cfg = {}
+    if not CONFIG.is_file() and (common.CONFIG / "legacy").exists():
+        # the overlay is installed and wrote no settings: say so once, then run on the defaults
+        print(f"usage-report: no {CONFIG} — collecting only (bootstrap.sh --config writes it)", file=sys.stderr)
+    if CONFIG.is_file():
+        try:
+            cfg = json.loads(CONFIG.read_text())
+        except ValueError as e:
+            sys.exit(f"usage-report: {CONFIG} is not JSON: {e}")
+    host = this_host()
+    hcfg = dict(cfg.get("hosts", {}).get(host, {}))
+    return {
+        "host": host,
+        "data": data_dir(cfg, host),
+        # The report is written to local_reports, which scripts and /sextant read, and handed to
+        # bin/publish with this scope ("data" or "vault"; empty: not published). Its place in the
+        # share is local_reports' place under ~/projects (docs/drive-share.md).
+        "local_reports": opt_path("USAGE_LOCAL_REPORTS", cfg, "local_reports", str(common.LOG_DIR / "reports")),
+        "publish": os.environ.get("USAGE_PUBLISH", cfg.get("publish", "")),
+        "render": os.environ.get("USAGE_RENDER", "1" if hcfg.get("render") else "0") == "1",
+        "render_after": hcfg.get("render_after", "07:05"),
+        "pull": hcfg.get("pull", []),
+        "notify": hcfg.get("notify"),
+        "claude_projects": Path(os.environ.get("USAGE_CC", HOME / ".claude/projects")),
+        "archive": Path(os.environ.get("USAGE_ARCHIVE", HOME / "projects/transcripts")),
+        "claude_json": Path(os.environ.get("USAGE_CLAUDE_JSON", HOME / ".claude.json")),
+        "accounts": account_dirs(),
+        "app": Path(os.environ.get("USAGE_APP", HOME / "Library/Application Support/Claude")),
+        "tz_now": now_local(),
+        "plan": dict(DEFAULT_PLAN, **cfg.get("plan", {})),
+        # argv the weekly ratio is committed with; tests swap in a stub
+        # atlas's knowledge-commit through the core's tool() (G35); None when atlas is not here
+        "knowledge_commit": shlex.split(os.environ["USAGE_KNOWLEDGE_COMMIT"]) if "USAGE_KNOWLEDGE_COMMIT" in os.environ
+                            else _knowledge_commit(),
+    }
+
+
+def _knowledge_commit():
+    # the vault the ratio file lives in, by the name knowledge-commit takes: atlas's own key
+    kc, vault = common.tool("knowledge-commit"), common.config_line("atlas/vault")
+    return [str(kc), vault] if kc and vault else None
+
+
+def this_host():
+    return os.environ.get("USAGE_HOST") or socket.gethostname().split(".")[0].lower()
+
+
+def data_dir(cfg=None, host=None):
+    """<data>: USAGE_DATA, else the host's "data" in usage.json, else the NAS share ("nas") when mounted,
+    else the core's log dir (`regatta/log-dir`). bin/review-gate calls this too, so its log sits beside the usage data."""
+    if cfg is None:
+        try:
+            cfg = json.loads(CONFIG.read_text()) if CONFIG.is_file() else {}
+        except ValueError:
+            cfg = {}
+    hcfg = cfg.get("hosts", {}).get(host or this_host(), {})
+    nas = Path(os.path.expanduser(cfg["nas"])) if cfg.get("nas") else None
+    if os.environ.get("USAGE_DATA"):
+        return Path(os.environ["USAGE_DATA"])
+    if hcfg.get("data"):
+        return Path(os.path.expanduser(hcfg["data"]))
+    if nas and nas.parent.is_dir():
+        return nas
+    return common.LOG_DIR
+
+
+def account_dirs():
+    """Every Claude account's config dir on this machine (multi-account design E5), from
+    bin/account's own reading of the registry (enabled rows, set up here): each keeps its own
+    .claude.json usage cache and exhaustion.jsonl. USAGE_CLAUDE_JSON set (the tests) means that
+    file alone, plus USAGE_ACCOUNT_DIRS. ~/.claude's own cache is claude_json."""
+    if "USAGE_CLAUDE_JSON" in os.environ:
+        return [Path(d) for d in os.environ.get("USAGE_ACCOUNT_DIRS", "").split(":") if d]
+    dirs = [HOME / ".claude"]
+    acct = common.tool("account")  # lighthouse's (G13); without it, ~/.claude alone
+    if not acct:
+        return dirs
+    try:
+        r = subprocess.run([sys.executable, str(acct), "limits", "--all",
+                            "--cached", "--json"], capture_output=True, text=True, timeout=30)
+        for a in json.loads(r.stdout) if r.returncode == 0 else []:
+            d = Path(a["home"])
+            if a["provider"] == "claude" and a["here"] and d not in dirs:
+                dirs.append(d)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return dirs
+
+
+def opt_path(env, cfg, key, default):
+    """An optional folder: the environment wins (even empty), then the config, then the default;
+    an empty string means "not used"."""
+    v = os.environ[env] if env in os.environ else cfg.get(key, default)
+    return Path(os.path.expanduser(v)) if v else None
+
+
+def now_local():
+    t = os.environ.get("USAGE_NOW")  # tests pin the clock
+    return dt.datetime.fromisoformat(t).astimezone() if t else dt.datetime.now().astimezone()
+
+
+def local_day(ts):
+    """ISO timestamp (UTC 'Z') → local calendar day; the plan's resets read in local time."""
+    return dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().date().isoformat()
+
+
+def cost_of(model, inp, out, cr, cw5, cw1):
+    p = PRICES.get(model, DEFAULT_PRICE)
+    return (inp * p[0] + out * p[1] + cr * p[2] + cw5 * p[3] + cw1 * p[4]) / 1e6
+
+
+def project_of(cwd):
+    """The main checkout, relative to ~/projects: a worktree's calls file with its repo."""
+    p = (cwd or "").split("/.claude/worktrees/")[0]
+    m = re.match(r"^/Users/[^/]+/projects/(.+)$", p)  # the same repo on both Macs, whoever's home
+    return m.group(1) if m else (p.replace(str(HOME), "~") or "?")
+
+
+# ----------------------------------------------------------------------------- collect
+
+def claude_code_files(c):
+    files = [Path(p) for p in glob.glob(str(c["claude_projects"] / "**/*.jsonl"), recursive=True)]
+    files += [Path(p) for p in glob.glob(str(c["archive"] / "**/*.jsonl"), recursive=True)]
+    return sorted(files)  # glob order is not stable, and an old fork's tie goes to the file read first
+
+
+def read_claude_code(c, since):
+    """Per-call records since `since` (a local ISO day), plus titles, agent types and calibration."""
+    calls = {}
+    titles = {}
+    agent_types = {}
+    cost_state = {}
+    prompts = {}
+    first_user = {}
+    found = {}      # (call key, sessionId) → the call, merged once every fork's cutoff is known
+    fork_cut = {}   # forked sessionId → timestamp of the last record it inherited
+    metas = glob.glob(str(c["claude_projects"] / "**/subagents/*.meta.json"), recursive=True)
+    metas += glob.glob(str(c["archive"] / "**/subagents/*.meta.json"), recursive=True)
+    for meta in metas:
+        try:
+            m = json.loads(Path(meta).read_text())
+            agent_types[Path(meta).name.split(".")[0].replace("agent-", "")] = m.get("agentType") or "?"
+        except (OSError, ValueError):
+            pass
+    cutoff = dt.datetime.fromisoformat(since).timestamp() - 86400  # mtime prefilter, a day of slack
+    for f in claude_code_files(c):
+        try:
+            if f.stat().st_mtime < cutoff:
+                continue
+            fh = f.open(errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"ai-title"' in line or '"cost-state"' in line or '"usage"' in line or '"last-prompt"' in line \
+                        or '"forked-from"' in line or ('"type":"user"' in line and '"content":"' in line):
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                else:
+                    continue
+                t = d.get("type")
+                if t == "ai-title":
+                    titles[d.get("sessionId")] = d.get("aiTitle")
+                    continue
+                if t == "user":
+                    sid = d.get("sessionId")
+                    txt = (d.get("message") or {}).get("content")
+                    if sid not in first_user and isinstance(txt, str) and not txt.startswith("<"):
+                        first_user[sid] = " ".join(txt.split())[:60]
+                    continue
+                if t == "last-prompt":
+                    # Remote Control and `claude -p` sessions get no AI title; their last prompt names them
+                    sid = d.get("sessionId")
+                    lp = " ".join(str(d.get("lastPrompt") or "").split())[:60]
+                    if lp:
+                        prompts[sid] = lp
+                    continue
+                if t == "forked-from":
+                    if d.get("cutoff"):
+                        fork_cut[d.get("sessionId")] = d["cutoff"]
+                    continue
+                if t == "cost-state":
+                    # the last record per process is its running total; a process is (session, startTime),
+                    # which also makes the archive's copy of a live file count once
+                    cost_state[(d.get("sessionId"), d.get("startTime"))] = d
+                    continue
+                if t != "assistant":
+                    continue
+                msg = d.get("message") or {}
+                u = msg.get("usage")
+                model = msg.get("model")
+                if not u or model == "<synthetic>" or not d.get("timestamp"):
+                    continue
+                day = local_day(d["timestamp"])
+                if day < since:
+                    continue
+                # requestId alone: a fork made on this host carries the same requestIds under a new
+                # sessionId, and an old fork has no forked-from record to skip it by
+                key = ("r", d["requestId"]) if d.get("requestId") else ("u", d.get("uuid") or id(d))
+                out = u.get("output_tokens") or 0
+                seen = found.get((key, d.get("sessionId")))
+                if seen and seen["out"] >= out:  # a streamed reply's earlier blocks
+                    continue
+                cc = u.get("cache_creation") or {}
+                cw5, cw1 = cc.get("ephemeral_5m_input_tokens") or 0, cc.get("ephemeral_1h_input_tokens") or 0
+                if not cw5 and not cw1:
+                    cw5 = u.get("cache_creation_input_tokens") or 0
+                found[(key, d.get("sessionId"))] = ({
+                    "day": day, "ts": d["timestamp"], "source": "claude-code", "session": d.get("sessionId") or "?",
+                    "cwd": d.get("cwd"), "model": model, "effort": d.get("effort") or "",
+                    "skill": d.get("attributionSkill") or "", "agent_id": d.get("agentId") or "",
+                    "entry": d.get("entrypoint") or "", "inp": u.get("input_tokens") or 0, "out": out,
+                    "cr": u.get("cache_read_input_tokens") or 0, "cw5": cw5, "cw1": cw1,
+                })
+    # The skip comes before the merge: a fork read before its source would otherwise win the
+    # requestId and then be dropped, losing the call from both.
+    def rank(call):  # an old fork's copy ties with its source on output; the source keeps it
+        return call["out"], not str(titles.get(call["session"]) or "").startswith("🔀 fork")
+    for (key, _), call in found.items():
+        cut = fork_cut.get(call["session"])
+        if cut and call["ts"] <= cut:
+            continue
+        if key in calls and rank(calls[key]) >= rank(call):
+            continue
+        calls[key] = call
+    for (sid, start) in list(cost_state):  # an inherited process's running total, copied under the fork's id
+        cut = fork_cut.get(sid)
+        try:
+            if cut and start and start <= dt.datetime.fromisoformat(cut.replace("Z", "+00:00")).timestamp() * 1000:
+                del cost_state[(sid, start)]
+        except ValueError:  # a cutoff spelt another way: keep the record rather than stop collect
+            pass
+    for sid, lp in list(prompts.items()) + list(first_user.items()):  # last prompt wins over first
+        titles.setdefault(sid, "“" + lp + "”")
+    return list(calls.values()), titles, agent_types, cost_state
+
+
+def read_cowork_local(c, since):
+    """Cowork sessions that ran on this Mac: <app>/local-agent-mode-sessions/**/local_*/audit.jsonl."""
+    out = []
+    base = c["app"] / "local-agent-mode-sessions"
+    for meta in glob.glob(str(base / "*/*/local_*.json")):
+        m = {}
+        try:
+            m = json.loads(Path(meta).read_text())
+        except (OSError, ValueError):
+            pass
+        audit = Path(meta[:-5]) / "audit.jsonl"
+        if not audit.is_file():
+            continue
+        seen = {}
+        for line in audit.open(errors="replace"):
+            if '"assistant"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("type") != "assistant" or not d.get("timestamp"):
+                continue
+            u = (d.get("message") or {}).get("usage")
+            if not u:
+                continue
+            day = local_day(d["timestamp"])
+            if day < since:
+                continue
+            key = d.get("request_id") or d.get("uuid")
+            o = u.get("output_tokens") or 0
+            if key in seen and seen[key]["out"] >= o:
+                continue
+            cc = u.get("cache_creation") or {}
+            seen[key] = {
+                "day": day, "ts": d["timestamp"], "source": "cowork-local", "session": Path(meta).stem,
+                "cwd": (m.get("userSelectedFolders") or [""])[0] if m.get("userSelectedFolders") else "",
+                "model": d["message"].get("model"), "effort": "", "skill": "", "agent_id": "",
+                "entry": "cowork", "inp": u.get("input_tokens") or 0, "out": o,
+                "cr": u.get("cache_read_input_tokens") or 0,
+                "cw5": cc.get("ephemeral_5m_input_tokens") or 0, "cw1": cc.get("ephemeral_1h_input_tokens") or 0,
+                "title": m.get("title") or "",
+            }
+        out.extend(seen.values())
+    return out
+
+
+def aggregate(c, records, titles, agent_types):
+    rows = {}
+    for r in records:
+        agent = "main"
+        if r["agent_id"]:
+            agent = agent_types.get(r["agent_id"], "subagent")
+        title = r.get("title") or titles.get(r["session"]) or r["session"][:8]
+        r["entry"] = r["entry"] or "unrecorded"  # some sessions on the second Mac carry no entrypoint at all (2026-09-22)
+        k = (r["day"], r["source"], r["session"], r["model"], r["effort"], r["skill"], agent, r["entry"])
+        row = rows.get(k)
+        if row is None:
+            row = rows[k] = {"day": r["day"], "host": c["host"], "source": r["source"], "session": r["session"],
+                             "title": title, "project": project_of(r["cwd"]), "model": r["model"], "effort": r["effort"],
+                             "skill": r["skill"], "agent": agent, "entry": r["entry"], "calls": 0, "input": 0,
+                             "output": 0, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0,
+                             "calls_over_200k": 0, "calls_over_400k": 0, "cost": 0.0, "first": r["ts"], "last": r["ts"]}
+        ctx = r["inp"] + r["cr"] + r["cw5"] + r["cw1"]
+        row["calls"] += 1
+        row["input"] += r["inp"]
+        row["output"] += r["out"]
+        row["cache_read"] += r["cr"]
+        row["cache_write_5m"] += r["cw5"]
+        row["cache_write_1h"] += r["cw1"]
+        row["calls_over_200k"] += ctx > 200_000
+        row["calls_over_400k"] += ctx > 400_000
+        row["cost"] += cost_of(r["model"], r["inp"], r["out"], r["cr"], r["cw5"], r["cw1"])
+        row["first"] = min(row["first"], r["ts"])
+        row["last"] = max(row["last"], r["ts"])
+    return list(rows.values())
+
+
+def session_accounts(c, host=None):
+    """{session: account label} from <data>/<host>/accounts.jsonl (hooks/sync.py, E6); the last
+    record of a session wins."""
+    out = {}
+    try:
+        lines = (c["data"] / (host or c["host"]) / "accounts.jsonl").read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("session") and r.get("account"):
+            out[r["session"]] = r["account"]
+    return out
+
+
+def secondary_labels():
+    """The registry's non-primary Claude rows: the accounts whose spend is not the plan's.
+
+    The ratio excludes these labels and counts everything else as the plan, so a renamed primary
+    (renamed in the registry, 2026-10-06), a row recorded before the registry fast-forwarded, or an
+    unreadable registry keeps the plan's own spend in it instead of silently dropping it (review
+    2026-10-06: matching on the primary's current label did the opposite)."""
+    try:
+        reg = json.loads(Path(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json").read_text())
+        # Orca's logins are rows too: sync.py records their labels (docs/orca-accounts-2026-10-16.md)
+        return {a["label"] for a in common.account_rows(reg.get("accounts"), HOME)
+                if not a.get("primary") and a.get("provider", "claude") == "claude"
+                and Path(a.get("home") or "~/.no-home").expanduser() != HOME / ".claude"}
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+
+
+def cmd_collect(c, days=3):
+    since = (c["tz_now"].date() - dt.timedelta(days=days)).isoformat()
+    cc, titles, agent_types, cost_state = read_claude_code(c, since)
+    cw = read_cowork_local(c, since)
+    rows = aggregate(c, cc + cw, titles, agent_types)
+    accts = session_accounts(c)
+    for r in rows:
+        r["account"] = accts.get(r["session"], "")
+    out = c["data"] / c["host"] / "calls"
+    out.mkdir(parents=True, exist_ok=True)
+    by_day = defaultdict(list)
+    for r in rows:
+        by_day[r["day"]].append(r)
+    today = c["tz_now"].date().isoformat()
+    for day in sorted(by_day):
+        rows_d = sorted(by_day[day], key=lambda r: -r["cost"])
+        tmp = out / f".{day}.csv.tmp"
+        with tmp.open("w", newline="") as fh:
+            w = csv.DictWriter(fh, FIELDS)
+            w.writeheader()
+            for r in rows_d:
+                w.writerow({**r, "cost": f"{r['cost']:.4f}"})
+        tmp.replace(out / f"{day}.csv")
+    # calibration: price Claude Code's own per-model token totals with this table and compare with
+    # its own costUSD. That tests the price table alone. (Matching sessions instead does not work:
+    # totalCostUSD restarts with every process, so a session picked up again reads low; 22% off, 2026-09-22.)
+    # Claude Code's cache writes are 1-hour ones, and modelUsage does not split them, so the check
+    # prices every write at the 1-hour rate.
+    per = defaultdict(lambda: [0.0, 0.0])
+    for d in cost_state.values():
+        for model, u in (d.get("modelUsage") or {}).items():
+            if model not in PRICES:
+                continue
+            per[model][0] += u.get("costUSD") or 0
+            per[model][1] += cost_of(model, u.get("inputTokens") or 0, u.get("outputTokens") or 0,
+                                     u.get("cacheReadInputTokens") or 0, 0, u.get("cacheCreationInputTokens") or 0)
+    cal = {"as_of": today, "processes": len(cost_state),
+           "models": {m: {"claude_code": round(a, 2), "table": round(b, 2)} for m, (a, b) in per.items()},
+           "claude_code": round(sum(a for a, _ in per.values()), 2), "table": round(sum(b for _, b in per.values()), 2),
+           "unknown_models": sorted({r["model"] for r in cc + cw if r["model"] not in PRICES})}
+    (c["data"] / c["host"] / "calibration.json").write_text(json.dumps(cal, indent=1))
+    print(f"collect {c['host']}: {len(cc)} Claude Code + {len(cw)} local Cowork calls since {since} → "
+          f"{len(by_day)} day file(s) in {out}")
+    return rows
+
+
+# ----------------------------------------------------------------------------- sample
+
+def plan_name(oa):
+    """A login's plan from its profile: 'default_claude_max_20x' → 'Max 20x', 'claude_pro' → 'Pro'."""
+    m = re.search(r"max_(\d+x)", oa.get("organizationRateLimitTier") or "")
+    if m:
+        return f"Max {m.group(1)}"
+    t = oa.get("organizationType") or ""
+    return {"claude_pro": "Pro", "claude_max": "Max"}.get(t, t or None)
+
+
+def sample_cache(c, cj_path, seen, new):
+    """One login's /usage cache (a .claude.json) → a sample, if it is new."""
+    try:
+        cj = json.loads(Path(cj_path).read_text())
+    except (OSError, ValueError):
+        return
+    cache = cj.get("cachedUsageUtilization") or {}
+    u = cache.get("utilization") or {}
+    if cache.get("fetchedAtMs") and ("cache", cache["fetchedAtMs"]) not in seen:
+        lim = {}
+        for l in u.get("limits") or []:
+            name = l.get("kind")
+            scope = ((l.get("scope") or {}).get("model") or {}).get("display_name")
+            if scope:
+                name = f"{name}:{scope}"
+            lim[name] = {"percent": l.get("percent"), "resets_at": l.get("resets_at"), "severity": l.get("severity")}
+        xu = u.get("extra_usage") or {}
+        spend = u.get("spend") or {}
+        used = (spend.get("used") or {})
+        # Which login the numbers belong to (2026-09-26: Claude Code moved to a Pro backup account
+        # when the Max week ran out, while the Claude app stayed on Max; unlabelled, the two sets of
+        # percentages interleaved as one plan). The id prefix only: the report is published, emails
+        # are not. The plan name comes from the login's own profile, and only when it is the same account.
+        acct = (cache.get("accountUuid") or "")[:8] or None
+        oa = cj.get("oauthAccount") or {}
+        same = bool(acct and (oa.get("accountUuid") or "")[:8] == acct)
+        new.append({
+            "src": "cache", "t": cache["fetchedAtMs"], "host": c["host"], "limits": lim,
+            "account": acct, "plan": plan_name(oa) if same else None,
+            # the organisation, so plan_now can tell the app's sample of the same login (id prefix only)
+            "org": (oa.get("organizationUuid") or "")[:8] or None if same else None,
+            "extra_usage": {"enabled": xu.get("is_enabled"), "user_disabled": xu.get("user_disabled"),
+                            "spend_limit_reached": xu.get("spend_limit_reached"), "used_credits": xu.get("used_credits"),
+                            "monthly_limit": xu.get("monthly_limit"), "utilization": xu.get("utilization")},
+            "spend_used": (used.get("amount_minor") or 0) / (10 ** (used.get("exponent") or 2)) if used else None,
+            "breakdown": {r["key"]: r.get("percent") for r in ((u.get("seven_day_breakdown") or {}).get("rows") or [])},
+        })
+
+
+def cmd_sample(c):
+    """Append new plan-utilisation samples to <data>/<host>/limits.jsonl. Idempotent."""
+    dest = c["data"] / c["host"]
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / "limits.jsonl"
+    seen = set()
+    if path.is_file():
+        for line in path.open():
+            try:
+                d = json.loads(line)
+                seen.add((d["src"], d["t"]))
+            except (ValueError, KeyError):
+                pass
+    new = []
+    jsons = [c["claude_json"]] + [d / ".claude.json" for d in c["accounts"] if d != HOME / ".claude"]
+    for cj_path in jsons:
+        sample_cache(c, cj_path, seen, new)
+    # An exhausted window (bin/account's log, written by bin/statusline or a probe) is a point at
+    # 100%, so limit_episodes counts it even when no cache sample caught the wall.
+    for d in c["accounts"]:
+        try:
+            lines = (d / "exhaustion.jsonl").read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                r = json.loads(line)
+                t = int(r["at"] * 1000)
+            except (ValueError, KeyError, TypeError):
+                continue
+            if ("exhaustion", t) in seen:
+                continue
+            kind = {"five_hour": "session", "seven_day": "weekly_all"}.get(r.get("window"), r.get("window"))
+            new.append({"src": "exhaustion", "t": t, "host": c["host"], "account": r.get("account"),
+                        "limits": {kind: {"percent": 100, "resets_at": r.get("resets_at")}}})
+    hist = c["app"] / "plan-usage-history.json"
+    if hist.is_file():
+        try:
+            for s in json.loads(hist.read_text()).get("samples", []):
+                if ("app", s.get("t")) in seen or not s.get("t"):
+                    continue
+                v = s.get("u") or {}
+                new.append({"src": "app", "t": s["t"], "host": c["host"], "five_hour": v.get("fh"),
+                            "weekly": v.get("sd"), "extra_usage": v.get("xu"), "org": (s.get("org") or "")[:8] or None})
+        except (OSError, ValueError):
+            pass
+    if new:
+        with path.open("a") as fh:
+            for n in sorted(new, key=lambda n: n["t"]):
+                fh.write(json.dumps(n) + "\n")
+    return len(new)
+
+
+# ----------------------------------------------------------------------------- pull
+
+def cmd_pull(c):
+    """rsync each configured remote host's folder into <data>/. A failure is reported, not retried."""
+    ok = True
+    for src in c["pull"]:
+        host = src.rstrip("/").split("/")[-1]
+        dest = c["data"] / host
+        dest.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(["rsync", "-a", "--timeout=30", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
+                            src.rstrip("/") + "/", str(dest) + "/"], capture_output=True, text=True)
+        print(f"pull {src}: {'ok' if r.returncode == 0 else 'FAILED ' + r.stderr.strip()[:200]}")
+        ok = ok and r.returncode == 0
+    return ok
+
+
+# ----------------------------------------------------------------------------- read back
+
+def load_rows(c, first, last):
+    rows = []
+    for f in glob.glob(str(c["data"] / "*/calls/*.csv")):
+        day = Path(f).stem
+        if not (first <= day <= last):
+            continue
+        with open(f, newline="") as fh:
+            for r in csv.DictReader(fh):
+                for k in ("calls", "input", "output", "cache_read", "cache_write_5m", "cache_write_1h",
+                          "calls_over_200k", "calls_over_400k"):
+                    r[k] = int(r[k] or 0)
+                r["cost"] = float(r["cost"] or 0)
+                rows.append(r)
+    return rows
+
+
+def load_limits(c):
+    out = []
+    for f in glob.glob(str(c["data"] / "*/limits.jsonl")):
+        for line in open(f):
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    out.sort(key=lambda s: s["t"])
+    return out
+
+
+def ms_local(t):
+    return dt.datetime.fromtimestamp(t / 1000).astimezone()
+
+
+def who(s):
+    """The login a sample is from: a Claude Code sample's account id, or '' — the Claude app, whose
+    login this script cannot read, and every sample from before accounts were recorded (2026-09-26)."""
+    return (s.get("account") or "") if s["src"] in ("cache", "exhaustion") else ""
+
+
+def account_labels(samples):
+    """account id → what the report calls it: its plan ('Max 20x', 'Pro'), else the id; '' → 'Claude app'."""
+    out = {"": "Claude app"}
+    for s in samples:
+        a = who(s)
+        if a:
+            out[a] = s.get("plan") or out.get(a) or a
+    return out
+
+
+def limit_episodes(samples, first, last):
+    """Contiguous runs at 100% per limit and login, clipped to local days [first, last]. A run is one
+    hit; its start is the first sample at 100, its end the last one before it dropped.
+
+    Each login is its own series: two plans' percentages interleaved read as a limit hit and cleared
+    every few minutes. A hit seen by the app and by a Claude Code account at overlapping times is one
+    event and is merged, named for the Claude Code account (the app's login is unknown here) — so on
+    one plan the report reads as before. Named only once some sample carries an account."""
+    labels = account_labels(samples)
+    named = len(labels) > 1
+    series = defaultdict(list)
+    for s in samples:
+        t = ms_local(s["t"])
+        g = who(s)
+        if s["src"] == "app":
+            series[("5-hour", g)].append((t, s.get("five_hour")))
+            series[("weekly", g)].append((t, s.get("weekly")))
+            if s.get("extra_usage") is not None:
+                series[("extra-usage cap", g)].append((t, s.get("extra_usage")))
+        else:
+            for name, l in (s.get("limits") or {}).items():
+                label = {"session": "5-hour", "weekly_all": "weekly"}.get(name, name.replace("weekly_scoped:", "weekly ").strip())
+                series[(label, g)].append((t, l.get("percent")))
+            if (s.get("extra_usage") or {}).get("spend_limit_reached"):
+                series[("extra-usage cap", g)].append((t, 100))
+    runs = defaultdict(list)                       # limit → [start, end, {logins}]
+    for (name, g), pts in series.items():
+        pts.sort()
+        cur = None
+        for t, v in pts:
+            if v is not None and v >= 100:
+                if cur is None:
+                    cur = [t, t, {g}]
+                else:
+                    cur[1] = t
+            elif v is not None and cur is not None:
+                runs[name].append(cur)
+                cur = None
+        if cur is not None:
+            runs[name].append(cur)
+    eps = []
+    for name, rs in runs.items():
+        rs.sort(key=lambda r: r[0])
+        merged = []
+        for r in rs:
+            # 20 min: the app samples every ~15, so a Claude Code sample of the same hit can fall
+            # just past the app run's last sample at 100 and still be that hit.
+            if merged and r[0] <= merged[-1][1] + dt.timedelta(minutes=20):
+                merged[-1][1] = max(merged[-1][1], r[1])
+                merged[-1][2] |= r[2]
+            else:
+                merged.append([r[0], r[1], set(r[2])])
+        for a, b, gs in merged:
+            if named:
+                acc = sorted(labels[g] for g in gs if g) or [labels[""]]
+                name_out = f"{name} ({', '.join(acc)})"
+            else:
+                name_out = name
+            eps.append((name_out, a, b))
+    return sorted(((n, a, b) for n, a, b in eps if a.date().isoformat() <= last and b.date().isoformat() >= first),
+                  key=lambda e: e[1])
+
+
+def latest_cache(samples):
+    for s in reversed(samples):
+        if s["src"] == "cache":
+            return s
+    return None
+
+
+def plan_now(samples):
+    """What "Plan now" shows once samples carry accounts: [(label, sample)], newest first.
+
+    One entry per Claude Code account whose newest sample is within a day of the newest overall
+    (an older percentage beside a fresh one reads as current). Then the Claude app's newest sample,
+    when its weekly figure disagrees with every account shown by more than 3 points: the two
+    sources are then on different logins (2026-09-26: the app on the spent Max, Claude Code on the
+    Pro backup). Empty while no sample carries an account: the report keeps its one-plan form.
+
+    An account's .claude.json cache can be days old while the app samples the same organisation
+    every few minutes (2026-09-29: the cache 41 h old said weekly 0%, the app 22%), so the app's
+    sample stands in for the account when it is fresher and names the same organisation — the
+    fresher of the two, as hooks/tier_check.py's weekly() takes — only when no other login shown
+    shares that organisation. Samples from before orgs were recorded (2026-10-19) match nothing
+    and read as before, so a cache already stale then is helped from its next refresh on."""
+    labels = account_labels(samples)
+    if len(labels) == 1:
+        return []
+    newest = {}
+    for s in samples:
+        if s["src"] == "cache" and who(s):
+            newest[who(s)] = s
+    if not newest:
+        return []
+    apps = {s["org"]: s for s in samples if s["src"] == "app" and s.get("org") and s.get("weekly") is not None}
+    # usage is per login, the app's history names only the organisation: two logins in one org
+    # (a Team's seats) cannot tell which the app is, so neither takes its sample (review, 2026-10-19)
+    orgs = Counter(s.get("org") for s in newest.values() if s.get("org"))
+    for a, s in list(newest.items()):
+        x = apps.get(s.get("org")) if s.get("org") and orgs[s["org"]] == 1 else None
+        if x and x["t"] > s["t"]:
+            newest[a] = dict(x, account=a, stands_in=s["t"])
+    top = max(s["t"] for s in newest.values())
+    out = [(labels[a], s) for a, s in sorted(newest.items(), key=lambda kv: -kv[1]["t"]) if top - s["t"] <= 86400000]
+    shown = {s.get("org") for _, s in out if s.get("org")}
+    app = next((s for s in reversed(samples) if s["src"] == "app"), None)
+    if app and app.get("org") in shown:
+        app = None  # the same login, already shown through its account
+    if app and app.get("weekly") is not None and top - app["t"] <= 86400000:
+        weeklies = [((s.get("limits") or {}).get("weekly_all") or {}).get("percent") for _, s in out]
+        if all(w is None or abs(w - app["weekly"]) > 3 for w in weeklies):
+            out.append((labels[""], app))
+    return out
+
+
+def plan_line(s):
+    """One login's percentages, from either source."""
+    if s["src"] == "app":
+        parts = [f"{k} {s[f]}%" for k, f in (("5-hour", "five_hour"), ("weekly", "weekly")) if s.get(f) is not None]
+        return ", ".join(parts)
+    return limits_line({"latest": s})
+
+
+# ----------------------------------------------------------------------------- render
+
+def money(x):
+    return common.cost_text(x)
+
+
+def ktok(n):
+    return f"{n / 1000:,.0f}k"
+
+
+def group(rows, key):
+    g = defaultdict(lambda: {"calls": 0, "cost": 0.0, "ctx": 0, "output": 0, "over400": 0})
+    for r in rows:
+        k = key(r)
+        x = g[k]
+        x["calls"] += r["calls"]
+        x["cost"] += r["cost"]
+        x["ctx"] += r["input"] + r["cache_read"] + r["cache_write_5m"] + r["cache_write_1h"]
+        x["output"] += r["output"]
+        x["over400"] += r["calls_over_400k"]
+    return sorted(g.items(), key=lambda kv: -kv[1]["cost"])
+
+
+def table(title, items, total, label, n=8):
+    if not items:
+        return []
+    out = [f"### {title}", "", f"| {label} | Calls | Context per call | Output | $ | Share |", "| --- | --- | --- | --- | --- | --- |"]
+    for k, v in items[:n]:
+        name = " · ".join(x for x in k if x) if isinstance(k, tuple) else (k or "—")
+        out.append(f"| {name.replace('|', '/')} | {v['calls']:,} | {ktok(v['ctx'] / max(v['calls'], 1))} | "
+                   f"{ktok(v['output'])} | {money(v['cost'])} | {100 * v['cost'] / total:.0f}% |" if total else "")
+    if len(items) > n:
+        rest = sum(v["cost"] for _, v in items[n:])
+        out.append(f"| {len(items) - n} more | | | | {money(rest)} | {100 * rest / total:.0f}% |" if total else "")
+    return out + [""]
+
+
+def driver(v):
+    per = v["ctx"] / max(v["calls"], 1)
+    if per > 300_000:
+        return f"long context, {ktok(per)} per call"
+    if v["calls"] > 300:
+        return f"{v['calls']:,} calls"
+    return f"heavy output, {ktok(v['output'])}"
+
+
+def summarise(c, day):
+    d = dt.date.fromisoformat(day)
+    first28 = (d - dt.timedelta(days=27)).isoformat()
+    rows28 = load_rows(c, first28, day)
+    rows = [r for r in rows28 if r["day"] == day]
+    days_with = defaultdict(float)
+    for r in rows28:
+        days_with[r["day"]] += r["cost"]
+    last7 = [(d - dt.timedelta(days=i)).isoformat() for i in range(7)]
+    avg7 = sum(days_with.get(x, 0) for x in last7) / 7
+    avg28 = sum(days_with.values()) / 28
+    samples = load_limits(c)
+    return {"day": day, "rows": rows, "rows7": [r for r in rows28 if r["day"] in last7], "total": sum(r["cost"] for r in rows),
+            "avg7": avg7, "avg28": avg28, "samples": samples, "latest": latest_cache(samples),
+            "plan_now": plan_now(samples),
+            "hits_day": limit_episodes(samples, day, day),
+            "hits_7d": limit_episodes(samples, last7[-1], day)}
+
+
+def limits_line(s):
+    lc = s["latest"]
+    if not lc:
+        return "Plan limits: no sample yet."
+    L = lc.get("limits") or {}
+    parts = []
+    for key, label in (("session", "5-hour"), ("weekly_all", "weekly")):
+        if key in L:
+            parts.append(f"{label} {L[key]['percent']}%")
+    for key, v in L.items():
+        if key.startswith("weekly_scoped:"):
+            parts.append(f"weekly {key.split(':', 1)[1]} {v['percent']}%")
+    return ", ".join(parts)
+
+
+def extra_line(lc):
+    if not lc:
+        return None
+    xu = lc.get("extra_usage") or {}
+    if xu.get("spend_limit_reached"):
+        return "extra usage: spend cap reached"
+    if xu.get("enabled"):
+        used = xu.get("used_credits")
+        lim = xu.get("monthly_limit")
+        return f"extra usage on, {used if used is not None else '?'} of {lim if lim is not None else 'no cap'} used"
+    return "extra usage off" + (" (you switched it off)" if xu.get("user_disabled") else "")
+
+
+def render(c, day):
+    s = summarise(c, day)
+    rows, total = s["rows"], s["total"]
+    lc = s["latest"]
+    L = []
+    L.append(f"# Claude usage — {day}")
+    L.append("")
+    L.append(f"Written by `bin/usage-report` at {c['tz_now'].strftime('%Y-%m-%d %H:%M')} on {c['host']}. "
+             "$ is API list price for the same tokens, a proxy, then the effective cost on the plan "
+             f"({common.ratio_note()}); the plan's own percentages are the truth.")
+    L.append("")
+    # headline
+    L.append("## Headline")
+    L.append("")
+    hosts = sorted({r["host"] for r in rows})
+    L.append(f"- **{money(total)} in Claude Code and local Cowork** on {day} "
+             f"(7-day average {money(s['avg7'])}, 28-day {money(s['avg28'])}; hosts: {', '.join(hosts) or 'none'}).")
+    if s["plan_now"]:
+        for label, x in s["plan_now"]:
+            when = ms_local(x["t"]).strftime("%m-%d %H:%M")
+            tail = (f"; {extra_line(x)}" if x["src"] == "cache"
+                    else " (the app's sample, fresher than Claude Code's)" if x.get("stands_in") else " (the app's own login)")
+            L.append(f"- **Plan now, {label}** ({when}): {plan_line(x)}{tail}.")
+    elif lc:
+        when = ms_local(lc["t"]).strftime("%m-%d %H:%M")
+        L.append(f"- **Plan now** ({when}): {limits_line(s)}; {extra_line(lc)}.")
+    if lc:
+        b = lc.get("breakdown") or {}
+        if b:
+            names = {"claude_code": "Claude Code", "cowork": "Cowork", "chat": "chats", "other": "other"}
+            whose = f" ({s['plan_now'][0][0]})" if s["plan_now"] else ""
+            L.append(f"- **This week's budget by surface{whose}:** " + ", ".join(f"{names.get(k, k)} {v}%" for k, v in b.items() if v)
+                     + ". Cloud Cowork (routines, remote sessions) has no transcript here; only this split sees it.")
+    if s["hits_day"]:
+        def span(a, b):
+            fmt = "%H:%M" if a.date() == b.date() else "%a %m-%d %H:%M"
+            return f"from {a.strftime(fmt)} to {b.strftime(fmt)}"
+        L.append("- **Limits hit:** " + "; ".join(f"{n} at 100% {span(a, b)}" for n, a, b in s["hits_day"]) + ".")
+    else:
+        L.append("- **No limit reached** on this day.")
+    by_sess = group(rows, lambda r: (r["title"], r["host"]))
+    if by_sess:
+        (title, host), v = by_sess[0]
+        L.append(f"- **Most expensive session:** {title} ({host}), {money(v['cost'])}, {driver(v)}.")
+    L.append("")
+    # last 7 days of limits
+    if s["hits_7d"]:
+        L.append("### Limits reached, last 7 days")
+        L.append("")
+        L.append("| Limit | From | To |")
+        L.append("| --- | --- | --- |")
+        for n, a, b in s["hits_7d"]:
+            L.append(f"| {n} | {a.strftime('%a %m-%d %H:%M')} | {b.strftime('%a %m-%d %H:%M')} |")
+        L.append("")
+    # tables
+    L.append("## Where it went")
+    L.append("")
+    L += table("By session", by_sess, total, "Session · host", 10)
+    L += table("By project", group(rows, lambda r: r["project"]), total, "Project")
+    L += table("By model and effort", group(rows, lambda r: (r["model"].replace("claude-", ""), r["effort"])), total, "Model · effort")
+    L += table("By skill", group(rows, lambda r: r["skill"] or "(none)"), total, "Skill")
+    L += table("By agent", group(rows, lambda r: r["agent"]), total, "Agent")
+    L += table("By surface and host", group(rows, lambda r: (r["entry"], r["source"], r["host"])), total, "Entry · source · host")
+    # levers
+    r7 = s["rows7"]
+    t7 = sum(r["cost"] for r in r7) or 1
+    calls7 = sum(r["calls"] for r in r7) or 1
+    o200 = sum(r["calls_over_200k"] for r in r7)
+    o400 = sum(r["calls_over_400k"] for r in r7)
+    cw1 = sum(cost_of(r["model"], 0, 0, 0, 0, r["cache_write_1h"]) for r in r7)
+    cread = sum(cost_of(r["model"], 0, 0, r["cache_read"], 0, 0) for r in r7)
+    fin = sum(r["cost"] for r in r7 if r["skill"] == "finish")
+    spans = defaultdict(lambda: [None, None, 0.0])
+    for r in r7:
+        sp = spans[(r["session"], r["title"])]
+        sp[0] = min(sp[0] or r["first"], r["first"])
+        sp[1] = max(sp[1] or r["last"], r["last"])
+        sp[2] += r["cost"]
+    long_cost = sum(v[2] for v in spans.values()
+                    if (dt.datetime.fromisoformat(v[1].replace("Z", "+00:00")) - dt.datetime.fromisoformat(v[0].replace("Z", "+00:00"))).total_seconds() > 8 * 3600)
+    L.append("## Levers, last 7 days")
+    L.append("")
+    L.append("Measured, not pulled (D6): a week of these before any setting changes.")
+    L.append("")
+    L.append("| Lever | Value | $ |")
+    L.append("| --- | --- | --- |")
+    L.append(f"| Calls above 200k context | {100 * o200 / calls7:.0f}% of {calls7:,} | |")
+    L.append(f"| Calls above 400k context | {100 * o400 / calls7:.0f}% | |")
+    L.append(f"| Cache reads of context | {100 * cread / t7:.0f}% of spend | {money(cread)} |")
+    L.append(f"| 1-hour cache writes | {100 * cw1 / t7:.0f}% of spend | {money(cw1)} |")
+    L.append(f"| Sessions spanning more than 8 hours | {100 * long_cost / t7:.0f}% of spend | {money(long_cost)} |")
+    L.append(f"| `/finish` | {100 * fin / t7:.0f}% of spend | {money(fin)} |")
+    for (m, e), v in group(r7, lambda r: (r["model"].replace("claude-", ""), r["effort"]))[:4]:
+        L.append(f"| {m} at {e or 'default'} effort | {100 * v['cost'] / t7:.0f}% of spend | {money(v['cost'])} |")
+    L.append("")
+    L.append("### Tier mix, last 7 days")
+    L.append("")
+    L += tier_lines(tier_mix(r7)) + [""]
+    # calibration
+    L.append("## Calibration")
+    L.append("")
+    for f in sorted(glob.glob(str(c["data"] / "*/calibration.json"))):
+        try:
+            cal = json.loads(Path(f).read_text())
+        except ValueError:
+            continue
+        host = Path(f).parent.name
+        if cal.get("claude_code"):
+            dev = 100 * (cal["table"] - cal["claude_code"]) / cal["claude_code"]
+            flag = " **Above 2%: check the price table.**" if abs(dev) > 2 else ""
+            worst = [f"{m.replace('claude-', '')} {100 * (v['table'] - v['claude_code']) / v['claude_code']:+.1f}%"
+                     for m, v in cal["models"].items() if v["claude_code"] > 5]
+            L.append(f"- {host}: this table prices Claude Code's own token counts at {common.usd(cal['table'])} (list) against its "
+                     f"{common.usd(cal['claude_code'])}, {dev:+.1f}% ({', '.join(worst)}).{flag}")
+        else:
+            L.append(f"- {host}: no Claude Code cost records in the window.")
+        if cal.get("unknown_models"):
+            L.append(f"- {host}: priced at Opus rates, model not in the table: {', '.join(cal['unknown_models'])}.")
+    L.append("")
+    return "\n".join(L), s
+
+
+def line(c, day, s=None):
+    s = s or summarise(c, day)
+    lc = s["latest"]
+    parts = [f"Claude {day[5:]}: {money(s['total'])} in Claude Code; 7-day avg {money(s['avg7'])}."]
+    if s["plan_now"]:
+        ll = "; ".join(f"{label}: {plan_line(x)}" for label, x in s["plan_now"]).replace("5-hour", "5h")
+        parts.append(ll + ".")
+    elif lc:
+        ll = limits_line(s).replace("5-hour", "5h")
+        parts.append(ll[:1].upper() + ll[1:] + ".")
+    if lc:
+        b = lc.get("breakdown") or {}
+        if b.get("cowork"):
+            whose = f"the {s['plan_now'][0][0]} week" if s["plan_now"] else "the week"
+            parts.append(f"Cowork {b['cowork']}% of {whose}.")
+    if s["hits_day"]:
+        parts.append("Hit: " + ", ".join(sorted({n for n, _, _ in s["hits_day"]})) + ".")
+    else:
+        parts.append("No limit hit.")
+    by_sess = group(s["rows"], lambda r: r["title"])
+    if by_sess:
+        k, v = by_sess[0]
+        name = k if len(k) <= 48 else k[:46].rstrip() + ("…”" if k.startswith("“") else "…")
+        parts.append(f"Biggest: {name}, {money(v['cost'])}.")
+    return " ".join(parts)
+
+
+def write_reports(folder, day, text, ln):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{day}.md").write_text(text + "\n")
+    (folder / "latest.md").write_text(text + "\n")
+    (folder / "latest-line.txt").write_text(ln + "\n")
+
+
+def publish(c, day):
+    """Hand the three files to bin/publish, which copies them to Google Drive (`--dest drive`;
+    publish's both-destinations default is for other callers) and queues a destination that fails. Returns publish's exit code: 0 means at least one destination has
+    each file. Its lines go into this job's log."""
+    if c["publish"] not in ("data", "vault"):
+        if c["publish"]:
+            print(f"publish: '{c['publish']}' is not a scope (data or vault); not published")
+        return None
+    f = c["local_reports"]
+    tool = common.tool("publish")  # lighthouse's (G35)
+    if not tool:
+        print("publish: lighthouse not installed — local only")
+        return None
+    try:
+        # Drive only: under launchd the network-volume copy never landed (python3 lacks Network
+        # Volumes access), and the report is read on Drive. publish's both-destinations default
+        # stays for every other caller.
+        r = subprocess.run([sys.executable, str(tool), "--" + c["publish"], "--dest", "drive",
+                            str(f / f"{day}.md"), str(f / "latest.md"), str(f / "latest-line.txt")],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"publish: FAILED {e}")
+        return 1
+    for ln in (r.stdout + r.stderr).splitlines():
+        print(f"  {ln}")
+    return r.returncode
+
+
+def cmd_render(c, day):
+    """The report always goes to local_reports, then to the shares through bin/publish (drive-share.md).
+    A failed destination is queued and retried by publish itself, never by this job."""
+    text, s = render(c, day)
+    ln = line(c, day, s)
+    write_reports(c["local_reports"], day, text, ln)
+    print(f"render {day}: {c['local_reports'] / (day + '.md')}")
+    publish(c, day)
+    return ln
+
+
+# ----------------------------------------------------------------------------- tier mix and branch quality
+# The passive half of the model-routing re-evaluation (docs/record/model-routing-2026-09-30.md section 7,
+# D8; built by S-E): where the week's $ went by tier, and how often the review gate found a real defect
+# per changed line on branches a `worker` helped build against the rest. Zero tokens; /sextant reads both.
+
+WEEKLY_SKILLS = {"sextant", "aurora", "horizon", "dream"}  # the weekly passes keep their Fable pin (D4); old names too
+TIERS = (("worker", {"worker"}), ("sr-worker", {"sr-worker"}), ("architect", {"architect", "sr-architect"}),
+         ("reviewer", {"reviewer", "reviewer-high", "code-reviewer"}))
+
+
+def tier_of(r):
+    if r["agent"] == "main":
+        return "main · " + (r["model"] or "?").replace("claude-", "")
+    for name, agents in TIERS:
+        if r["agent"] in agents:
+            return name
+    if r["skill"] == "code-review":  # the forked /code-review runs as general-purpose (review 2026-10-05)
+        return "reviewer"
+    return "other agents"
+
+
+def tier_mix(rows):
+    """$ and share per tier; Fable in main sessions on its own, and the part of it outside the weekly
+    skills — the part D4 moved to `architect`, so its share is the drift /sextant watches."""
+    total = sum(r["cost"] for r in rows)
+    by = defaultdict(float)
+    for r in rows:
+        by[tier_of(r)] += r["cost"]
+    weekly = {r["session"] for r in rows if r["skill"] in WEEKLY_SKILLS}
+    fable = [r for r in rows if r["agent"] == "main" and "fable" in (r["model"] or "")]
+    f_all = sum(r["cost"] for r in fable)
+    f_out = sum(r["cost"] for r in fable if r["session"] not in weekly)
+    pct = lambda x: round(100 * x / total, 1) if total else 0.0
+    return {"usd": round(total, 2),
+            "tiers": [{"tier": k, "usd": round(v, 2), "share": pct(v)} for k, v in sorted(by.items(), key=lambda kv: -kv[1])],
+            "fable_main": {"usd": round(f_all, 2), "share": pct(f_all),
+                           "outside_weekly_usd": round(f_out, 2), "outside_weekly_share": pct(f_out)}}
+
+
+def gate_records(c):
+    """The review gate's lines that carry S-E's fields, the last per branch (a re-run replaces the
+    earlier). bin/review-gate writes <data>/review-gate.jsonl through data_dir(); a pulled host's
+    copy, should the pull carry one, sits in <data>/<host>/."""
+    last = {}
+    for f in sorted(glob.glob(str(c["data"] / "review-gate.jsonl")) + glob.glob(str(c["data"] / "*/review-gate.jsonl"))):
+        try:
+            lines = open(f, errors="replace").read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(d, dict) or not isinstance(d.get("diff"), dict) or not isinstance(d.get("models"), dict):
+                continue  # written before S-E (2026-10-05): no size, no models
+            if "error" in d["models"]:
+                continue  # transcripts unreadable: who built it is unknown, so it joins neither group
+            k = (d.get("project") or project_of(d.get("repo")), d.get("branch"))
+            if k not in last or (d.get("ts") or "") >= (last[k].get("ts") or ""):
+                last[k] = d
+    return list(last.values())
+
+
+def built_with_worker(d):
+    return any(a.get("type") == "worker" for a in (d.get("models") or {}).get("agents") or [])
+
+
+def branch_quality(c):
+    """Confirmed WRONG per 100 changed non-doc lines, pooled, for branches a `worker` helped build and
+    for the rest, with n. "Confirmed" is the gate's: a merged finding that holds a reviewer WRONG."""
+    out = {}
+    size = lambda d: (d["diff"].get("added") or 0) + (d["diff"].get("removed") or 0)
+    every = gate_records(c)
+    for name, keep in (("with_worker", True), ("without_worker", False)):
+        group = [d for d in every if built_with_worker(d) == keep]
+        # A branch with no non-doc lines (a skills- or rules-only change: .md is "doc") would add its
+        # WRONGs over 0 lines; it is left out of both sums and counted on its own (review 2026-10-05).
+        recs = [d for d in group if size(d)]
+        lines_ = sum(size(d) for d in recs)
+        wrong = sum(sum((d.get("wrong") or {}).values()) for d in recs)
+        out[name] = {"n": len(recs), "doc_only": len(group) - len(recs), "changed_lines": lines_, "wrong": wrong,
+                     "wrong_per_100": round(100 * wrong / lines_, 2) if lines_ else None}
+    return out
+
+
+def tier_lines(mix, q=None):
+    """The tier-mix block, Markdown, for the daily report and `numbers`."""
+    L = ["| Tier | $ | Share |", "| --- | --- | --- |"]
+    L += [f"| {t['tier']} | {money(t['usd'])} | {t['share']:.0f}% |" for t in mix["tiers"]]
+    f = mix["fable_main"]
+    L += ["", f"Fable in main sessions: {money(f['usd'])}, {f['share']:.1f}% of spend; outside the weekly skills "
+              f"{money(f['outside_weekly_usd'])}, {f['outside_weekly_share']:.1f}%."]
+    if q is not None:
+        def one(x):
+            v = x["wrong_per_100"]
+            return f"{v:.2f} (n={x['n']}, {x['wrong']} WRONG in {x['changed_lines']:,} lines)" if v is not None \
+                else f"no changed lines yet (n={x['n']})"
+        L.append(f"WRONG per 100 changed lines (review gate, all branches logged since 2026-10-05): with worker "
+                 f"{one(q['with_worker'])}; without {one(q['without_worker'])}.")
+    return L
+
+
+# ----------------------------------------------------------------------------- numbers (weekly)
+
+# A scope's weekly pass (aurora's `/aurora dream --scope <scope>`, knowledge-layers S5) is a session
+# whose prompt names it: weekly-run starts it as `claude -p "/aurora dream --scope <s>"`, which gets
+# no AI title, so the row's title is that prompt (read_claude_code's last-prompt fallback); a pass
+# typed by hand is named the same way until Claude Code titles it.
+SCOPE_PASS = re.compile(r"/aurora dream\b[^\n”]*?--scope[ =]([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def scope_passes(rows):
+    """{scope: {"sessions": n, "usd": list $}} for the rows of scope passes, by the title."""
+    out = {}
+    for r in rows:
+        m = SCOPE_PASS.search(r.get("title") or "")
+        if m:
+            p = out.setdefault(m.group(1), {"sessions": set(), "usd": 0.0})
+            p["sessions"].add(r.get("session"))
+            p["usd"] += r["cost"]
+    return {k: {"sessions": len(v["sessions"]), "usd": round(v["usd"], 2)} for k, v in sorted(out.items())}
+
+
+def numbers(c):
+    today = c["tz_now"].date()
+    first = (today - dt.timedelta(days=7)).isoformat()
+    last = (today - dt.timedelta(days=1)).isoformat()
+    rows = load_rows(c, first, last)
+    samples = load_limits(c)
+    eps = limit_episodes(samples, first, last)
+    lc = latest_cache(samples)
+    pn = plan_now(samples)
+    hits = defaultdict(int)
+    for n, _, _ in eps:
+        hits[n] += 1
+    return {"window": [first, last], "proxy_usd": round(sum(r["cost"] for r in rows), 2),
+            "tier_mix": tier_mix(rows), "branch_quality": branch_quality(c), "scope_passes": scope_passes(rows),
+            "by_host": {h: round(sum(r["cost"] for r in rows if r["host"] == h), 2) for h in sorted({r["host"] for r in rows})},
+            "limit_hits": dict(hits), "extra_usage": extra_line(lc) if lc else None,
+            "breakdown": (lc or {}).get("breakdown"),
+            # each with its age: knowledge-numbers printed a 41 h old cache as "plan now" (2026-09-29)
+            "limits_now": ("; ".join(f"{label}: {plan_line(x)} ({age_text(c, x['t'])} old)" for label, x in pn) if pn
+                           else f"{limits_line({'latest': lc})} ({age_text(c, lc['t'])} old)" if lc else None)}
+
+
+def age_text(c, t):
+    """How old a sample at epoch-ms t is against the report's clock: '12 min', '5 h', '3 d'."""
+    m = max(0, int((c["tz_now"].timestamp() * 1000 - t) // 60000))
+    return f"{m} min" if m < 60 else f"{m // 60} h" if m < 48 * 60 else f"{m // 1440} d"
+
+
+# ----------------------------------------------------------------------------- ratio (weekly)
+
+def last_sunday(today):
+    """The Sunday that ends the last complete Monday–Sunday week before today."""
+    return today - dt.timedelta(days=today.isoweekday())
+
+
+def compute_ratio(c):
+    plan = c["plan"]
+    others = secondary_labels()
+    end = last_sunday(c["tz_now"].date())
+    since = dt.date.fromisoformat(plan["since"]) if plan.get("since") else None
+    weeks = []
+    for i in range(RATIO_WEEKS):
+        sun = end - dt.timedelta(days=7 * i)
+        mon = sun - dt.timedelta(days=6)
+        if since and mon < since:
+            break
+        rows = load_rows(c, mon.isoformat(), sun.isoformat())
+        # the plan's own spend only: a session on another account (an employer-paid one) is not
+        # this plan's week (work-account E6); a row with no account, or a label no longer a secondary, is the plan's
+        spend = sum(r["cost"] for r in rows if r.get("account") not in others)
+        other = sum(r["cost"] for r in rows if r.get("account") in others)
+        if spend > 0:
+            w = {"monday": mon.isoformat(), "list_usd": round(spend, 2)}
+            if other:
+                w["excluded_usd"] = round(other, 2)
+            weeks.append(w)
+    if not weeks:
+        return None
+    week_usd = plan["usd_month"] / DAYS_PER_MONTH * 7
+    avg = sum(w["list_usd"] for w in weeks) / len(weeks)
+    return {"ratio": round(week_usd / avg, 5), "week_ending": end.isoformat(), "plan": plan["name"],
+            "plan_usd_month": plan["usd_month"], "plan_usd_week": round(week_usd, 2),
+            "list_usd_week": round(avg, 2), "weeks": weeks,
+            "method": f"plan ${plan['usd_month']} ÷ {DAYS_PER_MONTH:.2f} × 7, over the average list spend of the last "
+                      f"{RATIO_WEEKS} complete Mon–Sun weeks on the plan (usage-report ratio)"}
+
+
+def write_ratio(c, entry):
+    """Merge the Anthropic entry into the ratio file, keeping other providers' entries as they are."""
+    p = common.COST_RATIO
+    try:
+        data = json.loads(p.read_text())
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as ex:  # a conflict or a hand edit: never drop other providers' entries
+        raise RuntimeError(f"{p} is not readable JSON ({ex}); fix it by hand, then usage-report ratio --write")
+    if not isinstance(data, dict) or not isinstance(data.get("providers", {}), dict):
+        raise RuntimeError(f"{p} is not a JSON object with a providers object; fix it by hand")
+    data["_about"] = ("List-to-effective cost ratio per provider, written weekly by plumb's usage-report "
+                      "ratio; read by the regatta core's cost_text. A provider not named here is "
+                      "pay-per-use (effective = list).")
+    data.setdefault("providers", {})["anthropic"] = entry
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    return p
+
+
+def ratio_due(c):
+    _, e = common.cost_ratio()
+    return not e or e.get("week_ending") != last_sunday(c["tz_now"].date()).isoformat()
+
+
+def ratio_uncommitted():
+    """The ratio file differs from what git has: a failed commit, or a `ratio --write` by hand.
+    The next render commits it, so a week's value is never left on one Mac."""
+    p = common.COST_RATIO
+    try:
+        r = subprocess.run(["git", "-C", str(p.parent), "status", "--porcelain", "--", p.name],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def commit_ratio(c, e):
+    if not c["knowledge_commit"]:  # G35: atlas absent — the ratio stands in its file, said once
+        print(f"ratio: written, not committed — atlas (knowledge-commit) not installed; {common.COST_RATIO}")
+        return
+    argv = c["knowledge_commit"] + ["-m", f"Cost ratio: list × {e['ratio']:.4f}, week ending {e['week_ending']}",
+                                    str(common.COST_RATIO)]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        print(f"ratio: commit {'done' if r.returncode == 0 else 'FAILED ' + (r.stderr or r.stdout).strip()[-300:]}")
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        print(f"ratio: commit FAILED {ex}")
+
+
+def cmd_ratio(c, write=False, commit=False):
+    e = compute_ratio(c)
+    if not e:
+        print("ratio: no list spend in a complete week on the plan yet; nothing written")
+        return None
+    print(f"ratio: list × {e['ratio']:.4f} — ${e['plan_usd_week']:.2f} a week over an average "
+          f"${e['list_usd_week']:,.0f} of list spend ({len(e['weeks'])} weeks to {e['week_ending']})")
+    ex = sum(w.get("excluded_usd", 0) for w in e["weeks"])
+    if ex:
+        tot = ex + sum(w["list_usd"] for w in e["weeks"])
+        print(f"ratio: excluded ${ex:,.0f} of list spend on other accounts ({100 * ex / tot:.0f}% of the "
+              f"weeks' total) — not this plan's week (work-account E6)")
+    if not write:
+        return e
+    p = write_ratio(c, e)
+    print(f"ratio: wrote {p}")
+    if commit:
+        commit_ratio(c, e)
+    return e
+
+
+# ----------------------------------------------------------------------------- tick
+
+def notify(c, text):
+    """Config "notify" is either an argv list (the line is appended as the last argument) or
+    {"ssh": "user@host", "command": "..."}: the command runs there with the line shell-quoted,
+    because ssh joins its arguments into one remote shell string and "$158" would be expanded."""
+    cmd = c["notify"]
+    if not cmd:
+        print("notify: none configured for this host")
+        return
+    if isinstance(cmd, dict):
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", cmd["ssh"], f"{cmd['command']} {shlex.quote(text)}"]
+    else:
+        argv = list(cmd) + [text]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"notify: FAILED {e}")
+        return False
+    # A failure keeps its head and its tail: a traceback's cause is its last line, and the first
+    # 300 characters alone hid it for 23 days running (the notifier on the second Mac, 2026-09-25..10-17).
+    err = (r.stderr or r.stdout).strip()
+    err = err if len(err) <= 500 else f"{err[:150]} … {err[-350:]}"
+    print(f"notify: {'sent' if r.returncode == 0 else 'FAILED ' + err}"
+          + (f" ({(r.stderr or '').strip()[:200]})" if r.returncode == 0 and 'dry-run' in (r.stderr or '') else ""))
+    return r.returncode == 0
+
+
+def notify_watch(c, ok):
+    """Two failed days in a row post one bulletin line, so a silent loop says so. Why: the daily
+    line failed every day 09-22..09-26 and only this job's log knew (dream 2026-09-27 P5)."""
+    streak = c["data"] / c["host"] / ".notify-failed"
+    if ok is not False:
+        streak.unlink(missing_ok=True)
+        return
+    n = int(streak.read_text() or 0) + 1 if streak.is_file() else 1
+    streak.write_text(str(n))
+    if n == 2:
+        bulletin = common.tool("bulletin.py")  # atlas's (G15); without it the log alone says so
+        if not bulletin:
+            return
+        subprocess.run([sys.executable, str(bulletin), "--post",
+                        "the daily usage line is the spend feedback loop and it has gone quiet",
+                        f"usage-report on {c['host']}: notify FAILED two days running — read "
+                        "usage-report's job log and fix the notify path"],
+                       capture_output=True, text=True, timeout=30)
+
+
+def cmd_tick(c):
+    n = cmd_sample(c)
+    now = c["tz_now"]
+    marker = c["data"] / c["host"] / f".collected-{now.date().isoformat()}"
+    if not marker.exists():
+        cmd_collect(c)
+        marker.touch()
+    if not c["render"]:
+        print(f"tick {c['host']}: {n} new sample(s); this host does not render")
+        return
+    day = (now.date() - dt.timedelta(days=1)).isoformat()
+    done = c["data"] / c["host"] / f".rendered-{day}"
+    if done.exists() or now.strftime("%H:%M") < c["render_after"]:
+        print(f"tick {c['host']}: {n} new sample(s)")
+        return
+    cmd_collect(c)
+    pulled = cmd_pull(c)
+    # Weekly: the first render after a week ends, before the line that quotes it. Not on a failed
+    # pull — a week without the other host's spend would stand all week; the next day's render retries.
+    try:
+        if pulled and ratio_due(c):
+            cmd_ratio(c, write=True, commit=True)
+        elif ratio_uncommitted():
+            commit_ratio(c, common.cost_ratio()[1] or {"ratio": 0, "week_ending": "?"})
+    except Exception as ex:  # the daily report goes out regardless; the next render tries again
+        print(f"ratio: FAILED {ex}")
+    ln = cmd_render(c, day)
+    notify_watch(c, notify(c, ln))
+    done.touch()
+
+
+# ----------------------------------------------------------------------------- cli
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="usage-report", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("tick")
+    sub.add_parser("sample")
+    p = sub.add_parser("collect")
+    p.add_argument("--days", type=int, default=3)
+    sub.add_parser("pull")
+    for name in ("render", "line"):
+        p = sub.add_parser(name)
+        p.add_argument("--day")
+    p = sub.add_parser("numbers")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("ratio")
+    p.add_argument("--write", action="store_true", help="write the ratio file; the next tick commits it")
+    a = ap.parse_args(argv)
+    c = load_config()
+    yesterday = (c["tz_now"].date() - dt.timedelta(days=1)).isoformat()
+    if a.cmd == "tick":
+        cmd_tick(c)
+    elif a.cmd == "sample":
+        print(f"sample {c['host']}: {cmd_sample(c)} new → {c['data'] / c['host'] / 'limits.jsonl'}")
+    elif a.cmd == "collect":
+        cmd_collect(c, a.days)
+    elif a.cmd == "pull":
+        return 0 if cmd_pull(c) else 1
+    elif a.cmd == "render":
+        cmd_render(c, a.day or yesterday)
+    elif a.cmd == "line":
+        print(line(c, a.day or yesterday))
+    elif a.cmd == "ratio":
+        cmd_ratio(c, write=a.write)
+    elif a.cmd == "numbers":
+        n = numbers(c)
+        if a.json:
+            print(json.dumps(n, indent=1))
+        else:
+            for k, v in n.items():
+                if k not in ("tier_mix", "branch_quality"):
+                    print(f"{k}: {v}")
+            print(f"\nTier mix, {n['window'][0]} to {n['window'][1]}:\n")
+            print("\n".join(tier_lines(n["tier_mix"], n["branch_quality"])))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

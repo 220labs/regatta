@@ -1,0 +1,1723 @@
+#!/usr/bin/env python3
+"""rc-hosts — one Remote Control host per repo on this machine, from repos.json.
+
+A Remote Control host is `claude remote-control` kept alive by launchd in a repo's directory.
+The Claude app on the owner's phone (and claude.ai/code) lists it by name and starts sessions in it
+(the owner, 2026-09-24: "create sessions for … on both the build Mac and this laptop, so I can connect to
+either from my phone"). Every repo in repos.json gets one on every host that clones it, unless
+its entry says `"rc": false` or is a public twin (`twin_of`), and only while it is in use: a
+commit on any of its refs, local or fetched, in the last ACTIVE_DAYS (30) days (the owner,
+2026-10-13, rc-slots D4: "A, but let's limit this to repos I worked on in the last 30 days").
+A repo that looks idle is fetched first (at most daily), so work from the other Mac counts;
+one whose commits cannot be read keeps its host.
+An `"rc": {…}` object overrides label, name, capacity, spawn or permission_mode (the owner,
+2026-10-07: every repo, and every new one from /new-project). Before this, the build Mac's
+first host was a hand-made plist.
+
+No host pre-creates a session (`--no-create-session-in-dir`, rc-slots D3): the default put one
+idle session in every host's directory at start — the constant "1/8" in every log, about 100 MB
+and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Mac, 2026-10-13).
+
+  rc-hosts                  write and load every host that is missing; retire an empty host
+                            whose repo is no longer wanted here
+  rc-hosts --check          report only: in sync / missing / differs / not cloned, and every
+                            repo under ~/projects that is not in repos.json (no host until it is)
+  rc-hosts --restart NAME   restart a running host, applying a changed plist; it ends the
+                            host's sessions, so it refuses while one of them is busy
+  rc-hosts --idle           every host's sessions: busy or idle, and for how long
+  rc-hosts --reap [--hours N] [--only NAME] [--dry-run]
+                            end the host sessions idle N hours or more (default 12), then
+                            restart an empty host that reconnected since the last run, then
+                            converge: load a missing or unloaded host, reload an empty one whose
+                            plist changed, retire an empty unwanted one — wanted or not, every
+                            host's idle sessions are reaped, so a changed flag reaches a host and
+                            an unwanted one retires once its last session is gone
+  rc-hosts --end ID [--dry-run]
+                            end one host session by its session id (a prefix is enough), once
+                            it is idle — the slot /finish and pickup name for the owner to free
+  rc-hosts --schedule-reap  run --reap every hour from launchd (log: claude-host/reap.log);
+                            --unschedule-reap removes it
+  rc-hosts --grant          the sitting, once per Mac and after each claude-host.c change: build
+                            ~/.local/bin/claude-host, walk its Full Disk Access and App Management
+                            switches, raise every prompt-only grant once for the owner to allow, record
+                            --probe-all; then every empty host and every claude-starting
+                            LaunchAgent starts through it (--agents --fix)
+  rc-hosts --probe-all      ok or denied per privacy service, asked by a child of claude-host as
+                            launchd starts it; an unanswered prompt reads denied, never ok
+  rc-hosts --agents [--fix] FAILS (once this Mac's sitting is done) on an empty host or an idle
+                            job that starts claude, or a claude-starting script of the primary
+                            checkout, without claude-host (a host holding a session, a job running
+                            now: pending); --fix rewrites the idle <label prefix>.* ones, and
+                            --reap runs it hourly (hosts move by converge)
+  rc-hosts --launcher [PATH] claude-host's path when it may start PATH (an overlay script, claude),
+                            else nothing and exit 1 — what every plist writer asks
+  rc-hosts --tcc-survey [--host PEER] [--hours N] [--health]
+                            not-allowed privacy requests charged to a versioned claude in the last
+                            N hours (24), from the unified log; read-only. bin/health runs --health
+  rc-hosts --orphans [--end] `claude remote-control` processes no launchd job owns (a host whose
+                            claude-host was killed before 2026-10-18), and --end to end them
+
+One identity for every claude not started by an app (docs/tcc-one-identity-2026-10-18.md): macOS
+charges a privacy request to the *responsible process*, keys a bare executable's grant by its path,
+and claude's path changes at every update — so a claude that is its own responsible process asks
+every prompt again after each update. claude-host (bin/claude-host.c) is the stable one: it makes
+itself responsible wherever it starts and waits for what it starts. Every writer here names it —
+hosts, dispatch's one-shots and runs, weekly-run, autofinish, usage-report, dispatch-rc's tidier —
+only for a build whose probe passed (ready()), so nothing changes on a Mac before its sitting.
+
+Hosts start through claude-host (bin/claude-host.c) once it holds Full Disk Access. A launchd
+job's grant belongs to the program it starts, and one to `claude` named a versioned file every
+update replaces — the owner re-allowlisted it by hand after each update (2026-10-17: "once and for
+all"). claude-host never changes with Claude Code and spawns the current claude, whose sessions
+inherit the grant. Until --grant has seen a child of claude-host read a file only Full Disk
+Access opens, hosts run claude directly, as before; once it has, converge moves each empty host
+over (its plist changed). A changed claude-host.c is built only by --grant — a rebuild is a new
+binary to macOS and needs the grant again — and the build in place keeps the hosts meanwhile, up
+to that --grant: it replaces the binary under running hosts, so a host holding a session runs
+without the grant from its next start until the switch is on again. Edit claude-host.c only for a
+reason worth that (a comment counts: the stamp is the whole file).
+
+What the probe proves is that claude-host's child inherits the grant; a session is a grandchild
+(claude-host → claude → session). In 2.1.302 a Remote Control session is a plain child of claude
+and inherits it (read from the binary, review 2026-10-17), but Claude Code also has a path that
+re-runs itself with `macDisclaimResponsibility` (its background-session daemon): a session moved
+onto that path would lose the grant silently, the probe and the start-up line none the wiser. A
+host session that cannot read Drive after an update: suspect that first.
+
+Nothing in Claude Code ends an idle Remote Control session — 2.1.282's `remote-control
+--help` has no idle option — and a full host refuses new sessions from the phone: the build Mac's
+first host sat at 4/4 for two days on sessions idle 9 to 42 hours (2026-09-25). Each session is
+a child process of its host, and Claude Code keeps a record of it in
+~/.claude/sessions/<pid>.json (`status` idle|busy, `statusUpdatedAt`). --reap sends SIGTERM
+to a child whose record has said idle for N hours, re-reading it just before, and never
+touches a busy one or a session outside a host (VS Code, a terminal). Ending a session is
+the owner's to run or schedule — an agent's own attempt is refused as interfering with workloads.
+
+A host holding a session is never restarted unasked: `launchctl bootout` ends every session it
+holds, and the session running this script is usually one of them. It is reported as "differs"
+instead. An empty host is restarted unasked by the hourly --reap: revive() after a reconnect,
+converge() when its plist changed (loading the new plist either way), retire() when it is no
+longer wanted.
+
+Each host is named "<repo> · <machine>", so the phone tells the build Mac's host of a repo from the
+laptop's. Logs: ~/Library/Logs/claude-host/<slug>.log (the first lines hold the link).
+
+A host needs Claude Code's workspace-trust dialog accepted for its directory, once per machine:
+bin/trust-projects does every repo under ~/projects at once. Trust is per directory, not inherited — `shop` was
+trusted and `shop/pipeline` still refused (2026-09-25). An untrusted host exits with "Workspace not
+trusted"; launchd retries it every 30 s, so it comes up by itself once trust is accepted. This
+script only reads ~/.claude.json to say so; it never writes it — every running session rewrites
+that file. bin/repos --clone trusts first, then calls this (2026-10-07).
+"""
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from xml.parsers.expat import ExpatError
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+sys.path.insert(0, str(BIN.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); add() only: dispatch-rc loads this file at its import
+core_path.add()
+try:
+    import common  # noqa: E402 — repos_json() and tool(); none: registry() names it
+except ImportError:
+    common = None
+HOME = Path.home()
+PROJECTS = HOME / "projects"
+AGENTS = HOME / "Library" / "LaunchAgents"
+LOGS = HOME / "Library" / "Logs" / "claude-host"
+CLAUDE = HOME / ".local" / "bin" / "claude"
+LAUNCHER = HOME / ".local" / "bin" / "claude-host"          # bin/claude-host.c; holds the grant
+LABEL_PREFIX = ((common.config_line("wharf-runs/label-prefix") if common else "")
+                or "org.regatta.claude")                   # dispatch's launchd prefix (wharf-runs/label-prefix)
+OURS = LABEL_PREFIX + "."                                  # a job label of ours starts so
+LAUNCHER_ID = LABEL_PREFIX + "-host"                       # its codesign identifier, in the stamp
+BUILT = LAUNCHER.with_name("claude-host.source-sha256")    # the stamp the binary was built from
+GRANTED = LAUNCHER.with_name("claude-host.granted")        # the stamp --grant's probe passed for
+PROBE = OURS + "fda-probe"   # never under HOST_LABEL: unwanted() would retire it as a host
+TCC_JOB = OURS + "tcc-probe"   # --probe-all's and the walk's touches, a child of claude-host
+TCC_RESULTS = LAUNCHER.with_name("claude-host.tcc.json")   # --probe-all's last answer, per build
+
+
+def primary():
+    """The checkout claude-host's allowlist names (never a worktree): the overlay's, where one is
+    installed (its claude-host.c lists its scripts), else this module in the main checkout (the
+    config dir's `home`), else the module this file sits in."""
+    old = common.legacy_root() if common else None
+    if old:
+        return old
+    home = common.config_line("home") if common else ""
+    mod = Path(home).expanduser() / "modules" / "wharf-runs" if home else None
+    return mod if mod and (mod / "bin").is_dir() else BIN.parent
+
+
+PRIMARY = primary()
+# bin/claude-host.c's SCRIPTS: the overlay's scripts it starts. CLAIMERS are the ones that start
+# claude (bin/account's `claude -p` runs under usage-report), which --agents wants through it.
+SCRIPTS = ("dispatch", "dispatch-rc", "weekly-run", "autofinish", "usage-report", "rc-hosts")
+CLAIMERS = ("dispatch", "dispatch-rc", "weekly-run", "autofinish", "usage-report")
+LAUNCHER_VERSION = 2   # claude-host --version: 2 runs scripts and `claude`, re-takes responsibility
+CLAUDE_JSON = HOME / ".claude.json"
+SESSIONS = HOME / ".claude" / "sessions"
+REAP_HOURS = 12.0
+ACTIVE_DAYS = float(os.environ.get("RC_ACTIVE_DAYS", "30"))
+REAPER = OURS + "rc-reap"
+HOST_LABEL = OURS + "host"   # every host's label starts so (a repo's own `rc.label` may be exactly this)
+# What a plist read can raise. plistlib passes the XML parser's ExpatError through, and it is no
+# ValueError: launchd accepts a plist Python does not (a `--` inside an XML comment, as in a project's
+# runner on the build Mac, 2026-10-19), and one such file crashed --agents for every job.
+PLIST_ERRORS = (OSError, ValueError, ExpatError)
+
+
+def read_plist(path):
+    """A LaunchAgent's plist as a dict, or None when it is unreadable or no dict. Python first; on
+    a file it refuses, plutil's own XML rendering of it, which reads the file as launchd does."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None   # plutil cannot open what Python cannot
+    try:
+        plist = plistlib.loads(data)
+    except Exception:   # beyond PLIST_ERRORS, plistlib's XML parser raises IndexError,
+        try:            # AttributeError and LookupError on malformed input (review, 2026-10-19)
+            out = subprocess.run(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", str(path)],
+                                 capture_output=True, timeout=10)
+            plist = plistlib.loads(out.stdout) if out.returncode == 0 else None
+        except Exception:
+            plist = None
+    return plist if isinstance(plist, dict) else None
+
+def ssh_peers():
+    """{peer: ssh alias} from wharf-runs/ssh (`<peer>:<alias>` per line), peers lower-cased; {} when
+    the key is absent."""
+    out = {}
+    for line in (common.config_lines("wharf-runs/ssh") or []) if common else []:
+        peer, _, alias = line.partition(":")
+        if peer.strip() and alias.strip():
+            out[peer.strip().lower()] = alias.strip()
+    return out
+
+
+def machines():
+    """repos.json host → the name shown (the host name as the keys give it): the laptop
+    (regatta/laptop), the dispatch host and every peer wharf-runs/ssh names."""
+    names = [(getattr(common, "LAPTOP", "") or "laptop").lower()]
+    names.append((common.config_line("wharf-runs/dispatch-host") if common else "").lower())
+    names += list(ssh_peers())
+    return {n: n for n in names if n}
+
+
+MACHINES = machines()
+
+
+def machine():
+    name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True,
+                          text=True).stdout.strip().lower()
+    if name not in MACHINES:
+        sys.exit(f"rc-hosts: unknown machine {name!r} (the config names {', '.join(MACHINES)})")
+    return name
+
+
+def last_commit(repo):
+    """Unix time of the newest commit on any ref of repo — local branches and fetched ones, so
+    work pushed from the other Mac counts once fetched (sync.py fetches at session start; the
+    checkpoint hook commits every turn). None when the repo has no commit to read."""
+    r = subprocess.run(["git", "-C", str(repo), "for-each-ref", "--sort=-committerdate", "--count=1",
+                        "--format=%(committerdate:unix)", "refs/heads", "refs/remotes"],
+                       capture_output=True, text=True)
+    out = r.stdout.strip()
+    return int(out) if r.returncode == 0 and out.isdigit() else None
+
+
+FETCH_HOURS = 20   # active() fetches a repo it would call idle at most this often
+_ACTIVE = {}
+
+
+def active(repo):
+    """Worked on in the last ACTIVE_DAYS. A repo not cloned here counts, so it is reported as
+    "not cloned" rather than silently left out. Fails safe: a repo whose commits cannot be read
+    (a git error, dubious ownership) counts as active, since retiring is the side that costs a
+    phone session. Before calling a repo idle it fetches origin, at most every FETCH_HOURS: this
+    Mac's refs are stale for a repo worked on only from the other one — sync.py fetches only the
+    repo a session opens (review, 2026-10-14). Cached per run: --reap asks three times."""
+    key = str(repo)
+    if key not in _ACTIVE:
+        _ACTIVE[key] = _active(repo)
+    return _ACTIVE[key]
+
+
+def _active(repo):
+    if not repo.is_dir():
+        return True
+
+    def fresh(t):
+        return t is None or time.time() - t < ACTIVE_DAYS * 86400
+
+    if fresh(last_commit(repo)):
+        return True
+    try:
+        recent = time.time() - (repo / ".git" / "FETCH_HEAD").stat().st_mtime < FETCH_HOURS * 3600
+    except OSError:
+        recent = False
+    if not recent:
+        try:
+            subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return True   # no verdict: keep the host
+    return fresh(last_commit(repo))
+
+
+def registry():
+    """repos.json's `repos`, read through the core's one reader (C3: CLAUDE_REPOS_JSON, else the
+    config dir's wharf/repos.json); exits naming both when there is none."""
+    f = common.repos_json() if common else None
+    if not f or not f.is_file():
+        sys.exit("rc-hosts: no registry — set CLAUDE_REPOS_JSON, or link wharf/repos.json in the regatta config dir"
+                 + ("" if common else " (and the regatta core is missing)"))
+    return json.loads(f.read_text())["repos"]
+
+
+def source():
+    """claude-host.c — the launcher's source, the overlay's file (it names the overlay's scripts):
+    RC_HOSTS_SOURCE for the tests, else wherever the core finds it; None when nowhere."""
+    v = os.environ.get("RC_HOSTS_SOURCE")
+    if v:
+        return Path(v)
+    return common.tool("claude-host.c") if common else None
+
+
+def wanted(host):
+    """(label, plist dict, repo dir) for every repo this host clones and someone worked on in
+    the last ACTIVE_DAYS, bar a public twin and "rc": false."""
+    repos = registry()
+    program = str(LAUNCHER if through_launcher() else CLAUDE)
+    out = []
+    for path, r in repos.items():
+        rc = r.get("rc", True)
+        if rc is False or r.get("twin_of") or host not in r.get("hosts", []):
+            continue
+        if not active(PROJECTS / path):
+            continue
+        rc = rc if isinstance(rc, dict) else {}
+        slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
+        label = rc.get("label") or f"{HOST_LABEL}.{slug}"
+        name = f"{rc.get('name') or path.split('/')[-1]} · {MACHINES[host]}"
+        repo = PROJECTS / path
+        plist = {
+            "Label": label,
+            "ProgramArguments": [program, "remote-control", "--name", name,
+                                 "--spawn", rc.get("spawn", "worktree"),
+                                 "--capacity", str(rc.get("capacity", 8)),
+                                 # auto, as interactive laptop sessions and both unattended
+                                 # starters run: acceptEdits asked for every Bash call, so
+                                 # a session the owner started from the phone stopped on what the
+                                 # laptop's never did (the owner, 2026-10-04: "the build Mac should be AT
+                                 # LEAST as unattended as the laptop sessions"). The flag beats
+                                 # settings' defaultMode, and a loaded host keeps its old one
+                                 # until `rc-hosts --restart <name>`.
+                                 "--permission-mode", rc.get("permission_mode", "auto"),
+                                 # no idle session in the repo's directory at start (D3)
+                                 "--no-create-session-in-dir"],
+            "WorkingDirectory": str(repo),
+            # Homebrew's bin as every other plist here has it: without it a session this host
+            # spawned read ffmpeg as missing (2026-10-12). hooks/tool_path.py adds it to the Bash
+            # tool too; this line reaches the hooks and MCP servers the host starts (`gh` in
+            # common.py). A loaded host takes it at `rc-hosts --restart`.
+            "EnvironmentVariables": {"PATH": f"/usr/bin:/bin:/usr/sbin:/sbin:{HOME}/.local/bin:"
+                                             f"{HOME}/.bun/bin:/opt/homebrew/bin:/usr/local/bin"},
+            "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 30,
+            "ProcessType": "Background", "Nice": 10, "LowPriorityIO": True,
+            "StandardOutPath": str(LOGS / f"{slug}.log"),
+            "StandardErrorPath": str(LOGS / f"{slug}.log"),
+        }
+        out.append((label, name, plist, repo))
+    return out
+
+
+def loaded(label):
+    return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                          capture_output=True).returncode == 0
+
+
+def running(label):
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and "state = running" in r.stdout
+
+
+def trusted(repo, claude_json=None):
+    """Workspace trust of repo in a config dir's .claude.json — the default dir's unless the caller
+    names another (dispatch on a picked account, work-account E5: trust is per config dir)."""
+    try:
+        projects = json.loads(Path(claude_json or CLAUDE_JSON).read_text()).get("projects", {})
+    except (OSError, ValueError):
+        return True   # can't tell; the host's log will
+    return bool(projects.get(str(repo), {}).get("hasTrustDialogAccepted"))
+
+
+def untrusted_note(name, repo):
+    return (f"           {name}: waits for workspace trust — `repos --clone` (wharf) trusts it;"
+            f" the host starts itself within 30 s")
+
+
+def settled(label):
+    """A freshly bootstrapped host reads as not running for a second or two (2026-09-25)."""
+    for _ in range(10):
+        if running(label):
+            return True
+        time.sleep(1)
+    return False
+
+
+def host_pid(label):
+    """The pid of the host's `claude remote-control`: the job's own, or claude-host's child when
+    the job starts through it. Sessions are children of claude, and --reap, --end, --idle, kids()
+    and restart_one() all look one level below this pid — claude-host's pid would show claude
+    as a session that is never idle, and no host would be reloaded or retired again."""
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                       capture_output=True, text=True)
+    m = re.search(r"^\tpid = (\d+)", r.stdout, re.M)
+    if not m:
+        return None
+    pid = int(m.group(1))
+    prog = re.search(r"^\tprogram = (.*)$", r.stdout, re.M)
+    if prog and Path(prog.group(1).strip()).name == LAUNCHER.name:
+        kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+        return int(kids[0]) if kids else pid
+    return pid
+
+
+def record(pid):
+    try:
+        return json.loads((SESSIONS / f"{pid}.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def sessions_of(pid):
+    kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    return [(int(c), rec) for c in kids if (rec := record(int(c))) is not None]
+
+
+def idle_hours(rec):
+    if not rec or rec.get("status") != "idle":
+        return 0.0
+    since = rec.get("statusUpdatedAt") or rec.get("updatedAt") or rec.get("startedAt") or 0
+    return max(0.0, (time.time() * 1000 - since) / 3.6e6)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def capacity(plist):
+    """The host's own last `Capacity: n/N` line, from its log."""
+    try:
+        found = re.findall(r"Capacity: (\d+/\d+)", Path(plist["StandardOutPath"]).read_text(errors="replace"))
+    except OSError:
+        return "?"
+    return found[-1] if found else "?"
+
+
+def where(rec):
+    return (rec.get("cwd") or "?").replace(str(PROJECTS) + "/", "")
+
+
+def served(host):
+    """Every host on this Mac, wanted or not: wanted(host), then each unwanted plist in
+    LaunchAgents as it is on disk. The reaper, --end and --idle walk this, so a host that stopped
+    being wanted while it held a session still has that session reaped, and retire() can then
+    take it (review, 2026-10-14: walking wanted() alone, such a host never emptied)."""
+    hosts = wanted(host)
+    for label in unwanted(hosts):
+        plist = read_plist(AGENTS / f"{label}.plist")
+        if plist is None:
+            continue
+        args = plist.get("ProgramArguments") or []
+        name = args[args.index("--name") + 1] if "--name" in args[:-1] else label
+        hosts.append((label, name, plist, Path(plist.get("WorkingDirectory") or PROJECTS)))
+    return hosts
+
+
+def sessions_report(host, only):
+    for label, name, plist, repo in served(host):
+        if only and name.split(" · ")[0] not in only:
+            continue
+        pid = host_pid(label)
+        if not pid:
+            print(f"  --  {name}: not running")
+            continue
+        print(f"  {name}: capacity {capacity(plist)}")
+        for c, rec in sessions_of(pid):
+            print(f"      {c:>6}  {rec.get('status', '?'):<7} {idle_hours(rec):5.1f} h  {where(rec)}"
+                  f"  {rec.get('name', '')}")
+
+
+def reap(host, hours, only, dry):
+    for label, name, plist, repo in served(host):
+        if only and name.split(" · ")[0] not in only:
+            continue
+        pid = host_pid(label)
+        if not pid:
+            continue
+        ended = []
+        for c, rec in sessions_of(pid):
+            rec = record(c)   # re-read: a session that woke since the listing is left alone
+            if not rec or rec.get("status") != "idle" or idle_hours(rec) < hours:
+                continue
+            print(f"  {'would end' if dry else 'ending   '}  {name}: {c}, idle {idle_hours(rec):.1f} h,"
+                  f" {where(rec)}  ({time.strftime('%Y-%m-%d %H:%M')})")
+            if not dry:
+                os.kill(c, signal.SIGTERM)
+                ended.append(c)
+        if ended:
+            deadline = time.time() + 20
+            while time.time() < deadline and any(alive(c) for c in ended):
+                time.sleep(1)
+            time.sleep(3)   # the host notices the exit and redraws its capacity line
+            gone = [c for c in ended if not alive(c)]
+            print(f"             {name}: {len(gone)}/{len(ended)} ended; capacity now {capacity(plist)};"
+                  f" sessions {[c for c, _ in sessions_of(pid)]}")
+
+
+def end(host, prefix, dry):
+    """One host session, by session id: the slot a finished session still holds. Idle only —
+    a busy one is mid-turn, and a /finish that prints its own id is still running as it does.
+    Returns the exit code."""
+    hits = []
+    for label, name, plist, repo in served(host):
+        pid = host_pid(label)
+        for c, rec in sessions_of(pid) if pid else []:
+            if (rec.get("sessionId") or "").startswith(prefix):
+                hits.append((name, plist, c))
+    if len(hits) != 1:
+        print(f"  rc-hosts: no host session with id {prefix!r} — it has ended already, or it runs"
+              f" outside a host (VS Code, a terminal)" if not hits else
+              f"  rc-hosts: {len(hits)} host sessions match {prefix!r} — give more of the id")
+        return 1
+    name, plist, c = hits[0]
+    rec = record(c)   # re-read: it may have woken since the listing
+    if not rec or rec.get("status") != "idle":
+        print(f"  rc-hosts: {name}: {c} is {(rec or {}).get('status', 'gone')} — ends only once idle")
+        return 1
+    print(f"  {'would end' if dry else 'ending   '}  {name}: {c}, idle {idle_hours(rec):.1f} h, {where(rec)}")
+    if dry:
+        return 0
+    os.kill(c, signal.SIGTERM)
+    deadline = time.time() + 20
+    while time.time() < deadline and alive(c):
+        time.sleep(1)
+    time.sleep(3)   # the host notices the exit and redraws its capacity line
+    print(f"             {name}: {'ended' if not alive(c) else 'STILL RUNNING'}; capacity now {capacity(plist)}")
+    return 1 if alive(c) else 0
+
+
+def log_tail(path, start):
+    """The log's bytes from `start` to its end, and its size now. A host rewrites its status
+    line many times a minute, so a log grows by megabytes a day; the reaper reads only what
+    arrived since its last run."""
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(min(start, size))
+            return f.read(), size
+    except OSError:
+        return b"", start
+
+
+def revive(host, only, dry):
+    """Restart an empty host that reconnected since the reaper last saw it.
+
+    On 2026-09-28 the build Mac's four hosts logged a reconnect (11:37, 11:52), went on logging
+    "Connected" with the right capacity, and were gone from the app's Remote Control picker
+    for two days; `launchctl kickstart -k` on the empty host put each back at once. The log
+    of a host the picker lost reads exactly like one it still lists, and most reconnects
+    (6 to 12 a day per host, both machines) lose nothing — so this restarts on the only
+    signal there is: a "Reconnected after" line since the last run, from the same process,
+    on a host with no session at all (any child process counts; a restart would end it).
+    A host holding a session keeps its flag until the session ends. Why the picker drops a
+    host is Anthropic's side and unverified. State: claude-host/reap-state.json, per label
+    the host pid and how far into its log the reaper has read."""
+    state_file = LOGS / "reap-state.json"
+    try:
+        state = json.loads(state_file.read_text())
+    except (OSError, ValueError):
+        state = {}
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    for label, name, plist, repo in wanted(host):
+        if only and name.split(" · ")[0] not in only:
+            continue
+        log = plist["StandardOutPath"]
+        seen = state.get(label) or {}
+        pid = host_pid(label)
+        if not seen:   # first sight: a baseline, nothing to judge yet
+            state[label] = {"pid": pid, "offset": log_tail(log, 1 << 62)[1]}
+            continue
+        new, size = log_tail(log, seen.get("offset", 0))
+        if not pid:
+            # A hand-run `claude rc` in the repo holds its slot, and launchd's host exits every
+            # 30 s: sessions seem to vanish. The build Mac's 2026-09 build says "This folder is already
+            # served by a terminal `claude remote-control` …", 2.1.284 "… by another Claude Code
+            # on this device"; the common prefix covers both. Say so once.
+            if b"This folder is already served" in new and not seen.get("served"):
+                print(f"  blocked    {name}: another `claude remote-control` on this machine serves {repo.name};"
+                      f" the host retries every 30 s and comes back when that one exits  ({stamp})")
+                seen["served"] = True
+            state[label] = {**seen, "pid": None, "offset": size}
+            continue
+        if pid != seen.get("pid") or b"] Reconnected after" not in new:
+            # Restarted since, or nothing to act on. A reconnect in the hour launchd restarted
+            # a host is not acted on — which of the new bytes predate the new process is
+            # unknowable here; the next reconnect (about 4 h away) is.
+            state[label] = {"pid": pid, "offset": size}
+            continue
+        kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+        if kids:
+            if not seen.get("waiting"):
+                print(f"  waiting    {name}: reconnected since the last run, {len(kids)} session(s) —"
+                      f" restarts once empty  ({stamp})")
+            state[label] = {**seen, "waiting": True}   # offset kept: the flag stands
+            continue
+        print(f"  {'would restart' if dry else 'restarting'} {name}: reconnected since the last run,"
+              f" no sessions — the picker may have dropped it  ({stamp})")
+        if dry:
+            continue
+        # kickstart restarts the loaded job with its old flags, and the host it brings back can
+        # hold a pre-created session that keeps converge() off it for another 12 h; a plist that
+        # changed is loaded instead (review, 2026-10-14: two repos' hosts, 2026-10-13 11:48).
+        dest = AGENTS / f"{label}.plist"
+        if dest.exists() and plistlib.loads(dest.read_bytes()) != plist:
+            load(label, plist)
+        else:
+            restart_job(label)
+        up = settled(label) and host_pid(label) != pid
+        print(f"             {name}: {'restarted, pid ' + str(host_pid(label)) if up else 'NOT RUNNING — see ' + log}")
+        state[label] = {"pid": host_pid(label), "offset": log_tail(log, 1 << 62)[1] if up else size}
+    if not dry:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state, indent=1) + "\n")
+
+
+def job_pid(label):
+    """The pid launchd holds for the job — claude-host's for a host behind it."""
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True)
+    m = re.search(r"^\tpid = (\d+)", r.stdout, re.M)
+    return int(m.group(1)) if m else None
+
+
+def restart_job(label):
+    """Restart a loaded host in place: SIGTERM, wait for it to go, start it. Never `kickstart -k`,
+    which SIGKILLs the job's program: behind claude-host that is claude-host alone, and its claude
+    lived on with no launchd job, serving the repo beside the new host and charged to its own
+    versioned path again (19 such on the laptop, 2026-10-18 13:15 — each revive wave left one per
+    host; docs/tcc-one-identity-2026-10-18.md). claude-host forwards the TERM and exits with claude."""
+    target = f"gui/{os.getuid()}/{label}"
+    old = job_pid(label)
+    subprocess.run(["launchctl", "kill", "SIGTERM", target], capture_output=True)
+    for _ in range(40):   # a host that holds no session exits in a second or two
+        if job_pid(label) != old:
+            break
+        time.sleep(0.5)
+    if job_pid(label) is None:   # KeepAlive would start it after ThrottleInterval; now is sooner
+        subprocess.run(["launchctl", "kickstart", target], capture_output=True)
+
+
+def restart_one(label, name, plist):
+    """--restart on a running host: ends every session it holds, so only when none is busy —
+    the session asking is usually one of them, and busy (--end's rule). A child with no record
+    to read counts as busy, as --end refuses one. Returns True if done."""
+    pid = host_pid(label)
+    kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split() if pid else []
+    busy = [int(c) for c in kids if (record(int(c)) or {}).get("status") != "idle"]
+    if busy:
+        print(f"  busy     {name}: session(s) {busy} busy — restart once idle (rc-hosts --idle)")
+        return False
+    load(label, plist)
+    print(f"  restart  {name}: {'running' if settled(label) else 'NOT RUNNING — see the log'}"
+          f" ({plist['StandardOutPath']})")
+    return True
+
+
+def kids(label):
+    pid = host_pid(label)
+    return subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split() if pid else []
+
+
+def unwanted(hosts):
+    """Labels of host plists in LaunchAgents that no wanted host claims: a repo idle past
+    ACTIVE_DAYS, set "rc": false, gone from repos.json — or loaded from a branch that never
+    landed, as 17 were on both Macs from 2026-10-07 to 2026-10-13 (rc-slots doc)."""
+    # a wanted repo whose clone is gone (moved to ~/projects-attic) claims nothing: its host
+    # would respawn every 30 s in a missing directory (review, 2026-10-14)
+    claimed = {label for label, _, _, repo in hosts if repo.is_dir()}
+    return sorted(p.stem for p in AGENTS.glob(f"{HOST_LABEL}*.plist") if p.stem not in claimed)
+
+
+def retire(hosts, dry, quiet=False):
+    """Unload and remove an unwanted host with no session; one holding a session waits, since
+    unloading it would end the session (the reaper retires it once the session is reaped)."""
+    for label in unwanted(hosts):
+        if kids(label):
+            if not quiet:
+                print(f"  waiting  {label}: no longer wanted here, holds a session — retires once empty")
+            continue
+        print(f"  {'would retire' if dry else 'retiring'} {label}: no longer wanted here"
+              f" (idle {ACTIVE_DAYS:g} days+, \"rc\": false, or unregistered)  ({time.strftime('%Y-%m-%d %H:%M')})")
+        if dry:
+            continue
+        stop(label)
+        (AGENTS / f"{label}.plist").unlink(missing_ok=True)
+
+
+def stale_image(label, plist=None):
+    """A host behind claude-host whose claude-host started before the build in place was made:
+    it runs the old image, whose grants a rebuild's sitting replaces. A plist that already names
+    claude-host compares equal after a rebuild, so without this nothing restarts it, and it loses
+    Full Disk Access the moment the owner swaps the old entry for the new (review, 2026-10-18)."""
+    if plist is not None and (plist.get("ProgramArguments") or [""])[0] != str(LAUNCHER):
+        return False
+    pid = job_pid(label)
+    try:
+        built = BUILT.stat().st_mtime
+    except OSError:
+        return False
+    started = proc_started(pid) if pid else None
+    return started is not None and started < built
+
+
+def proc_started(pid):
+    """A process's start time (epoch seconds), from ps; None when it cannot be read."""
+    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                         env={**os.environ, "LC_ALL": "C"}).stdout.strip()   # local time, as mktime reads it
+    try:
+        return time.mktime(time.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
+
+def restart_stale(host, quiet=False):
+    """Restart every empty host whose claude-host image predates the build (stale_image); say which
+    hosts wait for their sessions to end. converge() does the same hourly."""
+    for label, name, plist, repo in wanted(host):
+        dest = AGENTS / f"{label}.plist"
+        have = read_plist(dest)
+        if have is None:
+            continue
+        # The plist on disk, not the wanted one: a host still loaded bare is converge's to move, and
+        # its job is claude, not an old claude-host — restarting it here was for nothing (review)
+        if have != plist or not loaded(label) or not stale_image(label, have):
+            continue
+        if kids(label):
+            print(f"  waiting  {name}: runs the old claude-host, holds a session — restarts once empty")
+            continue
+        print(f"  restart  {name}: the old claude-host image  ({time.strftime('%Y-%m-%d %H:%M')})")
+        restart_job(label)
+
+
+def converge(host, only, dry):
+    """The reaper's last step, silent unless it acts: load a wanted host that is missing, reload
+    an empty one whose plist changed, retire an empty unwanted one. A host holding a session is
+    never reloaded — its sessions would end — so a new flag reaches it after the reaper has
+    ended its last idle session. Untrusted repos are left to `rc-hosts --check` to name."""
+    hosts = wanted(host)
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    for label, name, plist, repo in hosts:
+        if (only and name.split(" · ")[0] not in only) or not repo.is_dir() or not trusted(repo):
+            continue
+        dest = AGENTS / f"{label}.plist"
+        have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
+        # A loaded host holding a session is never reloaded, plist on disk or not: load() boots
+        # it out first. A matching plist whose job is not loaded is a bootstrap that failed, and
+        # is retried (review, 2026-10-14).
+        if kids(label) or (have == plist and loaded(label) and not stale_image(label, plist)):
+            continue
+        print(f"  {'would load' if dry else 'loading  '}  {name}: "
+              f"{'new here' if have is None else 'plist changed, no session' if have != plist else 'not loaded' if not loaded(label) else 'the old claude-host image, no session'}"
+              f"  ({stamp})")
+        if not dry:
+            LOGS.mkdir(parents=True, exist_ok=True)
+            load(label, plist)
+    if not only:
+        retire(hosts, dry, quiet=True)
+
+
+def repo_roots(d, depth):
+    """Git repo roots under d, as bin/trust-projects walks them: not below a repo, not into
+    dot-folders (worktrees), never through a symlink."""
+    if (d / ".git").exists():
+        return [d]
+    if depth == 0:
+        return []
+    try:
+        sub = sorted(p for p in d.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith("."))
+    except OSError:
+        return []
+    return [r for k in sub for r in repo_roots(k, depth - 1)]
+
+
+def unregistered():
+    """Repos under ~/projects that repos.json does not list: they get no host anywhere.
+    One was on GitHub and cloned on the build Mac a day before anyone noticed (2026-10-13)."""
+    listed = {PROJECTS / p for p in registry()}
+    return [r for r in repo_roots(PROJECTS, 5) if r not in listed]
+
+
+def reaper_plist():
+    return {
+        "Label": REAPER,
+        "ProgramArguments": [str(Path(__file__).resolve()), "--reap"],
+        "EnvironmentVariables": {"PATH": f"/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:{HOME}/.local/bin"},
+        "StartInterval": 3600, "ProcessType": "Background",
+        "StandardOutPath": str(LOGS / "reap.log"), "StandardErrorPath": str(LOGS / "reap.log"),
+    }
+
+
+def stop(label):
+    """End a loaded job: SIGTERM first and wait for it to go (up to 20 s), then bootout. bootout
+    itself sends SIGTERM and SIGKILLs only after the job's ExitTimeOut (man launchd.plist: 20 s by
+    default), so this is the same order made explicit, with the wait ours rather than the plist's
+    — claude-host forwards the TERM and exits with claude, and a SIGKILL of claude-host alone would
+    leave its claude running with no job, charged to itself (restart_job's note: what
+    `kickstart -k` did). Every unload here goes through this: load(), retire(), the reaper's
+    unschedule, the probes' jobs."""
+    target = f"gui/{os.getuid()}/{label}"
+    old = job_pid(label)
+    if old:
+        subprocess.run(["launchctl", "kill", "SIGTERM", target], capture_output=True)
+        for _ in range(40):
+            if job_pid(label) != old:
+                break
+            time.sleep(0.5)
+    subprocess.run(["launchctl", "bootout", target], capture_output=True)
+
+
+def load(label, plist):
+    """Write and (re)load a job; True when launchd took it."""
+    dest = AGENTS / f"{label}.plist"
+    target = f"gui/{os.getuid()}/{label}"
+    stop(label)
+    # bootout returns before the old host and its sessions have exited, and a bootstrap in
+    # that window fails "5: Input/output error" — it did on --restart pipeline, 2026-09-25,
+    # leaving the host stopped and the rest of the run skipped. Wait for the label to go,
+    # then bootstrap, once more after a pause if needed; report a failure, never crash.
+    for _ in range(30):
+        if subprocess.run(["launchctl", "print", target], capture_output=True).returncode != 0:
+            break
+        time.sleep(1)
+    dest.write_bytes(plistlib.dumps(plist))
+    for attempt in (1, 2):
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(dest)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return True
+        if attempt == 1:
+            time.sleep(5)
+    print(f"           {label}: launchctl bootstrap failed ({r.returncode}: {r.stderr.strip()})"
+          f" — run rc-hosts again in a minute")
+    return False
+
+
+def read(path):
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+# codesign's flags for claude-host: ad hoc, its own identifier, and the hardened runtime, which
+# keeps DYLD_INSERT_LIBRARIES out of claude-host itself (bin/claude-host.c's header)
+SIGN = ["-s", "-", "-f", "-o", "runtime", "-i", LAUNCHER_ID]
+# claude-host's entitlements. tccd denies a hardened-runtime process the services whose
+# entitlement it lacks ("Deny for missing Hardened Runtime Entitlement", in tccd's strings; review
+# 2026-10-18), and claude-host is the responsible process for all its sessions do: Automation
+# (Messages for sparks, Notes, System Events, Terminal), Contacts, Photos, Calendars, the
+# microphone, the camera. Claude Code 2.1.303 is hardened too and carries automation.apple-events
+# and device.audio-input (`codesign -d --entitlements -`). Its other three — cs.allow-jit,
+# cs.allow-unsigned-executable-memory, cs.disable-library-validation — are for Bun's JIT and its
+# own loading, in claude's own process, which carries them; claude-host is plain C and the last
+# one would reopen what the runtime closes. Kept here, not as a file under bin/: overlay.txt admits
+# no new path there (new tools are born in regatta, AGENTS.md).
+ENTITLEMENTS = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.automation.apple-events</key><true/>
+  <key>com.apple.security.personal-information.addressbook</key><true/>
+  <key>com.apple.security.personal-information.photos-library</key><true/>
+  <key>com.apple.security.personal-information.calendars</key><true/>
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.device.camera</key><true/>
+</dict></plist>
+"""
+
+
+def source_sha():
+    """The stamp: claude-host.c, its signing flags and its entitlements — a change to any must
+    rebuild, or the binary keeps the old signature (bootstrap.sh's sextant_host_sha, the same rule)."""
+    src = source()
+    return hashlib.sha256(src.read_bytes() + " ".join(SIGN).encode() + ENTITLEMENTS.encode()).hexdigest() \
+        if src and src.exists() else ""
+
+
+def through_launcher():
+    """Hosts start through claude-host only once --grant's probe passed for the build in place;
+    a changed claude-host.c leaves that build serving until --grant rebuilds it."""
+    return LAUNCHER.exists() and read(BUILT) != "" and read(GRANTED) == read(BUILT)
+
+
+def build_launcher():
+    """Build and ad-hoc sign claude-host when its stamp changed; True when a current build is in
+    place. Built beside it and moved over, so a host starting meanwhile never runs half a file."""
+    sha = source_sha()
+    if not sha:
+        print(f"  FAIL     claude-host: {source() or 'claude-host.c (in the overlay bin/)'} missing")
+        return False
+    if LAUNCHER.exists() and read(BUILT) == sha:
+        return True
+    LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+    tmp = LAUNCHER.with_name("claude-host.new")
+    ent = LAUNCHER.with_name("claude-host.entitlements")   # written at signing time, beside the binary
+    ent.write_text(ENTITLEMENTS)
+    ok = (subprocess.run(["clang", "-O2", "-o", str(tmp), str(source())]).returncode == 0
+          and subprocess.run(["codesign", *SIGN, "--entitlements", str(ent), str(tmp)],
+                             capture_output=True).returncode == 0)
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        print(f"  FAIL     claude-host: could not build {LAUNCHER} (clang, codesign)")
+        return False
+    GRANTED.unlink(missing_ok=True)   # first: no host is pointed at the new, ungranted build (review)
+    tmp.replace(LAUNCHER)
+    BUILT.write_text(sha + "\n")
+    print(f"  built    {LAUNCHER} — a new binary to macOS, so it needs Full Disk Access (again)")
+    return True
+
+
+def probe():
+    """True when a child of claude-host, started as its own launchd job as a host is, reads a file
+    only Full Disk Access opens. A job, not a child of this script: from here macOS would ask
+    about this script's own responsible process (a terminal, VS Code) instead."""
+    out = LOGS / "fda-probe.log"
+    LOGS.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    try:   # a Ctrl-C mid-probe must not leave a RunAtLoad job in LaunchAgents (review)
+        load(PROBE, {"Label": PROBE, "ProgramArguments": [str(LAUNCHER), "--probe"], "RunAtLoad": True,
+                     "StandardOutPath": str(out), "StandardErrorPath": str(out)})
+        for _ in range(40):
+            if "probe: " in read(out):
+                break
+            time.sleep(0.25)
+    finally:
+        stop(PROBE)
+        (AGENTS / f"{PROBE}.plist").unlink(missing_ok=True)
+    return "probe: ok" in read(out)
+
+
+def launcher_version():
+    """What the build in place says to --version: 2 since 2026-10-18; a build before that knew only
+    remote-control and --probe, and refuses --version (usage, exit 2) — 1 then. 0: no build."""
+    if not LAUNCHER.exists():
+        return 0
+    try:
+        out = subprocess.run([str(LAUNCHER), "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    m = re.match(r"claude-host (\d+)", out)
+    return int(m.group(1)) if m else 1
+
+
+def ready():
+    """This Mac's sitting is done: the build in place held Full Disk Access at --grant and runs more
+    than remote-control. Every plist writer names claude-host for a script or a claude only then,
+    and --agents and --tcc-survey --health fail only then: before it, what they would flag is the
+    state the sitting fixes, and the laptop's own check must not stop on it."""
+    return through_launcher() and launcher_version() >= LAUNCHER_VERSION
+
+
+def allowed(argv):
+    """True when claude-host (bin/claude-host.c) would start argv: `claude …`, a SCRIPTS path of the
+    primary checkout, or /usr/bin/python3 and one. Kept beside the C list; test_rc_hosts.sh runs
+    the real build on each to keep them alike."""
+    if not argv:
+        return False
+    if argv[0] in ("claude", str(CLAUDE)):
+        return True
+    i = 1 if argv[0] == "/usr/bin/python3" and len(argv) > 1 else 0
+    return argv[i] in {str(PRIMARY / "bin" / s) for s in SCRIPTS}
+
+
+def through(argv):
+    """argv as a launchd job or a script should start it: through claude-host once ready() and
+    when claude-host would run it; else argv as it is. `claude …` becomes `claude-host claude …`."""
+    if not (argv and ready() and allowed(argv)):
+        return list(argv)
+    return [str(LAUNCHER), "claude", *argv[1:]] if argv[0] in ("claude", str(CLAUDE)) else [str(LAUNCHER), *argv]
+
+
+# --- the LaunchAgents check (--agents): nothing that starts claude may skip claude-host ---------
+
+def expand(word):
+    """A path as a shell would see it in a plist's /bin/sh -c line: ~, $HOME and ${HOME} expanded."""
+    for pre in ("~", "$HOME", "${HOME}"):
+        if word == pre or word.startswith(pre + "/"):
+            return str(HOME) + word[len(pre):]
+    return word
+
+
+def claimer(arg):
+    """(name, ours) for the CLAIMERS a ProgramArguments string runs — a script path or a /bin/sh -c
+    line naming one, spelt absolute, with ~ or $HOME, or relative after a `cd` — or None. ours: it
+    resolves to the primary checkout's, the one path claude-host would start; any other (a
+    worktree's, a clone elsewhere, a relative one with no cd) is outside its allowlist."""
+    for name in CLAIMERS:
+        for m in re.finditer(r"(?:^|(?<=[\s'\";&|(]))([^\s'\";&|()]*bin/%s)(?=['\"\s;&|)]|$)" % re.escape(name), arg):
+            word = expand(m.group(1))
+            if not word.startswith("/"):
+                cds = re.findall(r"\bcd\s+['\"]?([^\s'\";&|]+)", arg[:m.start()])
+                if not cds:
+                    return name, False
+                word = os.path.join(expand(cds[-1]), word)
+            return name, os.path.normpath(word) == str(PRIMARY / "bin" / name)
+    return None
+
+
+def agent_problem(args):
+    """(why, kind) when a job's ProgramArguments start claude without claude-host, else None.
+    kind: 'bare' (claude itself, or a claimer of the primary checkout: through() fixes it) or
+    'outside' (a claimer from another checkout, which claude-host would refuse to start)."""
+    if not args:
+        return None
+    try:
+        first = Path(args[0]).resolve()
+    except (OSError, RuntimeError):
+        first = Path(args[0])
+    versions = HOME / ".local" / "share" / "claude" / "versions"
+    if args[0] == str(CLAUDE) or versions in first.parents or first == versions:
+        return "starts claude itself, whose path every update replaces", "bare"
+    if Path(args[0]).name == LAUNCHER.name:
+        return None
+    for a in args[:3]:
+        hit = claimer(a)
+        if hit and str(LAUNCHER) not in a:
+            name, ours = hit
+            if not ours:
+                return f"runs {name} from outside {PRIMARY / 'bin'}, which claude-host's allowlist names", "outside"
+            return f"runs {name}, which starts claude, without claude-host", "bare"
+    return None
+
+
+def agents(fix=False, quiet=False):
+    """--agents: every plist in LaunchAgents whose job starts claude bare. Exit 1 (a regression:
+    some writer bypassed ready()) only once ready(), and only for what should have moved by now:
+    an empty bare host or an idle bare job. A host holding a session (it moves once empty, up to
+    the 12 h reap) and a job running right now (--fix takes it once it ends: the hourly --reap
+    runs agents(fix=True)) are `--` pending; so is a claimer outside the primary checkout, which
+    claude-host would not start. Before the sitting everything is a `--` line. --fix rewrites an
+    idle script job through claude-host and reloads it — only a <label prefix>.* job; anyone
+    else's is reported for a hand. quiet (the reaper's run): print only what it fixed or counts.
+
+    Two more count, once ready (review, 2026-10-18): a claimer outside the primary checkout
+    (OUTSIDE: claude-host refuses to start it, so it stays bare whatever runs), and an
+    <label prefix>.* job that names claude-host but is not loaded (UNLOADED: a --fix whose reload
+    launchd refused leaves exactly that, and the next run would otherwise say ok); --fix loads it
+    again — a host's is converge's."""
+    bad = []
+    skipped = 0
+    for p in sorted(AGENTS.glob("*.plist")):
+        plist = read_plist(p)
+        if plist is None:
+            skipped += 1
+            if not quiet:
+                print(f"  --       {p.stem}: not a plist dict Python or plutil can read — not checked")
+            continue
+        args = plist.get("ProgramArguments") or ([plist["Program"]] if plist.get("Program") else [])
+        hit = agent_problem([str(a) for a in args])
+        if hit:
+            bad.append((p.stem, plist) + hit)
+        elif (args and str(args[0]) == str(LAUNCHER) and p.stem.startswith(OURS)
+              and p.stem not in (PROBE, TCC_JOB) and not loaded(p.stem)):
+            bad.append((p.stem, plist, "names claude-host, but launchd has not loaded it", "unloaded"))
+    if not bad:
+        if not quiet:
+            print("  ok       LaunchAgents: every job " + ("it could read " if skipped else "")
+                  + "that starts claude starts through claude-host")
+        return 0
+    on = ready()
+    counted = 0
+    for label, plist, why, kind in bad:
+        host = label.startswith(HOST_LABEL)
+        ours = label.startswith(OURS)
+        if not on:
+            tag, note = "--      ", ""
+        elif kind == "outside":
+            tag, note = "OUTSIDE ", ""
+            counted += 1
+        elif kind == "unloaded":
+            done = fix and not host and load(label, plist)
+            tag, note = ("loaded  ", "") if done else \
+                ("UNLOADED", " (a host: converge loads it)" if host else " (rc-hosts --agents --fix loads it)")
+            counted += not done
+        elif host and kids(label):
+            tag, note = "--      ", " (a host holding a session: it moves once empty)"
+        elif not host and running(label):
+            tag, note = "--      ", " (running now: the hourly reap moves it once it ends)"
+        elif fix and not host and ours and (done := fix_agent(label, plist)):
+            tag, note = ("fixed   ", "") if done == "ok" else ("FAILED  ", " (rewritten, but launchd did not load it: it is not running)")
+            counted += done != "ok"
+        else:
+            tag = "BARE    "
+            note = (" (an empty host: rc-hosts moves it)" if host else
+                    "" if ours else f" (not a job under {LABEL_PREFIX}: rc-hosts leaves it to a hand)")
+            counted += 1
+        if not quiet or tag.strip() in ("fixed", "BARE", "FAILED", "OUTSIDE", "UNLOADED", "loaded"):
+            print(f"  {tag} {label}: {why}{note}")
+    if not on:
+        if not quiet:
+            print("           not yet this Mac's grant: the sitting is rc-hosts --grant"
+                  " (docs/tcc-one-identity-2026-10-18.md)")
+        return 0
+    outside = sum(1 for b in bad if b[3] == "outside")
+    if outside:
+        print(f"           {outside} job(s) run a script outside {PRIMARY / 'bin'}: claude-host won't start"
+              " them — point each at the primary checkout's script")
+    return 1 if counted else 0
+
+
+def fix_agent(label, plist):
+    """One idle script job through claude-host: its ProgramArguments rewritten as through() would
+    write them (a /bin/sh -c line: each quoted script path prefixed), the job reloaded. True if done.
+    Never anyone else's job, never a host (converge's), never a running one."""
+    if label.startswith(HOST_LABEL) or not label.startswith(OURS) or running(label):
+        return False
+    args = [str(a) for a in plist.get("ProgramArguments") or []]
+    if args and args[0] == "/bin/sh" and len(args) == 3 and args[1] == "-c":
+        line = args[2]
+        for s in CLAIMERS:
+            path = str(PRIMARY / "bin" / s)
+            line = line.replace(f"'{path}'", f"'{LAUNCHER}' '{path}'")
+        new = args[:2] + [line]
+    else:
+        new = through(args)
+    if new == args or agent_problem(new):
+        return False
+    return "ok" if load(label, {**plist, "ProgramArguments": new}) else "failed"
+
+
+# --- the privacy walk: one sitting raises every grant claude-host needs, --probe-all reads them ---
+
+# (key, what the owner sees, kind, target). The services that stopped sessions on either Mac, from the
+# 30-day log survey and the build Mac's TCC.db (docs/tcc-one-identity-2026-10-18.md, section 2). Each is
+# touched once by a child of claude-host: the touch that raises the prompt is the probe that reads
+# the answer, so the walk and --probe-all run the same list.
+AUTOMATION = (("com.apple.Notes", "Notes", "count windows"),
+              ("com.apple.systemevents", "System Events", "count processes"),
+              ("com.apple.Terminal", "Terminal", "count windows"),
+              ("com.apple.AddressBook", "Contacts", "count windows"))
+# Messages is required, but only on the Macs that send texts: the owner's own (the owner, 2026-10-18:
+# "Messages are required now for everything that includes sparks … only on my macs"), the ones the
+# config names (MACHINES). Any other machine never drives Messages; its texts go to the build Mac
+# through the texting service's relay, declared for every machine and honoured only where no job
+# of the service can send.
+MESSAGES_MACHINES = tuple(MACHINES)
+MESSAGES = ("com.apple.MobileSMS", "Messages", "count windows")
+
+
+def tcc_services():
+    lib = HOME / "Library"
+    out = [("fda", "Full Disk Access", "file", lib / "Application Support" / "com.apple.TCC" / "TCC.db"),
+           ("app-management", "App Management", "row", "kTCCServiceSystemPolicyAppBundles")]
+    for root in sorted((lib / "CloudStorage").glob("*")) if (lib / "CloudStorage").is_dir() else []:
+        out.append((f"cloud:{root.name}", f"{root.name} (File Provider)", "dir", root))
+    out.append(("icloud-drive", "iCloud Drive (File Provider)", "dir", lib / "Mobile Documents" / "com~apple~CloudDocs"))
+    for key, what, sub in (("desktop", "Desktop folder", "Desktop"), ("documents", "Documents folder", "Documents"),
+                           ("downloads", "Downloads folder", "Downloads")):
+        out.append((key, what, "dir", HOME / sub))
+    for vol in network_volumes():
+        out.append((f"volume:{vol.name}", f"network volume {vol.name}", "dir", vol))
+    # The folder behind each library, then the library's own row in the user TCC.db: once Full Disk
+    # Access is on, the folder opens by it alone, and its `ok` would say nothing of the library's
+    # own grant, which a session using the framework (not the files) would still be asked for.
+    out.append(("contacts", "Contacts", "dir+row", (lib / "Application Support" / "AddressBook", "kTCCServiceAddressBook")))
+    out.append(("media-library", "Media & Apple Music", "dir+row", (HOME / "Music" / "Music", "kTCCServiceMediaLibrary")))
+    out.append(("photos", "Photos", "dir+row", (HOME / "Pictures" / "Photos Library.photoslibrary", "kTCCServicePhotos")))
+    for bid, name, verb in ((MESSAGES,) if machine() in MESSAGES_MACHINES else ()) + AUTOMATION:
+        out.append((f"automation:{bid}", f"Automation of {name}", "event", (bid, verb)))
+    return out
+
+
+def network_volumes():
+    try:
+        out = subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [Path(m.group(1)) for m in re.finditer(r" on (/Volumes/[^(]+?) \((smbfs|afpfs|nfs|webdav)", out)]
+
+
+# Where each Automation target lives: system apps, read from the disk, not Spotlight — with no
+# index mdfind finds nothing, and every target would have read n/a, i.e. ok (review, 2026-10-18).
+APPS = {"com.apple.MobileSMS": "/System/Applications/Messages.app",
+        "com.apple.Notes": "/System/Applications/Notes.app",
+        "com.apple.systemevents": "/System/Library/CoreServices/System Events.app",
+        "com.apple.Terminal": "/System/Applications/Utilities/Terminal.app",
+        "com.apple.AddressBook": "/System/Applications/Contacts.app"}
+
+
+def app_installed(bid):
+    path = APPS.get(bid)
+    return bool(path) and Path(path).is_dir()
+
+
+SYSTEM_TCC = Path("/Library/Application Support/com.apple.TCC/TCC.db")
+# App Management (kTCCServiceSystemPolicyAppBundles) is a per-user service: on both Macs its
+# claude-host row is in the user's TCC.db, never the system one, where --probe-all first looked
+# and read "not in the list" for a switch that was on (2026-10-19). The user's row decides; the
+# system's is read only when the user's database has none (tcc_one).
+USER_TCC = HOME / "Library" / "Application Support" / "com.apple.TCC" / "TCC.db"
+
+
+def tcc_row(service, client, db):
+    """One TCC.db's answer for client (USER_TCC or SYSTEM_TCC, always named by the caller):
+    'ok' when a row allows it and the build in place satisfies that row's code requirement (a
+    rebuild's new code hash makes an old row count for nothing), else 'denied'. Opens only with
+    Full Disk Access — which is why the walk asks it from claude-host's child."""
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = con.execute("SELECT auth_value, csreq FROM access WHERE service = ? AND client = ?",
+                           (service, client)).fetchall()
+        con.close()
+    except sqlite3.Error as e:
+        return f"denied ({e})"
+    if not rows:
+        return "denied (not in the list)"
+    if any(v == 2 and satisfies(blob, client) for v, blob in rows):
+        return "ok"
+    return "denied (switched off, or granted to an older build)"
+
+
+def satisfies(blob, path):
+    """Does the binary at path meet the compiled requirement TCC stored (its csreq)? The same test
+    TCC makes: csreq turns the blob back into text, codesign checks the binary against it."""
+    if not blob:
+        return False
+    req = LOGS / "tcc-row.csreq"
+    try:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        req.write_bytes(blob)
+        text = subprocess.run(["/usr/bin/csreq", "-r", str(req), "-t"], capture_output=True, text=True,
+                              timeout=20).stdout.strip()
+        return bool(text) and subprocess.run(["/usr/bin/codesign", "--verify", "-R", "=" + text, path],
+                                             capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+# A library whose folder opened — by Full Disk Access alone once it is on, which also keeps the
+# touch from raising the library's own prompt — and that has no row of its own. Not a denial, and
+# not ok either: a session using the framework would still be asked, once, for claude-host.
+UNPROVEN = "unproven (its folder opens by Full Disk Access; no grant of its own)"
+
+
+def result_kind(r):
+    """ok, unproven or denied, for a --tcc-run result."""
+    return "ok" if r in ("ok", "n/a") else "unproven" if r.startswith("unproven") else "denied"
+
+
+def tcc_one(kind, target, wait):
+    """One service, from this process (a child of claude-host when the job runs it): 'ok',
+    'denied (…)', 'no answer' (the prompt is still up, or was never answered) or 'n/a'."""
+    if kind == "row":
+        # the user's tccd decides App Management (the system tccd only forwards it: the laptop's
+        # unified log, 2026-10-20), so a row there is the answer; the system's counts only when
+        # the user's has none, and never hides a refusal in the user's
+        mine = tcc_row(target, str(LAUNCHER), USER_TCC)
+        if mine != "denied (not in the list)":
+            return mine
+        return tcc_row(target, str(LAUNCHER), SYSTEM_TCC)
+    if kind == "dir+row":
+        folder, service = target
+        got = tcc_one("dir", folder, wait)
+        if got != "ok":
+            return got
+        own = tcc_row(service, str(LAUNCHER), USER_TCC)
+        return "ok" if own == "ok" else UNPROVEN
+    if kind == "event":
+        bid, verb = target
+        if not app_installed(bid):   # a listed target that is missing is a failure, never n/a
+            return f"denied ({APPS.get(bid, bid)} not found)"
+        argv = ["/usr/bin/osascript", "-e", f"with timeout of {int(wait)} seconds",
+                "-e", f'tell application id "{bid}" to {verb}', "-e", "end timeout"]
+    else:
+        if not Path(target).exists() and kind == "dir":
+            return "n/a"
+        argv = ["/usr/bin/head", "-c", "1", str(target)] if kind == "file" else ["/bin/ls", str(target)]
+    p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        _, err = p.communicate(timeout=wait + 5)
+    except subprocess.TimeoutExpired:
+        p.kill()   # a File Provider read waiting on a prompt may not die at once: never wait for it
+        return "no answer"
+    if p.returncode == 0:
+        return "ok"
+    first = (err or "").strip().splitlines()[-1:] or [f"exit {p.returncode}"]
+    if "-1712" in first[0]:   # AppleEvent timed out: the prompt was not answered
+        return "no answer"
+    return f"denied ({first[0][-80:]})"
+
+
+def tcc_run(mode, only=()):
+    """--tcc-run touch|probe [keys]: what the job runs under claude-host. touch waits long (the owner is
+    answering each prompt), probe briefly; results to LOGS/tcc-probe.json for the parent."""
+    wait = 120 if mode == "touch" else 8
+    res = {}
+    for key, what, kind, target in tcc_services():
+        if only and key not in only:
+            continue
+        if mode == "touch":
+            print(f"  asking   {what} …", flush=True)
+        res[key] = {"what": what, "result": tcc_one(kind, target, wait)}
+    out = LOGS / "tcc-probe.json"
+    tmp = out.with_name(out.name + ".tmp")   # tcc_job polls for out: never let it read half a file
+    tmp.write_text(json.dumps({"mode": mode, "at": int(time.time()), "results": res}, indent=1) + "\n")
+    tmp.replace(out)
+    return 0
+
+
+def tcc_job(mode, only=(), timeout=60):
+    """Run --tcc-run as its own launchd job through claude-host, as a host runs, and read its
+    answer: {key: {what, result}}, or None when no answer came. The primary checkout's rc-hosts —
+    claude-host starts nothing else (and what runs is what landed)."""
+    out = LOGS / "tcc-probe.json"
+    LOGS.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    log = LOGS / "tcc-probe.log"
+    args = [str(LAUNCHER), "/usr/bin/python3", str(PRIMARY / "bin" / "rc-hosts"), "--tcc-run", mode, *only]
+    try:
+        load(TCC_JOB, {"Label": TCC_JOB, "ProgramArguments": args, "RunAtLoad": True,
+                       "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+                       "StandardOutPath": str(log), "StandardErrorPath": str(log)})
+        deadline = time.time() + timeout
+        while time.time() < deadline and not out.exists():
+            time.sleep(1)
+        try:
+            return json.loads(out.read_text()).get("results")
+        except (OSError, ValueError):
+            return None
+    finally:
+        stop(TCC_JOB)
+        (AGENTS / f"{TCC_JOB}.plist").unlink(missing_ok=True)
+
+
+def primary_knows():
+    """The walk's job runs the primary checkout's rc-hosts --tcc-run. One from before 2026-10-18
+    would take the unknown flag for a plain run — a write and retire pass on every poll (review,
+    2026-10-18) — so refuse until this has landed there."""
+    try:
+        ok = '"--tcc-run"' in (PRIMARY / "bin" / "rc-hosts").read_text()
+    except OSError:
+        ok = False
+    if not ok:
+        print(f"  FAIL     {PRIMARY / 'bin' / 'rc-hosts'} does not know --tcc-run yet: land this first,"
+              " and fast-forward that checkout")
+    return ok
+
+
+def probe_all(record_it=True):
+    """--probe-all: the table, recorded beside the grant stamp for this build. Exit 1 when a
+    service is denied or unanswered; an unproven library is named, never called ok."""
+    res = tcc_job("probe", timeout=300)
+    if res is None:
+        print(f"  FAIL     the probe job gave no answer ({LOGS / 'tcc-probe.log'})")
+        return 1
+    bad = 0
+    tags = {"ok": "ok      ", "unproven": "--      ", "denied": "DENIED  "}
+    for key, r in res.items():
+        kind = result_kind(r["result"])
+        bad += kind == "denied"
+        print(f"  {tags[kind]} {r['what']}: {r['result']}")
+    unproven = [r["what"] for r in res.values() if result_kind(r["result"]) == "unproven"]
+    if unproven:
+        print(f"           unproven, not denied: {', '.join(unproven)} — asked once, for good, the first"
+              " time a session uses the framework rather than the files")
+    if record_it:
+        TCC_RESULTS.write_text(json.dumps({"build": read(BUILT), "at": time.strftime("%Y-%m-%d %H:%M"),
+                                           "results": res}, indent=1) + "\n")
+    return 1 if bad else 0
+
+
+def open_pane(anchor, what):
+    print(f"{what} — System Settings opens on the list, and Finder shows claude-host:")
+    print("  drag claude-host into the list and switch it on (or: + in the list, ⇧⌘G, type"
+          f" {LAUNCHER}, Open).")
+    print("  Already in the list from an older build? Remove it (−) and add it again: a rebuild is")
+    print("  a new binary to macOS, and the old entry no longer counts.")
+    # Privacy_AllFiles has held since macOS 13 (the texting service's install.sh); Privacy_AppBundles and its +
+    # button are in macOS 26.3's SecurityPrivacyExtension TCCServiceList.plist (read 2026-10-18)
+    subprocess.run(["open", f"x-apple.systempreferences:com.apple.preference.security?{anchor}"],
+                   capture_output=True)
+    subprocess.run(["open", "-R", str(LAUNCHER)], capture_output=True)
+
+
+def grant(host):
+    """--grant: the sitting, once per Mac and again only after claude-host.c changes (a rebuild is a
+    new binary to macOS: every grant again). In order: build if needed; Full Disk Access (the
+    switch, seen by a child reading the TCC database); App Management (the switch, read from the
+    user's TCC database, then the system's when the user's has no row — nothing here modifies a
+    real app to raise it); every prompt-only service
+    touched once from a child of claude-host, for the owner to allow; --probe-all recorded. Then every
+    empty host and every idle claude-starting LaunchAgent moves to claude-host."""
+    if not primary_knows():
+        return 2
+    if not build_launcher():
+        return 1
+    if not probe():
+        open_pane("Privacy_AllFiles", "Full Disk Access")
+        print("waiting for the grant (up to 10 minutes; Ctrl-C stops the wait)…", flush=True)
+        deadline = time.time() + 600
+        while not probe():
+            if time.time() > deadline:
+                print("  --       not granted after 10 minutes: hosts keep running claude directly")
+                return 1
+            time.sleep(5)   # each probe loads a launchd job: poll gently (rules/engineering)
+    GRANTED.write_text(read(BUILT) + "\n")
+    print("  ok       claude-host holds Full Disk Access: a child it started read the TCC database")
+    restart_stale(host)
+    am = (tcc_job("probe", ("app-management",)) or {}).get("app-management", {}).get("result", "")
+    if am != "ok":
+        open_pane("Privacy_AppBundles", "App Management (a session's Chrome updates itself under it)")
+        print("waiting for the switch (up to 10 minutes)…", flush=True)
+        deadline = time.time() + 600
+        while am != "ok" and time.time() < deadline:
+            time.sleep(10)
+            am = (tcc_job("probe", ("app-management",)) or {}).get("app-management", {}).get("result", "")
+        print(f"  {'ok      ' if am == 'ok' else '--      '} App Management: {am or 'no answer'}")
+    print("Now each prompt-only grant, one prompt at a time — answer each with Allow (OK). Messages,")
+    print("Notes, Terminal and Contacts open if they are not running: each is only asked to count its")
+    print("windows; nothing is sent or written.", flush=True)
+    touched = tcc_job("touch", timeout=60 + 130 * len(tcc_services()))
+    if touched is None:
+        print(f"  --       the touches gave no answer ({LOGS / 'tcc-probe.log'}); --probe-all says what holds")
+    print("--probe-all:")
+    rc = probe_all()
+    print("           hosts start through it from now on; one holding a session moves once it is empty")
+    converge(host, set(), False)
+    agents(fix=True)
+    return rc
+
+
+# --- the recurrence check: what the unified log says was refused, charged to a versioned claude ---
+
+SURVEY_PRED = ('subsystem == "com.apple.TCC" AND (eventMessage CONTAINS "AUTHREQ_CTX" OR '
+               'eventMessage CONTAINS "AUTHREQ_ATTRIBUTION" OR eventMessage CONTAINS "AUTHREQ_RESULT")')
+AUTH = {"0": "denied", "1": "unknown", "3": "limited"}
+REASON = {"0": "none", "2": "user-consent", "3": "user-set", "4": "system-set", "5": "no-record", "9": "prompt-timeout",
+          "13": "missing-entitlement"}
+# Requests that never stopped a session: preflights the tools make on their own (`say`, Chrome's
+# helpers, DeveloperTool's exec checks), answered "unknown" with no prompt (the 30-day survey).
+QUIET = ("DeveloperTool", "ListenEvent", "AudioCapture", "Microphone", "Camera", "ScreenCapture")
+
+
+def survey(lines, since="", skip=frozenset()):
+    """Group not-allowed TCC requests whose responsible process — or, with none, the accessing one —
+    is a versioned claude (~/.local/share/claude/versions/<v>): {(service, result, accessing): [n,
+    last, versions]}. since ("YYYY-MM-DD HH:MM"): only requests from then on; skip: pids whose
+    requests do not count (the responsible one, or with none the accessing one). Pure, for the
+    suite; tcc_survey() feeds it `log show` output."""
+    req = {}
+    for line in lines:
+        m = re.search(r"AUTHREQ_CTX: msgID=([^,]+), function=[^,]*, service=kTCCService(\w+), preflight=(\w+)", line)
+        if m:
+            req.setdefault(m.group(1), {}).update(t=line[:16], svc=m.group(2), pre=m.group(3))
+            continue
+        m = re.search(r"AUTHREQ_ATTRIBUTION: msgID=([^,]+),", line)
+        if m:
+            r = re.search(r"responsible=\{[^}]*?pid=(\d+)[^}]*?binary_path=([^},]*)", line)
+            a = re.search(r"accessing=\{[^}]*?pid=(\d+)[^}]*?binary_path=([^},]*)", line)
+            req.setdefault(m.group(1), {}).update(resp=r.group(2) if r else "", acc=a.group(2) if a else "",
+                                                  pid=int((r or a).group(1)) if (r or a) else 0)
+            continue
+        m = re.search(r"AUTHREQ_RESULT: msgID=([^,]+), authValue=(\d+), authReason=(\d+)", line)
+        if m:
+            req.setdefault(m.group(1), {}).update(val=m.group(2), why=m.group(3))
+    out = {}
+    for d in req.values():
+        if "svc" not in d or d.get("val") in (None, "2") or d["svc"] in QUIET:
+            continue
+        if d["t"] < since or d.get("pid") in skip:
+            continue
+        charged = d.get("resp") or d.get("acc") or ""
+        v = re.search(r"/\.local/share/claude/versions/([\d.]+)$", charged)
+        if not v:
+            continue
+        result = AUTH.get(d["val"], d["val"]) + "/" + REASON.get(d.get("why", ""), d.get("why", "?")) + \
+            ("" if d.get("pre") == "yes" else " REAL")
+        acc = re.sub(r"^/Users/[^/]+", "~", d.get("acc") or charged)
+        acc = re.sub(r"claude/versions/[\d.]+", "claude/versions/<v>", acc)
+        k = (d["svc"], result, acc)
+        n, last, vs = out.get(k, (0, "", set()))
+        out[k] = (n + 1, max(last, d["t"]), vs | {v.group(1)})
+    return out
+
+
+def tcc_survey(host, hours, health):
+    """--tcc-survey: read-only. Exit 1 when anything is listed — with --health, only once this
+    Mac's sitting is done (before it, the list is what the sitting fixes)."""
+    cmd = ["/usr/bin/log", "show", "--last", f"{int(hours)}h", "--style", "compact", "--predicate", SURVEY_PRED]
+    if host:
+        peer = ssh_peers().get(host.lower())
+        if not peer:
+            known = ", ".join(f"{h} (ssh {a})" for h, a in ssh_peers().items()) or "none in wharf-runs/ssh"
+            sys.exit(f"rc-hosts: --host {host}: only {known}")
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", peer, shlex.join(cmd)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=600)
+    except subprocess.TimeoutExpired:
+        print("  --       tcc-survey: the log read timed out")
+        return 0 if health else 1
+    if r.returncode != 0 and not r.stdout:
+        print(f"  --       tcc-survey: could not read the log ({(r.stderr or '').strip()[:120]})")
+        return 0 if health else 1
+    since, skip = "", frozenset()
+    if health and ready():
+        # The rule --agents keeps: what the sitting has not moved yet is pending, not a regression.
+        # So count only requests since the sitting (the grant stamp's time), and none charged to a
+        # bare host that holds a session or a bare job running now — they are claude themselves.
+        try:
+            since = time.strftime("%Y-%m-%d %H:%M", time.localtime(GRANTED.stat().st_mtime))
+        except OSError:
+            pass
+        skip = frozenset(pending_pids())
+    found = survey(r.stdout.splitlines(), since, skip)
+    where = host or "here"
+    if not found:
+        print(f"  ok       privacy: nothing refused to a versioned claude in {hours:g} h ({where})")
+        return 0
+    print(f"  {'REFUSED ' if not health or ready() else '--      '} privacy: refused to a versioned claude"
+          f" in {hours:g} h ({where}) — a claude started without claude-host:")
+    for (svc, result, acc), (n, last, vs) in sorted(found.items()):
+        print(f"           {n:5d} {svc} {result}  {acc}  last {last}  {','.join(sorted(vs))}")
+    if health and not ready():
+        print("           not yet this Mac's grant: the sitting is rc-hosts --grant")
+        return 0
+    return 1
+
+
+def pending_pids():
+    """The pids --agents calls pending: each bare host holding a session (claude itself is the
+    job's program, so its pid is the job's) and each bare job running now, with what runs under it."""
+    out = set()
+    for p in AGENTS.glob("*.plist"):
+        plist = read_plist(p)
+        if plist is None:
+            continue
+        hit = agent_problem([str(a) for a in plist.get("ProgramArguments") or []])
+        pid = job_pid(p.stem) if hit and hit[1] == "bare" else None
+        if not pid or (p.stem.startswith(HOST_LABEL) and not kids(p.stem)):   # an empty bare host counts
+            continue
+        todo = [pid]
+        while todo:
+            q = todo.pop()
+            out.add(q)
+            todo += [int(k) for k in subprocess.run(["pgrep", "-P", str(q)], capture_output=True,
+                                                     text=True).stdout.split() if k.isdigit()]
+    return out
+
+
+def orphans():
+    """`claude remote-control` processes launchd does not hold: a host's claude whose claude-host was
+    SIGKILLed lives on with ppid 1, serving the repo beside the new host and charged to itself."""
+    jobs = set()
+    for line in subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout.splitlines():
+        pid = line.split("\t", 1)[0]
+        if pid.isdigit():
+            jobs.add(int(pid))
+    ps = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
+    out = []
+    for line in ps.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1] == "1" and f"{CLAUDE} remote-control" in parts[2] \
+                and int(parts[0]) not in jobs:
+            out.append((int(parts[0]), parts[2]))
+    return out
+
+
+def launcher_report():
+    built = read(BUILT)
+    if not LAUNCHER.exists() or not built:
+        return ("--       claude-host: not built — hosts and scripts run claude, whose grants every"
+                " Claude Code update drops (rc-hosts --grant)")
+    if read(GRANTED) != built:
+        return "--       claude-host: built, Full Disk Access not seen yet — hosts run claude (rc-hosts --grant)"
+    if built != source_sha():
+        return ("--       claude-host: holds Full Disk Access, built from an older claude-host.c —"
+                " rc-hosts --grant rebuilds it, and every grant is needed again")
+    try:
+        tcc = json.loads(TCC_RESULTS.read_text())
+    except (OSError, ValueError):
+        tcc = {}
+    res = (tcc.get("results") or {}).values() if tcc.get("build") == built else None
+    if res is None:
+        return ("ok       claude-host: held Full Disk Access at --grant; hosts and scripts start through it;"
+                " --probe-all not recorded for this build")
+    denied = [r["what"] for r in res if result_kind(r["result"]) == "denied"]
+    unproven = [r["what"] for r in res if result_kind(r["result"]) == "unproven"]
+    said = ([f"denied {', '.join(denied)}"] if denied else []) + ([f"unproven {', '.join(unproven)}"] if unproven else [])
+    return ("ok       claude-host: held Full Disk Access at --grant; hosts and scripts start through it;"
+            f" --probe-all {tcc['at']}: " + ("; ".join(said) if said else "every service ok"))
+
+
+FLAGS = {"--check", "--restart", "--only", "--idle", "--schedule-reap", "--unschedule-reap", "--end",
+         "--dry-run", "--reap", "--hours", "--grant", "--launcher", "--tcc-run", "--agents", "--fix",
+         "--tcc-survey", "--host", "--health", "--orphans", "--probe-all"}
+
+
+def main():
+    args = sys.argv[1:]
+    # An unknown flag is an error, never a plain run: a caller from a newer checkout asking an older
+    # rc-hosts (--launcher, --tcc-run) would otherwise get a full write and retire pass (review,
+    # 2026-10-18). --tcc-run's own operands are words, not flags.
+    unknown = [a for a in (args[:args.index("--tcc-run")] if "--tcc-run" in args else args)
+               if a.startswith("--") and a not in FLAGS]
+    if unknown:
+        print(f"rc-hosts: unknown {' '.join(unknown)} (see the header: {Path(__file__).resolve()})", file=sys.stderr)
+        return 2
+    check = "--check" in args
+    restart = {args[i + 1] for i, a in enumerate(args) if a == "--restart" and i + 1 < len(args)}
+
+    def opt(name, default=None):
+        return next((args[i + 1] for i, a in enumerate(args) if a == name and i + 1 < len(args)), default)
+    # the verbs other scripts and launchd jobs call: no machine name needed, nothing written but
+    # --agents --fix's and --tcc-run's own files
+    if "--launcher" in args:   # a plist writer's question: `rc-hosts --launcher <script>`
+        what = opt("--launcher")
+        argv = [what] if what and not what.startswith("-") else ["claude"]
+        if ready() and allowed(argv):
+            print(LAUNCHER)
+            return 0
+        return 1
+    if "--tcc-run" in args:   # the job's own half (tcc_job); never by hand
+        i = args.index("--tcc-run")
+        return tcc_run(args[i + 1] if i + 1 < len(args) else "probe", tuple(args[i + 2:]))
+    if "--agents" in args:
+        return agents(fix="--fix" in args)
+    if "--tcc-survey" in args:
+        return tcc_survey(opt("--host"), float(opt("--hours", "24")), "--health" in args)
+    if "--orphans" in args:
+        found = orphans()
+        for pid, cmd in found:
+            print(f"  {'ending  ' if '--end' in args else 'orphan  '} {pid}: {cmd[:120]}")
+            if "--end" in args:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    print(f"           {pid}: gone already")
+                except PermissionError:
+                    print(f"           {pid}: not ours to end")
+        if not found:
+            print("  ok       no `claude remote-control` outside a launchd job")
+        return 0
+    if "--probe-all" in args:
+        if not primary_knows():
+            return 2
+        if not ready():   # a version-1 build refuses the job: probe_all would wait 300 s for nothing
+            print(f"  --       {launcher_report().split(None, 1)[1]}" if not through_launcher() else
+                  "  --       claude-host: this build predates the walk (it says no version 2) —"
+                  " rc-hosts --grant rebuilds it first")
+            return 1
+        return probe_all()
+    host = machine()
+    only = {args[i + 1] for i, a in enumerate(args) if a == "--only" and i + 1 < len(args)}
+    if "--idle" in args:
+        return sessions_report(host, only)
+    if "--schedule-reap" in args:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        load(REAPER, reaper_plist())
+        return print(f"  reaper: every hour, sessions idle {REAP_HOURS:g} h+ ({LOGS / 'reap.log'})")
+    if "--unschedule-reap" in args:
+        stop(REAPER)
+        (AGENTS / f"{REAPER}.plist").unlink(missing_ok=True)
+        return print("  reaper: removed")
+    if "--end" in args:
+        i = args.index("--end")
+        if i + 1 >= len(args) or args[i + 1].startswith("-"):
+            sys.exit("rc-hosts: --end needs a session id")
+        sys.exit(end(host, args[i + 1], "--dry-run" in args))
+    if "--reap" in args:
+        hours = next((float(args[i + 1]) for i, a in enumerate(args)
+                      if a == "--hours" and i + 1 < len(args)), REAP_HOURS)
+        reap(host, hours, only, "--dry-run" in args)
+        revive(host, only, "--dry-run" in args)
+        converge(host, only, "--dry-run" in args)
+        if not only and "--dry-run" not in args and ready():
+            agents(fix=True, quiet=True)   # a job --grant skipped while it ran heals by itself
+        return 0
+    if "--grant" in args:
+        return grant(host)
+    if not CLAUDE.exists():
+        sys.exit(f"rc-hosts: {CLAUDE} missing — install Claude Code first")
+    LOGS.mkdir(parents=True, exist_ok=True)
+    reaper = AGENTS / f"{REAPER}.plist"
+    print(f"  {'ok      ' if reaper.exists() else '--      '} reaper: "
+          + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else "not scheduled (--schedule-reap)"))
+    print(f"  {launcher_report()}")
+    hosts = wanted(host)
+    refused = restart - {n.split(" · ")[0] for _, n, _, _ in hosts} - {l for l, _, _, _ in hosts}
+    for r in refused:
+        print(f"  --       {r}: no such host here ({', '.join(n.split(' · ')[0] for _, n, _, _ in hosts)})")
+    for label, name, plist, repo in hosts:
+        dest = AGENTS / f"{label}.plist"
+        if not repo.is_dir():
+            print(f"  skip     {name}: {repo} not cloned here (bin/repos clones it)")
+            continue
+        have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
+        asked = name.split(" · ")[0] in restart or label in restart
+        if have is not None and running(label) and asked and not check:
+            if not restart_one(label, name, plist):   # in sync or not (2026-09-30: it used to say "in sync")
+                refused.add(label)
+            continue
+        if have == plist:
+            state = "running" if running(label) else "NOT RUNNING"
+            print(f"  ok       {name}: in sync, {state}")
+            if state != "running" and not trusted(repo):
+                print(untrusted_note(name, repo))
+            elif not check and state != "running":
+                load(label, plist)
+                print(f"           {name}: loaded")
+            continue
+        if have is not None and running(label) and not asked:
+            print(f"  differs  {name}: running — the reaper reloads it once it holds no session;"
+                  f" sooner: rc-hosts --restart {name.split(' · ')[0]} (ends its sessions)")
+            continue
+        print(f"  {'missing' if have is None else 'differs'}  {name}"
+              + ("" if check else " → writing and loading"))
+        if not check:
+            load(label, plist)
+        if not trusted(repo):
+            print(untrusted_note(name, repo))
+        elif not check:
+            print(f"           {name}: {'running' if settled(label) else 'NOT RUNNING — see the log'}"
+                  f" ({plist['StandardOutPath']})")
+    if check:
+        for label in unwanted(hosts):
+            print(f"  unwanted {label}: " + ("holds a session — retires once empty" if kids(label)
+                                              else "retires on the next run"))
+    elif not only and not restart:   # --restart NAME touches NAME only (review, 2026-10-14)
+        retire(hosts, False)
+    for r in unregistered() if check else []:   # --check's question; a plain run (repos --clone) acts
+        print(f"  unregistered  {r.relative_to(PROJECTS)}: no host until repos.json lists it"
+              f" (bin/github-repo registers it; /new-project adopts a folder)")
+    return 1 if refused else 0   # a --restart that did not happen is not a success
+
+
+if __name__ == "__main__":
+    sys.exit(main())

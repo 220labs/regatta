@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""headroom — whether this host has the memory for one more run; dispatch asks it beside the run cap.
+
+    headroom [check] [--json] [--no-log]
+
+Why (2026-10-22): six runs took a 16 GB, 10-core host to load 65, 0.9 % idle and 58 % system time,
+251 MB free and 11.2 of 12 GB swap — thrashing — while dispatch would still have started four more:
+its cap (10 there) counts runs, and memory is what ran out. The owner wants the big host loaded full
+and the laptop kept clear, and a Linux host reports memory its own way.
+
+Three readings, the same names on macOS and Linux:
+  avail  % of RAM free for new work — macOS kern.memorystatus_level (what memory_pressure prints);
+         Linux MemAvailable / MemTotal (/proc/meminfo)
+  swap   GB of swap in use — macOS vm.swapusage; Linux SwapTotal - SwapFree
+  rate   MB/s swapped in and out over a SAMPLE_S sample — macOS vm_stat's Swapins + Swapouts; Linux
+         /proc/vmstat's pswpin + pswpout. The one that tells thrashing from busy: at the thrash and an
+         hour later that host read 30 % / 11.2 GB and 29 % / 10.4 GB, while the rate is what moves.
+  macOS swap is sticky (it is seldom given back), so `swap` is a backstop and `rate` the gate.
+
+The limits are per host, in `<config>/wharf-runs/headroom` (the overlay writes it), one line each:
+`<host>:avail=<min %>,swap=<max GB>,rate=<max MB/s>`, any of the three left out to skip that rule,
+`*:` for a host without a line; neither, or no file, is DEFAULT. Host names compare lower-case. A line
+or a rule it cannot read, or a file it cannot open, is no reading (exit 2), never a dropped rule. A host over any limit gets no new
+run: dispatch refuses it, as it does at the cap — refused, not queued.
+
+Exit 0 room, 3 over a limit (the reason on stdout), 2 when it cannot read this host's memory or its
+limits, or fails in any other way: then dispatch goes ahead, saying so — a broken probe must not stop
+every run. Over is 3, never 1: 1 is what Python exits with on an uncaught error (review, 2026-10-22). Every check is a row in
+~/Library/Logs/claude-weekly/headroom.jsonl, for setting the limits from samples. HEADROOM_SAMPLE
+("<avail> <swap GB> <rate MB/s>"), HEADROOM_HOST, and HEADROOM_OS=Linux with HEADROOM_PROC (a folder
+holding meminfo and vmstat), and HEADROOM_SAMPLE_S (the sample's seconds) stand in for the tests. Python 3.9, stdlib only.
+"""
+import argparse
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2)
+core_path.require()
+try:
+    import common  # noqa: E402
+except Exception as e:   # the core refusing an incomplete overlay: no reading, never a refusal
+    print("memory unreadable here (the core: %s)" % e)
+    sys.exit(2)
+
+KEY = "wharf-runs/headroom"
+DEFAULT = {"avail": 10.0, "rate": 50.0}   # no host named: a neutral floor, no swap rule
+SAMPLE_S = float(os.environ.get("HEADROOM_SAMPLE_S") or 2.0)
+RULES = (("avail", "min", "%% free, under %g %%"), ("swap", "max", "GB swap, over %g GB"), ("rate", "max", "MB/s swapping, over %g MB/s"))
+
+
+def log_path():
+    return Path(os.environ.get("HOME") or Path.home()) / "Library/Logs/claude-weekly/headroom.jsonl"
+
+
+def here():
+    return os.environ.get("HEADROOM_HOST") or os.environ.get("DISPATCH_HOST") or common.host_name()
+
+
+def parse_limits(text):
+    """{"avail": 10.0, …} from `avail=10,swap=12`; a word it cannot read is an error, never skipped:
+    a typo would otherwise drop the rule silently."""
+    out = {}
+    for part in (p.strip() for p in text.split(",") if p.strip()):
+        k, _, v = (x.strip() for x in part.partition("="))
+        if k not in ("avail", "swap", "rate"):
+            raise ValueError("unknown rule %r" % k)
+        out[k] = float(v)
+    return out
+
+
+def limits(host):
+    """(limits, where from) for host: its own line, else `*`, else DEFAULT."""
+    lines, err = common.config_read(KEY)
+    if err:
+        raise ValueError("%s: %s" % (KEY, err))
+    if not lines:
+        return dict(DEFAULT), "default (no %s)" % KEY
+    table = {}
+    for l in lines:
+        name, colon, rules = l.partition(":")
+        if not colon:
+            raise ValueError("%s: a line without <host>: (%r)" % (KEY, l))
+        table[name.strip().lower()] = rules
+    host = host.lower()
+    for name in (host, "*"):
+        if name in table:
+            return parse_limits(table[name]), "%s %s:" % (KEY, name)
+    return dict(DEFAULT), "default (%s has no %s: or *:)" % (KEY, host)
+
+
+def _sh(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=True).stdout
+
+
+def _mac_swapped():
+    """Pages swapped in and out so far, and the page size."""
+    out = _sh("vm_stat")
+    size = int(re.search(r"page size of (\d+) bytes", out).group(1))
+    n = sum(int(re.search(r"^%s:\s+(\d+)" % k, out, re.M).group(1)) for k in ("Swapins", "Swapouts"))
+    return n, size
+
+
+def _proc(name):
+    return (Path(os.environ.get("HEADROOM_PROC") or "/proc") / name).read_text()
+
+
+def _linux_swapped():
+    v = dict(l.split() for l in _proc("vmstat").splitlines() if l.count(" ") == 1)
+    return int(v["pswpin"]) + int(v["pswpout"]), os.sysconf("SC_PAGE_SIZE")
+
+
+def read():
+    """{"avail", "swap", "rate"} for this host, measured."""
+    t = os.environ.get("HEADROOM_SAMPLE")
+    if t:
+        a, s, r = (float(x) for x in t.split())
+        return {"avail": a, "swap": s, "rate": r}
+    if (os.environ.get("HEADROOM_OS") or platform.system()) == "Darwin":
+        avail = float(_sh("sysctl", "-n", "kern.memorystatus_level").strip())
+        m = re.search(r"used = ([\d.]+)([KMG])", _sh("sysctl", "vm.swapusage"))
+        swap = float(m.group(1)) / {"K": 1024 ** 2, "M": 1024, "G": 1}[m.group(2)]
+        swapped = _mac_swapped
+    else:
+        info = {l.split(":")[0]: int(l.split()[1]) for l in _proc("meminfo").splitlines() if l.endswith("kB")}
+        avail = 100.0 * info["MemAvailable"] / info["MemTotal"]
+        swap = (info.get("SwapTotal", 0) - info.get("SwapFree", 0)) / 1024 ** 2
+        swapped = _linux_swapped
+    n0, size = swapped()
+    time.sleep(SAMPLE_S)
+    n1, _ = swapped()
+    return {"avail": round(avail, 1), "swap": round(swap, 2), "rate": round((n1 - n0) * size / 1024 ** 2 / SAMPLE_S, 1)}
+
+
+def judge(sample, lim):
+    """The rules this sample breaks, as words; [] is room."""
+    over = []
+    for k, side, words in RULES:
+        if k in lim and ((side == "min" and sample[k] < lim[k]) or (side == "max" and sample[k] > lim[k])):
+            over.append(("%g " + words) % (sample[k], lim[k]))
+    return over
+
+
+def headroom(write_log=True):
+    host = here()
+    row = {"t": int(time.time()), "host": host}
+    try:
+        lim, source = limits(host)
+        row.update(limits=lim, source=source)
+        row["sample"] = sample = read()
+        over = judge(sample, lim)
+        row.update(over=over, room=not over)
+        row["reason"] = ("no room: " + "; ".join(over)) if over else "room: %g %% free, %g GB swap, %g MB/s swapping" % (
+            sample["avail"], sample["swap"], sample["rate"])
+    except Exception as e:   # any failure is no reading: dispatch goes ahead
+        row.update(room=None, reason="memory unreadable here (%s: %s)" % (e.__class__.__name__, e))
+    if write_log:
+        try:
+            p = log_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a") as f:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return row
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="headroom", description=__doc__.split("\n\n")[0])
+    ap.add_argument("verb", nargs="?", default="check", choices=["check"])
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-log", action="store_true", help="write no headroom.jsonl row")
+    a = ap.parse_args(argv)
+    row = headroom(write_log=not a.no_log)
+    print(json.dumps(row, sort_keys=True) if a.json else "%s: %s (%s)" % (row["host"], row["reason"], row.get("source", "")))
+    return {True: 0, False: 3, None: 2}[row["room"]]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

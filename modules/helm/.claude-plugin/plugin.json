@@ -1,0 +1,14 @@
+{
+  "name": "helm",
+  "version": "0.2.0",
+  "description": "Project management: a large idea broken into ships, blocks and tasks; the skippers and their tick, the asks an unattended run relays instead of asking, and the board.",
+  "author": {
+    "name": "220 Labs"
+  },
+  "dependencies": [
+    "regatta",
+    "wharf",
+    "wharf-runs",
+    "keel"
+  ]
+}

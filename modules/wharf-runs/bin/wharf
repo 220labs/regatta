@@ -1,0 +1,2723 @@
+#!/usr/bin/env python3
+"""wharf — a blueprint built into a ship on Orca (docs/wharf-on-orca-2026-10-17.md S1; B7 of
+docs/orchestration-orca-2026-10-15.md, its section 4 Q2 table; the owner's D1-A: under the final words).
+
+    wharf check <blueprint.md> [--plan ID] [--accept] [--json]
+        Validate the blueprint (bin/blueprintlib.py) and print its graph; with a plan, say whether
+        its digest is the one accepted; --accept records it there.
+    wharf apply <blueprint.md> [--plan ID] [--dry-run | --once] [--json]
+        The live compile: one Orca Run per ship, a Task per block, a gate per decision block, then
+        every row the diff names acted on — ready blocks started, answered gates resolved, ended
+        blocks completed — pass after pass until a pass acts on nothing. --once is one pass and
+        never the first compile (the tick's form). --dry-run is B6's: the diff, nothing written.
+    wharf apply --once --all [--dry-run]
+        The tick's (`helm tick`): one pass over every ship with a Run, in every plan on this Mac.
+    wharf apply --yard <blueprint.md> [--plan ID] [--no-merge] [--gen N] [--json]
+        Lay a ship on its scope's yard (skipper-resilience S2): the blueprint as committed and pushed,
+        pinned {repo, branch, rel, digest} and read there from origin/<branch>:<rel>, its text kept in
+        the plan (plans/<id>/blueprint-<ship>.md) so the yard's tick drives it with no checkout. On the
+        yard it compiles here; elsewhere it runs itself there over the yard's ssh alias
+        (wharf-runs/ssh), with the pin and who laid it (`laid_by`: attended or unattended, the depth,
+        the session, the host) spelled out, since ssh carries no environment. A pin another plan here
+        still drives is refused, naming the plan to rejoin. The merge the launch will ask for is
+        recorded as plan.json's `merge: {value, why}`: no for --no-merge (the keel), the blueprint's
+        `merge: no`, or an unattended layer; else yes. A new ship's lease is written beside it,
+        plans/<id>/skipper.json at `holder: yard, gen 0` (helm's bin/leaselib.py, S4): the yard holds
+        it until the scope's skipper takes it. A lay into a plan that has a lease is fenced by it:
+        --gen N (else SKIPPER_GEN, which a caller elsewhere sends as --gen) at another generation is
+        refused, exit 4; with neither, the yard's side over ssh is a plain shell and passes, and a
+        session on the yard itself passes only if it holds the lease.
+    wharf apply --watch <blueprint.md>... [--plan ID] [--every MIN] [--launch] [--launches N]
+        The skipper's one command per ship (yard-smooth, 2026-10-19): an apply every MIN minutes
+        (default 5), each a fresh `bin/wharf apply` process, until every ship named has ended or the
+        process is stopped. --launch: a `launch: finish` block whose predecessor ended is launched by
+        `bin/autofinish-run <wt> --session <this session>` once the worktree's lock is free or
+        handed over, at most N launches at once in its repo (default 2, from the worktrees'
+        autofinish.json) and never past dispatch's run cap; its PR merged, it is reported `launched`;
+        a launch that stopped is reported `waiting` with its gate, once; one the run cap refused
+        is started again once a run ends. Attended only: refused under CLAUDE_UNATTENDED, the tick
+        stays disarmed (D5-A).
+
+What a pass does besides the diff's rows (yard-smooth): a block it ends — Orca completed it, or its
+worker reported failed and its done_when holds all the same — has its worktree lock marked handed
+over and its worker stopped (`worker-stop`); a block Orca put back to ready is not started again
+when its done_when holds; each question a ship's worker asked the coordinator is relayed once to
+the skipper (the file queue its next prompt prints, else the plan's `waiting` report).
+    wharf status [<blueprint.md> | <ship>] [--plan ID] [--json]
+        Where each block stands: the plan's status, Orca's Task, its newest Dispatch. Reads only.
+    wharf status --orphans [--json]
+        The Orca repos and Runs no plan on this Mac accounts for (a scratch ship's leftovers; Orca can
+        remove neither). Reads only.
+    wharf next <branch> [--repo DIR] [--json]
+        `dispatch --next`'s question (wharf-on-orca S5, B9): is the caller a block of a ship with a
+        block after it? The caller's own record decides: DISPATCH_SHIP (or the older DISPATCH_PLAN)
+        and DISPATCH_TASK, the ship and
+        block id wharf starts a session with, the block found in a blueprint that plan recorded (and
+        in --repo's, when given); never a match of branch names across plans. Exit 0 and the next
+        block(s) when one follows; exit 1, printing nothing, when the caller is no ship's block, is
+        wharf's own start (a ship id without a block), or nothing follows it; exit 2 and a line on
+        stderr when the check itself failed. Reads only; Orca is not asked: the graph is the file's,
+        and `--next` must work with the Orca app shut.
+
+The yard's fence (skipper-resilience S2): a ship whose repo's scope has a yard (`scopes set --yard`)
+has one driver, the yard. A plain `wharf apply` of it (--watch too, whose passes are plain applies) is
+refused off the yard, naming --yard, and on the yard too, where --yard lays and the tick drives; a dry
+run, which writes nothing, is not. A scope with no yard (absent or null) applies as before.
+
+Exit: 0 done; 1 refused (the file changed since its digest was accepted); 2 not a valid blueprint,
+or refused by rule; 3 Orca not reachable; 4 another apply holds this ship's lock, or the ship's
+lease refuses the caller's generation (--yard, S4).
+
+What Orca provides is used, not rebuilt (the owner's D3-A rider, 2026-10-17; each probed by `--help`
+on Orca 1.4.227): the Run (`run-create`, `run-use` when the coordinator died, `run-list` to find a
+Run whose creation's answer was lost), the Tasks and their deps (`task-create --deps`, Orca makes a
+Task `ready` when its deps complete — P3), the gates (`gate-create`, `gate-resolve`), the start
+(`worker-start --task`, through the orca adapter's start(), the one bin/harness run uses), the
+coordinator (`terminal create --worktree path:<repo>`: a Run's mutations need a terminal handle to
+come `--from`, and a script has none of its own — P2, P6). Orca refuses a caller-chosen
+`--retry-request` (P3), so a crash between a call and its record is recovered from Orca's own
+state: a Task is found again by its title (the diff's `record` row), a Dispatch by `worker-list`,
+a Run by its objective in `run-list`. What stays ours, because Orca has no slot for it: the
+blueprint and its digest, the plan's ids and ledger, `done_when`, the memo answers behind a gate,
+the gates on a start (`physical: none`, the week, depth 0, attended only), the worktree (made our
+way and handed by `path:`, B6a's pick A), and the launch — Orca never launches.
+
+Words: `skipper:` is read beside `manager:`; `launch:` is the release verb. Helm's words since rename
+S5 (helm-vocabulary H1): its events are `helm report`'s, a block it reports merged is `launched` (`landed`
+and `launched` both read as ended), a task names its block and its doer `by`, a seeded session gets
+DISPATCH_SHIP beside DISPATCH_PLAN, and the ship's `started` is set by its first live apply. The store
+keeps its names (plans/<id>/plan.json). An Orca block on another host (`host:` one of
+the repo's hosts in repos.json) starts there: its house worktree made over ssh in the host's clone,
+then `worker-start --on <host> --worktree path:<it>` (wharf-on-orca S3); refused while no Orca
+environment is paired under the host's name. A claude-code block there starts by `dispatch --on`. Python 3.9, PyYAML (blueprintlib's), nothing of Claude's imported; no model call.
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+import blueprintlib  # noqa: E402
+def dispatch_host():
+    """The Mac runs are dispatched to (`wharf-runs/dispatch-host`, else the first peer of
+    `wharf-runs/ssh`), lower-case, or "" when neither key is set: it holds the larger run cap
+    (bin/dispatch's max_runs)."""
+    h = common.config_line("wharf-runs/dispatch-host")
+    if not h:
+        h = (common.config_lines("wharf-runs/ssh") or [""])[0].split(":", 1)[0]
+    return h.strip().lower()
+
+
+# helmlib (ships, their locks and events) and asklib are helm's (M11), still the overlay's until
+# B12: found through the core, after this folder; without them there is no ship to check or apply.
+# Exit 1, which dispatch's --next reads from `wharf next` as "not a ship's block": true where helm is
+# absent, since every ship is helm's.
+_HELMLIB = common.tool("helmlib.py")
+if not _HELMLIB:
+    sys.exit("wharf: helm's helmlib.py not found — wharf check and apply run on helm's ships")
+sys.path.insert(2, str(_HELMLIB.parent))
+import helmlib  # noqa: E402
+# the ship's lease (skipper-resilience S4) is helm's too, beside helmlib; only --yard reads or writes
+# it, so a helm without it — or one that will not load mid-edit — costs --yard alone (yard_lease),
+# never a plain apply or the tick, which loads this file every pass
+try:
+    import leaselib  # noqa: E402
+except Exception:  # noqa: BLE001
+    leaselib = None
+
+ENDED = ("done", "landed", "launched")   # `launched` is rename S2's word for `landed`: read both
+PASSES = 10          # an apply's passes at most; a pass that acts on nothing ends it sooner
+SHELL_TIMEOUT = 300  # a shell block's own timeout_seconds wins; over ~500 s it starts only from an attended apply (the tick has 600 s)
+SESSION_START = 400  # what a session start may take: worker-start's 300 s and its 90 s wait, or pickup seed
+TICK_STARTS = 2      # session starts per tick, every ship together: no run cap counts them yet (bin/harness)
+
+
+def _mod(name, path):
+    return SourceFileLoader(name, str(path)).load_module()
+
+
+_cache = {}
+
+
+def orca():
+    if "orca" not in _cache:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("harness_adapter_orca", str(HERE / "harness_adapters" / "orca.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _cache["orca"] = mod
+    return _cache["orca"]
+
+
+def harness():
+    """bin/harness as a module: its Ctx, Failed and guard()'s rules, so a start here is refused
+    exactly where `harness run` refuses one."""
+    if "harness" not in _cache:
+        _cache["harness"] = _mod("harness_bin", HERE / "harness")
+    return _cache["harness"]
+
+
+def core():
+    """hooks/common.py, the core's (read_owner, write_owner: the worktree lock's one writer)."""
+    if "common" not in _cache:
+        import common
+        _cache["common"] = common
+    return _cache["common"]
+
+
+def read_json(path):
+    try:
+        d = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def launch_live(state):
+    """A launch whose `autofinish.json` in STATE (a worktree's `<git dir>/claude`) has not ended is
+    under way while its waiter lives (`autofinish-waiter.json`'s pid), or for its first 10 minutes
+    (bin/autofinish-run's PRE_START_S: the child may not have written the waiter yet). A runner
+    that died without an end is not: autofinish-run's own refusals judge it at the next start."""
+    st = read_json(Path(state) / "autofinish.json") or {}
+    if pid_alive((read_json(Path(state) / "autofinish-waiter.json") or {}).get("pid")):
+        return True
+    try:
+        import datetime
+        return time.time() - datetime.datetime.fromisoformat(st.get("started") or "").timestamp() < 600
+    except (TypeError, ValueError):
+        return False
+
+
+def worker_report(t):
+    """The subject of an Orca Task's failed worker_done (its `result`, a JSON string Orca writes:
+    provenance worker_report, outcome failed), or None: a Task failed any other way — a re-spec's
+    `cancelled`, a failure set by hand — is no report."""
+    r = t.get("result")
+    if not isinstance(r, dict):   # a JSON string as Orca writes it; an object taken as read
+        try:
+            r = json.loads(r or "")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(r, dict) or r.get("provenance") != "worker_report" or str(r.get("outcome")).lower() != "failed":
+        return None
+    return " ".join(str(r.get("subject") or str(r.get("body") or "").split("\n")[0] or "no subject").split())[:160]
+
+
+def say(*a):
+    print(*a, flush=True)
+
+
+def time_left():
+    """Seconds until the caller's kill time (STALLS_DEADLINE: `ask poll` SIGKILLs the whole tick
+    then), or None when there is none. Nothing is started that cannot finish before it."""
+    try:
+        d = float(os.environ.get("STALLS_DEADLINE") or 0)
+    except ValueError:
+        return None
+    return (d - time.time()) if d else None
+
+
+# ---------------------------------------------------------------------------- the plan and the file
+
+def plan_id(given=None):
+    pid = given or helmlib.env("ship") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not pid:
+        raise SystemExit("wharf: no ship id — pass --plan, or run inside a session (DISPATCH_SHIP or DISPATCH_PLAN, "
+                         "CLAUDE_CODE_SESSION_ID)")
+    return pid
+
+
+def need(pid):
+    p = helmlib.load_plan(pid)
+    if p is None:
+        raise SystemExit("wharf: no ship %s in %s (helm ship <topic>)" % (pid, helmlib.plans_root()))
+    return p
+
+
+def recorded(pid, path):
+    """(key, accepted) a load of PATH in plan PID reads with (blueprintlib.load): the pin's repo of the
+    record whose file PATH is (a pinned ship's copy), and every digest the plan has accepted."""
+    recs = [r for r in ((helmlib.load_plan(pid) or {}).get("blueprints") or {}).values() if isinstance(r, dict)]
+    real = os.path.realpath(str(path))
+    pin = next((r["pin"] for r in recs if isinstance(r.get("pin"), dict) and r.get("file")
+                and os.path.realpath(r["file"]) == real), None)
+    return (pin or {}).get("repo"), set(r["digest"] for r in recs if r.get("digest"))
+
+
+def load_recorded(pid, path):
+    """blueprintlib.load of PATH as plan PID records it (recorded()); raises as load does."""
+    key, accepted = recorded(pid, path)
+    return blueprintlib.load(path, key=key, accepted=accepted)
+
+
+def load_blueprint(path, pid=None):
+    """The blueprint at PATH, or exit 2 naming every problem. With PID, read as that plan records it:
+    a pinned copy keyed on its pin's repo, and a ship in flight warned of a `host:` the yard rule
+    would refuse a new compile (its yard_warnings)."""
+    key, accepted = recorded(pid, path) if pid else (None, ())
+    try:
+        return blueprintlib.load(path, key=key, accepted=accepted)
+    except blueprintlib.BlueprintError as e:
+        print("wharf: %s is not a valid blueprint:" % path, file=sys.stderr)
+        for x in e.problems:
+            print("  - %s" % x, file=sys.stderr)
+        sys.exit(2)
+    except OSError as e:
+        print("wharf: %s" % e, file=sys.stderr)
+        sys.exit(2)
+
+
+def repo_dir(bp):
+    """The blueprint's repo on this Mac: an absolute path as is, else a name under ~/projects."""
+    return repo_path(bp["meta"]["repo"])
+
+
+def repo_path(r):
+    """A registry key's checkout under the core's projects folder (common.PROJECTS, the root
+    blueprintlib.repo_key reads keys from), or an absolute path as is."""
+    return Path(r) if r.startswith("/") else Path(common.PROJECTS) / r
+
+
+def ship_repo(bp, rec):
+    """(key, checkout) of a ship's repo: a pinned ship's is its pin's — the yard never reads the
+    blueprint's `repo:`, which may be a path on the caller's Mac — else the blueprint's."""
+    pin = (rec or {}).get("pin")
+    r = pin["repo"] if isinstance(pin, dict) and pin.get("repo") else bp["meta"]["repo"]
+    return r, repo_path(r)
+
+
+def skipper(bp, pid=None):
+    m = bp["meta"]
+    who = m.get("skipper") or m.get("manager")
+    if who != "scope":
+        return who
+    # `skipper: scope` (a blueprint `helm send` sent) names the scope's lease holder, never the sender:
+    # plans/<pid>/skipper.json says who holds it (S4) — a skipper's session while its lease runs; the
+    # yard's hold, a lapsed lease or none names no session, and a relay goes to the board
+    if not (pid and leaselib):
+        return None
+    try:
+        rec = leaselib.read(pid)
+    except leaselib.Unreadable:
+        return None
+    if not rec or rec["holder"] == leaselib.YARD or leaselib.lapsed(pid, rec=rec):
+        return None
+    return rec.get("session")
+
+
+def doc_path(bp, rel, rec=None):
+    """A decision's doc: beside the blueprint's own checkout first (it lives on the blueprint's branch),
+    then the repo's main checkout (a pinned ship's: its pin's)."""
+    roots = []
+    try:
+        r = subprocess.run(["git", "-C", str(Path(bp["path"]).resolve().parent), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            roots.append(Path(r.stdout.strip()))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    roots.append(ship_repo(bp, rec)[1])
+    for root in roots:
+        if (root / rel).is_file():
+            return root / rel
+    return None
+
+
+def pinned_doc(rec, rel):
+    """A pinned ship's decision doc as its branch has it on origin, or None: the pin's text is the
+    plan's copy, in no checkout, and the answers are commits on the branch (keel pull), so neither
+    of doc_path's places has them until the branch merges. Fetched at most once a pass (Ship.apply
+    clears the mark); a fetch that fails reads the origin ref as it last came."""
+    pin, main = rec.get("pin"), rec.get("main")
+    if not (isinstance(pin, dict) and pin.get("branch") and main and Path(main, ".git").exists()):
+        return None
+    done = _cache.setdefault("fetched", set())
+    if (main, pin["branch"]) not in done:
+        done.add((main, pin["branch"]))
+        try:
+            subprocess.run(["git", "-C", main, "fetch", "-q", "origin", pin["branch"]], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return _git_text(main, "show", "origin/%s:%s" % (pin["branch"], rel))
+
+
+def memo_answered(bp, rec=None, mode=None):
+    """doc, items → (every item answered?, "D2 B; D3 A") by bin/keel's own reader. No network, but for
+    a pinned ship (REC with a pin), whose doc is read from its branch on origin first (pinned_doc).
+
+    In mode dnd or yolo (skipper-modes S3) a gate whose open items keel yolo would all take — under
+    dnd none held (keel's dnd_held), under yolo every one with a bare pick — resolves as taken, with
+    "taken unattended (dnd)" in its text: nothing is written to the doc here (it may sit in another
+    session's worktree), and the block after it, a run in the same mode, writes the picks itself
+    through its prompt's `keel yolo` gate. One item held, and the gate waits on the owner as before. dnd
+    reads the contract's `physical:` in the doc's checkout — a pinned doc's in the ship's main —
+    and with no checkout to read it in holds the item (keel's dnd_held reads None as physical)."""
+    memo = _mod("memo", common.tool("keel") or HERE / "keel")
+
+    def takeable(it, lines, physical):
+        if mode == "dnd":
+            return memo.dnd_held(it, lines, physical) is None
+        rec = " ".join((it.get("recommended") or "").split())
+        return bool(rec) and not memo.CONDITIONAL_RE.search(rec) and not memo.reopened(it, lines)
+
+    def answered(rel, items):
+        # the pinned branch's copy first; when it does not settle every item, doc_path's places too:
+        # a doc answered on main (or a keel branch merged there) must not be hidden by a stale branch copy
+        pinned = pinned_doc(rec, rel) if rec else None
+        if pinned is not None:
+            got = settle(pinned, rel, items, Path(rec["main"], rel) if rec.get("main") else None)
+            if got[0]:
+                return got
+        p = doc_path(bp, rel, rec)
+        if p is None:
+            return got if pinned is not None else (False, "%s not found" % rel)
+        return settle(p.read_text(), rel, items, p)
+
+    def settle(text, rel, items, path):
+        lines, found, _ = memo.parse(text)
+        got = {it["id"]: it for it in found}
+        missing = [i for i in items if i not in got]
+        if missing:
+            return False, "no %s in %s" % (", ".join(missing), rel)
+        # yolo_settled, not answered: a session's own `> Proceeding with B` must not open a gate
+        ok = all(memo.yolo_settled(got[i], lines) for i in items)
+        if not ok and mode in ("dnd", "yolo"):
+            physical = memo.doc_physical(path) if mode == "dnd" and path else None
+            open_ = [i for i in items if not memo.yolo_settled(got[i], lines)]
+            if all(takeable(got[i], lines, physical) for i in open_):
+                return True, "taken unattended (%s): %s" % (mode, "; ".join(
+                    "%s %s" % (i, " ".join((got[i].get("recommended") or "").split())[:40]) for i in open_))
+        return ok, "; ".join("%s %s" % (i, (got[i].get("answer") or "").strip().splitlines()[0][:40] if (got[i].get("answer") or "").strip() else "replied")
+                             for i in items) if ok else None
+    return answered
+
+
+def ship_mode(pid, bp):
+    """The ship's mode now (skipper-modes S1): plan.json, then the blueprint's `mode:` (a dry run before
+    the first apply wrote it), the repo's scope, `default` — helmlib.task_mode."""
+    return helmlib.task_mode(pid, None, str(repo_dir(bp)), bp_mode(pid, bp))[0]
+
+
+def bp_mode(pid, bp):
+    """The blueprint's `mode:` as this caller may record it (skipper-modes S3b): None when it would raise
+    the ship's mode and the caller is unattended — a blueprint is a file any run can write, and a raise
+    is a yes to merge. The refusal's words, for the apply's line, from bp_mode_refusal. None too once an
+    apply refused it (plan.json's `mode_refused`): a refusal stands until the owner runs `helm mode`."""
+    if (helmlib.load_plan(pid) or {}).get("mode_refused"):
+        return None
+    return None if bp_mode_refusal(pid, bp) else bp["meta"].get("mode")
+
+
+def bp_mode_refusal(pid, bp, once=False):
+    """The refusal's words when recording the blueprint's `mode:` would raise the ship's mode for this
+    caller, else None. `once` (the helm tick's `wharf apply --once --all`, from launchd with no
+    CLAUDE_UNATTENDED) counts as unattended: no person runs it (landing review 9)."""
+    m = bp["meta"].get("mode")
+    env = dict(os.environ, CLAUDE_UNATTENDED=os.environ.get("CLAUDE_UNATTENDED") or "wharf apply --once") if once else None
+    return m and helmlib.raise_refusal(helmlib.task_mode(pid, None, str(repo_dir(bp)))[0], m, env)
+
+
+def change_text(rec, d, sd):
+    if rec.get("digest") == d:
+        return "the digest accepted %s matches" % helmlib.iso(rec.get("accepted"))[:16]
+    added, changed, removed = blueprintlib.changes(rec.get("blocks"), sd)
+    parts = [("%s %s" % (w, ", ".join(x))) for w, x in (("added", added), ("changed", changed), ("removed", removed)) if x]
+    return "changed since accepted %s: %s" % (helmlib.iso(rec.get("accepted"))[:16], "; ".join(parts) or "the front matter or the preamble")
+
+
+def report(pid, task, status=None, progress=None, **extra):
+    """A `helm report` line, written as bin/helm's report writes it (one O_APPEND line)."""
+    ev = {"task": task, "session": None, "host": helmlib.host(), "harness": "wharf", "plan": pid}
+    for k, v in (("status", status), ("progress", progress)):
+        if v:
+            ev[k] = v
+    ev.update({k: v for k, v in extra.items() if v is not None})
+    try:
+        helmlib.append_event(pid, ev)
+    except (OSError, ValueError) as e:
+        print("wharf: report %s skipped (%s)" % (task, e), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------- Orca's reads
+
+def orca_reads(run, coordinator=None):
+    """({"run", "tasks", "gates", "workers"}, None) or (None, why): the four reads of Q2, through the
+    orca adapter's one CLI path (HARNESS_ORCA, ELECTRON_RUN_AS_NODE cleared). Reads only."""
+    o = orca()
+    if not o._app_up():
+        return None, "Orca is not running here (the app's runtime answers the CLI)"
+    out = {}
+    res, err = o._call(None, ["orchestration", "run-show", "--id", run])
+    if err:
+        return None, err
+    out["run"] = (res or {}).get("run") or res
+    coord = coordinator or (out["run"] or {}).get("coordinator_handle")
+    res, err = o._call(None, ["orchestration", "task-list", "--run", run] + (["--from", coord] if coord else []))
+    if err:
+        return None, err
+    out["tasks"] = (res or {}).get("tasks") or []
+    res, err = o._call(None, ["orchestration", "gate-list", "--run", run])
+    if err:
+        return None, err
+    out["gates"] = (res or {}).get("gates") or []
+    rows, cursor = [], None
+    for _ in range(20):
+        res, err = o._call(None, ["orchestration", "worker-list", "--run", run, "--limit", "100", "--include-remote"] + (["--cursor", cursor] if cursor else []))
+        if err:
+            return None, err
+        rows += (res or {}).get("workers") or []
+        page = (res or {}).get("page") or {}
+        cursor = page.get("nextCursor")
+        if not (page.get("hasMore") and cursor):
+            break
+    out["workers"] = rows
+    return out, None
+
+
+def plan_status(pid):
+    try:
+        return {t["id"]: t for t in helmlib.state(pid)["tasks"]}
+    except Exception:  # noqa: BLE001 — a state that will not merge reads as no reports yet
+        return {}
+
+
+# ---------------------------------------------------------------------------- check (B6's `plan chain`)
+
+def cmd_check(a):
+    bp = load_blueprint(a.file, a.plan)
+    here = helmlib.host()
+    d, sd = blueprintlib.digest(bp), blueprintlib.block_digests(bp)
+    if a.json and a.accept:
+        raise SystemExit("wharf check: --json prints the graph only; --accept separately")
+    if a.json:
+        print(json.dumps(blueprintlib.as_json(bp, here), indent=1, ensure_ascii=False, sort_keys=True))
+        return 0
+    for line in blueprintlib.graph_lines(bp, here):
+        say(line)
+    if not (a.accept or a.plan):
+        return 0
+    pid = plan_id(a.plan)
+    p = need(pid)
+    rec = (p.get("blueprints") or {}).get(bp["name"])
+    if not a.accept:
+        say("plan %s: %s" % (pid, change_text(rec, d, sd) if rec and rec.get("digest")
+                             else "no digest of %s recorded (wharf check --accept)" % bp["name"]))
+        return 0
+    held = lock(pid, bp["name"])
+    if held is None:
+        say("wharf check --accept: %s is being applied right now (its lock in %s): accept once it ends" % (bp["name"], helmlib.plan_dir(pid)))
+        return 4
+    try:
+        with helmlib.locked(pid):
+            p = need(pid)
+            rec = dict((p.get("blueprints") or {}).get(bp["name"]) or {})
+            if rec.get("pin") and rec.get("file") and os.path.realpath(a.file) != os.path.realpath(rec["file"]):
+                # accept() would point a pinned ship at this file, out of its pin (apply_ship's guard)
+                say("wharf check --accept: %s refused — it is pinned (%s): its blueprint is %s, and "
+                    "`wharf apply --yard` rejoins it" % (bp["name"], pin_label(rec["pin"]), rec["file"]))
+                return 2
+            before = change_text(rec, d, sd) if rec.get("digest") else None
+            accept(rec, a.file, d, sd)
+            p.setdefault("blueprints", {})[bp["name"]] = rec
+            helmlib.save_plan(p)
+    finally:
+        held.close()
+    say("accepted %s into plan %s: digest %s%s" % (bp["name"], pid, d[:12], (" (was: %s)" % before) if before else ""))
+    return 0
+
+
+def accept(rec, path, d, sd):
+    f = Path(path).resolve()
+    rec.update(file=str(f), digest=d, blocks=sd, accepted=helmlib.now(), by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    pin = rec.get("pin")
+    if pin:
+        # a pinned ship (wharf apply --yard): its file is the plan's copy, in no checkout; where it sits
+        # in its repo is the pin's, so blueprint_file() and doc_path() find the repo with no branch here
+        rec.update(main=str(repo_path(pin["repo"])), rel=pin["rel"], by=rec["by"] or (rec.get("laid_by") or {}).get("session"))
+        return
+    # where it sits in its repo: a file accepted from a worktree is found on the main checkout once
+    # the worktree is gone (its branch launched), as doc_path does
+    gd = _git(f.parent, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    prefix = _git(f.parent, "rev-parse", "--show-prefix")   # git's own spelling: no relative_to on a case-insensitive disk
+    if gd and prefix is not None:
+        rec.update(main=str(Path(gd).parent), rel=prefix + f.name)
+
+
+def blueprint_file(rec):
+    """The recorded blueprint, else the same path on the repo's main checkout, else None."""
+    if rec.get("file") and Path(rec["file"]).is_file():
+        return rec["file"]
+    if rec.get("main") and rec.get("rel"):
+        alt = Path(rec["main"]) / rec["rel"]
+        if alt.is_file():
+            return str(alt)
+    return None
+
+
+# ---------------------------------------------------------------------------- apply: the gates on a start
+
+def paired(name):
+    """True when Orca on this Mac holds a saved environment named NAME (`orca environment list`),
+    False when it holds none so named, None when Orca can't be asked. The S3 recipe pairs a host
+    under its repos.json name: `orca environment add --name <host> --pairing-code <link>`."""
+    o = orca()
+    res, err = o._call(None, ["environment", "list"])
+    if err:
+        return None
+    return any(isinstance(e, dict) and e.get("name") == name for e in (res or {}).get("environments") or [])
+
+
+def remote_refusal(s):
+    """Why a block on another host does not start, or None: an Orca block starts once Orca here holds
+    an environment paired under the host's name (Ship.start_orca: a house worktree there over ssh, then
+    `worker-start --on <host> --worktree path:<it>`, the start S3 proved on 2026-10-18)."""
+    h = s["host"]
+    doc = "docs/wharf-on-orca-2026-10-17.md S3"
+    if s.get("provider") == "claude-code":
+        return "host: %s — a claude-code block there starts by `dispatch --on %s`, not from apply yet (%s)" % (h, h, doc)
+    ok = paired(h)
+    if ok is None:
+        return "host: %s — Orca could not list its environments (orca environment list)" % h
+    if not ok:
+        return "host: %s — no Orca environment paired as %s (orca environment list; %s pairs one)" % (h, h, doc)
+    return None
+
+
+def start_refusal(bp, st, repo):
+    """Why this block may not start now, or None. A session start (orca, claude-code) is attended
+    and at depth 0 only (bin/harness's guard; the 10-15 doc's Q2: a ship is flat), on a repo whose
+    contract says `physical: none`, with a login whose week is not tight (bin/autofinish's
+    week_tight: `account pick --cached`). A shell block passes the first two: it starts no session."""
+    s = st["raw"]
+    if blueprintlib.remote_host(s, helmlib.host()):
+        why = remote_refusal(s)
+        if why:
+            return why
+    if s.get("physical") and s["physical"] != "none":
+        return "physical: %s — apply starts only physical: none" % s["physical"]
+    why = harness().physical_ok(str(repo))
+    if why:
+        return why
+    if s.get("provider") == "shell":
+        return None
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return "a session start is attended only (CLAUDE_UNATTENDED=%s): the tick starts it from launchd" % os.environ["CLAUDE_UNATTENDED"]
+    depth = os.environ.get("DISPATCH_DEPTH") or "0"
+    if depth not in ("", "0"):
+        return "a ship starts its blocks at depth 0 (DISPATCH_DEPTH=%s)" % depth
+    if s.get("provider") == "orca" and s.get("agent") == "codex" and harness().public_repo(str(repo)):
+        return "Codex does not run in %s: a public repo (contract E4)" % repo
+    if not os.environ.get("WHARF_NO_WEEK"):
+        try:
+            af = _cache.get("autofinish") or _mod("autofinish_bin", HERE / "autofinish")
+            _cache["autofinish"] = af
+            verdict, detail = af.week_tight(str(repo))
+        except Exception as e:  # noqa: BLE001
+            verdict, detail = "none", "the week could not be read (%s)" % type(e).__name__
+        if verdict:
+            return "the week says %s: %s" % (verdict, detail)
+    return None
+
+
+# Ship.worktree()'s recipe on another host, read by `sh -s -- <repo under ~/projects> <topic> <branch>
+# <plan/ship>` over ssh; prints the worktree's absolute path last. Exit 2 no clone, 3 not from local
+# main, 4 on another branch, 5 another ship's (the same refusals as here).
+REMOTE_WORKTREE = r'''set -u
+rel=$1 topic=$2 br=$3 mine=$4
+cd "$HOME/projects/$rel" 2>/dev/null || { echo "no clone at ~/projects/$rel" >&2; exit 2; }
+p="$PWD/.claude/worktrees/$topic"
+if [ -d "$p" ]; then
+  [ "$(git -C "$p" symbolic-ref --short -q HEAD)" = "$br" ] || { echo "$p is not on $br" >&2; exit 4; }
+  own="$(git -C "$p" rev-parse --absolute-git-dir)/wharf-ship"
+  if [ -f "$own" ]; then
+    [ "$(cat "$own")" = "$mine" ] || { echo "$p is ship $(cat "$own")'s worktree, not $mine's" >&2; exit 5; }
+  elif ! git -C "$p" merge-base --is-ancestor main HEAD; then
+    echo "$br does not fork from local main" >&2; exit 3
+  fi
+  echo "$p"; exit 0
+fi
+# the host's main moves only when a session starts there (sync.py): bring a clean one up to origin
+# first, as sync.py would. Every command reads /dev/null: the recipe itself is sh's stdin (review 2026-10-18)
+if [ "$(git symbolic-ref --short -q HEAD)" = main ] && [ -z "$(git status --porcelain </dev/null)" ]; then
+  git fetch -q origin main </dev/null && git merge --ff-only -q origin/main </dev/null || echo "main not brought up to origin; forking from local main" >&2
+fi
+if git show-ref --verify --quiet "refs/heads/$br"; then git worktree add -q "$p" "$br" </dev/null; else git worktree add -q "$p" -b "$br" main </dev/null; fi || exit 1
+if [ -e .env ] && [ ! -e "$p/.env" ]; then ln -s "$PWD/.env" "$p/.env"; fi
+git -C "$p" merge-base --is-ancestor main HEAD || { echo "$br does not fork from local main" >&2; exit 3; }
+printf '%s\n' "$mine" > "$(git -C "$p" rev-parse --absolute-git-dir)/wharf-ship"
+echo "$p"
+'''
+
+
+# ---------------------------------------------------------------------------- apply: one ship
+
+class Ship:
+    """One apply over one blueprint in one plan: the plan, its record of the ship, the ledger."""
+
+    def __init__(self, pid, bp, dry, launch=None):
+        self.pid, self.bp, self.dry = pid, bp, dry
+        self.launch = launch   # {"launches": N, "session": id or None}: --launch starts `launch: finish` blocks
+        self.p = need(pid)
+        self.rec = (self.p.get("blueprints") or {}).get(bp["name"]) or {}
+        self.repo_key, self.repo = ship_repo(bp, self.rec)
+        self.here = helmlib.host()
+        self.did = []   # what this apply did, one line each
+        self.checks = {}   # done_when `check:` results, read once per apply
+
+    def reload(self):
+        """plan.json read again (after the ship's lock: what an earlier reader saw may be stale)."""
+        self.p = need(self.pid)
+        self.rec = (self.p.get("blueprints") or {}).get(self.bp["name"]) or {}
+
+    def clash(self):
+        """A block id that is already another ship's plan task: plan task ids are one namespace per
+        plan, so a second ship's `build` would read the first one's ended `build` as its own."""
+        mine = self.bp["name"]
+        # a task with no ship is one made by hand (`helm task`) or by `helm compile`: its reports
+        # would read as the block's own (a `done` there completes the block's Task unstarted)
+        return ["%s (%s)" % (s["id"], ("ship %s" % t["ship"]) if t.get("ship") else "a plan task of no ship")
+                for s in self.bp["blocks"] for t in [(self.p.get("tasks") or {}).get(s["id"])]
+                if t is not None and t.get("ship") != mine]
+
+    def save(self):
+        """Only this ship's part written: under the plan's lock, plan.json is read again and this
+        ship's record and plan tasks replace theirs, so another writer's tasks, ships or space
+        survive an apply that runs for minutes (bin/helm, the tick, a second ship). `started` is the
+        ship's start (helm-vocabulary C5: the keel laid), set once by its first apply (apply_ship)."""
+        if self.dry:
+            return
+        with helmlib.locked(self.pid):
+            fresh = helmlib.load_plan(self.pid) or self.p
+            if self.p.get("started") and not fresh.get("started"):
+                fresh["started"] = self.p["started"]
+            if self.p.get("mode") and "mode" not in fresh:   # the blueprint's, once; `helm mode` since wins
+                fresh["mode"] = self.p["mode"]
+            fresh.setdefault("blueprints", {})[self.bp["name"]] = self.rec
+            ft = fresh.setdefault("tasks", {})
+            for sid, t in (self.p.get("tasks") or {}).items():
+                if sid in self.bp["by_id"] or t.get("ship") == self.bp["name"]:
+                    # the keys wharf writes (plan_fields' and its own), set or removed; the rest (an ETA, a
+                    # `helm task --owns` on a block that declares no owns) is whoever wrote it since this apply read the plan
+                    have, owned = ft.setdefault(sid, {}), self.owned_keys(sid)
+                    for k in owned:
+                        if k in t:
+                            have[k] = t[k]
+                        else:
+                            have.pop(k, None)
+                    for k in set(t) - owned:
+                        have.setdefault(k, t[k])
+            helmlib.save_plan(fresh)
+            self.p = fresh
+
+    WHARF_KEYS = {"orca_task", "orca_dispatches", "seeded_branch", "branch", "stopped", "wt_deferred"}
+
+    def owned_keys(self, sid):
+        st = self.bp["by_id"].get(sid)
+        if not st:
+            return set(self.WHARF_KEYS)
+        return set(blueprintlib.plan_fields(self.bp, st, self.here, self.repo_key)) | self.WHARF_KEYS
+
+    def task(self, sid):
+        return self.p.setdefault("tasks", {}).setdefault(sid, {})
+
+    # -- the request ledger: one line before each call, completed after it --------------------
+
+    def intent(self, op, block, **k):
+        e = dict(op=op, block=block, at=helmlib.now(), state="sent", **k)
+        self.rec.setdefault("ledger", []).append(e)
+        self.save()
+        crash = os.environ.get("WHARF_CRASH")   # tests: "<op>:<block>" dies after the call, before the record
+        return e, crash == "%s:%s" % (op, block)
+
+    def settle(self, e, crash, result=None, error=None):
+        if crash:
+            os._exit(9)
+        e["state"] = "failed" if error else "done"
+        if error:
+            e["error"] = str(error)[:300]
+        for k in ("id", "request"):
+            if result and result.get(k):
+                e[k] = result[k]
+        self.save()
+
+    def dangling(self):
+        """Ledger lines sent and never settled: a crash between a call and its record. Each is
+        marked once, and Orca's own state decides what follows (module docstring)."""
+        out = [e for e in self.rec.get("ledger") or [] if e.get("state") == "sent"]
+        for e in out:
+            e["state"] = "unknown"
+        if out:
+            self.save()
+        return out
+
+    def call(self, op, block, args, timeout=120):
+        """One Orca mutation through the adapter's CLI path, ledgered: (result, None) or (None, why)."""
+        e, crash = self.intent(op, block)
+        res, err = orca()._call(None, args, timeout=timeout)
+        o = orca()
+        self.settle(e, crash, {"id": o._first(res or {}, "task.id", "gate.id", "run.id", "dispatch.id", "id"),
+                               "request": o._first(res or {}, "mutation.requestId", "requestId")}, err)
+        return res, err
+
+    # -- the Run and its coordinator ------------------------------------------------------------
+
+    def objective(self):
+        return "%s/%s (wharf apply, plan %s)" % (self.bp["meta"]["repo"], self.bp["name"], self.pid)
+
+    def coordinator_alive(self, h):
+        res, err = orca()._call(None, ["terminal", "show", "--terminal", h], timeout=30)
+        if err and re.search(r"\((?:terminal|terminal_tab|session_tab)_not_found\)", str(err)):   # orca._call's "(<code>)"
+            return False
+        if err:   # a timeout or a busy runtime is not a dead coordinator: a new one would orphan it
+            raise Refused("terminal show %s: %s" % (h, str(err)[:200]), 3)
+        # a closed terminal still answers `terminal show` (1.4.227, live 2026-10-17): `connected:
+        # false` and an `exitCause` ({"kind": "operator_close"}) say it is gone
+        term = orca()._first(res or {}, "terminal") or {}
+        return term.get("connected") is not False and not term.get("exitCause")
+
+    def new_coordinator(self):
+        """A shell in the repo's main checkout, the Run's home terminal (P2: a path selector works
+        for any worktree Orca knows; the repo is registered — `orca repo add` once, below)."""
+        try:
+            orca()._repo_id(harness().Ctx(), str(self.repo))   # `repo add` when Orca does not know it: a live write, said
+        except harness().Failed as e:
+            raise Refused("Orca does not know %s and would not add it: %s" % (self.repo, e), 1)
+        res, err = self.call("terminal-create", None, ["terminal", "create", "--worktree", "path:%s" % self.repo,
+                                                       "--title", "wharf %s" % self.bp["name"]], timeout=60)
+        h = orca()._first(res or {}, "terminal.handle", "handle")
+        if err or not h:
+            raise Refused("Orca opened no coordinator terminal in %s: %s" % (self.repo, err or json.dumps(res)[:200]), 1)
+        return h
+
+    def ensure_run(self):
+        """(run id, coordinator): recorded ones, a dead coordinator replaced (`run-use`), a Run
+        whose creation's answer was lost found by its objective (`run-list`), else run-create."""
+        run, coord = self.rec.get("orca_run"), self.rec.get("coordinator")
+        if run:
+            if coord and self.coordinator_alive(coord):
+                return run, coord
+            coord = self.new_coordinator()
+            _, err = self.call("run-use", None, ["orchestration", "run-use", "--id", run, "--from", coord])
+            if err:
+                orca()._call(None, ["terminal", "close", "--terminal", coord, "--tab"], timeout=60)   # no tab left per refused pass
+                raise Refused("run-use %s from a new coordinator: %s" % (run, err), 1)
+            self.rec["coordinator"] = coord
+            self.save()
+            self.did.append("coordinator %s took Run %s (the last one is gone)" % (coord, run))
+            return run, coord
+        # a failed run-create counts too: Orca's own CLI says an unknown-outcome error "may already
+        # have taken effect", and our timeout reads as failed; the objective names this plan, so a hit is ours
+        lost = [e for e in self.rec.get("ledger") or [] if e.get("op") == "run-create" and e.get("state") in ("unknown", "failed")]
+        if lost:
+            hit, cursor = [], None
+            for _ in range(20):
+                res, err = orca()._call(None, ["orchestration", "run-list", "--limit", "100"] + (["--cursor", cursor] if cursor else []))
+                if err:
+                    break
+                hit += [r for r in (res or {}).get("runs") or [] if r.get("objective") == self.objective()]
+                # Orca 1.4.230 answers `nextCursor` at the top level; the `page` object is read for older ones
+                page = (res or {}).get("page") or {}
+                cursor = (res or {}).get("nextCursor") or (page.get("nextCursor") if page.get("hasMore") else None)
+                if hit or not cursor:
+                    break
+            if hit:
+                self.rec.update(orca_run=hit[0].get("id"), coordinator=hit[0].get("coordinator_handle") or coord)
+                self.save()
+                self.did.append("Run %s found by its objective (its creation's answer was lost)" % self.rec["orca_run"])
+                return self.ensure_run()
+        coord = coord if coord and self.coordinator_alive(coord) else self.new_coordinator()
+        self.rec["coordinator"] = coord
+        self.save()
+        res, err = self.call("run-create", None, ["orchestration", "run-create", "--objective", self.objective(), "--from", coord])
+        run = orca()._first(res or {}, "run.id", "id", "runId")
+        if err or not run:
+            raise Refused("run-create: %s" % (err or json.dumps(res)[:200]), 1)
+        self.rec.update(orca_run=run, coordinator=coord, created_run=helmlib.now())
+        self.save()
+        self.did.append("Run %s created, coordinator %s" % (run, coord))
+        return run, coord
+
+    # -- the worktree, our way ------------------------------------------------------------------
+
+    def worktree(self, st):
+        """(path, branch) of a block's worktree: `.claude/worktrees/<topic>` on its branch from local
+        main, the .env linked (rules/git-workflow.md's recipe; B6a's pick A). Made once; a second
+        apply finds it."""
+        br = blueprintlib.branch_of(self.bp, st, self.here)
+        topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", br.rsplit("/", 1)[-1])
+        path = self.repo / ".claude" / "worktrees" / topic
+        mine = "%s/%s" % (self.pid, self.bp["name"])
+        if path.is_dir():
+            got = _git(path, "symbolic-ref", "--short", "-q", "HEAD")
+            if got != br:
+                raise Refused("%s is on %s, not %s" % (path, got, br), 2)
+            gd = _git(path, "rev-parse", "--absolute-git-dir")
+            owner = (Path(gd) / "wharf-ship") if gd else None
+            had = owner.read_text().strip() if owner and owner.is_file() else None
+            if had and had != mine:
+                raise Refused("%s is ship %s's worktree, not %s's (a block id two ships share)" % (path, had, mine), 2)
+            # R1 here too: a worktree an earlier apply left after refusing it is still refused
+            if not had and subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", "main", "HEAD"],
+                                          capture_output=True).returncode:
+                raise Refused("%s does not fork from local main" % br, 2)
+            return path, br
+        argv = ["worktree", "add", str(path), br] if _git(self.repo, "show-ref", "--verify", "--quiet", "refs/heads/" + br) is not None \
+            else ["worktree", "add", str(path), "-b", br, "main"]
+        try:
+            r = subprocess.run(["git", "-C", str(self.repo)] + argv, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            r = None
+        if r is None or r.returncode:
+            raise Refused("git worktree add %s: %s" % (path, (r.stderr or "").strip()[-200:] if r else "timed out"), 1)
+        if (self.repo / ".env").exists() and not os.path.lexists(str(path / ".env")):
+            os.symlink(str(self.repo / ".env"), str(path / ".env"))
+        # R1: the tip is on local main (a reused branch must not carry another base)
+        if subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", "main", "HEAD"], capture_output=True).returncode:
+            raise Refused("%s does not fork from local main" % br, 2)
+        gd = _git(path, "rev-parse", "--absolute-git-dir")
+        if gd:
+            (Path(gd) / "wharf-ship").write_text(mine + "\n")   # whose it is: one ship per worktree
+        return path, br
+
+    def remote_worktree(self, st, host):
+        """(path on HOST, branch) of an Orca block's worktree there: worktree()'s recipe and checks, run
+        over ssh in the host's clone (~/projects/<this repo's path under ~/projects>), the path read
+        back from the host for the exact `path:` selector — Orca refuses `current` and `new-child`
+        remotely. The ssh alias is bin/harness's PEERS; WHARF_SSH stands in for ssh (tests)."""
+        peer = harness().peers().get(host)   # PEERS plus HARNESS_PEER_<HOST>, never this machine
+        if not peer:
+            raise Refused("host %s has no ssh alias (bin/harness PEERS or HARNESS_PEER_%s)" % (host, host.upper()), 2)
+        br = blueprintlib.branch_of(self.bp, st, self.here)
+        topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", br.rsplit("/", 1)[-1])
+        try:
+            rel = self.repo.resolve().relative_to((Path.home() / "projects").resolve())
+        except ValueError:
+            raise Refused("%s is not under ~/projects: no clone of it on %s to name" % (self.repo, host), 2)
+        args = " ".join(shlex.quote(x) for x in (str(rel), topic, br, "%s/%s" % (self.pid, self.bp["name"])))
+        try:
+            r = subprocess.run([os.environ.get("WHARF_SSH") or "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                                peer, "sh -s -- " + args], input=REMOTE_WORKTREE, capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise Refused("the worktree on %s: %s" % (host, e), 1)
+        lines = (r.stdout or "").strip().splitlines()
+        if r.returncode or not lines or not lines[-1].startswith("/"):
+            # 2 no clone, 3 not from local main, 4 another branch, 5 another ship's: the recipe's refusals
+            raise Refused("the worktree on %s: %s" % (host, ((r.stderr or "").strip() or "exit %d" % r.returncode)[-200:]),
+                          2 if r.returncode in (2, 3, 4, 5) else 1)
+        return lines[-1], br
+
+    def branch(self, st):
+        """A block's branch: the one pickup seed made (read back), else the blueprint's."""
+        return (self.p.get("tasks") or {}).get(st["id"], {}).get("seeded_branch") or blueprintlib.branch_of(self.bp, st, self.here)
+
+    def wt_of(self, sid):
+        st = self.bp["by_id"].get(sid)
+        br = self.branch(st) if st else None
+        if not br or blueprintlib.remote_host(st["raw"], self.here):   # a remote block's worktree is on its host
+            return None
+        return self.repo / ".claude" / "worktrees" / re.sub(r"^\d{4}-\d{2}-\d{2}-", "", br.rsplit("/", 1)[-1])
+
+    # -- the starts, one per provider -----------------------------------------------------------
+
+    def started(self, sid, task=None):
+        """The ledger line of a shell or claude-code block this ship already started, or None: Orca
+        keeps its Task `ready`, so the ledger is the word (an Orca block's start is Orca's own Dispatch).
+        A shell line counts for its own Task only: a re-specced block's new Task runs its command. A
+        seed counts for the block (its branch exists whatever the Task); one cut off mid-call
+        (`unknown`) counts only when its branch is there to prove it."""
+        hit = []
+        for e in self.rec.get("ledger") or []:
+            if e.get("block") != sid or e.get("state") not in ("done", "unknown"):
+                continue
+            if e.get("op") == "shell" and (task is None or e.get("task") in (None, task)):
+                hit.append(e)
+            elif e.get("op") == "seed" and (e["state"] == "done" or self.seed_branch_found(sid, e)):
+                hit.append(e)
+        return hit[-1] if hit else None
+
+    def seed_branch_found(self, sid, e):
+        """An `unknown` seed's branch, read back (`claude/<host>/<date>-<sid>`): recorded on the line
+        and the task when found, else the line is marked failed (nothing was made)."""
+        if e.get("id"):
+            return True
+        refs = _git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/claude/") or ""
+        # pickup seed's own name: claude/<this host>/<a date from the line's day on>-<sid>
+        day = time.strftime("%Y-%m-%d", time.localtime(e.get("at") or 0))
+        hits = [r for r in refs.splitlines() if re.match(r"claude/%s/(\d{4}-\d{2}-\d{2})-%s$" % (re.escape(self.here), re.escape(sid)), r)
+                and re.match(r"claude/[^/]+/(\S{10})", r).group(1) >= day]
+        if not hits:
+            if not self.dry:
+                e["state"], e["error"] = "failed", "cut off before it said; no branch for %s" % sid
+                self.save()
+            return False
+        if not self.dry:
+            e["id"] = hits[-1]
+            self.task(sid)["seeded_branch"] = self.task(sid)["branch"] = hits[-1]
+            self.save()
+        return True
+
+    def spent(self, st):
+        """Why a block's starts are used up, or None. Asked before the tick counts a start. A start
+        that ran (a Dispatch made, a seed made) counts against the first and the block's retries
+        (0–2); one that failed before anything ran counts against two more, so a passing hiccup is
+        tried again and a start that always fails still stops. Per Orca Task for a worker: a
+        re-specced block starts afresh."""
+        s, sid = st["raw"], st["id"]
+        op = {"orca": "worker-start", "claude-code": "seed"}.get(s["provider"])
+        if not op:
+            return None
+        cur = ((self.p.get("tasks") or {}).get(sid) or {}).get("orca_task")
+        mine = [e for e in self.rec.get("ledger") or [] if e.get("block") == sid and e.get("op") == op
+                and (op == "seed" or e.get("task") in (None, cur))]
+        ran = [e for e in mine if e.get("state") != "failed"]
+        failed = [e for e in mine if e.get("state") == "failed"]
+        allowed = 1 + int(s.get("retries") or 0)
+        if len(ran) < allowed and len(failed) < allowed + 2:
+            return None
+        why = ("started %d times already" % len(ran)) if len(ran) >= allowed else ("%d starts failed before anything ran" % len(failed))
+        if not self.dry and (plan_status(self.pid).get(sid) or {}).get("status") != "failed":
+            report(self.pid, sid, "failed", "%s: %s (retries %d), not started again" % (op, why, allowed - 1))
+        return "not started: %s (retries %d)" % (why, allowed - 1)
+
+    def start(self, st, task, run, coord):
+        s, sid = st["raw"], st["id"]
+        e = self.started(sid, task) if s["provider"] != "orca" else None
+        if e and s["provider"] == "shell":
+            # the command ran (or was cut off) and Orca still says `ready`: its end never reached the
+            # Task — send it again from this pass's coordinator, never the command
+            if self.dry:
+                return "started already (the ledger): would send its end to Orca again"
+            rc = e.get("id") if e.get("state") == "done" else None
+            status = "completed" if rc == "0" else "failed"
+            text = ("exit %s (sent again)" % rc) if rc is not None else "interrupted: the command's result was never recorded"
+            _, err = self.call("task-update", sid, ["orchestration", "task-update", "--id", task, "--status", status,
+                                                    "--result", text, "--run", run, "--from", coord])
+            if err:
+                return "started already (the ledger): its end not taken again — %s" % err
+            return "sent its end again (the ledger: it ran once): %s" % status
+        if e:
+            return "started already (the ledger): its end completes the Task"
+        built = self.built_before_retry(st, task)
+        if built:
+            return built
+        spent = self.spent(st)
+        if spent:
+            return spent
+        why = start_refusal(self.bp, st, self.repo)
+        if why:
+            return "refused: %s" % why
+        braked = None if blueprintlib.remote_host(s, self.here) else brake_refusal()
+        if braked:
+            # constant text: a standing refusal is said once (say_once), classed `refuse` and never
+            # escalated (the brake is the owner's own, on purpose). A block on another host is not
+            # held: the brake read here is this Mac's, and the other Mac's is not read yet
+            return "braked: a start waits for the studio brake"
+        need_s = (int(s.get("timeout_seconds") or SHELL_TIMEOUT) if s["provider"] == "shell" else SESSION_START)
+        if blueprintlib.remote_host(s, self.here):
+            need_s += 90   # remote_worktree's ssh, before the start
+        left = time_left()
+        if left is not None and left < need_s + 30:
+            # no count of seconds left in the line: it changes every tick, and the tick says a
+            # standing refusal once (.said)
+            return "refused: it needs %ds, more than is left before the tick's kill time (the next attended apply or tick)" % need_s
+        if s["provider"] != "shell" and _cache.get("tick") is not None:
+            if _cache["tick"] >= TICK_STARTS:
+                return "refused: %d session starts this tick already (TICK_STARTS)" % TICK_STARTS
+        if s["provider"] == "shell" and s.get("launch") == "finish":
+            return self.start_shell(st, task, run, coord)   # it runs no command: a launch, or the skipper's (dry inside)
+        if self.dry:
+            return "would start (%s)" % s["provider"]
+        if s["provider"] != "shell" and _cache.get("tick") is not None:
+            _cache["tick"] += 1
+        if s["provider"] == "shell":
+            return self.start_shell(st, task, run, coord)
+        if s["provider"] == "orca":
+            return self.start_orca(st, task, run, coord)
+        return self.start_claude_code(st, task, run, coord)
+
+    def worktree_known(self, st, path):
+        """False once, when Orca's own registry does not list the worktree git just made: the first
+        S1 probe (2026-10-21) got `selector_not_found` seconds after `git worktree add`, and a start
+        that fails before anything ran counts against the block (spent()). Orca owns that registry
+        (no `worktree add` of ours), so the start waits one pass; a second pass that still finds it
+        absent starts anyway, and a real failure then counts as it always did. A list that cannot be
+        read, or is cut off before the path, never holds a start back."""
+        t = self.task(st["id"])
+        res, err = orca()._call(None, ["worktree", "list", "--repo", "path:%s" % self.repo, "--limit", "1000"], timeout=60)
+        rows = (res or {}).get("worktrees")
+        if err or not isinstance(rows, list) or (res or {}).get("truncated"):
+            return True
+        want = os.path.realpath(str(path))
+        if any(os.path.realpath(str(r.get("path") or "")) == want for r in rows if isinstance(r, dict)):
+            if t.pop("wt_deferred", None):
+                self.save()   # owned (WHARF_KEYS), so save() drops it: the block's next new worktree waits again
+            return True
+        if t.get("wt_deferred"):
+            return True
+        t["wt_deferred"] = helmlib.now()
+        self.save()
+        return False
+
+    def ensure_trusted(self, env):
+        """The picked login must have trusted this repo before its claude starts: an interactive
+        session in an untrusted folder stops at the trust dialog for a person, which no one is there
+        to answer on the yard (S1 probe: four starts of 90 s each, all at the picked login's dialog). Dispatch
+        has done the same since 2026-10-13 (`ensure_trusted`, bin/dispatch): `dispatch-rc trusted` asks,
+        lighthouse's `trust-projects` writes what the dialog would for the login's config dir, and it is
+        read back once. Still untrusted is a failed start, never a try at the dialog itself."""
+        d = (env or {}).get("CLAUDE_CONFIG_DIR") or ""
+
+        def trusted():
+            try:
+                return subprocess.run([sys.executable, str(HERE / "dispatch-rc"), "trusted", str(self.repo), "--config-dir", d],
+                                      capture_output=True, timeout=60).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                return False   # unread is untrusted: a Refused below, settled as a failed start, never a stray exception
+        if trusted():
+            return
+        found = common.tool("trust-projects")   # lighthouse's, found through the core
+        tp = shlex.split(os.environ.get("WHARF_TRUST") or "") or ([sys.executable, str(found)] if found else [])   # WHARF_TRUST: tests
+        if not tp:
+            raise Refused("untrusted: %s is not trusted by %s and trust-projects is not installed" % (self.repo, d or "the default login"), 1)
+        tenv = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        if d:
+            tenv["CLAUDE_CONFIG_DIR"] = d
+        try:
+            subprocess.run(tp, env=tenv, capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if not trusted():
+            raise Refused("untrusted after trust-projects (%s)" % (d or "the default login"), 1)
+
+    def start_orca(self, st, task, run, coord):
+        s, sid = st["raw"], st["id"]
+        h, o = harness(), orca()
+        # Orca puts a Task whose worker exited back to `ready`: a start is counted, never looped —
+        # the first one and the block's own retries (0–2), then the plan says failed (spent())
+        ctx = h.Ctx()
+        req = {"agent": s.get("agent") or "claude", "model": s.get("model"), "effort": s.get("effort"),
+               "account": "auto", "ship": self.bp["name"], "repo": str(self.repo)}
+        # on another host the worker runs on the login that host's Orca holds: a pick here would name
+        # a login dir of this Mac, and Orca has no login per worker (orca.start(on=))
+        on = blueprintlib.remote_host(s, self.here)
+        try:
+            login = o._login(ctx, req, req["agent"]) if req["agent"] == "claude" and not on else (None, {})
+            path, br = self.remote_worktree(st, on) if on else self.worktree(st)
+            if not on and not self.worktree_known(st, path):
+                if _cache.get("tick"):
+                    _cache["tick"] -= 1   # nothing started: the tick's slot goes back (start() took it)
+                return "not started: worktree not yet known to Orca (retried next pass)"
+            e, crash = self.intent("worker-start", sid, task=task)
+            try:
+                if req["agent"] == "claude" and not on:
+                    self.ensure_trusted(login[1])   # a refusal is a failed start, counted: it is settled below
+                did, res, own = o.start(ctx, req, "path:%s" % path, run, coord, login, task=task,
+                                        term_title=br.rsplit("/", 1)[-1], on=on)
+            except (h.Failed, Refused) as x:
+                # raised before Orca made a Dispatch (a login terminal, the agent's wait): settled,
+                # so the next apply reads no crash; still a try (a start that keeps failing stops)
+                self.settle(e, crash, None, str(x))
+                raise
+            self.settle(e, crash, {"id": did}, None if did else res)
+        except (h.Failed, Refused) as x:
+            return "not started: %s" % x
+        if not did:
+            return "not started: %s" % res
+        t = self.task(sid)
+        t.setdefault("orca_dispatches", [])
+        if did not in t["orca_dispatches"]:
+            t["orca_dispatches"].append(did)
+        self.save()
+        where = " on " + on if on else ""
+        report(self.pid, sid, "running", "Orca dispatch %s in %s%s" % (did, path, where), branch=br)
+        return "started dispatch %s on %s%s (login %s)" % (did, br, where, login[0] or ("%s's Orca's own" % on if on else "Orca's own"))
+
+    def start_claude_code(self, st, task, run, coord):
+        """The section as a seeded brief on the block's branch, started by dispatch (bin/pickup seed,
+        which commits docs/handoff/<date>-<topic>.md and starts it); Orca's Task mirrors it."""
+        s, sid = st["raw"], st["id"]
+        brief = Path(self.p.get("dir") or helmlib.plan_dir(self.pid)) / ("brief-%s.md" % sid)
+        brief.write_text("# %s — block of ship %s\n%s\n" % (sid, self.bp["name"], blueprintlib.spec_of(self.bp, st)))
+        argv = [str(HERE / "pickup"), "seed", sid, "--file", str(brief), "--repo", str(self.repo), "--no-blueprint"]   # the block is this ship's: no one-block ship of its own (S5)
+        if s.get("account"):
+            argv += ["--account", s["account"]]
+        e, crash = self.intent("seed", sid)
+        # DISPATCH_SHIP (and DISPATCH_PLAN until rename S8): the seeded session reports to this ship,
+        # wherever wharf runs (launchd has no session id)
+        # (no DISPATCH_TASK: a caller that is itself a block must not make this start read as that block's
+        # own `--next`, which `wharf next` would swallow)
+        env = {k: v for k, v in os.environ.items() if k != "DISPATCH_TASK"}
+        env.update(helmlib.env_pairs("ship", self.pid))
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=SESSION_START, env=env)
+            rc, out = r.returncode, (r.stdout or "")
+            tail = ((r.stderr or "") + out).strip()[-300:]
+        except subprocess.TimeoutExpired as x:
+            # what it printed before the kill still names the branch it made
+            out = x.stdout.decode(errors="replace") if isinstance(x.stdout, bytes) else (x.stdout or "")
+            rc, tail = 124, "pickup seed timed out after %ds" % SESSION_START
+        m = re.search(r"seeded (claude/\S+)", out)
+        # a seed is made once: a failed one that made its branch is not seeded again (the topic is open)
+        self.settle(e, crash, {"id": m.group(1) if m else None}, None if (rc == 0 or m) else tail)
+        if m:
+            self.task(sid)["seeded_branch"] = m.group(1)
+            self.task(sid)["branch"] = m.group(1)
+            self.save()
+        if rc and not m:
+            return "not started: pickup seed: %s" % tail[-200:]
+        # seed prints its start lines and exits 0 where it starts nothing (launch_seed's other kinds)
+        hand = [x.strip() for x in out.splitlines() if x.strip().startswith(("start it", "nothing started"))
+                or "press Enter there" in x or "dispatch refused it" in x]
+        if rc or hand:
+            report(self.pid, sid, "waiting", "seeded %s, not started: %s" % (m.group(1) if m else sid, (hand or [tail])[0][:200]))
+            return "raised: seeded %s, not started — %s" % (m.group(1) if m else sid, (hand or [tail])[0][:160])
+        # Orca's Task stays `ready`: `dispatched` needs an Orca Dispatch (task_not_startable). The
+        # settled seed line says it started (started()); the plan's end completes the Task.
+        report(self.pid, sid, "running", "dispatched as %s" % (m.group(1) if m else sid))
+        return "seeded and dispatched %s" % (m.group(1) if m else sid)
+
+    def start_shell(self, st, task, run, coord):
+        """The command in the repo's main checkout, `<wt>` the worktree of the block's one
+        predecessor with a branch; the Task `dispatched` first, so a crash mid-command is never
+        run again blindly (dangling(): it fails the Task instead)."""
+        s, sid = st["raw"], st["id"]
+        if s.get("launch") == "finish":
+            if self.launch is not None:
+                return self.start_launch(st, task)
+            said = "launch: finish — %s's /finish launches it (a gate file is in it)" % (skipper(self.bp, self.pid) or "the skipper")
+            if not self.dry and (plan_status(self.pid).get(sid) or {}).get("progress") != said:
+                report(self.pid, sid, "waiting", said)
+            return "raised: launch: finish is the skipper's (%s)" % (skipper(self.bp, self.pid) or "none named")
+        cmd = s["command"]
+        if "<wt>" in cmd:
+            wts = [w for w in (self.wt_of(d) for d in st["deps"]) if w]
+            if len(wts) != 1:
+                return "not started: <wt> needs exactly one predecessor with a worktree (has %d)" % len(wts)
+            cmd = cmd.replace("<wt>", shlex.quote(str(wts[0])))
+        # no `dispatched` first: Orca refuses it without an active Dispatch (task_not_startable, live
+        # 2026-10-17), so the ledger's line is what keeps a crashed command from running again
+        e, crash = self.intent("shell", sid, task=task)
+        try:
+            r = subprocess.run(["sh", "-c", cmd], cwd=str(self.repo), capture_output=True, text=True,
+                               timeout=int(s.get("timeout_seconds") or SHELL_TIMEOUT))
+            rc, tail = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()[-400:]
+        except subprocess.TimeoutExpired:
+            rc, tail = 124, "timed out after %ss" % (s.get("timeout_seconds") or SHELL_TIMEOUT)
+        self.settle(e, crash, {"id": str(rc)})
+        status = "completed" if rc == 0 else "failed"
+        _, err = self.call("task-update", sid, ["orchestration", "task-update", "--id", task, "--status", status,
+                                                "--result", "exit %d: %s" % (rc, tail or "no output"), "--run", run, "--from", coord])
+        report(self.pid, sid, None if rc == 0 else "failed", "shell exit %d%s" % (rc, (": " + tail.splitlines()[-1][:120]) if tail else ""))
+        return "ran `%s`: exit %d%s" % (cmd, rc, (" (task-update: %s)" % err) if err else "")
+
+    # -- a settled builder ----------------------------------------------------------------------
+
+    def built_before_retry(self, st, task):
+        """An Orca block Orca put back to `ready` after its worker ended (an exit, a stop): its
+        done_when read before a retry. When it holds in the block's worktree the work is done — the
+        plan says done, the builder is released, nothing starts (rename S3, 2026-10-19: built and
+        committed, a retry would have built it again). None when it does not hold, or there was no
+        start to retry, or the block names no done_when: today's retry stands."""
+        s, sid = st["raw"], st["id"]
+        if s.get("provider") != "orca" or not s.get("done_when"):
+            return None
+        ran = [e for e in self.rec.get("ledger") or [] if e.get("block") == sid and e.get("op") == "worker-start"
+               and e.get("state") != "failed" and e.get("task") in (None, task)]
+        if not ran:
+            return None
+        ok, what = self.done_when(st)
+        if not ok:
+            return None
+        did = ((self.p.get("tasks") or {}).get(sid) or {}).get("orca_dispatches") or [ran[-1].get("id")]
+        if self.dry:
+            return "built: %s holds — would end it, not start it again" % what
+        report(self.pid, sid, "done", "built; the worker ended with no report (dispatch %s): %s" % (did[-1], what))
+        self.did += ["%s: %s" % (sid, x) for x in self.release_builder(st)]
+        return "built: %s holds — ended, not started again" % what
+
+    def release_builder(self, st):
+        """A block the yard has ended: its worktree's lock marked handed over (owner.json's
+        `handover`, the field `pickup next` writes: the next writer takes it), and Orca asked to stop
+        the worker. Every session runs the Session-tab waiter, so a finished builder reads `shell`
+        and its lock would refuse the launch's /finish (bin/autofinish-run's lock_refusal);
+        `worker-stop` answers `processAction: none` for these terminals (2026-10-19), so the handover
+        is what frees the launch. A lock a launch holds is left alone. Lines of what was done."""
+        if self.dry or st["raw"].get("provider") != "orca":
+            return []
+        out, sid = [], st["id"]
+        wt = self.wt_of(sid)
+        gd = _git(wt, "rev-parse", "--absolute-git-dir") if wt and wt.is_dir() else None
+        if gd:
+            state = Path(gd) / "claude"
+            lock = core().read_owner(state)
+            launch_state = read_json(state / "autofinish.json") or {}
+            if lock and lock.get("session") and not lock.get("handover") and \
+                    not (launch_state.get("session") == lock["session"] and not launch_state.get("ended")):
+                try:
+                    core().write_owner(state, lock["session"], lock.get("branch") or self.branch(st), handover=time.time())
+                    out.append("lock handed over (session %s)" % str(lock["session"])[:8])
+                except OSError as e:
+                    out.append("lock not handed over: %s" % e)
+        t = self.task(sid)
+        for did in (t.get("orca_dispatches") or [])[-1:]:
+            if did in (t.get("stopped") or []):
+                continue
+            res, err = self.call("worker-stop", sid, ["orchestration", "worker-stop", "--dispatch", did], timeout=60)
+            if not err:   # a failed ask is asked again at the next pass
+                t.setdefault("stopped", []).append(did)
+                self.save()
+            act = orca()._first(res or {}, "processAction", "stop.processAction", "worker.processAction")
+            out.append("worker-stop %s: %s" % (did, err or ("processAction %s" % act if act else "asked")))
+        return out
+
+    # -- the launch (--launch) -------------------------------------------------------------------
+
+    def launch_wt(self, st):
+        """The worktree a `launch: finish` block launches: its own branch's, else its one predecessor's."""
+        wt = self.wt_of(st["id"]) if st["raw"].get("branch") else None
+        if wt and wt.is_dir():
+            return wt
+        wts = [w for w in (self.wt_of(d) for d in st["deps"]) if w and w.is_dir()]
+        return wts[0] if len(wts) == 1 else None
+
+    def pr_state(self, br):
+        """(merged?, PR number or None) of a branch, from GitHub (`gh pr view`); (None, why) when not asked."""
+        if os.environ.get("PLAN_NO_GH"):
+            return None, "GitHub not asked (PLAN_NO_GH)"
+        if self.dry:
+            return None, "GitHub not asked in a dry run"
+        try:
+            r = subprocess.run(["gh", "pr", "view", br, "--json", "state,number"], cwd=str(self.repo),
+                               capture_output=True, text=True, timeout=60)
+            d = json.loads(r.stdout or "{}")
+        except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+            return None, "gh %s" % type(e).__name__
+        return d.get("state") == "MERGED", d.get("number")
+
+    def launches_running(self):
+        """Launches under way in this repo now, from each worktree's `claude/autofinish.json`: started,
+        not ended, and its waiter alive (`autofinish-waiter.json`) or started under 10 min ago (its
+        child may not have written the waiter yet). A dead runner's state is not counted."""
+        gd = _git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if not gd:
+            return 0
+        return sum(1 for f in [Path(gd) / "claude"] + sorted(Path(gd).glob("worktrees/*/claude"))
+                   if not (read_json(f / "autofinish.json") or {"ended": True}).get("ended") and launch_live(f))
+
+    def runs_busy(self, wt):
+        """(runs busy on this Mac, dispatch's cap) as dispatch counts them before a start
+        (`dispatch-rc live --no-reap`: read only; warm and waiting runs not counted), or (None, cap)
+        when it cannot be read — then the start goes ahead and dispatch's own refusal decides. A
+        launch refused there ends `never-started` at gate `refused` and is started again here."""
+        most = int(os.environ.get("DISPATCH_MAX_RUNS") or (10 if self.here == dispatch_host() else 3))   # bin/dispatch's max_runs; test_dispatch.sh checks the copy
+        topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", Path(wt).name)
+        try:
+            r = subprocess.run([os.environ.get("WHARF_DISPATCH_RC") or str(HERE / "dispatch-rc"), "live", "--no-reap",
+                                str(self.repo), topic], capture_output=True, text=True, timeout=60)
+            return int(r.stdout.strip()), most
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return None, most
+
+    def start_launch(self, st, task):
+        """--launch: a `launch: finish` block whose predecessor ended is launched by `bin/autofinish-run
+        <wt> --session <the skipper's>` (a fresh /finish --unattended, every gate run), once the
+        worktree's lock is free or handed over and fewer than --launches run in the repo. Its PR
+        merged: reported `launched` by wharf itself. A launch that stopped on this tip: reported
+        `waiting` with its gate, once — autofinish-run never retries a tip, and neither does this."""
+        s, sid = st["raw"], st["id"]
+        # the branch first, the worktree after: a launched branch's worktree may be gone already
+        brs = [s["branch"]] if s.get("branch") else [b for b in (self.branch(self.bp["by_id"][d]) for d in st["deps"]) if b]
+        merged, pr = self.pr_state(brs[0]) if len(brs) == 1 else (None, None)
+        if merged:
+            if not self.dry:
+                report(self.pid, sid, "launched", "launched via #%s" % pr if pr else "its PR merged")
+            return "launched: %s merged%s" % (brs[0], " (#%s)" % pr if pr else "")
+        wt = self.launch_wt(st)
+        if wt is None:
+            return "not started: launch: finish needs its branch's worktree, or one predecessor's, on this Mac"
+        br = _git(wt, "symbolic-ref", "--short", "-q", "HEAD") or brs[0]
+        gd = _git(wt, "rev-parse", "--absolute-git-dir")
+        state = Path(gd) / "claude" if gd else None
+        tip = _git(wt, "rev-parse", "HEAD")
+        af = read_json(state / "autofinish.json") if state else None
+        last = (plan_status(self.pid).get(sid) or {}).get("progress")
+        if af and not af.get("ended") and launch_live(state):
+            # whatever the tip: /finish rewrites the branch as it goes
+            return "raised: its launch runs (session %s, started %s)" % (str(af.get("session"))[:8], af.get("started"))
+        if af and af.get("ended") and af.get("outcome") in core().LAUNCHED_OUTCOMES:
+            return "raised: its /finish launched it%s; GitHub does not say merged yet (%s)" % (
+                " (#%s)" % af["pr"] if af.get("pr") else "", pr or "asked")
+        # refused before any session (dispatch's run cap: gate `refused`, `not-launched` before
+        # 2026-10-17), or died: queued, never stopped — autofinish-run starts those again on the
+        # same tip (its refusal()), and only those (review, 2026-10-19)
+        refused = bool(af and af.get("ended") and (af.get("gate") in core().REFUSED_GATES or af.get("outcome") == "died"))
+        if af and af.get("ended") and af.get("tip") == tip and not refused:
+            said = "launch stopped: %s%s on %s — the skipper's" % (af.get("outcome") or "no outcome",
+                                                                   " at gate %s" % af["gate"] if af.get("gate") else "", str(tip)[:7])
+            if not self.dry and last != said:
+                report(self.pid, sid, "waiting", said)
+            return "raised: " + said
+        lock = core().read_owner(state) if state else None
+        holder = (lock or {}).get("session")
+        me = (self.launch or {}).get("session")
+        if holder and holder != me:
+            # a dead holder frees it too: autofinish-run's own rule (its registry read) decides past this.
+            # Its lock_refusal, mirrored: an idle holder frees it; handed over, `shell` too; busy, never
+            import asklib
+            rec = asklib.registry(holder)
+            if rec and pid_alive(rec.get("pid")) and rec.get("status") != "idle":
+                if not lock.get("handover"):
+                    return "raised: waits for its lock (session %s holds it, live, not handed over)" % holder[:8]
+                if rec.get("status") not in ("idle", "shell"):
+                    return "raised: waits for its lock (session %s handed it over, still %s)" % (holder[:8], rec.get("status") or "with no status")
+        n = (self.launch or {}).get("launches")
+        cap = 2 if n is None else int(n)   # --launches 0 holds every launch
+        running = self.launches_running()
+        if running >= cap:
+            return "raised: %d launch%s under way (--launches %d): it waits" % (running, "" if running == 1 else "es", cap)
+        busy, most = self.runs_busy(wt)
+        if busy is not None and busy >= most:
+            return "raised: %s%d runs busy, dispatch's cap is %d (dispatch --status): the launch waits for one to end" % (
+                "queued — its last start was refused by the run cap; " if refused else "", busy, most)
+        argv = [os.environ.get("WHARF_AUTOFINISH_RUN") or str(HERE / "autofinish-run"), str(wt)] + (["--session", me] if me else [])
+        if self.dry:
+            return "would start the launch: %s" % " ".join(shlex.quote(x) for x in argv)
+        e, crash = self.intent("launch", sid, task=task, tip=tip)
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+            rc, tail = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+        except (OSError, subprocess.TimeoutExpired) as x:
+            rc, tail = 124, str(x)
+        self.settle(e, crash, {"id": tip}, None if rc == 0 else tail[-300:])
+        if rc:
+            return "not started: autofinish-run exit %d: %s" % (rc, (tail.splitlines() or [""])[-1][:200])
+        report(self.pid, sid, "running", "launch started: autofinish-run %s" % wt)
+        return "started the launch of %s (autofinish-run%s)" % (br, ", session %s" % me[:8] if me else "")
+
+    # -- a worker's question ---------------------------------------------------------------------
+
+    def relay_questions(self, run, coord):
+        """Each question a worker of this ship asked the coordinator and nobody has read (the orca
+        adapter's questions(): `check --peek --types question`, never a consuming check), relayed
+        once to the skipper with the block id and the text: the file queue its next prompt prints
+        (hooks/ask_guard.py; asklib's file backend, bin/ask relay's road) when the skipper is live
+        here, else the plan's `waiting` report the board shows. Recorded in the ship's `relayed`,
+        so a second pass never relays it again (rename S3's msg_5107b77a14a6 sat 30 min unread)."""
+        if not run or not coord:
+            return []
+        qs = orca().questions(None, run, coord)
+        if qs is None:
+            return [("orca", "failed", None, "the Run's questions unread (check --peek)")]
+        st_now = plan_status(self.pid)
+        by_did = {d: sid for sid, t in (self.p.get("tasks") or {}).items() if sid in self.bp["by_id"]
+                  for d in t.get("orca_dispatches") or []}
+        seen = set(self.rec.get("relayed") or [])
+        rows = []
+        for q in qs:
+            sid = by_did.get(q.get("dispatch"))
+            if not sid or q["id"] in seen or (st_now.get(sid) or {}).get("status") in ENDED:
+                continue
+            text = " ".join(str(q.get("text") or "").split())
+            line = ("ASK %s %s/%s — Orca question %s from dispatch %s: %s — reply: orca orchestration reply --id %s "
+                    "--body \"<text>\" --run %s --from %s" % (self.bp["meta"]["repo"], self.bp["name"], sid, q["id"],
+                                                           q.get("dispatch"), text[:500], q["id"], run, coord))
+            if self.dry:
+                rows.append(("orca", "relay", sid, "would relay question %s to %s" % (q["id"], skipper(self.bp, self.pid) or "the board")))
+                continue
+            import asklib
+            name, verdict, detail, _ = asklib.relay({"manager": skipper(self.bp, self.pid), "session": None, "plan": self.pid}, line, ["file"])
+            if verdict == "queued":
+                how = "the skipper's next prompt (%s)" % detail
+            else:
+                report(self.pid, sid, "waiting", "Orca question %s: %s" % (q["id"], text[:200]))
+                how = "the board, as waiting (%s)" % detail
+            self.rec.setdefault("relayed", []).append(q["id"])
+            self.save()
+            rows.append(("orca", "relay", sid, "question %s → %s" % (q["id"], how)))
+        return rows
+
+    # -- done_when ------------------------------------------------------------------------------
+
+    def done_when(self, st):
+        """(holds?, what was read) for a block Orca has completed (iac section 6's kinds)."""
+        dw = st["raw"].get("done_when")
+        if not dw:
+            return True, "no done_when"
+        (k, v), = dw.items()
+        root = self.wt_of(st["id"])
+        root = root if root and root.is_dir() else self.repo
+        if k == "file":
+            return (root / v).exists(), "file %s" % v
+        if k == "marker":
+            doc, _, anchor = v.partition("#")
+            p = root / doc
+            if not p.is_file():
+                return False, "marker: %s not found" % doc
+            lines = p.read_text().splitlines()
+            # the convention (iac section 6): the block wrote "Built" under its item — the item's own
+            # lines only (up to the next item or heading), and the word, never "not built" or "rebuilt"
+            item = re.compile(r"(^#|^\s*(?:[-*]|\d+\.)\s|^\s*\*\*|^\s*\|)")
+            built = re.compile(r"(?<![\w-])built(?![\w-])", re.I)   # never "built-ins"
+            unbuilt = re.compile(r"\b(?:not(?:\s+yet)?|never|un)\s*-?\s*built\b|\bbuilt\s*\?|\bonce\b[^.]*\bbuilt\b|\bis\s+built\s+(?:before|first)\b", re.I)
+            # the anchor's own item: a heading, list item, bold lead or table row that starts with
+            # the anchor (after its marker), never a line that merely mentions it ("starts S3 once S1 is built")
+            # also an item line that names it bold anywhere ("1. **Built 2026-10-16** — … **B6a — x**":
+            # this repo rewrites a step's line when it is built)
+            e = re.escape(anchor)
+            lead = re.compile(r"^\s*(?:#+|[-*]|\d+\.|\|)?\s*(?:\*\*|`)?%s(?![\w-])|^\s*(?:#+|[-*]|\d+\.|\|)\s.*?\*\*%s(?![\w-])" % (e, e))
+            for i, line in enumerate(lines):
+                if not lead.match(line):
+                    continue
+                for j, x in enumerate(lines[i:i + 12]):
+                    if j and item.match(x) and not x.lstrip().startswith(">"):
+                        break
+                    if built.search(x) and not unbuilt.search(x):
+                        return True, "marker %s" % v
+            return False, "marker %s: no \"built\" under it" % v
+        if k == "check":
+            if self.dry:
+                return False, "check: would run `%s` (not in a dry run)" % v
+            if v in self.checks:
+                return self.checks[v]
+            left = time_left()
+            limit = 1800 if left is None else int(min(1800, left - 30))
+            if limit < 30:
+                return False, "check: not run, too near the tick's kill time"
+            try:
+                r = subprocess.run(["sh", "-c", v], cwd=str(root), capture_output=True, timeout=limit)
+                got = (r.returncode == 0, "check exit %d" % r.returncode)
+            except subprocess.TimeoutExpired:
+                got = (False, "check timed out")
+            self.checks[v] = got
+            return got
+        if k == "memo_answered":
+            memo = _mod("memo", common.tool("keel") or HERE / "keel")
+            p = root / v
+            if not p.is_file():
+                return False, "memo %s not found" % v
+            lines, found, _ = memo.parse(p.read_text())
+            left = [it["id"] for it in found if not memo.yolo_settled(it, lines)]
+            return not left, "memo %s%s" % (v, (": %s open" % ", ".join(left)) if left else "")
+        if k == "pr_merged":
+            br = self.branch(st)
+            if not br:
+                return False, "pr_merged: the block has no branch"
+            if os.environ.get("PLAN_NO_GH"):
+                return False, "pr_merged: GitHub not asked (PLAN_NO_GH)"
+            if self.dry:
+                return False, "pr_merged: would ask GitHub about %s (not in a dry run)" % br
+            try:
+                r = subprocess.run(["gh", "pr", "view", br, "--json", "state", "-q", ".state"], cwd=str(self.repo),
+                                   capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                return False, "pr %s: gh %s" % (br, type(e).__name__)
+            return r.stdout.strip() == "MERGED", "pr %s %s" % (br, r.stdout.strip() or "unknown")
+        return False, "done_when %s unknown" % k
+
+    # -- one pass -------------------------------------------------------------------------------
+
+    def one_pass(self, reads, run, coord):
+        """Every row of the diff acted on; the lines of what was done. Rows are read in wave order,
+        so a create's deps were created earlier in the same pass."""
+        bp, here = self.bp, self.here
+        st_now = plan_status(self.pid)
+        ended = lambda sid: (st_now.get(sid) or {}).get("status") in ENDED
+        rows = blueprintlib.diff(bp, here, self.p.get("tasks") or {}, reads, answered=memo_answered(bp, self.rec, ship_mode(self.pid, bp)), ended=ended,
+                                 cancelled=set(self.rec.get("respecced") or []), repo=self.repo_key)
+        acted = []
+        # the plan's side first: every block a plan task, with the fields Orca has no slot for
+        for act, sid, detail in rows["plan"]:
+            if act in ("add", "update"):
+                t = self.task(sid)
+                t.update(blueprintlib.plan_fields(bp, bp["by_id"][sid], here, self.repo_key))
+                if t.get("seeded_branch"):
+                    t["branch"] = t["seeded_branch"]
+                acted.append(("plan", act, sid, detail))
+            elif act == "record":
+                self.task(sid)["orca_task"] = re.search(r"orca_task (\S+)", detail).group(1)
+                acted.append(("plan", act, sid, detail))
+        if acted and not self.dry:
+            self.save()
+        tasks = {t.get("id"): t for t in (reads or {}).get("tasks") or []}
+        gates = {}
+        for g in (reads or {}).get("gates") or []:
+            gates.setdefault(g.get("task_id"), []).append(g)
+
+        def held(st):
+            # Orca makes a Task ready once its deps' Tasks complete; done_when is ours, so a dep the
+            # plan has not ended (done_when unmet, or not read yet) holds the block all the same
+            return [d for d in st["deps"] if (st_now.get(d) or {}).get("status") not in ENDED]
+
+        def deps_done(tid):
+            # a gated Task reads `blocked` in Orca whether or not its deps completed (P3): ask the deps
+            t = tasks.get(tid) or {}
+            return all(str((tasks.get(d) or {}).get("status")).lower() == "completed" for d in blueprintlib._deps_of(t))
+
+        for act, sid, detail in rows["orca"]:
+            st = bp["by_id"].get(sid) if sid else None
+            tid = (self.p.get("tasks") or {}).get(sid, {}).get("orca_task") if sid else None
+            if act == "create":
+                deps = [(self.p.get("tasks") or {}).get(d, {}).get("orca_task") for d in st["deps"]]
+                if not all(deps):
+                    acted.append(("orca", "wait", sid, "its deps have no Task yet"))
+                    continue
+                if self.dry:
+                    acted.append(("orca", act, sid, detail))
+                    continue
+                br = blueprintlib.branch_of(bp, st, here)
+                res, err = self.call("task-create", sid, ["orchestration", "task-create", "--spec", blueprintlib.spec_of(bp, st),
+                                                          "--task-title", sid, "--display-name", br or sid, "--run", run, "--from", coord]
+                                     + (["--deps", json.dumps(deps)] if deps else []))
+                new = orca()._first(res or {}, "task.id", "id")
+                if err or not new:
+                    acted.append(("orca", "failed", sid, "task-create: %s" % (err or json.dumps(res)[:200])))
+                    continue
+                self.task(sid)["orca_task"] = new
+                self.save()
+                tasks[new] = {"id": new, "status": orca()._first(res or {}, "task.status") or ("pending" if deps else "ready")}
+                acted.append(("orca", act, sid, "task %s" % new))
+            elif act == "gate":
+                tid = tid or None
+                if not tid:
+                    acted.append(("orca", "wait", sid, "no Task to gate yet"))
+                    continue
+                s = st["raw"]
+                if self.dry:
+                    acted.append(("orca", act, sid, detail))
+                    continue
+                res, err = self.call("gate-create", sid, ["orchestration", "gate-create", "--task", tid, "--question",
+                                                          "%s#%s" % (s["doc"], ", ".join(s["items"])), "--from", coord]
+                                     + (["--options", json.dumps(s["options"])] if s.get("options") else []))
+                acted.append(("orca", act if not err else "failed", sid, err or "gate %s on %s" % (orca()._first(res or {}, "gate.id", "id"), tid)))
+                if not err:
+                    report(self.pid, sid, "waiting", "gated on %s#%s" % (s["doc"], ", ".join(s["items"])))
+            elif act == "resolve":
+                pend = [g for g in gates.get(tid) or [] if str(g.get("status")).lower() == "pending"]
+                text = detail.split("answered (", 1)[-1].split(") —", 1)[0]
+                if not deps_done(tid) or held(st):
+                    acted.append(("orca", "wait", sid, "answered; its gate resolves once %s ends" % ", ".join(held(st) or st["deps"])))
+                    continue
+                if self.dry or not pend:
+                    acted.append(("orca", act, sid, detail))
+                    continue
+                _, err = self.call("gate-resolve", sid, ["orchestration", "gate-resolve", "--id", pend[0]["id"],
+                                                         "--resolution", text, "--from", coord])
+                if not err:
+                    _, err = self.call("task-update", sid, ["orchestration", "task-update", "--id", tid, "--status", "completed",
+                                                            "--result", "answered: %s" % text, "--run", run, "--from", coord])
+                acted.append(("orca", act if not err else "failed", sid, err or "gate %s resolved: %s" % (pend[0]["id"], text)))
+                if not err:
+                    report(self.pid, sid, "done", "answered: %s" % text)
+            elif act == "complete":
+                if st and st["kind"] == "decision" and not deps_done(tid):
+                    acted.append(("orca", "wait", sid, "resolved; completed once its deps complete"))
+                    continue
+                if self.dry:
+                    acted.append(("orca", act, sid, detail))
+                    continue
+                _, err = self.call("task-update", sid, ["orchestration", "task-update", "--id", tid, "--status", "completed",
+                                                        "--result", "ended in the plan", "--run", run, "--from", coord])
+                acted.append(("orca", act if not err else "failed", sid, err or "task %s completed" % tid))
+                if not err and st and st["kind"] == "decision" and not ended(sid):
+                    # its gate was resolved without this pass (Orca's app, or a crash after gate-resolve)
+                    report(self.pid, sid, "done", "gate resolved; Task %s completed" % tid)
+            elif act == "start":
+                if not tid:
+                    acted.append(("orca", "wait", sid, "no Task yet"))
+                    continue
+                if held(st):
+                    acted.append(("orca", "wait", sid, "ready in Orca; waits until the plan ends %s" % ", ".join(held(st))))
+                    continue
+                said = self.start(st, tid, run, coord)
+                kind = "ok" if said.startswith("started already") else \
+                       "done" if said.startswith(("built", "landed", "launched")) else \
+                       "start" if said.startswith(("started", "ran", "seeded", "would", "sent")) else \
+                       "raise" if said.startswith("raised") else "refuse"
+                acted.append(("orca", kind, sid, said))
+            elif act == "changed" and "re-spec" in detail and not self.dry:
+                _, err = self.call("task-update", sid, ["orchestration", "task-update", "--id", tid, "--status", "failed",
+                                                        "--result", "cancelled", "--run", run, "--from", coord])
+                if not err:
+                    self.task(sid).pop("orca_task", None)
+                    self.rec.setdefault("respecced", []).append(tid)   # never this block's Task again (diff's cancelled)
+                    self.save()
+                acted.append(("orca", "re-spec" if not err else "failed", sid, err or "task %s cancelled; created again next pass" % tid))
+            else:
+                acted.append(("orca", act, sid, detail))
+        # done_when: a block Orca completed that the plan has not ended, and one whose worker
+        # reported failed — its work may be done all the same (rename S3: built and committed, its
+        # suites killed for low memory): read once it reported, never rebuilt
+        for st in bp["blocks"]:
+            sid = st["id"]
+            tid = (self.p.get("tasks") or {}).get(sid, {}).get("orca_task")
+            t = tasks.get(tid) or {}
+            status = str(t.get("status")).lower()
+            if ended(sid):
+                continue
+            if status == "failed" and st["kind"] == "block" and st["raw"].get("done_when"):
+                subject = worker_report(t)
+                if subject is None:
+                    continue
+                ok, what = self.done_when(st)
+                if ok:
+                    if not self.dry:
+                        report(self.pid, sid, "done", "built; the worker reported failed: %s" % subject)
+                        self.did += ["%s: %s" % (sid, x) for x in self.release_builder(st)]
+                    acted.append(("plan", "done", sid, "%s holds; the worker reported failed: %s" % (what, subject)))
+                continue
+            if status != "completed":
+                continue
+            if st["kind"] == "decision":
+                # completed in Orca, not ended in the plan: the gate was resolved where this never saw it
+                if not self.dry:
+                    report(self.pid, sid, "done", "Orca completed its Task %s" % tid)
+                acted.append(("plan", "done", sid, "Orca completed its Task"))
+                continue
+            ok, what = self.done_when(st)
+            last = (st_now.get(sid) or {}).get("progress")
+            if ok:
+                if not self.dry:
+                    report(self.pid, sid, "done", "Orca completed it; %s" % what)
+                    self.did += ["%s: %s" % (sid, x) for x in self.release_builder(st)]
+                acted.append(("plan", "done", sid, what))
+            elif last != "done_when not met: %s" % what:
+                if not self.dry:
+                    report(self.pid, sid, "blocked", "done_when not met: %s" % what)
+                acted.append(("plan", "unmet", sid, what))
+        acted += self.relay_questions(run, coord)
+        return acted
+
+    def apply(self, once):
+        """Passes until one acts on nothing, at most PASSES; --once is one."""
+        lost = [] if self.dry else self.dangling()
+        for e in lost:
+            self.did.append("ledger: %s %s was sent and never recorded — Orca's state decides" % (e["op"], e.get("block") or ""))
+        run, coord = (self.rec.get("orca_run"), self.rec.get("coordinator")) if self.dry else self.ensure_run()
+        for e in lost:
+            # after ensure_run: the coordinator the crash left may be gone; a failed update here is
+            # sent again by start(), which finds the `unknown` shell line while Orca still says ready
+            if e["op"] == "shell" and e.get("task"):
+                self.call("task-update", e["block"], ["orchestration", "task-update", "--id", e["task"], "--status", "failed",
+                                                      "--result", "interrupted: the command's result was never recorded",
+                                                      "--run", run, "--from", coord])
+                report(self.pid, e["block"], "failed", "interrupted shell block: not run again blindly")
+        lines = []
+        for n in range(1 if once else PASSES):
+            _cache.pop("fetched", None)   # a pinned ship's decision docs: fetched at most once a pass
+            reads = None
+            if run:
+                reads, why = orca_reads(run, coord)
+                if why:
+                    raise Refused("Orca unread — %s" % why, 3)
+            acted = self.one_pass(reads, run, coord)
+            real = [x for x in acted if x[1] not in ("ok", "wait", "stalled", "failed", "orphan", "refuse", "raise", "changed")]
+            lines.append((n + 1, acted))
+            if self.dry or not real:
+                break
+        if not self.dry and run:
+            self.finish_if_ended()
+        return lines
+
+    def finish_if_ended(self):
+        """Every block ended in the plan: the ship is marked ended (the tick stops visiting it) and its
+        coordinator terminal closed, so a finished ship leaves no tab in Orca. The Run stays: Orca has
+        no run delete, and its history is the record."""
+        st = plan_status(self.pid)
+        if self.rec.get("ended") or not all((st.get(s["id"]) or {}).get("status") in ENDED for s in self.bp["blocks"]):
+            return
+        self.rec["ended"] = helmlib.now()
+        coord = self.rec.get("coordinator")
+        if coord:
+            _, err = orca()._call(None, ["terminal", "close", "--terminal", coord, "--tab"], timeout=60)
+            self.rec["coordinator_closed"] = not err
+        self.save()
+        self.did.append("every block ended: the ship is marked ended%s" % (", its coordinator %s closed" % coord if coord and self.rec["coordinator_closed"] else ""))
+
+
+def brake_refusal():
+    """Why a start waits for the studio brake, or None (S1 of the skipper-resilience build): the file
+    `~/.studio-brake` (the studio brake, a script outside this module: music is on and the agent host
+    steps aside), or — with `wharf-runs/brake-label` naming the launchd job the brake stops — that job's
+    process in state `T`, stopped. The probe's start ran under the file untouched: nothing in wharf
+    read it. wharf only reads the brake, and it holds new starts only: a worker already running is braked by
+    no one."""
+    home = Path(os.environ.get("HOME") or Path.home())
+    if (home / ".studio-brake").exists():
+        return "%s exists" % (home / ".studio-brake")
+    label = common.config_line("wharf-runs/brake-label")
+    if not label:
+        return None
+    try:
+        out = subprocess.run([os.environ.get("WHARF_LAUNCHCTL") or "launchctl", "list", label],
+                             capture_output=True, text=True, timeout=20).stdout
+        m = re.search(r'"PID"\s*=\s*(\d+);', out)
+        if not m:
+            return None
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", m.group(1)], capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return "%s (pid %s) is stopped" % (label, m.group(1)) if stat.startswith("T") else None
+
+
+class Refused(Exception):
+    def __init__(self, msg, code=2):
+        Exception.__init__(self, msg)
+        self.code = code
+
+
+def _git(cwd, *argv):
+    try:
+        r = subprocess.run(["git", "-C", str(cwd)] + list(argv), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def lock(pid, ship):
+    """The strict lock: one apply per ship at a time (the tick's and an attended one)."""
+    d = helmlib.plan_dir(pid)
+    f = open(str(d / ("wharf-%s.lock" % ship)), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def say_once(pid, ship, quiet, text, dry=False):
+    """A ship's refusal line: said always when attended; in the tick (quiet) only when it differs
+    from what the last tick said for this ship (the .said file the standing rows use too)."""
+    if not quiet:
+        say(text)
+        return
+    said = helmlib.plan_dir(pid) / ("wharf-%s.said" % ship)
+    try:
+        before = said.read_text()
+    except OSError:
+        before = None
+    if before != text:
+        say(text)
+        try:
+            said.write_text(text)   # a dry tick's one write, as for the standing rows
+        except OSError:
+            pass
+
+
+def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, launch=None):
+    """One ship: the digest, the lock, the passes. Returns the exit code."""
+    bp = load_blueprint(path, pid)
+    ship = Ship(pid, bp, dry, launch)
+    d, sd = blueprintlib.digest(bp), blueprintlib.block_digests(bp)
+    rec = ship.rec
+    if rec.get("pin") and rec.get("file") and os.path.realpath(path) != os.path.realpath(rec["file"]):
+        # a pinned ship is keyed on its pin: its text is the plan's copy, never a checkout's file,
+        # which may be a later push the yard never fetched
+        say_once(pid, bp["name"], quiet, "wharf apply: %s refused — it is pinned (%s): its blueprint is %s, and "
+                 "`wharf apply --yard` rejoins it" % (bp["name"], pin_label(rec["pin"]), rec["file"]), dry)
+        return 2
+    if rec.get("digest") and rec["digest"] != d:
+        say_once(pid, bp["name"], quiet, "wharf apply: %s refused — %s; `wharf check %s --plan %s --accept` re-records it, then a "
+                 "pending Task is re-specced and a dispatched one becomes a card (Q1)" % (bp["name"], change_text(rec, d, sd), path, pid), dry)
+        return 1
+    if dry and not rec.get("orca_run"):
+        return dry_run(pid, path)
+    if once and rec.get("ended"):
+        if not quiet:
+            say("wharf apply --once: %s ended %s — an attended `wharf apply` opens it again" % (bp["name"], helmlib.iso(rec["ended"])[:16]))
+        return 0
+    if once and not rec.get("orca_run"):
+        say("wharf apply --once: %s has no Run — its first compile is an attended `wharf apply`" % bp["name"])
+        return 2
+    held = None if dry else lock(pid, bp["name"])
+    if not dry and held is None:
+        say("wharf apply: %s is being applied by another run (its lock in %s)" % (bp["name"], helmlib.plan_dir(pid)))
+        return 4
+    try:
+        if not dry:
+            ship.reload()   # under the lock: what was read before it may be another apply's past
+            rec = ship.rec
+        clash = ship.clash()
+        if clash:
+            say_once(pid, bp["name"], quiet, "wharf apply: %s refused — block ids already another ship's plan task in plan %s: %s (rename them)"
+                     % (bp["name"], pid, ", ".join(clash)))
+            return 2
+        if not dry and not orca()._app_up():
+            say_once(pid, bp["name"], quiet, "wharf apply: Orca is not running here (open the app; a session in VS Code clears ELECTRON_RUN_AS_NODE)", dry)
+            return 3
+        warned = "; ".join(bp.get("yard_warnings") or [])
+        if warned and not dry and rec.get("yard_warned") != warned:
+            # a ship laid before its scope had a yard keeps going; its far block is said once, here
+            # and in the tick's log, and a new compile of the same text is refused (blueprintlib.load)
+            say("wharf apply: %s: warning — %s (laid before its scope had a yard: it goes on, a new compile is refused)"
+                % (bp["name"], warned))
+            rec["yard_warned"] = warned
+            ship.save()
+        if rec.get("ended") and not dry:
+            rec.pop("ended", None)   # applied again: open, until every block has ended once more
+        if not rec.get("digest") and not dry:
+            accept(rec, path, d, sd)
+            ship.did.append("digest %s recorded (the first apply)" % d[:12])
+        if not dry and bp["meta"].get("mode") and "mode" not in ship.p and not ship.p.get("mode_refused"):
+            # the blueprint's mode, once (skipper-modes S1): plan.json holds it from here, and `helm
+            # mode` rewrites it there — a later apply never puts the file's word back over the owner's.
+            # An unattended or --once apply never records a raise (S3b), and its refusal is kept in
+            # plan.json: the next tick's apply, from launchd with no CLAUDE_UNATTENDED, would otherwise
+            # record the run-written mode (landing review 9)
+            why = bp_mode_refusal(pid, bp, once)
+            if why:
+                ship.p["mode_refused"] = {"mode": bp["meta"]["mode"], "why": why, "ts": helmlib.now()}
+                ship.save()
+                ship.did.append("mode %s not recorded, and never by a later apply (`helm mode %s %s` records it): %s"
+                                % (bp["meta"]["mode"], pid, bp["meta"]["mode"], why))
+            else:
+                ship.p["mode"] = bp["meta"]["mode"]
+                ship.save()
+                ship.did.append("mode %s recorded (the blueprint's)" % bp["meta"]["mode"])
+        if not dry and not ship.p.get("started"):
+            # the ship's start, once (H1), here and not in the digest branch: a blueprint accepted
+            # first with `wharf check --accept` has its digest already. A ship applied before rename
+            # S5 has none, and its card reads its first running task instead (helmlib.state)
+            ship.p["started"] = helmlib.now()
+            ship.save()
+        try:
+            passes = ship.apply(once)
+        except Refused as e:
+            say_once(pid, bp["name"], quiet and not ship.did, "\n".join(["wharf apply: %s — %s" % (bp["name"], e)]
+                                                                       + ["  %s" % x for x in ship.did]), dry)
+            return e.code
+    finally:
+        if held:
+            held.close()
+    if as_json:
+        print(json.dumps({"ship": bp["name"], "plan": pid, "run": ship.rec.get("orca_run"), "coordinator": ship.rec.get("coordinator"),
+                          "did": ship.did, "passes": [{"pass": n, "rows": [list(r) for r in rows]} for n, rows in passes]},
+                         ensure_ascii=False, sort_keys=True))
+        return 0
+    # quiet (the tick's): print a ship that acted, or whose standing rows (a refusal, a failure, a
+    # card) differ from what the last tick said — a ship that only waits is said once, not every 5 min
+    busy = any(r[1] not in ("ok", "wait", "refuse", "raise", "changed", "orphan", "failed") and not str(r[3]).startswith("would")
+               for _, rows in passes for r in rows) or ship.did
+    standing = sorted(set("%s %s %s" % (r[1], r[2], r[3]) for _, rows in passes for r in rows
+                          if r[1] in ("refuse", "raise", "changed", "orphan", "failed")))
+    said = helmlib.plan_dir(pid) / ("wharf-%s.said" % bp["name"])
+    try:
+        before = said.read_text()
+    except OSError:
+        before = None
+    now_said = "\n".join(standing)
+    if quiet and standing and before != now_said:
+        busy = True
+    if quiet:   # a dry tick too: the disarmed tick is dry every 5 min, and this note is its only write
+        try:
+            said.write_text(now_said)
+        except OSError:
+            pass
+    if quiet and not busy:
+        return 0
+    say("wharf apply%s: %s — plan %s, Run %s (coordinator %s)" % (" --once" if once else " --dry-run" if dry else "", bp["name"], pid,
+                                                                 ship.rec.get("orca_run") or "—", ship.rec.get("coordinator") or "—"))
+    for x in ship.did:
+        say("  %s" % x)
+    width = max([len(s["id"]) for s in bp["blocks"]] + [1])
+    for n, rows in passes:
+        if len(passes) > 1:
+            say(" pass %d" % n)
+        for side, act, sid, detail in rows:
+            if quiet and act == "ok":
+                continue
+            say("  %-5s %-8s %-*s  %s" % (side, act, width, sid or "—", detail))
+    return 0
+
+
+def dry_run(pid, path, as_json=False):
+    """B6's dry run (`plan apply --dry-run`): the diff against Orca and the plan, nothing written."""
+    bp = load_blueprint(path, pid)
+    here = helmlib.host()
+    p = need(pid)
+    rec = (p.get("blueprints") or {}).get(bp["name"]) or {}
+    d, sd = blueprintlib.digest(bp), blueprintlib.block_digests(bp)
+    refused = bool(rec.get("digest")) and rec["digest"] != d
+    reads = None
+    if rec.get("orca_run"):
+        reads, why = orca_reads(rec["orca_run"], rec.get("coordinator"))
+        if why:
+            print("wharf apply: Orca unread — %s; with Run %s recorded, a diff without it would be wrong" % (why, rec["orca_run"]),
+                  file=sys.stderr)
+            return 3
+    st = plan_status(pid)
+    ended = lambda sid: (st.get(sid) or {}).get("status") in ENDED
+    rows = blueprintlib.diff(bp, here, p.get("tasks") or {}, reads, answered=memo_answered(bp, rec, ship_mode(pid, bp)), ended=ended,
+                             cancelled=set(rec.get("respecced") or []), repo=ship_repo(bp, rec)[0])
+    if as_json:
+        print(json.dumps({"ship": bp["name"], "file": bp["path"], "plan": pid, "digest": d, "accepted": rec.get("digest"),
+                          "refused": refused, "orca_run": rec.get("orca_run"),
+                          "rows": {k: [list(r) for r in v] for k, v in rows.items()}}, ensure_ascii=False, sort_keys=True))
+        return 1 if refused else 0
+    say("wharf apply --dry-run: %s (%s) against plan %s — nothing is called that writes" % (bp["name"], path, pid))
+    if rec.get("digest"):
+        say("digest %s: %s" % (d[:12], change_text(rec, d, sd)))
+    else:
+        say("digest %s: not recorded — the first apply records it (wharf check --accept records it now)" % d[:12])
+    if reads is None:
+        say("orca: no Run recorded for this blueprint — run-create \"%s/%s (wharf apply)\" first; nothing to read" % (bp["meta"]["repo"], bp["name"]))
+    else:
+        r = reads["run"] or {}
+        say("orca: Run %s (coordinator %s): %d tasks, %d gates, %d dispatches" % (
+            r.get("id") or rec["orca_run"], r.get("coordinator_handle") or "?", len(reads["tasks"]), len(reads["gates"]), len(reads["workers"])))
+    width = max([len(s["id"]) for s in bp["blocks"]] + [1])
+    for side in ("orca", "plan"):
+        say("%s:" % side)
+        for act, sid, detail in rows[side]:
+            say("  %-8s %-*s  %s" % (act, width, sid or "—", detail))
+    counts = {}
+    for act, _, _ in rows["orca"] + rows["plan"]:
+        if act != "ok":
+            counts[act] = counts.get(act, 0) + 1
+    say("to do: %s" % (", ".join("%d %s" % (n, k) for k, n in sorted(counts.items())) or "nothing — Orca and the plan match the file"))
+    if refused:
+        say("wharf apply: refused — %s; `wharf check %s --accept` re-records it, then a pending Task is re-specced "
+            "and a dispatched one becomes a card (Q1)" % (change_text(rec, d, sd), path))
+        return 1
+    return 0
+
+
+def ships_with_runs():
+    """[(plan id, blueprint file, ship, None or a plan)] of every ship on this Mac with a Run recorded.
+    A pinned ship (wharf apply --yard) is keyed on its pin, its file the plan's copy: a second un-ended
+    record of one pin — two plans compiled one blueprint and both drove before the refusal existed
+    (31157269, 2230a94e) — carries the plan id of the one accepted first in the last place, and the
+    tick drives that one only."""
+    rows, first = [], {}
+    for pid in helmlib.list_plans():
+        p = helmlib.load_plan(pid) or {}
+        for name, rec in sorted((p.get("blueprints") or {}).items()):
+            if rec.get("orca_run") and rec.get("file") and not rec.get("ended"):
+                k = pin_key(rec.get("pin"))
+                rows.append((pid, blueprint_file(rec) or rec["file"], name, k))
+                at = (rec.get("accepted") or 0, pid)
+                if k and (k not in first or at < first[k]):
+                    first[k] = at
+    return [(pid, f, name, first[k][1] if k and first[k][1] != pid else None, bool(k)) for pid, f, name, k in rows]
+
+
+def tick_fence(f, pid):
+    """Why the tick leaves an unpinned ship alone on this Mac, or None: its scope gained a yard that is
+    another host (a plain apply made before the overlay named one), so the yard drives it, not two Macs.
+    A registry that does not read fails closed, as yard_fence does."""
+    if common.registry_unreadable():
+        return "the registry %s does not read, so which host drives it cannot be told" % common.repos_json()
+    _, scope, yard = blueprintlib.scope_yard_of(load_blueprint(f, pid)["meta"]["repo"])
+    if yard and yard != harness().machine():
+        return "its scope %s drives on %s — not driven here (lay it there with --yard)" % (scope, yard)
+    return None
+
+
+def cmd_apply(a):
+    if (a.no_merge or a.gen is not None) and not a.yard:
+        raise SystemExit("wharf apply: --no-merge and --gen go with --yard")
+    if (a.pinned or a.laid_by) and not a.yard:
+        raise SystemExit("wharf apply: --pinned and --laid-by are --yard's, the yard's side over ssh")
+    if a.yard:
+        return cmd_yard(a)
+    if a.all:
+        if not a.once:
+            raise SystemExit("wharf apply --all is the tick's: --once with it")
+        rc = 0
+        _cache["tick"] = 0   # session starts this tick, every ship together (TICK_STARTS)
+        for pid, f, name, held, pinned in ships_with_runs():
+            if held:
+                say_once(pid, name, True, "wharf apply --once: plan %s's %s is a pin plan %s drives already — not driven twice "
+                         "(end one of them)" % (pid, name, held), a.dry_run)
+                continue
+            if not Path(f).is_file():
+                say_once(pid, name, True, "wharf apply --once: plan %s's blueprint %s is gone from this Mac" % (pid, f), a.dry_run)
+                continue
+            # one ship's bad file or crash is its own line; the ships after it are still visited
+            try:
+                why = None if pinned else tick_fence(f, pid)
+                if why:
+                    say_once(pid, name, True, "wharf apply --once: plan %s's %s: %s" % (pid, name, why), a.dry_run)
+                    continue
+                rc = max(rc, apply_ship(pid, f, dry=a.dry_run, once=True, quiet=True))
+            except SystemExit as e:
+                say_once(pid, name, True, "wharf apply --once: %s (plan %s): exit %s" % (f, pid, e.code if isinstance(e.code, int) else e.code or ""))
+                rc = max(rc, e.code if isinstance(e.code, int) else 2)
+            except Exception as e:  # noqa: BLE001
+                say_once(pid, name, True, "wharf apply --once: %s (plan %s): %s: %s" % (f, pid, type(e).__name__, str(e)[:200]))
+                rc = max(rc, 2)
+        return rc
+    if a.watch:
+        return cmd_watch(a)
+    if len(a.files) != 1:
+        raise SystemExit("wharf apply: one blueprint file (several with --watch), or --once --all")
+    a.file = a.files[0]
+    if not a.dry_run:
+        why = yard_fence(load_blueprint(a.file, a.plan))
+        if why:
+            print("wharf apply: refused: %s" % why, file=sys.stderr)
+            return 2
+    pid = plan_id(a.plan)
+    launch = None
+    if a.launch:
+        if os.environ.get("CLAUDE_UNATTENDED"):
+            raise SystemExit("wharf apply --launch: a launch starts from an attended apply only (CLAUDE_UNATTENDED=%s)"
+                             % os.environ["CLAUDE_UNATTENDED"])
+        launch = {"launches": a.launches, "session": a.session or os.environ.get("CLAUDE_CODE_SESSION_ID")}
+    if a.dry_run and not a.once:
+        return dry_run(pid, a.file, a.json)
+    return apply_ship(pid, a.file, dry=a.dry_run, once=a.once, as_json=a.json, quiet=a.quiet, launch=launch)
+
+
+# ---------------------------------------------------------------------------- the yard (skipper-resilience S2)
+
+YARD_ONLY = "the yard's flags come over ssh from a caller, never from a session here"
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def yard_fence(bp):
+    """Why a plain `wharf apply` of BP is refused on this host, or None: the yard's fence, one driver
+    per ship (the proposal's yard component). A ship whose repo's scope has a yard is laid there with
+    --yard and driven there by the tick; a scope with no yard — absent or null, every scope until the
+    overlay names them (S3) — is refused nothing. A registry that does not read fails closed (the
+    torn-registry trap): which host drives cannot be told."""
+    if common.registry_unreadable():
+        return "the registry %s does not read, so whether %s's scope has a yard cannot be told" % (common.repos_json(), bp["meta"]["repo"])
+    _, scope, yard = blueprintlib.scope_yard_of(bp["meta"]["repo"])
+    if not yard:
+        return None
+    if yard != harness().machine():
+        return "%s's scope %s drives on %s; lay it with --yard" % (bp["meta"]["repo"], scope, yard)
+    return "on the yard a ship is laid with --yard (or --once --all, the tick's)"
+
+
+def yard_scope(bp):
+    """(registry key, scope, yard) of BP's repo, or Refused: --yard lays only a ship whose scope has a yard."""
+    if common.registry_unreadable():
+        raise Refused("the registry %s does not read: no scope's yard can be told" % common.repos_json())
+    key, scope, yard = blueprintlib.scope_yard_of(bp["meta"]["repo"])
+    if not scope:
+        raise Refused("%s is in no scope (scopes check)" % bp["meta"]["repo"])
+    if not yard:
+        raise Refused("scope %s has no yard (scopes set %s --yard HOST names one)" % (scope, scope))
+    return key, scope, yard
+
+
+def pin_scope(pin):
+    """(scope, yard) of a pin's repo, its registry key as the caller resolved it, or Refused as yard_scope."""
+    if common.registry_unreadable():
+        raise Refused("the registry %s does not read: no scope's yard can be told" % common.repos_json())
+    scope = common.scope_of_key(pin["repo"])
+    if not scope:
+        raise Refused("%s is in no scope here (scopes check)" % pin["repo"])
+    yard = common.scope_yard(scope)
+    if not yard:
+        raise Refused("scope %s has no yard (scopes set %s --yard HOST names one)" % (scope, scope))
+    return scope, yard
+
+
+def pin_key(pin):
+    """What a pin is, its digest aside: the same file on the same branch is the same ship, pushed again or not."""
+    return (pin.get("repo"), pin.get("branch"), pin.get("rel")) if isinstance(pin, dict) else None
+
+
+def pin_label(pin):
+    return "%s %s:%s" % (pin.get("repo"), pin.get("branch"), pin.get("rel"))
+
+
+def pinned_by(pin, other_than=None):
+    """(plan id, ship) of an un-ended ship on this Mac pinned to PIN in a plan other than OTHER_THAN, or None."""
+    for pid in helmlib.list_plans():
+        if pid == other_than:
+            continue
+        for name, rec in sorted(((helmlib.load_plan(pid) or {}).get("blueprints") or {}).items()):
+            if not rec.get("ended") and pin_key(rec.get("pin")) == pin_key(pin):
+                return pid, name
+    return None
+
+
+def laid_by_here():
+    """Who lays the ship, read on the calling Mac — never on the yard, where ssh has carried no
+    environment: unattended when CLAUDE_UNATTENDED is set, DISPATCH_DEPTH is not 0, or a ship's env is."""
+    raw = os.environ.get("DISPATCH_DEPTH") or "0"
+    # a ship's block (a shell command, an Orca worker) carries the ship's env (helmlib's ENV_NAMES)
+    # and no CLAUDE_UNATTENDED: no person laid it, and S6 reads `attended` as a person's yes to merge
+    unattended = (bool(os.environ.get("CLAUDE_UNATTENDED")) or raw != "0"
+                  or any(os.environ.get(n) for n in helmlib.ENV_NAMES["ship"]))
+    return {"mode": "unattended" if unattended else "attended", "depth": int(raw) if raw.isdigit() else 0,
+            "session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": harness().machine(), "t": helmlib.now()}
+
+
+def merge_value(bp, no_merge, laid_by):
+    """The merge the launch asks for, decided at the keel and kept as data (S6's start_launch reads it):
+    merge unless --no-merge (the keel), the blueprint's `merge: no` or an unattended layer says no."""
+    said = blueprintlib.merge_of(bp["meta"])
+    if no_merge:
+        return {"value": "no", "why": "keel"}
+    if said == "no":
+        return {"value": "no", "why": "blueprint"}
+    if laid_by.get("mode") == "unattended":
+        return {"value": "no", "why": "unattended"}
+    return {"value": "yes", "why": "blueprint" if said == "yes" else "default"}
+
+
+def _git_text(cwd, *argv):
+    """git's stdout as it is (a file's text, unstripped), or None."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd)] + list(argv), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def yard_alias(yard):
+    """How this Mac reaches YARD over ssh: `wharf-runs/ssh`'s `<host>:<alias>` line (orca-host --on's
+    key), else bin/harness's peers; None when neither names it."""
+    for line in common.config_lines("wharf-runs/ssh") or []:
+        host, _, alias = line.partition(":")
+        if host.strip().lower() == yard.lower() and alias.strip():
+            return alias.strip()
+    return harness().peers().get(yard)
+
+
+# The caller's side over ssh, read by `sh -s -- <flags>` on the yard: the yard's own wharf, found by the
+# yard's own config — the overlay's bin/wharf where an overlay is installed (the allow rules name its
+# shim: the module-path trap), else the core's module. ssh carries no environment, so nothing here is
+# the caller's but the flags.
+REMOTE_WHARF = r'''set -u
+c=${REGATTA_CONFIG:-$HOME/.config/regatta}
+w=
+l=$(head -n 1 "$c/legacy" 2>/dev/null)
+case $l in "~"*) l=$HOME${l#"~"};; esac
+if [ -n "$l" ] && [ -x "$l/bin/wharf" ]; then w=$l/bin/wharf; fi
+if [ -z "$w" ]; then
+  h=$(head -n 1 "$c/home" 2>/dev/null)
+  case $h in "~"*) h=$HOME${h#"~"};; esac
+  if [ -n "$h" ] && [ -x "$h/modules/wharf-runs/bin/wharf" ]; then w=$h/modules/wharf-runs/bin/wharf; fi
+fi
+[ -n "$w" ] || { echo "no wharf on $(hostname -s): neither an overlay's bin/wharf nor the core's module ($c)" >&2; exit 2; }
+PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH
+export PATH
+exec "$w" apply --yard "$@" </dev/null
+'''
+
+
+def cmd_yard(a):
+    """`wharf apply --yard`: the caller's side (a blueprint file), or the yard's (--pinned, --laid-by)."""
+    if a.all or a.once or a.watch or a.dry_run or a.launch:
+        raise SystemExit("wharf apply --yard: lays one ship on its yard; not with --all, --once, --watch, --dry-run or --launch")
+    try:
+        if a.pinned or a.laid_by:
+            if not (a.pinned and a.laid_by) or a.files:
+                raise Refused("--pinned and --laid-by come together and with no file: the caller's ssh sends them")
+            return yard_side(a)
+        if len(a.files) != 1:
+            raise Refused("one blueprint file")
+        return yard_caller(a)
+    except Refused as e:
+        print("wharf apply --yard: refused: %s" % e, file=sys.stderr)
+        return e.code
+
+
+def yard_caller(a):
+    """The blueprint as committed and pushed: pinned, its scope's yard found, then compiled here when
+    this is the yard, else over the yard's ssh alias. Exit: the compile's."""
+    f = Path(a.files[0]).resolve()
+    if not f.is_file():
+        raise Refused("%s: no such file" % a.files[0])
+    top = _git(f.parent, "rev-parse", "--show-toplevel")
+    if not top:
+        raise Refused("%s is in no git checkout: the yard reads a blueprint from origin" % f)
+    branch = _git(top, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":
+        raise Refused("%s is on no branch (a detached HEAD): the yard reads origin/<branch>" % top)
+    rel = _git(f.parent, "ls-files", "--full-name", "--", f.name)
+    if not rel:
+        raise Refused("%s is not committed: commit it, then push it — the yard reads origin/%s:<its path>" % (f, branch))
+    # the yard reads origin's text, so the caller's must be that text: pushed, and nothing changed since
+    if _git_text(top, "show", "origin/%s:%s" % (branch, rel)) != f.read_text():
+        raise Refused("push it first: the yard reads origin/%s:%s" % (branch, rel))
+    bp = load_blueprint(str(f))
+    key, scope, yard = yard_scope(bp)
+    # judged as the yard will load it (key=, that repo's own hosts), not by a path `repo:`'s union of
+    # every repo's hosts: else a `host:` passes here and the lay is refused only after the ssh
+    try:
+        blueprintlib.load(str(f), key=key)
+    except blueprintlib.BlueprintError as e:
+        raise Refused("as the yard reads it (repo %s): %s" % (key, "; ".join(e.problems)))
+    pin = {"repo": key, "branch": branch, "rel": rel, "digest": blueprintlib.digest(bp)}
+    laid = laid_by_here()
+    pid = plan_id(a.plan)
+    if yard == harness().machine():
+        return yard_compile(pin, laid, pid, a)
+    depth_refusal(laid)   # said here, before the ssh: the yard would refuse it as well
+    alias = yard_alias(yard)
+    if not alias:
+        raise Refused("scope %s's yard %s has no ssh alias here (wharf-runs/ssh: %s:<alias>)" % (scope, yard, yard))
+    # ssh carries no environment: the caller's SKIPPER_GEN goes across as --gen
+    gen = a.gen if a.gen is not None else (os.environ.get("SKIPPER_GEN") or "").strip() or None
+    flags = (["--pinned", json.dumps(pin, sort_keys=True), "--laid-by", json.dumps(laid, sort_keys=True), "--plan", pid]
+             + (["--no-merge"] if a.no_merge else []) + (["--gen", str(gen)] if gen is not None else [])
+             + (["--json"] if a.json else []))
+    argv = [os.environ.get("WHARF_SSH") or harness().SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias,
+            "sh -s -- " + " ".join(shlex.quote(x) for x in flags)]
+    if not a.json:
+        say("wharf apply --yard: %s pinned at %s; laying it on %s (%s)" % (pin_label(pin), pin["digest"][:12], yard, alias))
+    raw = os.environ.get("WHARF_YARD_TIMEOUT") or "1200"
+    if not raw.isdigit():
+        raise Refused("WHARF_YARD_TIMEOUT=%s is not a number" % raw[:40])
+    ceiling = int(raw)
+    try:
+        # its output relayed as it comes, its exit kept; a ceiling well past a lay's git fetch (120 s)
+        # and its Orca calls, so a yard that hangs after connecting never holds the caller for good
+        r = subprocess.run(argv, input=REMOTE_WHARF, text=True, timeout=ceiling)
+    except subprocess.TimeoutExpired:
+        raise Refused("ssh %s: no answer from the yard in %ss (WHARF_YARD_TIMEOUT); the lay may have gone through: "
+                      "`wharf status` on the yard before laying it again" % (alias, ceiling), 1)
+    except OSError as e:
+        raise Refused("ssh %s: %s" % (alias, e), 1)
+    if r.returncode == 255:
+        print("wharf apply --yard: ssh %s exit 255 — the yard was not reached, or ssh itself failed" % alias, file=sys.stderr)
+    return r.returncode
+
+
+def depth_refusal(laid):
+    raw = os.environ.get("DISPATCH_MAX_DEPTH") or "5"   # bin/dispatch's maxdepth, the same default
+    if not raw.isdigit():
+        raise Refused("DISPATCH_MAX_DEPTH=%s is not a number" % raw[:40])
+    most = int(raw)
+    if laid["depth"] > most:
+        raise Refused("laid_by.depth %d is past dispatch's cap (DISPATCH_MAX_DEPTH %d): past it a person lays the next"
+                      % (laid["depth"], most))
+
+
+def yard_side(a):
+    """The yard's side of --yard, as the caller's ssh runs it: the pin and laid_by as the caller sent
+    them, never read from a session here."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED"):
+        raise Refused(YARD_ONLY)
+    try:
+        pin, laid = json.loads(a.pinned), json.loads(a.laid_by)
+    except ValueError:
+        raise Refused("--pinned and --laid-by are JSON objects")
+    if not (isinstance(pin, dict) and all(isinstance(pin.get(k), str) and pin[k] for k in ("repo", "branch", "rel"))
+            and DIGEST_RE.match(str(pin.get("digest") or ""))):
+        raise Refused("--pinned is {repo, branch, rel, digest}: %s" % a.pinned[:200])
+    if not (isinstance(laid, dict) and laid.get("mode") in ("attended", "unattended")
+            and isinstance(laid.get("depth"), int) and not isinstance(laid.get("depth"), bool) and laid["depth"] >= 0):
+        raise Refused("--laid-by is {mode: attended|unattended, depth, session, host, t}: %s" % a.laid_by[:200])
+    if pin["branch"].startswith("-") or pin["rel"].startswith("-"):
+        raise Refused("--pinned's branch and rel never start with '-' (git would read an option): %s" % a.pinned[:200])
+    if not a.plan:
+        raise Refused("--pinned comes with --plan: the caller names the plan")
+    try:
+        helmlib.plan_dir(a.plan)
+    except ValueError as e:
+        raise Refused("--plan %s: %s" % (a.plan[:80], e))
+    # ssh sends no environment: the caller's layer is restored here, so start_refusal judges a lay
+    # through the yard exactly as one made on it (an unattended or nested layer starts no session)
+    if laid["mode"] == "unattended":
+        os.environ["CLAUDE_UNATTENDED"] = "laid_by"
+    os.environ["DISPATCH_DEPTH"] = str(laid["depth"])
+    return yard_compile(pin, laid, a.plan, a)
+
+
+def yard_lock():
+    """One --yard compile at a time on this Mac: the pin's refusal reads every plan, then records."""
+    root = helmlib.plans_root()
+    root.mkdir(parents=True, exist_ok=True)
+    f = open(str(root / ".wharf-yard.lock"), "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
+def yard_compile(pin, laid, pid, a):
+    """On the yard: the pin read from origin, checked, kept in the plan, then the first apply."""
+    here = harness().machine()
+    depth_refusal(laid)
+    main = repo_path(pin["repo"])
+    if not (main / ".git").exists():
+        raise Refused("%s is not cloned on %s (repos --clone there)" % (pin["repo"], here))
+    try:
+        r = subprocess.run(["git", "-C", str(main), "fetch", "-q", "origin", pin["branch"]], capture_output=True, text=True, timeout=120)
+        fetched = r.returncode == 0
+        why = (r.stderr or "").strip()[-200:]
+    except (OSError, subprocess.TimeoutExpired) as e:
+        fetched, why = False, str(e)
+    if not fetched:
+        raise Refused("git fetch origin %s in %s: %s" % (pin["branch"], main, why or "failed"), 1)
+    text = _git_text(main, "show", "origin/%s:%s" % (pin["branch"], pin["rel"]))
+    if text is None:
+        raise Refused("origin/%s:%s is not there as %s fetched it" % (pin["branch"], pin["rel"], here))
+    # the pin's repo is the key here, never the blueprint's `repo:` (a caller's path means nothing on
+    # this Mac); a ship this plan already accepted is read as in flight (load's yard_warnings)
+    accepted = set(r["digest"] for r in ((helmlib.load_plan(pid) or {}).get("blueprints") or {}).values()
+                   if isinstance(r, dict) and r.get("digest"))
+    try:
+        bp = blueprintlib.load(main / pin["rel"], text=text, key=pin["repo"], accepted=accepted)
+    except blueprintlib.BlueprintError as e:
+        print("wharf: origin/%s:%s is not a valid blueprint:" % (pin["branch"], pin["rel"]), file=sys.stderr)
+        for x in e.problems:
+            print("  - %s" % x, file=sys.stderr)
+        return 2
+    d = blueprintlib.digest(bp)
+    if d != pin["digest"]:
+        raise Refused("origin/%s:%s reads digest %s here, not the pinned %s: pushed again since — lay it again"
+                      % (pin["branch"], pin["rel"], d[:12], pin["digest"][:12]))
+    scope, yard = pin_scope(pin)
+    key = pin["repo"]
+    if yard != here:
+        raise Refused("%s is not scope %s's yard (%s): it lays the ship there" % (here, scope, yard))
+    lease = yard_lease()
+    name = bp["name"]
+    merge = merge_value(bp, a.no_merge, laid)
+    held = yard_lock()
+    try:
+        other = pinned_by(pin, other_than=pid)
+        if other:
+            raise Refused("%s is ship %s of plan %s — rejoin it with --plan %s" % (pin_label(pin), other[1], other[0], other[0]))
+        if helmlib.load_plan(pid) is None:
+            # the plan is the yard's: made here, its skipper record the caller's, as `helm ship` would make it
+            helmlib.new_plan(pid, name, manager={"session": laid.get("session"), "host": laid.get("host"), "harness": "wharf --yard"},
+                             repo=key)
+        copy = helmlib.plan_dir(pid) / ("blueprint-%s.md" % name)
+        with helmlib.locked(pid):
+            # The lease first, under the plan's lock, so a rejoin at a stale generation changes nothing.
+            # Judged by this process's own environment: over ssh the yard's side is a plain shell (it
+            # refuses a session of its own, and ssh carries none), so a sender's rejoin from another Mac
+            # passes unless it names a --gen; on the yard, a session that does not hold the lease is refused.
+            why = lease.fence(pid, "wharf apply --yard", given=a.gen)
+            if why:
+                raise Refused(why[len("refused: "):] if why.startswith("refused: ") else why, lease.REFUSED_EXIT)
+            p = need(pid)
+            rec = dict((p.get("blueprints") or {}).get(name) or {})
+            if rec and pin_key(rec.get("pin")) != pin_key(pin):
+                raise Refused("plan %s has a ship %s already (%s): this one is another plan's"
+                              % (pid, name, pin_label(rec["pin"]) if rec.get("pin") else "unpinned, %s" % (rec.get("file") or "no file")))
+            if rec.get("pin") and rec["pin"].get("digest") != pin["digest"]:
+                raise Refused("%s is pinned in plan %s at digest %s, and origin reads %s: a re-pin is not built yet — "
+                              "push the pinned text back, or lay a new ship" % (pin_label(pin), pid, rec["pin"]["digest"][:12], pin["digest"][:12]))
+            if not rec:
+                rec.update(pin=pin, laid_by=laid, merge=merge, file=str(copy.resolve()), main=str(main), rel=pin["rel"])
+            elif merge["value"] == "no" and (rec.get("merge") or {}).get("value") != "no":
+                rec["merge"] = merge   # a rejoin keeps the keel's record; it can only take the merge away
+            if not copy.is_file() or copy.read_text() != text:
+                copy.write_text(text)
+            p.setdefault("blueprints", {})[name] = rec
+            helmlib.save_plan(p)
+            if lease.read(pid) is None:   # a new ship, or one laid before S4: the yard holds it, gen 0
+                lease.write_yard(pid, scope, here, "laid by wharf apply --yard")
+    finally:
+        held.close()
+    if not a.json:
+        say("wharf apply --yard: %s pinned at %s into plan %s on %s (merge %s: %s)" % (pin_label(pin), d[:12], pid, here, merge["value"], merge["why"]))
+    return apply_ship(pid, str(copy), as_json=a.json)
+
+
+def yard_lease():
+    """helm's leaselib, or Refused: --yard writes the ship's lease, and lays no ship it cannot fence."""
+    if leaselib is None:
+        raise Refused("helm's leaselib.py is not beside its helmlib.py (%s): --yard writes the ship's lease" % _HELMLIB.parent)
+    return leaselib
+
+
+def ship_ended(f, pid):
+    """True once `wharf status <f> --json` — a fresh process, as the passes are — says the ship ended."""
+    try:
+        r = subprocess.run([str(HERE / "wharf"), "status", f, "--plan", pid, "--json"], capture_output=True, text=True, timeout=300)
+        return bool(r.returncode == 0 and all(s.get("ended") for s in json.loads(r.stdout or "[]")) and r.stdout.strip() != "[]")
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return False
+
+
+def cmd_watch(a):
+    """`wharf apply --watch`: a pass over every ship named every --every minutes until each has
+    ended, or the process is stopped. Each pass is `bin/wharf apply` run afresh, so a merge that
+    renames or rewrites the yard's files (rename S5) never runs stale code here — this loop holds
+    no state of its own beyond the file list. Attended only, as a start is; the tick stays as D5-A
+    left it (disarmed). A pass's lines are printed only when it said something (--quiet: the
+    tick's rule, a standing row said once)."""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        raise SystemExit("wharf apply --watch: attended only, as a start is (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"])
+    if a.once or a.all or a.dry_run or a.json:
+        raise SystemExit("wharf apply --watch: its passes are full applies; not with --once, --all, --dry-run or --json")
+    if not a.files:
+        raise SystemExit("wharf apply --watch: one or more blueprint files")
+    for f in a.files:
+        # each pass is a plain apply, which the fence would refuse every --every minutes: say it once
+        why = yard_fence(load_blueprint(f, a.plan))
+        if why:
+            print("wharf apply --watch: refused: %s" % why, file=sys.stderr)
+            return 2
+    pid = plan_id(a.plan)
+    files = [str(Path(f).resolve()) for f in a.files]
+    sess = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    extra = (["--launch", "--launches", str(a.launches)] + (["--session", sess] if sess else [])) if a.launch else []
+    limit = int(os.environ.get("WHARF_WATCH_PASSES") or 0)   # tests: stop after this many passes
+    n = 0
+    while True:
+        n += 1
+        left = [f for f in files if not ship_ended(f, pid)]
+        if not left:
+            say("wharf apply --watch: every ship ended (%s) — done after %d pass%s" % (
+                ", ".join(Path(f).name for f in files), n - 1, "" if n == 2 else "es"))
+            return 0
+        for f in left:
+            exe = HERE / "wharf"
+            if not exe.is_file():
+                raise SystemExit("wharf apply --watch: %s is gone (renamed?): start the watch again from its new name" % exe)
+            r = subprocess.run([str(exe), "apply", f, "--plan", pid, "--quiet"] + extra, capture_output=True, text=True)
+            out = ((r.stdout or "") + (r.stderr or "")).rstrip()
+            if out:
+                say("— %s pass %d, %s%s" % (time.strftime("%H:%M"), n, Path(f).name, (" (exit %d)" % r.returncode) if r.returncode else ""))
+                say(out)
+        if limit and n >= limit:
+            return 0
+        time.sleep(max(0.0, a.every * 60))
+
+
+# ---------------------------------------------------------------------------- status
+
+def cmd_orphans(a):
+    """Orca repos and Runs that no plan on this Mac accounts for: what a scratch ship leaves behind.
+    Orca 1.4.229 can remove neither (no `repo remove`, no run delete), so this only lists them; the
+    first S1 probe's `yard-probe.9vWy` and `run_8910502da80f` are the first rows of the yard's. A Run
+    is an orphan when no plan records it as a ship's `orca_run`; a repo when its folder is gone, or it
+    is neither a registry repo (`<projects>/<name>`) nor a plan's. Reads only."""
+    o = orca()
+    if not o._app_up():
+        print("wharf status: Orca is not running here (the app's runtime answers the CLI)", file=sys.stderr)
+        return 3
+    runs_seen, repos_seen = set(), set()
+    for pid in helmlib.list_plans():
+        for rec in ((helmlib.load_plan(pid) or {}).get("blueprints") or {}).values():
+            if rec.get("orca_run"):
+                runs_seen.add(rec["orca_run"])
+            if rec.get("main"):
+                repos_seen.add(os.path.realpath(rec["main"]))
+            f = blueprint_file(rec)
+            if f:
+                try:
+                    repos_seen.add(os.path.realpath(str(ship_repo(load_recorded(pid, f), rec)[1])))
+                except (blueprintlib.BlueprintError, OSError):
+                    pass
+    try:
+        reg = (common.repos_json() and json.loads(common.repos_json().read_text()).get("repos")) or {}
+    except (OSError, ValueError):
+        print("wharf status: the registry is unreadable — every repo outside a plan is listed", file=sys.stderr)
+        reg = {}
+    for name in reg:
+        repos_seen.add(os.path.realpath(str(common.PROJECTS / name)))
+    out = {"runs": [], "repos": []}
+    runs, cursor = [], None
+    for _ in range(20):   # paged: --limit tops out at 100
+        res, err = o._call(None, ["orchestration", "run-list", "--limit", "100"] + (["--cursor", cursor] if cursor else []), timeout=60)
+        if err:
+            print("wharf status: Orca unread — %s" % err, file=sys.stderr)
+            return 3
+        runs += (res or {}).get("runs") or []
+        cursor = (res or {}).get("nextCursor")
+        if not cursor:
+            break
+    for r in runs:
+        # Orca's own `legacy` row and `bin/harness run`'s Runs are no ship's leftovers
+        if r.get("legacy") or str(r.get("objective") or "").endswith("(bin/harness run)"):
+            continue
+        if r.get("id") and r["id"] not in runs_seen:
+            out["runs"].append({"run": r["id"], "objective": r.get("objective"), "created": r.get("created_at")})
+    res, err = o._call(None, ["repo", "list"], timeout=60)
+    if err:
+        print("wharf status: Orca unread — %s" % err, file=sys.stderr)
+        return 3
+    for r in (res or {}).get("repos") or []:
+        path = r.get("path") or ""
+        if not os.path.isdir(path):
+            out["repos"].append({"repo": r.get("displayName") or path, "path": path, "why": "its folder is gone"})
+        elif os.path.realpath(path) not in repos_seen:
+            out["repos"].append({"repo": r.get("displayName") or path, "path": path, "why": "no plan and not a registry repo"})
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False, sort_keys=True))
+        return 0
+    for r in out["repos"]:
+        say("repo %s — %s (%s)" % (r["repo"], r["path"], r["why"]))
+    for r in out["runs"]:
+        say("run  %s — %s (%s)" % (r["run"], r["objective"] or "no objective", r["created"] or "?"))
+    say("%d repo(s) and %d Run(s) in Orca that no plan here accounts for; Orca can remove neither, so they are listed only"
+        % (len(out["repos"]), len(out["runs"])))
+    return 0
+
+
+def cmd_status(a):
+    if a.orphans:
+        return cmd_orphans(a)
+    pid = plan_id(a.plan)
+    p = need(pid)
+    recs = p.get("blueprints") or {}
+    if a.what and a.what.endswith(".md"):
+        names = [load_blueprint(a.what, pid)["name"]]
+    else:
+        names = [a.what] if a.what else sorted(recs)
+    st = plan_status(pid)
+    out = []
+    for name in names:
+        rec = recs.get(name)
+        if not rec:
+            raise SystemExit("wharf status: no ship %s in plan %s" % (name, pid))
+        reads = None
+        if rec.get("orca_run"):
+            reads, why = orca_reads(rec["orca_run"], rec.get("coordinator"))
+            if why:
+                print("wharf status: Orca unread — %s" % why, file=sys.stderr)
+        tasks = {t.get("id"): t for t in (reads or {}).get("tasks") or []}
+        ws = {}
+        for w in (reads or {}).get("workers") or []:
+            ws.setdefault(w.get("taskId"), []).append(w)
+        blocks = []
+        bp = None
+        if blueprint_file(rec):
+            try:
+                bp = load_recorded(pid, blueprint_file(rec))
+            except blueprintlib.BlueprintError:
+                bp = None
+        ids = [s["id"] for s in bp["blocks"]] if bp else sorted(k for k, v in (p.get("tasks") or {}).items() if v.get("ship") == name)
+        for sid in ids:
+            t = (p.get("tasks") or {}).get(sid) or {}
+            ot = tasks.get(t.get("orca_task")) or {}
+            w = (ws.get(t.get("orca_task")) or [{}])[0]
+            blocks.append({"id": sid, "plan": (st.get(sid) or {}).get("status") or "planned",
+                           "progress": (st.get(sid) or {}).get("progress"), "orca_task": t.get("orca_task"),
+                           "orca": ot.get("status"), "dispatch": w.get("dispatchId"), "dispatch_status": w.get("dispatchStatus")})
+        out.append({"ship": name, "file": rec.get("file"), "run": rec.get("orca_run"), "coordinator": rec.get("coordinator"),
+                    "digest": (rec.get("digest") or "")[:12], "blocks": blocks, "ended": rec.get("ended")})
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False, sort_keys=True))
+        return 0
+    for s in out:
+        say("ship %s — Run %s, coordinator %s, digest %s" % (s["ship"], s["run"] or "none yet", s["coordinator"] or "—", s["digest"] or "—"))
+        width = max([len(b["id"]) for b in s["blocks"]] + [1])
+        for b in s["blocks"]:
+            say("  %-*s  %-8s orca %-10s %s%s" % (width, b["id"], b["plan"], b["orca"] or "—",
+                                                 ("dispatch %s %s" % (b["dispatch"], b["dispatch_status"] or "")) if b["dispatch"] else "",
+                                                 ("  · " + b["progress"][:80]) if b["progress"] else ""))
+    return 0
+
+
+def ship_of_caller(pid, block, branch, repo=None):
+    """(ship, blueprint) of the ship whose block `block` is, in plan `pid`'s recorded blueprints; None
+    when the plan, or a block of that name in a blueprint of it, is not there. The caller's own record
+    decides — the ship id and the block id wharf starts a session with (DISPATCH_SHIP or DISPATCH_PLAN, DISPATCH_TASK) —
+    never a match of branch names across every plan on this Mac. The branch asked about must be the
+    one the plan recorded for that block (wharf's seed of it): a block session that starts some other
+    branch — a handoff, its own next stage — is not that block's successor and goes on as before.
+    `repo`, when given, must be the blueprint's. A recorded blueprint that is gone or no longer loads is
+    raised when nothing else matched: a guard that cannot read its ship must say so, not read as "not
+    a ship"."""
+    p = helmlib.load_plan(pid)
+    if not p:
+        if (helmlib.plan_dir(pid) / "plan.json").exists():   # there, but load_plan swallowed why
+            raise ValueError("plan %s: plan.json does not parse" % pid)
+        return None
+    t = (p.get("tasks") or {}).get(block) or {}
+    if not t.get("ship") or branch not in [b for b in (t.get("branch"), t.get("seeded_branch")) if b]:
+        return None   # no ship's task by that id, or a branch the block was not started on
+    broke = None
+    for name, rec in sorted((p.get("blueprints") or {}).items()):
+        if name != t["ship"]:
+            continue
+        f = blueprint_file(rec)
+        if not f:
+            broke = broke or "%s: recorded, not found" % (rec.get("file") or rec.get("rel") or name)
+            continue
+        try:
+            bp = load_recorded(pid, f)
+        except (blueprintlib.BlueprintError, OSError) as e:
+            broke = broke or "%s: %s" % (f, e)
+            continue
+        if repo and ship_repo(bp, rec)[1].resolve() != Path(repo).resolve():
+            continue
+        if block in [st["id"] for st in bp["blocks"]]:
+            return name, bp
+    if broke:
+        raise ValueError("plan %s records a blueprint that does not load (%s)" % (pid, broke))
+    return None
+
+
+def cmd_next(a):
+    """Exit 0 and a line: the caller is a block of a ship and a block follows it (`wharf apply` starts
+    that one). Exit 1, nothing printed: not a ship's block, or nothing follows it — the caller seeds as
+    before. Exit 2, stderr: the check itself failed."""
+    try:
+        pid, block = helmlib.env("ship"), os.environ.get("DISPATCH_TASK")
+        if not (pid and block):
+            return 1   # a session that is not a block of a ship, or wharf's own start (a ship id, no block)
+        hit = ship_of_caller(pid, block, a.branch, a.repo)
+        if not hit:
+            return 1
+        name, bp = hit
+        after = [s for s in bp["blocks"] if block in s["deps"]]
+        if not after:
+            return 1
+        ids = [s["id"] for s in after]
+        if a.json:
+            print(json.dumps({"ship": name, "plan": pid, "block": block, "next": ids, "file": bp["path"]}, sort_keys=True))
+            return 0
+        say("%s is block %s of ship %s (plan %s): next is %s — `wharf apply` (the tick or the skipper) starts it, nothing is seeded here"
+            % (a.branch, block, name, pid, ", ".join(s["id"] + ("" if s["kind"] == "block" else " (a decision)") for s in after)))
+        return 0
+    except Exception as e:   # an uncaught one would exit 1, which reads as "not a ship"
+        print("wharf next: %s" % e, file=sys.stderr)
+        return 2
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="wharf", description=__doc__.split("\n\n")[0])
+    sp = ap.add_subparsers(dest="cmd")
+    s = sp.add_parser("check"); s.add_argument("file"); s.add_argument("--plan"); s.add_argument("--accept", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s = sp.add_parser("apply"); s.add_argument("files", nargs="*"); s.add_argument("--plan")
+    s.add_argument("--dry-run", action="store_true"); s.add_argument("--once", action="store_true")
+    s.add_argument("--all", action="store_true"); s.add_argument("--json", action="store_true")
+    s.add_argument("--watch", action="store_true"); s.add_argument("--every", type=float, default=5.0)
+    s.add_argument("--launch", action="store_true")
+    # --landings: the old name, read until rename S8 — a --watch loop started before S5 passes it to each pass
+    s.add_argument("--launches", "--landings", dest="launches", type=int, default=2)
+    s.add_argument("--session", help=argparse.SUPPRESS); s.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--yard", action="store_true"); s.add_argument("--no-merge", action="store_true")
+    s.add_argument("--gen", type=int)   # the caller's lease generation (S4): fenced by plans/<id>/skipper.json
+    s.add_argument("--pinned", help=argparse.SUPPRESS); s.add_argument("--laid-by", dest="laid_by", help=argparse.SUPPRESS)
+    s = sp.add_parser("status"); s.add_argument("what", nargs="?"); s.add_argument("--plan"); s.add_argument("--json", action="store_true")
+    s.add_argument("--orphans", action="store_true")
+    s = sp.add_parser("next"); s.add_argument("branch"); s.add_argument("--repo"); s.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    fn = {"check": cmd_check, "apply": cmd_apply, "status": cmd_status, "next": cmd_next}.get(a.cmd)
+    if not fn:
+        ap.print_help()
+        return 2
+    try:
+        return fn(a) or 0
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit("wharf %s: %s" % (a.cmd, e))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

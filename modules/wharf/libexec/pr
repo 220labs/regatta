@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""pr — the pull request for the current claude/* branch, without `gh` (absent on the other Mac).
+
+  pr status                       the open PR for this branch: number, title, url — or "none"
+  pr ready [--title T] [--body-file F] [--hold] [--drops-ok]
+                                  /finish step 11: rename the hook's `WIP: …` PR to T (default:
+                                  the branch's first commit subject), replace its body with F
+                                  (default: the branch's commit log), and take it out of draft;
+                                  opens the PR if the hook could not. Prints the URL. --hold
+                                  labels it `hold` before it leaves draft, and keeps the label:
+                                  a `/finish --yolo` launch outside a `merge: auto` repo stops
+                                  at a ready PR, which automerge would otherwise launch (E12).
+                                  Both ready and merge refuse a PR that changes a path the
+                                  branch's `<branch>-raw` never changed — main's newer work
+                                  undone by a stale rebuild (strays()); --drops-ok if meant.
+                                  Both also refuse, in an unattended /finish the autofinish sweep
+                                  started, a curated diff that touches a gate (bin/autofinish's
+                                  GATES and the repo's exclusions): the sweep judged the tip
+                                  before the run's own edits (refuse_sweep_gate()).
+  pr strays [--local]             the same check alone, offline — /finish step 9, before the push:
+                                  exit 1 with the list, else `strays: none`
+  pr merge [--drops-ok]           rebase-merge it (the one method the repos allow, D9). Only
+                                  on the owner's approval — at the laptop's keyboard, or their
+                                  explicit yes to this PR on the other Mac; /finish asks. Then, for
+                                  every branch this one CARRIES whose content is then proved
+                                  on origin/main: close its open PR as "Launched via #N",
+                                  record it with its commit; sync.py archives it at the next start.
+  pr carried [--launched-via N]   what this branch carries — content taken from other claude/*
+                                  branches, as the checkpoint hook recorded it in
+                                  .git/…/claude/carries — one `Carries: <branch> (<kind>, PR
+                                  #n | no PR)` line each, for /finish's report and PR body.
+                                  With --launched-via N (this branch's merged PR, checked; its old spelling --landed-via an alias until the rename's S8) it
+                                  does what `merge` does afterwards, for a merge that
+                                  happened on github.com. The record is a pointer: a source
+                                  is closed only if branches.prove() holds for it, whatever
+                                  the record's kind. Nothing here deletes a branch: sync.py
+                                  archives a launched one at session start (coding-on-workflow D4).
+
+Token and host come from hooks/common.py: the token git already has, nothing new. Base is the
+repo's main (workflow.json "main", else main). docs/record/repo-sync-2026-09-22.md.
+"""
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import branches  # noqa: E402
+import common  # noqa: E402
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, timeout=30).stdout.strip()
+
+
+def carried(slug, tok, launched_via=None):
+    """The lines for /finish: what the hook recorded, per source branch. With `launched_via` —
+    the number of THIS branch's merged pull request, checked against GitHub — it also closes a
+    carried branch's open PR (a close, not a deletion; the branch and its history stay), but
+    only for a source whose content branches.prove() finds on origin/main right then: an
+    ancestor of it, or every file the source changed identical there — which, straight after
+    the merge, holds exactly when the merge kept everything. The record itself is a pointer,
+    never proof: a merge refused on a dirty tree or a resolution that dropped a file leaves the
+    same line (second review, 2026-09-24). No live session may hold the source's worktree. Each
+    closed one is recorded with its commit in the common git dir's `launched` file, and the
+    names are printed; sync.py archives them at the next session start."""
+    gitdir = Path(git("rev-parse", "--absolute-git-dir"))
+    records = [branches.parse_record(l) for l in branches.read_lines(gitdir / "claude" / branches.CARRIES_NAME)]
+    if not records:
+        return ["Carries: nothing (no content taken from another claude/* branch)"]
+    repo = Path(git("rev-parse", "--show-toplevel"))
+    branch = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    if launched_via:
+        st, merged = common.api("GET", f"/repos/{slug}/pulls/{launched_via}", tok=tok)
+        if st != 200 or not (merged or {}).get("merged_at") or (merged.get("head") or {}).get("ref") != branch:
+            sys.exit(f"pr: #{launched_via} is not this branch's merged pull request — nothing closed")
+        # origin/main must hold the merge before prove() means anything; stale tips prove nothing
+        if subprocess.run(["git", "fetch", "-q", "origin"], capture_output=True, timeout=60).returncode:
+            sys.exit("pr: fetch failed — nothing closed")
+    tgt = branches.target(repo, main_branch())
+    known = branches.collect(repo)
+    now = time.time()
+    for path, name, gd in branches.worktrees(repo):
+        if name in known:
+            known[name].worktree = path
+            known[name].live = bool(gd) and branches.lock_fresh(gd, now)
+    by_source = {}
+    for kind, sha, source in records:
+        by_source.setdefault(source, []).append((kind, sha))
+    lines, done, today = [], [], datetime.date.today().isoformat()
+    record = branches.common_dir(repo) / "claude" / branches.LAUNCHED_NAME  # `landed` before rename S4, still read
+    for source, recs in by_source.items():
+        b = known.get(source)
+        pr = common.find_pr(slug, source, tok)
+        tag = f"PR #{pr['number']}" if pr else "no PR"
+        kinds = ", ".join(sorted({k for k, _ in recs}))
+        if b is None:
+            lines.append(f"Carries: {source} ({kinds}, {tag}) — the branch no longer exists")
+            continue
+        if not launched_via:
+            lines.append(f"Carries: {source} ({kinds}, {tag})")
+            continue
+        proof = branches.prove(repo, b, tgt) if tgt else None
+        if not proof:
+            lines.append(f"Carries: {source} ({kinds}, {tag}) — carried by #{launched_via} but not proved on "
+                         f"main: left open, stays not on main")
+            continue
+        if b.live:
+            lines.append(f"Carries: {source} ({kinds}, {tag}) — launched ({proof}), but a live session holds "
+                         f"its worktree: not closed")
+            continue
+        if pr:
+            body = (f"Launched via #{launched_via} — this branch's content reached `main` there, carried "
+                    f"across by that branch's session ({proof}). The branch itself stays until the owner "
+                    f"deletes it (rule: git-workflow, never a deletion by an agent).")
+            common.api("POST", f"/repos/{slug}/issues/{pr['number']}/comments", {"body": body}, tok=tok)
+            tag += ", closed" if common.edit_pr(slug, pr["number"], tok, state="closed") else ", could not close"
+        # The commit the proof holds for: the tip the other tips descend from. branches.py
+        # trusts this line only while every tip is still an ancestor of it.
+        tip = b.remote if b.local and b.remote and branches.is_ancestor(repo, b.local, b.remote) else (b.local or b.remote)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        if not any(branches.parse_launched(l)[:2] == (source, tip) for l in branches.launched_lines(repo)):
+            with record.open("a") as f:
+                f.write(f"{source} {tip} via #{launched_via} {today}\n")
+        lines.append(f"Carries: {source} ({kinds}, {tag}) — launched: {proof}")
+        done.append(b)
+    if done:
+        lines.append("Carried branches launched — archived at the next session start: " + ", ".join(b.name for b in done))
+    return lines
+
+
+def strays(up, branch):
+    """Paths the PR changes against `up` (origin/main) that the branch's own work never changed,
+    as `<git status letter> path` — None when there is no `<branch>-raw` to judge by
+    (knowledge-commit only rebases, and a rebase cannot undo main). /finish step 8 rebuilds the
+    branch from -raw's tree; reset to anything newer than -raw's own base (`--soft origin/main`,
+    2026-10-11) and the commit undoes whatever main changed since: ec782b3 deleted five docs and
+    cut a lessons section #276 had launched 82 seconds before, and step 9's `diff -raw HEAD` was
+    empty by construction."""
+    raw = f"{branch}-raw"
+    if not git("rev-parse", "-q", "--verify", f"refs/heads/{raw}"):
+        return None
+    fork = must("merge-base", up, raw)
+
+    def names(*a):
+        return set(must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", *a).splitlines())
+
+    def blob(ref, path):  # "" for a path the ref lacks
+        return git("rev-parse", "-q", "--verify", f"{ref}:{path}")
+
+    own = names(fork, raw)
+    out = []
+    for line in must("-c", "core.quotePath=false", "diff", "--name-status", "--no-renames", f"{up}...HEAD").splitlines():
+        st, _, path = line.partition("\t")
+        if path and path not in own:
+            out.append(f"{st[:1]} {path}")
+    # A file both sides changed: HEAD sits on main's newer copy (its base, not up — step 9 runs
+    # before the rebase) yet carries exactly -raw's, so main's edit is undone inside a file the
+    # branch owns (review, finding 1).
+    on = must("merge-base", up, "HEAD")
+    for path in sorted(own & names(fork, on)):
+        mine, theirs = blob("HEAD", path), blob(on, path)
+        if mine == blob(raw, path) and theirs != blob(fork, path) and theirs != mine:
+            out.append(f"M {path} (main's edit undone)")
+    return out
+
+
+def must(*args):
+    """git() for the stray check: a failed call refuses, never reads as "nothing stray"."""
+    r = subprocess.run(["git", *args], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        sys.exit(f"pr: could not judge the PR against -raw (git {args[-2] if len(args) > 1 else args[0]} …: "
+                 f"{r.stderr.strip()[:200]}) — nothing changed on GitHub")
+    return r.stdout.strip()
+
+
+def refuse_strays(up, branch, verb, args):
+    """Stop `ready`/`merge`/`strays` on strays() unless --drops-ok says the PR means it."""
+    found = strays(up, branch)
+    if not found:
+        return
+    # the override is a person's: the run that made the stale tree would judge it right too
+    # (step 9 printed nothing for ec782b3) — code review, finding 6
+    unattended = bool(os.environ.get("CLAUDE_UNATTENDED"))
+    if "--drops-ok" in args and not unattended:
+        return
+    sys.exit(f"pr: NOT {verb} — this PR changes {len(found)} path(s) that {branch}-raw, the branch's "
+             f"own work, never changed:\n  " + "\n  ".join(found[:12]) + (f"\n  … +{len(found) - 12}" if len(found) > 12 else "") +
+             f"\nMain changed them after the branch forked (D: main added it, A: main removed it, M: "
+             f"main edited it) and the curated tree predates that — a reset to {up} instead of the "
+             f"merge-base undoes it. Rebuild from -raw, never back it up again (that would save this "
+             f"tree as -raw and pass): `git reset -q --hard {branch}-raw`, then step 8's reset to "
+             f"`git merge-base main HEAD` and its commits. If -raw is what is stale — commits after "
+             f"step 8 — rerun step 8 whole. "
+             + ("--drops-ok is refused unattended: stop and hand it to the owner." if unattended
+                else "If the PR really means it, rerun with --drops-ok."))
+
+
+def run_record(me):
+    """autofinish-run's state for this session: this worktree's, else — a sibling repo /finish
+    step 11 launches from the run's own worktree — the one in the worktree the session's transcript
+    started in (review, 2026-10-19). None when neither names this session (no id: this one's)."""
+    def read(gitdir):
+        try:
+            st = json.loads((Path(gitdir) / "claude" / common.AUTOFINISH_RUN).read_text())
+        except (OSError, ValueError):
+            return None
+        return st if isinstance(st, dict) else None
+    st = read(git("rev-parse", "--absolute-git-dir"))
+    if st and (not me or not st.get("session") or st["session"] == me):
+        return st
+    if not me:
+        return None
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    for t in (cfg / "projects").glob(f"*/{me}.jsonl"):
+        try:
+            with open(t, errors="replace") as f:
+                cwd = next((rec.get("cwd") for rec in map(lambda l: json.loads(l) if l.strip() else {}, f)
+                            if isinstance(rec, dict) and rec.get("cwd")), None)
+        except (OSError, ValueError):
+            continue
+        try:  # bounded: a dead mount must not hang `pr ready`
+            r = subprocess.run(["git", "-C", cwd, "rev-parse", "--absolute-git-dir"], capture_output=True,
+                               text=True, timeout=10) if cwd and Path(cwd).is_dir() else None
+        except (OSError, subprocess.TimeoutExpired):
+            r = None
+        other = read(r.stdout.strip()) if r and not r.returncode else None
+        if other and other.get("session") == me:
+            return other
+    return None
+
+
+def refuse_sweep_gate(up, base, verb, hold=None):
+    """Stop `ready`/`merge` in an unattended `/finish` the sweep started (autofinish-run's state:
+    by=sweep, or yolo — a retry the sweep starts for a yolo run that died, bin/autofinish
+    runner_by — not ended, this session) whose curated diff touches a gate. The sweep judged the
+    tip before the start; the run's own edits (step 1's fix to a hook or to bin/pr) come after,
+    and could launch a gate unwatched (autofinish-widen item 3, the 2026-10-10 note).
+    autofinish's touches_gate and repo_config, so the gates are the sweep's own list; autofinish
+    is wharf-runs' (G1), found through common.tool(), and a sweep record with none found to read
+    the gates refuses, as an unreadable config does. `hold`: at merge the PR is ready already, so
+    automerge would launch it — labelled `hold` first.
+    A mode launch (by yolo or dnd, or the sweep's rule M; skipper-modes S3b) is judged again here by
+    autofinish's held_slice under the branch's mode now: a mode lowered since the start, or a run's
+    own edit into the held slice, stops it as a gate does (landing review 1)."""
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    st = run_record(me)
+    if not st or st.get("by") not in ("sweep", "yolo", "dnd") or st.get("ended"):
+        return
+    from importlib.machinery import SourceFileLoader
+    found = common.tool("autofinish")
+    gate, problem = None, "autofinish (wharf-runs) is not installed"
+    if found:
+        af = SourceFileLoader("autofinish", str(found)).load_module()
+        primary = str(Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent)
+        _, _, problem, exclude = af.repo_config(primary, base)
+        paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
+        gate = af.touches_gate(primary, base, exclude, paths)
+        if not gate and not problem and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"):
+            mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)[0]
+            # autofinish-run's landing(): a yolo launch with no mode is E12's standing yes, judged at its start
+            eff = mode if mode in af.LAND_MODES else ("yolo" if mode is None and st.get("by") == "yolo" else mode)
+            try:
+                held = af.held_slice(primary, git("rev-parse", "--show-toplevel"), base, eff)
+            except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
+                held = f"the held slice could not be read ({type(e).__name__})"
+            if held:
+                gate = f"held: {held}"
+    if gate or problem:
+        why = f"the curated diff touches a gate ({gate})" if gate else f"its gates could not be read ({problem})"
+        if hold is None:
+            keep = "leave the PR a draft"
+        else:
+            keep = ("the PR is labelled `hold`, so automerge leaves it" if hold()
+                    else "the PR is ready and could not be labelled `hold`: label it, or automerge may launch it")
+        sys.exit(f"pr: NOT {verb} — this /finish was started by the autofinish sweep, and {why}. "
+                 f"A gate launches by a /finish or /autofinish {common.OWNER_NAME or 'the owner'} starts, never unwatched: stop with "
+                 f"`⚠ step 11 — {why}`; {keep}.")
+
+
+def main_branch():
+    top = git("rev-parse", "--show-toplevel")
+    for root in (Path(top), Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent):
+        try:
+            return json.loads((root / ".claude" / "workflow.json").read_text()).get("main") or "main"
+        except (OSError, ValueError):
+            continue
+    return "main"
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    branch = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    if cmd == "strays":
+        # /finish step 9, before anything is pushed: no token, no PR, no network; against the
+        # last-fetched origin base, or the local one with --local (offline, /finish --local)
+        base = main_branch()
+        up = base if "--local" in args or not git("rev-parse", "-q", "--verify", f"origin/{base}") else f"origin/{base}"
+        refuse_strays(up, branch, "clean", [])
+        print("strays: none" if strays(up, branch) is not None else f"strays: no {branch}-raw to judge by")
+        return
+    slug = common.repo_slug(git("remote", "get-url", "origin"))
+    if not branch.startswith("claude/") or not slug:
+        sys.exit(f"pr: on {branch or 'a detached HEAD'} with origin {slug or 'not on GitHub'} — nothing to do")
+    tok = common.token()
+    if not tok:
+        sys.exit("pr: no GitHub token — GH_TOKEN, ~/.git-credentials or `gh auth token`")
+    pr = common.find_pr(slug, branch, tok)
+    base = main_branch()
+
+    if cmd == "status":
+        print(f"#{pr['number']} {pr['title']}\n{pr['html_url']}" if pr else "none")
+        return
+    if cmd == "ready":
+        title = body = None
+        hold = False
+        i = 1
+        while i < len(args):
+            if args[i] == "--hold":
+                hold = True; i += 1
+            elif args[i] == "--drops-ok":
+                i += 1
+            elif args[i] == "--title":
+                title = args[i + 1]; i += 2
+            elif args[i] == "--body-file":
+                body = Path(args[i + 1]).read_text(); i += 2
+            else:
+                sys.exit(f"pr: unknown option {args[i]}")
+        # The PR's commits are what origin's base lacks, not the local one: a local main that
+        # diverged from origin (an unpushed launch) put origin's own tip first in the range,
+        # and ten PRs on 2026-09-25 were titled after an already-merged PR.
+        git("fetch", "-q", "origin", base)
+        up = f"origin/{base}" if git("rev-parse", "-q", "--verify", f"origin/{base}") else base
+        rng = f"{up}..HEAD"
+        # before the PR leaves draft: here a ready PR is a launched one (automerge.yml); /finish
+        # step 9 runs `pr strays` before the push too
+        refuse_strays(up, branch, "readied", args)
+        refuse_sweep_gate(up, base, "readied")
+        if not title:
+            title = git("log", "--reverse", "--format=%s", rng).splitlines()[0]
+        if body is None:
+            body = git("log", "--reverse", "--format=%s%n%n%b", rng)
+        # never the hold mark: a curated body carrying it would let a later `pr ready` take off a
+        # `hold` the owner set (common.ready_pr's one-shot mark)
+        body = body.replace(common.HOLD_NOTE, "").rstrip()
+        body += f"\n\n---\nFrom `{common.host_name()}`, curated by `/finish`."
+        if pr:
+            # open_pr's `hold` on a PR it could not open as a draft is in the body this replaces;
+            # carry the mark across, so ready_pr still takes that label off (common.HOLD_NOTE)
+            held = common.HOLD_NOTE in (pr.get("body") or "")
+            pr = common.edit_pr(slug, pr["number"], tok, title=title, body=body)
+            if pr and held:
+                pr["_held"] = True
+        else:
+            pr = common.open_pr(slug, branch, base, title, body, tok)
+        if not pr:
+            sys.exit("pr: GitHub refused — is the branch pushed, and does it differ from main?")
+        if hold:
+            # labelled while still a draft, so automerge never sees it ready and unheld; and no
+            # `_held` mark, so ready_pr leaves this label on (it takes off only open_pr's own)
+            common.api("POST", f"/repos/{slug}/labels", common.HOLD, tok=tok)  # 201 made, 422 already there
+            st, _ = common.api("POST", f"/repos/{slug}/issues/{pr['number']}/labels",
+                               {"labels": [common.HOLD["name"]]}, tok=tok)
+            if st != 200:
+                sys.exit(f"pr: {pr['html_url']} could not be labelled `hold` (HTTP {st}) — left a draft")
+            if common.HOLD_NOTE in (pr.get("body") or ""):  # open_pr's note says ready takes it off: not this time
+                edited = common.edit_pr(slug, pr["number"], tok, body=pr["body"].replace(f"\n\n{common.HOLD_NOTE}", "").replace(common.HOLD_NOTE, ""))
+                if not edited:  # ready_pr would read the note and take the label off: stop held
+                    sys.exit(f"pr: {pr['html_url']} is labelled `hold`, but its body could not be cleaned — left as it is")
+                pr = edited
+            pr["_held"] = False
+        if not common.ready_pr(pr, tok):
+            sys.exit(f"pr: {pr['html_url']} is still a draft — GitHub would not mark it ready")
+        print(pr["html_url"])
+        return
+    if cmd == "merge":
+        if not pr:
+            # automerge may have launched it already (a repo with .github/workflows/automerge.yml):
+            # GitHub's merged PR at exactly this tip is the proof, and the carried pass still runs
+            done = common.merged_pr(slug, branch, git("rev-parse", "HEAD"), tok)
+            if not done:
+                sys.exit("pr: no open pull request for this branch — `pr ready` first")
+            print(f"merged #{done['number']}: already, by automerge")
+            for line in carried(slug, tok, launched_via=done["number"]):
+                if not line.startswith("Carries: nothing"):
+                    print(line)
+            return
+        git("fetch", "-q", "origin", base)
+        before = git("rev-parse", "-q", "--verify", f"origin/{base}")
+        refuse_strays(f"origin/{base}" if before else base, branch, "merged", args)
+        def hold():
+            common.api("POST", f"/repos/{slug}/labels", common.HOLD, tok=tok)  # 201 made, 422 already there
+            st, _ = common.api("POST", f"/repos/{slug}/issues/{pr['number']}/labels",
+                               {"labels": [common.HOLD["name"]]}, tok=tok)
+            return st == 200
+        refuse_sweep_gate(f"origin/{base}" if before else base, base, "merged", hold)
+        # the check judged local HEAD; GitHub merges the PR's head — they must be one commit
+        remote = ((pr.get("head") or {}).get("sha") or "")
+        if remote and remote != git("rev-parse", "HEAD"):
+            sys.exit(f"pr: NOT merged — the PR's head {remote[:8]} is not this HEAD: push first (step 11.2)")
+        # A refusal is read back, never assumed: in a repo with automerge.yml a token that is no
+        # admin (the other Mac's) is refused while `check` runs and automerge launches the PR a minute
+        # later; the wait and its limits are common.merge_pr_waiting's.
+        has_am = subprocess.run(["git", "cat-file", "-e", f"origin/{base}:{common.AUTOMERGE_YML}"],
+                                capture_output=True).returncode == 0
+        ok, msg = common.merge_pr_waiting(slug, pr["number"], tok, automerge=has_am)
+        if not ok:
+            sys.exit(f"pr: merge refused — {msg}")
+        print(f"merged #{pr['number']}: {msg}")
+        # A rebase merge puts every commit of the PR on the base, so undoing it is a range, not
+        # HEAD; both ends are read back from origin, never worked out (coding-on-workflow 3e).
+        git("fetch", "-q", "origin", base)
+        after = git("rev-parse", "-q", "--verify", f"origin/{base}")
+        primary = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+        if before and after and before != after:
+            print(f"rollback: cd {primary} && git revert --no-edit {before}..{after} "
+                  f"&& GIT_PUSH_OK=1 git push origin {base}")
+        for line in carried(slug, tok, launched_via=pr["number"]):
+            if not line.startswith("Carries: nothing"):
+                print(line)
+        return
+    if cmd == "carried":
+        via = None
+        # --landed-via is the old spelling of --launched-via, an alias until the rename's S8 (a /finish older than S4 says it)
+        flag = next((f for f in ("--launched-via", "--landed-via") if f in args), None)
+        if flag:
+            i = args.index(flag)
+            via = args[i + 1] if i + 1 < len(args) else sys.exit(f"pr: {flag} needs the PR number")
+            via = via.lstrip("#")
+            if not via.isdigit():
+                sys.exit(f"pr: {flag} needs a PR number, got {via}")
+        print("\n".join(carried(slug, tok, launched_via=via)))
+        return
+    sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,46 @@
+# The repo's check in CI, so a pull request proves itself before it launches.
+#
+# The `run:` line is the `check:` command from AGENTS.md's session contract, the same command a
+# session runs locally. Until a real one replaces the placeholder this job fails, on purpose: a
+# check that asserts nothing would let automerge launch every branch unproved.
+#
+# ubuntu unless the check reads a macOS tool: a private repo bills macOS minutes at 10x, so such a
+# check goes to a self-hosted runner on a Mac of one's own, through wharf's `ci-provider <repo>`
+# and its self-hosted kind (this file with its runs-on swapped; private repos with fork PRs'
+# workflows off). That runner runs as a login holding that Mac's credentials (gh, an ssh key, git,
+# Claude logins): "private" stops forks, but any write collaborator can run code there by
+# opening a PR.
+# A matrix job reports as `check (<value>)`, and main-protection.json must name exactly that;
+# read the names back with `gh pr checks <n>`, never predict them.
+# A check whose tests make scratch commits needs a git identity step and `fetch-depth: 0`.
+name: check
+on:
+  push:
+    branches: [main]
+  # ready_for_review: a draft's pushes skip the job below, so leaving draft is what runs it.
+  # closed: runs no job, but joins the concurrency group below and so cancels a run still going
+  # when the PR merges — a `/finish` that merges seconds after readying has just run the whole
+  # check (seen 2026-10-18: runs cancelled 6-7 s after each merge).
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+permissions:
+  contents: read
+# A newer push to the same PR makes the older run moot, and so does the PR closing; every run
+# bills the account's minutes. Keyed on the PR number: a merged PR's `closed` event carries the
+# base branch in github.ref, not refs/pull/N/merge. github.ref is the push trigger's key.
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    # Not on a draft: the checkpoint hook pushes one every ~10 min, and those runs were most
+    # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
+    # check, so automerge.yml arms only once this head has a run that is not skipped.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        run: |
+          {{COMMAND}}

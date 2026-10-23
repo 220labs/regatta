@@ -1,0 +1,1424 @@
+#!/usr/bin/env python3
+"""autofinish-run — a fresh, unattended `/finish` on one claude/* worktree, and how it ended.
+
+    autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|typed|yolo|dnd|chain] [--merge] [--session ID] [--dry]
+    autofinish-run notify [WORKTREE]      the run's own session: whom to message, and the text (below)
+
+E1 of docs/autofinish-design-2026-10-02.md (D13): the runner. Whoever decides that a branch should
+launch without the owner's wait — the sweep (rules A, B, D, E, L), `/autofinish` (C), a typed `/finish` handed
+off cold (E7), the end of a `dispatch --yolo` or dnd build run (E12, `--by yolo|dnd`: the prompt becomes
+`/finish <branch> --unattended --yolo|--dnd`) — calls this, and it returns at once.
+
+The landing ladder (skipper-modes S3b; the owner, 2026-10-21: "dnd: I want to automerge as well"): before
+the start, landing() reads the branch's mode from plan.json itself (bin/autofinish's landing_mode) and
+decides whether this run may merge. `ask`: every launch but a person's stops at a ready PR. A mode
+launch (`--by yolo|dnd`, or the sweep's rule M): `yolo` merges on any host bar the launcher's gates and
+the repo's `autofinish_exclude` and `in_place`, `dnd` bar the held slice (bin/autofinish's held_slice:
+money, a physical repo, a public publish, a deleted data file, `autofinish_exclude`), and a mode
+lowered since holds — but a yolo launch with no mode at all in a `"merge": "auto"` repo, from a caller
+without CLAUDE_UNATTENDED, keeps that standing yes (E12). A hold adds `--hold` to the prompt, denies
+`bin/pr merge` to the run, writes `"hold": "<why>"` into the state, and a stop at step 11 is recorded
+with gate `held` and the class (`stopped <branch> held held (<why>): …`), which helm's board cards.
+`--by` itself grants nothing: the yes to merge is the mode, which only the owner raises
+(helmlib.raise_refusal), so an unattended caller typing `--by yolo` gets what plan.json says. Defaults: --rule C, --by override (a person
+calling it by hand is closest to `/autofinish`). --merge: the owner's `--merge` (/finish's: their explicit
+yes to merge this branch's PR, given up front), carried into the run: the prompt becomes
+`/finish <branch> --unattended --merge`, and on the build Mac step 11.4 then merges without asking. It
+covers that one branch's PR only, and only a person gives it: `--by override` or `--by typed`; with
+`--by sweep`, `chain` or `yolo` it is refused at once (exit 2) — the sweep and the chain have no
+person's yes, and a yolo launch outside a `"merge": "auto"` repo stops at a held PR on purpose (E12).
+So is any caller with CLAUDE_UNATTENDED set (exit 2): every dispatched run has it, and its allow rules
+pass `bin/*` unseen, so a run the sweep started could otherwise launch another that merges. The label
+is all that is checked otherwise, the caller's word that a person said yes. A chain relaunch of a
+`--merge` run does not carry it, nor a sweep retry of one that died: either stops at the PR. --session: the caller's own session (E7's hook
+passes the panel's), never a lock holder it is refused for.
+
+A ship's lease (skipper-resilience S4): when DISPATCH_SHIP (or the older DISPATCH_PLAN) names a ship
+that has one here (plans/<id>/skipper.json, helm's bin/leaselib.py), the caller's generation is
+checked first — SKIPPER_GEN, else the lease's own session, else a plain shell — and any other is
+refused, exit 4, with one event in the ship (none on --dry). No lease, no DISPATCH_SHIP, or helm not
+installed: nothing is checked, as before.
+
+Before the start, in this process, under `<git dir>/claude/autofinish.json.lock` (O_EXCL; one
+older than START_LOCK_S is a start that died, taken over), so two callers never both pass the
+refusals and both write:
+  - no retry on the same tip: a worktree whose last run (its autofinish.json) was on this very
+    commit is refused, whatever that run's outcome — a stop repeats itself on the same tip, and
+    a run still going is not started twice. One exception: a run dispatch refused before any
+    session existed (the run cap, its start lock: gate `refused`, `not-launched` before 2026-10-17 and
+    read both ways) never ran, so it may start.
+    `--by chain` (the chain manager's tick, orchestration B3) is judged by chain_refusal() instead:
+    it relaunches only a tip whose last run stopped at `no-landing` with the network or sleep as the
+    branch's last autofinished line (S4), at most CHAIN_RELAUNCHES times per tip (counted in
+    `<git dir>/claude/autofinish-chain.json`), and a yolo launch it relaunches stays a yolo one;
+  - the login (work-account E5, as `dispatch --account auto`; joined early on the owner's word,
+    2026-10-08): `bin/account pick --repo <primary> --json` at start time, so a second login, first in
+    the walk, takes the run unless the repo is on its deny list; the pick's CLAUDE_CONFIG_DIR goes to
+    the start (unset for the default dir, whose env must stay empty — bin/account's header), and
+    `account` in the state and the log line names the row. Exit 3 from the pick (no row may run
+    now) is a refusal with each row's reason; exit 4 (no registry) or an unreadable answer keeps
+    the login this was started with, as before. A caller's CLAUDE_CONFIG_DIR or
+    CLAUDE_CODE_OAUTH_TOKEN is an explicit choice and is kept, no pick, unless that dir's row has
+    a window locked or is parked (`limits --all --parked --json --cached`: parked, locked, or cooling
+    down after an exhaustion):
+    then the pick decides, and with no row to move to it refuses (2026-10-22). Kept:
+    a panel session on the work login handing its /finish off cold, or a test (bin/autofinish's start_runner and dispatch --yolo's
+    launch pass neither, so the sweep, the override and a yolo launch always pick). A pick past PICK_TIMEOUT (a probe hanging) falls back
+    to `pick --cached`; --by typed picks `--cached` from the start (cold_prompt's 45 s, a hook's);
+  - no lock taken from a session at work: owner.json naming a session that is not the caller,
+    live in the registry (~/.claude/sessions, its pid alive) and not `idle` — busy, waiting on a
+    dialog — is a refusal, whoever calls (review, 2026-10-05: a typed hand-off took one), unless
+    the lock is marked `handover` (bin/pickup next; bin/wharf when it settles an Orca block, since
+    2026-10-19: every session starts `sessionpipe wait` at SessionStart, so a finished builder
+    reads `shell`, which counts as busy, and four launches were refused for it). A typed
+    hand-off (--by typed) is refused, too, by any lock another session holds unexpired
+    (checkpoint.py's held_by_other: seen under OWNER_TTL, not handed over): the owner typed /finish in
+    one panel, and the branch is another's;
+  - a session id is chosen, and `<git dir>/claude/autofinish.json` written with it (the contract
+    the hooks read — `{"started", "session", "tip", "by", "rule", "window", "account", "ended",
+    "outcome", "pr", "gate"}`, plus `"merge": true` for a `--merge` launch and `"hold": "<why>"` for a
+    held one (S3b) — each key absent otherwise — and nothing else), then the worktree lock `owner.json` (hooks/common.py's
+    write_owner) in that id's name: the session holds the lock from its first call (P8), and a
+    panel session still open on the branch is refused its next write, with the reason.
+    Should the detach fail after that, the lock is given back (the previous owner.json, or none)
+    and the state ended `never-started` at gate `refused`, exit 1: nothing ran.
+Then a detached child (a double fork and setsid: the caller's process group, a hook's or a
+Bash call's, may be ended the moment the caller returns — dispatch's header, 2026-10-05):
+  - the bundle — bin/pickup's context_bundle, the branch's prompts, its last asks and replies, its
+    PR — at `<git dir>/claude/autofinish-bundle.md`: the conversation's record for /finish's
+    learnings and open-items gates (design section 7). Written here, not before returning: it
+    reads every transcript of the repo, seconds the caller should not wait;
+  - `dispatch --start "/finish <branch> --unattended[ --yolo| --dnd][ --hold][ --merge]" <worktree> "finish · <topic>"`: Remote
+    Control "finish · <topic> · laptop", a window tiled on Desktop 5 (bin/tiling), ended by dispatch-rc's watcher
+    10 min after it goes idle — dispatch writes that `idle` into the run's record for every
+    --start run, because this waiter blocks on the watcher and nobody picks a launch up again; a
+    seeded branch run is kept the prompt cache's hour instead (2026-10-06), and is ended before
+    this start (`dispatch-rc end-warm`; a busy one stops it — D2 of
+    docs/dispatch-warm-hour-2026-10-08.md); opus (dispatch's default — no model flag here: a model is
+    chosen in bin/gate or a script bin/test_gate.sh names); `--permission-mode auto` with dispatch's allowlist
+    plus what /finish runs (Agent, EnterWorktree, git, the contract's `check:` as written on the
+    primary's main, the overlay's bin/* (legacy_root), carried.py), and dispatch's denied list minus
+    `git push` and bin/pr's launch verbs: checkpoint.py and the repo's pre-push judge those by
+    ref. No `--background`: dispatch's default holds — background tasks off
+    (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1), so a Bash call past BASH_DEFAULT_TIMEOUT_MS (30 min)
+    is killed, not backgrounded; /finish starts its check as `nohup bin/check … &` inside one call and polls
+    its summary (skills/finish step 1; bin/check reads main's check line when CLAUDE_UNATTENDED is set). Every CLAUDE* variable is stripped first but the two that name the account
+    (lessons/claude-code.md: a child of a session saves no transcript) — dispatch's screen
+    runner strips them too, its headless fallback does not;
+  - it waits for dispatch to return, which is the watcher's end.
+After the end, in `finally`, whatever happened before:
+  - the lock is released if it still names this session, and a `finishing` marker removed (R29:
+    a `-p` exit once left owner.json naming a dead session; the watcher frees it too, this does
+    not rely on that). A waiter ended while its session still runs ends that session first:
+    a lock and a marker freed under a live /finish would let the checkpoint hook commit into its
+    rewrite;
+  - the outcome, read from the transcript's last reply, never from a return code (`launched` was
+    `landed` before rename S4; every reader takes both, common.LAUNCHED_OUTCOMES):
+      launched       a DONE closing line (common.ending), `Shipped:` or a `rollback:` line, and no
+                     ⚠ anywhere → pr N from `merged #N`, the PR link, the Shipped line, or GitHub
+      stopped        any ⚠ line, whatever else the reply says (a stop may well name `merged #57`
+                     or a rollback: review, 2026-10-05); gate `G<n>` from the first ⚠ line
+                     (`⚠ step 4 — …`, as the skill's --unattended paragraph asks), else from its
+                     words, else `stop`; no ⚠ and no launch: `nothing-to-land` or `no-landing`
+                     (an ending /finish never writes, R16)
+      never-started  no reply in the transcript: gate `never-started` and the screen's last lines
+                     (the watcher's hardcopy), or `refused` when dispatch refused to start;
+  - autofinish.json updated (`ended`, `outcome`, `pr`, `gate`); a stop posted as one comment on the
+    branch's PR through hooks/common.py's api; a line in `<common git dir>/claude/autofinished`
+    (`launched <branch> #N` — no number when none was read —, `stopped <branch> <gate> <line>` or
+    `never-started <branch> <line>`: the shapes bin/autofinish's header gives, design section 7);
+    and one line in ~/Library/Logs/claude-weekly/autofinish-<date>.log,
+    `<iso> run <repo> <branch> <outcome> …`.
+
+A runner that dies — the Mac lost power, the process was killed — never reaches that `finally`
+(2026-10-06: two rule-D runs, a laptop at 1 %). bin/autofinish's sweep asks `dead()` about every
+worktree whose state says started with no outcome, and `bury()` writes what the `finally` would
+have, as outcome `died` (docs/autofinish-died-2026-10-07.md):
+  - dead: the waiter itself is gone (its pid and start time in autofinish-waiter.json — while it
+    runs, nothing else is asked: a Mac asleep before dispatch wrote its record is not a death);
+    then neither its claude (the pid with its recorded start time: a reused pid is not it) nor
+    dispatch's watcher runs, and dispatch wrote no end; or dispatch ended it PRE_START_S ago and
+    no outcome followed (the waiter died); or no dispatch record PRE_START_S after the start.
+    A run dispatch ended is recorded with the outcome its transcript gives (record(), as the
+    waiter would have) — a launch or a stop is not a death;
+  - autofinish.json ended `died` (gate null), the lock released and a `finishing` marker removed
+    when the lock still names the dead session (or none does), one comment on the PR, a line
+    `<iso> died <branch> <tip7> <dispatch log's last line>` in `autofinished` and
+    `<iso> run <repo> <branch> died session=… tip=… rule=… by=… account=… — <that line>` in the day's log.
+    The override marker stays: the branch is judged again, and a rule-C branch needs it for that.
+  A died run's tip is no "same tip" refusal here: bin/autofinish retries it once (its header).
+
+The sessions it works on are told (the owner, 2026-10-18: "message every open/active session it works
+on … and provide details of the session that's running it"). At the start, before the lock changes
+hands, the live sessions open on the worktree — bin/autofinish's sessions_on(): the lock's holder,
+the last prompter, any whose cwd is inside it; a typed hand-off's caller left out, it handed the
+branch over — go into `<git dir>/claude/autofinish-notify.json` ({"session", "targets", "ts",
+"told"}). A write that fails is said and skipped, never a failed start. SendMessage is a model tool
+and no CLI verb sends one (2.1.302), so the run's own session sends them, as its first act under
+`/finish --unattended` (skills/finish), each send judged by the classifier — no allow rule:
+
+    autofinish-run notify [WORKTREE]
+
+prints, per target still live, `SendMessage to <name>` (with its cwd where another live session
+shares the name) and the text: the branch is taken, and the run's session id, how ListAgents lists
+it (every run is named `run-finish`, so by its cwd too), its Remote Control name as dispatch
+recorded it, account, rule, start, tip, record and log. A target with no inbox, or gone since, is
+named and skipped: checkpoint.py's once-notice at its next prompt carries the run's session,
+account and rule. So does a send across logins that SendMessage refuses — unproven either way
+(docs/session-asks-2026-10-09.md, B0c), which is why the day's log line says `asked=`, not sent.
+Only the run's own session gets the lines (CLAUDE_CODE_SESSION_ID; unset is refused), only while
+the run is under way, and once (`told`). Exit 0, also with nothing to send.
+
+The run's own output (dispatch's log and this child's) goes to
+~/Library/Logs/claude-weekly/<date>-dispatch-finish-<topic>.log. --dry prints what would be
+written and run — the state, the lock, the bundle's head, and dispatch's own dry run, claude's
+whole command line included — and writes nothing.
+
+Exit: 0 started (or --dry), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
+a claude/* worktree, 3 refused (same tip, a run going, another start under way, a lock in use, no
+account may run it now), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4).
+Tests (bin/test_autofinish_run.sh) replace dispatch's commands with DISPATCH_CLAUDE, _SCREEN and the
+rest; AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
+DISPATCH_ACCOUNT; the tests mostly run the real one on a fixture registry), AUTOFINISH_API_STUB names a Python file whose
+`api()` stands in for common.api. Python 3.9, stdlib only.
+"""
+import argparse
+import contextlib
+import datetime
+import glob
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import pathlib
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import traceback
+import urllib.parse
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+
+HOME = os.path.expanduser("~")
+LOGS = os.path.join(HOME, "Library", "Logs", "claude-weekly")
+RUNS = os.path.join(LOGS, "run-seed-runs")  # dispatch's record of each run
+DISPATCH = os.environ.get("AUTOFINISH_DISPATCH") or os.path.join(HERE, "dispatch")
+# account is lighthouse's (G12): without it, no pick — the run keeps the login it was started with.
+ACCOUNT = os.environ.get("AUTOFINISH_ACCOUNT") or (str(common.tool("account") or "") or None)
+STATE, BUNDLE, RECORD = common.AUTOFINISH_RUN, "autofinish-bundle.md", common.AUTOFINISHED
+START_LOCK = STATE + ".lock"
+WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
+NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
+KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
+OPTIONAL_KEYS = ("merge", "hold")   # written only when set: a launch without --merge or a hold keeps the file it always had
+LAND_BY = ("yolo", "dnd")   # the mode launches (skipper-modes S3b): `--by` names the mode, plan.json decides
+MERGE_BY = ("override", "typed")   # whose yes --merge may carry: a person's (the header)
+REFUSED = common.REFUSED   # the gate of a start dispatch refused before any session; was "not-launched"
+REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
+DIED = "died"
+DIED_WHY = "the runner died before an outcome: the Mac lost power or the process was killed; nothing merged"
+PRE_START_S = 600   # a state this young with no run record yet: its child may still be writing the bundle
+START_LOCK_S = 130   # the refusals and the writes take a second, the pick at most PICK_TIMEOUT + 5 s (a caller
+                     # with its own dir first `which`, 10 s, and its row, 5 s, both cached), ending a warm
+                     # run up to 90 s (start(), capped): 125 s at worst; an older lock's holder died
+PICK_TIMEOUT = 15    # a probe takes ~4 s, and the sweep's fresh pick seconds before left the cache warm; a
+                     # hang falls back to --cached. bin/autofinish's start_runner waits 120 s for all of
+                     # this; cold_prompt's typed hand-off 45 s (it picks --cached, ends a warm run in 30 s)
+COMMENT_CAP = 3000   # characters of the ⚠ block in the PR comment
+# The account variables stay (bin/account); DISPATCH_* (or, from before the rename, RUN_SEED_*) of a calling run would make this one part of
+# its chain (DEPTH, BRIEF) or delete its launchd job (LABEL) — dispatch's own list, plus the chain's.
+KEEP_CLAUDE = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
+DROP_DISPATCH = tuple(p + v for p in ("DISPATCH_", "RUN_SEED_") for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF"))
+NAME_RE = re.compile(r"^claude/(?:[a-z0-9-]+/)?\d{4}-\d{2}-\d{2}-(?P<topic>.+)$")  # pickup's NAME_RE
+# --by chain (the chain manager's tick, orchestration B3): which stops it may relaunch, and how often.
+# The patterns are bin/stalls.py's NET_RE and LOGIN_RE, character for character (test_helm.sh compares
+# them): the tick judges S4 with one copy and this file lifts its refusal with the other.
+S4_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNREFUSED\b)")
+LOGIN_RE = re.compile(r"Not logged in|/login\b|OAuth token|authentication_error", re.I)
+CHAIN = "autofinish-chain.json"   # {"tip", "sessions"}: the chain relaunches on that tip (chain_refusal)
+CHAIN_RELAUNCHES = 2                 # D4 = C (the owner, 2026-10-14): two retries per step, a launch's tip included
+ROLLBACK_RE = re.compile(r"^.*\brollback:\s.*$", re.M)
+MERGED_RE = re.compile(r"\bmerged #(\d+)")
+PULL_RE = re.compile(r"/pull/(\d+)\b")
+HASH_RE = re.compile(r"#(\d+)\b")
+STEP_RE = re.compile(r"\bstep (\d+)", re.I)
+# a ⚠ line that names no step: the gate by its words, first match wins (the skill's steps → design's G-numbers)
+GATE_WORDS = (("open item", "G4"), ("owns the checkout", "G0"), ("lock", "G0"),
+              ("another session", "G10"), ("review", "G1r"), ("deploy", "G1"), ("live", "G1"),
+              ("check", "G1"), ("github", "G5"), ("merge", "G11"), ("push", "G11"), ("rebase", "G11"))
+
+if os.environ.get("AUTOFINISH_API_STUB"):  # the tests' GitHub: find_pr and the comment go through it
+    _spec = importlib.util.spec_from_file_location("api_stub", os.environ["AUTOFINISH_API_STUB"])
+    _stub = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_stub)
+    common.api = _stub.api
+
+
+def load_bin(name):
+    """A script in bin/ as a module (no .py, sometimes a dash: no plain import)."""
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), os.path.join(HERE, name))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def now_iso():
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def git(where, *args):
+    r = subprocess.run(["git", "-C", where, *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+class Tree:
+    """The worktree, read from git — never from the caller's cwd."""
+
+    def __init__(self, path):
+        self.path = git(path, "rev-parse", "--show-toplevel")
+        self.gitdir = git(path, "rev-parse", "--absolute-git-dir")
+        common_dir = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        self.common = common_dir
+        self.primary = os.path.dirname(common_dir) if common_dir.endswith("/.git") else ""
+        self.branch = git(path, "symbolic-ref", "--quiet", "--short", "HEAD")
+        self.tip = git(path, "rev-parse", "HEAD")
+        m = NAME_RE.match(self.branch)
+        self.topic = m.group("topic") if m else self.branch.rsplit("/", 1)[-1]
+        self.repo = os.path.basename(self.primary)
+        self.state_dir = os.path.join(self.gitdir, "claude")
+        self.window = "finish · %s" % self.topic   # dispatch adds " · <machine>" for Remote Control
+        # fixed at the start: a run that crosses midnight keeps one file
+        self.runlog = os.path.join(LOGS, "%s-dispatch-finish-%s.log" % (datetime.date.today().isoformat(), self.topic))
+
+    def problem(self):
+        if not self.path or not self.gitdir:
+            return "not a git worktree"
+        if not self.branch.startswith("claude/"):
+            return "on %s, not a claude/* branch" % (self.branch or "a detached HEAD")
+        if not self.primary or os.path.realpath(self.path) == os.path.realpath(self.primary):
+            return "the primary checkout: a runner works in the branch's own worktree"
+        return None
+
+
+def read_state(t):
+    try:
+        with open(os.path.join(t.state_dir, STATE)) as f:
+            st = json.load(f)
+        return st if isinstance(st, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def contract(st):
+    """The keys autofinish.json carries: KEYS always, OPTIONAL_KEYS only when set."""
+    return dict({k: st.get(k) for k in KEYS}, **{k: st[k] for k in OPTIONAL_KEYS if st.get(k)})
+
+
+def write_state(t, st):
+    """The contract's keys, in its order, nothing else; through a rename, so a hook never reads half."""
+    os.makedirs(t.state_dir, exist_ok=True)
+    path = os.path.join(t.state_dir, STATE)
+    tmp = "%s.%d" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(contract(st), f, indent=1, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def log(line):
+    """One line in the day's autofinish log — the dry run's file and shape."""
+    os.makedirs(LOGS, exist_ok=True)
+    with open(os.path.join(LOGS, "autofinish-%s.log" % datetime.date.today().isoformat()), "a") as f:
+        f.write(line.rstrip("\n") + "\n")
+
+
+def run_record(sid):
+    """(path, state) of dispatch's record of the run with this session id, or (None, None)."""
+    for path in glob.glob(os.path.join(RUNS, "*.%s.json" % sid[:8])):
+        try:
+            with open(path) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if st.get("session") == sid:
+            return path, st
+    return None, None
+
+
+def run_live(sid):
+    """True while dispatch's run of this session is not over: its claude or its watcher still
+    running and no end written (dispatch-rc's unfinished())."""
+    path, _ = run_record(sid)
+    if not path:
+        return False
+    rc = load_bin("dispatch-rc")
+    st = rc.load(path)
+    if st.get("ended"):
+        return False
+    return rc.same(st) or (isinstance(st.get("watcher"), int) and not rc.watcher_gone(st))
+
+
+def last_stop(t):
+    """The detail of this branch's last line in `autofinished` when that line is a stop, else None."""
+    entries = [e for e in common.autofinished(t.common) if e["branch"] == t.branch]
+    return entries[-1]["detail"] if entries and entries[-1]["outcome"] == "stopped" else None
+
+
+def chain_runs(t):
+    """The sessions `--by chain` started on this worktree's tip, from CHAIN (any other tip's are void)."""
+    try:
+        with open(os.path.join(t.state_dir, CHAIN)) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return list(d.get("sessions") or []) if isinstance(d, dict) and d.get("tip") == t.tip else []
+
+
+def chain_spent(t, prev):
+    """The chain relaunches spent on this tip: CHAIN's sessions less the one dispatch refused before any
+    session existed (refused) — that start is always the `prev` of the next one, so start()
+    drops it from CHAIN then, and a refused start is never counted once a later one runs."""
+    return [s for s in chain_runs(t) if not (prev and s == prev.get("session") and prev.get("gate") in REFUSED_GATES)]
+
+
+def chain_refusal(t, prev):
+    """Why the chain manager's tick may not relaunch this tip, or None (orchestration B3, chain-manager
+    E3, D4 = C). The one refusal it lifts — no retry on the same tip — only for the one cause it is
+    for: the last run on this very tip stopped at `no-landing` and the branch's last autofinished
+    line says the network or sleep stopped it (S4_RE, anchored at the stop text's start, as
+    bin/stalls.py's NET_RE: a WAITING line that quotes an API error is not one — R4). At most
+    CHAIN_RELAUNCHES of them per tip; a chain start dispatch refused before any session (refused)
+    leaves the stop in place and is not counted against the tip."""
+    if not prev or prev.get("tip") != t.tip:
+        return ("a chain relaunch is for a launch stopped on this tip, and its last run was on %s"
+                % (str((prev or {}).get("tip") or "none")[:7]))
+    if not prev.get("ended"):
+        return "a run on this tip started %s (session %s) has not ended" % (
+            prev.get("started"), str(prev.get("session"))[:8])
+    started = chain_spent(t, prev)
+    if not (prev.get("outcome") == "stopped" and prev.get("gate") == "no-landing") and prev.get("gate") not in REFUSED_GATES:
+        return "its run on this tip ended %s at %s, not stopped by the network — no chain relaunch" % (
+            prev.get("outcome"), prev.get("gate") or "no gate")
+    gate, _, text = (last_stop(t) or "").partition(" ")
+    if gate != "no-landing" or not S4_RE.match(text) or LOGIN_RE.search(text):
+        return "the branch's last autofinished line is no network or sleep stop — no chain relaunch"
+    if len(started) >= CHAIN_RELAUNCHES:
+        return "%d chain relaunches on this tip already (%s) — raised, not retried" % (
+            len(started), ", ".join(s[:8] for s in started))
+    return None
+
+
+def refusal(t, prev, by=None):
+    """Why no run starts now, or None."""
+    if by == "chain":
+        return chain_refusal(t, prev)
+    if not prev:
+        return None
+    if prev.get("tip") == t.tip and prev.get("gate") not in REFUSED_GATES and prev.get("outcome") != DIED:
+        if not prev.get("ended"):
+            return "a run on this tip started %s (session %s) has not ended" % (
+                prev.get("started"), str(prev.get("session"))[:8])
+        return ("its run on this tip (%s) ended %s, %s%s — no retry on the same tip" % (
+            t.tip[:7], prev.get("ended"), prev.get("outcome"),
+            " at %s" % prev["gate"] if prev.get("gate") else ""))
+    if not prev.get("ended") and prev.get("session"):
+        if run_live(prev["session"]):
+            return "a run is going on this worktree (session %s, tip %s)" % (
+                prev["session"][:8], str(prev.get("tip"))[:7])
+        try:
+            started = datetime.datetime.fromisoformat(prev.get("started") or "").timestamp()
+        except ValueError:
+            started = 0
+        if not run_record(prev["session"])[0] and time.time() - started < PRE_START_S:
+            return "a run was started %s and has not reached dispatch yet" % prev.get("started")
+    return None
+
+
+def same_session(a, b):
+    """A full id and its first 8 (a trailer's) are the same session."""
+    a, b = str(a or ""), str(b or "")
+    return bool(a and b) and (a == b or (min(len(a), len(b)) >= 8 and (a.startswith(b) or b.startswith(a))))
+
+
+def open_sessions(t, caller=None, typed=False):
+    """The live sessions open on this worktree now (bin/autofinish's sessions_on, by the lock's
+    holder, the last prompter and cwd): the ones `notify` tells. Read before the lock changes hands."""
+    af = load_bin("autofinish")
+    state = pathlib.Path(t.state_dir)
+    ids = {s for s in ((common.read_owner(state) or {}).get("session"), af.queue_session(state)) if s}
+    return sorted({e["sessionId"] for e in af.sessions_on(pathlib.Path(t.path), ids)
+                   if not (typed and same_session(e["sessionId"], caller))})
+
+
+def write_targets(t, sid, targets, told=None):
+    path = os.path.join(t.state_dir, NOTIFY)
+    tmp = "%s.%d" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump({"session": sid, "targets": targets, "ts": now_iso(), "told": told}, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def notify_text(t, st, me):
+    """The message: what happened to the branch, then the run — enough to find, watch or reach it.
+    Every name is read back, never built: the Remote Control name from dispatch's record (it spells
+    the host as the config keys do), the run's name from the registry — which is `run-finish` for every
+    run (dispatch's -n), so the session id and the worktree go with it."""
+    rc = (run_record(st["session"])[1] or {}).get("rc_name") or common.autofinish_window(st, t.branch)
+    name = (me or {}).get("name")
+    reach = ("ListAgents lists it as %s, cwd %s" % (name, t.path)) if name else "ListAgents lists it by its cwd, %s" % t.path
+    return ("autofinish picked up this session's branch %s: a fresh unattended /finish is launching it now. "
+            "The run: session %s (%s), window and Remote Control \"%s\", account %s, rule %s (by %s), "
+            "started %s on tip %s. It holds this worktree's lock, so writes here are refused until it ends; "
+            "its outcome shows here at the next prompt and on the PR. Record %s; log %s. "
+            "To stop it, type in its window or Remote Control session (/autofinish off stops only the next start). "
+            "No reply needed."
+            % (t.branch, st["session"], reach, rc, st.get("account") or "unchanged", st.get("rule"), st.get("by"),
+               common.iso_clock(st.get("started")), (st.get("tip") or "")[:7], os.path.join(t.state_dir, STATE),
+               runlog_of(t, st)))
+
+
+def notify(argv):
+    ap = argparse.ArgumentParser(prog="autofinish-run notify")
+    ap.add_argument("worktree", nargs="?", default=".")
+    args = ap.parse_args(argv)
+    t = Tree(os.path.abspath(os.path.expanduser(args.worktree)))
+    if t.problem():
+        print("autofinish-run notify: %s: %s" % (args.worktree, t.problem()), file=sys.stderr)
+        return 2
+    st = read_state(t) or {}
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    try:
+        with open(os.path.join(t.state_dir, NOTIFY)) as f:
+            n = json.load(f)
+    except (OSError, ValueError):
+        n = {}
+    if not st.get("session") or st.get("ended"):
+        print("nothing to send: no autofinish run is under way on %s" % t.branch)
+        return 0
+    if not same_session(me, st["session"]):
+        # closed when unknown: anyone else sending these would speak as the run
+        print("nothing to send: the run on %s is session %s, not this one (%s)"
+              % (t.branch, st["session"][:8], me[:8] if me else "no CLAUDE_CODE_SESSION_ID"))
+        return 0
+    if n.get("session") != st["session"] or not n.get("targets"):
+        print("nothing to send: no other session was open on %s when the run started" % t.branch)
+        return 0
+    if n.get("told"):
+        print("nothing to send: the lines were printed at %s already" % common.iso_clock(n["told"]))
+        return 0
+    live = {e["sessionId"]: e for e in load_bin("autofinish").live_sessions()}
+    text = notify_text(t, st, live.get(st["session"]))
+    asked, skipped = [], []
+    for sid in n["targets"]:
+        e = live.get(sid)
+        if not e:
+            skipped.append("%s — ended since the start" % sid[:8])
+            continue
+        name = e.get("name") or sid
+        if not e.get("messagingSocketPath"):
+            skipped.append("%s — binds no inbox; checkpoint's notice tells it at its next prompt" % name)
+            continue
+        # ListAgents: a bare name is the address unless two rows share it (asklib's same_named, K2)
+        twins = [x for x in live.values() if e.get("name") and x.get("name") == e["name"] and x["sessionId"] != sid]
+        print("SendMessage to %s" % name + ("  — %d other live session(s) share the name: send to the ListAgents "
+                                            "row whose cwd is %s, with its [ref]" % (len(twins), e.get("cwd"))
+                                            if twins else ""))
+        asked.append(sid[:8])
+    if asked:
+        print("with this text, word for word:\n\n%s\n" % text)
+    for s in skipped:
+        print("skip %s" % s)
+    try:
+        write_targets(t, n["session"], n["targets"], told=now_iso())
+    except OSError:
+        pass
+    # asked=, not sent=: the model makes the sends, and one across logins may be refused (unproven, B0c)
+    log("%s run %s %s notify session=%s asked=%s%s" % (now_iso(), t.repo, t.branch, st["session"][:8],
+                                                       ",".join(asked) or "-", " skipped=%d" % len(skipped) if skipped else ""))
+    return 0
+
+
+def lock_refusal(t, caller, typed):
+    """Why the worktree's lock is not this run's to take, or None. The registry is bin/autofinish's
+    reader (its pid and procStart test), so both judge a live session alike."""
+    lock = common.read_owner(t.state_dir)
+    holder = (lock or {}).get("session")
+    if not holder or same_session(holder, caller):
+        return None
+    live = next((e for e in load_bin("autofinish").live_sessions() if same_session(e["sessionId"], holder)), None)
+    # handed over (`pickup next`, or wharf once the yard settled the block): free while the holder
+    # is idle or `shell` — a finished builder still runs the Session-tab waiter, so it reads `shell`.
+    # Busy, it may still be in its last turn (worker-done, then the Stop checkpoint): refused (review, 2026-10-19)
+    if lock.get("handover") and (not live or live.get("status") in ("idle", "shell")):
+        return None
+    if live and live.get("status") != "idle":
+        return "the worktree's lock is held by session %s, live and %s" % (holder[:8], live.get("status") or "with no status")
+    if typed and not lock.get("handover") and time.time() - (lock.get("seen") or 0) < common.OWNER_TTL:
+        return ("the worktree's lock is held by session %s (seen %d min ago), not the one that typed /finish"
+                % (holder[:8], (time.time() - (lock.get("seen") or 0)) // 60))
+    return None
+
+
+def take_start_lock(t):
+    """The path of `autofinish.json.lock`, now ours, or None while another start holds it."""
+    os.makedirs(t.state_dir, exist_ok=True)
+    path = os.path.join(t.state_dir, START_LOCK)
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) < START_LOCK_S:
+                    return None
+                os.remove(path)
+            except OSError:
+                pass  # gone meanwhile: the next try takes it
+            continue
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return path
+    return None
+
+
+def give_back(t, sid, before, st):
+    """The detach failed after the lock and the state were written: the lock as it was (or none),
+    and the state ended never-started at `refused` — nothing ran, so the tip may start again."""
+    path = os.path.join(t.state_dir, common.OWNER_FILE)
+    if (common.read_owner(t.state_dir) or {}).get("session") == sid:
+        if before is None:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        else:
+            tmp = "%s.%d" % (path, os.getpid())
+            with open(tmp, "w") as f:
+                f.write(before)
+            os.replace(tmp, path)
+    st.update(ended=now_iso(), outcome="never-started", gate=REFUSED)
+    write_state(t, st)
+
+
+class NoAccount(Exception):
+    """No row of the registry may run this now; args[0] is each row's reason."""
+
+
+def account_pick(t, cached=False):
+    """(label, dir, why) of the login the session runs on (header, the login). dir: the
+    CLAUDE_CONFIG_DIR to start with, "" for the default login (unset), None to leave the env as
+    it is. Raises NoAccount on the pick's exit 3."""
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        # the token outranks any dir (bin/account's header): `account which` reads only the dir
+        return "oauth-token", None, "the caller's CLAUDE_CODE_OAUTH_TOKEN, kept"
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not ACCOUNT and not cfg:
+        return None, None, "no account tool (lighthouse not installed) — the login this run was started with"
+    cooling = False
+    if cfg:
+        try:
+            if not ACCOUNT:
+                raise OSError("no account tool")
+            r = subprocess.run([ACCOUNT, "which"], capture_output=True, text=True, timeout=10)
+            label = r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            label = ""
+        # ~/.claude set explicitly is the default login, which runs logged out unless unset
+        # (bin/account's header) — bin/autofinish passes it for a pick of the default row
+        default = os.path.realpath(os.path.expanduser(cfg)) == os.path.realpath(os.path.expanduser("~/.claude"))
+        cooling = cooling_down(cfg)
+        if cooling:
+            label = cooling
+        else:
+            # no spaces: the run lines are key=value, split on whitespace
+            return re.sub(r"\s+", "_", label or cfg), "" if default else None, "the caller's CLAUDE_CONFIG_DIR, kept"
+    cmd = [ACCOUNT, "pick", "--repo", t.primary, "--json"]
+    try:
+        r = common.run_group(cmd + (["--cached"] if cached else []), PICK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:  # a probe that hangs: the cached readings decide, as a dry run's do
+            r = common.run_group(cmd + ["--cached"], 5)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return None, None, "account pick failed (%s) — the login this run was started with" % type(e).__name__
+    except OSError as e:
+        return None, None, "account pick failed (%s) — the login this run was started with" % e
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        d = None
+    if r.returncode == 4:
+        return None, None, "no account registry here — the login this run was started with"
+    if r.returncode == 3 and isinstance(d, dict):
+        raise NoAccount("; ".join("%s: %s" % (l, w) for l, w in d.get("skipped") or []))
+    if r.returncode or not isinstance(d, dict) or not d.get("account"):
+        return None, None, "account pick failed (%s) — the login this run was started with" % (
+            (r.stdout or r.stderr).strip()[:120] or "exit %d" % r.returncode)
+    why = d.get("reason") or ""
+    if cfg and cooling:
+        why = "the caller's %s is cooling down, so picked: %s" % (label, why)
+    return d["account"], (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), why
+
+
+def cooling_down(cfg):
+    """The label of the row whose home is CFG when it is parked or a window of it is locked, else None. A caller's
+    login is an explicit choice over the soft ceilings, never over a lock: a panel session left on
+    a cooling login handed every landing it launched to that login (yard-s2, 2026-10-22, the work login
+    held till 11:00). The row is read by its home, not from pick's `skipped`: pick stops at the
+    first eligible row and never judges the rest, and `which` names no default row (the review)."""
+    if not ACCOUNT:
+        return None
+    try:
+        r = common.run_group([ACCOUNT, "limits", "--all", "--parked", "--json", "--cached"], 5)
+        rows = json.loads(r.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    home = os.path.realpath(os.path.expanduser(cfg))
+    for a in rows if isinstance(rows, list) else []:
+        if not isinstance(a, dict) or not a.get("home") or os.path.realpath(a["home"]) != home:
+            continue
+        lim = a.get("limits") if isinstance(a.get("limits"), dict) else {}
+        if a.get("enabled") is False or lim.get("locked") or str(a.get("why") or "").startswith("cooling down"):
+            return re.sub(r"\s+", "_", str(a.get("label") or cfg))
+    return None
+
+
+def use_account(cfg):
+    """The pick's dir into this process's env, so the start and the transcript's reader follow it."""
+    if cfg is None:
+        return
+    if cfg:
+        os.environ["CLAUDE_CONFIG_DIR"] = cfg
+    else:
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+
+def finish_prompt(branch, by=None, merge=False, hold=None):
+    """The prompt the run starts with (the header's)."""
+    return "/finish %s --unattended" % branch + (" --%s" % by if by in LAND_BY else "") + (" --hold" if hold else "") \
+        + (" --merge" if merge else "")
+
+
+def _lander():
+    """bin/autofinish as a module: landing_mode and held_slice, the ladder's one copy (S3b). None when
+    it will not load (its wharf peer missing exits at import): the caller then holds."""
+    try:
+        return importlib.machinery.SourceFileLoader("autofinish_lander", os.path.join(HERE, "autofinish")).load_module()
+    except BaseException:  # noqa: B036 — SystemExit included: a missing peer is a hold, never a crash
+        return None
+
+
+def main_of(t):
+    try:
+        with open(os.path.join(t.primary, ".claude", "workflow.json")) as f:
+            return json.load(f).get("main") or "main"
+    except (OSError, ValueError, AttributeError):
+        return "main"
+
+
+def landing(t, by, rule):
+    """(hold, mode) for this launch — the landing ladder (skipper-modes S3b), read here from plan.json
+    (bin/autofinish's landing_mode), never from the caller: `--by` is a label any caller may type, and
+    every dispatched run's allow rules pass bin/* unseen (AGENTS.md's unattended-caller trap). `hold` is
+    why the run stops at a ready PR, or None when it may merge:
+      - mode `ask`: every launch holds but a person's (`override` or `typed`, no CLAUDE_UNATTENDED);
+      - a mode launch (`--by yolo|dnd`, or rule M): held_slice under the mode now — `yolo` merges bar the
+        launcher's own gates and the repo's `autofinish_exclude`/`in_place`, `dnd` bar the held slice, any
+        other mode holds (a taken answer never lands there, yolo-veto D1) — except that a yolo launch
+        with no mode at all (a run from before the mode) in a `"merge": "auto"` repo keeps its standing
+        yes (E12), and only from a caller without CLAUDE_UNATTENDED: a lowered mode is a mode, and a run
+        typing `--by yolo` is no person (landing review 3, 4c);
+      - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host)."""
+    af = _lander()
+    if af is None:
+        return ("the lander's judge did not load (bin/autofinish)" if by in LAND_BY or rule == "M" else None), None
+    mode = af.landing_mode(t.branch, t.primary or None)[0]  # with the repo, as the sweep's verdict reads it
+    person = by in MERGE_BY and not os.environ.get("CLAUDE_UNATTENDED")
+    if mode == "ask" and not person:
+        return "mode ask — nothing lands by itself", mode
+    if by not in LAND_BY and rule != "M":
+        return None, mode
+    eff = mode if mode in af.LAND_MODES else ("yolo" if by == "yolo" and mode is None and merge_auto(t)
+                                              and not os.environ.get("CLAUDE_UNATTENDED") else mode)
+    try:
+        return af.held_slice(t.primary, t.path, main_of(t), eff), mode
+    except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
+        return "the held slice could not be read (%s)" % type(e).__name__, mode
+
+
+def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None):
+    """dispatch --start, with E1's lists. The bin and carried.py rules are the overlay's
+    (common.legacy_root(): /finish runs its tools there), in the two spellings a session types them
+    in: under `~/` and the absolute path. No overlay installed: no such rule, and the classifier
+    judges those calls like any other."""
+    # No allow rule for the contract's check command: since D1-A (2026-10-13) a branch may launch
+    # an AGENTS.md change unwatched, and an allow rule approves before the classifier looks, so
+    # the check line would become pre-approved code (code review, 2026-10-13). The classifier
+    # judges the check like any command; a slower run, never a wrong one.
+    # No allow rule for SendMessage either (`notify`, the header): a bare one would let text in the
+    # bundle steer any live session unseen; the classifier judges each send (review, 2026-10-18)
+    allow = ["Agent", "EnterWorktree", "Bash(git:*)"]
+    old = common.legacy_root()
+    roots = []
+    if old:
+        old = os.path.abspath(os.path.expanduser(str(old)))
+        rel = os.path.relpath(old, HOME)
+        roots = (["~/" + rel] if not rel.startswith("..") else []) + [old]
+    for root in roots:
+        allow += ["Bash(%s/bin/*)" % root, "Bash(python3 %s/bin/*)" % root,
+                  "Bash(python3 %s/hooks/carried.py:*)" % root]
+    prompt = finish_prompt(t.branch, by, merge, hold)
+    cmd = [DISPATCH, "--start", prompt, t.path, t.window,
+           "--session-id", sid]   # opus: dispatch's default (header)
+    for a in allow:
+        cmd += ["--allow", a]
+    lift = ["Bash(git push:*)", "Bash(*bin/pr ready*)", "Bash(*bin/pr merge*)",
+            "Bash(*libexec/pr ready*)", "Bash(*libexec/pr merge*)"]
+    if hold:
+        # a held launch (landing(): mode ask, the dnd slice, a mode lowered since, E12's yolo outside a
+        # `"merge": "auto"` repo) stops at a ready PR. The skill says so; this makes it so — prose alone
+        # did not hold once (bin/dispatch, idea-redaction, 2026-10-04)
+        lift.remove("Bash(*bin/pr merge*)")
+        lift.remove("Bash(*libexec/pr merge*)")
+    for d in lift:
+        cmd += ["--undeny", d]
+    return cmd + (["--dry-run"] if dry else [])
+
+
+def merge_auto(t):
+    """The repo's standing yes: `"merge": "auto"` in .claude/workflow.json on origin/<main> (main's
+    name read from the primary's copy), as /finish step 11.4 reads it. Unreadable: no."""
+    try:
+        cfg = json.loads(git(t.path, "show", "origin/%s:.claude/workflow.json" % main_of(t)) or "{}")
+    except ValueError:
+        return False
+    return isinstance(cfg, dict) and cfg.get("merge") == "auto"
+
+
+def start_env(t):
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("CLAUDE") and k not in KEEP_CLAUDE) and k not in DROP_DISPATCH}
+    env["DISPATCH_LOG"] = t.runlog
+    return env
+
+
+def bundle_text(t):
+    """pickup's context bundle for the branch, as `pickup open --here` prints it."""
+    try:
+        from pathlib import Path
+        pk = load_bin("pickup")
+        root = pk.repo_root(Path(t.path))
+        data = pk.collect(root, fetch=False)
+        b = pk.resolve(t.branch, data["branches"])
+        s = b["sessions"][0] if b["sessions"] else None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            pk.context_bundle(b, data, s)
+        return buf.getvalue()
+    except Exception as e:  # pickup's Stop included: the run goes on from git alone
+        return ("(no bundle: pickup could not read %s — %s: %s. The branch's commits carry its "
+                "prompts: git log --reverse --format='%%h %%s%%n%%b' main..HEAD)\n" % (t.branch, type(e).__name__, e))
+
+
+def write_bundle(t, st):
+    path = os.path.join(t.state_dir, BUNDLE)
+    with open(path, "w") as f:
+        f.write("# The conversation's record for /finish %s --unattended\n\n" % t.branch)
+        f.write("Written %s by bin/autofinish-run for session %s, tip %s — read it as the old "
+                "session's record (design section 7): its prompts, its last asks and replies.\n\n"
+                % (now_iso(), st["session"], t.tip[:7]))
+        f.write(bundle_text(t))
+    return path
+
+
+# ---- after the end -------------------------------------------------------------------------------
+
+def transcript(sid):
+    dirs = {os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude"), os.path.join(HOME, ".claude")}
+    for d in dirs:
+        hits = glob.glob(os.path.join(d, "projects", "*", sid + ".jsonl"))
+        if hits:
+            return hits[0]
+    return None
+
+
+def last_reply(sid):
+    """The session's last assistant text (a subagent's sidechain is not the session's), or None."""
+    text = None
+    try:
+        with open(transcript(sid), errors="replace") as f:
+            for line in f:
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") != "assistant" or rec.get("isSidechain"):
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                if isinstance(content, list):
+                    said = "\n".join(c.get("text", "") for c in content
+                                     if isinstance(c, dict) and c.get("type") == "text").strip()
+                    text = said or text
+    except (OSError, TypeError):
+        return None
+    return text
+
+
+def tail_lines(path, offset=0, n=8):
+    try:
+        with open(path, errors="replace") as f:
+            f.seek(offset)
+            lines = [l.rstrip() for l in f if l.strip().strip("\0")]
+    except (OSError, TypeError):
+        return []
+    return lines[-n:]
+
+
+def gate_of(warn):
+    m = STEP_RE.search(warn)
+    if m:
+        return "G%s" % m.group(1)
+    low = warn.lower()
+    return next((g for w, g in GATE_WORDS if w in low), "stop")
+
+
+def read_outcome(t, sid, log_from):
+    """(outcome, pr, gate, lines): lines is what the log, the record and a comment quote."""
+    path, rec = run_record(sid)
+    if not path:
+        return "never-started", None, REFUSED, tail_lines(t.runlog, log_from) or ["(dispatch wrote nothing)"]
+    text = last_reply(sid)
+    if not text:
+        shown = tail_lines(path + ".screen.txt", 0, 15)   # dispatch-rc's hardcopy of a never-busy screen
+        return "never-started", None, "never-started", shown or tail_lines(t.runlog, log_from) or [
+            "(no reply, no screen: %s)" % rec.get("end_reason", "?")]
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    # a ⚠ anywhere is a stop, read before any launch marker: a stop report may well name another
+    # PR's merge or quote a rollback line (review, 2026-10-05: `merged #57` read as launched)
+    warn = next((i for i, l in enumerate(lines) if "⚠" in l), None)
+    if warn is not None:
+        block = [l for l in lines[warn:] if not common.closing_kind(l)]
+        return "stopped", None, gate_of(lines[warn]), block
+    rollback = ROLLBACK_RE.search(text)
+    if common.ending(text)[0] == "done" and (rollback or "Shipped:" in text):
+        m = MERGED_RE.search(text) or PULL_RE.search(text) or HASH_RE.search(
+            next((l for l in lines if "Shipped:" in l), "")) or HASH_RE.search(text)
+        pr = int(m.group(1)) if m else merged_pr(t)
+        return "launched", pr, None, [rollback.group(0).strip()] if rollback else lines[-1:]
+    # the gate tokens are persisted, so they keep their word; /finish's text says either (rename S4)
+    gate = "nothing-to-land" if ("Nothing to land" in text or "Nothing to launch" in text) else "no-landing"
+    return "stopped", None, gate, lines[-1:]
+
+
+def slug(t):
+    """owner/name of origin as configured (not `get-url`, which expands insteadOf)."""
+    return common.repo_slug(git(t.primary, "config", "--get", "remote.origin.url"))
+
+
+def merged_pr(t):
+    """The launched PR's number when the reply names none: the newest merged PR of this head."""
+    s = slug(t)
+    if not s:
+        return None
+    st, prs = common.api("GET", "/repos/%s/pulls?state=closed&per_page=5&head=%s:%s"
+                         % (s, s.split("/")[0], urllib.parse.quote(t.branch, safe="")))
+    hit = next((p for p in prs or [] if isinstance(p, dict) and p.get("merged_at")), None) if st == 200 else None
+    return hit.get("number") if hit else None
+
+
+def comment(t, st, outcome, gate, lines):
+    """The stop, on the branch's PR. Returns (pr number or None, what happened)."""
+    s = slug(t)
+    if not s:
+        return None, "no comment: origin is not on GitHub"
+    pr = common.find_pr(s, t.branch)
+    if not pr:
+        return None, "no comment: no open pull request for %s" % t.branch
+    what = {"never-started": "never started", DIED: "runner died"}.get(outcome) or "stopped at %s" % gate
+    head = ("**autofinish %s** — `%s`, session `%s`, tip `%s`, rule %s, started by %s at %s."
+            % (what, finish_prompt(t.branch, st.get("by"), st.get("merge"), st.get("hold")), st["session"], str(st.get("tip") or t.tip)[:7], st.get("rule"), st.get("by"),
+               st.get("started")))
+    quoted = "\n".join(lines)
+    if len(quoted) > COMMENT_CAP:
+        quoted = quoted[:COMMENT_CAP - 1] + "…"
+    if outcome == DIED:  # its words first, then dispatch's log as it was left
+        body = head + "\n\n" + DIED_WHY + ".\n\n" + ("```\n%s\n```" % quoted) + (
+            "\n\nThe sweep may judge this branch once more — not once this PR is out of `WIP:`, nor "
+            "a branch the runner had already curated locally; a second death on this tip waits for a prompt. "
+            "The transcript, if any, is session `%s` on %s." % (st["session"], common.host_name()))
+    else:
+        body = head + "\n\n" + ("```\n%s\n```" % quoted if outcome == "never-started" else quoted) + (
+            "\n\nNothing retries on this tip. A new commit can be started again; the transcript is "
+            "session `%s` on %s." % (st["session"], common.host_name()))
+    code, _ = common.api("POST", "/repos/%s/issues/%d/comments" % (s, pr["number"]), {"body": body})
+    return pr["number"], ("commented on #%d" % pr["number"] if code == 201
+                          else "comment on #%d refused (HTTP %s)" % (pr["number"], code or "none"))
+
+
+def release(t, sid):
+    """The lock if it is still this session's, and a `finishing` marker. Returns what was done."""
+    done = []
+    lock = common.read_owner(t.state_dir)
+    if lock and lock.get("session") == sid:
+        try:
+            os.remove(os.path.join(t.state_dir, common.OWNER_FILE))
+            done.append("lock released")
+        except OSError as e:
+            done.append("lock NOT released: %s" % e)
+    marker = os.path.join(t.state_dir, "finishing")
+    if os.path.exists(marker):
+        try:
+            os.remove(marker)
+            done.append("finishing marker removed")
+        except OSError as e:
+            done.append("finishing marker NOT removed: %s" % e)
+    return done
+
+
+def end_live_run(sid):
+    """A run still going when its waiter is ended (SIGTERM, a crash here): ended the way
+    `dispatch --end` ends one, so nothing frees its lock under it. True when it was live."""
+    path, _ = run_record(sid)
+    if not path:
+        return False
+    rc = load_bin("dispatch-rc")
+    st = rc.load(path)
+    if st.get("ended") or not rc.same(st):
+        return False
+    reason = "ended with its autofinish waiter"
+    cur = rc.load(path)
+    cur["ending"] = reason
+    rc.save(path, cur)
+    if rc.end_session(st):
+        rc.finish(path, rc.load(path), reason)
+    return True
+
+
+def wait_for_end(t, st, cmd):
+    """The detached child: bundle, start, wait; then, whatever happened, the lock and the record."""
+    def term(signum, _frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, term)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)   # a closing terminal is not an end
+    sid, rc, why = st["session"], None, None
+    try:  # its pid for dead(); autofinish.json's keys are the hooks' contract, so a file of its own
+        rc_mod = load_bin("dispatch-rc")
+        with open(os.path.join(t.state_dir, WAITER), "w") as f:
+            json.dump({"session": sid, "pid": os.getpid(), "start": rc_mod.proc_start(os.getpid())}, f)
+    except Exception:
+        traceback.print_exc()
+    try:
+        log_from = os.path.getsize(t.runlog)
+    except OSError:
+        log_from = 0
+    p = None
+    try:
+        print("%s autofinish-run: bundle %s" % (now_iso(), write_bundle(t, st)), flush=True)
+        p = subprocess.Popen(cmd, env=start_env(t))
+        rc = p.wait()
+    except BaseException as e:  # SystemExit from SIGTERM included: the finally below is the point
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a second TERM must not cut the cleanup short
+        why = "the waiter ended: " + ("signal %s" % e.code if isinstance(e, SystemExit) else type(e).__name__)
+        if not isinstance(e, SystemExit):
+            traceback.print_exc()
+        # dispatch gets a TERM it can clean up after (its start lock, its plist), not subprocess.call's KILL
+        if p and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                p.kill()
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        notes = []
+        try:
+            if why and end_live_run(sid):
+                notes.append("its live session ended")
+        except Exception:
+            traceback.print_exc()
+        notes += release(t, sid)
+        try:
+            record(t, st, log_from, rc, why, notes)
+        except Exception:
+            traceback.print_exc()
+            # still an end in the state: an `ended: null` would read as a run going on forever
+            try:
+                if not (read_state(t) or {}).get("ended"):
+                    st.update(ended=now_iso(), outcome="stopped", gate="error")
+                    write_state(t, st)
+            except Exception:
+                traceback.print_exc()
+            log("%s run %s %s error session=%s — %s" % (now_iso(), t.repo, t.branch, sid[:8],
+                                                         "the outcome could not be recorded; " + "; ".join(notes)))
+
+
+def record(t, st, log_from, rc, why, notes):
+    sid = st["session"]
+    outcome, pr, gate, lines = read_outcome(t, sid, log_from)
+    if why and outcome not in common.LAUNCHED_OUTCOMES:
+        lines = [why] + lines
+    if st.get("hold") and outcome == "stopped" and gate == "G11":
+        # the held landing (S3b): the gate says so, and the line names the class whatever the model
+        # wrote, so the board's held card (helm_render) reads it from `autofinished`, not from prose
+        gate, lines = "held", ["held (%s): %s" % (st["hold"], lines[0] if lines else "a ready PR waits for the owner's tap")] + lines[1:]
+    said = ""
+    if outcome not in common.LAUNCHED_OUTCOMES and gate not in REFUSED_GATES:
+        pr, said = comment(t, st, outcome, gate, lines)
+    st.update(ended=now_iso(), outcome=outcome, pr=pr, gate=gate)
+    write_state(t, st)
+    # /autofinish's marker has done its job once a run ended: left behind, a `now` marker would
+    # have the Stop hook judge the branch again at every later turn's end (E3's note)
+    if gate not in REFUSED_GATES:
+        try:
+            os.unlink(os.path.join(t.state_dir, common.AUTOFINISH_OVERRIDE))
+        except OSError:
+            pass
+    first = lines[0] if lines else ""
+    # `<iso> <outcome> <branch> <detail>`: the shape hooks/common.py's autofinished() parses, and
+    # its phrase reads an empty launched detail as `#?` — never a `#None`
+    if outcome in common.LAUNCHED_OUTCOMES:
+        detail = "%s %s%s" % (outcome, t.branch, " #%s" % pr if pr else "")
+    elif outcome == "never-started":
+        detail = "never-started %s %s" % (t.branch, first)
+    else:
+        detail = "stopped %s %s %s" % (t.branch, gate, first)
+    line = st["ended"] + " " + detail.rstrip()
+    if gate not in REFUSED_GATES:   # nothing ran: no record for the session start to report
+        os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
+        with open(os.path.join(t.common, "claude", RECORD), "a") as f:
+            f.write(line + "\n")
+    extra = [x for x in (said, "dispatch exit %s" % rc if rc not in (0, None) else "") + tuple(notes) if x]
+    log(common.RUN_END % (
+        st["ended"], t.repo, t.branch, outcome, " gate=%s" % gate if gate else "",
+        " pr=#%s" % pr if pr else "", sid[:8], t.tip[:7], st.get("rule"), st.get("by"), st.get("account") or "-",
+        first[:300], "; " + "; ".join(extra) if extra else ""))
+
+
+def runlog_of(t, st):
+    """The dispatch log a run wrote to: named for the day it started (Tree's is today's)."""
+    day = str(st.get("started") or "")[:10] or datetime.date.today().isoformat()
+    return os.path.join(LOGS, "%s-dispatch-finish-%s.log" % (day, t.topic))
+
+
+def waiter_alive(state_dir, sid):
+    """True while the run's waiter (autofinish-waiter.json, same session) still runs."""
+    try:
+        with open(os.path.join(state_dir, WAITER)) as f:
+            w = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(w, dict) or w.get("session") != sid or not isinstance(w.get("pid"), int):
+        return False
+    return load_bin("dispatch-rc").running(w["pid"], w.get("start"))
+
+
+def dead(t, st, now=None, state_dir=None):
+    """Why this worktree's run died without an outcome, or None: no run, an ended one, or one that
+    may still live. Never a guess on the dying side — a waiter still running, a watcher not yet
+    recorded, or a dispatch end its waiter is still recording, is no death."""
+    if not st or st.get("ended") or not st.get("session") or not st.get("started"):
+        return None
+    if state_dir and waiter_alive(state_dir, st["session"]):
+        return None
+    now = time.time() if now is None else now
+    try:
+        started = datetime.datetime.fromisoformat(st["started"]).timestamp()
+    except (TypeError, ValueError):
+        started = 0
+    path, _ = run_record(st["session"])
+    if not path:
+        if now - started < PRE_START_S:
+            return None
+        return "no dispatch record %d min after its start" % ((now - started) // 60)
+    rc = load_bin("dispatch-rc")
+    try:
+        rec = rc.load(path)
+        age = now - os.path.getmtime(path)
+    except (OSError, ValueError):
+        return None
+    if rec.get("ended"):
+        ended = rec["ended"] if isinstance(rec["ended"], (int, float)) else now - age
+        if now - ended < PRE_START_S:
+            return None
+        return "dispatch ended the run %d min ago (%s) and no outcome was recorded" % (
+            (now - ended) // 60, rec.get("end_reason") or "no reason")
+    if rc.same(rec):
+        return None
+    w = rec.get("watcher")
+    if isinstance(w, int):
+        if not rc.watcher_gone(rec):
+            return None
+    elif age < PRE_START_S:
+        return None   # no watcher recorded yet: dispatch may still be starting it
+    return "claude (pid %s) and its watcher (pid %s) are gone, and dispatch wrote no end" % (
+        rec.get("pid"), w if isinstance(w, int) else "never recorded")
+
+
+def bury(t, why):
+    """Record the dead run as the waiter's `finally` would have: the state, the lock, the PR, the
+    record and the log. Under the start lock, the state read again: None when another start or
+    an end got there first, else the log line written."""
+    held = take_start_lock(t)
+    if not held:
+        return None
+    try:
+        st = read_state(t)
+        if not st or st.get("ended"):
+            return None
+        sid = st["session"]
+        holder = (common.read_owner(t.state_dir) or {}).get("session")
+        notes = release(t, sid) if not holder or holder == sid else [
+            "the lock is session %s's now: left as it is" % str(holder)[:8]]
+        _, rec = run_record(sid)
+        if rec and rec.get("ended"):  # the session ended, only its waiter died: its reply is the outcome
+            record(t, st, 0, None, None, notes + ["recorded after its waiter died (%s)" % why])
+            return "%s run %s %s recorded after its waiter died — %s" % (now_iso(), t.repo, t.branch, why)
+        last = tail_lines(runlog_of(t, st), 0, 1)
+        lines = last or ["(its dispatch log %s is empty or gone)" % runlog_of(t, st)]
+        pr, said = None, ""
+        try:
+            pr, said = comment(t, st, DIED, None, lines + ["(%s)" % why])
+        except Exception as e:  # noqa: BLE001 — GitHub down is no reason to leave the run undead
+            said = "no comment: %s" % type(e).__name__
+        st.update(ended=now_iso(), outcome=DIED, pr=pr, gate=None)   # ended after the comment: the
+        write_state(t, st)                                           # retry's GitHub quiet starts here
+        os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
+        with open(os.path.join(t.common, "claude", RECORD), "a") as f:
+            f.write("%s died %s %s %s\n" % (st["ended"], t.branch, str(st.get("tip"))[:7], lines[0]))
+        extra = [x for x in [said, why] + notes if x]
+        line = "%s run %s %s died session=%s tip=%s rule=%s by=%s account=%s — %s; %s" % (
+            st["ended"], t.repo, t.branch, sid[:8], str(st.get("tip"))[:7], st.get("rule"), st.get("by"),
+            st.get("account") or "-", lines[0][:300], "; ".join(extra))
+        log(line)
+        return line
+    finally:
+        try:
+            os.remove(held)
+        except OSError:
+            pass
+
+
+def detach(fn, out_path):
+    """fn() in a grandchild in its own session, its output appended to out_path; returns at once.
+    Raises when no grandchild was made: the fork failed, or the child could not setsid or fork."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    pid = os.fork()
+    if pid:
+        _, status = os.waitpid(pid, 0)
+        if not os.WIFEXITED(status) or os.WEXITSTATUS(status):
+            raise OSError("the detaching child ended with status %d" % status)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, 0)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        fn()
+        code = 0
+    except BaseException:
+        traceback.print_exc()
+        code = 1
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    os._exit(code)
+
+
+def lease_refusal(dry):
+    """None, or the line the ship's lease refuses this caller with (the header's "A ship's lease"). The
+    ship is the caller's DISPATCH_SHIP: a launch acting for a leased ship is the skipper's, the yard's
+    or the owner's, never a former holder's. leaselib is helm's, found through the core's tool() beside
+    helmlib; absent, the launch goes on as it did before S4."""
+    ship = next((os.environ[n] for n in ("DISPATCH_SHIP", "DISPATCH_PLAN") if os.environ.get(n)), None)
+    if not ship:
+        return None
+    lib = common.tool("leaselib.py")
+    if not lib:
+        return None
+    if str(lib.parent) not in sys.path:
+        sys.path.append(str(lib.parent))   # appended: helm's bin/ never shadows this module's own
+    try:
+        import leaselib
+    except Exception as e:  # a helm that will not load is a line, never the launch's crash
+        print("autofinish-run: the lease of ship %s not checked — helm's leaselib does not load (%s)" % (ship, e), file=sys.stderr)
+        return None
+    return leaselib.fence(ship, "autofinish-run", record=not dry)
+
+
+def main(argv):
+    if argv[:1] == ["notify"]:
+        return notify(argv[1:])
+    ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
+    ap.add_argument("worktree")
+    ap.add_argument("--rule", choices="ABCDELM", default="C")
+    ap.add_argument("--by", choices=("sweep", "override", "typed", "yolo", "dnd", "chain"), default="override")
+    ap.add_argument("--merge", action="store_true",
+                    help="carry the owner's /finish --merge into the run (--by override|typed only)")
+    ap.add_argument("--session", metavar="ID", help="the caller's own session: its lock is no refusal")
+    ap.add_argument("--dry", action="store_true")
+    args = ap.parse_args(argv)
+    if args.merge and args.by not in MERGE_BY:
+        print("autofinish-run: --merge needs a person's yes, so --by %s (not %s) only" % (" or ".join(MERGE_BY), args.by),
+              file=sys.stderr)
+        return 2
+    if args.merge and os.environ.get("CLAUDE_UNATTENDED"):
+        print("autofinish-run: --merge needs a person's yes, and this caller is an unattended run (CLAUDE_UNATTENDED=%s)"
+              % os.environ["CLAUDE_UNATTENDED"], file=sys.stderr)
+        return 2
+    why = lease_refusal(args.dry)
+    if why:
+        print("autofinish-run: %s" % why, file=sys.stderr)
+        return 4
+    t = Tree(os.path.abspath(os.path.expanduser(args.worktree)))
+    bad = t.problem()
+    if bad:
+        print("autofinish-run: %s: %s" % (args.worktree, bad), file=sys.stderr)
+        return 2
+    # --dry writes nothing, the start lock included: it only says what a start would meet
+    held = None if args.dry else take_start_lock(t)
+    if not args.dry and not held:
+        why = "another start on this worktree is under way (%s)" % os.path.join(t.state_dir, START_LOCK)
+        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
+        log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                args.rule, args.by, why))
+        return 3
+    try:
+        return start(t, args)
+    finally:
+        if held:
+            try:
+                os.remove(held)
+            except OSError:
+                pass
+
+
+def start(t, args):
+    """The refusals, the writes and the detach, under the start lock main() holds."""
+    prev = read_state(t)
+    why = refusal(t, prev, args.by) or lock_refusal(t, args.session, args.by == "typed")
+    if why:
+        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
+        if not args.dry:
+            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                    args.rule, args.by, why))
+        return 3
+    try:
+        # cached for --dry, and for a typed hand-off: cold_prompt waits 45 s on this, in a prompt hook.
+        # Before the warm run's end below: a run no account can take ends nothing
+        label, cfg, picked = account_pick(t, cached=args.dry or args.by == "typed")
+    except NoAccount as e:
+        why = "no account may run this now — %s" % e
+        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
+        if not args.dry:
+            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                    args.rule, args.by, why))
+        return 3
+    # A seeded run of this branch is kept the cache's hour, past autofinish's 40 min: it is ended
+    # first, then the branch launches (the owner, D2 of docs/dispatch-warm-hour-2026-10-08.md: C). A busy
+    # one is not the launch's to end: no launch.
+    # Under the start lock and the sweep's RUNNER_TIMEOUT (both 120 s): ending a run takes ~15 s
+    # with its window out of view (close tries, the SIGTERM wait, CLOSE_WAIT), so 90 s, and a
+    # timeout is a refusal — the next sweep tries again (re-review of 2026-10-08). A typed hand-off
+    # gets 30 s: cold_prompt kills this process at 45 s, and a refusal lets the /finish run in its tab.
+    warm_s = 30 if args.by == "typed" else 90
+    try:
+        warm = subprocess.run([sys.executable, os.path.join(HERE, "dispatch-rc"), "end-warm", t.branch, t.primary]
+                              + (["--dry-run"] if args.dry else []), capture_output=True, text=True, timeout=warm_s)
+    except subprocess.TimeoutExpired:
+        warm = subprocess.CompletedProcess([], 1, "", "ending its warm run took over %d s" % warm_s)
+    if warm.stdout.strip():
+        print(warm.stdout.strip())
+    if warm.returncode:
+        why = "its dispatch run could not be ended first: " + (warm.stdout.strip() or warm.stderr.strip()[-200:])
+        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
+        if not args.dry:
+            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                    args.rule, args.by, why))
+        return 3
+    use_account(cfg)
+    sid = str(uuid.uuid4())
+    # A chain relaunch of a yolo launch is a yolo launch again (chain-manager E3; bin/autofinish's
+    # runner_by() keeps a died yolo retry yolo for the same reason): a plain /finish --unattended
+    # would merge the answers yolo took where the yolo run stops at a held PR. Recorded as `yolo`,
+    # so start_cmd, runner_by and the next chain relaunch all read it as one; CHAIN and the log's
+    # `via=chain` say the tick started it.
+    by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in LAND_BY else args.by
+    via = " via=chain" if args.by == "chain" else ""
+    hold, mode = landing(t, by, args.rule)
+    st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
+          "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
+          "merge": args.merge, "hold": hold}
+    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold)
+    try:
+        targets = open_sessions(t, args.session, args.by == "typed")
+    except Exception as e:  # who to tell is never worth the launch: notify then sends nothing
+        targets = []
+        print("autofinish-run: the sessions open on %s were not read — %s" % (t.branch, e), file=sys.stderr)
+    if args.dry:
+        print("autofinish-run --dry: %s in %s, tip %s, rule %s, by %s%s" % (t.branch, t.path, t.tip[:7], args.rule, by, via))
+        print("mode %s: %s" % (mode or "none", "held at a ready PR — " + hold if hold else "may merge, past the check and the review gate"))
+        print("account %s%s: %s" % (label or "unchanged", " (%s)" % cfg if cfg else "", picked))
+        print("would write %s:" % os.path.join(t.state_dir, STATE))
+        print("  " + json.dumps(contract(st), ensure_ascii=False))
+        print("would write %s: session %s" % (os.path.join(t.state_dir, common.OWNER_FILE), sid))
+        print("would write %s: tell %s" % (os.path.join(t.state_dir, NOTIFY), ", ".join(x[:8] for x in targets) or "nobody"))
+        text = bundle_text(t)
+        print("would write %s (%d characters), beginning:" % (os.path.join(t.state_dir, BUNDLE), len(text)))
+        print("\n".join("  | " + l for l in text.splitlines()[:6]))
+        print("would run, detached, output to %s:" % t.runlog)
+        print("  " + " ".join(shlex.quote(c) for c in cmd))
+        print("dispatch --start --dry-run says the session would be:")
+        sys.stdout.flush()
+        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold), env=start_env(t))
+    try:
+        with open(os.path.join(t.state_dir, common.OWNER_FILE)) as f:
+            before = f.read()
+    except OSError:
+        before = None
+    write_state(t, st)
+    try:
+        write_targets(t, sid, targets)
+    except OSError as e:  # never worth the launch: notify then finds no file and sends nothing
+        print("autofinish-run: %s not written — %s" % (NOTIFY, e), file=sys.stderr)
+    common.write_owner(t.state_dir, sid, t.branch)
+    if args.by == "chain":   # counted before the detach: a start that fails is refused, which chain_refusal skips
+        tmp = os.path.join(t.state_dir, "%s.%d" % (CHAIN, os.getpid()))
+        with open(tmp, "w") as f:
+            json.dump({"tip": t.tip, "sessions": chain_spent(t, prev) + [sid]}, f)
+        os.replace(tmp, os.path.join(t.state_dir, CHAIN))
+    log("%s run %s %s started session=%s tip=%s rule=%s by=%s%s account=%s window=\"%s\" — %s" % (
+        st["started"], t.repo, t.branch, sid[:8], t.tip[:7], args.rule, by, via + (" merge=yes" if args.merge else "")
+        + (" hold=\"%s\"" % hold if hold else ""),
+        label or "-", t.window, picked))
+    try:
+        detach(lambda: wait_for_end(t, st, cmd), t.runlog)
+    except OSError as e:
+        # no child: a lock naming a session that never exists would refuse the panel for 2 h
+        give_back(t, sid, before, st)
+        print("autofinish-run: %s did not start — %s; the lock is given back" % (t.branch, e), file=sys.stderr)
+        log("%s run %s %s never-started gate=%s session=%s tip=%s rule=%s by=%s — the detach failed: %s" % (
+            st["ended"], t.repo, t.branch, REFUSED, sid[:8], t.tip[:7], args.rule, by, e))
+        return 1
+    print("started: %s — window and Remote Control \"%s\", session %s, account %s; state %s; log %s"
+          % (finish_prompt(t.branch, by, args.merge, hold), t.window, sid, label or "unchanged", os.path.join(t.state_dir, STATE), t.runlog))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

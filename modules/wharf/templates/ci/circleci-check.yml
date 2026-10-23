@@ -1,0 +1,23 @@
+# The repo's check on CircleCI: written by `bin/ci-provider <repo> --to circleci` from
+# wharf's templates/ci/circleci-check.yml; `--to actions` removes it and puts check.yml back.
+# The same job as GitHub Actions' check.yml: the `check:` command from AGENTS.md, on every push
+# of every branch, so main's required status `ci/circleci: check` reports on every PR head.
+# CircleCI cannot see a PR's draft flag, so drafts run too (Actions' check.yml skips them); a
+# small Docker job costs a few credits of the Free plan's 30,000 a month.
+# cimg/python pinned by digest (Docker Hub, read 2026-10-18): the checks need sh, git and python3,
+# and CircleCI's checkout step needs git and ssh, which python:slim lacks.
+jobs:
+  check:
+    docker:
+      - image: cimg/python:3.12.15@sha256:d0177be857b2c8492d9d655f082bd32b6d02cc4cb7497abb99f8f2d66064fc29
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: check
+          command: |
+            @COMMAND@
+workflows:
+  check:
+    jobs:
+      - check

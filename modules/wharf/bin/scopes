@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""scopes — the groups of repos the owner works on together, and the VS Code workspace of each.
+
+  scopes                  each scope, its file and its repos, the anchor first
+  scopes of REPO          the scope REPO is in (a registry key, or any path inside its checkout
+                          or one of its worktrees); exit 1 when it is in none
+  scopes anchor REPO      the absolute path of the first folder of REPO's scope's file — read from
+                          the file when it exists, else the first declared repo on this Mac
+  scopes workspace REPO   the absolute path of REPO's scope's workspace file, when it exists;
+                          exit 1 otherwise
+  scopes write [--dry-run]
+                          write every scope's workspace file where repos.json says it lives,
+                          keeping the worktree folders VS Code added; move a retired file into
+                          ~/projects/.scopes-retired/ (one tracked in git is named, never moved).
+                          A file a VS Code window has open is never moved, nor rewritten with a
+                          new first folder: refused with a ✗ line and exit 1 (2026-10-15 crash)
+  scopes check            exit 1, naming each fault, when a repo is in no scope or two, a scope
+                          names a repo the registry lacks, two scopes share a file, an anchor
+                          is a glob or a twin, a flag is not true/false, a login no label or a
+                          yard no host, a confidential scope's anchor is on this Mac without a
+                          `memory/` folder, or a confidential scope's yard is a host its anchor
+                          is not on (the check runs this through bin/test_scopes.sh)
+  scopes set SCOPE [--confidential | --open] [--login LABEL | --no-login] [--yard HOST|none] [--dry-run]
+                          flag SCOPE confidential (a node nothing outside it reads) or open, name
+                          the account label its runs start on, and the host its ships are driven
+                          from (its yard: a host lighthouse/hosts lists, or none — written as
+                          null); each flag optional, at least one given; writes repos.json in
+                          place, its layout kept, and proves the file then parses to exactly that
+                          change
+  scopes configure        the checklist: every scope, its flag and login; at a terminal, toggle
+                          by number and save through `set`
+  scopes paths SCOPE      the paths the fence keeps out for SCOPE (the core's scope_paths)
+
+Confidential (knowledge-layers design D3, 2026-10-20: "base it on scopes. And make a scope
+configurator on regatta that lets me set which ones are confidential"): `"confidential": true` on a
+scope is the registry of what is fenced, `"login"` the label `account pick --repo` hands its runs
+to, `"yard"` the host whose tick drives its ships and where `wharf apply --yard` lays them
+(skipper-resilience S2; `null` or absent, no yard: a plain apply as before). The core reads them
+(`common.confidential_scopes()`, `scope_login()`, `scope_yard()`, `scope_paths()`); this tool only
+writes them and checks them. A flagged scope's anchor is its knowledge repo, which holds
+`memory/<repo>/` for the scope's repos (D1), so `check` fails one that is here without it.
+
+The list is `scopes` in repos.json (the owner, 2026-10-14: "create reasonable groups of projects that
+I might work on together. Connect [the layer] in each of them ... Let's call this 'scope'"); the
+reasoning sits beside it as `_scopes`, the answers in docs/scopes-2026-10-14.md.
+
+One file per scope, where the owner keeps it (D1-B, D2-A): the list is what is canonical, the files are
+VS Code's to write into — each time a session enters a worktree, VS Code adds it as a folder, so a
+file in git would dirty its repo at every entry. `write` owns the folders it lists and the
+settings repos.json declares (D4); it keeps any folder under `.claude/worktrees/` that still exists
+and every other top-level key, and drops a setting nobody declared — except OWNED_ELSEWHERE.
+`check` checks the list only.
+
+Two other tools write a scope file, and `write` keeps the peace with both (review 2026-10-15):
+The home repo's scripts/sync_vscode_workspace.py rebuilds its own .code-workspace's folders on every commit
+(the root, then its worktrees, then whatever else is there), and hooks/sync.py keeps
+`git.branchProtection` in it. Both parse it as strict JSON — a `//` header made the home repo's script
+rebuild the file from nothing — so `write` writes plain JSON, puts the anchor's worktree folders
+straight after the anchor (the order the home repo's script makes), leaves `git.branchProtection` as it
+finds it, and compares content, not text, so neither tool's formatting starts a rewrite. It writes
+in place, never by rename: a rename over a watched workspace file is the deleted-path event that
+crashed a window on 2026-10-15, and an in-place rewrite crashed none.
+
+The anchor comes first: the Claude extension scopes a window's session list, and the cwd of every
+session it starts, to the window's FIRST folder (`sessionListScopeRoot` = `workspaceFolders[0]`,
+extension 2.1.299). A session for another repo of the scope still opens in the scope's window and
+moves into that repo's worktree from there (the owner, D2: "I want the session to open in the scoped
+window even if it's not targeting the first folder"); bin/pickup finds that window by any of its
+folders, and a session picked up again by the folder whose project dir holds the transcript. Then the scope's other
+repos in registry order, twins last, then the layer (likely to change whatever the work is).
+
+A member may be a glob (`*zigzag*`), matched against registry keys, so a repo not cloned yet
+lands in its scope the day it is added. Paths in a file are relative to it, so one list serves
+both Macs; a folder missing on this Mac is left out of the file, with a note.
+
+Python 3.9, stdlib only.
+"""
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+
+# The registry through the core's one reader (C3); the checkout it really sits in (an overlay links
+# it into the config dir) is the one whose primary's parent holds every repo and scope file.
+REGISTRY = common.repos_json()
+HERE = REGISTRY.resolve().parent if REGISTRY else None
+# The registry's own repo (the knowledge layer, on the owner's Macs), by its registry key: every
+# scope's file lists it last. Read from where the file really sits, never named (as github-repo).
+LAYER = HERE.name if HERE else None
+WORKTREES = "/.claude/worktrees/"
+RETIRED = ".scopes-retired"
+EXT = ".code-workspace"
+OWNED_ELSEWHERE = ("git.branchProtection",)  # hooks/sync.py's landed-branch locks: never declared, never dropped
+
+
+def registry(root=None):
+    if not root and not REGISTRY:
+        sys.exit(f"scopes: no registry — set CLAUDE_REPOS_JSON, or link one at {common.CONFIG / 'wharf' / 'repos.json'}")
+    p = root / "repos.json" if root else REGISTRY
+    try:
+        data = json.loads(p.read_text())
+    except OSError as e:   # a dangling link: the core returns it, so the read refuses here
+        sys.exit(f"scopes: the registry {p} cannot be read — {e.strerror}")
+    return data["repos"], data.get("scopes") or {}, data.get("folder_names") or {}
+
+
+def primary(root=None):
+    """The primary checkout of the registry's repo (the git common dir's parent)."""
+    root = root or HERE
+    r = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       capture_output=True, text=True)
+    return Path(r.stdout.strip()).parent if r.returncode == 0 and r.stdout.strip() else root
+
+
+def projects(root=None):
+    """The folder every registry key and scope file is relative to: the primary checkout's parent;
+    a registry outside any checkout (a plain file in the config dir), the core's `projects` key."""
+    p = primary(root)
+    return p.parent if (p / ".git").exists() else common.PROJECTS
+
+
+is_glob = common.is_glob
+members = common.scope_members   # the scope's repos, in its order, globs matched (the core's one rule)
+
+
+def faults(repos, scopes):
+    out, seen, files = [], {}, {}
+    for name, scope in scopes.items():
+        first = (scope.get("repos") or [None])[0]
+        if not first or is_glob(first):
+            out.append(f"scope {name}'s first entry must name its anchor outright, not {first!r}")
+        for k in OWNED_ELSEWHERE:
+            if k in (scope.get("settings") or {}):
+                out.append(f"scope {name} declares {k}, which hooks/sync.py owns")
+        if not scope.get("file"):
+            out.append(f"scope {name} has no file")
+        elif scope["file"] in files:
+            out.append(f"scopes {files[scope['file']]} and {name} would both write {scope['file']}")
+        else:
+            files[scope["file"]] = name
+        for key in members(scope, repos):
+            if key not in repos:
+                out.append(f"scope {name} names {key}, which repos.json does not list")
+            if key in seen:
+                out.append(f"{key} is in two scopes: {seen[key]} and {name}")
+            seen.setdefault(key, name)
+        if first and not is_glob(first) and repos.get(first, {}).get("twin_of"):
+            out.append(f"scope {name}'s anchor {first} is a twin; a twin is never worked in")
+        if "confidential" in scope and not isinstance(scope["confidential"], bool):
+            out.append(f"scope {name}'s confidential is {scope['confidential']!r}, not true or false")
+        if "login" in scope and not (isinstance(scope["login"], str) and scope["login"]):
+            out.append(f"scope {name}'s login is {scope['login']!r}, not an account label")
+        yard = scope.get("yard")
+        if "yard" in scope and yard is not None and not (isinstance(yard, str) and yard):
+            out.append(f"scope {name}'s yard is {yard!r}, not a host or null")
+        elif yard and scope.get("confidential") is True and first and not is_glob(first):
+            # the yard keeps the ship's plan, its pinned blueprint and its workers' worktrees: a
+            # confidential scope's yard is a host its anchor (the knowledge repo) is on, so the
+            # node's text stays on the Macs the registry already says hold it
+            hosts = (repos.get(first) or {}).get("hosts")
+            if not (isinstance(hosts, list) and yard in hosts):
+                out.append(f"confidential scope {name}'s yard {yard} is not a host its anchor {first} is on"
+                           f" ({first}'s hosts: {', '.join(hosts) if isinstance(hosts, list) and hosts else 'none listed'})")
+    for key in repos:
+        if key not in seen:
+            out.append(f"{key} is in no scope — add it to \"scopes\" in repos.json")
+    return out
+
+
+def confidential_faults(repos, scopes, base):
+    """(faults, notes) for the flagged scopes: an anchor here with no memory/ is a fault (D1: the
+    node's memory lives in its knowledge repo); an anchor not cloned on this Mac is a note."""
+    out, notes = [], []
+    for name, scope in scopes.items():
+        if scope.get("confidential") is not True:
+            continue
+        first = (scope.get("repos") or [None])[0]
+        if not first or is_glob(first):
+            continue   # faults() names it
+        if not (base / first).is_dir():
+            notes.append(f"confidential scope {name}'s anchor {first} is not on this Mac — its memory/ unchecked here")
+        elif not (base / first / "memory").is_dir():
+            out.append(f"confidential scope {name}'s anchor {first} has no memory/ — its repos' memory has no home"
+                       f" in the node (make {base / first / 'memory'}, or atlas's knowledge-home init {name})")
+    return out, notes
+
+
+# repos.json is laid out by hand (one-line rows, aligned lists), so `set` edits the text of one
+# scope's object and never re-dumps the file: a dump would rewrite every line of it. `spans` finds
+# where each value sits; the edit is then proved structurally — the file must parse to exactly
+# the old registry with the one change, or nothing is written.
+_WS = " \t\r\n"
+
+
+def spans(text, i=0):
+    """→ (start, end, children) for the JSON value at text[i:]; children maps each key of an
+    object to (key_start, value_start, value_end, its children). Only objects get children."""
+    while text[i] in _WS:
+        i += 1
+    start, c = i, text[i]
+    if c == "{":
+        kids, i = {}, i + 1
+        while True:
+            while text[i] in _WS + ",":
+                i += 1
+            if text[i] == "}":
+                return start, i + 1, kids
+            k0 = i
+            k, i = json.JSONDecoder().raw_decode(text, i)
+            while text[i] in _WS + ":":
+                i += 1
+            v0, v1, sub = spans(text, i)
+            kids[k] = (k0, v0, v1, sub)
+            i = v1
+    if c == "[":
+        i += 1
+        while True:
+            while text[i] in _WS + ",":
+                i += 1
+            if text[i] == "]":
+                return start, i + 1, {}
+            i = spans(text, i)[1]
+    _, end = json.JSONDecoder().raw_decode(text, i)
+    return start, end, {}
+
+
+class _Null:
+    """set_key's value for a JSON `null` written out (`--yard none`): None already means the pair
+    removed, and a scope that says `"yard": null` has decided it has none."""
+
+    def __repr__(self):
+        return "NULL"
+
+
+NULL = _Null()
+
+
+def set_key(text, name, key, value):
+    """repos.json's text with scopes.<name>.<key> set to `value` (None removes it, NULL writes
+    `null`), the rest of the file byte for byte. Raises ValueError when the edit would not parse to
+    exactly that."""
+    want = json.loads(text)
+    if name not in (want.get("scopes") or {}):
+        raise ValueError(f"no scope {name} in the registry")
+    if value is None:
+        want["scopes"][name].pop(key, None)
+    else:
+        want["scopes"][name][key] = None if value is NULL else value
+    dumped = json.dumps(None if value is NULL else value)
+    o0, o1, kids = spans(text)[2]["scopes"][3][name][1:]
+    if key in kids:
+        k0, v0, v1, _ = kids[key]
+        if value is not None:
+            out = text[:v0] + dumped + text[v1:]
+        else:   # the pair and the comma that joined it to its neighbour; a line of its own goes whole
+            line = text.rfind("\n", 0, k0) + 1
+            own = re.match(r"[ \t]*,[ \t]*\n", text[v1:]) if not text[line:k0].strip() else None
+            after = re.match(r"\s*,[ \t]*", text[v1:])
+            if own:
+                out = text[:line] + text[v1 + own.end():]
+            elif after:
+                out = text[:k0] + text[v1 + after.end():]
+            else:
+                before = re.search(r",\s*$", text[o0:k0])
+                out = text[:o0 + before.start()] + text[v1:] if before else text[:k0] + text[v1:]
+    elif value is None:
+        out = text
+    else:
+        body = text[o0 + 1:o1 - 1]
+        pair = f'"{key}": {dumped}'
+        m = re.match(r"\n([ \t]*)", body)
+        if m:      # a multi-line object: a line of its own at the first key's indent
+            out = text[:o0 + 1] + f"\n{m.group(1)}{pair}," + text[o0 + 1:]
+        elif body.strip():   # the closing brace's own line and indent stay where they were
+            head = text[:o1 - 1]
+            kept = head.rstrip()
+            out = kept + f", {pair}" + head[len(kept):] + text[o1 - 1:]
+        else:
+            out = text[:o0 + 1] + pair + text[o1 - 1:]
+    if json.loads(out) != want:
+        raise ValueError(f"the edit of scope {name}'s {key} did not parse back to the change alone — nothing written")
+    return out
+
+
+def flag_line(name, scope):
+    on = scope.get("confidential") is True
+    login = scope.get("login")
+    yard = (f" — yard {scope['yard'] or 'none'}" if "yard" in scope else "")   # said only where the key is
+    return f"{'[x]' if on else '[ ]'} {name}" + (f" — login {login}" if login else "") + yard
+
+
+def set_flags(path, name, confidential=None, login=None, drop_login=False, dry=False, yard=None):
+    """Write scope `name`'s flags into the registry file at `path`. → the lines to print. `yard`:
+    a host, `none` (written as null), or None to leave the key as it is."""
+    text = path.read_text(encoding="utf-8")
+    new = text
+    if confidential is not None:
+        new = set_key(new, name, "confidential", True if confidential else None)
+    if login:
+        new = set_key(new, name, "login", login)
+    elif drop_login:
+        new = set_key(new, name, "login", None)
+    if yard is not None:
+        new = set_key(new, name, "yard", NULL if yard == "none" else yard)
+    scope = json.loads(new)["scopes"][name]
+    if new == text:
+        return [f"  {flag_line(name, scope)} — unchanged"]
+    if not dry:
+        write_registry(path, new)
+    return [f"{'would write' if dry else 'wrote'} {path}: {flag_line(name, scope)}"]
+
+
+def write_registry(path, text):
+    """Replace the registry file in one step: every hook and the fence read it while this runs, and a
+    truncate-then-write read half-way is no registry at all (the /finish review of S1, 2026-10-22)."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def primary_main(path):
+    """Why `path` must not be written here: it sits in a repo's primary checkout on its main branch
+    (the Macs' registry links to the overlay's primary, and a write there is live before any branch
+    or pull request, and leaves main dirty for sync). None for a linked worktree, any other branch
+    or no git repo."""
+    def git(*a):
+        r = subprocess.run(["git", "-C", str(path.parent), *a], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    branch, gd, common_dir = git("rev-parse", "--abbrev-ref", "HEAD"), git("rev-parse", "--absolute-git-dir"), \
+        git("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if branch in ("main", "master") and gd and common_dir and os.path.realpath(gd) == os.path.realpath(common_dir):
+        return f"{path} is in the primary checkout of {Path(common_dir).parent}, on {branch}"
+    return None
+
+
+def configure(path, ask=input, dry=False, show=print):
+    """The checklist: each scope with its flag; at a terminal, numbers toggle it and a label after
+    one sets its login (`3 claude-x`); a blank line saves. → the lines to print."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    names = list(data.get("scopes") or {})
+    state = {n: (data["scopes"][n].get("confidential") is True, data["scopes"][n].get("login")) for n in names}
+    first = dict(state)
+    while True:
+        for i, n in enumerate(names, 1):
+            on, login = state[n]
+            show(f"  {i:2} {'[x]' if on else '[ ]'} {n}" + (f" — login {login}" if login else ""))
+        try:
+            line = ask("toggle (numbers, `N LABEL` for a login, blank to save, q to quit): ").strip()
+        except EOFError:
+            line = "q"
+        if line in ("q", "quit"):
+            return ["nothing written"]
+        if not line:
+            break
+        parts = line.replace(",", " ").split()
+        n = 0
+        while n < len(parts):
+            if not parts[n].isdigit() or not 1 <= int(parts[n]) <= len(names):
+                show(f"  ? {parts[n]} is no number on the list")
+                n += 1
+                continue
+            key = names[int(parts[n]) - 1]
+            on, login = state[key]
+            if n + 1 < len(parts) and not parts[n + 1].isdigit():
+                state[key] = (on, parts[n + 1])
+                n += 2
+            else:
+                state[key] = (not on, login)
+                n += 1
+    out = []
+    for n in names:
+        if state[n] != first[n]:
+            on, login = state[n]
+            out += set_flags(path, n, on, login=login if login != first[n][1] else None, dry=dry)
+    return out or ["nothing changed"]
+
+
+def folders(scope, repos, layer=None):
+    """The keys in the scope's file: the anchor (its first entry, named outright), the rest in
+    order, twins last, then the layer (LAYER, the registry's own repo)."""
+    layer = layer or LAYER
+    keys = [k for k in members(scope, repos) if k in repos]
+    first = (scope.get("repos") or [None])[0]
+    if first in keys:
+        keys.remove(first)
+        keys.insert(0, first)
+    if not keys:
+        return [layer] if layer else []
+    anchor, rest = keys[0], keys[1:]
+    order = [anchor] + [k for k in rest if not repos[k].get("twin_of")] + [k for k in rest if repos[k].get("twin_of")]
+    return order + ([] if not layer or layer in order else [layer])
+
+
+def load_jsonc(text):
+    """A workspace file VS Code wrote: JSON with // and /* */ comments and trailing commas."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            i = text.find("\n", i) if "\n" in text[i:] else n
+        elif text.startswith("/*", i):
+            i = text.find("*/", i + 2) + 2 if "*/" in text[i + 2:] else n
+        else:
+            out.append(c)
+            i += 1
+    return json.loads(re.sub(r",(\s*[}\]])", r"\1", "".join(out)))
+
+
+def render(name, scope, repos, names, base, current=None):
+    """(body, notes): the file `write` makes for the scope at base/<file>, from the file there now."""
+    path = base / scope["file"]
+    notes = []
+    managed = []
+    for k in folders(scope, repos):
+        if not (base / k).is_dir():
+            notes.append(f"{k} is not on this Mac — left out of {scope['file']}")
+            continue
+        # a twin by its full key: `oss/shared` beside `shared`, never two of one name
+        default = k if repos.get(k, {}).get("twin_of") else k.rsplit("/", 1)[-1]
+        managed.append({"path": os.path.relpath(base / k, path.parent), "name": names.get(k, default)})
+    body = dict(current or {})
+    kept = []
+    for f in (current or {}).get("folders") or []:
+        p = str(f.get("path") or "")
+        full = (path.parent / p) if not os.path.isabs(p) else Path(p)
+        # VS Code writes them relative, `.claude/worktrees/<topic>` from an anchor's own folder
+        if WORKTREES in "/" + p.replace("\\", "/") + "/" and full.is_dir():
+            kept.append(f)
+    body["folders"] = managed[:1] + kept + managed[1:]  # the home repo's script's order: root, worktrees, rest
+    settings = dict(scope.get("settings") or {})
+    for k in OWNED_ELSEWHERE:
+        if k in ((current or {}).get("settings") or {}):
+            settings[k] = current["settings"][k]
+    body["settings"] = settings
+    order = ["folders", "settings"] + [k for k in body if k not in ("folders", "settings")]
+    return {k: body[k] for k in order}, notes
+
+
+def anchor_of(scope, repos, base=None):
+    """The scope's file's first folder — the window's anchor — read from the file when it is
+    there (a refused write leaves an open file's old one), else the first declared repo present
+    here, as render() would write it."""
+    base = base or projects()
+    path = base / scope["file"]
+    try:
+        f = first_folder(load_jsonc(path.read_text()), path)
+        if f:
+            return Path(f)
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    keys = folders(scope, repos)
+    return base / next((k for k in keys if (base / k).is_dir()), keys[0])
+
+
+def resolve(arg, repos, base=None):
+    """A registry key for ARG: the key itself, or the repo whose checkout (or worktree) holds the path."""
+    if arg in repos:
+        return arg
+    p = Path(arg).expanduser()
+    if not p.exists():
+        return None
+    r = subprocess.run(["git", "-C", str(p if p.is_dir() else p.parent), "rev-parse", "--path-format=absolute",
+                        "--git-common-dir"], capture_output=True, text=True)
+    if r.returncode or not r.stdout.strip():
+        return None
+    top = Path(r.stdout.strip()).parent.resolve()
+    try:
+        key = str(top.relative_to((base or projects()).resolve()))
+    except ValueError:
+        return None
+    return key if key in repos else None
+
+
+def scope_of(key, repos, scopes):
+    return next((n for n, s in scopes.items() if key in members(s, repos)), None) if key else None
+
+
+# A file a VS Code window has open is never moved, and never rewritten with a new first folder.
+# 2026-10-15 00:00: `write` moved the open regatta.code-workspace into .scopes-retired; VS Code
+# logged "Watcher shutdown because watched path got deleted", its extension host ended two seconds
+# later and nine Claude sessions died with it. The files rewritten in place, first folder unchanged,
+# crashed nothing (the crash investigation, 2026-10-15).
+# Which files are open: VS Code's own windowsState (storage.json, by path) or a window title in
+# `code --status` ("… — atlas (Workspace) — …", by name) — either one is enough. VS Code running
+# without `code --status` is "open" for every file: a refusal costs a rerun, a wrong guess a crash.
+STORAGE = [Path.home() / "Library/Application Support/Code/User/globalStorage/storage.json",
+           Path.home() / ".config/Code/User/globalStorage/storage.json"]
+APP_CLI = Path("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code")
+
+
+class Opened:
+    """Which .code-workspace files VS Code windows have open, from the two readings."""
+
+    def __init__(self, status=None, storage=None, running=False):
+        self.paths, self.names = set(), set()
+        for w in ([storage.get("windowsState", {}).get("lastActiveWindow")]
+                  + (storage.get("windowsState", {}).get("openedWindows") or []) if storage else []):
+            uri = ((w or {}).get("workspaceIdentifier") or {}).get("configURIPath") or ""
+            if uri.startswith("file://"):
+                self.paths.add(os.path.realpath(urllib.parse.unquote(uri[len("file://"):])))
+        for m in re.finditer(r"window \[\d+\] \((.*)\)\s*$", status or "", re.M):
+            self.names.update(re.findall(r"(?:^|— )([^—]+?) \(Workspace\)", m.group(1)))
+        # storage.json is a snapshot (windowsState is saved on window blur and at shutdown, VS Code
+        # 1.142 mainImpl.js): a window opened since is in `code --status` only, so without that
+        # reading a running VS Code is blind, whatever storage.json says (review 2026-10-15)
+        self.blind = running and status is None
+
+    def holds(self, path):
+        """Why `path` counts as open, or None."""
+        if self.blind:
+            return "VS Code is running and which files its windows have open could not be read"
+        if os.path.realpath(path) in self.paths:
+            return "a VS Code window has it open (storage.json)"
+        stem = Path(path).name[:-len(EXT)] if str(path).endswith(EXT) else None
+        if stem and stem in self.names:
+            return f"a VS Code window titled \"{stem} (Workspace)\" is open"
+        return None
+
+
+def opened_now():
+    """The live reading: `code --status` and storage.json, whichever can be read."""
+    running = subprocess.run(["pgrep", "-f", "Visual Studio Code.app/Contents/MacOS"],
+                             capture_output=True, text=True).returncode == 0
+    cli = shutil.which("code") or (str(APP_CLI) if APP_CLI.exists() else None)
+    status = None
+    if cli and running:
+        try:
+            r = subprocess.run([cli, "--status"], capture_output=True, text=True, timeout=30)
+            status = r.stdout if r.returncode == 0 and "window [" in r.stdout else None
+        except (OSError, subprocess.SubprocessError):
+            status = None
+    storage = None
+    for f in STORAGE:
+        try:
+            storage = json.loads(f.read_text())
+            break
+        except (OSError, ValueError):
+            continue
+    return Opened(status, storage, running)
+
+
+def first_folder(body, path):
+    f = ((body or {}).get("folders") or [{}])[0].get("path")
+    return os.path.realpath(path.parent / f) if f else None
+
+
+def tracked(path):
+    r = subprocess.run(["git", "-C", str(path.parent), "ls-files", "--error-unmatch", path.name],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def write(repos, scopes, names, base, dry, retired=(), opened=None):
+    """Write every scope's file; move each retired one aside. → the lines to print. A file a VS
+    Code window has open (opened, read live when not given) is never moved, nor rewritten with
+    another first folder: refused with a ✗ line, the rest done."""
+    opened = opened or opened_now()
+    out = []
+    for name, scope in scopes.items():
+        path = base / scope["file"]
+        current = None
+        if path.exists():
+            try:
+                current = load_jsonc(path.read_text())
+            except ValueError as e:
+                out.append(f"✗ {scope['file']} is not readable JSON ({e}) — left as it is")
+                continue
+        if not path.parent.is_dir():
+            out.append(f"  {scope['file']}: {path.parent} is not on this Mac — no file written")
+            continue
+        body, notes = render(name, scope, repos, names, base, current)
+        out += [f"  {n}" for n in notes]
+        if current == body:
+            continue  # content, not text: the home repo's script and sync.py format it their own way
+        text = json.dumps(body, indent=2, ensure_ascii=False) + "\n"
+        why = opened.holds(path) if current is not None else None
+        if why and first_folder(current, path) != first_folder(body, path):
+            out.append(f"✗ {scope['file']} not written: its first folder would change and {why} — close"
+                       f" that window, then run `bin/scopes write` again")
+            continue
+        out.append(f"{'would write' if dry else 'wrote'} {scope['file']}")
+        if not dry:
+            path.write_text(text)
+    stamp = datetime.date.today().isoformat()
+    for rel in retired:
+        path = base / rel
+        if not path.exists():
+            continue
+        if tracked(path):
+            out.append(f"⚠ {rel} is retired but tracked in git — remove it there with a commit")
+            continue
+        why = opened.holds(path)
+        if why:
+            out.append(f"✗ {rel} not retired: {why} — moving it would crash that window; close it,"
+                       f" then run `bin/scopes write` again")
+            continue
+        dest = base / RETIRED / stamp / rel.replace("/", "__")
+        out.append(f"{'would move' if dry else 'moved'} retired {rel} → {dest.relative_to(base)}")
+        if not dry:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(dest))
+    return out
+
+
+def main(argv):
+    cmd = argv[0] if argv else "list"
+    repos, scopes, names = registry()
+    if cmd in ("list", "-l"):
+        for name, scope in scopes.items():
+            flag = (" [confidential" + (f", login {scope['login']}" if scope.get("login") else "") + "]"
+                    if scope.get("confidential") is True else "")
+            print(f"{name}{flag} ({scope.get('file')}): " + ", ".join(members(scope, repos)))
+        return 0
+    if cmd == "set" and len(argv) >= 3:
+        rest = argv[2:]
+        want = True if "--confidential" in rest else False if "--open" in rest else None
+        login = rest[rest.index("--login") + 1] if "--login" in rest and rest.index("--login") + 1 < len(rest) else None
+        yard = rest[rest.index("--yard") + 1] if "--yard" in rest and rest.index("--yard") + 1 < len(rest) else None
+        known = {"--confidential", "--open", "--login", "--no-login", "--yard", "--dry-run"}
+        stray = [a for i, a in enumerate(rest) if a not in known and not (i and rest[i - 1] in ("--login", "--yard"))]
+        if ("--confidential" in rest and "--open" in rest) or ("--login" in rest and (not login or login.startswith("-"))) \
+                or ("--yard" in rest and (not yard or yard.startswith("-"))) \
+                or stray or not known.intersection(rest) - {"--dry-run"}:
+            print("scopes set: --confidential or --open (not both), --login takes a label, --yard a host or none"
+                  + (f" — not understood: {' '.join(stray)}" if stray else ""), file=sys.stderr)
+            return 2
+        if argv[1] not in scopes:
+            print(f"scopes set: no scope {argv[1]} — the registry has {', '.join(scopes)}", file=sys.stderr)
+            return 1
+        if yard and yard != "none":
+            # a yard is a Mac the fleet knows: the one list of them is lighthouse's, read through the core
+            hosts = common.config_lines("lighthouse/hosts") or []
+            if yard not in hosts:
+                print(f"scopes set: {yard} is not a host {common.CONFIG / 'lighthouse/hosts'} lists"
+                      f" ({', '.join(hosts) or 'it lists none'}) — a yard is one of them, or none", file=sys.stderr)
+                return 1
+        why = None if "--dry-run" in rest else primary_main(REGISTRY.resolve())
+        if why:
+            print(f"✗ scopes set: {why} — write a claude/* worktree's copy: "
+                  f"CLAUDE_REPOS_JSON=<that worktree>/repos.json scopes set …", file=sys.stderr)
+            return 1
+        try:
+            lines = set_flags(REGISTRY.resolve(), argv[1], want, login, "--no-login" in rest, "--dry-run" in rest, yard)
+        except (ValueError, TypeError) as e:
+            print(f"✗ scopes set: {e}", file=sys.stderr)
+            return 1
+        print("\n".join(lines))
+        if "--dry-run" not in rest and lines[0].startswith("wrote"):
+            print("  the registry is a file in git: commit it on a claude/* branch of its repo")
+        return 0
+    if cmd == "configure":
+        if not sys.stdin.isatty() or "--dry-run" in argv[1:]:
+            for name, scope in scopes.items():
+                print(f"  {flag_line(name, scope)}")
+            print("  (not a terminal: `scopes set SCOPE --confidential|--open [--login LABEL]` writes one)")
+            return 0
+        why = primary_main(REGISTRY.resolve())
+        if why:
+            print(f"✗ scopes configure: {why} — run it on a claude/* worktree's copy: "
+                  f"CLAUDE_REPOS_JSON=<that worktree>/repos.json scopes configure", file=sys.stderr)
+            return 1
+        print("\n".join(configure(REGISTRY.resolve())))
+        return 0
+    if cmd == "paths" and len(argv) == 2:
+        if argv[1] not in scopes:
+            print(f"scopes paths: no scope {argv[1]}", file=sys.stderr)
+            return 1
+        print("\n".join(str(p) for p in common.scope_paths(argv[1])))
+        return 0
+    if cmd in ("of", "anchor", "workspace") and len(argv) == 2:
+        key = resolve(argv[1], repos)
+        name = scope_of(key, repos, scopes)
+        if not name:
+            print(f"scopes: {argv[1]} is in no scope", file=sys.stderr)
+            return 1
+        if cmd == "of":
+            print(name)
+            return 0
+        if cmd == "anchor":
+            print(anchor_of(scopes[name], repos))
+            return 0
+        path = projects() / scopes[name]["file"]
+        if not path.is_file():
+            print(f"scopes: {name}'s file {path} does not exist — run bin/scopes write", file=sys.stderr)
+            return 1
+        print(path)
+        return 0
+    if cmd == "write":
+        bad = faults(repos, scopes)
+        if bad:
+            print("\n".join(f"✗ {b}" for b in bad), file=sys.stderr)
+            return 1
+        retired = json.loads(REGISTRY.read_text()).get("scope_files_retired") or []
+        lines = write(repos, scopes, names, projects(), "--dry-run" in argv[1:], retired)
+        print("\n".join(lines) if lines else f"✓ {len(scopes)} scope files current")
+        return 1 if any(l.startswith("✗") for l in lines) else 0
+    if cmd == "check":
+        bad = faults(repos, scopes)
+        more, notes = confidential_faults(repos, scopes, projects())
+        bad += more
+        if bad:
+            print("\n".join([f"✗ {b}" for b in bad] + [f"  {n}" for n in notes]))
+            return 1
+        conf = [n + (f" ({scopes[n]['login']})" if scopes[n].get("login") else "") for n in scopes
+                if scopes[n].get("confidential") is True]
+        print("\n".join([f"✓ scopes: {len(repos)} repos in {len(scopes)} scopes; confidential: {', '.join(conf) or 'none'}"]
+                        + [f"  {n}" for n in notes]))
+        return 0
+    print(__doc__.split("\n\n")[0] + "\n" + __doc__.split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

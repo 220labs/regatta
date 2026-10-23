@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""statusline — Claude Code's status line: repo · branch · model effort · context · week.
+
+  <status JSON on stdin> | statusline     one line, as settings.json "statusLine" runs it
+
+Why (dream 2026-09-27 P10, weekly 2026-09-29): context is the larger spend lever and nothing
+showed it — sessions longer than 8 h were 63% of the week of 09-20's spend, calls above 400k
+context 23% — and "which folder are you in?" was asked three times the week before. The owner's
+answer on sextant D23: save without lowering quality, so the line shows what to watch
+(context, the week), not a cheaper tier.
+
+Fields read (Claude Code 2.1.282, from the binary's status builder, not recalled):
+workspace.current_dir, model.display_name, effort.level, context_window.used_percentage and
+.total_input_tokens, rate_limits.seven_day.used_percentage. Any may be missing; each is
+skipped when it is. `asks N` (session-asks R6): the docs with open asks bin/ask poll last found on branches active in the last 7 days.
+`stalled N` (orchestration B4): the stalls the tick in that poll found, from its cache, hidden when 15 min old.
+`also here: a, b +N` (dream 2026-09-27 Q6): this repo's other worktrees whose writer was active in the last 2 h.
+
+A window at 100% (rate_limits.five_hour / .seven_day {used_percentage, resets_at}; 2.1.288's
+builder carries no locked_reason) is an exhaustion: the line gains `· limit!` and, once per
+session and window, `bin/account exhausted` records it in this config dir's exhaustion.jsonl,
+which `account pick` reads to skip and then distrust the account (multi-account design E3, D6).
+The marker beside it keeps a locked session from starting a process on every refresh. Whether the VS Code side panel renders a status line is unverified — one
+panel session after wiring tells. Stdlib only; prints something even on bad input.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+
+def git(cwd: str, *args: str) -> str:
+    try:
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                              timeout=2).stdout.strip()
+    except Exception:
+        return ""
+
+
+OWNER_TTL = 2 * 3600  # == common.OWNER_TTL, a copy (as sync.py keeps one): an owner idle this long has gone
+
+
+def line(d: dict) -> str:
+    cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or os.getcwd()
+    common, _, mine = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir").partition("\n")
+    repo = os.path.basename(os.path.dirname(common)) if common else os.path.basename(cwd)
+    branch = git(cwd, "branch", "--show-current")
+    parts = [repo + (f" · {branch}" if branch else "")]
+    model = (d.get("model") or {}).get("display_name") or ""
+    effort = (d.get("effort") or {}).get("level") or ""
+    if model or effort:
+        parts.append(" ".join(x for x in (model, effort) if x))
+    cw = d.get("context_window") or {}
+    if cw.get("used_percentage") is not None:
+        k = cw.get("total_input_tokens") or 0
+        parts.append(f"ctx {round(cw['used_percentage'])}%" + (f" ({k // 1000}k)" if k else ""))
+    week = ((d.get("rate_limits") or {}).get("seven_day") or {}).get("used_percentage")
+    if week is not None:
+        parts.append(f"week {round(week)}%")
+    others = live_others(common, mine, d.get("session_id"))
+    if others:
+        parts.append("also here: " + ", ".join(others[:2]) + (f" +{len(others) - 2}" if len(others) > 2 else ""))
+    n = open_asks()
+    if n:
+        parts.append(f"asks {n}")
+    n = stalled()
+    if n:
+        parts.append(f"stalled {n}")
+    if exhausted(d):
+        parts.append("limit!")
+    return " · ".join(parts)
+
+
+def live_others(common: str, mine: str, me=None) -> list:
+    """The topics of this repo's other worktrees whose writer was seen within OWNER_TTL — the
+    checkpoint hook's lock, <git dir>/claude/owner.json {session, branch, seen} — newest first, so
+    a session about to write to a live system sees who else is working here (dream 2026-09-27 Q6).
+    This worktree's own lock is not counted, nor one this session left in a worktree it has since
+    left (`me`, the status JSON's session_id; review, 2026-10-19). One small read per worktree."""
+    if not common:
+        return []
+    now, found = time.time(), []
+    root = os.path.join(common, "worktrees")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    for name in names:
+        gitdir = os.path.join(root, name)
+        if os.path.realpath(gitdir) == os.path.realpath(mine or "/nonexistent"):
+            continue
+        try:
+            o = json.load(open(os.path.join(gitdir, "claude", "owner.json")))
+            seen = float(o.get("seen") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if me and o.get("session") == me:
+            continue
+        if now - seen < OWNER_TTL:
+            branch = str(o.get("branch") or name).rsplit("/", 1)[-1]
+            topic = branch[11:] if len(branch) > 11 and branch[:4].isdigit() and branch[10] == "-" else branch
+            found.append((seen, topic))
+    return [t for _, t in sorted(found, reverse=True)]
+
+
+def open_asks() -> int:
+    """Open asks waiting on the owner anywhere (session-asks R6): `bin/ask poll`'s cache, refreshed every
+    5 min on the laptop. A cache older than an hour (the poll is off) shows nothing rather than a
+    stale count. No tokens, one small file read per refresh."""
+    p = os.environ.get("ASK_CACHE_DIR") or os.path.expanduser("~/Library/Caches/ask")
+    try:
+        d = json.load(open(os.path.join(p, "asks.json")))
+        if time.time() - d.get("t", 0) > 3600:
+            return 0
+        # Docs, not items: the owner answers a doc in one form, and 165 items read as noise where the
+        # same backlog is about 25 docs (2026-10-11).
+        return len({(a.get("repo"), a.get("branch"), a.get("rel")) for a in (d.get("asks") or []) if isinstance(a, dict)})
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def stalled() -> int:
+    """Stalls the chain manager's tick found on both Macs (orchestration B4): the count `bin/ask poll`
+    cached at the end of its last run, ~/Library/Caches/ask/stalls.json {t, n}, beside asks.json. Ask-covered waits (an
+    open D-item) are not in it: the tick leaves those to `asks N`. Hidden once older than 15 min, three
+    missed polls — a number nobody is refreshing is worse than none. Never ssh, never the classifier."""
+    p = os.environ.get("ASK_CACHE_DIR") or os.path.expanduser("~/Library/Caches/ask")
+    try:
+        d = json.load(open(os.path.join(p, "stalls.json")))
+        if time.time() - d.get("t", 0) > 900:
+            return 0
+        return max(0, int(d.get("n") or 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _account():
+    """lighthouse's bin/account through the core's tool() (G13), or None. Loaded only when a window
+    is at 100%: the line itself stays stdlib and import-free on every refresh. The core is found as
+    lib/find_core.py finds it in regatta's plumb module, else through hooks/ beside bin/ (the overlay)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        if os.path.isfile(os.path.join(root, "lib", "find_core.py")):
+            sys.path.insert(0, os.path.join(root, "lib"))
+            import find_core
+            sys.path.insert(0, find_core.hooks())
+        else:
+            sys.path.insert(0, os.path.join(root, "hooks"))
+        import common
+        return common.tool("account")
+    except (ImportError, SystemExit):
+        return None
+
+
+def exhausted(d: dict) -> bool:
+    hit = False
+    config = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+    for w in ("five_hour", "seven_day"):
+        x = (d.get("rate_limits") or {}).get(w) or {}
+        if (x.get("used_percentage") or 0) < 100:
+            continue
+        hit = True
+        try:
+            marks = os.path.join(config, "exhaustion-marks")
+            mark = os.path.join(marks, f"{d.get('session_id') or 'none'}-{w}-{int(float(x.get('resets_at') or 0))}")
+            if os.path.exists(mark):
+                continue
+            os.makedirs(marks, exist_ok=True)
+            for old in os.listdir(marks):  # a lock lasts a week at most
+                if os.path.getmtime(os.path.join(marks, old)) < time.time() - 8 * 86400:
+                    os.remove(os.path.join(marks, old))
+            acct = _account()
+            if not acct:  # lighthouse absent (G13): `limit!` still shows; nothing recorded
+                continue
+            r = subprocess.run([sys.executable, str(acct),
+                            "exhausted", "--window", w, "--resets-at", str(x.get("resets_at") or 0),
+                            "--used", str(x["used_percentage"]), "--session", str(d.get("session_id") or "")],
+                           capture_output=True, timeout=5)
+            if r.returncode == 0:  # marked only once recorded, so a failed write is tried again
+                open(mark, "w").close()
+        except Exception:
+            pass
+    return hit
+
+
+def main() -> int:
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        d = {}
+    try:
+        print(line(d if isinstance(d, dict) else {}))
+    except Exception:
+        print(os.path.basename(os.getcwd()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

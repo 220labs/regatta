@@ -1,0 +1,7 @@
+{
+  "name": "keel",
+  "version": "0.1.0",
+  "description": "Decisions reach the owner batched in one doc, answered inline and taken back as commits: keel (the D-list, its form and page), the Stop-hook reply lint, the answered-doc prompt hook, the spacesheep gate.",
+  "author": { "name": "220 Labs" },
+  "dependencies": ["regatta"]
+}

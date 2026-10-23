@@ -1,0 +1,2033 @@
+#!/usr/bin/env python3
+"""ci-provider — which CI runs a repo's check: GitHub Actions on ubuntu, GitHub Actions on a
+self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched in one command.
+
+    REPO: any path in the checkout, `.` by default; every form works on its top level.
+
+    ci-provider [REPO]                        where REPO stands: provider, files, main's required
+                                              check on GitHub, which CI reported on HEAD and main,
+                                              the repo's self-hosted runners
+    ci-provider REPO --to actions|self-hosted|circleci [--check CMD] [--context NAME] [--force] [--dry-run]
+                                              rewrite the checkout's files for that provider
+                                              (--force: drop what the old CI file held beyond the
+                                              template and its command)
+    ci-provider REPO --to self-hosted --runs-on-var NAME | --twin
+                                              the same, runs-on read from a repository variable
+                                              (--twin: CI_RUNS_ON, for a check.yml a public twin
+                                              publishes)
+    ci-provider REPO --protect [--force] [--dry-run]
+                                              set GitHub main's required check to the provider's
+                                              (live: the one step that changes GitHub)
+    ci-provider REPO --compose                regenerate .circleci/config.yml from its parts
+    ci-provider REPO --runner install|status|remove [--dry-run]
+                                              the repo's runner on the runner Mac, over ssh
+                                              (live: install downloads and registers it, and sets
+                                              the runs-on variable; remove deregisters it; status
+                                              only reads)
+
+The owner, 2026-10-18: "I need to be able to easily switch repos between circle ci and raw GH
+actions - add that capability (will later move to Regatta)"; moved into wharf 2026-10-20 with
+its templates (templates/ci/circleci-check.yml here; templates/code/.github/workflows/check.yml
+and main-protection.json, B5's). bin/repos loads this file, its sibling, for provider_from, the
+one definition of which CI a repo is on (its ci_state reads origin/main with it).
+
+The self-hosted kind's name is `self-hosted`, or what the config dir's `wharf/ci-runner-kind`
+says: an installer whose repos' ci.json already name it otherwise (after the first Mac it ran
+on) writes that name there, and every verb, --to and ci.json take it (SELF, below). Nothing
+else here names a machine. The runner Mac's
+private values come from the regatta config dir (`$REGATTA_CONFIG`, else .config/regatta in the
+home folder), one file each, which the overlay writes (wharf's README, "Private values"), read
+once per command:
+  wharf/ci-runner-ssh      the ssh alias of the runner Mac, logged in as the runner's user (never
+                           starting with `-`: ssh would read it as an option)
+  wharf/ci-runner-labels   runs-on's labels, one per line: self-hosted, macOS and at least one of
+                           the Mac's own; the first of its own is also the runner's name
+  wharf/ci-runner-user     that user's name, for the trust warning only (absent: left unnamed)
+  wharf/ci-runner-kind     the self-hosted kind's name in ci.json and --to (absent: self-hosted)
+Without the first two, --to self-hosted and --runner refuse and name the file to write; every other
+verb, status among them, reads the labels a repo's own check.yml or variable asks for instead.
+
+Which runs-on is this tool's (review 2026-10-21, 3-5): only the two forms it writes, the labels
+key's labels literally or the variable form below exactly. Any other (`[self-hosted, linux, gpu]`,
+a `vars.X` the repo reads its own way) is a hand edit: a switch holds it like any other, --force
+drops it, and --runner never reads or writes its variable. Without ci.json a check.yml is self-hosted
+when its runs-on is the variable form, or a literal naming one of the labels key's own labels
+(`[self-hosted, macOS, <label>]`, `[macOS, <label>]`, the label alone); on a Mac without the key,
+only the variable form says so.
+
+What a provider is, all of it in the repo except the last line:
+  .github/ci.json                     {"provider": "actions"|"self-hosted"|"circleci", "check": "<command>"},
+                                      a record of the command; the live CI file wins over it. Only
+                                      the command crosses a switch: a check.yml or part holding more
+                                      than its template (setup steps, env) is refused without --force;
+                                      optional "context": main's required check name when it is
+                                      not the provider's default (a CircleCI GitHub App project
+                                      reports through the Checks API under a name read back on its
+                                      first run, 2026-10-18). Dropped on a switch: a
+                                      name belongs to one provider; `--to … --context NAME` sets it;
+                                      "replaces": the names a later --context or switch replaced,
+                                      which --protect swaps out of main's required checks too;
+                                      only this branch's: the list main carries is spent
+  actions:  .github/workflows/check.yml from templates/code/.github/workflows/check.yml
+  self-hosted:  the same file with its runs-on line swapped: Actions on the runner Mac, always on
+            (the owner, 2026-10-19: "Add this as a 3rd kind of CI workflow, I want this
+            standardized"). For a check that reads a macOS tool (plutil, Apple cc, qlmanage):
+            hosted macOS bills at 10x and CircleCI's Free macOS at 200 credits a minute, while a
+            self-hosted runner bills no minutes. Only the runs-on line and a first step differ
+            (below), so the draft skip and the concurrency block are the template's own. The line takes one of two forms:
+              literal   `runs-on: [<the labels key's labels>]`, for a repo that is private only
+              variable  `runs-on: ${{ fromJSON(vars.NAME || '"ubuntu-latest"') }}`: the labels
+                        sit in the repository variable NAME (a JSON list), which --runner install
+                        sets and status reads, so the file names no machine (the template's header
+                        names none either; wharf's suite scans both where a private word list is
+                        installed). For a repo with a public twin, whose check.yml is published:
+                        --runs-on-var NAME or --twin, or by itself (CI_RUNS_ON) when
+                        .helloworld/allowlist.txt lists check.yml (even over a literal: published,
+                        it would name the runner Mac's labels), or the repo carries .helloworld/
+                        and check.yml is not on the runner Mac yet. Otherwise a re-run keeps the
+                        file's form, literal or variable, unless --runs-on-var is given. Where the
+                        variable is unset (the twin, a fork) the job runs on ubuntu-latest, and
+                        still reports `check`: set it (--runner install) before that green counts.
+                        One shape for every repo: another (`github.event.repository.private &&
+                        …`) is a hand edit here.
+            The self-hosted file also takes a first step, `GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig`
+            into $GITHUB_ENV (GUARD_STEP): the job runs as the runner's login with its real HOME,
+            so a `git config --global` would rewrite that login's identity. Not a scratch HOME:
+            on macOS that hung headless Chrome and hid the user site's packages (eight repos moved
+            by hand, 2026-10-21). A file written before the step is still the tool's own; a re-run
+            adds it, and status warns without it. --to self-hosted refuses a check command that runs
+            `npm install -g` (the global prefix is first on the login's PATH), sudo or unguarded
+            apt-get (--force writes it, still said), and says each such line, by file and line, in
+            the scripts the command names (one level) and, with `git config --global` where no
+            GIT_CONFIG_GLOBAL guards it, in the other workflows on the runner Mac; status says
+            them too (host_writes: a line read as text, not a shell parse). The step hides the
+            login's whole ~/.gitconfig from the job, its identity, init.defaultBranch and credential
+            helper too: a check that needs one sets it in the job.
+  circleci: .circleci/parts/check.yml from templates/ci/circleci-check.yml, composed into
+            .circleci/config.yml (CircleCI reads one file; a repo's own jobs, e.g. an untrusted
+            harness, stay in their own part and survive every switch)
+  .github/main-protection.json        required_status_checks.contexts: `check` (Actions' job
+                                      name, on ubuntu or the runner Mac alike: a switch between
+                                      those two needs no --protect and keeps ci.json's `context`)
+                                      or `ci/circleci: check` (what CircleCI's GitHub
+                                      integration posts: `ci/circleci: <job>`, read back on a
+                                      CircleCI project 2026-10-18)
+  GitHub main's protection            --protect PATCHes required_status_checks only; never the
+                                      rest of the protection (a PUT would replace all of it). It
+                                      swaps the old provider's check for the new one and keeps every
+                                      other required check; main-protection.json likewise. As
+                                      `checks` when GitHub (or the file) has them, so a kept
+                                      check keeps its app_id pin; the new one is sent without,
+                                      and GitHub pins the app that reported it
+
+The order a switch takes: --to on a claude/* branch, commit and push; the new CI reports green on
+that head; then --protect, which refuses a check that has never reported (a required check that
+never reports blocks every PR; an admin bypass would be the only way in). It runs before the
+switching PR lands, so every other open PR needs a rebase onto it to report the new check, and an
+abandoned switch PR leaves main requiring a check main cannot produce: --protect prints the PATCH
+that undoes it.
+
+To actions or self-hosted with --protect to follow, the PR leaves draft before it: check.yml runs on no
+claude/* push and skips a draft PR's head (a skipped `check`, which GitHub counts as passed and
+--protect does not), so `gh pr ready` is what makes `check` report on that head. Ready is not
+landed: main still requires the old CI's check, whose file the head no longer has, so the merge
+waits for --protect (review 2026-10-19, 2). Not workflow_dispatch: GitHub runs it only for a
+workflow file already on the default branch (docs, "Events that trigger workflows", read
+2026-10-19), and a switch to Actions has not landed check.yml there yet.
+
+Not handled: a repo with .github/workflows/automerge.yml. Automerge runs on Actions and waits for
+a check.yml run, so under CircleCI it would never arm; --to circleci refuses it rather than leave
+a broken gate (bin/repos --github also checks automerge repos against check.yml). CircleCI must
+follow the project once (Projects > Set Up, config from the branch) before anything reports.
+
+self-hosted, and what it does not cover:
+  - the trust boundary: the runner runs as the runner's user, which holds whatever that login
+    holds (on the owner's Mac: `gh` logged in as a machine account with write on every repo, an
+    ssh key, git credentials and Claude logins; the owner's D5-A accepts it). A job runs the
+    workflow file of the PR's own head, so ANY write collaborator on the repo can run code on
+    the runner Mac as that user by pushing a branch and opening a PR. "Private repos only" below
+    stops forks, and nothing else. --to self-hosted and --runner install print the repo's write
+    collaborators (`gh api repos/O/R/collaborators`, push or above) as a warning; they refuse
+    nothing for them.
+  - a public repo is refused, by --to self-hosted and by --runner install (`gh api repos/O/R --jq
+    .private`), and so is a private one set to run fork PRs' workflows (`gh api repos/O/R/actions/
+    permissions/fork-pr-workflows-private-repos`, run_workflows_from_fork_pull_requests); either
+    one unread is refused too: a fork's pull request would run its own code on the runner Mac.
+    `ci-provider REPO` warns if a self-hosted repo has gone public, or let fork PRs run, since.
+    A private repo's public twin is another repo: it has no variable, so its check runs hosted.
+  - automerge.yml stays on ubuntu-latest, hosted, so no runner-Mac job runs with an
+    authenticated `gh` it does not need (its script calls `gh`; the runner's user has one).
+    It runs on every PR event (opened, push, label, ready), each billed as a hosted Linux minute:
+    the one Actions cost left. --to self-hosted says so when the repo has it.
+  - with no online runner carrying every label the job waits in the queue (GitHub drops it
+    after 24 h) and `check` never reports: provision the runner, then land the switch.
+  - the runner: one per repo, never org-wide (an owner that is a GitHub User account has no org
+    runners), in ~/actions-runners/<owner>/<repo> under the runner's user, named after the
+    labels key's first label of its own, labels self-hosted and macOS (both automatic) and its
+    own; actions/runner v2.338.0 osx-arm64,
+    pinned by URL, size and SHA-256 (the release's asset digest, read 2026-10-19), downloaded
+    once into ~/actions-runners/.dist. The service is the runner's own svc.sh: a LaunchAgent of
+    the runner user's, which launchd runs only while that user has a login session on the Mac.
+    Nested, owner then repo, since 2026-10-19: the flat <owner>-<repo> it replaced let `a-b/c`
+    and `a/b-c` share one directory. The runners installed before that stay where they are:
+    every verb uses the flat directory while its .runner names this repo's URL (config.sh writes
+    it as gitHubUrl), the nested one otherwise.
+  - the variable form: --runner install sets the repository variable to the labels key's labels
+    once the runner is online (`gh api` POST repos/O/R/actions/variables, or PATCH
+    …/variables/NAME when it holds another value: REST "Actions variables", read 2026-10-20),
+    reads it back and prints the call that undoes it; only GitHub's 404 reads as unset, any other
+    failure refuses the write. --runner remove leaves it, says what it holds, read back, and prints
+    the DELETE that would send the check back to ubuntu-latest. Where check.yml reads no variable
+    while ci.json says self-hosted or the repo has a public twin, install says it set none, and why.
+  - the registration and remove tokens: `gh api -X POST repos/O/R/actions/runners/
+    registration-token` (`remove-token`), an hour's life, minted only once the runner Mac reports
+    the runner not configured (install) or configured (remove); held in memory, written to ssh's
+    stdin and handed to config.sh as ACTIONS_RUNNER_INPUT_TOKEN (the runner reads and unsets its
+    ACTIONS_RUNNER_INPUT_* variables: src/Runner.Listener/CommandSettings.cs at v2.338.0); never
+    in an argv, a file, a log or this tool's output. It does sit in config.sh's environment for
+    that run, which any process of the runner's user can read (`ps -E`), until config.sh exits.
+  - a check.yml beyond the template (a matrix, setup steps) is refused like any other: the runner
+    Mac is one macOS, so a matrix over macOS images becomes one job. --force writes the template's
+    job (its steps as one --check command), and a matrix's `check (<value>)` names leave main's
+    required checks on every switch, as no file written here can report them: that switch needs
+    --protect, and says so; a ci.json `context` that is such a name is not carried into the
+    one-job file. --protect and status drop them only when the check.yml on disk has no
+    `strategy:`/`matrix:`: a hand-written matrix still reports them.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+# This module, wharf: its templates/ beside this bin/ (the realpath, so a source shim's copy in an
+# overlay still reads the module's own), and the core through lib/core_path.py like repos (C2)
+MOD = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(MOD, "lib"))
+import core_path  # noqa: E402 — the regatta core; none: one line, exit 2
+core_path.require()
+import common  # noqa: E402
+# The self-hosted kind's name (the header): the owner's repos say the first runner Mac's, which
+# the overlay writes to `wharf/ci-runner-kind`; read once, at import, like the rest of the table.
+SELF = common.config_line("wharf/ci-runner-kind") or "self-hosted"
+CODE_TEMPLATES = os.path.join(MOD, "templates", "code")
+ACTIONS_TEMPLATE = os.path.join(CODE_TEMPLATES, ".github", "workflows", "check.yml")
+CIRCLECI_TEMPLATE = os.path.join(MOD, "templates", "ci", "circleci-check.yml")
+CONTEXT = {"actions": "check", "circleci": "ci/circleci: check", SELF: "check"}
+ACTIONS_KINDS = ("actions", SELF)  # one check.yml on GitHub Actions; self-hosted: runs-on and GUARD_STEP
+# The labels a self-hosted runner gets by itself (config.sh adds the OS and the architecture):
+# the rest of the labels key are the Mac's own, passed to config.sh --labels
+AUTOMATIC_LABELS = ("self-hosted", "macos", "linux", "windows", "x64", "arm64", "arm")
+RUNS_ON_VAR = "CI_RUNS_ON"   # the variable form's name when none is given (regatta#53's)
+# the self-hosted kind's first step, before the checkout, at the steps' indent (render_workflow). What a job on
+# the runner Mac found it must not do, moving eight repos there by hand (2026-10-21): GIT_CONFIG_GLOBAL
+# and not a scratch HOME, which hung headless Chrome and hid the user site's packages on macOS,
+# while the repos without either passed with one. Harmless where the variable form runs hosted.
+GUARD_STEP = """\
+# The runner runs as its login, with that login's real HOME (a scratch HOME on macOS hangs
+# headless Chrome and hides the user site's Python packages), so a job keeps out of what is
+# that login's own: `git config --global` writes this job's file (this step); `npm install -g`
+# takes --prefix "$RUNNER_TEMP/npm", with "$RUNNER_TEMP/npm/bin" added to $GITHUB_PATH (the
+# global prefix is first on the login's PATH, in front of its own tools); no sudo, no apt-get.
+# The runner takes one job at a time: a job that waits on another job's effect deadlocks if it
+# takes the runner first.
+- name: git config --global in this job's own file
+  run: echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
+"""
+GUARD_RUN = GUARD_STEP.splitlines()[-1].split("run: ", 1)[1]
+RUNNER_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/"
+              "actions-runner-osx-arm64-2.338.0.tar.gz")
+# read 2026-10-19 from the release's asset (size, digest) and its notes' "BEGIN SHA osx-arm64"
+RUNNER_SIZE = 128562863
+RUNNER_SHA256 = "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2"
+RUNNER_WAIT = 60  # seconds a new runner gets to show online on GitHub
+GENERATED = "# GENERATED by wharf's ci-provider"
+# Every config.yml composed before the move opens "# GENERATED by <the overlay's path to it>":
+# read as generated too, else the first compose after the move takes it for a hand edit
+GENERATED_BEFORE = re.compile(r"# GENERATED by [^\n]*\bci-provider from \.circleci/parts/")
+HASHED = "sha256 of what follows: "
+SECTION_ORDER = ["parameters", "orbs", "executors", "commands", "jobs", "workflows"]
+
+
+class Refusal(Exception):
+    pass
+
+
+# --- the runner Mac's private values (the docstring; wharf's README, "Private values") -------
+
+def config_key(name):
+    """`wharf/<name>`'s lines from the regatta config dir, None when absent; unreadable is a
+    refusal, never taken for absent."""
+    lines, why = common.config_read("wharf/" + name)
+    if why:
+        raise Refusal("%s is unreadable (%s)" % (common.CONFIG / "wharf" / name, why))
+    return lines
+
+
+def runner_labels(required=True):
+    """runs-on's labels for the runner Mac, from `wharf/ci-runner-labels`: self-hosted among them
+    and at least one of the Mac's own, or a refusal naming the file to write. required=False, for
+    reading a repo's files (which kind, which labels status asks for): None instead of a refusal.
+    Read once per command and passed down (review 2026-10-21, 12)."""
+    try:
+        lines = config_key("ci-runner-labels")
+        path = common.CONFIG / "wharf" / "ci-runner-labels"
+        if not lines:
+            raise Refusal("no runner labels: write the runner Mac's runs-on labels to %s, one per "
+                          "line (self-hosted, macOS and one of its own, e.g. its host name)" % path)
+        labels = tuple(dict.fromkeys(lines))
+        if "self-hosted" not in {l.lower() for l in labels} or not own_labels(labels):
+            raise Refusal("%s holds %s: it needs self-hosted and at least one label of the Mac's own"
+                          % (path, ", ".join(labels)))
+    except Refusal:
+        if required:
+            raise
+        return None
+    return labels
+
+
+def own_labels(labels):
+    """The labels config.sh does not add by itself: what --labels gets; the first names the
+    runner on GitHub."""
+    return [l for l in labels or () if l.lower() not in AUTOMATIC_LABELS]
+
+
+def runner_host():
+    """The ssh alias of the runner Mac, from `wharf/ci-runner-ssh`, or a refusal. One starting
+    with `-` is refused: it goes to ssh as an argument, where it would be read as an option."""
+    lines = config_key("ci-runner-ssh")
+    path = common.CONFIG / "wharf" / "ci-runner-ssh"
+    if not lines:
+        raise Refusal("no runner Mac: write the ssh alias that logs in to it as the runner's user "
+                      "to %s" % path)
+    if lines[0].startswith("-"):
+        raise Refusal("%s holds %r: an ssh alias never starts with '-', which ssh would take for an "
+                      "option" % (path, lines[0]))
+    return lines[0]
+
+
+def runner_user():
+    """How the trust warning names the runner's user: `wharf/ci-runner-user`, else unnamed."""
+    try:
+        lines = config_key("ci-runner-user")
+    except Refusal:
+        lines = None
+    return "as %s" % lines[0] if lines else "as the runner's user"
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True).stdout.strip()
+
+
+def gh(*args, data=None):
+    """gh api, JSON in and out; returns (ok, parsed-or-text)."""
+    cmd = ["gh", "api", *args]
+    if data is not None:
+        cmd += ["--input", "-"]
+    p = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
+                       capture_output=True, text=True)
+    out = p.stdout.strip()
+    try:
+        out = json.loads(out) if out else None
+    except ValueError:
+        pass
+    return p.returncode == 0, (out if p.returncode == 0 else (p.stderr.strip() or out))
+
+
+def slug(repo):
+    url = git(repo, "remote", "get-url", "origin").rstrip("/")
+    m = re.search(r"github\.com[:/]([^/]+)/(.+?)(?:\.git)?$", url)
+    if not m:
+        raise Refusal("no GitHub origin in %s (%r)" % (repo, url))
+    return "%s/%s" % (m.group(1), m.group(2))
+
+
+def p(repo, *parts):
+    return os.path.join(repo, *parts)
+
+
+def main_branch(repo):
+    wfj = p(repo, ".claude", "workflow.json")
+    if os.path.exists(wfj):
+        return json.loads(read(wfj)).get("main", "main")
+    return "main"
+
+
+def read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def read_loose(path):
+    """A file read only to scan it (another workflow, the allowlist): a byte that is not UTF-8 is
+    replaced, never a traceback (landing review 2026-10-21, 13)."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def write(path, text, dry):
+    if dry:
+        print("  would write %s" % path)
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print("  wrote %s" % path)
+
+
+def remove(path, dry):
+    if os.path.exists(path):
+        print("  %s %s" % ("would remove" if dry else "removed", path))
+        if not dry:
+            os.remove(path)
+
+
+def load_ci(repo):
+    """ci.json, {} when there is none; one that is not a JSON object is a refusal, never a
+    traceback (provider_from tolerates it, as bin/repos must not stop on one repo)."""
+    path = p(repo, ".github", "ci.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        ci = json.loads(read(path))
+    except ValueError as e:
+        raise Refusal("%s is not JSON (%s): fix it, or remove it and pass --check" % (path, e))
+    if not isinstance(ci, dict):
+        raise Refusal("%s is not a JSON object: fix it, or remove it and pass --check" % path)
+    return ci
+
+
+def required_context(repo, provider):
+    """main's required check: ci.json's `context` for this provider, else the provider's default."""
+    ci = load_ci(repo)
+    if ci.get("provider") == provider and ci.get("context"):
+        return ci["context"]
+    return CONTEXT[provider]
+
+
+def provider_from(get, labels=None):
+    """(provider or None, why) from a repo's files, `get(relpath)` giving a file's text or None.
+    The one definition: this tool reads the checkout, bin/repos (ci_state) origin/main (review
+    2026-10-19, 5). ci.json's record first, as only this tool writes it; then the files. labels:
+    the labels key's (None when absent), which a literal runs-on is read against: bin/repos passes
+    none, as it calls this only where main has no check.yml."""
+    try:
+        ci = json.loads(get(".github/ci.json") or "{}")
+    except ValueError:
+        ci = {}
+    if isinstance(ci, dict) and ci.get("provider"):
+        return ci["provider"], "ci.json"
+    if get(".circleci/parts/check.yml") is not None:
+        return "circleci", "inferred: .circleci/parts/check.yml"
+    wf = get(".github/workflows/check.yml")
+    if wf is not None:
+        if on_runner_mac(wf, labels):
+            return SELF, "inferred: .github/workflows/check.yml runs on the runner Mac"
+        return "actions", "inferred: .github/workflows/check.yml"
+    return None, "no check in CI"
+
+
+# runs-on, as this tool reads it. Its own self-hosted file takes one of two forms and nothing else is
+# the tool's (review 2026-10-21, 3-5): the labels key's labels literally, or the variable form
+# exactly as var_runs_on spells it. Any other runs-on (`[self-hosted, linux, gpu]`, a `vars.X` of
+# the repo's own) is a hand edit: a switch holds it like any other (--force drops it), --runner never
+# writes its variable, and it is self-hosted only when it names one of the labels key's own labels.
+RUNS_ON_LINE = re.compile(r"^( *)runs-on:(.*)$", re.M)
+VAR_NAME = re.compile(r"(?!GITHUB_)[A-Za-z_][A-Za-z0-9_]*", re.I)
+
+
+def var_runs_on(name):
+    """The variable form's runs-on value, regatta#53's spelling: the variable's JSON list, else
+    ubuntu-latest, so a public twin or a fork, which has no such variable, runs hosted."""
+    return "${{ fromJSON(vars.%s || '\"ubuntu-latest\"') }}" % name
+
+
+# The variable form exactly as var_runs_on writes it: only the name may vary
+VAR_FORM = re.compile(re.escape(var_runs_on("@NAME@")).replace("@NAME@", "([A-Za-z_][A-Za-z0-9_]*)"))
+
+
+def yaml_value(raw):
+    """A one-line YAML value without its trailing comment (a `#` after a space, outside quotes) and
+    the whitespace around it, a CR among it (review 2026-10-21, 8)."""
+    quote = None
+    for i, c in enumerate(raw):
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or raw[i - 1] in " \t"):
+            return raw[:i].strip()
+    return raw.strip()
+
+
+def runs_on_lines(text):
+    """(as written, value) for each runs-on in a check.yml, in order: the text after `runs-on:`
+    stripped, and its value without a trailing comment."""
+    return [(m.group(2).strip(), yaml_value(m.group(2))) for m in RUNS_ON_LINE.finditer(text or "")]
+
+
+def flow_labels(value):
+    """The labels of a literal runs-on, quotes off: a flow list's items, or the one plain label;
+    None for an expression (`${{ … }}`) or nothing."""
+    if not value or value.startswith("${{"):
+        return None
+    if value.startswith("["):
+        if not value.endswith("]"):
+            return None
+        items = value[1:-1].split(",")
+    else:
+        items = [value]
+    labels = tuple(re.sub(r"^(['\"])(.*)\1$", r"\2", i.strip()) for i in items if i.strip())
+    return labels or None
+
+
+def lowered(labels):
+    return {l.lower() for l in labels or ()}
+
+
+def var_form(value):
+    """The variable's name when value is this tool's variable form, else None."""
+    m = VAR_FORM.fullmatch(value or "")
+    return m.group(1) if m else None
+
+
+def runs_on_var(text):
+    """The repository variable a check.yml's runs-on reads in this tool's form, or None: a
+    variable the file reads any other way is the repo's own, never this tool's to set."""
+    return next((var_form(v) for _, v in runs_on_lines(text) if var_form(v)), None)
+
+
+def own_runs_on(text, labels):
+    """runs-on as this tool writes it, as the file has it (for comparing the file with its
+    template): the variable form, or the labels key's labels literally (labels: the key's; None,
+    the variable form only). None when the file has neither."""
+    for written, v in runs_on_lines(text):
+        if var_form(v) or (labels and flow_labels(v) and lowered(flow_labels(v)) == lowered(labels)):
+            return written
+    return None
+
+
+def on_runner_mac(text, labels):
+    """Whether a check.yml runs on the runner Mac: its runs-on is the variable form, or a literal
+    naming one of the labels key's own labels (`[self-hosted, macOS, <label>]`, `[macOS, <label>]`,
+    the label alone), as the first Mac's name once did (review 2026-10-21, 5). From the config,
+    never a name here; without the key, only the variable form says so."""
+    own = lowered(own_labels(labels))
+    return any(var_form(v) or own & lowered(flow_labels(v)) for _, v in runs_on_lines(text))
+
+
+def literal_labels(text, labels=None):
+    """The labels a literal runs-on asks for when it is a self-hosted runner's (self-hosted among
+    them, or one of the labels key's own), or None."""
+    want = {"self-hosted"} | lowered(own_labels(labels))
+    for _, v in runs_on_lines(text):
+        found = flow_labels(v)
+        if found and lowered(found) & want:
+            return found
+    return None
+
+
+def publishes_workflows(repo):
+    """Whether the repo's public twin gets its check.yml: helloworld's allowlist (one file per
+    line, `#` comments; .helloworld/, else the old .opensource/, as helloworld reads it) lists
+    .github/workflows/check.yml. Such a check.yml must name no machine, so a literal runs-on is no
+    form to keep there. Another .github/ file published (dependabot.yml, another workflow) leaves
+    check.yml private (landing review 2026-10-21, 8)."""
+    for conf in (".helloworld", ".opensource"):
+        path = p(repo, conf, "allowlist.txt")
+        if os.path.isfile(path):
+            break
+    else:
+        return False
+    for line in read_loose(path).splitlines():
+        line = line.strip().rstrip("/")
+        if line in (".github", ".github/workflows", ".github/workflows/check.yml"):
+            return True
+    return False
+
+
+def pick_runs_on_var(repo, given, labels, twin=False):
+    """Which repository variable --to self-hosted writes runs-on through, or None for the literal
+    labels: --runs-on-var NAME; else, for a repo whose check.yml is published (--twin, or
+    .helloworld/allowlist.txt listing check.yml), the variable check.yml already reads or
+    RUNS_ON_VAR, even over a literal, which would publish the runner Mac's labels; else a re-run
+    keeps its form, the variable check.yml already reads or a literal on the runner Mac (review
+    2026-10-21, 6); else RUNS_ON_VAR when the repo has a public twin (.helloworld/)."""
+    if given is not None:
+        # fullmatch: `$` would take a name with a trailing newline (review 2026-10-21, 11)
+        if not VAR_NAME.fullmatch(given):
+            raise Refusal("--runs-on-var %r: a variable name is letters, digits and _, not starting "
+                          "with a digit or GITHUB_" % given)
+        return given
+    wf = p(repo, ".github", "workflows", "check.yml")
+    text = read(wf) if os.path.isfile(wf) else None
+    have = runs_on_var(text)
+    if have:
+        return have
+    if twin or publishes_workflows(repo):
+        return RUNS_ON_VAR
+    if text is not None and on_runner_mac(text, labels):
+        return None
+    if os.path.isdir(p(repo, ".helloworld")):
+        return RUNS_ON_VAR
+    return None
+
+
+# What a job on the runner Mac must not do: it runs as the runner's login, with that login's real
+# HOME (a scratch HOME is too much on macOS: headless Chrome hangs with no DOM, and the user site's
+# Python packages vanish; the move of eight repos, 2026-10-21), so what the job writes "globally"
+# is that login's own. Each: (what, the pattern, why and the fix). A line is read as a command;
+# comments are skipped. The guards each takes are in host_writes.
+HOST_WRITES = (
+    # bounded at a shell separator, so `npm install && cc -g …` is no npm -g; npm 8's
+    # --location=global and `npm -g install` too; `--global-style` is not -g (landing review 2026-10-21, 1)
+    ("npm install -g", re.compile(r"\bnpm\s+(?:(?:-g|--global|--location[= ]global)\s+(?:install|i|add)\b"
+                                  r"|(?:install|i|add)\b[^#\n;&|]*?\s(?:-g|--global|--location[= ]global))(?![\w-])"),
+     "lands in the runner login's global prefix, first on its PATH, in front of its own tools: "
+     "install with --prefix \"$RUNNER_TEMP/npm\" and add \"$RUNNER_TEMP/npm/bin\" to $GITHUB_PATH "
+     "(or after actions/setup-node with a node-version, whose own Node takes it)"),
+    ("sudo", re.compile(r"(?:^|[\s;&|(`])sudo\s"),
+     "the runner's login waits on a password, or changes the Mac for every login"),
+    ("apt-get", re.compile(r"(?:^|[\s;&|(`])apt(?:-get)?\s+(?:-\S+\s+)*(?:install|update|upgrade|remove)\b"),
+     "there is no apt-get on macOS: guard it (`if: runner.os == 'Linux'`, or `command -v apt-get`)"),
+    ("git config --global", re.compile(r"\bgit\s+config\s+(?:[^#\n]*\s)?--global\b"),
+     "rewrites the runner login's own git identity: a first step "
+     "`echo \"GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig\" >> \"$GITHUB_ENV\"`"),
+)
+# what says a line runs on Linux only: not a bare "linux", which `--platform linux/amd64` holds
+# (landing review 2026-10-21, 12)
+APT_GUARD = re.compile(r"uname|command -v|which apt|runner\.os|RUNNER_OS|OSTYPE|ubuntu-", re.I)
+# git's global config moved for the job: GIT_CONFIG_GLOBAL, or a HOME under the job's temp dir
+# (five of the eight hand-moved repos, landing review 2026-10-21, 7)
+GIT_GUARD = re.compile(r"GIT_CONFIG_GLOBAL=|\bHOME=\S*RUNNER_TEMP")
+
+
+def runs_on_runner_mac(text, labels):
+    """For the scan only: on_runner_mac, or any runs-on naming self-hosted (`[self-hosted, macOS]`,
+    an expression holding it), which the runner Mac takes too (landing review 2026-10-21, 4). A wider test
+    than on_runner_mac, which decides a re-run's form and stays the tool's own."""
+    return on_runner_mac(text, labels) or any("self-hosted" in w.lower() for w, _ in runs_on_lines(text))
+
+
+def job_start(lines, i):
+    """The first line of the workflow job holding line i (its `<id>:` key under `jobs:`), else 0:
+    $GITHUB_ENV and setup-node act within one job (landing review 2026-10-21, 5)."""
+    top = next((j for j, l in enumerate(lines[:i]) if re.match(r"^jobs:\s*(#.*)?$", l)), None)
+    if top is None:
+        return 0
+    col = next((len(l) - len(l.lstrip()) for l in lines[top + 1:i + 1]
+                if l.strip() and not l.lstrip().startswith("#")), None)
+    for j in range(i, top, -1):
+        l = lines[j]
+        if len(l) - len(l.lstrip()) == col and re.match(r"^\s*[\w-]+:\s*(#.*)?$", l):
+            return j
+    return top
+
+
+def step_span(lines, i):
+    """(first, last + 1) of the workflow step holding line i: its `- ` line and every line deeper
+    than it, so an `if:` after `run:` counts (YAML's key order is free; landing review 2026-10-21, 12)."""
+    start = next((j for j in range(i, -1, -1) if re.match(r"^\s*-\s", lines[j])), 0)
+    col = len(lines[start]) - len(lines[start].lstrip())
+    end = i + 1
+    while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > col):
+        end += 1
+    return start, end
+
+
+def host_writes(repo, cmd, labels, own=False):
+    """[(where, line number, line, what, why)] for each HOST_WRITES line a check on the runner Mac
+    would run: in cmd (the check command, written into check.yml's job), in each file cmd names in
+    the repo (one level: a script it runs), and in each other workflow that runs on the runner Mac
+    (own: check.yml too, for status, which then holds the command, so cmd itself is not read again;
+    a switch replaces it).
+    The guards: `git config --global` only in another workflow, where no GIT_CONFIG_GLOBAL or HOME
+    under $RUNNER_TEMP comes before it in its job (the self-hosted check.yml's first step sets it for
+    the command and its scripts); `npm … -g` with a --prefix or npm_config_prefix on its line, an
+    NPM_CONFIG_PREFIX set before it (in a workflow: in its job), or after actions/setup-node with a
+    node-version in its job; apt-get, and a sudo on its line, with uname, `command -v`, runner.os
+    or ubuntu- on its line or the three before (a workflow: anywhere in its step)."""
+    sources = [] if own else [("the check command", cmd, False)]
+    seen = set()
+    for tok in re.findall(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", cmd):
+        path = os.path.realpath(p(repo, tok))
+        if (tok in seen or not os.path.isfile(path) or not path.startswith(os.path.realpath(repo) + os.sep)
+                or os.path.getsize(path) > 512 * 1024):
+            continue
+        seen.add(tok)
+        try:
+            sources.append((tok, read_loose(path), False))
+        except OSError:
+            continue
+    wdir = p(repo, ".github", "workflows")
+    if os.path.isdir(wdir):
+        for name in sorted(os.listdir(wdir)):
+            path = os.path.join(wdir, name)
+            if ((name == "check.yml" and not own) or not name.endswith((".yml", ".yaml"))
+                    or not os.path.isfile(path)):
+                continue
+            text = read_loose(path)
+            if runs_on_runner_mac(text, labels):
+                sources.append((".github/workflows/" + name, text, True))
+    hits = []
+    for where, text, workflow in sources:
+        lines = text.splitlines()
+        def live(a, b):
+            return [l for l in lines[a:b] if not l.lstrip().startswith("#")]
+        def apt_guarded(i):
+            a, b = step_span(lines, i) if workflow else (max(0, i - 3), i + 1)
+            return any(APT_GUARD.search(l) for l in lines[a:b])
+        for i, line in enumerate(lines):
+            # a comment, or a workflow step's name (the guard step's own names git config --global)
+            if line.lstrip().startswith("#") or (workflow and re.match(r"^\s*(- )?name:", line)):
+                continue
+            before = live(job_start(lines, i) if workflow else 0, i)
+            for what, pat, why in HOST_WRITES:
+                if not pat.search(line):
+                    continue
+                if what == "git config --global" and (
+                        not workflow or any(GIT_GUARD.search(l) for l in before)
+                        or re.search(r"\s--(get|list)\b|\s-l\b", line)):
+                    continue
+                if what == "npm install -g" and (
+                        re.search(r"--prefix|npm_config_prefix", line, re.I)
+                        or any(re.search(r"NPM_CONFIG_PREFIX=", l, re.I) for l in before)
+                        or (workflow and any("actions/setup-node" in l for l in before)
+                            and any(re.search(r"node-version(-file)?:", l) for l in before))):
+                    continue
+                if what == "apt-get" and apt_guarded(i):
+                    continue
+                if what == "sudo" and HOST_WRITES[2][1].search(line) and apt_guarded(i):
+                    continue  # `sudo apt-get …` behind a Linux guard: hosted ubuntu needs the sudo
+                hits.append((where, i + 1, line.strip(), what, why))
+    return hits
+
+
+def say_host_writes(hits):
+    for where, n, line, what, why in hits:
+        print("  ⚠ %s:%d runs %s on the runner Mac: %s — %s" % (where, n, what, why, line))
+
+
+def provider_on_disk(repo, labels):
+    return provider_from(lambda rel: read(p(repo, rel)) if os.path.isfile(p(repo, rel)) else None,
+                         labels)
+
+
+# A block scalar's header: `|` or `>`, a chomping indicator and an indentation digit in either
+# order (`|-`, `|+`, `|2`, `>2-`), then an optional comment (YAML 1.2, 8.1.1)
+BLOCK_HEADER = r"([|>])(?:([-+])?([1-9])?|([1-9])([-+]))\s*(?:#.*)?$"
+
+
+def blocks(text, key):
+    """Every block scalar under `key:` (Actions' `run: |`, CircleCI's `command: |`; `|-`, `|+`,
+    `|2`, `| # …` and folded `>` too), dedented, each with whether its step is named `check`
+    (`- name: check`, or `name: check` under `- run:`). Chomping is moot: a command's trailing
+    newlines are dropped either way."""
+    lines = text.splitlines()
+    found = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)(?:- )?%s:\s*%s" % (re.escape(key), BLOCK_HEADER), line)
+        inline = None if m else re.match(r"^(\s*)(?:- )?%s:\s*([^|>#\s].*?)\s*$" % re.escape(key), line)
+        if inline:
+            # `run: sh check.sh` on one line; a quoted value loses its quotes
+            m, value = inline, re.sub(r"^(['\"])(.*)\1$", r"\2", inline.group(2))
+        elif not m:
+            continue
+        body = [] if not inline else None
+        # the block ends at the key's own column: on `- run: |` that is past the dash, where a
+        # sibling `name:` after it starts
+        key_col = len(m.group(1)) + (2 if re.match(r"^\s*- ", line) else 0)
+        for nxt in lines[i + 1:] if body is not None else ():
+            if nxt.strip() == "":
+                body.append("")
+                continue
+            if len(nxt) - len(nxt.lstrip()) <= key_col:
+                break
+            body.append(nxt)
+        if body is None:
+            body = [value]
+        while body and not body[-1].strip():
+            body.pop()
+        digit = m.group(4) or m.group(5) if not inline else None
+        if digit:
+            # an explicit indent counts from the mapping holding the key, so a first line indented
+            # deeper keeps its extra spaces
+            ind = key_col + int(digit)
+        else:
+            ind = min((len(b) - len(b.lstrip()) for b in body if b.strip()), default=0)
+        body = [b[ind:] for b in body]
+        if not inline and m.group(2) == ">":
+            body = ["".join(fold(body))]
+        found.append(("\n".join(body), step_named_check(lines, i)))
+    return found
+
+
+def fold(lines):
+    """A folded (`>`) block's text from its dedented lines: a break between two plain lines is a
+    space, an empty line a newline, and a more-indented line keeps its breaks (YAML 1.2, 6.5)."""
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    out, prev, i = [], None, 0
+    while i < len(lines):
+        empty = 0
+        while i < len(lines) and not lines[i].strip():
+            empty, i = empty + 1, i + 1
+        cur = lines[i]
+        if prev is not None:
+            kept = prev[:1] in (" ", "\t") or cur[:1] in (" ", "\t")
+            out.append("\n" * (empty + kept) if (empty or kept) else " ")
+        out.append(cur)
+        prev, i = cur, i + 1
+    return out
+
+
+def step_named_check(lines, i):
+    """Whether the mapping holding the key on line i has `name: check`, before the key or after
+    it: YAML's key order is free (review 2026-10-19, 6). Its siblings are the lines whose content
+    starts in the key's column, up to the first line that starts left of it."""
+    def col(line):
+        s = re.match(r"^(\s*)(- )?(.*)$", line)
+        return len(s.group(1)) + len(s.group(2) or ""), s.group(3), bool(s.group(2))
+    key_col, _, dash = col(lines[i])
+    def named(text):
+        return re.match(r"^name:\s*['\"]?check['\"]?\s*(#.*)?$", text.strip()) is not None
+    # forward: siblings after the key (deeper lines are the block or other keys' values)
+    for line in lines[i + 1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        c, text, d = col(line)
+        if c < key_col or (d and c == key_col):
+            break
+        if c == key_col and named(text):
+            return True
+    # backward: siblings before it, stopping at the list item that opens the step (`- name: check`
+    # itself, or `- run:` above CircleCI's `command:`); a key on a `- ` line opens its own step
+    if dash:
+        return False
+    for line in reversed(lines[:i]):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        c, text, d = col(line)
+        if c < key_col:
+            break
+        if c == key_col and named(text):
+            return True
+        if d and c == key_col:
+            break
+    return False
+
+
+def the_check(text, key, where):
+    """The step named `check`, else the only block; two candidates and none named is a refusal:
+    a setup step taken for the check would run green and assert nothing."""
+    # the self-hosted kind's guard step is a `run:` too, never the check (landing review 2026-10-21, 14)
+    found = [(b, n) for b, n in blocks(text, key) if b.strip() != GUARD_RUN]
+    named = [b for b, n in found if n]
+    if len(named) == 1:
+        return named[0]
+    if len(found) == 1 and not named:
+        return found[0][0]
+    if found:
+        raise Refusal("%s: %d `%s:` steps and not one named `check`: pass --check"
+                      % (where, len(found), key))
+    return None
+
+
+def check_command(repo, given):
+    if given:
+        return given
+    # the live CI file first: an edit made there is the newest word; ci.json is its record
+    wf = p(repo, ".github", "workflows", "check.yml")
+    if os.path.exists(wf):
+        cmd = the_check(read(wf), "run", ".github/workflows/check.yml")
+        # only the template's own placeholder is no command: `${{ matrix.os }}` and the like are
+        if cmd and cmd.strip() != "{{COMMAND}}":
+            return cmd
+    part = p(repo, ".circleci", "parts", "check.yml")
+    if os.path.exists(part):
+        cmd = the_check(read(part), "command", ".circleci/parts/check.yml")
+        if cmd and cmd.strip() != "@COMMAND@":
+            return cmd
+    ci = load_ci(repo)
+    if ci.get("check"):
+        return ci["check"]
+    agents = p(repo, "AGENTS.md")
+    if os.path.exists(agents):
+        m = re.search(r"^- check: `([^`]+)`", read(agents), re.M)
+        if m:
+            return m.group(1)
+    raise Refusal("no check command: pass --check, or give AGENTS.md a `- check: `…`` line")
+
+
+def indent_block(cmd, spaces):
+    pad = " " * spaces
+    return "\n".join((pad + line) if line.strip() else "" for line in cmd.splitlines())
+
+
+def render(template, placeholder, cmd):
+    """The template with its placeholder line replaced by cmd at the placeholder's own indent."""
+    text = read(template)
+    pat = r"^( *)%s$" % re.escape(placeholder)
+    m = re.search(pat, text, re.M)
+    if not m:
+        raise Refusal("%s has no `%s` line" % (template, placeholder))
+    return re.sub(pat, lambda _: indent_block(cmd, len(m.group(1))), text, count=1, flags=re.M)
+
+
+def render_workflow(kind, cmd, runs_on=None, guard=True):
+    """check.yml for actions or self-hosted: the template, and for self-hosted its one runs-on line
+    swapped for runs_on (the caller's: the labels key's, or a file's own when comparing) and the
+    GIT_CONFIG_GLOBAL step first (guard=False: without it, as the tool wrote it before 2026-10-21,
+    for comparing an older file). One template for both, so the draft skip and the concurrency
+    block cannot drift."""
+    text = render(ACTIONS_TEMPLATE, "{{COMMAND}}", cmd)
+    if kind != SELF:
+        return text
+    if guard:
+        steps = r"^( *)- uses: actions/checkout@"
+        found = re.findall(steps, text, re.M)
+        if len(found) != 1:
+            raise Refusal("%s has %d `- uses: actions/checkout@` steps, not one" % (ACTIONS_TEMPLATE, len(found)))
+        def first_step(m):
+            pad = m.group(1)
+            return "\n".join(pad + l if l else "" for l in GUARD_STEP.splitlines()) + "\n" + m.group(0)
+        text = re.sub(steps, first_step, text, count=1, flags=re.M)
+    if not runs_on:
+        raise Refusal("no runs-on for the self-hosted runner")
+    pat = r"^( *)runs-on: ubuntu-latest$"
+    found = re.findall(pat, text, re.M)
+    if len(found) != 1:
+        raise Refusal("%s has %d `runs-on: ubuntu-latest` lines, not one" % (ACTIONS_TEMPLATE, len(found)))
+    def swap(m):
+        pad = m.group(1)
+        # Published with the file wherever check.yml is (a public twin's): this block, like the
+        # template's header, names no machine, login or account; in the literal form the labels
+        # on the runs-on line do, which is why a repo with a twin takes the variable form. The
+        # suite scans the rendered file against the private word list where one is installed.
+        var = var_form(yaml_value(runs_on))
+        via = ("%s# runs-on reads the repository variable %s (a JSON list of labels), ubuntu-latest\n"
+               "%s# where it is unset (a public twin, a fork): this file names no machine.\n"
+               % (pad, var, pad)) if var else ""
+        return via + ("%s# A self-hosted runner on a Mac of the owner's (wharf's ci-provider): macOS, no\n"
+                "%s# Actions minutes. It runs as a login holding that Mac's credentials (gh, an ssh\n"
+                "%s# key, git, Claude logins). Any write collaborator on this repo can run code there\n"
+                "%s# by opening a PR. Private repos with fork PRs' workflows off only: that stops forks,\n"
+                "%s# nothing else. The runner: `ci-provider <repo> --runner install`; with none online\n"
+                "%s# the job waits, unreported.\n"
+                "%sruns-on: %s" % (pad, pad, pad, pad, pad, pad, pad, runs_on))
+    return re.sub(pat, swap, text, count=1, flags=re.M)
+
+
+def workflow_renders(cmd, runs_on=None):
+    """check.yml as each Actions kind renders it with cmd, for comparing an existing file: self-hosted
+    with that file's own runs-on (runs_on), so the comparison needs no runner keys and a file
+    written on another Mac's labels holds nothing more, and self-hosted without its GIT_CONFIG_GLOBAL
+    step too, so a file written before it is the tool's own and a re-run adds the step; a kind
+    whose render is refused is left out, as the file cannot be that kind's."""
+    out = []
+    for k, guard in (("actions", True), (SELF, True), (SELF, False)):
+        try:
+            out.append(render_workflow(k, cmd, runs_on, guard))
+        except Refusal:
+            pass
+    return out
+
+
+def is_private(s):
+    """Whether GitHub says the repo is private; anything unread is a refusal, never a guess."""
+    ok, out = gh("repos/%s" % s, "--jq", ".private")
+    if not ok or not isinstance(out, bool):
+        raise Refusal("could not read whether %s is private (%s): the runner Mac runs a private "
+                      "repo's jobs only" % (s, out))
+    return out
+
+
+def runs_fork_prs(s):
+    """Whether a private repo runs workflows from fork pull requests (Settings > Actions >
+    General > Fork pull request workflows); unread is a refusal, as with .private."""
+    ok, out = gh("repos/%s/actions/permissions/fork-pr-workflows-private-repos" % s)
+    flag = out.get("run_workflows_from_fork_pull_requests") if ok and isinstance(out, dict) else None
+    if not isinstance(flag, bool):
+        raise Refusal("could not read whether %s runs fork pull requests' workflows (%s): the "
+                      "runner Mac runs a repo's jobs only when it does not" % (s, out))
+    return flag
+
+
+def refuse_forks(s, what):
+    """Public, or private with fork PRs' workflows on: a fork's PR would run its code on the
+    runner Mac."""
+    if not is_private(s):
+        raise Refusal("%s is public: %s would let a fork's pull request run its code on the runner Mac; "
+                      "keep it on actions (ubuntu)" % (s, what))
+    if runs_fork_prs(s):
+        raise Refusal("%s runs fork pull requests' workflows: %s would let a fork's pull request "
+                      "run its code on the runner Mac; turn that off (Settings > Actions > General) or keep "
+                      "it on actions (ubuntu)" % (s, what))
+
+
+def warn_writers(s):
+    """The trust boundary, said at the two steps that open it: every collaborator with push or
+    above can run code on the runner Mac as its user by opening a PR (the owner's D5-A accepts it;
+    nothing is refused for it)."""
+    ok, out = gh("repos/%s/collaborators?per_page=100" % s)
+    if ok and isinstance(out, list):
+        names = [c.get("login") for c in out if isinstance(c, dict) and any(
+            (c.get("permissions") or {}).get(k) for k in ("push", "maintain", "admin"))]
+        print("  ⚠ write collaborators of %s, each able to run code on the runner Mac %s, with "
+              "every credential it holds (gh, its ssh key, git, Claude logins): %s"
+              % (s, runner_user(), ", ".join(names) or "none"))
+    else:
+        print("  ⚠ write collaborators of %s unread (%s): each of them can run code on the runner "
+              "Mac %s" % (s, out, runner_user()))
+
+
+def holds_more(path, rendered):
+    """Whether the CI file at path differs from what its template renders with the same command,
+    comments and blank lines aside (a template's reworded comment is no difference; a step, an
+    `env:`, an `on:` filter or a newer image digest is: --force says it may go)."""
+    if not os.path.exists(path):
+        return False
+    def meat(s):
+        return [l.rstrip() for l in s.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    return meat(read(path)) != meat(rendered)
+
+
+# --- CircleCI composition ------------------------------------------------------------------
+
+def split_part(text, name):
+    """A part's preamble comments and its top-level sections, each a list of body lines."""
+    preamble, sections, cur, started = [], {}, None, False
+    for line in text.splitlines():
+        if line.rstrip() == "---" and not started:
+            # a document-start marker before any key: one document, nothing to section; a second
+            # `---` (two documents in one file) still meets the refusal below
+            started = True
+            continue
+        if line[:1] not in ("", " ", "#"):
+            started = True
+            # every column-0 line is a top-level key; one compose cannot section is refused
+            m = re.match(r"^([A-Za-z_][\w-]*):(.*)$", line)
+            if not m:
+                raise Refusal("%s: column-0 line %r is not a top-level key" % (name, line))
+            cur, rest = m.group(1), m.group(2).strip()
+            if cur == "version":
+                cur = None
+                continue
+            if rest and not rest.startswith("#"):
+                raise Refusal("%s: top-level `%s:` has an inline value (%r); compose takes only "
+                              "sections (%s)" % (name, cur, rest, ", ".join(SECTION_ORDER)))
+            if cur in sections:
+                raise Refusal("%s: top-level `%s:` twice" % (name, cur))
+            sections[cur] = []
+            continue
+        if cur is None:
+            if line.strip() and not line.lstrip().startswith("#"):
+                raise Refusal("%s: %r is outside any top-level section" % (name, line))
+            preamble.append(line)
+        else:
+            sections[cur].append(line)
+    for sec, body in sections.items():
+        if sec not in SECTION_ORDER:
+            raise Refusal("%s: top-level `%s:` is not one compose knows (%s)" % (name, sec, ", ".join(SECTION_ORDER)))
+        # parts are pasted under one key, so their entries must share its indent: two spaces
+        first = next((b for b in body if b.strip() and not b.lstrip().startswith("#")), None)
+        if first is not None and len(first) - len(first.lstrip()) != 2:
+            raise Refusal("%s: `%s:` entries are indented %d spaces; compose needs 2"
+                          % (name, sec, len(first) - len(first.lstrip())))
+    return preamble, sections
+
+
+def read_parts(repo, overrides=None):
+    """The parts on disk, with this run's planned writes (text) and removals (None) applied."""
+    parts_dir = p(repo, ".circleci", "parts")
+    parts = {f: read(os.path.join(parts_dir, f)) for f in os.listdir(parts_dir)
+             if f.endswith(".yml")} if os.path.isdir(parts_dir) else {}
+    for name, text in (overrides or {}).items():
+        if text is None:
+            parts.pop(name, None)
+        else:
+            parts[name] = text
+    return parts
+
+
+def compose_text(parts):
+    """The one config.yml CircleCI reads, from the parts; validated, nothing written."""
+    merged = {s: [] for s in SECTION_ORDER}
+    seen = {}
+    for name in sorted(parts):
+        preamble, sections = split_part(parts[name], name)
+        first = True
+        for sec in SECTION_ORDER:
+            if sec not in sections:
+                continue
+            for line in sections[sec]:
+                m = re.match(r"^  ([^\s#][^:]*):", line)
+                if m:
+                    key = (sec, m.group(1))
+                    if key in seen:
+                        raise Refusal("%s and %s both define %s `%s`" % (seen[key], name, sec, m.group(1)))
+                    seen[key] = name
+            head = ["  # --- part: .circleci/parts/%s" % name]
+            if first:
+                head += ["  " + c if c.strip() else "" for c in preamble if c.strip()]
+                first = False
+            body = list(sections[sec])
+            while body and not body[-1].strip():
+                body.pop()
+            merged[sec] += head + body + [""]
+    out = ["version: 2.1", ""]
+    for sec in SECTION_ORDER:
+        if merged[sec]:
+            while merged[sec] and not merged[sec][-1].strip():
+                merged[sec].pop()
+            out += ["%s:" % sec] + merged[sec] + [""]
+    body = "\n".join(out).rstrip("\n") + "\n"
+    yaml_check(body)
+    return (GENERATED + " from .circleci/parts/*.yml: edit a part, then\n"
+            "# `ci-provider <repo> --compose`. CircleCI reads only this file. "
+            + HASHED + hashlib.sha256(body.encode()).hexdigest() + "\n" + body)
+
+
+def config_state(repo):
+    """absent | hand (never generated) | generated | edited (generated, then changed by hand).
+    A config generated before the hash line existed reads as generated: nothing to compare."""
+    config = p(repo, ".circleci", "config.yml")
+    if not os.path.exists(config):
+        return "absent"
+    text = read(config)
+    if not (text.startswith(GENERATED) or GENERATED_BEFORE.match(text)):
+        return "hand"
+    head = text.split("\n", 2)
+    if len(head) == 3 and HASHED in head[1]:
+        want = head[1].rsplit(HASHED, 1)[1].strip()
+        if hashlib.sha256(head[2].encode()).hexdigest() != want:
+            return "edited"
+    return "generated"
+
+
+def compose_plan(repo, overrides=None, adopting=False):
+    """What compose would do, validated, nothing written: ("write"|"same"|"remove"|"none", text)."""
+    parts = read_parts(repo, overrides)
+    state = config_state(repo)
+    config = p(repo, ".circleci", "config.yml")
+    if state == "edited" or (state == "hand" and parts and not adopting):
+        raise Refusal("%s was edited by hand beside .circleci/parts/: move the edit into a part "
+                      "(or restore the file), then compose" % config)
+    if not parts:
+        return ("remove" if state == "generated" else "none"), None
+    text = compose_text(parts)
+    if state != "absent" and read(config) == text:
+        return "same", text
+    return "write", text
+
+
+def apply_plan(repo, plan, dry, quiet=False):
+    config = p(repo, ".circleci", "config.yml")
+    action, text = plan
+    if action == "write":
+        write(config, text, dry)
+    elif action == "remove":
+        remove(config, dry)
+    elif action == "same" and not quiet:
+        print("  %s already composed" % config)
+
+
+def compose(repo, dry=False, quiet=False):
+    apply_plan(repo, compose_plan(repo), dry, quiet)
+
+
+def yaml_check(text):
+    """Parse the composed file with Ruby's YAML (on every Mac; no Python YAML in stdlib)."""
+    ruby = shutil.which("ruby")
+    if not ruby:
+        print("  (ruby not found: the composed YAML was not parsed)")
+        return
+    # aliases: true, as CircleCI's own loader takes anchors; an orb's job (`node/test`) is defined
+    # by the orb, not under jobs:
+    prog = ("require 'yaml'; begin; d = YAML.safe_load(STDIN.read, aliases: true); "
+            "raise 'not a mapping' unless d.is_a?(Hash); "
+            "raise 'no jobs' unless d['jobs'].is_a?(Hash); "
+            "raise 'no workflows' unless d['workflows'].is_a?(Hash); "
+            "d['workflows'].each { |w, v| next unless v.is_a?(Hash); (v['jobs'] || []).each { |j| "
+            "n = j.is_a?(Hash) ? j.keys.first : j; next if n.to_s.include?('/'); "
+            "raise \"workflow #{w}: no job #{n}\" unless d['jobs'].key?(n) } }; "
+            "rescue => e; warn e.message.lines.first.to_s.strip; exit 1; end")
+    r = subprocess.run([ruby, "-e", prog], input=text, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Refusal("the composed .circleci/config.yml does not pass: %s" % (r.stderr.strip().splitlines() or ["?"])[0])
+
+
+def adopt_text(repo):
+    """A hand-written .circleci/config.yml becomes parts/main.yml the first time parts are used:
+    its text, or None when there is nothing to adopt."""
+    config = p(repo, ".circleci", "config.yml")
+    parts_dir = p(repo, ".circleci", "parts")
+    if config_state(repo) != "hand":
+        return None
+    if os.path.isdir(parts_dir) and os.listdir(parts_dir):
+        raise Refusal("%s was edited by hand beside .circleci/parts/: move the edit into a part" % config)
+    return re.sub(r"^version:.*\n", "", read(config), count=1, flags=re.M)
+
+
+# --- the switch ----------------------------------------------------------------------------
+
+def swap_contexts(have, want, drop):
+    """main's required checks with the old provider's (drop) swapped for want; the rest kept."""
+    return [c for c in have if c not in drop and c != want] + [want]
+
+
+def matrix_names(contexts):
+    """`check (<value>)`: what a matrix job named check reports (a repo's two macOS images).
+    Every file this tool writes has one job and no matrix, so after a switch none of these can
+    report again, and left required they would block every PR."""
+    return {c for c in contexts if c and re.match(r"^check \(.+\)$", c)}
+
+
+def has_matrix(text):
+    """Whether a check.yml has a `strategy:` or `matrix:`: written by hand, as this tool's never do."""
+    return text is not None and re.search(r"^\s*(strategy|matrix):", text, re.M) is not None
+
+
+def stale_matrix(repo, contexts):
+    """The matrix names to drop from main's required checks: all of them while the check.yml on
+    disk is this tool's one job (or there is none), none while a hand-written matrix reports
+    them (review 2026-10-19 second pass, E: --protect --force would block every PR)."""
+    wf = p(repo, ".github", "workflows", "check.yml")
+    if has_matrix(read(wf) if os.path.isfile(wf) else None):
+        return set()
+    return matrix_names(contexts)
+
+
+def pins_of(rsc):
+    """{context: app_id} from required_status_checks' `checks`, the form that pins a check to the
+    GitHub App that must report it; app_id None where none is pinned."""
+    return {c["context"]: c.get("app_id") for c in (rsc or {}).get("checks") or []
+            if isinstance(c, dict) and c.get("context")}
+
+
+def checks_of(names, pins):
+    """`checks` for these names: a kept check keeps its pin, a new one goes without app_id, which
+    GitHub fills with the app that recently reported it (REST "Update status check protection",
+    read 2026-10-19). A `contexts` PATCH re-derives every pin that way, so an explicit pin to
+    another app, or -1 (any app), would not survive one (review 2026-10-19, 3). A null app_id is
+    kept unpinned (sent without one); -1 is not used. Unverified: what GitHub does with either.
+    The second review of 2026-10-19 left this as it is."""
+    return [dict({"context": n}, **({"app_id": pins[n]} if pins.get(n) is not None else {}))
+            for n in names]
+
+
+def protection_text(repo, provider, context, old_context):
+    """main-protection.json with the provider's check swapped in, or None when it already is.
+    Written in the form(s) the file had: `checks` keeps its pins, `contexts` stays plain."""
+    path = p(repo, ".github", "main-protection.json")
+    data = json.loads(read(path)) if os.path.exists(path) else json.loads(
+        read(os.path.join(CODE_TEMPLATES, ".github", "main-protection.json")))
+    rsc = data.get("required_status_checks") or {"strict": False}
+    data["required_status_checks"] = rsc
+    pins = pins_of(rsc)
+    have = list(rsc.get("contexts") or []) + list(pins)
+    want = context or CONTEXT[provider]
+    # matrix names all go: this runs for a switch, and what it writes is one job or no check.yml
+    new = swap_contexts(list(dict.fromkeys(have)), want,
+                        set(CONTEXT.values()) | {old_context} | live_replaces(repo)
+                        | matrix_names(have))
+    before = same_checks(rsc)
+    if "checks" in rsc:
+        rsc["checks"] = checks_of(new, pins)
+    if "contexts" in rsc or "checks" not in rsc:
+        rsc["contexts"] = new
+    if same_checks(rsc) == before:
+        return None
+    return json.dumps(data, indent=2) + "\n"
+
+
+def same_checks(rsc):
+    """required_status_checks as GitHub reads it: the lists are sets, so a reorder (the swap puts
+    the new check last) is no change, and a switch that only reorders needs no --protect."""
+    d = dict(rsc)
+    if isinstance(d.get("contexts"), list):
+        d["contexts"] = sorted(set(d["contexts"]))
+    if isinstance(d.get("checks"), list):
+        d["checks"] = sorted({(c.get("context"), c.get("app_id")) for c in d["checks"]
+                              if isinstance(c, dict)}, key=repr)
+    return json.dumps(d, sort_keys=True)
+
+
+def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False):
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    main = main_branch(repo)
+    if branch == main:
+        raise Refusal("%s is on %s: switch on a claude/* branch, then land it" % (repo, main))
+    automerge = os.path.exists(p(repo, ".github", "workflows", "automerge.yml"))
+    if to == "circleci" and automerge:
+        raise Refusal("automerge.yml runs on GitHub Actions and waits for a check.yml run, so under "
+                      "CircleCI it would never arm; remove it first or keep actions")
+    # the labels key, read once (review 2026-10-21, 12): for self-hosted first, in either form
+    # (--runner install will set the variable to them), so without it there is nothing to write
+    # and GitHub is not asked; for the other kinds only to tell this tool's runs-on from a hand edit
+    labels = runner_labels(required=(to == SELF))
+    runs_on = None
+    if to == SELF:
+        var = pick_runs_on_var(repo, var, labels, twin)
+        runs_on = var_runs_on(var) if var else "[%s]" % ", ".join(labels)
+        refuse_forks(slug(repo), "a check on the runner Mac's self-hosted runner")
+    was, _ = provider_on_disk(repo, labels)
+    cmd = check_command(repo, check)
+    print("%s → %s (check: %s)" % (repo, to, cmd.replace("\n", "; ")))
+    if to == SELF:
+        # what the job would run as the runner's login: the check command, which this switch
+        # writes, is refused (--force writes it anyway); what it leaves, the scripts the command
+        # names and the other workflows on the runner Mac, is said, line by line
+        hits = host_writes(repo, cmd, labels)
+        say_host_writes(hits)
+    wf = p(repo, ".github", "workflows", "check.yml")
+    part = p(repo, ".circleci", "parts", "check.yml")
+    # only the target's file: a refusal of one kind's render (the self-hosted kind's runs-on swap) gates only
+    # a switch to that kind
+    target = (render_workflow(to, cmd, runs_on) if to in ACTIONS_KINDS
+              else render(CIRCLECI_TEMPLATE, "@COMMAND@", cmd))
+    # what either CI file holds beyond its template and its own command is not carried across, nor
+    # kept by a re-run on the same provider: each is compared with its template rendered with that
+    # file's own command, not the new one (check.yml with either runs-on, ubuntu's or this tool's
+    # own self-hosted one: a runs-on of any other shape is a hand edit, review 2026-10-21, 4)
+    wf_text = read(wf) if os.path.exists(wf) else None
+    own_on = own_runs_on(wf_text, labels)
+    for path, key, renders in (
+            (wf, "run", lambda c: workflow_renders(c, own_on)),
+            (part, "command", lambda c: [render(CIRCLECI_TEMPLATE, "@COMMAND@", c)])):
+        if not os.path.exists(path) or force:
+            continue
+        try:
+            own = the_check(read(path), key, os.path.relpath(path, repo)) or cmd
+        except Refusal:
+            own = cmd  # a file with no clear check is compared as is: --force passes it
+        if all(holds_more(path, r) for r in renders(own)):
+            # a runner's runs-on that is not this config's labels: say so, as it is often the one
+            # difference (another Mac's labels, or a Mac without the labels key)
+            why = ""
+            if path == wf and own_on is None and literal_labels(wf_text, labels):
+                why = (" (its runs-on, [%s], is not this tool's: %s)" % (
+                    ", ".join(literal_labels(wf_text, labels)),
+                    "the labels key here holds [%s]" % ", ".join(labels) if labels
+                    else "%s is not set here" % (common.CONFIG / "wharf" / "ci-runner-labels")))
+            raise Refusal("%s holds more than its template and its check command (setup steps, env, "
+                          "other jobs, an older template, a runs-on of its own)%s; a switch keeps only "
+                          "the command: port the rest by hand, then --force (and --check CMD if the "
+                          "command read is not the check)" % (os.path.relpath(path, repo), why))
+    # after the holds-more refusal: its way out, --force, also drops what the old file held beyond
+    # its template, which that refusal says first (landing review 2026-10-21, 15)
+    if to == SELF and not force and any(h[0] == "the check command" for h in hits):
+        raise Refusal("the check command runs %s on the runner Mac, as its login (above): pass "
+                      "--check without it, or --force" % ", ".join(
+                          sorted({h[3] for h in hits if h[0] == "the check command"})))
+    # plan everything, validate, and only then write: a refusal leaves the checkout as it was
+    writes, removes = {}, []
+    if to == "circleci":
+        overrides = {"check.yml": target}
+        adopted = adopt_text(repo)
+        if adopted is not None:
+            overrides["main.yml"] = adopted
+        try:
+            plan = compose_plan(repo, overrides, adopting=adopted is not None)
+        except Refusal as e:
+            if adopted is None:
+                raise
+            # main.yml is not on disk yet: name the file the text came from
+            raise Refusal("adopting .circleci/config.yml as .circleci/parts/main.yml: %s" % e)
+        for name, text in overrides.items():
+            writes[p(repo, ".circleci", "parts", name)] = text
+        removes.append(wf)
+    else:
+        plan = compose_plan(repo, {"check.yml": None})
+        writes[wf] = target
+        removes.append(part)
+    old = load_ci(repo)
+    # a name belongs to the CI that reports it: kept on the same provider, and between actions and
+    # self-hosted, where the same job of the same check.yml reports it
+    if context is None and (old.get("provider") == to or
+                            {old.get("provider"), to} <= set(ACTIONS_KINDS)):
+        context = old.get("context")
+        if to in ACTIONS_KINDS and matrix_names([context]):
+            # a matrix job's name, and the check.yml written here has one job: it would never
+            # report. Left to `replaces`, so --protect swaps it out
+            print("  ci.json's context %r is a matrix job's name, which the one-job check.yml "
+                  "cannot report: dropped" % context)
+            context = None
+    prot = protection_text(repo, to, context, old.get("context"))
+    if prot is not None:
+        writes[p(repo, ".github", "main-protection.json")] = prot
+    ci = {"provider": to, "check": cmd}
+    if context:
+        ci["context"] = context
+    # a context this branch named before and now replaces may already be required on GitHub
+    # (--protect ran on it): kept here so --protect swaps it out too; main's own list is spent
+    replaces = [c for c in sorted(live_replaces(repo)) + [old.get("context")] if c and c != context]
+    if replaces:
+        ci["replaces"] = sorted(set(replaces))
+    if old != ci:
+        writes[p(repo, ".github", "ci.json")] = json.dumps(ci, indent=2) + "\n"
+    for path, text in writes.items():
+        write(path, text, dry)
+    for path in removes:
+        remove(path, dry)
+    apply_plan(repo, plan, dry, quiet=True)
+    if not dry:
+        for d in (p(repo, ".circleci", "parts"), p(repo, ".circleci")):
+            if os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+    want = context or CONTEXT[to]
+    where = ""
+    if to == SELF:
+        # the variable form runs hosted until the variable is set, and a green there proves
+        # nothing of the runner: say so where the step asks for green (review 2026-10-21, 6)
+        where = (" on the runner Mac, which it reaches only once %s is set (`ci-provider %s --runner "
+                 "install`; until then it runs on ubuntu-latest, hosted)" % (var, repo)
+                 if var else " on the runner Mac")
+    if to == "circleci":
+        print("next: commit and push this branch; CircleCI must follow the project (Projects > Set "
+              "Up) and report `%s` green; then `ci-provider %s --protect`" % (want, repo))
+    elif was in ACTIONS_KINDS and prot is None:
+        # same job name, main-protection.json unchanged: GitHub already requires what will report
+        print("next: commit and push this branch; the `check` workflow must report green%s; main's "
+              "required check stays %r: no --protect" % (where, want))
+    else:
+        # check.yml skips drafts, and every claude/* PR starts as one: ready it, or `check` never
+        # reports on this head and --protect refuses (the docstring's order)
+        print("next: commit and push this branch, then `gh pr ready` its PR (check.yml skips a "
+              "draft); once the `check` workflow reports green%s, `ci-provider %s --protect` "
+              "(until then main requires the old check, so the ready PR waits)" % (where, repo))
+    if context:
+        print("  main's required check will be %r (ci.json `context`)" % context)
+    if to == SELF:
+        warn_writers(slug(repo))
+        if var:
+            # unset, the job runs hosted and still reports `check`: green there is no proof the
+            # runner works, so the variable is set only once the runner is online
+            print("  runs-on reads the repository variable %s: `ci-provider %s --runner install` "
+                  "installs the runner (downloads actions/runner onto the runner Mac) and then sets "
+                  "%s to %s; until then the check runs on ubuntu-latest, hosted"
+                  % (var, repo, var, variable_value(labels)))
+        else:
+            print("  the runner, once per repo: `ci-provider %s --runner install` (downloads "
+                  "actions/runner onto the runner Mac); until one labelled %s is online the job "
+                  "queues and `check` never reports" % (repo, ", ".join(labels)))
+        if automerge:
+            print("  automerge.yml stays on ubuntu-latest, hosted, so no runner-Mac job runs with an "
+                  "authenticated `gh` it does not need: about one hosted Linux minute per PR event, "
+                  "still billed")
+
+
+# --- GitHub ---------------------------------------------------------------------------------
+
+def statuses(repo_slug, ref):
+    """Names and states of what reported on ref: commit statuses and check runs."""
+    found = {}
+    ok, st = gh("repos/%s/commits/%s/status" % (repo_slug, ref))
+    if ok and isinstance(st, dict):
+        for s in st.get("statuses", []):
+            found.setdefault(s["context"], s["state"])
+    ok, cr = gh("repos/%s/commits/%s/check-runs" % (repo_slug, ref))
+    if ok and isinstance(cr, dict):
+        runs = {}
+        for c in cr.get("check_runs", []):
+            runs.setdefault(c["name"], []).append(c)
+        for name, rs in runs.items():
+            c = best_run(rs)
+            found.setdefault(name, c.get("conclusion") or c.get("status"))
+    return found
+
+
+def best_run(runs):
+    """One head can carry several runs of one name (a draft's skipped `check` beside the ready
+    PR's: a commit of 2026-10-19 listed skipped before success). A success if any, else the
+    newest completed, else the first listed."""
+    ok = [r for r in runs if r.get("conclusion") == "success"]
+    if ok:
+        return ok[0]
+    done = [r for r in runs if r.get("status") == "completed"]
+    if done:
+        return max(done, key=lambda r: r.get("completed_at") or "")
+    return runs[0]
+
+
+def required(repo_slug, branch):
+    ok, rsc = gh("repos/%s/branches/%s/protection/required_status_checks" % (repo_slug, branch))
+    if not ok:
+        return None, rsc
+    return rsc, None
+
+
+def main_ci(repo):
+    """ci.json as main has it ({} when it has none)."""
+    shown = subprocess.run(["git", "-C", repo, "show", "%s:.github/ci.json" % main_branch(repo)],
+                           capture_output=True, text=True)
+    if shown.returncode == 0:
+        try:
+            ci = json.loads(shown.stdout)
+            return ci if isinstance(ci, dict) else {}
+        except ValueError:
+            pass
+    return {}
+
+
+def live_replaces(repo):
+    """ci.json's `replaces` while they may still be required on GitHub: the names this branch's
+    switches replaced. Once a switch lands its --protect has run (the order above), so the list
+    main carries is spent: a branch whose ci.json is main's drops none of it, and a switch does not
+    carry it on. Else the list only grew, and a name once replaced was swapped out of protection
+    for good, even when a later job reused it (review 2026-10-19, 7)."""
+    ci = load_ci(repo)
+    if ci == main_ci(repo):
+        return set()
+    return set(ci.get("replaces", []))
+
+
+def stale_contexts(repo):
+    """Every provider's check name, the context main's ci.json names and this branch's replaced
+    ones: what a swap replaces."""
+    drop = set(CONTEXT.values()) | {main_ci(repo).get("context")} | live_replaces(repo)
+    drop.discard(None)
+    return drop
+
+
+def protect(repo, force, dry):
+    provider, why = provider_on_disk(repo, runner_labels(required=False))
+    if provider not in CONTEXT:
+        raise Refusal("no provider on disk (%s)" % why)
+    want = required_context(repo, provider)
+    s, main = slug(repo), main_branch(repo)
+    rsc, err = required(s, main)
+    if rsc is None:
+        raise Refusal("could not read %s %s's required checks: %s" % (s, main, err))
+    have = rsc.get("contexts") or []
+    new = swap_contexts(have, want, stale_contexts(repo) | stale_matrix(repo, have))
+    if set(new) == set(have):
+        print("%s %s already requires %r" % (s, main, want))
+        return
+    head = git(repo, "rev-parse", "HEAD")
+    seen = statuses(s, head)
+    if seen.get(want) != "success" and not force:
+        # a skipped `check` (a draft's) is no report, though GitHub counts it as passed: the order
+        # above has the PR leave draft first
+        raise Refusal("%r has not reported success on this checkout's HEAD %s (saw: %s); push and "
+                      "let it run first%s, or --force" % (
+                          want, head[:12], seen or "nothing",
+                          " (check.yml skips a draft PR: `gh pr ready` it)"
+                          if provider in ACTIONS_KINDS else ""))
+    # `checks` whenever GitHub answers with it, so each kept check keeps its app_id pin
+    pins = pins_of(rsc)
+    def body_of(names):
+        if "checks" in rsc:
+            return {"strict": bool(rsc.get("strict")), "checks": checks_of(names, pins)}
+        return {"strict": bool(rsc.get("strict")), "contexts": names}
+    url = "repos/%s/branches/%s/protection/required_status_checks" % (s, main)
+    print("%s %s: required %s → %s" % (s, main, have, new))
+    if dry:
+        print("  (dry run: nothing changed)")
+        return
+    ok, out = gh("-X", "PATCH", url, data=body_of(new))
+    if not ok:
+        raise Refusal("GitHub refused: %s" % out)
+    back, err = required(s, main)
+    kept = {n: a for n, a in pins.items() if n in new and a is not None}
+    if (back is None or set(back.get("contexts") or []) != set(new)
+            or any(pins_of(back).get(n) != a for n, a in kept.items())):
+        raise Refusal("read back %s, not %r%s" % (back and (back.get("checks") or back.get("contexts")),
+                                                  new, " with pins %s" % kept if kept else ""))
+    print("  read back: %s" % back.get("contexts"))
+    print("  rollback: echo '%s' | gh api -X PATCH %s --input -" % (json.dumps(body_of(have)), url))
+
+
+def status(repo):
+    labels = runner_labels(required=False)
+    provider, why = provider_on_disk(repo, labels)
+    print("%s: %s (%s)" % (repo, provider or "none", why))
+    for f in (".github/ci.json", ".github/workflows/check.yml", ".circleci/parts/check.yml",
+              ".circleci/config.yml", ".github/main-protection.json", ".github/workflows/automerge.yml"):
+        print("  %-34s %s" % (f, "present" if os.path.exists(p(repo, f)) else "-"))
+    if provider == SELF:
+        # read here, before GitHub: what the job runs as the runner's login (2026-10-21)
+        wf = p(repo, ".github", "workflows", "check.yml")
+        text = read(wf) if os.path.isfile(wf) else ""
+        if text and not GIT_GUARD.search(text):
+            print("  ⚠ check.yml sets no GIT_CONFIG_GLOBAL: a `git config --global` in its job rewrites "
+                  "the runner login's own; `ci-provider %s --to %s` adds the step (with --check "
+                  "and --force on a hand-edited file)" % (repo, SELF))
+        if text and publishes_workflows(repo) and not runs_on_var(text):
+            print("  ⚠ check.yml is published (its allowlist lists it) and its runs-on "
+                  "names the runner Mac's labels: `ci-provider %s --to %s` writes the variable form"
+                  % (repo, SELF))
+        try:
+            cmd = check_command(repo, None)
+        except Refusal:
+            cmd = ""
+        say_host_writes(host_writes(repo, cmd, labels, own=True))
+    try:
+        s = slug(repo)
+    except Refusal as e:
+        print("  " + str(e))
+        return
+    main = main_branch(repo)
+    rsc, err = required(s, main)
+    print("  GitHub %s requires: %s" % (main, rsc.get("contexts") if rsc else "(unread: %s)" % err))
+    if provider in CONTEXT and rsc:
+        want = required_context(repo, provider)
+        have = rsc.get("contexts") or []
+        if set(swap_contexts(have, want, stale_contexts(repo) | stale_matrix(repo, have))) != set(have):
+            print("  ⚠ protection differs from the files: `ci-provider %s --protect` once %r reports" % (repo, want))
+    for label, ref in (("HEAD", git(repo, "rev-parse", "HEAD")), (main, main)):
+        seen = statuses(s, ref)
+        print("  reported on %s: %s" % (label, ", ".join("%s=%s" % kv for kv in sorted(seen.items())) or "nothing"))
+    if provider == SELF:
+        # the runners API only here: it needs admin rights, and an actions repo has no runner
+        runners = show_runners(s)
+        want = wanted_labels(repo, s, labels)
+        if runners is not None and want and not any(runs_check(r, want) for r in runners):
+            print("  ⚠ no online runner labelled %s: the check queues and never reports; "
+                  "`ci-provider %s --runner install`" % (", ".join(want), repo))
+        try:
+            if not is_private(s):
+                print("  ⚠ %s is public and runs on the runner Mac: a fork's PR would run there; "
+                      "`ci-provider %s --to actions` now" % (s, repo))
+            elif runs_fork_prs(s):
+                print("  ⚠ %s runs fork pull requests' workflows and runs on the runner Mac: a fork's PR "
+                      "would run there; turn that off, or `ci-provider %s --to actions` now" % (s, repo))
+        except Refusal as e:
+            print("  ⚠ %s" % e)
+
+
+# --- the runner on the runner Mac -----------------------------------------------------------
+
+def wanted_labels(repo, s, labels):
+    """The labels the repo's check asks for, said as status reads them: its check.yml's literal
+    runs-on, or the repository variable it reads (unset: hosted, nothing to ask for), else the
+    labels key's (labels, None when absent); None when none is known."""
+    wf = p(repo, ".github", "workflows", "check.yml")
+    text = read(wf) if os.path.isfile(wf) else None
+    var = runs_on_var(text)
+    if var:
+        value, err = variable(s, var)
+        if err:
+            print("  runs-on variable %s: (unread: %s)" % (var, err))
+            return None
+        if value is None:
+            print("  ⚠ runs-on variable %s is unset: the check runs on ubuntu-latest, hosted; "
+                  "`ci-provider %s --runner install` sets it" % (var, repo))
+            return None
+        print("  runs-on variable %s: %s" % (var, value))
+        try:
+            asked = json.loads(value)
+        except ValueError:
+            asked = None
+        if isinstance(asked, str):
+            # fromJSON of a string is one runs-on name, a hosted image as the variable's own
+            # default is: no self-hosted runner asked for, so no runner to warn about (review
+            # 2026-10-21, 10)
+            print("  runs-on variable %s is one name, not a label list: a hosted runner, none of "
+                  "the runner Mac's" % var)
+            return None
+        if not isinstance(asked, list) or not all(isinstance(l, str) for l in asked):
+            print("  ⚠ runs-on variable %s is not a JSON label list: check.yml's fromJSON fails" % var)
+            return None
+        return tuple(asked)
+    return literal_labels(text, labels) or labels
+
+
+def runners_of(s):
+    """The repo's self-hosted runners from GitHub, or None when unread (it needs admin rights)."""
+    ok, out = gh("repos/%s/actions/runners" % s)
+    if not ok or not isinstance(out, dict):
+        return None, out
+    return out.get("runners") or [], None
+
+
+def labels_of(r):
+    return [l.get("name", "") for l in r.get("labels") or []]
+
+
+def runs_check(r, labels):
+    """An online runner with every label check.yml's runs-on asks for."""
+    have = {l.lower() for l in labels_of(r)}
+    return r.get("status") == "online" and all(l.lower() in have for l in labels)
+
+
+def show_runners(s):
+    runners, err = runners_of(s)
+    if runners is None:
+        print("  runners: (unread: %s)" % err)
+    elif not runners:
+        print("  runners: none")
+    for r in runners or []:
+        print("  runner %s: %s%s, labels %s" % (r.get("name"), r.get("status"),
+                                                ", busy" if r.get("busy") else "",
+                                                ", ".join(labels_of(r))))
+    return runners
+
+
+def runner_dir(s):
+    """Under the runner user's home: one directory per repo, as a runner serves one repo;
+    owner then repo, so `a-b/c` and `a/b-c` cannot share one."""
+    return "actions-runners/" + s
+
+
+def flat_runner_dir(s):
+    """Where an install before 2026-10-19 put it (two runners, <owner>-<repo>); RUNNER_SH
+    uses it while its .runner names this repo, so status and remove still find those two."""
+    return "actions-runners/" + s.replace("/", "-")
+
+
+# Run by bash on the runner Mac, its arguments in argv and nothing secret among them: the token, when the
+# verb needs one, is the first line of stdin. No `set -x`: it would echo the token's expansion.
+RUNNER_SH = r'''set -euo pipefail
+verb=$1 slug=$2 dir=$HOME/$3 flat=$HOME/$4 url=$5 size=$6 sha=$7 name=$8 label=$9
+# a runner installed before 2026-10-19 lives in the flat <owner>-<repo>: kept while its .runner (config.sh's
+# settings, gitHubUrl among them) names this repo, so another repo's flat directory of
+# the same spelling (a-b/c beside a/b-c) is never taken for it
+if grep -qiF "github.com/$slug\"" "$flat/.runner" 2>/dev/null; then dir=$flat; fi
+dist=$HOME/actions-runners/.dist
+tgz=$dist/${url##*/}
+case $verb in
+probe)
+  # whether a token is needed: install mints one only when not configured, remove only when it is
+  if [ -f "$dir/.runner" ]; then echo "configured $dir"; else echo "absent $dir"; fi
+  ;;
+install)
+  mkdir -p "$dist" "$dir"
+  cd "$dir"
+  if [ -f .runner ]; then
+    echo "configured already: $dir"
+  else
+    IFS= read -r token || true
+    if [ -z "${token:-}" ]; then echo "no registration token on stdin" >&2; exit 4; fi
+    # one download for every repo's runner, kept only when its size and SHA-256 are the pinned ones
+    if [ "$(stat -f %z "$tgz" 2>/dev/null || echo 0)" != "$size" ]; then
+      echo "downloading ${url##*/}"
+      curl -fsSL --retry 2 -o "$tgz.part" "$url"
+      mv "$tgz.part" "$tgz"
+    fi
+    got=$(stat -f %z "$tgz")
+    if [ "$got" != "$size" ]; then echo "$tgz: $got bytes, not $size; removed" >&2; rm -f "$tgz"; exit 3; fi
+    if ! echo "$sha  $tgz" | shasum -a 256 -c --status -; then
+      echo "$tgz: SHA-256 is not $sha; removed" >&2; rm -f "$tgz"; exit 3
+    fi
+    tar xzf "$tgz"
+    # config.sh sources env.sh, which freezes this PATH into .path for every job: ssh's bare one
+    # lacks Homebrew, which hosted macOS images have (gtar for upload-pages-artifact, say)
+    if [ -d /opt/homebrew/bin ]; then PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH; fi
+    # the runner reads ACTIONS_RUNNER_INPUT_TOKEN and unsets it: the token stays out of ps' argv
+    ACTIONS_RUNNER_INPUT_TOKEN=$token ./config.sh --unattended --replace \
+      --url "https://github.com/$slug" --name "$name" --labels "$label" --work _work
+  fi
+  unset token || true
+  # svc.sh's install refuses an existing plist, and `launchctl load` a loaded one; grep without
+  # -q reads to the end, so pipefail never sees launchctl die of SIGPIPE
+  [ -f .service ] || ./svc.sh install
+  svc=$(basename "$(cat .service)" .plist)
+  launchctl list | grep -F "$svc" >/dev/null || ./svc.sh start
+  ./svc.sh status
+  ;;
+status)
+  if [ ! -f "$dir/.runner" ]; then echo "not configured: $dir"; exit 0; fi
+  cd "$dir"
+  ./svc.sh status
+  ;;
+remove)
+  if [ ! -f "$dir/.runner" ]; then echo "not configured: $dir"; exit 0; fi
+  IFS= read -r token || true
+  if [ -z "${token:-}" ]; then echo "no remove token on stdin" >&2; exit 4; fi
+  cd "$dir"
+  if [ -f .service ]; then
+    # svc.sh's uninstall stops first and gives up when the agent is not loaded
+    plist=$(cat .service)
+    ./svc.sh uninstall || { launchctl unload "$plist" 2>/dev/null || true; rm -f "$plist" .service; }
+  fi
+  ACTIONS_RUNNER_INPUT_TOKEN=$token ./config.sh remove
+  unset token
+  echo "removed; $dir stays (a reinstall unpacks over it)"
+  ;;
+esac
+'''
+
+
+def variable_value(labels):
+    """The variable's value for these labels: a compact JSON list, as GitHub's UI shows one."""
+    return json.dumps(list(labels), separators=(",", ":"))
+
+
+def variable(s, name):
+    """(value, None) for a repository variable; (None, None) when GitHub has none of that name,
+    which only its 404 says; (None, error) for any other answer, a gh failure with no output among
+    them (review 2026-10-21, 7): unread is never taken for absent, or a write would follow."""
+    ok, out = gh("repos/%s/actions/variables/%s" % (s, name))
+    if ok:
+        if isinstance(out, dict) and isinstance(out.get("value"), str):
+            return out["value"], None
+        return None, "no value in %r" % (out,)
+    if "HTTP 404" in str(out):
+        return None, None
+    return None, out or "gh failed with no output"
+
+
+def same_labels(value, labels):
+    try:
+        return json.loads(value) == list(labels)
+    except (TypeError, ValueError):
+        return False
+
+
+def set_variable(s, name, labels, dry):
+    """The runs-on variable set to labels and read back: POST when GitHub has none of that name,
+    PATCH when it holds another value (REST "Actions variables", read 2026-10-20)."""
+    want = variable_value(labels)
+    have, err = variable(s, name)
+    if err:
+        raise Refusal("could not read %s's variable %s: %s" % (s, name, err))
+    if have is not None and same_labels(have, labels):
+        print("  variable %s already %s" % (name, have))
+        return
+    if dry:
+        print("  would %s variable %s: %s → %s" % ("create" if have is None else "update", name,
+                                                   have, want))
+        return
+    body = {"name": name, "value": want}
+    if have is None:
+        ok, out = gh("-X", "POST", "repos/%s/actions/variables" % s, data=body)
+    else:
+        ok, out = gh("-X", "PATCH", "repos/%s/actions/variables/%s" % (s, name), data=body)
+    if not ok:
+        raise Refusal("GitHub refused variable %s: %s" % (name, out))
+    back, err = variable(s, name)
+    if back is None or not same_labels(back, labels):
+        raise Refusal("variable %s read back %s, not %s" % (name, back if back is not None else err, want))
+    print("  variable %s: %s (read back)" % (name, back))
+    if have is not None:
+        print("  rollback: gh api -X PATCH repos/%s/actions/variables/%s -f name=%s -f value=%s"
+              % (s, name, name, shlex.quote(have)))
+    else:
+        # created: undone by removing it, which sends the check back to ubuntu-latest (review
+        # 2026-10-21, 17)
+        print("  rollback: gh api -X DELETE repos/%s/actions/variables/%s" % (s, name))
+
+
+def runner_token(s, kind):
+    """A registration or remove token (an hour's life). Returned to be written to ssh's stdin and
+    nowhere else: no error message carries gh's stdout, which would be the token."""
+    r = subprocess.run(["gh", "api", "-X", "POST", "repos/%s/actions/runners/%s-token" % (s, kind),
+                        "--jq", ".token"], capture_output=True, text=True)
+    tok = r.stdout.strip()
+    if r.returncode != 0 or not re.match(r"^[A-Za-z0-9_.\-]+$", tok):
+        raise Refusal("could not get a runner %s token for %s (gh exit %d: %s)"
+                      % (kind, s, r.returncode, r.stderr.strip()[:200] or "no token"))
+    return tok
+
+
+def ssh_runner(verb, s, host, labels, token=None, capture=False):
+    """RUNNER_SH on the runner Mac (host, the ssh key's alias): the script and its arguments in
+    ssh's argv, the token on stdin. The return code, or with capture (probe) the code and stdout.
+    The name and the labels (the labels key's) are passed on every verb, as before; only install
+    reads them."""
+    args = (verb, s, runner_dir(s), flat_runner_dir(s), RUNNER_URL, str(RUNNER_SIZE), RUNNER_SHA256,
+            own_labels(labels)[0], ",".join(own_labels(labels)))
+    remote = "bash -c %s ci-provider-runner %s" % (shlex.quote(RUNNER_SH),
+                                                   " ".join(shlex.quote(a) for a in args))
+    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", host, remote],
+                       input=(token + "\n") if token else "", text=True,
+                       stdout=subprocess.PIPE if capture else None)
+    return (r.returncode, r.stdout or "") if capture else r.returncode
+
+
+def configured(s, host, labels):
+    """Whether the runner Mac reports the repo's runner configured: a token is minted only for a step
+    that will use it (an hour's life, and one less in flight)."""
+    rc, out = ssh_runner("probe", s, host, labels, capture=True)
+    state = out.strip().split(" ", 1)[0] if rc == 0 else None
+    if state not in ("configured", "absent"):
+        raise Refusal("ssh %s exited %d (%s): could not read whether %s's runner is configured"
+                      % (host, rc, out.strip()[:200] or "no output", s))
+    return state == "configured"
+
+
+def wait_online(s, labels):
+    """Poll GitHub until the runner shows online (state, never a re-registration loop)."""
+    name = own_labels(labels)[0]
+    deadline = time.time() + RUNNER_WAIT
+    while True:
+        runners, err = runners_of(s)
+        mine = [r for r in runners or [] if r.get("name") == name]
+        if mine and runs_check(mine[0], labels):
+            print("  GitHub: runner %s online, labels %s" % (name, ", ".join(labels_of(mine[0]))))
+            return
+        if time.time() >= deadline:
+            raise Refusal("runner %s is not online on GitHub after %d s (%s): `ci-provider <repo> "
+                          "--runner status`" % (name, RUNNER_WAIT,
+                                                mine and mine[0].get("status") or err or "not listed"))
+        time.sleep(5)
+
+
+def no_variable(repo, text, labels):
+    """Why --runner install sets no variable, when one might be expected: ci.json says self-hosted or
+    the repo has a public twin, and check.yml reads none in this tool's form (review 2026-10-21,
+    16). None when nothing needs saying."""
+    try:
+        on_self = load_ci(repo).get("provider") == SELF
+    except Refusal:
+        on_self = False
+    if not (on_self or os.path.isdir(p(repo, ".helloworld"))):
+        return None
+    if text is None:
+        why = "there is no .github/workflows/check.yml"
+    elif own_runs_on(text, labels):
+        why = "check.yml's runs-on names the labels itself (the literal form)"
+    else:
+        values = [v for _, v in runs_on_lines(text)]
+        why = "check.yml's runs-on (%s) reads no variable in this tool's form" % (
+            "; ".join(values) or "none")
+    return ("  no repository variable set: %s. A repo with a public twin takes the variable form: "
+            "`ci-provider %s --to %s --runs-on-var %s`" % (why, repo, SELF, RUNS_ON_VAR))
+
+
+def runner(repo, verb, dry):
+    s = slug(repo)
+    # the keys before anything else, GitHub and ssh included: absent, a refusal naming the file.
+    # Read once here and passed down (review 2026-10-21, 12)
+    host, labels = runner_host(), runner_labels()
+    name = own_labels(labels)[0]
+    wf = p(repo, ".github", "workflows", "check.yml")
+    text = read(wf) if os.path.isfile(wf) else None
+    # only the variable form this tool writes: a variable the file reads any other way is the
+    # repo's own, never set here (review 2026-10-21, 3)
+    var = runs_on_var(text)
+    where = "%s:~/%s (or ~/%s, installed before 2026-10-19)" % (host, runner_dir(s), flat_runner_dir(s))
+    if verb == "status":
+        print("%s's runner on the runner Mac (%s):" % (s, where))
+        rc = ssh_runner("status", s, host, labels)
+        show_runners(s)
+        if rc:
+            raise Refusal("ssh %s exited %d" % (host, rc))
+        return
+    if verb == "install":
+        refuse_forks(s, "a runner on the runner Mac")
+        warn_writers(s)
+        none_set = None if var else no_variable(repo, text, labels)
+        if dry:
+            print("would: ask the runner Mac whether it is configured; if not, take a registration "
+                  "token (gh api -X POST repos/%s/actions/runners/registration-token), and over ssh "
+                  "into %s: fetch %s once (%d bytes, SHA-256 %s), unpack, config.sh --name %s "
+                  "--labels %s; svc.sh install and start; then wait for it online on GitHub"
+                  % (s, where, RUNNER_URL, RUNNER_SIZE, RUNNER_SHA256[:12], name,
+                     ",".join(own_labels(labels))))
+            if var:
+                print("would then set the repository variable %s that check.yml's runs-on reads:"
+                      % var)
+                set_variable(s, var, labels, dry=True)
+            elif none_set:
+                print(none_set)
+            return
+        print("%s: installing its runner in %s" % (s, where))
+        rc = ssh_runner("install", s, host, labels,
+                        None if configured(s, host, labels) else runner_token(s, "registration"))
+        if rc:
+            raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
+        wait_online(s, labels)
+        # only now: set before the runner is online, every job would queue on it
+        if var:
+            set_variable(s, var, labels, dry=False)
+        elif none_set:
+            print(none_set)
+        return
+    if dry:
+        print("would: if the runner Mac reports it configured, take a remove token, and over ssh in "
+              "%s: svc.sh uninstall, config.sh remove" % where)
+        return
+    print("%s: removing its runner in %s" % (s, where))
+    rc = ssh_runner("remove", s, host, labels,
+                    runner_token(s, "remove") if configured(s, host, labels) else None)
+    if rc:
+        raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
+    runners, _ = runners_of(s)
+    left = [r for r in runners or [] if r.get("name") == name]
+    if left:
+        # a runner whose directory was lost stays registered: the DELETE is printed, not run
+        print("  GitHub still lists %s (%s): gh api -X DELETE repos/%s/actions/runners/%s"
+              % (name, left[0].get("status"), s, left[0].get("id")))
+    else:
+        print("  GitHub: no runner %s left" % name)
+    if var:
+        # what the variable holds, read, never assumed (review 2026-10-21, 9). Left set, jobs queue
+        # for a runner that is gone; deleting it sends the check to hosted ubuntu, billed: the
+        # owner's call, so printed, not run
+        value, err = variable(s, var)
+        delete = "`gh api -X DELETE repos/%s/actions/variables/%s`" % (s, var)
+        if err:
+            print("  the repository variable %s: unread (%s); while it holds labels, jobs queue until "
+                  "a runner carrying them is back; %s sends the check to ubuntu-latest"
+                  % (var, err, delete))
+        elif value is None:
+            print("  the repository variable %s is unset: the check runs on ubuntu-latest, hosted"
+                  % var)
+        else:
+            print("  the repository variable %s holds %s: jobs queue until a runner carrying those "
+                  "labels is back; %s sends the check to ubuntu-latest" % (var, value, delete))
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="ci-provider", description=__doc__.split("\n\n")[0])
+    ap.add_argument("repo", nargs="?", default=".")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--to", choices=sorted(CONTEXT))
+    g.add_argument("--protect", action="store_true")
+    g.add_argument("--compose", action="store_true")
+    g.add_argument("--runner", choices=["install", "status", "remove"])
+    ap.add_argument("--check", help="the check command (default: ci.json, check.yml, the part, AGENTS.md)")
+    ap.add_argument("--context", help="with --to: main's required check name, when not the provider's default")
+    ap.add_argument("--runs-on-var", metavar="NAME",
+                    help=f"with --to {SELF}: runs-on read from the repository variable NAME, so "
+                         "check.yml names no machine (by itself CI_RUNS_ON where .helloworld/ is)")
+    ap.add_argument("--twin", action="store_true",
+                    help=f"with --to {SELF}: check.yml is published to a public twin, so runs-on "
+                         "takes the variable form even over a literal (by itself where "
+                         ".helloworld/allowlist.txt lists .github/workflows/check.yml)")
+    ap.add_argument("--force", action="store_true",
+                    help="--protect without a green report; --to dropping what the old CI file held beyond its template")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args(argv)
+    if (a.check or a.context) and not a.to:
+        ap.error("--check and --context go with --to only")
+    if a.runs_on_var is not None and a.to != SELF:
+        ap.error(f"--runs-on-var goes with --to {SELF} only")
+    if a.twin and a.to != SELF:
+        ap.error(f"--twin goes with --to {SELF} only")
+    if a.force and not (a.to or a.protect):
+        ap.error("--force goes with --to or --protect")
+    # the checkout's top level, not the directory named: from a subdirectory, `.github/` and
+    # `.circleci/` would land beside the real ones (review 2026-10-19, 1)
+    top = subprocess.run(["git", "-C", a.repo, "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode != 0 or not top.stdout.strip():
+        print("ci-provider: %s is not in a git checkout" % os.path.abspath(a.repo), file=sys.stderr)
+        return 2
+    repo = top.stdout.strip()
+    try:
+        if a.to:
+            switch(repo, a.to, a.check, a.dry_run, a.context, a.force, a.runs_on_var, a.twin)
+        elif a.protect:
+            protect(repo, a.force, a.dry_run)
+        elif a.compose:
+            compose(repo, a.dry_run)
+        elif a.runner:
+            runner(repo, a.runner, a.dry_run)
+        else:
+            status(repo)
+    except Refusal as e:
+        print("ci-provider: %s" % e, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

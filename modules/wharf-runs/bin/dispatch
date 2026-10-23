@@ -1,0 +1,1689 @@
+#!/usr/bin/env bash
+# dispatch BRANCH [--repo DIR] [--at WHEN] [--on auto|HOST|here [--fallback here]] [--note TEXT] [--model M] [--effort E]
+#                 [--account auto|bound|LABEL [--force]] [--headless] [--background allow|deny] [--yolo] [--if-room]
+#                 [--mode default|ask|dnd|yolo] [--probe] [--dry-run]
+# dispatch BRANCH --next [--repo DIR] [--on here] [--note TEXT] [--model M] [--effort E] [--headless]
+#                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo]
+# dispatch --status
+# dispatch --slots
+# dispatch --end TOPIC [--repo DIR]
+# dispatch --start PROMPT DIR NAME [--session-id ID] [--resume ID [--fork]] [--allow TOOL]... [--undeny TOOL]...
+#                   [--model M] [--effort E] [--headless] [--dry-run]
+#
+# Start a seeded claude/* branch (pickup seed: its brief is docs/handoff/*-<topic>.md on the
+# branch) as an unattended Claude Code session — on the dispatch host by default (Where, below) — now or once at a local time. Written
+# for the first case, 2026-10-03: a session that should begin on the build Mac when the weekly limit
+# resets (Sun 2026-10-04 04:00 Pacific), with nobody at a keyboard.
+#
+# Named run-seed until 2026-10-05 (the owner: "isn't named right"). Its on-disk state keeps the old
+# name — ~/Library/Caches/run-seed, …/run-seed-runs — so a run live across the rename stays
+# visible to --status and the reaper; bin/run-seed is a shim for callers of the old name.
+#
+# The run is visible (the owner, 2026-10-04: "How can I see these runs?"): an interactive
+# `claude --remote-control "<topic> · <machine>"` inside a detached `screen -S run-<topic>` (no
+# tmux: a new dependency), so it shows on the phone, in VS Code's side panel (whose list hides
+# every `claude -p` transcript — entrypoint sdk-cli, extension 2.1.289) and, on the laptop, in a
+# Terminal window titled "run · <topic>" tiled on Desktop 5 (bin/tiling). Once its session record
+# has said idle for 10 minutes after it was first busy, bin/dispatch-rc ends the claude process,
+# the screen and the window, and logs the session id; a busy session is never ended. The screen
+# lives in ~/Library/Caches/run-seed/screen (SCREENDIR: launchd's TMPDIR is not the shell's);
+# `--status` prints the attach line. Each run's record: ~/Library/Logs/claude-weekly/run-seed-runs/.
+#
+# Where (the owner, 2026-10-13: "dispatch to [the build Mac] by default, not the laptop"): a run anyone
+# starts goes to the dispatch host — `--on <it> --fallback here` unless a host is named — and to this
+# Mac only when it does not answer; `--on here` keeps it here. --next too: the step is confirmed from
+# the peer's log over ssh. The dispatch host is `wharf-runs/dispatch-host` in the regatta config dir;
+# absent, the first host `wharf-runs/ssh` names (one stderr line says so); neither, none: here. Not the default for what runs here by nature: a fired job, --start, --yolo, a bare clock time,
+# the --next of an unattended run here (the code's comment says why). --cancel looks on both. A run sent this way replaces a pending /later job of its branch
+# on the peer (the peer cannot tell a direct run from a scheduled one there).
+#
+#   --headless  the run as before 2026-10-04: `claude -p`, output in the log, invisible elsewhere —
+#               only when asked. Nothing falls back to it since 2026-10-13 (the owner: "always launch in
+#               a terminal, never headless"): an untrusted repo is trusted first (ensure_trusted), and
+#               a visible run whose session never got busy (DISPATCH_START_WAIT) is retried once,
+#               visible, then FAILED.
+#   --background  allow|deny: whether the session may background work (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).
+#               Default deny, in both modes (the owner, 2026-10-05: "foreground process as the default"): -p
+#               ends at its reply and what still runs dies unread; a visible run is ended once its
+#               session has been idle 10 min, and one waiting on a background check may read as idle
+#               (inferred from dispatch-rc's watch, not observed). `allow` exists to run one brief both
+#               ways side by side; the log's "== background" line and the run's record say which it
+#               had. The prompt is the same both ways, so only the switch differs. Side by side means
+#               two branches (one branch's runs go one after another, in one worktree), each with the
+#               brief under its own topic. Per step, not per chain: a --next step takes the default.
+#   --account   which login runs it (work-account E5, docs/work-account-2026-10-06.md section 3): `auto`,
+#               the default for a seeded run, asks `bin/account pick --repo <repo>` AT FIRE TIME on the host
+#               that runs it — the limits that matter are the ones when the run starts — so a second login's row
+#               first in the walk takes it unless the repo is on its deny list; LABEL takes that row,
+#               refused past its rules unless --force, and in a denied repo always. Exit 3 from the pick (nobody may
+#               run) is `FAILED:` with each row's reason, no retry. No registry (exit 4): the default login,
+#               as before. The pick's CLAUDE_CONFIG_DIR is exported to the run (the runner keeps it), and
+#               trust is read from that dir. --next inherits the running session's account when it is an
+#               enabled secondary (`account which`; a default-dir session's step stays auto); --start and --probe keep the caller's login unless --account is given.
+#               `--at reset` with a LABEL is that row's weekly reset, else this Mac's default login's.
+#               `bound` (the owner, 2026-10-10: "design sessions should be pinned to [the primary]") is `account pick --bound`
+#               at fire time: the registry's primary row, for work the account owns — a Claude Design
+#               artifact belongs to the login that published it (hooks/design_route.py sends design work
+#               here). Exit 3 is FAILED as for auto. The run carries DISPATCH_PIN=bound, so its --next
+#               stays bound; --force does not apply (pick --bound has no rules to cross).
+#   --yolo      the unattended one-pass run (E12 of docs/autofinish-design-2026-10-02.md; D1-D3 of
+#               docs/subagent-cache-2026-10-04.md, the owner: B, B, A): a brief that would stop for the owner's answers to
+#               a D-list goes on instead. The prompt carries the gate: the session runs `bin/keel yolo <doc>`,
+#               which answers every open item with a bare pick — `Reversible: no` included since
+#               skipper-modes D1 ("--yolo goes all the way") — with `Taken unattended (<owner>'s yolo, <date>):
+#               <pick>`, or stops at the first with none, a conditional or a reopened one (exit 3) and writes
+#               nothing; the build then runs inline in the session. Mode yolo (--mode) is this switch. The build run keeps every guard
+#               below — the prompt's "do not push … never launch", the denied list. Once it ends on its own
+#               (headless: exit 0; interactive: idle 10 min after its last turn — the warm hour is
+#               for a session the owner picks up again, never this one), its last reply not stopping for the owner, no
+#               next step scheduled, autofinish armed here and the week not tight, its worktree clean
+#               and no doc the branch changed holding an item the owner has not settled (yolo_launch's
+#               gates), this script starts the launch: `autofinish-run <worktree> --rule M --by yolo` (E1's start:
+#               `/finish --unattended --yolo`, whose own list lifts the push and bin/pr denials for that run only).
+#               Whether it merges is the landing ladder's (skipper-modes S3b), which autofinish-run reads from
+#               plan.json, not from this flag: in mode yolo it merges on any host once the check and the review
+#               gate pass; a ship lowered since stops at a ready PR, labelled `hold` (docs/yolo-veto-2026-10-07.md
+#               D1, kept for default and ask). A mode raised by an unattended caller is refused (--mode). The
+#               log says which, or why no launch started. Per step, not per chain: a --next step is yolo only
+#               when it says --yolo.
+#   --if-room   at fire time, after the account pick: refuse to start when autofinish's week_tight says
+#               `tight` or `none` (no account may run it), or when reading it raised. For a run scheduled
+#               a week ahead (Sextant's sounding queue, `--at reset`: the Sounding design's section 5,
+#               the overlay's docs/record/proposer-2026-10-16.md): it spends the week it fires in, so the budget
+#               is read then, never when it was queued. No reading is room, review-gate's rule: no
+#               registry, no sample, or a sample from before the reset (last week's figure) — which at
+#               `--at reset` is the usual case, so there `none` is what refuses in practice. The verdict
+#               alone is tested, not the tuple's detail. A refusal is `FAILED: --if-room: …` in the run's
+#               log and the job is gone; the branch stays a seed, and soundings' `refresh` returns its
+#               entry to the queue once the week is past. Crosses to the peer like --yolo.
+#   --mode      the sent task's mode (docs/skipper-modes-2026-10-21.md S1, S3): `default` — the prompt as
+#               below, a skipper answers `Reversible: yes` asks; `ask` — nothing answers but the owner, the
+#               prompt says so; `dnd` — the prompt's gate runs `keel yolo --dnd <doc>`, builds on what it
+#               took and relays each item it holds (D1-A's classes); `yolo` — `--yolo`, whose gate runs
+#               `keel yolo <doc>` (every bare pick, Reversible: no included; D1's answer). Written as
+#               DISPATCH_MODE into the plist, the run's record (`task_mode`: the record's `mode` is rc or
+#               headless) and the session's environment, and into the ship's plan.json task when the ship
+#               is on this Mac. At fire time the run reads its mode again — plan.json first (`helm mode`
+#               changes it mid-flight), DISPATCH_MODE a hint, then the repo's scope `mode` in repos.json,
+#               then `default` (helmlib.task_mode) — so a mode changed after scheduling holds. A --next
+#               keeps its run's mode, bar yolo (per step, as --yolo). Not for --start or --probe. A dnd run
+#               launches as a yolo one does (S3b), `--by dnd`, and lands bar the held slice. Raising a mode —
+#               --mode or --yolo above the caller's own, helmlib.raise_refusal — exits 2 under
+#               CLAUDE_UNATTENDED (a fired job's plist excepted): the mode is a yes to merge, the owner's alone.
+#   --on auto   the host berth picks (skipper-modes S6b; modules/wharf-runs/bin/berth): the repo's scope's
+#               `berths` in repos.json crossed with its clone hosts, then slots and load. The default
+#               where a host would have been defaulted (Where, below): DISPATCH_DEFAULT_ON is `auto` unless
+#               set. A pick of this Mac runs here; a peer's is scheduled there with `--fallback here` only
+#               when this Mac is among the candidates (a scope whose berths leave it out never falls back
+#               here); no candidate is a refusal, exit 2. A host is reached by its `wharf-runs/ssh` alias
+#               (`<host>:<alias>`); a berth that cannot run keeps the dispatch host (Where).
+#   --slots     `<busy> <cap>` for this Mac: the runs counted against the cap, and the cap (berth reads
+#               a peer's over ssh, so the cap has one home).
+#   --status    every run of the last 7 days: running/ended, last activity, session id, VS Code link.
+#               It also ends an orphan (its watcher gone, claude still there) once idle 1 min — a look
+#               at the runs is when one is noticed, and a separate verb would be one more to remember.
+#   --end       end TOPIC's live run now, busy or not: claude, its screen and window, its lock.
+#
+# Without --at, a run is scheduled a minute out rather than run in this shell: launchd then owns
+# the watcher. Run in a session's Bash call, it died with that call's process tree and left claude
+# and the screen running unwatched — `--status` said running, the topic's next run waited 2 h and
+# failed (two runs on 2026-10-05). macOS has no setsid(1) to detach it otherwise; launchd is the
+# path every scheduled run already takes. --dry-run still runs here.
+#
+# Limits (review of 2026-10-05: nothing bounded an unattended chain):
+#   - a run is ended at DISPATCH_MAX_H hours (default 8) even if never idle, and caffeinate ends with it;
+#     a run that goes idle is kept for DISPATCH_IDLE (the prompt cache's hour, the owner 2026-10-06) with
+#     caffeinate released, and its window closed once it is dead or cold (dispatch-rc tidy); a
+#     --start run keeps the old 10 min, since its caller waits on the watcher (autofinish-run);
+#   - a chain of runs, each started by the one before, stops at depth DISPATCH_MAX_DEPTH (5):
+#     DISPATCH_DEPTH travels in the plist and the session's environment;
+#   - `--next` from an unattended run is refused while the branch's newest brief is the very one
+#     that run started from (DISPATCH_BRIEF, the brief's blob): it would run the same step again;
+#   - a run is refused (not queued) when $max_runs other runs are busy — 10 on the dispatch
+#     host, 3 elsewhere (the owner, 2026-10-08, 2026-10-19, 2026-10-20), DISPATCH_MAX_RUNS over either; a
+#     warm, idle run does not count (D1 of docs/dispatch-warm-hour-2026-10-08.md), nor one waiting at a prompt or a question
+#     (dispatch-rc parked(); the owner, 2026-10-08: "don't clog the pipeline"): a queue would need a waiter that
+#     outlives the scheduler, and a refusal shows at once in --next's confirm. A host whose memory is past
+#     its wharf-runs/headroom line is refused the same way, whatever its count (bin/headroom, 2026-10-22);
+#   --at     WHEN is `reset` (the next weekly limit reset + 10 min — what /later uses by default),
+#            `reset+MIN`, "YYYY-MM-DD HH:MM" in the target host's local time, or `@EPOCH`.
+#            Writes a one-shot launchd job (<prefix>.dispatch.<repo>.<topic>.<YYYYmmddHHMM>; the prefix
+#            is `wharf-runs/label-prefix` in the regatta config dir, else org.regatta.claude) that
+#            runs this script once and then removes itself. launchd's calendar interval has no year,
+#            so a job that did not remove itself would fire again next year. Scheduling replaces the
+#            branch's other jobs except one launchd reports running: that is a run going on now,
+#            maybe the caller's own. One label per scheduled run, because a run that scheduled its
+#            successor under its own label booted itself out — launchd ends the job's whole process
+#            tree — and died at its last step with exit 137, the successor never scheduled (model
+#            gate S3, 2026-10-04). "Schedule once this job has exited" is no alternative: whatever
+#            would wait for that is in the same process tree; only another job outlives it. A run
+#            that fires while an earlier run of its branch is alive waits for it to end (up to
+#            DISPATCH_PREV_WAIT s, default 2 h); the earlier run, idle, is then ended after 1 min, not 10.
+#   --on     schedule it on a peer over ssh: HOST is one `wharf-runs/ssh` names (<host>:<ssh alias> a
+#            line, compared case-blind); any other name is refused, listing the ones it holds. The
+#            peer runs its own core (its config dir's `home`). The time is resolved here to an epoch
+#            and turned into that host's local clock there, so a timezone gap cannot move it.
+#            `--fallback here` (the owner, 2026-10-10: "auto-dispatch to [the build Mac] (run locally as
+#            fallback)"): a 10-second probe first (ssh ConnectTimeout, BatchMode — the host entry sets
+#            no timeout, and an asleep peer would hold the connect for the OS's ~75 s); on its exit
+#            255 (unreachable), or a peer whose dispatch predates `--account bound`, the run is
+#            scheduled on this Mac instead, at least 90 s out, through this Mac's own checks
+#            (`physical:`), and says so. Once the probe passed, the real call is made and its
+#            answer stands: a dropped connection after the peer scheduled can never put the branch
+#            on both hosts. A run the peer accepts and refuses at fire time (its cap of 10) is in
+#            the peer's log. --cancel with --on cancels there only; with no host, here and on the dispatch host.
+#            `--account bound` over ssh always carries that version guard (exit 3 without
+#            --fallback): the peer's checkout pulls main only at a session start (review 2026-10-10).
+#   --note   extra instructions appended to the brief — a build-now/measure-later split goes here,
+#            because the brief says what "done" is and a run before its inputs exist cannot meet it.
+#   --next   a finished step starts the next one itself, on the dispatch host (header, Where), in about two minutes — instead of a
+#            prompt for the owner to paste (the owner, 2026-10-04: "I don't have time to copy-paste prompts for
+#            you"). The sequence the model gate S3 proved that day, so no session re-derives it: the
+#            branch's brief (docs/handoff/*-<topic>.md) committed and its worktree clean; the branch
+#            pushed (your own claude/* branch — what the checkpoint hook does anyway, now rather than
+#            at session end, so the run fetches this commit); this session's lock on that worktree
+#            freed (another live session's is refused); --at now + 90 s; then it waits for the run's
+#            header in the log and fails unless the run is still going 20 s later. Blocks up to
+#            about 3 min: give the Bash call a 300000 ms timeout. A session that entered the
+#            worktree leaves it (ExitWorktree, keep) right after and writes nothing more there.
+#            A run that is a block of a ship (its DISPATCH_SHIP (or DISPATCH_PLAN) and DISPATCH_TASK name a block with a
+#            successor in the plan's blueprint: `wharf next`) starts nothing here: the successor is the
+#            blueprint's next block and `wharf apply` (the tick or the skipper) starts it; --next says
+#            so and exits 0 (wharf-on-orca S5, B9). Any other caller — a seed, wharf's own start, the
+#            last block — is scheduled as before; a check that fails (exit 2) stops with its message.
+#            For a fresh seed: `pickup seed TOPIC --file BRIEF --no-start`, then this. Here, not a
+#            `pickup next`: every step but the push and the lock is this script's own scheduling and
+#            log, and its tests already stand in for launchd. A worktree lock marked `handover`
+#            (pickup next, 96f3c9d) counts as free.
+#   --probe  the visible path with the prompt "reply with the single word ok", in the repo, no
+#            worktree: Remote Control in a screen, ended by the watcher once idle (1 min), the answer
+#            logged as "probe answered: ok". Proves a launchd-started claude is logged in and the
+#            interactive path works. Under launchd the login is the GUI session's, not the SSH
+#            shell's CLAUDE_CODE_OAUTH_TOKEN, and that difference is exactly what to test.
+#            With --headless: `claude -p "reply …"` as before.
+#   --start  the visible run for a caller with its own trigger and its own prompt — bin/autofinish-run
+#            (docs/autofinish-design-2026-10-02.md E1): PROMPT, as it is, in the worktree DIR (its
+#            branch, its repo), now and in this process, which returns once the watcher has ended
+#            the session (exit 3: never busy; no headless retry — the caller decides about another
+#            start). Remote Control "NAME · <machine>", window "run · NAME · <repo>", the run's topic
+#            NAME as a slug. --session-id is the caller's, so it can write the worktree lock before
+#            the start; --allow adds to the allowlist below and --undeny takes an exact entry off the
+#            denied list (an entry not there is refused: the lists stay this file's). The start lock,
+#            the run cap, the trust step and the watcher are a run's as above; no
+#            `physical:` check, no brief, no chain depth check: those are the caller's. The caller
+#            detaches it — run in a Bash call, it dies with the call (header). --dry-run prints the
+#            script screen would run, claude's whole command line included.
+#            --launch is its old name, kept as an alias for a week (S8 of docs/wharf-rename-2026-10-16.md
+#            drops it): a runner loaded before the rename still calls it; "launch" is the release verb now.
+#            --resume ID continues that session instead of starting a fresh one (bin/harness V2,
+#            orchestration B5; the owner's open D9 of docs/orchestration-2026-10-11.md — this is its option A,
+#            in a commit of its own, so B or C reverts it whole): PROMPT is the next turn. Without --fork
+#            the session keeps its id, so --session-id is refused (claude 2.1.300: "--session-id can only
+#            be used with --continue or --resume if --fork-session is also specified"); with --fork, claude
+#            copies the transcript under a new id — --session-id's, else a fresh one — and leaves the
+#            original as it was. The record names the session it came from (`resumed_from`). Known gap:
+#            dispatch-rc's watcher reads "the transcript holds an answer" as busy (replied()), and a
+#            continued transcript already holds one, so a continued run is never "never busy" (exit 3): one
+#            stuck before its first turn is ended idle instead, after the same 10 minutes.
+#
+# The run writes in a worktree of its own (the primary stays on main) on the branch as it is on
+# origin. It never launches: the checkpoint hook commits and pushes the branch, /finish merges. The
+# guards are the prompt, hooks/checkpoint.py (command text; it runs under -p) and the repo's
+# pre-push (refs), and a repo whose contract says `physical: none` (refused otherwise);
+# --disallowedTools is a habit guard only — a wrapper (`bash -c`, `python3 -c`) passes it, so the
+# allowlist names no interpreter wildcard and leaves wrappers to the classifier. Headless, with
+# no host to answer --permission-prompts, anything that would prompt is denied (probed), so the
+# mode is `auto`, as interactive sessions run: acceptEdits + an allowlist refused git fetch/merge,
+# web and curl in four of seven runs on 2026-10-04 (docs/record/run-seed-permissions-2026-10-04.md).
+# The allowlist only spares the classifier read-only and commit calls. Interactive (the default
+# since 2026-10-04), a call that would prompt may wait at its prompt instead of being denied —
+# answerable from the phone — and the watcher ends only an idle session; neither is probed yet.
+# `reset` is read from THIS
+# Mac's plan cache: it is the reset of the account signed in here, so state which account the
+# job will run under. Log: the path printed when scheduled (~/Library/Logs/claude-weekly/).
+# DISPATCH_NEXT_DELAY, _WAIT and _SETTLE time --next (seconds: start, give up, still running);
+# DISPATCH_HOST names the machine (the laptop gets the window; the dispatch host's run cap is 10); the tests replace commands with
+# DISPATCH_SCREEN, _OPEN, _YABAI (and dispatch-rc's _POLL, _IDLE, _START_WAIT seconds),
+# DISPATCH_RCHOSTS bin/rc-hosts (asked whether claude-host may start the job and the claude: --launcher),
+# DISPATCH_CLAUDE the `claude` command and DISPATCH_LAUNCHCTL `launchctl`.
+set -uo pipefail
+# Named run-seed until 2026-10-05: a job scheduled before then, and a session it started, still
+# carry RUN_SEED_*, and its session's hooks and skills now call this name directly — so the chain
+# depth and the unchanged-brief guard hold across the rename (review of 2026-10-05).
+for v in LABEL LOG YEAR DEPTH BRIEF; do
+  o="RUN_SEED_$v"; n="DISPATCH_$v"
+  if [ -n "${!o:-}" ]; then [ -n "${!n:-}" ] || export "$n=${!o}"; unset "$o"; fi
+done
+here="$(cd "$(dirname "$0")/.." && pwd)"   # this module (wharf-runs), anchored on this script, never the caller's cwd
+# The regatta core (lib/core_path.py, C2) and the peers it finds (common.tool): keel (M4), account and
+# trust-projects (lighthouse, G12), ask and helm (helm, G22; the overlay's until B12). One call, read
+# once; a missing peer is an empty value and its caller's fallback.
+core=""; legacy=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
+# The private values (the scrub's conventions): the peers and their ssh aliases (`wharf-runs/ssh`,
+# <host>:<alias> a line), the dispatch host (`wharf-runs/dispatch-host`), the launchd label prefix
+# (`wharf-runs/label-prefix`), the laptop and the owner (the core's), the projects folder. Read
+# through the core; where it cannot load (a config the overlay left incomplete), the files
+# themselves, so a missing key is a default and never a broken run.
+peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; projects="$HOME/projects"
+eval "$(python3 - "$here" <<'CORE'
+import os, shlex, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import core_path
+out = {"core": core_path.add() or ""}
+try:
+    import common
+except ImportError:
+    common = None
+cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+def lines(name):
+    if common:
+        return common.config_lines(name) or []
+    try:
+        with open(os.path.join(cfg, name), encoding="utf-8-sig") as f:
+            return [l.strip() for l in f if l.strip()]
+    except (OSError, ValueError):
+        return []
+def first(name, default=""):
+    return (lines(name) or [default])[0]
+out["peers"] = " ".join("%s:%s" % (n.strip(), a.strip()) for n, a in
+                        (l.split(":", 1) for l in lines("wharf-runs/ssh") if ":" in l) if n.strip() and a.strip())
+out["dhost"] = first("wharf-runs/dispatch-host")
+out["lprefix"] = first("wharf-runs/label-prefix", "org.regatta.claude")
+out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") or first("regatta/laptop", "laptop"))
+out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
+out["projects"] = str(common.PROJECTS) if common else os.path.expanduser("~/projects")
+if common:
+    old = common.legacy_root()
+    if old and (old / "bin").is_dir():
+        # its main checkout, as the old code anchored on its own: a worktree goes away at /finish
+        import subprocess
+        gd = subprocess.run(["git", "-C", str(old), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True).stdout.strip()
+        out["legacy"] = os.path.dirname(gd) if gd.endswith("/.git") else str(old.resolve())
+    for var, name in (("p_account", "account"), ("p_trust", "trust-projects"), ("p_keel", "keel"),
+                      ("p_ask", "ask"), ("p_helm", "helm")):
+        found = common.tool(name)
+        out[var] = str(found) if found else ""
+for k, v in out.items():
+    print("%s=%s" % (k, shlex.quote(v)))
+CORE
+)"
+# Where an overlay is installed the run prompt names its shims, as before B12: each account dir's
+# allow rules name the overlay's bin/ask and bin/plan (bin/plan until rename S8), and rules for this
+# module's paths arrive only with a manual bootstrap.sh --hooks — a run refused its report stalls its
+# ship (S5 review; the overlay's 913cb0f2). tool() finds helm's module first once it shares this checkout.
+if [ -n "$legacy" ]; then
+  [ -x "$legacy/bin/ask" ] && p_ask="$legacy/bin/ask"
+  if [ -x "$legacy/bin/plan" ]; then p_helm="$legacy/bin/plan"; elif [ -x "$legacy/bin/helm" ]; then p_helm="$legacy/bin/helm"; fi
+fi
+# DISPATCH_ASK, DISPATCH_HELM: the tests' stand-ins; set but empty is "not installed" (G22's case)
+[ -n "${DISPATCH_ASK+x}" ] && p_ask="$DISPATCH_ASK"
+[ -n "${DISPATCH_HELM+x}" ] && p_helm="$DISPATCH_HELM"
+[ -n "$core" ] || { echo "dispatch: the regatta core is missing — install the \`regatta\` plugin, or name a clone in the regatta config dir's \`home\` file" >&2; exit 2; }
+# The default repo: the overlay's checkout where one is installed (the config dir's `legacy`), else
+# the main checkout of the clone this file sits in — never a worktree, whose branch is not the run's.
+# The job's script path likewise: the overlay's shim (the path its jobs always named), else this
+# module in the main checkout; a worktree's copy goes away at /finish.
+mainco="$(cd "$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)"
+primary="${legacy:-$mainco}"
+jobbin="$mainco/modules/wharf-runs/bin/dispatch"
+[ -n "$legacy" ] && [ -f "$legacy/bin/dispatch" ] && jobbin="$legacy/bin/dispatch"
+RCH="${DISPATCH_RCHOSTS:-$here/bin/rc-hosts}"
+lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }   # host names compare lower-case (bash 3.2 has no ${x,,})
+# --on NAME: a host `wharf-runs/ssh` names, case-blind -> $pname (as the key spells it) and $peer (its
+# ssh alias); 1 when the key names no such host
+peer_of() {
+  local p
+  for p in $peers; do
+    [ "$(lc "${p%%:*}")" = "$(lc "$1")" ] && { pname="${p%%:*}"; peer="${p#*:}"; return 0; }
+  done
+  return 1
+}
+unknown_host() {
+  local p names=""
+  for p in $peers; do names="$names${names:+, }${p%%:*}"; done
+  echo "dispatch: unknown host $1 — wharf-runs/ssh names ${names:-no host}; or here" >&2; exit 2
+}
+pname=""; peer=""
+# The dispatch host: the build Mac a run goes to when nobody names one (header, Where), and the one
+# with the larger cap below. `wharf-runs/dispatch-host`; absent, the first host `wharf-runs/ssh`
+# names, said once on stderr where the default is taken; neither, none (runs stay here).
+dispatch_host="$dhost"; dh_note=""
+if [ -z "$dispatch_host" ] && [ -n "$peers" ]; then
+  dispatch_host="${peers%% *}"; dispatch_host="${dispatch_host%%:*}"
+  dh_note="dispatch: no wharf-runs/dispatch-host in the regatta config — taking $dispatch_host, the first host wharf-runs/ssh names"
+fi
+# Runs live at once before another is refused. The build Mac (10 cores, 16 GB, never sleeps, often
+# idle) takes 10; the laptop keeps 3, its own sessions share it (the owner, 2026-10-08: "increase
+# [the build Mac's] capacity to 5"; 2026-10-19, the regatta build at 5 runs left the build Mac at
+# load 6 on 10 cores while the laptop sat at 150: "bump [its] concurrent run to 8, see if it can
+# sustain that load"; 2026-10-20, "push [it] to 10 actually, it's going too slow"). So: 10 on the
+# dispatch host, 3 on any other Mac. DISPATCH_MAX_RUNS overrides either; DISPATCH_HOST is
+# machine()'s, for the tests.
+self_host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
+if [ -n "$dispatch_host" ] && [ "$(lc "$self_host")" = "$(lc "$dispatch_host")" ]; then
+  max_runs="${DISPATCH_MAX_RUNS:-10}"
+else
+  max_runs="${DISPATCH_MAX_RUNS:-3}"
+fi
+who="${owner:-the owner}"   # text addressed to the owner (common.OWNER_NAME)
+# Memory beside the cap (2026-10-22: six runs left a 16 GB host thrashing, load 65 and swap full,
+# with four slots still free): bin/headroom reads this host's memory against its wharf-runs/headroom
+# line. Over it (exit 3), prints why and fails — the run is refused as at the cap; anything else that
+# is not 0 (unreadable, or a crash: Python's own exit 1) says so on stderr and passes, since a broken
+# probe must not stop every run. Sampled before the start lock: it sleeps 2 s.
+roomy() {
+  local why rc
+  why=$(python3 "$here/bin/headroom" check); rc=$?
+  [ "$rc" = 3 ] && { echo "$why"; return 1; }
+  [ "$rc" = 0 ] || echo "dispatch: no memory reading ($why) — going ahead" >&2
+  return 0
+}
+branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
+account=""; force=0; fallback=""; on_here=0; on_default=0; at_default=0; on_auto=0; ifroom=0
+start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --start|--launch) [ $# -ge 4 ] || { echo "dispatch: --start PROMPT DIR NAME" >&2; exit 2; }
+              start=1; lprompt="$2"; ldir="$3"; lname="$4"; shift 4;;
+    --session-id) lsid="$2"; shift 2;;
+    --resume) lresume="${2:-}"; [ -n "$lresume" ] || { echo "dispatch: --resume takes a session id" >&2; exit 2; }; shift 2;;
+    --fork) lfork=1; shift;;
+    --allow) extra_allow+=("$2"); shift 2;;
+    --undeny) undeny+=("$2"); shift 2;;
+    --repo) repo="$2"; repo_given=1; shift 2;;
+    # once: the last would win, so `--at reset --at <clock>` would pass a rule pinned to `--at reset`
+    # (the sounding queue's allow rules in aurora's weekly-run; the S7 /finish review's R5)
+    --at) [ -z "$at" ] || { echo "dispatch: --at given twice" >&2; exit 2; }; at="$2"; shift 2;;
+    --note) note="$2"; shift 2;;
+    --model) model="$2"; shift 2;;
+    --effort) effort="$2"; shift 2;;
+    --probe) probe=1; shift;;
+    --account) account="${2:-}"; [ -n "$account" ] || { echo "dispatch: --account takes auto or a label" >&2; exit 2; }; shift 2;;
+    --force) force=1; shift;;
+    --dry-run) dry=1; shift;;
+    --on) on="${2:-}"; [ "$(lc "$on")" = here ] && { on=""; on_here=1; }; [ "$(lc "$on")" = auto ] && { on=""; on_auto=1; }; shift 2;;
+    --fallback) fallback="${2:-}"; [ "$fallback" = here ] || { echo "dispatch: --fallback takes here" >&2; exit 2; }; shift 2;;
+    --cancel) cancel=1; shift;;
+    --next) next=1; shift;;
+    --headless) headless=1; shift;;
+    --yolo) yolo=1; mode_given=1; shift;;   # mode yolo, written to plan.json as --mode yolo is (landing review 11)
+    --if-room) ifroom=1; shift;;
+    --mode) mode="${2:-}"; case "$mode" in default|ask|dnd|yolo) mode_given=1;; *) echo "dispatch: --mode takes default, ask, dnd or yolo" >&2; exit 2;; esac; shift 2;;
+    --background) bg="${2:-}"; case "$bg" in allow|deny) ;; *) echo "dispatch: --background takes allow or deny" >&2; exit 2;; esac; shift 2;;
+    --status) exec python3 "$here/bin/dispatch-rc" status;;
+    --slots) n=$(python3 "$here/bin/dispatch-rc" live --no-reap "" "" 2>/dev/null) || n="?"; echo "${n:-?} $max_runs"; exit 0;;
+    --end) end="$2"; shift 2;;
+    -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d'; exit 0;;   # the whole header, however long
+    -*) echo "dispatch: unknown option $1" >&2; exit 2;;
+    *) branch="$1"; shift;;
+  esac
+done
+# The weekly Sextant (aurora's weekly-run exports WEEKLY_RUN) runs in `auto` mode: its allow rules
+# only spare the classifier, they refuse nothing. So the one shape it may schedule is held here — a
+# branch at a reset slot with --if-room and nothing else; the fired run never carries WEEKLY_RUN
+# (the S7 /finish review's F1, F5).
+if [ -n "${WEEKLY_RUN:-}" ]; then
+  case "$at" in reset|reset+30|reset+60) slot=1;; *) slot=0;; esac
+  if [ "$slot" = 0 ] || [ "$ifroom" = 0 ] || [ -z "$branch" ] \
+     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode" ] \
+     || [ "$model/$effort" != opus/high ]; then
+    echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
+  fi
+fi
+repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
+if [ -n "$end" ]; then
+  if [ -n "$repo_given" ]; then exec python3 "$here/bin/dispatch-rc" end "$end" "$repo"; fi
+  exec python3 "$here/bin/dispatch-rc" end "$end"
+fi
+if { [ "${#extra_allow[@]}${#undeny[@]}${lsid}${lresume}" != 00 ] || [ "$lfork" = 1 ]; } && [ "$start" = 0 ]; then
+  echo "dispatch: --session-id, --resume, --fork, --allow and --undeny go with --start only" >&2; exit 2
+fi
+if [ "$lfork" = 1 ] && [ -z "$lresume" ]; then echo "dispatch: --fork goes with --resume ID" >&2; exit 2; fi
+if [ -n "$lresume" ] && [ "$lfork" = 0 ] && [ -n "$lsid" ]; then
+  echo "dispatch: --resume keeps the session's own id; --session-id goes with --fork only" >&2; exit 2
+fi
+if [ "$start" = 1 ]; then
+  [ -z "$branch$at$on$note$mode" ] && [ "$cancel$next$probe$yolo$ifroom" = 00000 ] || { echo "dispatch: --start takes no BRANCH, --at, --on, --note, --cancel, --next, --probe, --yolo, --if-room or --mode" >&2; exit 2; }
+  [ -n "$lprompt" ] && [ -n "$lname" ] || { echo "dispatch: --start needs a PROMPT and a NAME" >&2; exit 2; }
+  ldir="$(cd "$ldir" 2>/dev/null && pwd -P)" || { echo "dispatch: --start: no such directory" >&2; exit 2; }
+  branch=$(git -C "$ldir" symbolic-ref --quiet --short HEAD) || { echo "dispatch: --start: $ldir is on no branch" >&2; exit 2; }
+  # the repo is the worktree's own, whatever --repo said: the run record's repo is what --status and the cap read
+  repo="$(cd "$(git -C "$ldir" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)"
+fi
+[ -n "$branch" ] || { echo "dispatch: BRANCH required" >&2; exit 2; }
+topic="${branch##*/}"; topic="$(echo "$topic" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-//')"
+# a start's topic is its NAME as a slug: "finish · autofinish-runner" → finish-autofinish-runner, so the
+# screen, the record and `dispatch --end` tell it from a seeded run of the same branch
+[ "$start" = 1 ] && topic=$(printf '%s' "$lname" | LC_ALL=C tr -cs 'A-Za-z0-9-' '-' | sed 's/^-*//; s/-*$//' | tr 'A-Z' 'a-z')
+# a brief is docs/handoff/<YYYY-MM-DD>-<topic>.md exactly: `*-demo.md` also matched `…-foo-demo.md`
+topic_re="$(printf '%s' "$topic" | sed 's/[][\.*^$]/\\&/g')"
+brief_re="^docs/handoff/[0-9]{4}-[0-9]{2}-[0-9]{2}-$topic_re\.md\$"
+# The mode (header, --mode): a fired job's plist carries it as DISPATCH_MODE; a --next from a run keeps
+# its run's (the session's DISPATCH_MODE), bar yolo, which is per step as --yolo always was. --yolo is
+# mode yolo and mode yolo is --yolo: one switch under two names.
+if [ "$mode_given" = 0 ] && [ -n "${DISPATCH_MODE:-}" ]; then
+  if [ -n "${DISPATCH_LABEL:-}" ]; then mode="$DISPATCH_MODE"
+  elif [ "$next" = 1 ] && [ "$DISPATCH_MODE" != yolo ]; then mode="$DISPATCH_MODE"; fi
+fi
+case "$mode" in default|ask|dnd|yolo|'') ;; *) mode="";; esac   # a plist's stray value is no mode
+if [ "$yolo" = 1 ]; then
+  case "$mode" in ''|yolo) mode=yolo;; *) echo "dispatch: --yolo is mode yolo, not $mode" >&2; exit 2;; esac
+elif [ "$mode" = yolo ]; then yolo=1; fi
+[ -z "$mode" ] || [ "$probe" = 0 ] || { echo "dispatch: --mode is a seeded run's, not a probe's" >&2; exit 2; }
+# skipper-modes S3b: landing follows the mode, so a raise is a yes to merge, and only the owner gives it. An
+# unattended caller (CLAUDE_UNATTENDED: every dispatched run) naming --mode or --yolo above the target's
+# mode is refused — helmlib.raise_refusal against the target branch's mode (helmlib.branch_mode: the plan
+# task naming it, a `helm mode --branch`, its newest run), else the caller's own (a run handing on its
+# mode to a new branch keeps it); never the caller's alone, or a dnd run could raise a sibling the owner
+# lowered (landing review 5). ship_mode checks the ship's task again before it writes. A fired job
+# (DISPATCH_LABEL) carries the plist's mode, which a guarded dispatch wrote. Without helm here, the
+# caller's DISPATCH_MODE or `default` is its mode: the refusal fails closed.
+if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -z "${DISPATCH_LABEL:-}" ] && [ -n "$mode" ] && { [ "$mode_given" = 1 ] || [ "$yolo" = 1 ]; }; then
+  why=$(python3 - "$core" "$mode" "$branch" "$repo" <<'PY' 2>/dev/null
+import os, sys
+sys.path.insert(0, sys.argv[1])
+rank = {"ask": 0, "default": 1, "dnd": 2, "yolo": 3}
+try:
+    import common
+    p = common.tool("helmlib.py")
+    sys.path.insert(0, str(p.parent))
+    import helmlib
+    old = helmlib.branch_mode(sys.argv[3], sys.argv[4])[0] or helmlib.run_mode()[0]
+    print(helmlib.raise_refusal(old, sys.argv[2]) or "")
+except Exception:
+    old = os.environ.get("DISPATCH_MODE") or "default"
+    if rank.get(sys.argv[2], 0) > rank.get(old, 1):
+        print("mode %s over %s is a raise, and only the owner raises a mode (an unattended caller; helm unreadable here)" % (sys.argv[2], old))
+PY
+) || why="the mode's raise check failed"
+  [ -z "$why" ] || { echo "dispatch: $why" >&2; exit 2; }
+fi
+# Where a run goes when nobody names a host (the owner, 2026-10-13: "dispatch to [the build Mac] by
+# default, not the laptop"): berth's pick (`--on auto`, skipper-modes S6b), and this Mac only when the
+# pick does not answer (--fallback here). `--on here` keeps it here. Not for what runs here by nature: a
+# fired job (DISPATCH_LABEL), --start's caller, a probe, a bare clock time (ambiguous across hosts), a
+# --yolo build (its launch needs autofinish armed, and the build Mac stays disarmed), and the --next of
+# an unattended run here: dispatch-rc after() makes the next step wait for this run's last turn only on
+# one host (review 2026-10-13). A probe and a dry run take the default too, so they test the host the
+# real call would use. --cancel looks on both (below).
+# DISPATCH_DEFAULT_ON names the host (`auto`, the default: berth's pick); empty turns the default off
+# (the tests). When berth cannot run, and for a cancel, the default is DISPATCH_BERTH_FALLBACK, else the
+# dispatch host (above). A host the ssh key gives no alias for cannot be reached: one stderr line, and
+# the run stays here, as with none.
+# --on auto (header): berth's pick, into on/fallback, or a refusal. A berth that cannot run at all (no
+# core, a crash) keeps the default before S6b — the dispatch host, falling back here.
+berth_pick() {
+  local out rc
+  out=$(python3 "$here/bin/berth" "$repo" --json $([ "$dry" = 1 ] && echo --no-log) 2>/dev/null); rc=$?
+  if [ "$rc" = 3 ]; then
+    echo "dispatch: no berth for $repo — $(printf '%s' "$out" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("reason", "?"))' 2>/dev/null)" >&2; exit 2
+  fi
+  if [ "$rc" != 0 ]; then
+    on="${DISPATCH_BERTH_FALLBACK-$dispatch_host}"; [ "$(lc "$on")" = "$(lc "$self_host")" ] && on=""; [ -n "$on" ] && fallback=here
+    [ -n "${DISPATCH_BERTH_FALLBACK+x}" ] || [ -z "$on" ] || [ -z "$dh_note" ] || echo "$dh_note" >&2
+    if [ -n "$on" ] && ! peer_of "$on"; then   # as the dispatch-host default always did: here, never a refusal
+      echo "dispatch: the dispatch host $on has no line in wharf-runs/ssh (<host>:<ssh alias>) — running here" >&2
+      on=""; fallback=""
+    fi
+    echo "dispatch: berth failed (exit $rc); the default before it: ${on:-here}" >&2; return 0
+  fi
+  local pick here_ok
+  read -r pick here_ok < <(printf '%s' "$out" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d.get("pick") or "-", "1" if sys.argv[1] in (d.get("candidates") or []) else "0")' "$self_host")
+  echo "dispatch: berth — $pick ($(printf '%s' "$out" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("reason", ""))' 2>/dev/null))" >&2
+  if [ "$(lc "$pick")" = "$(lc "$self_host")" ]; then on=""; on_here=1
+  else on="$pick"; [ "$here_ok" = 1 ] && fallback=here; fi
+}
+default_on="${DISPATCH_DEFAULT_ON-auto}"; dpeer=""
+if [ -z "$on" ] && [ "$on_here" = 0 ] && [ "$on_auto" = 0 ] && [ -n "$default_on" ] && [ "$(lc "$self_host")" != "$(lc "$default_on")" ] \
+   && [ -z "${DISPATCH_LABEL:-}" ] && [ "$start$yolo" = 00 ] \
+   && ! { [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ]; }; then
+  case "$at" in
+    # a cancel looks on auto's peer, never on this Mac itself: from that peer it would ssh to itself
+    ''|reset*|@*) if [ "$cancel" = 1 ]; then
+                    [ "$default_on" = auto ] && [ "$(lc "$self_host")" = "$(lc "${DISPATCH_BERTH_FALLBACK-$dispatch_host}")" ] || on_default=1
+                  elif [ "$default_on" = auto ]; then on_auto=1; on_default=1
+                  else on="$default_on"; fallback=here; on_default=1; fi;;
+  esac
+fi
+# a cancel looks on the default's peer: berth's first peer has no meaning without a run to place
+[ "$default_on" = auto ] && default_on="${DISPATCH_BERTH_FALLBACK-$dispatch_host}"
+if [ "$on_default" = 1 ] && [ -z "$on" ] && [ -n "$default_on" ]; then
+  if peer_of "$default_on"; then dpeer="$peer"; default_on="$pname"
+  elif [ "$cancel" = 1 ]; then
+    echo "dispatch: the dispatch host $default_on has no line in wharf-runs/ssh (<host>:<ssh alias>) — looking here only" >&2
+  fi
+fi
+if [ "$on_default" = 1 ] && [ -n "$on" ]; then
+  if ! peer_of "$on"; then
+    echo "dispatch: the dispatch host $on has no line in wharf-runs/ssh (<host>:<ssh alias>) — running here" >&2
+    on=""; fallback=""; on_default=0
+  else
+    [ -n "${DISPATCH_DEFAULT_ON+x}" ] || [ -z "$dh_note" ] || echo "$dh_note" >&2
+    dpeer="$peer"
+  fi
+fi
+[ "$on_auto" = 1 ] && [ "$cancel" = 0 ] && berth_pick
+# a named host: one the ssh key names (its spelling from here on), else refused, naming those it holds
+if [ -n "$on" ]; then peer_of "$on" || unknown_host "$on"; on="$pname"; fi
+# --on with no --at: now, on the peer — the margin a direct run takes here (below)
+[ -z "$on" ] || [ -n "$at" ] || [ "$cancel$next" != 00 ] || { at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} ))"; at_default=1; }
+[ "$yolo$probe" != 11 ] || { echo "dispatch: --yolo is a seeded run's, not a probe's" >&2; exit 2; }
+ACCT="${DISPATCH_ACCOUNT:-${p_account:-$here/bin/account}}"   # the tests stand one in; lighthouse's
+[ "$force" = 0 ] || case "$account" in ''|auto|bound) echo "dispatch: --force goes with --account LABEL" >&2; exit 2;; esac
+[ -z "$fallback" ] || [ -n "$on" ] || { echo "dispatch: --fallback goes with --on" >&2; exit 2; }
+[ -z "$fallback" ] || [ "$cancel" = 0 ] || { echo "dispatch: --fallback is not for --cancel: cancel on each host" >&2; exit 2; }
+# How deep in a chain of unattended runs this one is: launchd hands the fired run its depth in the
+# plist (DISPATCH_LABEL set); anything else — a person, a session, a run's own session — is one
+# deeper than its own environment says (a person's shell has none: 0).
+case "${DISPATCH_DEPTH:-}" in ''|*[!0-9]*) d0=0;; *) d0=$DISPATCH_DEPTH;; esac
+if [ -n "${DISPATCH_LABEL:-}" ]; then depth=$(( d0 > 0 ? d0 : 1 )); else depth=$((d0 + 1)); fi
+maxdepth=${DISPATCH_MAX_DEPTH:-5}
+# skipper-modes S1: the run's mode at fire time (header, --mode): plan.json's task, then its ship (both on
+# this Mac only), the plist's DISPATCH_MODE a hint, the repo's scope, `default` — helmlib.task_mode, the
+# one reader. Without helm here, the hint or `default`. Into the session's environment and the record.
+resolve_mode() {
+  local out
+  out=$(python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+p = common.tool("helmlib.py")
+if not p:
+    print(sys.argv[5] or "default"); sys.exit()
+sys.path.insert(0, str(p.parent))
+import helmlib
+print(helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None)[0])
+PY
+) || out=""
+  mode="${out:-${mode:-default}}"
+  # plan.json wins both ways: a yolo hint changed to dnd is no yolo run, a mode changed to yolo is one
+  if [ "$mode" = yolo ]; then yolo=1; else yolo=0; fi
+  chain+=(DISPATCH_MODE="$mode")
+  echo "== mode $mode"
+}
+# Refusals say what to do instead. `pickup next` is the hand-over only in a repo dispatch refuses
+# (D1, 2026-10-05); here the step ends naming what it waits on (the overlay's working rules).
+deep() { echo "dispatch: this would be run $depth of a chain of unattended runs, each started by the one before (DISPATCH_DEPTH); past $maxdepth a person starts the next — end with the WAITING line: the next step waits for $who to start it (dispatch --next by hand starts a new chain)"; }
+# the repo is in the label (two repos may seed one topic); a probe has its own, so it cannot cancel the real job
+# (the prefix: `wharf-runs/label-prefix`, read above; the overlay's jobs carry the one it names)
+base="$lprefix.dispatch.$(basename "$repo").$topic"
+[ "$probe" = 1 ] && base="$base.probe"
+old="$lprefix.run-seed.${base#"$lprefix".dispatch.}"   # the label before 2026-10-05
+# A peer runs its own core (the scrub's conventions): the regatta checkout its config dir's `home`
+# file names, read there by the peer's shell. Its projects folder is taken as ~/projects, the core's
+# default (PROJECTS): a repo is named relative to this Mac's projects folder, the primary by its
+# checkout's basename.
+rbin='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
+LC="${DISPATCH_LAUNCHCTL:-launchctl}"
+LA="$HOME/Library/LaunchAgents"
+# this branch's jobs here: one per fire minute, the undated label of before 2026-10-04, and both
+# under the old name, so --cancel and a reschedule still find a job run-seed scheduled
+jobs() { local b; for b in "$base" "$old"; do ls "$LA/$b.plist" "$LA/$b".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].plist 2>/dev/null; done; }
+# a job whose run is going now; booting it out kills that run (probed: one tab, then this line)
+running() { "$LC" print "gui/$(id -u)/$1" 2>/dev/null | grep -qx $'\tstate = running'; }
+# every job of the branch but one that is running: pending, or a leftover of a run that died
+clear_jobs() {   # KEEP-PLIST VERB
+  local p l
+  while read -r p; do
+    [ -n "$p" ] && [ "$p" != "$1" ] || continue
+    l=$(basename "$p" .plist)
+    if running "$l"; then echo "left $l: its run is going (maybe this very one) — a run is ended, not unscheduled; dispatch --status"
+    else rm -f "$p"; "$LC" bootout "gui/$(id -u)/$l" 2>/dev/null; echo "$2 $l"; fi
+  done < <(jobs)
+}
+# fixed when scheduled and handed to the fired run in the plist: a run next Sunday logs where
+# the scheduling line said it would, not to a file dated by the day it fires
+log="${DISPATCH_LOG:-$HOME/Library/Logs/claude-weekly/$(date +%Y-%m-%d)-dispatch-$topic.log}"
+
+if [ "$cancel" = 1 ]; then
+  if [ -n "$on" ]; then
+    rel=""; [ "$repo" != "$primary" ] && rel=" --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")"
+    exec ${DISPATCH_SSH:-ssh} "$peer" "$rbin $(printf '%q' "$branch") --cancel$rel"
+  fi
+  out=$(clear_jobs "" cancelled); echo "${out:-nothing scheduled for $branch here}"
+  if [ "$on_default" = 1 ] && [ -n "$dpeer" ]; then   # a default run may sit on the peer: look there too, unreachable or not
+    rel=""; [ "$repo" != "$primary" ] && rel=" --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")"
+    ${DISPATCH_SSH:-ssh} -o ConnectTimeout=10 -o BatchMode=yes "$dpeer" "$rbin $(printf '%q' "$branch") --cancel$rel"
+    case $? in
+      0) ;;
+      255) echo "dispatch: $default_on did not answer — a job scheduled there stays (dispatch $branch --cancel --on $default_on later)" >&2;;
+      *) echo "dispatch: $default_on could not look (no such repo there?) — nothing of this branch can be scheduled there" >&2;;
+    esac
+  fi
+  exit 0
+fi
+
+# never a repo that acts on the real world: auto mode approves what nobody is there to see. /later
+# says the same; this makes it hold for a direct call too (review of 2026-10-04). The contract's
+# `physical:` line is the marker: none in a repo of code and records; a sweep in one that drives a house.
+physical_ok() {
+  phys=$(grep -h -m1 -E '^- physical:' "$repo/AGENTS.md" "$repo/CLAUDE.md" 2>/dev/null | head -1)
+  case "$phys" in "- physical: none"*) return 0;; esac
+  echo "dispatch: $repo's contract must say \`physical: none\` (it says: ${phys:-nothing})"; return 1
+}
+
+# session-asks R1 (docs/session-asks-2026-10-09.md): who a run relays its asks to. A run started by
+# another run keeps that run's manager; a run a watched session starts names that session. Read
+# where the job is scheduled — launchd and the runner strip the caller's CLAUDE_* — and carried in
+# the plist beside DISPATCH_DEPTH. An unattended caller with no manager (autofinish) passes none.
+# A login as one word both sides agree on: the config dir's real path (the default login's is
+# ~/.claude). `account which` printed nothing for the default dir while the run's pick said
+# the primary login, so one account read as two and SendMessage refused (launch review, finding 6).
+acct_dir() {
+  local d="${1:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+  (cd "$d" 2>/dev/null && pwd -P) || printf '%s\n' "$d"
+}
+# The skipper's road and its ship (rename S5, helm-vocabulary H1): read under the new name, else the
+# old one (a launchd plist or a run from before S5 has only the old), and written under both until S8.
+# SKIPPER_ENV pairs each value with its names, new first.
+SKIPPER_ENV="mgr:DISPATCH_SKIPPER mgr:DISPATCH_MANAGER macct:DISPATCH_SKIPPER_ACCOUNT macct:DISPATCH_MANAGER_ACCOUNT mplan:DISPATCH_SHIP mplan:DISPATCH_PLAN mspace:DISPATCH_PLAN_SPACE mhost:DISPATCH_SKIPPER_HOST mhost:DISPATCH_MANAGER_HOST"
+SKIPPER_UNSET=(-u DISPATCH_SKIPPER -u DISPATCH_MANAGER -u DISPATCH_SKIPPER_ACCOUNT -u DISPATCH_MANAGER_ACCOUNT -u DISPATCH_SHIP -u DISPATCH_PLAN -u DISPATCH_PLAN_SPACE -u DISPATCH_SKIPPER_HOST -u DISPATCH_MANAGER_HOST)
+manager_env() {
+  mgr="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; macct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"
+  mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
+  mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
+  if [ -z "$mgr" ] && [ -z "${CLAUDE_UNATTENDED:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir)
+    # where the manager runs: bin/ask reads "no record here" as an ended manager only on its own Mac
+    mhost="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
+  fi
+  [ -n "$mgr" ] || return 0
+  [ -n "$mplan" ] || mplan="$mgr"   # one ship per skipper by default (bin/helm ship)
+  # the plan's page, when the manager published one: the Talk address (R4)
+  [ -n "$mspace" ] || mspace=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("space") or "")' \
+    "${PLANS_DIR:-$HOME/Library/Logs/claude-weekly/plans}/$mplan/plan.json" 2>/dev/null) || mspace=""
+}
+mgr=""; macct=""; mplan=""; mspace=""; mhost=""
+# what pickup reads to tell a seed already sent off from one never started (`seeds --open` at /finish
+# would dispatch it a second time: a run on the peer opens its WIP PR only at its first push — review
+# 2026-10-13): <common git dir>/claude/dispatched/<topic>, "<epoch> <host> <branch>"
+mark_dispatched() {   # HOST
+  local d; d="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/claude/dispatched"
+  mkdir -p "$d" 2>/dev/null && printf '%s %s %s\n' "$(date +%s)" "$1" "$branch" > "$d/$topic" 2>/dev/null
+  return 0
+}
+
+if [ "$next" = 1 ]; then
+  [ -z "$at" ] && [ "$probe$dry$cancel" = 000 ] || { echo "dispatch: --next schedules now + 90 s, on the dispatch host unless --on here: no --at, --probe, --dry-run or --cancel" >&2; exit 2; }
+  case "$branch" in claude/*) ;; *) echo "dispatch: --next takes a claude/* branch, not $branch" >&2; exit 2;; esac
+  # A run that is a block of a ship has its successor in the blueprint's graph, and `wharf apply` — the
+  # tick or the skipper — starts it, gates and all (wharf-on-orca S5, B9): a second scheduler here would
+  # start it twice. `wharf next` decides from the caller's own DISPATCH_SHIP or DISPATCH_PLAN, and DISPATCH_TASK; reads the
+  # file and the plan only (never the Orca app), and says 1 for "not a ship's block" and 2 for "could not
+  # tell": that one stops here, so a broken check is never read as a seed.
+  nerr=$(mktemp); ship=$(python3 "$here/bin/wharf" next "$branch" --repo "$repo" 2>"$nerr"); nrc=$?
+  case $nrc in
+    0) rm -f "$nerr"; echo "dispatch: $ship"; exit 0;;
+    1) rm -f "$nerr";;
+    *) echo "dispatch: wharf next could not tell whether $branch is a ship's block — $(tail -n 3 "$nerr" | tr '\n' ' ')" >&2; rm -f "$nerr"; exit 2;;
+  esac
+  physical_ok >&2 || exit 2
+  git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || { echo "dispatch: no local $branch in $repo" >&2; exit 2; }
+  [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
+  # the run reads the latest brief; one older than the branch's work is the brief THIS step started from
+  brief=$(git -C "$repo" ls-tree -r --name-only "refs/heads/$branch" -- docs/handoff | grep -E -- "$brief_re" | sort | tail -1)
+  [ -n "$brief" ] || { echo "dispatch: $branch has no committed docs/handoff/<date>-$topic.md — write the next step's brief there and commit it" >&2; exit 2; }
+  # A run that commits nothing could --next itself on its own brief forever (review of 2026-10-05).
+  # Its session carries the blob of the brief it started from; the next step needs a new one.
+  if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -n "${DISPATCH_BRIEF:-}" ] \
+     && [ "$(git -C "$repo" rev-parse "refs/heads/$branch:$brief" 2>/dev/null)" = "$DISPATCH_BRIEF" ]; then
+    echo "dispatch: $brief is the brief this run started from, unchanged — a --next would run the same step again. Write the next step's brief (a new docs/handoff/<date>-$topic.md), or end with what is left for $who" >&2; exit 2
+  fi
+  # the cap is the host's that runs it: the peer applies its own at fire time (its 10)
+  n=0; [ -n "$on" ] || n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
+  [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already (dispatch --status; warm or waiting ones not counted) — refused, not queued: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
+  [ -n "$on" ] || why=$(roomy) || { echo "dispatch: $why — refused, not queued: end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
+  since=$(git -C "$repo" diff --name-only "$(git -C "$repo" log -1 --format=%H "refs/heads/$branch" -- "$brief")" "refs/heads/$branch" -- . ':!docs/handoff' | head -3)
+  [ -z "$since" ] || { echo "dispatch: work was committed after $brief (${since//$'\n'/, }) — it is the brief this step started from; write the next step's brief there last and commit it" >&2; exit 2; }
+  # the run reuses .claude/worktrees/<topic> when it is on the branch; git refuses a second checkout of it elsewhere
+  wt=$(git -C "$repo" worktree list --porcelain | awk -v b="branch refs/heads/$branch" '/^worktree /{w=substr($0,10)} $0==b{print w}')
+  if [ -n "$wt" ]; then
+    [ "$(cd "$wt" && pwd -P)" = "$(cd "$repo" && pwd -P)/.claude/worktrees/$topic" ] \
+      || { echo "dispatch: $branch is checked out at $wt; the run needs it at $repo/.claude/worktrees/$topic" >&2; exit 2; }
+    [ -z "$(git -C "$wt" status --porcelain)" ] || { echo "dispatch: $wt has uncommitted changes — commit them first; the run would stop on them" >&2; exit 2; }
+    owner="$(git -C "$wt" rev-parse --absolute-git-dir)/claude/owner.json"
+    held=$(python3 -c '
+import json, sys, time
+try:
+    o = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit()
+if o.get("session") == sys.argv[2] and o.get("handover"):
+    print("handed")   # this session ran pickup next: a tab owns the next step already
+elif o.get("session") == sys.argv[2]:
+    print("mine")
+elif o.get("handover"):   # pickup next marked it (96f3c9d): checkpoint.py holds nobody out on it
+    pass
+elif time.time() - o.get("seen", 0) < 2 * 3600:   # checkpoint.py OWNER_TTL
+    print("held by session " + str(o.get("session"))[:8])
+' "$owner" "${CLAUDE_CODE_SESSION_ID:-}")
+    case "$held" in handed) echo "dispatch: this session handed the worktree to a tab (pickup next) — one hand-over per step" >&2; exit 2;; esac
+    case "$held" in held*) echo "dispatch: $wt is $held — it must end (or idle 2 h) before the next step can write there" >&2; exit 2;; esac
+  fi
+  git -C "$repo" push -q -u origin "refs/heads/$branch:refs/heads/$branch" 2>&1 || { echo "dispatch: push of $branch failed" >&2; exit 1; }
+  if [ "${held:-}" = mine ]; then rm -f "$owner"; echo "freed this session's lock on $wt"; fi
+  # checkpoint.py re-takes the lock at this session's next write there
+  [ -n "$wt" ] && case "$(pwd -P)/" in "$(cd "$wt" && pwd -P)/"*)
+    echo "⚠ this shell is inside $wt: leave it now (ExitWorktree, keep) and write nothing more there — the next step owns it";; esac
+  at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} ))"
+  # the next step stays on this session's account unless told otherwise (E5); a bound run's stays bound.
+  # On the peer, `auto` picks there at fire time: this session's login may not be set up on it.
+  [ -n "$account" ] || [ "${DISPATCH_PIN:-}" != bound ] || account=bound
+  [ -n "$account" ] || [ -n "$on" ] || account=$("$ACCT" which 2>/dev/null) || account=""
+  size0=0; [ -f "$log" ] && size0=$(wc -c < "$log")   # `wc -c < missing` errs before 2>/dev/null applies
+fi
+
+# --next: the run's own header in the log, then still going 20 s later (no FAILED, no exit line).
+# Only the bytes written after scheduling count: the log is per day and topic, and may hold an
+# earlier run.
+# A step sent to the peer is confirmed from the peer's log (rlog, a path under its own $HOME), over ssh.
+logread() {
+  if [ -n "${rlog:-}" ]; then ${DISPATCH_SSH:-ssh} -o ConnectTimeout=10 -o BatchMode=yes "$peer" "tail -c +$((size0 + 1)) $rlog 2>/dev/null"
+  else tail -c +"$((size0 + 1))" "$log" 2>/dev/null; fi
+}
+confirm() {
+  # wall time, not summed sleeps: on the peer each poll is an ssh round trip too (review 2026-10-13)
+  local t0=$SECONDS waited=0 limit=${DISPATCH_NEXT_WAIT:-$(( ${DISPATCH_NEXT_DELAY:-90} + 90 ))} new where=""
+  [ -n "${rlog:-}" ] && where=" on $on"
+  while :; do
+    new=$(logread)
+    printf '%s\n' "$new" | grep -qF "dispatch $branch (" && break
+    [ "$waited" -ge "$limit" ] && { echo "dispatch: NOT STARTED$where — no run header in ${rlog:-$log} after ${waited} s; ${rlog:+ssh $peer }launchctl list | grep $base" >&2; return 1; }
+    sleep 5; waited=$((SECONDS - t0))
+  done
+  sleep "${DISPATCH_NEXT_SETTLE:-20}"
+  new=$(logread)
+  if printf '%s\n' "$new" | grep -qE '^(FAILED|== exit)'; then
+    echo "dispatch: the run started and already ended$where — ${rlog:-$log}:" >&2; printf '%s\n' "$new" | tail -5 >&2; return 1
+  fi
+  if printf '%s\n' "$new" | grep -qF "waiting for the run of $topic"; then
+    echo "queued$where: the next run of $branch ($model $effort) waits for this run to end — end your turn now; log ${rlog:-$log}"
+  elif [ "$headless" = 1 ]; then echo "started$where: claude -p is running $branch ($model $effort); log ${rlog:-$log}"
+  else echo "started$where: claude is running $branch ($model $effort) in screen run-$(basename "$repo")-$topic; ${rlog:+ssh $peer }dispatch --status; log ${rlog:-$log}"; fi
+  [ "$yolo" = 1 ] && echo "  --yolo: the launch starts from this run once it ends; the log says whether"
+  return 0
+}
+
+# A direct run goes through launchd (header), --next's margin out: launchd's calendar has minutes,
+# so "+60 s" fired anywhere from 0 to 60 s later, and a fire minute already begun never fires.
+direct=0
+if [ -z "$at" ] && [ "$cancel" = 0 ] && [ -z "${DISPATCH_LABEL:-}" ] && [ "$dry" = 0 ] && [ "$start" = 0 ]; then
+  at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} ))"; direct=1
+  echo "dispatch: through launchd, in about $(( ${DISPATCH_NEXT_DELAY:-90} / 60 + 1 )) min — run here, it would die with this shell" >&2
+fi
+
+# skipper-modes S1: `dispatch --mode` into the ship's plan.json task (helm mode's write), when the ship is
+# on this Mac — plan.json is the authority every reader reads at its decision. A ship elsewhere, or none,
+# keeps DISPATCH_MODE alone (the hint). Never fails the schedule.
+ship_mode() {
+  [ "$mode_given" = 1 ] && [ -n "$mplan" ] && [ "$dry" = 0 ] || return 0
+  # an unattended raise of the ship's own task is refused here too (exit 3, the reason on stdout): the
+  # early check read the branch, and the ship's task may name another (landing review 5)
+  python3 - "$core" "$mplan" "$topic" "$mode" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+p = common.tool("helmlib.py")
+if p:
+    sys.path.insert(0, str(p.parent))
+    import helmlib
+    pid, task, mode = sys.argv[2:5]
+    with helmlib.locked(pid):
+        plan = helmlib.load_plan(pid)
+        if plan is not None:
+            t = (plan.get("tasks") or {}).get(task) or {}
+            old = t.get("mode") if t.get("mode") in helmlib.MODES else helmlib.task_mode(pid, task)[0]
+            why = helmlib.raise_refusal(old, mode)
+            if why:
+                print("dispatch: " + why)
+                sys.exit(3)
+            plan.setdefault("tasks", {}).setdefault(task, {})["mode"] = mode
+            helmlib.save_plan(plan)
+            print("mode %s written to ship %s, task %s" % (mode, pid, task))
+PY
+  [ "$?" = 3 ] && return 3
+  return 0
+}
+if [ -n "$at" ]; then
+  [ "$probe" = 1 ] || manager_env
+  [ "$probe" = 1 ] || ship_mode >&2 || exit 2
+  [ "$probe" = 1 ] || [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
+  [ -n "$on" ] || physical_ok >&2 || exit 2   # with --on, the peer's dispatch checks its own copy
+  # fail now, not at fire time after the job has removed itself
+  git -C "$repo" ls-remote --exit-code origin "$branch" >/dev/null 2>&1 || { echo "dispatch: $branch is not on origin" >&2; exit 1; }
+  # bound: the pick is made at fire time, but a primary already out of room this week is said now,
+  # not in a log after the caller reported the run as started (review 2026-10-10); --at reset waits for it
+  if [ "$account" = bound ]; then case "$at" in reset*) ;; *)
+    bout=$("$ACCT" pick --bound --repo "$repo" --json --cached 2>&1)
+    [ $? != 3 ] || { echo "dispatch: --account bound: the primary has no room now ($(printf '%s' "$bout" | tr '\n' ' ' | cut -c1-200)); $([ "$next" = 1 ] && echo "end with the WAITING line naming its weekly reset" || echo "--at reset waits for its weekly reset")" >&2; exit 1; };;
+  esac; fi
+  case "$at" in
+    reset|reset+*)
+      # tier_check.weekly() is the one reader of the plan's resets_at (it rolls a stale cache forward)
+      case "$account" in
+        ''|auto|bound) epoch=$(python3 -c '   # bound: the primary is the default dir, ~/.claude.json
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import common
+from importlib.machinery import SourceFileLoader
+tc = common.tool("tier_check.py")   # plumb (M7): without it the reset is unknown here
+if not tc:
+    sys.exit(1)
+tier_check = SourceFileLoader("tier_check", str(tc)).load_module()
+w = tier_check.weekly(json.load(open(os.path.expanduser("~/.claude.json"))))
+if not w or not w[2]:
+    sys.exit(1)
+print(int(w[2]) + int((sys.argv[2] or "+10").lstrip("+")) * 60)
+' "$core" "${at#reset}") || { echo "dispatch: the weekly reset time is unknown here; give --at a time" >&2; exit 1; };;
+        *) # a named account: its own week, from its last probe here (E5)
+           epoch=$("$ACCT" limits "$account" --cached --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    rows = None
+r = (rows[0].get("limits") or {}).get("seven_day_resets") if rows else None
+if not r:
+    sys.exit(1)
+print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
+' "${at#reset}") || { echo "dispatch: $account's weekly reset is unknown here (account limits $account probes it); give --at a time" >&2; exit 1; };;
+      esac
+      at="@$epoch";;
+  esac
+  if [ -n "$on" ]; then
+    case "$at" in @*) ;; *) echo "dispatch: --on needs reset or @EPOCH (a bare clock time is ambiguous across hosts)" >&2; exit 2;; esac
+    # a defaulted "now": taken again here, after the push and the checks, so the peer's fire minute
+    # has not begun by the time it schedules (review 2026-10-13); a little more margin for the ssh
+    [ "$at_default" = 1 ] || [ "$next" = 1 ] && at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} + 15 ))"
+    # the peer's checkout of this repo; its own clock turns the epoch into its local time
+    # the peer adds one to the depth, as this script would
+    menv=""; for v in $SKIPPER_ENV; do
+      val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && menv="$menv ${v#*:}=$(printf '%q' "$val")"
+    done
+    cmd="${menv# }${menv:+ }DISPATCH_DEPTH=$d0 $rbin $(printf '%q' "$branch") --at $at --model $(printf '%q' "$model") --effort $(printf '%q' "$effort")"
+    # another repo: its path under the projects folder, whose home differs per host (one login name each)
+    [ "$repo" != "$primary" ] && case "$repo" in "$projects/"*) cmd="$cmd --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")";; *) echo "dispatch: --on needs a repo under $projects" >&2; exit 2;; esac
+    echo "scheduling on $on for epoch ${at#@} ($(date -r "${at#@}" '+%F %H:%M %Z') on this Mac)" >&2
+    [ -n "$note" ] && cmd="$cmd --note $(printf '%q' "$note")"
+    [ "$probe" = 1 ] && cmd="$cmd --probe"
+    [ "$headless" = 1 ] && cmd="$cmd --headless"
+    [ "$yolo" = 1 ] && cmd="$cmd --yolo"
+    [ "$ifroom" = 1 ] && cmd="$cmd --if-room"
+    [ -n "$mode" ] && [ "$mode" != yolo ] && cmd="$cmd --mode $mode"
+    [ -n "$bg" ] && cmd="$cmd --background $bg"
+    [ -n "$account" ] && cmd="$cmd --account $(printf '%q' "$account")"
+    [ "$force" = 1 ] && cmd="$cmd --force"
+    [ "$dry" = 1 ] && cmd="$cmd --dry-run"
+    # --next: its log named here, so the start can be confirmed from it (confirm, over ssh)
+    if [ "$next" = 1 ]; then
+      rlog="\$HOME/Library/Logs/claude-weekly/$(printf '%q' "$(date +%Y-%m-%d)-dispatch-$topic.log")"; cmd="DISPATCH_LOG=$rlog $cmd"
+    fi
+    # a peer whose dispatch predates bound would read it as a label and fail at fire time, unseen here
+    # (the peer runs its core's module: that file is the one read)
+    guard='grep -qs -- "pick --bound" "$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch" || { echo "dispatch on $(hostname -s) predates --account bound: pull its regatta main" >&2; exit 3; }; '
+    [ "$account" = bound ] || guard=""
+    remote=1
+    # the repo must be there too: one cloned only here (2026-10-13) falls back like an old peer, and so
+    # does a peer whose config dir names no core
+    rdir="\$HOME/projects/$(printf '%q' "$(basename "$primary")")"; [ "$repo" != "$primary" ] && rdir="\$HOME/projects/$(printf '%q' "${repo#"$projects"/}")"
+    if [ -n "$fallback" ]; then   # header, --fallback: probe, then the real call whose answer stands
+      ${DISPATCH_SSH:-ssh} -o ConnectTimeout=10 -o BatchMode=yes "$peer" "${guard}[ -x $rbin ] || { echo \"dispatch: no regatta core on \$(hostname -s)\" >&2; exit 3; }; [ -d $rdir ] || { echo \"dispatch: no $rdir on \$(hostname -s)\" >&2; exit 3; }"; rc=$?
+      case "$rc" in
+        0) ;;
+        255) echo "dispatch: $on is unreachable (ssh exit 255); scheduling it on this Mac instead (--fallback here)" >&2; remote=0;;
+        3) echo "dispatch: scheduling it on this Mac instead (--fallback here)" >&2; remote=0;;
+        *) echo "dispatch: the probe of $on failed (exit $rc); not scheduling" >&2; exit "$rc";;
+      esac
+    fi
+    if [ "$remote" = 1 ]; then
+      [ "$next" = 1 ] && size0=$(${DISPATCH_SSH:-ssh} "$peer" "[ -f $rlog ] && wc -c < $rlog || echo 0" 2>/dev/null | tr -dc 0-9)
+      size0=${size0:-0}
+      ${DISPATCH_SSH:-ssh} "$peer" "$guard$cmd"; rc=$?
+      # --next: scheduled is not started — the run's header in the peer's log, as here
+      [ "$rc" = 0 ] && [ "$dry$probe" = 00 ] && mark_dispatched "$on"
+      [ "$rc" = 0 ] && [ "$next" = 1 ] && { confirm || rc=1; }
+      # scheduled there: the session that asked is done here, and dispatch-rc tidy closes its Terminal
+      # window once it goes idle (hooks/common.py HANDOFFS; the owner, 2026-10-08). A dry run hands nothing off,
+      # nor a probe, nor a branch that is not the caller's own (/later takes any): its work stays here.
+      if [ "$rc" = 0 ] && [ "$dry" = 0 ] && [ "$probe" = 0 ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] \
+         && [ "$branch" = "$(git -C "$PWD" branch --show-current 2>/dev/null)" ] \
+         && [ "$(cd "$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" \
+              = "$(cd "$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" ]; then
+        python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; common.handed_off(*sys.argv[2:])' \
+          "$core" "$CLAUDE_CODE_SESSION_ID" "$on" dispatch "$branch" 2>/dev/null
+        # and closed about a minute after this turn ends, not at the next 10-minute tidy (the owner,
+        # 2026-10-13: "close the terminal window as soon as dispatch succeeds"); a run's own window
+        # goes by its watcher (dispatch-rc idle_limit), which reads the same record
+        python3 "$here/bin/dispatch-rc" tidy-soon >/dev/null 2>&1
+      fi
+      exit "$rc"
+    fi
+    # here, by this Mac's rules: the check the peer would have made, and a fire minute not yet begun
+    physical_ok >&2 || exit 2
+    rlog=""; on=""; direct=$at_default   # a defaulted "now" is a direct run: it replaces no /later job here
+    if [ "$next" = 1 ]; then   # the cap and the account --next would have taken here
+      n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
+      [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
+      why=$(roomy) || { echo "dispatch: $why here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
+      [ -n "$account" ] || account=$("$ACCT" which 2>/dev/null) || account=""
+      size0=0; [ -f "$log" ] && size0=$(wc -c < "$log")
+    fi
+    soon=$(( $(date +%s) + 90 )); [ "${at#@}" -ge "$soon" ] || at="@$soon"
+  fi
+  case "$at" in @*) at="$(date -r "${at#@}" '+%Y-%m-%d %H:%M')";; esac
+  # "YYYY-MM-DD HH:MM" -> the four keys launchd matches on
+  read -r d t <<<"$at"; IFS=- read -r yr mo dy <<<"$d"; IFS=: read -r hr mi <<<"$t"
+  [ -n "${mi:-}" ] || { echo "dispatch: --at wants \"YYYY-MM-DD HH:MM\"" >&2; exit 2; }
+  # launchd's calendar has no year: a time already past would sit loaded and fire next year
+  when=$(date -j -f '%Y-%m-%d %H:%M' "$at" +%s 2>/dev/null) && [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at is not in the future" >&2; exit 2; }
+  # …and one a year or more ahead would fire at the first match, meet the year guard and vanish
+  [ $((when - $(date +%s))) -lt 31536000 ] || { echo "dispatch: $at is a year or more ahead; launchd's calendar has no year" >&2; exit 2; }
+  # its own label: a job that has fired has a minute at or before now, this one's is after it
+  label="$base.$(date -r "$when" +%Y%m%d%H%M)"; plist="$LA/$label.plist"
+  args="<string>$jobbin</string><string>$branch</string><string>--repo</string><string>$repo</string><string>--model</string><string>$model</string><string>--effort</string><string>$effort</string>"
+  [ -n "$note" ] && args="$args<string>--note</string><string>$(printf '%s' "$note" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>"
+  [ "$probe" = 1 ] && args="$args<string>--probe</string>"
+  [ "$headless" = 1 ] && args="$args<string>--headless</string>"
+  [ "$yolo" = 1 ] && args="$args<string>--yolo</string>"
+  [ "$ifroom" = 1 ] && args="$args<string>--if-room</string>"
+  [ -n "$bg" ] && args="$args<string>--background</string><string>$bg</string>"
+  [ -n "$account" ] && args="$args<string>--account</string><string>$account</string>"
+  [ "$force" = 1 ] && args="$args<string>--force</string>"
+  # behind claude-host once this Mac's sitting is done (docs/tcc-one-identity-2026-10-18.md): a job
+  # that starts bash is charged to bash, and every third-party program it starts — the run's claude
+  # among them — to its own path, which for claude every update replaces
+  launch=$("$RCH" --launcher "$jobbin" 2>/dev/null) && args="<string>$launch</string>$args"
+  mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
+    local k v
+    for k in $SKIPPER_ENV; do
+      v="${k%%:*}"; v="${!v}"; [ -n "$v" ] && printf '<key>%s</key><string>%s</string>' "${k#*:}" "$(printf '%s' "$v" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+    done
+  }
+  xml="<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array>$args</array>
+  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string>${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
+  <key>StartCalendarInterval</key><dict><key>Month</key><integer>$((10#$mo))</integer><key>Day</key><integer>$((10#$dy))</integer><key>Hour</key><integer>$((10#$hr))</integer><key>Minute</key><integer>$((10#$mi))</integer></dict>
+  <key>StandardOutPath</key><string>$log</string>
+  <key>StandardErrorPath</key><string>$log</string>
+</dict></plist>"
+  if [ "$dry" = 1 ]; then echo "$xml"; exit 0; fi
+  mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
+  # one pending run per branch, as before — but a direct run leaves a pending /later job alone: it
+  # was scheduled on purpose, and replacing it unasked would lose it silently (re-review 2026-10-05)
+  if [ "$direct" = 1 ]; then
+    for p in $(jobs); do [ "$p" = "$plist" ] || echo "left $(basename "$p" .plist) scheduled: a direct run replaces no /later job (dispatch --cancel clears it)" >&2; done
+  else
+    clear_jobs "$plist" "replaced the pending" >&2
+  fi
+  printf '%s\n' "$xml" > "$plist"
+  "$LC" bootout "gui/$(id -u)/$label" 2>/dev/null
+  # bootout returns before the old job is gone (rc-hosts met "5: Input/output error" here): retry once
+  "$LC" bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "gui/$(id -u)" "$plist"; } || { rm -f "$plist"; echo "dispatch: launchctl bootstrap failed (plist removed)" >&2; exit 1; }
+  echo "scheduled $label for $at (host-local); log $log"
+  [ "$probe" = 1 ] || mark_dispatched "$self_host"
+  [ "$next" = 1 ] || exit 0
+  confirm; exit $?
+fi
+
+# From here on: the run itself (fired by launchd, or --dry-run).
+cache="$HOME/Library/Caches/run-seed"; lockd="$cache/start.lock"; held=""
+# plist first: bootout SIGTERMs this very script, and a plist left behind fires again next year.
+# Its own label only, never the branch's: a successor this run scheduled is another job.
+cleanup() {
+  drop_lock 2>/dev/null
+  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
+}
+trap cleanup EXIT
+# a job that survived a crash or reboot fires a year late: refuse it
+if [ -n "${DISPATCH_YEAR:-}" ] && [ "$DISPATCH_YEAR" != "$(date +%Y)" ]; then echo "dispatch: scheduled for $DISPATCH_YEAR, it is $(date +%Y); not running" >&2; exit 0; fi
+exec 3>&1   # --dry-run prints here, past the log redirect
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+mkdir -p "$(dirname "$log")" "$cache"
+# No `Bash(python3:*)` / `Bash(bash:*)`: an allow rule approves before the classifier looks, so an
+# interpreter wildcard would wave any wrapped command past it (review of 2026-10-04).
+tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
+       "Bash(ls:*)" "Bash(grep:*)" "Bash(date:*)" "Bash(wc:*)" "Bash(git status:*)" "Bash(git diff:*)"
+       "Bash(git log:*)" "Bash(git show:*)" "Bash(git add:*)" "Bash(git commit:*)")
+# a bound run is account work (hooks/design_route.py): it publishes Artifacts and shares them in Chrome
+[ "$account" = bound ] && tools+=(Artifact mcp__claude-in-chrome)
+# bin/pr (and wharf's libexec/pr, the no-overlay path /finish names) by its launch verbs only: `*bin/pr*` would also refuse /usr/bin/printf and `git log -- bin/pr`
+# AskUserQuestion: nobody watches a run, and in auto mode the classifier would answer it (R2 of
+# docs/session-asks-2026-10-09.md); the PreToolUse hook (hooks/ask_guard.py) is the guard, this the belt
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(python3 scripts/deploy.py:*)" AskUserQuestion)
+# --start's changes to both lists (bash 3.2: an empty array under set -u needs the ${a[@]+…} form)
+for t in ${extra_allow[@]+"${extra_allow[@]}"}; do
+  case " ${tools[*]} " in *" $t "*) ;; *) tools+=("$t");; esac
+done
+for t in ${undeny[@]+"${undeny[@]}"}; do
+  kept=(); hit=0
+  for d in "${denied[@]}"; do if [ "$d" = "$t" ]; then hit=1; else kept+=("$d"); fi; done
+  [ "$hit" = 1 ] || { echo "dispatch: --undeny $t: not on the denied list (${denied[*]})" >&2; exit 2; }
+  denied=(${kept[@]+"${kept[@]}"})
+done
+# The claude command, as words: through claude-host once this Mac's sitting is done (bin/rc-hosts
+# --launcher; docs/tcc-one-identity-2026-10-18.md). A run that outlives its job — autofinish-run's
+# detached /finish, a screen whose watcher died — would otherwise be charged to its own versioned
+# path, and claude-host makes itself responsible wherever it starts. The pid a run records is
+# still claude's own: pid_of_claude below.
+if [ -n "${DISPATCH_CLAUDE:-}" ]; then CL=("$DISPATCH_CLAUDE")
+elif hl=$("$RCH" --launcher claude 2>/dev/null); then CL=("$hl" claude)
+else CL=(claude); fi
+C="${CL[*]}"   # for the log lines
+# pid_of_claude PID FILE: through claude-host, the pid claude-host wrote to FILE (its
+# CLAUDE_HOST_PIDFILE) once it spawned claude, within 10 s; else PID. dispatch-rc reads
+# ~/.claude/sessions/<pid>.json, which only claude's own pid has; a child list read with pgrep
+# could catch the runner's short-lived `$(env | sed …)` subshell instead (review, 2026-10-18).
+# hpf_env FILE: the env word that asks claude-host for it, nothing when claude runs bare.
+# It only prints: a --dry-run prints the runner too and must remove nothing (run_rc and
+# run_headless clear a stale file first).
+hpf_env() { [ "${#CL[@]}" -gt 1 ] && printf '%s\n' "CLAUDE_HOST_PIDFILE=$1"; }
+pid_of_claude() {
+  local p=$1 f=$2 k=""
+  [ "${#CL[@]}" -gt 1 ] || { echo "$p"; return; }
+  for _ in $(seq 1 20); do [ -s "$f" ] && { read -r k < "$f"; break; }; sleep 0.5; done
+  rm -f "$f"
+  echo "${k:-$p}"
+}
+# -p ends with the reply and kills whatever still runs, so nothing may run in the background: the
+# switch turns off run_in_background for Bash and background agents alike (read in claude 2.1.289's
+# source, 2026-10-05). With it on, a call that times out is killed, not backgrounded, and the overlay's
+# test_checkpoint.sh alone took 465 s: 30 min as the default also lifts the 600 s cap (the cap is
+# max(600 s, BASH_MAX_TIMEOUT_MS or the default), same source).
+# Both modes take the switch by default (header, --background) and the 30-minute Bash default, so
+# the prompt's "one Bash call stops at 30 minutes" holds for both. `--background allow` lifts the
+# switch (the owner, 2026-10-05: "configurable, so we can test side by side").
+run_env() {   # headless|rc -> the session's variables in $renv; the choice goes to the log and $bgeff
+  bgeff="${bg:-deny}"
+  renv=(CLAUDE_UNATTENDED=dispatch BASH_DEFAULT_TIMEOUT_MS=1800000)
+  [ "$bgeff" = deny ] && renv+=(CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)
+  echo "== background $bgeff$([ -n "$bg" ] && echo " (--background)" || echo " (default for $1)")"
+}
+rname="$(basename "$repo")"
+runs="$HOME/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$runs"
+# what the session inherits from the run: the chain guards (header, "Limits")
+chain=(DISPATCH_DEPTH="$depth" DISPATCH_REPO="$repo")   # the repo: bin/helm report records it for the guard (K6)
+# a seeded run's manager (R1), from the plist; a --start run (autofinish) has none
+manager_chain() {
+  local v
+  [ "$start" = 0 ] || return 0
+  # a plan with no manager (wharf's tick from launchd seeds a ship's block): the session still
+  # reports to its plan, so its block ends; nothing to relay to
+  # the plist's values, read under either name (manager_env), passed on under both until S8
+  local mgr macct mplan mspace mhost
+  mgr="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"
+  if [ -z "$mgr" ]; then
+    [ -n "$mplan" ] && chain+=(DISPATCH_SHIP="$mplan" DISPATCH_PLAN="$mplan" DISPATCH_TASK="$topic")
+    return 0
+  fi
+  macct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
+  mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
+  for v in $SKIPPER_ENV; do
+    local val="${v%%:*}"; val="${!val}"
+    [ -n "$val" ] && chain+=("${v#*:}=$val")
+  done
+  # the run's login in the manager's vocabulary (acct_dir: pick_account has exported or unset
+  # CLAUDE_CONFIG_DIR by now)
+  chain+=(DISPATCH_TASK="$topic" ASK_ACCOUNT="$(acct_dir)")
+}
+max_s=$(awk -v h="${DISPATCH_MAX_H:-8}" 'BEGIN { printf "%d", h * 3600 }')
+
+# "How many runs are live, is this one's screen up -> its record written" in one piece: two runs
+# that fire in the same minute both passed the check before either recorded itself (review of
+# 2026-10-05). mkdir is atomic. The holder writes its pid inside; a lock whose holder is dead, or
+# one with no pid older than 2 min (a crash between mkdir and the write), is taken over. A waiter
+# waits 150 s, longer than that takeover age, so a lock is never given up on while it can still clear.
+# Nothing under the lock reaps orphans (that waits up to 20 s per run): the count runs with
+# reaping off, and the reaping after drop_lock.
+take_lock() {
+  local i h
+  for i in $(seq 1 300); do
+    if mkdir "$lockd" 2>/dev/null; then echo $$ > "$lockd/pid"; held=1; return 0; fi
+    h=$(cat "$lockd/pid" 2>/dev/null)
+    if { [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; } || { [ -z "$h" ] && [ -n "$(find "$lockd" -maxdepth 0 -mmin +2 2>/dev/null)" ]; }; then
+      [ "$(cat "$lockd/pid" 2>/dev/null)" = "$h" ] && { rm -f "$lockd/pid"; rmdir "$lockd" 2>/dev/null; }
+    fi
+    sleep 0.5
+  done
+  echo "FAILED: $lockd is held for 150 s (another run starting?); not running"; return 1
+}
+# only our own: a lock taken over meanwhile belongs to that run
+drop_lock() {
+  [ -n "$held" ] && [ "$(cat "$lockd/pid" 2>/dev/null)" = "$$" ] && { rm -f "$lockd/pid"; rmdir "$lockd" 2>/dev/null; }
+  held=""
+}
+# bin/pickup's running() compares exactly this: `ps -o lstart` in UTC
+pstart() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | xargs; }
+# one record per run, for --status and for dispatch-rc (which ends it and fills in the end);
+# the id is ours to give (--session-id), so the record and the transcript are found by it
+# The session id is in the name: a run that starts in the second its predecessor ended (--next's
+# usual case) wrote its record over the predecessor's (a test run of 2026-10-05, 1 in ~10).
+# --start's caller chose the id (its lock is written with it before the start)
+new_state() {
+  sid=${lsid:-$(uuidgen | tr 'A-Z' 'a-z')}
+  [ -n "$lresume" ] && [ "$lfork" = 0 ] && sid="$lresume"   # a plain --resume keeps its id
+  state="$runs/$(date +%Y%m%d-%H%M%S)-$rname.$topic.${sid:0:8}.json"
+  sess_args
+}
+# claude's words for the session, into $sargs: a fresh one under our id; --resume, the id kept; or a
+# fork, the one form in which claude takes a caller's id beside --resume (header, --start)
+sess_args() {
+  if [ -z "$lresume" ]; then sargs=(--session-id "$sid")
+  elif [ "$lfork" = 1 ]; then sargs=(--session-id "$sid" --resume "$lresume" --fork-session)
+  else sargs=(--resume "$lresume"); fi
+}
+# The record's chain fields, into $crec: the run's depth, model, effort, yolo, note and bound pin, the
+# brief it started from (path relative to the repo, as on every host, and blob; a --start run has
+# none) and its manager's id, plan, page, host and login — what a retry needs to start the same step
+# again under the same manager (orchestration B2, chain-manager E2).
+chain_record() {
+  local a
+  crec=(depth="$depth" model="$model" effort="$effort" yolo="$yolo")
+  [ -n "$mode" ] && [ "$start" = 0 ] && crec+=(task_mode="$mode")
+  [ -n "${brief:-}" ] && crec+=(brief="${brief#"$wt"/}")
+  [ -n "${note:-}" ] && crec+=(note="$note")
+  for a in ${chain[@]+"${chain[@]}"}; do
+    case "$a" in
+      # the run record keeps its keys (manager, plan…: read by stalls, the board, a re-dispatch);
+      # the chain holds each value under both names, so only the new one is read here
+      DISPATCH_SKIPPER=*) crec+=(manager="${a#*=}");; DISPATCH_SHIP=*) crec+=(plan="${a#*=}");;
+      DISPATCH_PLAN_SPACE=*) crec+=(plan_space="${a#*=}");; DISPATCH_SKIPPER_HOST=*) crec+=(manager_host="${a#*=}");;
+      DISPATCH_SKIPPER_ACCOUNT=*) crec+=(manager_account="${a#*=}");; DISPATCH_BRIEF=*) crec+=(brief_blob="${a#*=}");;
+      DISPATCH_PIN=*) crec+=(pin="${a#*=}");;
+    esac
+  done
+}
+# key=value words into the record; the numbers as numbers (they were all strings until 2026-10-11 —
+# dispatch-rc's typed() still reads those). INTS is dispatch-rc's list: change both together.
+record() { python3 -c '
+import json, sys
+INTS = ("pid", "started", "ended", "window", "watcher", "screen_pid", "idle", "depth", "probe", "yolo")
+st = dict(a.split("=", 1) for a in sys.argv[2:])
+st.update((k, int(v)) for k, v in list(st.items()) if k in INTS and v.isdecimal())
+json.dump(st, open(sys.argv[1], "w"), indent=1)' "$state" "$@"; }
+
+run_headless() {   # $prompt in $wt — with the start lock held; drops it once the run is recorded
+  new_state; run_env headless
+  # the plist's variables must not reach the session: its own dispatch calls would delete this job.
+  # CLAUDE_UNATTENDED reaches its hooks: checkpoint.py keeps the run read-only on live systems.
+  local hpf="$state.claude-pid" hw; rm -f "$hpf"; hw=($(hpf_env "$hpf"))
+  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
+  kpid=$!; cpid=$(pid_of_claude "$kpid" "$hpf"); chain_record
+  record mode=headless background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" started="$(date +%s)" log="$log" wt="$wt" \
+    watcher="$$" watcher_start="$(pstart $$)" "${crec[@]}"
+  drop_lock
+  # the maximum lifetime: a -p session has no idle to wait for, only an end
+  # (its sleep dies with it, and neither leaves a "Terminated" line in the log)
+  ( trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$max_s" & wait $!
+    kill -0 "$cpid" 2>/dev/null && { echo "$(date +%T) ending claude $cpid: still running after ${DISPATCH_MAX_H:-8} h (DISPATCH_MAX_H)"; kill -TERM "$cpid"; } ) 2>/dev/null & dog=$!
+  caffeinate -i -w "$kpid" & wait "$kpid"; rc=$?
+  # its sleep first: a TERM that reaches the watchdog after its trap is set but before its `wait`
+  # starts runs the trap only once that wait returns — bash 3.2 — so the watchdog, and this run,
+  # sat 8 h (two test runs of 2026-10-06, each a stub claude that exits at once)
+  pkill -TERM -P "$dog" sleep 2>/dev/null; kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+  # an end already recorded (dispatch --end) stays
+  python3 -c 'import json, sys, time; p = sys.argv[1]; s = json.load(open(p)); s.get("ended") or s.update(ended=int(time.time()), end_reason="exit " + sys.argv[2]); json.dump(s, open(p, "w"), indent=1)' "$state" "$rc"
+  # session-asks R2: an ask handed past a live manager is stored on the record, as dispatch-rc's
+  # finish() does for a visible run — a headless one never reaches finish()
+  python3 "$here/bin/dispatch-rc" ask-guard "$state" || true
+  echo "== exit $rc at $(date)"
+}
+
+machine() {   # $host, and $shown: the name as the config keys spell it (regatta/laptop, the dispatch host, the ssh peers)
+  local n
+  host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"; shown="$host"
+  for n in "$laptop" "$dispatch_host" ${peers}; do
+    n="${n%%:*}"; [ -n "$n" ] && [ "$(lc "$n")" = "$(lc "$host")" ] && { shown="$n"; return 0; }
+  done
+}
+# The runner: written out because screen takes one command line. It strips every CLAUDE* variable
+# a calling session would hand down (a child marker turns transcript saving off — probed
+# 2026-10-04) and the plist's, then becomes claude itself, so the pid it records is claude's.
+# CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN stay: they say which account runs it (bin/account).
+# The prompt goes first: --allowedTools/--disallowedTools take every word after them.
+runner_text() {   # PROMPT DIR REMOTE-CONTROL-NAME PIDFILE — with $sid set; claude-host writes claude's pid to PIDFILE.claude
+  echo '#!/bin/bash'
+  printf 'echo $$ $PPID > %q\n' "$4"   # claude (exec'd below) and its SCREEN master
+  echo 'for v in $(env | sed -n "s/^\(CLAUDE[A-Z_]*\)=.*/\1/p"); do case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN) ;; *) unset "$v";; esac; done'
+  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
+  printf 'cd %q || exit 1\n' "$2"
+  printf 'exec env'
+  local hw; hw=($(hpf_env "$4.claude"))
+  printf ' %q' "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" "$1" "${sargs[@]}" --remote-control "$3" --model "$model" --effort "$effort" \
+    --permission-mode auto -n "run-${3%% · *}" --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}"
+  echo
+}
+
+run_rc() {   # PROMPT DIR SCREEN [probe] — with the start lock held; drops it once the run is recorded
+  local scr="$3" name title
+  S="${DISPATCH_SCREEN:-/usr/bin/screen}"; export SCREENDIR="$cache/screen"
+  mkdir -p "$SCREENDIR"; chmod 700 "$SCREENDIR"   # screen refuses a socket directory others can read
+  # a socket left by a crash or reboot lists as "(Dead ???)" in this persistent SCREENDIR and read as
+  # a live run: wipe it, and never count a dead one
+  "$S" -wipe >/dev/null 2>&1
+  # screen -ls exits non-zero even when it lists sessions (4.00.03), which pipefail would pass on
+  if { "$S" -ls 2>/dev/null || :; } | grep -v 'Dead' | grep -qE "^[[:space:]]*[0-9]+\.$scr[[:space:]]"; then
+    drop_lock; echo "FAILED: a run of $topic in $rname is still going (SCREENDIR=$SCREENDIR screen -x $scr); not starting a second"; return 1
+  fi
+  machine
+  new_state; run_env rc
+  # Screen, runner, pid file, .command and title name the repo too: two repos may run one topic.
+  # The pid file is per run: two runs of a topic must never read each other's.
+  name="${scr#run-$rname-}"; [ "$start" = 1 ] && name="$lname"
+  title="run · $name · $rname"
+  runner="$cache/$scr.sh"; pidf="$cache/$scr.$sid.pid"
+  rm -f "$pidf.claude"   # claude-host's answer of an earlier run must not be read as this one's
+  runner_text "$1" "$2" "$name · $shown" "$pidf" > "$runner"
+  TERM=xterm-256color LANG="${LANG:-en_US.UTF-8}" "$S" -U -dmS "$scr" /bin/bash "$runner" || { drop_lock; echo "FAILED: screen did not start"; return 1; }
+  for _ in $(seq 1 20); do [ -s "$pidf" ] && break; sleep 0.5; done
+  [ -s "$pidf" ] || { drop_lock; "$S" -S "$scr" -X quit >/dev/null 2>&1; echo "FAILED: the run's screen started no claude ($runner); its screen quit"; return 1; }
+  read -r cpid spid < "$pidf"
+  cpid=$(pid_of_claude "$cpid" "$pidf.claude")   # the runner exec'd claude-host, whose child is claude
+  # A run with a caller of its own (--start: bin/autofinish-run's /finish) ends as soon as it is
+  # idle, as every run did before 2026-10-06: nobody picks a launch up again, so a warm cache buys
+  # nothing, and autofinish-run waits for this watcher to return — an hour of that would hold a
+  # detached waiter and one of DISPATCH_MAX_RUNS slots per launch, and the 10-minute sweep would
+  # start refusing. A seeded branch run keeps the hour (dispatch-rc's IDLE).
+  # A --yolo build ends idle too: its launch waits on this watcher, and nobody picks it up either.
+  local idle_for=""; { [ "$start" = 1 ] || [ "$yolo" = 1 ]; } && idle_for=600
+  chain_record
+  record mode=rc background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" \
+    started="$(date +%s)" log="$log" screen="$scr" screendir="$SCREENDIR" runner="$runner" rc_name="$name · $shown" \
+    title="$title" wt="$2" screen_pid="$spid" ${4:+probe=1} ${idle_for:+idle="$idle_for"} "${crec[@]}"
+  drop_lock
+  echo "== claude $cpid, session $sid, screen $scr, Remote Control \"$name · $shown\"; state $state"
+  # the window: the laptop only (regatta/laptop; the build Mac has nobody at its screen); a failure
+  # here never stops the run
+  if [ "$(lc "$host")" = "$(lc "$laptop")" ] && [ -x "${DISPATCH_YABAI:-/opt/homebrew/bin/yabai}" ]; then
+    python3 "$here/bin/dispatch-rc" window "$state"
+  fi
+  # stays until the session is done, keeping the Mac awake meanwhile; then ends it and logs the id
+  # no caffeinate here since 2026-10-06: the watcher holds one only while the session is busy
+  # (dispatch-rc's hold_awake), so the warm hour it now waits out does not keep the Mac awake
+  python3 "$here/bin/dispatch-rc" watch "$state"; local rc=$?
+  rm -f "$pidf"
+  return $rc
+}
+
+# An interactive session in an untrusted repo waits at the trust dialog for a person — trust is
+# per directory, ~/projects' does not reach ~/projects/x (probed 2026-10-04; a worktree takes its
+# repo's). Until 2026-10-13 the run went headless then; now it trusts the repo first and stays
+# visible (the owner, 2026-10-13: "always launch in a terminal, never headless" — and dispatch may accept
+# the dialog: bin/trust-projects, which writes what the dialog would). Read back; still untrusted
+# is FAILED, never -p. Trust is per config dir: the picked account's (E5), never only the default's.
+untrusted() { [ "$headless" = 0 ] && ! python3 "$here/bin/dispatch-rc" trusted "$repo" --config-dir "${CLAUDE_CONFIG_DIR:-}"; }
+ensure_trusted() {
+  untrusted || return 0
+  echo "== not trusted: $repo — trusting it (bin/trust-projects, ${CLAUDE_CONFIG_DIR:-the default login})"
+  ${DISPATCH_TRUST:-python3 ${p_trust:-$here/bin/trust-projects}} 2>&1 | tail -3
+  untrusted || return 0
+  echo "FAILED: $repo is still not trusted after bin/trust-projects; not running (no headless fallback)"; return 1
+}
+
+# The account, at fire time (header, --account). Exports CLAUDE_CONFIG_DIR for the picked row (unset
+# for the default dir, whose env must stay empty — bin/account's header); prints "== account …" to
+# the log, or FAILED and returns 1. A seeded run defaults to auto; --start and --probe keep the
+# caller's login unless --account was given.
+pick_account() {
+  local want="$account" out rc line
+  [ -n "$want" ] || { [ "$start$probe" = 00 ] && want=auto; } || return 0
+  [ -n "$want" ] || return 0
+  local cached=(); [ "$dry" = 1 ] && cached=(--cached)
+  if [ "$want" = auto ]; then
+    out=$("$ACCT" pick --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+  elif [ "$want" = bound ]; then
+    out=$("$ACCT" pick --bound --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+  else
+    out=$("$ACCT" limits "$want" --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+  fi
+  line=$(printf '%s' "$out" | python3 -c '
+import json, sys
+want, rc, force = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
+text = sys.stdin.read()
+try:
+    d = json.loads(text)
+except ValueError:
+    d = None
+if want in ("auto", "bound"):
+    if rc == 4:
+        print("-\x1f\x1fno account registry here — the login this run was started with"); sys.exit()
+    if rc == 3 and isinstance(d, dict):
+        print("FAILED\x1f\x1fno account may run this now — " + "; ".join("%s: %s" % (l, w) for l, w in d.get("skipped") or [])); sys.exit()
+    if rc != 0 or not isinstance(d, dict) or not d.get("account"):
+        print("-\x1f\x1faccount pick failed (%s) — the login this run was started with" % text.strip()[:120]); sys.exit()
+    print("%s\x1f%s\x1f%s" % (d["account"], (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), d.get("reason") or "")); sys.exit()
+rows = d if isinstance(d, list) else []
+if rc != 0 or not rows:
+    print("FAILED\x1f\x1f--account %s: %s" % (want, text.strip()[:200] or "no such enabled account")); sys.exit()
+a = rows[0]
+if a.get("provider") != "claude":
+    print("FAILED\x1f\x1f--account %s is a %s account; dispatch runs claude only" % (want, a.get("provider"))); sys.exit()
+if not a.get("here"):
+    print("FAILED\x1f\x1f--account %s is not set up on this machine (account setup)" % want); sys.exit()
+if a.get("denied"):  # the guard would block every prompt there: --force never crosses a deny list
+    print("FAILED\x1f\x1f--account %s: %s — run it on the default login (no --account)" % (want, a.get("why"))); sys.exit()
+if not a.get("eligible") and not force:
+    print("FAILED\x1f\x1f--account %s: %s — --force runs it there anyway" % (want, a.get("why"))); sys.exit()
+print("%s\x1f%s\x1f%s" % (want, (a.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), "as asked" + ("" if a.get("eligible") else ", forced past: " + str(a.get("why")))))
+' "$want" "$rc" "$force")
+  local label dir why
+  IFS=$'\x1f' read -r label dir why <<<"$line"   # not a tab: a whitespace IFS collapses an empty dir
+  if [ "$label" = FAILED ]; then echo "FAILED: $why; not running"; return 1; fi
+  if [ "$label" = - ]; then echo "== account: $why"; return 0; fi   # no registry, or no answer: as before E5
+  if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+  acct_label="$label"
+  [ "$want" = bound ] && chain+=(DISPATCH_PIN=bound)   # its --next stays bound (header, --account)
+  echo "== account $label${dir:+ ($dir)}: $why"
+}
+acct_label=""
+
+# --if-room (header): why this run may not spend the week now, or nothing. autofinish's week_tight is
+# the one reader the sweep and yolo_launch use; fresh, except a dry run's (cached, as pick_account's).
+# A read that raises is a reason, as in yolo_launch; no reading is room (week_tight's None, header).
+# Refusing on no reading would refuse every run at the reset, whose last sample is last week's.
+no_room() {
+  python3 - "$here" "$repo" "$dry" <<'PY' 2>/dev/null || echo "the week's budget is unreadable"
+import os, sys
+from importlib.machinery import SourceFileLoader
+here, repo, dry = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+try:
+    kind, detail = SourceFileLoader("autofinish", os.path.join(here, "bin", "autofinish")).load_module().week_tight(repo, fresh=not dry)
+except Exception as e:  # noqa: BLE001
+    print("the week's budget is unreadable (%s)" % type(e).__name__); sys.exit()
+if kind == "none":
+    print("no account may run it (%s)" % detail)
+elif kind == "tight":
+    print("the week is tight (%s)" % detail)
+PY
+}
+
+# --yolo's launch (header): after the build run, in the run's own log. Every refusal is a logged
+# line and no launch, never a failure of the run — the branch is pushed and its PR waits either way.
+# Each gate fails closed (review of 2026-10-08): what it cannot read is a reason not to launch.
+#   - the run ended on its own: exit 0 headless; interactively, idle after its last turn (dispatch-rc
+#     watch returns 0 for every end — `dispatch --end`, a crash, the lifetime cap — so its record's
+#     end_reason decides, not the exit)
+#   - its last reply, read from the transcript, carries no ⚠ and no WAITING line
+#   - no next step is scheduled on this branch (dispatch --next): the launch would curate under it
+#   - autofinish is armed on this Mac and the week is not tight: the sweep's two switches, which a
+#     launch started from here would otherwise skip (the build Mac stays disarmed)
+#   - the worktree is clean, and memo finds no D-item the owner has not settled (yolo_settled: the
+#     owner's box, a yolo pick, or a dated reply of the owner's — never a session's own `>` reply) in any Markdown file
+#     the branch adds, changes or renames against origin/<main>; a file memo cannot parse counts as open.
+#   - (skipper-modes S3b) a dnd run launches too, `--by dnd`: the build digest's "dnd never launches" is
+#     reversed by the owner's "dnd: I want to automerge as well". The mode is read again here, from plan.json
+#     (mode_now), not the one the run started with: a ship lowered mid-flight launches nothing, and the
+#     launch carries the mode read now. Whether it merges is autofinish-run's: it reads plan.json itself
+#     and holds the slice at a ready PR, never trusting this `--by`.
+AFRUN="${DISPATCH_AUTOFINISH_RUN:-$here/bin/autofinish-run}"   # the tests stand one in
+mode_now() {   # the run's mode at this moment, helmlib.task_mode as resolve_mode reads it; the start's without helm
+  python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" <<'PY' 2>/dev/null || echo "$mode"
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+p = common.tool("helmlib.py")
+if not p:
+    print(sys.argv[5]); sys.exit()
+sys.path.insert(0, str(p.parent))
+import helmlib
+print(helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None)[0])
+PY
+}
+yolo_launch() {   # RC — the build run's exit
+  { [ "$yolo" = 1 ] || [ "$mode" = dnd ]; } || return 0
+  local m="$mode"; [ "$yolo" = 1 ] && m=yolo
+  if [ "$1" != 0 ]; then echo "== $m: no launch — the build run ended with $1"; return 0; fi
+  local why nxt now_m
+  now_m=$(mode_now)
+  case "$now_m" in
+    dnd|yolo) m="$now_m";;
+    *) echo "== $m: no launch — the mode is now ${now_m:-unreadable} (plan.json): the sweep judges it under that mode's rules"; return 0;;
+  esac
+  nxt=$(jobs | grep -v "/${DISPATCH_LABEL:-/}\.plist\$" | head -1)
+  if [ -n "$nxt" ]; then echo "== $m: no launch — a next step is scheduled on this branch ($(basename "$nxt"))"; return 0; fi
+  why=$(python3 - "$state" "$here" "$branch" "$repo" "$core" <<'PY'
+import glob, json, os, sys
+state, here, branch, repo, core = sys.argv[1:6]
+sys.path.insert(0, core)
+try:
+    st = json.load(open(state))
+except (OSError, ValueError):
+    print("its run record is unreadable (%s)" % state); sys.exit()
+reason = st.get("end_reason") or ""
+# dispatch-rc's words (API_ERROR_END) for a run ended idle on a turn that ended on an API error: it
+# stopped halfway, and "idle" would read as done
+if "its last turn ended on an API error" in reason:
+    print("it ended idle on an API error, half done: %s" % reason); sys.exit()
+if st.get("mode") == "rc" and not reason.startswith("idle"):
+    print("it ended by %s, not idle after its last turn" % (reason or "an unrecorded end")); sys.exit()
+if os.path.exists(state + ".next"):
+    print("a next step is scheduled on this branch (dispatch --next)"); sys.exit()
+import common
+dirs = [os.environ.get("CLAUDE_CONFIG_DIR") or "", os.path.join(os.path.expanduser("~"), ".claude")]
+hits = [h for d in dirs if d for h in glob.glob(os.path.join(d, "projects", "*", st.get("session", "?") + ".jsonl"))]
+text = ""
+try:
+    with open(hits[0]) as f:
+        for line in f:
+            if '"type":"assistant"' not in line:
+                continue
+            try:
+                content = json.loads(line).get("message", {}).get("content")
+            except ValueError:
+                continue
+            if isinstance(content, list):
+                said = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+                text = said.strip() or text
+except (OSError, IndexError):
+    pass
+if not text:
+    print("its last reply could not be read (session %s)" % st.get("session")); sys.exit()
+kind = common.ending(text)[0]
+if "\u26a0" in text or kind in ("waiting", "relayed"):
+    print("its last reply stops for %s: %s" % (common.OWNER_NAME or "the owner", [l for l in text.splitlines() if l.strip()][-1][:120])); sys.exit()
+if kind == "pending":
+    print("its last reply waits on its own work: %s" % [l for l in text.splitlines() if l.strip()][-1][:120]); sys.exit()
+if not common.autofinish_armed():
+    print("autofinish is disarmed on this Mac (bin/autofinish arm)"); sys.exit()
+try:
+    from importlib.machinery import SourceFileLoader
+    # the repo's row in the account pool, as the sweep reads it (cached: autofinish-run picks fresh)
+    kind, detail = SourceFileLoader("autofinish", os.path.join(here, "bin", "autofinish")).load_module().week_tight(repo)
+except Exception as e:  # noqa: BLE001
+    print("the week's budget is unreadable (%s)" % e); sys.exit()
+if kind == "none":
+    print("no account may run it (%s)" % detail)
+elif kind == "tight":
+    print("the week is tight (%s)" % detail)
+PY
+)
+  if [ -n "$why" ]; then echo "== $m: no launch — $why"; return 0; fi
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then echo "== $m: no launch — $wt has uncommitted changes"; return 0; fi
+  local base open
+  base=$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("main") or "main")
+except (OSError, ValueError):
+    print("main")' "$wt/.claude/workflow.json")
+  git -C "$wt" fetch -q origin "$base" 2>/dev/null
+  git -C "$wt" rev-parse -q --verify "origin/$base" >/dev/null || { echo "== $m: no launch — origin/$base unreadable here"; return 0; }
+  open=$(git -C "$wt" -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM "origin/$base...HEAD" -- '*.md' | while IFS= read -r f; do
+    python3 "${p_keel:-$here/bin/keel}" parse "$wt/$f" 2>/dev/null | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("%s (memo could not parse it)" % sys.argv[1]); sys.exit()
+o = [i["id"] for i in d.get("items", []) if not i.get("settled")]
+if o:
+    print("%s %s" % (sys.argv[1], ",".join(o)))' "$f"
+  done)
+  if [ -n "$open" ]; then echo "== $m: no launch — open for $who: ${open//$'\n'/; }"; return 0; fi
+  echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $m"
+  # autofinish-run returns at once: its child is double-forked and setsid, out of this job's
+  # process group, which launchd ends with the job: probed 2026-10-08 on the build Mac, a setsid grandchild
+  # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
+  # without the build's login (pick_account exported it): autofinish-run picks its own, fresh, as
+  # the sweep's start_runner does — a build on a second login must not run on it past its ceiling (review, 2026-10-08)
+  env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
+    "$AFRUN" "$wt" --rule M --by "$m" 2>&1
+  echo "== $m: autofinish-run exit $?"
+}
+
+# --start --dry-run: what would run, printed and nothing written — not even the log's header
+if [ "$start" = 1 ] && [ "$dry" = 1 ]; then
+  sid="${lsid:-<session-id>}"; [ -n "$lresume" ] && [ "$lfork" = 0 ] && sid="$lresume"; sess_args; machine
+  untrusted && echo "# not trusted: $repo — the run would trust it first (bin/trust-projects)"
+  if [ "$headless" = 1 ]; then
+    run_env headless >&2
+    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
+    printf ' %q' "${renv[@]}" "${chain[@]}" "${CL[@]}" -p "$lprompt" "${sargs[@]}" --model "$model" --effort "$effort" \
+      --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text
+    echo
+  else
+    run_env rc >&2
+    echo "# screen -U -dmS run-$rname-$topic /bin/bash $cache/run-$rname-$topic.sh, which holds:"
+    runner_text "$lprompt" "$ldir" "$lname · $shown" "$cache/run-$rname-$topic.$sid.pid"
+  fi
+  exit 0
+fi
+
+{
+  echo "== $(date) dispatch $branch ($model $effort) in $repo"
+  # an installed tidier on an older plist (its interval) is brought up to this code: from here, a
+  # job of its own, never from the tidier itself (dispatch-rc refresh_tidy)
+  [ "$dry" = 1 ] || python3 "$here/bin/dispatch-rc" refresh-tidy
+  pick_account || exit 1
+  if [ "$start" = 1 ]; then
+    # the caller's run: its prompt, its worktree, its name; the start lock, the cap and the watcher as any run's
+    wt="$ldir"; prompt="$lprompt"
+    cd "$wt" || exit 1
+    ensure_trusted || exit 1
+    python3 "$here/bin/dispatch-rc" reap
+    room=0; why=$(roomy) || room=1   # before the lock: the sample sleeps 2 s
+    take_lock || exit 1
+    n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
+    if [ "$n" -ge "$max_runs" ]; then
+      drop_lock; echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"; exit 1
+    fi
+    if [ "$room" = 1 ]; then
+      drop_lock; echo "FAILED: $why; not starting another (wharf-runs/headroom)"; exit 1
+    fi
+    if [ "$headless" = 1 ]; then run_headless; exit 0; fi
+    run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
+    echo "== exit $rc at $(date)"
+    exit "$rc"
+  fi
+  if [ "$probe" = 1 ]; then
+    [ "$dry" = 1 ] && { echo "DRY RUN: probe" >&3; exit 0; }
+    probe_prompt="reply with the single word ok"
+    ensure_trusted || exit 1
+    if [ "$headless" = 1 ]; then
+      run_env headless
+      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
+      echo "== probe exit $? at $(date)"; exit 0
+    fi
+    # the visible path, as a run takes it: no worktree, its own screen; no run cap, no after()
+    take_lock || exit 1
+    run_rc "$probe_prompt" "$repo" "run-$rname-$topic-probe" probe; rc=$?
+    echo "== probe exit $rc at $(date)"; exit 0
+  fi
+  [ "$depth" -le "$maxdepth" ] || { echo "FAILED: $(deep)"; exit 1; }
+  # a dry run's refusal is said where the dry run prints (fd 3), not only in the log
+  physical_ok || { [ "$dry" = 1 ] && { echo -n "DRY RUN: refused — "; physical_ok; } >&3; echo "FAILED: not running"; exit 1; }
+  if [ "$ifroom" = 1 ]; then
+    room=$(no_room)
+    if [ -n "$room" ]; then
+      [ "$dry" = 1 ] && echo "DRY RUN: refused — --if-room: $room" >&3
+      echo "FAILED: --if-room: $room; not starting"; exit 1
+    fi
+    echo "== --if-room: the week has room"
+  fi
+  wt="$repo/.claude/worktrees/$topic"
+  if [ "$dry" = 1 ]; then echo "DRY RUN: would fetch $branch, use $wt, run $C $([ "$headless" = 1 ] && echo "-p <brief>" || echo "<brief> --remote-control in screen run-$rname-$topic") --model $model --effort $effort, background ${bg:-deny}, account ${acct_label:-the default login}${mode:+, mode $mode}$([ "$yolo" = 1 ] && echo ", --yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo")$([ "$mode" = dnd ] && echo ", dnd: keel yolo --dnd's gate in the prompt, then autofinish-run --by dnd")" >&3; exit 0; fi
+  # scheduled from inside an earlier run of this branch (--next's usual case): that run is in its
+  # last turn, or idle in its screen, in this same worktree. Wait for it rather than share it.
+  python3 "$here/bin/dispatch-rc" after "$repo" "$topic" || exit 1
+  git -C "$repo" fetch origin "$branch" 2>&1 || { echo "FAILED: $branch is not on origin"; exit 1; }
+  if [ -d "$wt" ]; then
+    # a leftover directory is no worktree (git would walk up to the primary on main), and one on another branch is not ours
+    [ "$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$wt" && pwd -P)" ] && [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$branch" ] \
+      || { echo "FAILED: $wt exists but is not a worktree on $branch"; exit 1; }
+  else
+    git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || git -C "$repo" branch --no-track "$branch" "origin/$branch" || exit 1
+    git -C "$repo" worktree add "$wt" "$branch" 2>&1 || { echo "FAILED: worktree"; exit 1; }
+    [ -f "$repo/.env" ] && ln -s "$repo/.env" "$wt/.env"
+  fi
+  # diverged from origin: stop — every checkpoint push would be refused and the work would sit here unread
+  git -C "$wt" merge --ff-only "origin/$branch" 2>&1 || { echo "FAILED: $branch here has diverged from origin (or $wt is dirty); not running"; exit 1; }
+  rel=$(git -C "$wt" ls-tree -r --name-only HEAD -- docs/handoff | grep -E -- "$brief_re" | sort | tail -1)
+  [ -n "$rel" ] || { echo "FAILED: no docs/handoff/<YYYY-MM-DD>-$topic.md on $branch"; exit 1; }
+  brief="$wt/$rel"
+  manager_chain
+  resolve_mode
+  # the brief's blob: a --next from this run's session on an unchanged brief is refused
+  chain+=(DISPATCH_BRIEF="$(git -C "$wt" rev-parse "HEAD:$rel")")
+  # "in the foreground": on 2026-10-05 two runs out of two (aurora-sequence-build, codereview-jev)
+  # backgrounded the check, replied "I'll pick up when it finishes", and -p exited with exit 0.
+  # A brief asked for the foreground on 2026-10-04 (idea-redaction) and the run backgrounded anyway:
+  # prose alone does not hold, so run_env enforces it unless --background allow (rule: engineering).
+  prompt="You are an unattended session started by dispatch on $(hostname -s) at $(date '+%F %H:%M %Z'); nobody is watching, so decide from the brief and do not ask. Your worktree is $wt on branch $branch. Read the brief at $brief and do what it says. Run the project's check from AGENTS.md before calling anything done, in the foreground: never run_in_background, Monitor or a background agent you would wait for — this run ends with your reply, and whatever is still running dies unread. One Bash call stops at 30 minutes; a longer check runs its && parts one call each. Commit; do not push, except through \`dispatch --next --repo $repo\`; never merge into main or launch (the checkpoint hook pushes, /finish launches). End with what changed, what you verified, and what you left for $who. ${note}"
+  # session-asks (R2–R4, B5): the three steps instead of an ask, and the plan reports — helm's tools
+  # (G22): without its ask and helm those lines leave the prompt, and a decision the run cannot make
+  # ends it on the WAITING line
+  if [ -n "$p_ask" ] && [ -n "$p_helm" ]; then
+    prompt="$prompt
+
+First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
+  else
+    prompt="$prompt
+
+When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it."
+  fi
+  prompt="$prompt When the brief names steps of a Course doc (a \`Steps:\` line), mark each one done once its check is green — \`python3 ${p_keel:-$here/bin/keel} step <doc> <S> done --branch $branch --stamp\` — and commit it: /finish and autofinish refuse a branch whose brief names an open step."
+  # The gate per mode travels in the prompt (E12: "the brief carries the gate"; skipper-modes S3): keel
+  # yolo is the mechanism, the mode read at fire time (resolve_mode) says which form.
+  case "$mode" in
+    yolo)
+    prompt="$prompt
+
+The owner's yolo (mode yolo, dispatch --yolo; E12 of docs/autofinish-design-2026-10-02.md, skipper-modes D1): one pass, up to a launch. Where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo <the doc>\` instead and commit what it wrote. Exit 0: every open item with a bare Recommended pick, Reversible: no included, now holds that pick as a 'Taken unattended' answer — build on those answers here, inline, in this session. Exit 3, or any other exit: it stopped (at an item with no pick, a conditional or a reopened one, or on an error it printed) and wrote nothing — build nothing that rests on that list; end with the WAITING line naming the item and the doc. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. Do not schedule a next step (dispatch --next): a yolo run is one pass, and a step waiting on this branch stops its launch. Do not run /finish: once this run ends with its worktree clean and no doc this branch changed holding an open item, dispatch starts the launch (autofinish-run --by yolo), which lands it while the ship's mode is still yolo, past the check and the review gate (skipper-modes S3b)."
+      ;;
+    dnd)
+    prompt="$prompt
+
+The owner's do-not-disturb (mode dnd, skipper-modes D1-A): where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo --dnd <the doc>\` instead and commit what it wrote. It takes every bare Recommended pick, Reversible: no included, as a 'Taken unattended ($who's dnd …)' answer, except the held classes (money in an option, a repo that is not physical: none, a deletion or a public publish, a third party's answer, no pick, a conditional, unmarked or reopened item). Exit 0: nothing held — build on the answers. Exit 4: it printed each held item as 'held Dn' — relay each one as above (ask relay <doc> <Dn>), park what rests on them, and build the rest on the answers it took. Any other exit: it wrote nothing — build nothing that rests on that list and relay its items. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. A dnd answer is not $who's word, but the mode is his yes to land (skipper-modes S3b): do not run /finish — once the last step on this branch ends with its worktree clean and nothing open, dispatch starts the launch (autofinish-run --by dnd), which lands it unless the branch is in the held slice (money, a physical repo, a public publish, a deletion of data, a gated path), where it stops at a ready PR for $who's tap."
+      ;;
+    ask)
+    prompt="$prompt
+
+The owner's ask mode (mode ask, skipper-modes S1): nothing answers this run's questions but $who. Relay each one as above — the relay cards it on the board, and your skipper will not answer it — then park what rests on it, build the rest, and end on the line bin/ask prints. Never take a Recommended pick yourself, and never run keel yolo."
+      ;;
+  esac
+  cd "$wt" || exit 1
+  ensure_trusted || exit 1
+  python3 "$here/bin/dispatch-rc" reap   # idle orphans out before counting, outside the lock
+  room=0; why=$(roomy) || room=1   # before the lock: the sample sleeps 2 s
+  take_lock || exit 1
+  n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
+  if [ "$n" -ge "$max_runs" ]; then
+    drop_lock; echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"; exit 1
+  fi
+  if [ "$room" = 1 ]; then
+    drop_lock; echo "FAILED: $why; not starting another (wharf-runs/headroom)"; exit 1
+  fi
+  if [ "$headless" = 1 ]; then run_headless; yolo_launch "$rc"; exit 0; fi
+  run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
+  if [ "$rc" = 3 ]; then
+    # never busy (dispatch-rc NEVER_STARTED): a dialog or a login prompt, the screen's contents above.
+    # Once more the same way, then FAILED — never -p (the owner, 2026-10-13: "never headless")
+    echo "never started interactively — retrying once, visible again"
+    take_lock || exit 1
+    run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
+    [ "$rc" = 3 ] && echo "FAILED: never started interactively, twice — the screens' contents above; not run headless"
+  fi
+  echo "== exit $rc at $(date)"
+  yolo_launch "$rc"
+} >> "$log" 2>&1

@@ -1,0 +1,635 @@
+#!/usr/bin/env python3
+"""hail — one verb that delivers a pointer to any session the harness contract names: the inbox
+socket on this Mac (any login: the login dirs share one registry), `codex queue` to a named thread,
+`orca orchestration send`, else helm's Talk and file roads. No broker, no service. The Lookout and
+Hail design, its section "Hail" and S2 (docs/crosstalk-2026-10-20.md on its branch).
+
+    hail REF (--text T | --file F) [--kind event|report|ask] [--about REPO:BRANCH:DOC[#Dn]]
+         [--thread ID] [--host here|<peer>] [--when now|idle] [--dry-run] [--json]
+        REF as `harness status` takes it: a session id or a prefix of 6 or more, a session's title,
+        a dispatch run's topic. --thread ID hails that Codex thread (REF is then only a label).
+        Prints one record, {road, verdict, target, at, …}; verdict is delivered | queued | held |
+        unreachable | refused (`dry-run` under --dry-run). Exit 0 delivered, queued, held or a dry
+        run; 2 refused; 3 unreachable; 1 a usage error.
+    hail subs [--fulfil] [--dry-run] [--json]
+        The `--when idle` subscriptions, state_dir()/hail-subs.jsonl. --fulfil (the tick's) hails each
+        row whose target is now idle, or has ended, and drops it; a row older than SUB_TTL_H is dropped
+        unsent. Exit 0; 3 when a fulfilled row found no road.
+
+The roads, in this order, the first whose preconditions hold:
+    socket    a Claude Code session live on this Mac: the adapter's send() posts to its inbox, but only
+              after re-reading its registry record and finding it idle for IDLE_S seconds or more —
+              a post mid-turn lands at its next tool boundary. `delivered` is read back from the
+              receiver (its transcript's enqueue, or its status turning busy), never from the
+              socket, which answers nothing; nothing seen within HAIL_READBACK_S is `held`
+    codex     --thread ID only: `codex queue` (the adapter lists a thread only while a turn is open)
+    orca      an Orca worker: its mailbox, or its terminal when idle
+    talk      helm's asklib: spacesheep Talk to the target's page — any Mac, any harness, any login.
+              The page is HAIL_SPACE, else this run's manager page when the target is its manager
+              (DISPATCH_PLAN_SPACE), else the Mac's standing manager's. Sender unverified
+    file      helm's asklib: a line its next prompt prints; this Mac, a live process; wakes nobody
+A refused road stops the hail (a busy session is waited for, never routed around); a held or
+unreachable one falls through to the next. Claude Code's SendMessage is never a road: it is a model's
+tool, and only within one login.
+
+--host PEER: the adapter roads run on PEER over ssh (bin/harness's peers and alias; this code and the
+adapters go over stdin, as `harness status --host` does), then Talk from here. ssh runs one way: a
+peer this Mac has no alias for gets Talk only.
+
+The frame is fixed text; the caller's words are a pointer, not content:
+    HAIL <kind> from <sender> — <text> — about <repo>:<branch>:<doc>#<Dn> @<sha>
+--about names where to look, and hail reads only the branch's commit for @<sha>: an answer's words
+never ride in a hail (K13). A text that carries an answer block or a relayed answer is refused, and
+one over TEXT_MAX characters too. A hail is data to its receiver (K3): it may name a doc, a commit,
+a run or a page; it approves nothing, and the receiver's own permissions decide what it does.
+
+--when idle: hailed now when the target is idle; while it works, the hail is a row in
+state_dir()/hail-subs.jsonl, which `hail subs --fulfil` sends once the target goes idle or ends.
+Every hail, sent, refused or subscribed, is a line in state_dir()/hail.jsonl (cost: none — no model
+call is made here). state_dir() is keel's: MEMO_STATE_DIR, else ~/.local/state/memo.
+
+Tests stand in: HAIL_ASKLIB (asklib's path), HAIL_READBACK_S, HARNESS_SSH, HARNESS_CODEX,
+HARNESS_ORCA, HARNESS_HOST, HARNESS_PEER_<HOST>, ASK_SESSIONS_DIR. Python 3.9, stdlib only.
+"""
+import fcntl
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+import types
+import uuid
+
+if "__file__" in globals():   # here, not on a peer from stdin: the regatta core on the path, for asklib
+    sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+    try:
+        import core_path
+        core_path.add()
+    except ImportError:
+        pass
+
+USAGE = __doc__.split("\n\n")[1] if __doc__ else "hail REF --text T"
+KINDS = ("event", "report", "ask")
+ROAD = {"claude-code": "socket", "codex": "codex", "orca": "orca"}
+IDLE_S = 60         # the quiet a socket post needs: the contract line's, fixed
+TEXT_MAX = 400       # a pointer's length: a hail names where to look, it never carries the thing
+SUB_TTL_H = 72       # a subscription whose target never went idle in three days is dropped unsent
+# what an answer looks like in a D-list doc or a relay (asklib's RELAYED_HEAD_RE): never in a frame
+# (anywhere on a line: the frame flattens whitespace, so a relay quoted mid-line counts too)
+ANSWER_RE = re.compile(r"➤\s*Answer|Relayed from .*\): ", re.I)
+FRAME_MAX = TEXT_MAX + 400   # the fixed prefix, the sender's name and an --about: a peer half refuses more
+FRAME_RE = re.compile(r"^HAIL (event|report|ask) from .+ — ")
+EXIT = {"delivered": 0, "queued": 0, "held": 0, "dry-run": 0, "refused": 2, "unreachable": 3}
+
+
+def warn(msg):
+    print("hail: %s" % msg, file=sys.stderr, flush=True)
+
+
+def embedded():
+    """{"harness": source, "adapters": {file: source}} when this copy runs on a peer from stdin."""
+    return globals().get("HAIL_EMBEDDED")
+
+
+def here_bin():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_H = []
+
+
+def harness():
+    """bin/harness as a module: its adapters, its pick() and its peers — one reading of REF and of
+    the hosts for both verbs. On a peer, from the source that came over stdin."""
+    if _H:
+        return _H[0]
+    emb = embedded()
+    if emb is not None:
+        mod = types.ModuleType("harness_mod")
+        mod.HARNESS_EMBEDDED = emb["adapters"]
+        exec(compile(emb["harness"], "harness", "exec"), mod.__dict__)
+    else:
+        path = os.path.join(here_bin(), "harness")
+        loader = importlib.machinery.SourceFileLoader("harness_mod", path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_mod", loader))
+        loader.exec_module(mod)
+    _H.append(mod)
+    return mod
+
+
+_ASK = []
+
+
+def asklib():
+    """helm's asklib (the Talk and file roads), or None — named once, never a trace. HAIL_ASKLIB,
+    else the core's tool() lookup."""
+    if _ASK:
+        return _ASK[0]
+    mod, path = None, os.environ.get("HAIL_ASKLIB")
+    if not path:
+        try:
+            import common
+            p = common.tool("asklib.py")
+            path = str(p) if p else None
+        except Exception:   # noqa: BLE001 — no core: the roads it carries are skipped, said
+            path = None
+    if path and os.path.isfile(path):
+        try:
+            loader = importlib.machinery.SourceFileLoader("asklib", path)
+            mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("asklib", loader))
+            loader.exec_module(mod)
+        except Exception as e:   # noqa: BLE001
+            warn("asklib at %s did not load (%s): the talk and file roads are skipped" % (path, e))
+            mod = None
+    _ASK.append(mod)
+    return mod
+
+
+def state_dir():
+    """keel's per-Mac state dir (MEMO_STATE_DIR moves it), where the lookout keeps its memory too."""
+    return os.environ.get("MEMO_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".local", "state", "memo")
+
+
+def log(rec):
+    try:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(os.path.join(state_dir(), "hail.jsonl"), "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        warn("could not log the hail: %s" % e)
+
+
+# ---- the frame -----------------------------------------------------------------------------
+
+def sessions_dir():
+    return os.environ.get("ASK_SESSIONS_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "sessions")
+
+
+def sender():
+    """Who hails: HAIL_FROM, else this session's title or id, else a script on this Mac."""
+    if os.environ.get("HAIL_FROM"):
+        return os.environ["HAIL_FROM"]
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        for p in glob.glob(os.path.join(sessions_dir(), "*.json")):
+            try:
+                with open(p) as f:
+                    d = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if isinstance(d, dict) and d.get("sessionId") == sid and d.get("name"):
+                return "%s (%s)" % (d["name"], sid[:8])
+        return "session %s" % sid[:8]
+    return "a script on %s" % harness().machine()
+
+
+def parse_about(about):
+    """REPO:BRANCH:DOC[#Dn] → dict, or exits. A branch holds slashes, never a colon."""
+    # DOC is a path, no spaces: the frame carries --about as given, so free text there would get
+    # past K13 and TEXT_MAX (B review, 2026-10-22)
+    m = re.match(r"^([^:\s]+):([^:\s]+):([^#\s]+)(?:#(D\d+))?$", about or "")
+    if not m or len(about) > 300 or ANSWER_RE.search(about):
+        sys.exit("hail: --about is REPO:BRANCH:DOC[#Dn] (got %r)" % about)
+    return {"repo": m.group(1), "branch": m.group(2), "doc": m.group(3), "item": m.group(4)}
+
+
+def repo_dir(repo):
+    """A repo named by absolute or ~ path, or by its name in the core's registry (cloned as
+    PROJECTS/<name>, common.cloned_repos()'s rule), or None. Never against the caller's cwd."""
+    if repo.startswith(("/", "~")):
+        p = os.path.expanduser(repo)
+        return p if os.path.isdir(p) else None
+    try:
+        import common
+        return next((str(p) for p in common.cloned_repos() if p.name == repo), None)
+    except Exception:   # noqa: BLE001 — no core or no registry: no @sha, said in the record
+        return None
+
+
+def sha_of(about):
+    """The branch's commit, short: origin's when the repo has it, else the local branch's; or None.
+    Only the commit is read, never the doc: its answers stay in the repo."""
+    d = repo_dir(about["repo"])
+    if not d:
+        return None
+    for ref in ("refs/remotes/origin/" + about["branch"], "refs/heads/" + about["branch"]):
+        try:
+            r = subprocess.run(["git", "-C", d, "rev-parse", "--short", "--verify", "-q", ref],
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return None
+
+
+def frame(kind, text, about, who):
+    out = "HAIL %s from %s — %s" % (kind, who, " ".join(text.split()))
+    if about:
+        out += " — about %s:%s:%s%s" % (about["repo"], about["branch"], about["doc"], "#" + about["item"] if about["item"] else "")
+        if about.get("sha"):
+            out += " @" + about["sha"]
+    return out
+
+
+def text_refusal(text):
+    if not text.strip():
+        return "the text is empty"
+    if len(text) > TEXT_MAX:
+        return "the text is %d characters, over %d: a hail is a pointer — name the doc, commit or page instead" % (len(text), TEXT_MAX)
+    if ANSWER_RE.search(text):
+        return "the text carries an answer: an answer's words never ride in a hail (K13) — point at the doc with --about"
+    return None
+
+
+# ---- the roads -----------------------------------------------------------------------------
+
+def target_of(args):
+    """(record, None) or (None, why): what REF names on this Mac, through bin/harness's pick()."""
+    H = harness()
+    if args.get("thread"):
+        return {"harness": "codex", "session_id": args["thread"], "state": "idle", "title": args.get("ref")}, None
+    ctx = H.Ctx()
+    cands = H.local_candidates(H.adapters(), ctx, args["ref"])
+    rec, many = H.pick(cands, args["ref"])
+    if rec is None and many:
+        return None, "%d live sessions answer to %r — name one by session id" % (len(many), args["ref"])
+    if rec is None:
+        return None, None
+    return rec, None
+
+
+def adapter_road(rec, msg):
+    """(road, result) of the record's own harness, or (None, None) when it has no send()."""
+    H = harness()
+    ctx = H.Ctx()
+    mod = ctx.adapter(rec.get("harness"))
+    if mod is None or not hasattr(mod, "send"):
+        return None, None
+    try:
+        return ROAD.get(rec.get("harness"), rec.get("harness")), mod.send(ctx, rec, msg)
+    except Exception as e:   # noqa: BLE001 — an adapter's failure is that road's, the next is tried
+        return ROAD.get(rec.get("harness"), rec.get("harness")), {"verdict": "unreachable", "why": "%s" % e}
+
+
+def talk_space(sid):
+    if os.environ.get("HAIL_SPACE"):
+        return os.environ["HAIL_SPACE"]
+    if sid and sid in (os.environ.get("DISPATCH_SKIPPER"), os.environ.get("DISPATCH_MANAGER")):
+        return os.environ.get("DISPATCH_PLAN_SPACE")
+    ask = asklib()
+    sm = ask.standing_manager() if ask and hasattr(ask, "standing_manager") else None
+    if sm and sm.get("manager") == sid:
+        return sm.get("space")
+    return None
+
+
+def relay_roads(sid, msg, tried, roads=("talk", "file")):
+    """The asklib roads, Talk then file: (road, result) of the first that takes it, or (None, None)."""
+    ask = asklib()
+    if ask is None:
+        tried.append(["talk", "helm's asklib is not installed"])
+        tried.append(["file", "helm's asklib is not installed"])
+        return None, None
+    if not sid:
+        tried.append(["talk", "no session id to address"])
+        tried.append(["file", "no session id to address"])
+        return None, None
+    ctx = {"manager": sid, "space": talk_space(sid), "session": os.environ.get("CLAUDE_CODE_SESSION_ID")}
+    for name in roads:
+        b = ask.BACKENDS.get(name)
+        if b is None:
+            tried.append([name, "asklib has no %s backend" % name])
+            continue
+        ok, why = b.available(ctx)
+        if not ok:
+            tried.append([name, why])
+            continue
+        if msg.get("dry"):
+            return name, {"verdict": "dry-run", "why": why}
+        verdict, detail = b.send(ctx, msg["frame"])
+        if verdict == "unreachable":
+            tried.append([name, detail])
+            continue
+        # Talk's `sent` is the page's thread taking it; the session reads it when it listens
+        return name, {"verdict": "queued", "why": detail}
+    return None, None
+
+
+def bundle():
+    """This file with harness's and the adapters' sources in front: what a peer's `python3 -` runs."""
+    H = harness()
+    with open(os.path.join(here_bin(), "harness")) as f:
+        hsrc = f.read()
+    with open(os.path.abspath(__file__)) as f:
+        me = f.read()
+    # ascii(): one line of the whole harness, non-ASCII escaped — Python 3.9 reading source from stdin
+    # failed "Non-UTF-8 code" on the literal form (test_hail.sh, 2026-10-21)
+    return "HAIL_EMBEDDED = %s\n%s" % (ascii({"harness": hsrc, "adapters": H.adapter_sources()}), me)
+
+
+def on_peer(host, alias, argv):
+    """The adapter roads run on HOST: (record, None) or (None, why)."""
+    H = harness()
+    cmd = "python3 - " + " ".join(shlex.quote(a) for a in argv)
+    try:
+        r = subprocess.run([H.SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", alias, cmd],
+                           input=bundle(), capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "%s did not answer: %s" % (host, e)
+    for line in (r.stderr or "").splitlines():
+        if line.strip():
+            print("%s: %s" % (host, line), file=sys.stderr)
+    try:
+        d = json.loads(r.stdout)
+        return (d, None) if isinstance(d, dict) else (None, "%s answered no record" % host)
+    except ValueError:
+        return None, "%s did not answer (ssh %s, exit %s)" % (host, alias, r.returncode)
+
+
+def deliver(args, msg):
+    """One hail, now: the record (without `at`), every road tried in order."""
+    H = harness()
+    me = H.machine()
+    host = args.get("host") or "here"
+    rec_out = {"road": None, "verdict": "unreachable", "target": args.get("thread") or args["ref"],
+               "host": me if host in ("here", me) else host, "kind": msg["kind"], "frame": msg["frame"], "why": None, "tried": []}
+    tried = rec_out["tried"]
+    sid, held = args.get("thread") or args["ref"], None
+
+    if host not in ("here", me):
+        alias = H.peers().get(host)
+        if alias is None:
+            tried.append(["ssh", "no ssh alias from %s to %s: ssh runs one way; Talk only" % (me, host)])
+        else:
+            argv = ["--peer-half", args["ref"], "--text", args["text"], "--kind", msg["kind"], "--frame", msg["frame"]]
+            argv += (["--thread", args["thread"]] if args.get("thread") else []) + (["--dry-run"] if msg.get("dry") else [])
+            got, why = on_peer(host, alias, argv)
+            if why:
+                tried.append(["ssh", why])
+            else:
+                tried.extend(got.get("tried") or [])
+                sid = got.get("target") or sid
+                rec_out["target"] = sid
+                if got.get("verdict") in ("delivered", "queued", "refused", "dry-run"):
+                    got.update(host=host, tried=tried, frame=msg["frame"], kind=msg["kind"])
+                    return got
+                if got.get("verdict") == "held":
+                    held = got
+    else:
+        rec, why = target_of(args)
+        if why:
+            rec_out.update(verdict="refused", why=why)
+            return rec_out
+        if rec is not None:
+            sid = rec.get("session_id") or sid
+            rec_out["target"] = sid
+            rec_out["target_name"] = rec.get("title")
+            if sid and sid == os.environ.get("CLAUDE_CODE_SESSION_ID"):
+                rec_out.update(verdict="refused", why="a session does not hail itself")
+                return rec_out
+            if rec.get("state") in H.FINAL:
+                tried.append(["adapter", "%s has ended (%s)" % (sid, rec.get("state"))])
+            else:
+                road, res = adapter_road(rec, msg)
+                if road is None:
+                    tried.append([rec.get("harness") or "adapter", "this harness has no send()"])
+                elif res["verdict"] in ("delivered", "queued", "refused", "dry-run"):
+                    rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
+                    return rec_out
+                else:
+                    tried.append([road, res["why"]])
+                    if res["verdict"] == "held":
+                        held = dict(rec_out, road=road, verdict="held", why=res["why"])
+        else:
+            tried.append(["adapter", "no session here answers to %r" % args["ref"]])
+    if args.get("peer-half"):
+        return held or rec_out
+
+    # after a held post Talk only, as the design's Risks line says: the file road reaches every live
+    # session at its next prompt, beside the socket copy the owner may still release
+    road, res = relay_roads(sid, msg, tried, ("talk",) if held else ("talk", "file"))
+    if road:
+        rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
+        return rec_out
+    if held:
+        held["tried"] = tried
+        return held
+    rec_out["why"] = "every road refused it"
+    return rec_out
+
+
+# ---- subscriptions -------------------------------------------------------------------------
+
+def subs_path():
+    return os.path.join(state_dir(), "hail-subs.jsonl")
+
+
+class SubsLock:
+    """One writer of hail-subs.jsonl at a time: the tick's fulfil and a session's subscribe."""
+    def __enter__(self):
+        os.makedirs(state_dir(), exist_ok=True)
+        self.fd = os.open(subs_path() + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+
+
+def read_subs():
+    """The rows; a line that does not parse is skipped with a warning, never the whole file, or the
+    next write would drop every row."""
+    rows = []
+    try:
+        with open(subs_path()) as f:
+            for n, l in enumerate(f, 1):
+                if not l.strip().startswith("{"):
+                    continue
+                try:
+                    rows.append(json.loads(l))
+                except ValueError:
+                    warn("%s line %d does not parse: skipped" % (subs_path(), n))
+    except OSError:
+        pass
+    return rows
+
+
+def write_subs(rows):
+    tmp = "%s.%d.tmp" % (subs_path(), os.getpid())
+    with open(tmp, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, subs_path())
+
+
+def subscribe(args, msg, rec):
+    row = {"id": uuid.uuid4().hex[:12], "at": int(time.time()), "ref": args["ref"], "target": rec.get("target"),
+           "thread": args.get("thread"), "host": args.get("host") or "here", "kind": msg["kind"],
+           "text": args["text"], "frame": msg["frame"], "waiting_on": rec.get("why")}
+    if not msg.get("dry"):
+        with SubsLock():
+            write_subs(read_subs() + [row])
+    return dict(rec, road="subs", verdict="dry-run" if msg.get("dry") else "queued", sub=row["id"],
+                why="subscribed until %s goes idle (%s)" % (rec.get("target"), rec.get("why")))
+
+
+def cmd_subs(args):
+    rows = read_subs()
+    if not args.get("fulfil"):
+        if args.get("json"):
+            print(json.dumps(rows, indent=1, ensure_ascii=False))
+        elif not rows:
+            print("no hail subscriptions")
+        else:
+            for r in rows:
+                print("%s  %s  %-10s %s  %s" % (r.get("id"), time.strftime("%m-%d %H:%M", time.localtime(r.get("at") or 0)),
+                                               r.get("host"), r.get("target") or r.get("ref"), r.get("kind")))
+        return 0
+    dry = bool(args.get("dry-run"))
+    out, rc, done = [], 0, set()
+    # the rows are read under the lock and delivered outside it: a socket readback or an ssh road can
+    # take a minute, and a session's subscribe() would wait on the lock that long
+    with SubsLock():
+        rows = read_subs()
+    for r in rows:
+        try:
+            if time.time() - (r.get("at") or 0) > SUB_TTL_H * 3600:
+                res = {"road": None, "verdict": "unreachable", "target": r.get("target"), "why": "expired after %d h unsent" % SUB_TTL_H,
+                       "sub": r.get("id"), "tried": []}
+            else:
+                a = {"ref": r.get("target") or r.get("ref"), "thread": r.get("thread"), "host": r.get("host"), "text": r.get("text")}
+                msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S}
+                res = deliver(a, msg)
+                res["sub"] = r.get("id")
+        except Exception as e:   # noqa: BLE001 — one bad row never costs the pass: it stays for the next
+            res = {"road": None, "verdict": "refused", "target": r.get("target"), "why": "fulfil failed: %s" % e,
+                   "sub": r.get("id"), "tried": [], "kept": True}
+        busy = res["verdict"] == "refused" and not res.get("kept") and res.get("road") in ("socket", "orca")
+        if busy or res.get("kept"):
+            res["kept"] = True   # still working: the next pass tries again
+        else:
+            done.add(r.get("id"))
+        res["at"] = int(time.time())
+        if not dry and not busy:   # a target still at work is no news: one line a tick for 72 h would bury the log
+            log(res)
+        if res["verdict"] == "unreachable":
+            rc = 3
+        out.append(res)
+    if not dry and done:
+        with SubsLock():   # the rows as they are now, less the ones handled: a subscribe meanwhile stays
+            write_subs([r for r in read_subs() if r.get("id") not in done])
+    if args.get("json"):
+        print(json.dumps(out, indent=1, ensure_ascii=False))
+    else:
+        for res in out:
+            print("%s  %s %s via %s%s" % (res.get("sub"), res.get("target"), res["verdict"], res.get("road") or "-",
+                                          " (kept)" if res.get("kept") else ""))
+    return rc
+
+
+# ---- the command line ----------------------------------------------------------------------
+
+VALUED = ("--text", "--file", "--kind", "--about", "--thread", "--host", "--when", "--frame")
+FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half")
+
+
+def parse(argv):
+    a = {}
+    i = 0
+    while i < len(argv):
+        x = argv[i]
+        if x in ("-h", "--help"):
+            print(__doc__)
+            sys.exit(0)
+        if x in FLAGS:
+            a[x[2:]] = True
+        elif x in VALUED and i + 1 < len(argv):
+            a[x[2:]] = argv[i + 1]
+            i += 1
+        elif not x.startswith("-") and "ref" not in a:
+            a["ref"] = x
+        else:
+            sys.exit("hail: unexpected %r\n%s" % (x, USAGE))
+        i += 1
+    return a
+
+
+def emit(rec, as_json):
+    if as_json:
+        print(json.dumps(rec, indent=1, ensure_ascii=False))
+        return
+    print("%s via %s → %s%s" % (rec["verdict"], rec.get("road") or "-", rec.get("target"),
+                                ": " + rec["why"] if rec.get("why") else ""))
+    for road, why in rec.get("tried") or []:
+        print("  tried %s: %s" % (road, why))
+
+
+def main(argv):
+    if argv[:1] == ["subs"]:
+        return cmd_subs(parse(argv[1:]))
+    a = parse(argv)
+    if a.get("peer-half"):   # a peer's half of --host: the adapter roads, the frame as sent
+        # a public flag on the same binary: the frame it posts must still be one hail's frame
+        f = a.get("frame") or ""
+        bad = ("--peer-half needs --frame" if not f else
+               "the frame is not a HAIL frame" if not FRAME_RE.match(f) else
+               "the frame is %d characters, over %d" % (len(f), FRAME_MAX) if len(f) > FRAME_MAX else
+               "the frame carries an answer (K13)" if ANSWER_RE.search(f) else None)
+        if bad:
+            print(json.dumps({"road": None, "verdict": "refused", "target": a.get("thread") or a.get("ref"),
+                              "why": bad, "tried": []}, ensure_ascii=False))
+            return 2
+        msg = {"kind": a.get("kind") or "event", "frame": f, "dry": bool(a.get("dry-run")), "idle_s": IDLE_S}
+        rec = deliver(dict(a, host="here"), msg)
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    if not a.get("ref"):
+        sys.exit(USAGE)
+    if bool(a.get("text")) == bool(a.get("file")):
+        sys.exit("hail: one of --text or --file\n" + USAGE)
+    if a.get("file"):
+        try:
+            with open(a["file"]) as f:
+                a["text"] = f.read()
+        except OSError as e:
+            sys.exit("hail: --file: %s" % e)
+    kind = a.get("kind") or "event"
+    if kind not in KINDS:
+        sys.exit("hail: --kind is one of %s" % ", ".join(KINDS))
+    when = a.get("when") or "now"
+    if when not in ("now", "idle"):
+        sys.exit("hail: --when is now or idle")
+    dry = bool(a.get("dry-run"))
+    about = parse_about(a["about"]) if a.get("about") else None
+    if about:
+        about["sha"] = sha_of(about)
+    rec = {"road": None, "verdict": None, "target": a.get("thread") or a["ref"], "kind": kind, "tried": []}
+    why = text_refusal(a["text"])
+    if why:
+        rec.update(verdict="refused", why=why)
+    else:
+        msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S}
+        rec = deliver(a, msg)
+        # --when idle: a target still at work is a subscription, not a refusal
+        if when == "idle" and rec["verdict"] == "refused" and rec.get("road") in ("socket", "orca"):
+            rec = subscribe(a, msg, rec)
+    if about and not about.get("sha") and rec.get("verdict") != "refused":
+        rec.setdefault("notes", []).append("no commit found for %s:%s: the frame has no @sha" % (about["repo"], about["branch"]))
+    rec["at"] = int(time.time())
+    if dry:
+        rec["dry_run"] = True
+    else:
+        log(rec)
+    emit(rec, a.get("json"))
+    return EXIT.get(rec["verdict"], 3)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

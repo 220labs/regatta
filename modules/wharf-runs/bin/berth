@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""berth — the host a sent task starts on, picked by privacy, then load (docs/skipper-modes-2026-10-21.md,
+"Berth", step S6b).
+
+    berth REPO [--json] [--no-log]
+
+Privacy first: the repo's scope's ordered `berths` (repos.json `scopes.<name>.berths`, read through
+the core's scope_of_repo — editable data, because "these rules may change", the owner, 2026-10-21),
+crossed with the repo's clone `hosts`. A scope with no `berths` keeps dispatch's order before this
+verb: each peer `wharf-runs/ssh` names, then this Mac. Then load: the first candidate with a free
+slot (its own `dispatch --slots`: busy runs under its cap, the one rule for the cap) and a 5-minute
+load per core under `wharf-runs/load-max`; a later one only when every earlier one fails and its
+own load per core is lower than the lightest earlier one's by `wharf-runs/load-margin`. When none
+qualifies the first that answered is the pick: its own cap refuses at fire time, and the refusal is
+a card (until S7, an overloaded build Mac is a card; a laptop pass that pulls is S7's).
+
+Log-only, the first week: a load key whose line ends in `log` (`1.5 log`) makes the load rule's pick
+the row's `would` and keeps the first candidate that answers as the pick — dispatch's order before
+berth, with no refusal and no redirect — while berth.jsonl gathers the samples. The landing starts a
+log-only week; a TODO item owned by 2026-10-29 sets the keys from it without the word. Neither key
+set: 1.5 and 0.5 per core, log-only; one key set without `log`, the other unset: enforced, the unset
+one at its default.
+
+Read-only: this Mac's load from os.getloadavg, each peer's in one ssh (BatchMode, 10 s connect)
+that prints its load, its core count and its `dispatch --slots`; no model call. A peer that does
+not answer is no candidate; one whose dispatch predates --slots counts as free (its cap refuses at
+fire time). Exit 0 with a pick; 3 when no host may take the repo (the berths and the clone hosts
+share none, none answers, or the registry is there but will not read: a torn repos.json reads as no
+scopes and no clone hosts, which would drop both filters — the core's registry_unreadable() first,
+as every fence; AGENTS.md's trap); 2 on a usage error. Every pick is a row in
+~/Library/Logs/claude-weekly/berth.jsonl. BERTH_HOST, BERTH_SSH, BERTH_LOADAVG ("<5-min> <cores>")
+and BERTH_SLOTS ("<busy> <max>") stand in for the tests. Python 3.9, stdlib only.
+"""
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "lib"))
+import core_path  # noqa: E402 — the regatta core (C2)
+core_path.require()
+import common  # noqa: E402
+
+SSH_TIMEOUT = 10
+DEFAULTS = {"wharf-runs/load-max": 1.5, "wharf-runs/load-margin": 0.5}
+# what a peer runs: its load and cores, then its own dispatch's slots — the peer's core, the checkout its
+# config dir's `home` file names, read by the peer's shell, as dispatch's own remote calls name it (the
+# wharf-runs scrub's conventions); each half fails alone
+PROBE = ("python3 -c 'import os; print(\"%.2f %d\" % (os.getloadavg()[1], os.cpu_count() or 1))'; "
+         "\"$(head -1 \"${REGATTA_CONFIG:-$HOME/.config/regatta}/home\" 2>/dev/null)/modules/wharf-runs/bin/dispatch\" "
+         "--slots 2>/dev/null || echo slots-unknown")
+
+
+def log_path():
+    return Path(os.environ.get("HOME") or Path.home()) / "Library/Logs/claude-weekly/berth.jsonl"
+
+
+def here():
+    return os.environ.get("BERTH_HOST") or os.environ.get("DISPATCH_HOST") or common.host_name()
+
+
+def load_key(name):
+    """(threshold, log-only, set) from `<config>/<name>`: `1.5`, or `1.5 log` for the log-only week;
+    unset, the default and log-only — berth() reads an unset key beside a set one as enforced."""
+    lines = common.config_lines(name) or []
+    words = " ".join(lines).split()
+    try:
+        value = float(words[0]) if words else DEFAULTS[name]
+    except ValueError:
+        value = DEFAULTS[name]
+    return value, (not words) or "log" in words[1:], bool(words)
+
+
+def ssh_aliases():
+    """{host: ssh alias} from `wharf-runs/ssh` (`<host>:<alias>` lines, orca-host's PEERS)."""
+    return dict(x.split(":", 1) for x in common.config_lines("wharf-runs/ssh") or [] if ":" in x)
+
+
+def registry():
+    p = common.repos_json()
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def candidates(repo, me):
+    """(candidates in order, a dict of what decided them). A registry that is there but will not read
+    gives none, its `unreadable` set: read as empty it would drop the clone-host filter."""
+    key = common.repo_key(repo)
+    if common.registry_unreadable():
+        return [], {"repo": key, "scope": None, "berths": None, "hosts": None, "source": None,
+                    "unreadable": "the registry (%s) will not read" % common.repos_json()}
+    name, scope = common.scope_of_repo(repo)
+    entry = (registry().get("repos") or {}).get(key)
+    hosts = entry.get("hosts") if isinstance(entry, dict) else None
+    berths = scope.get("berths") if isinstance(scope, dict) else None
+    if isinstance(berths, list) and berths:
+        order, source = [h for h in berths if isinstance(h, str)], "scope %s berths" % name
+    else:
+        order, source = [h for h in ssh_aliases() if h != me] + [me], "no berths: each peer, then this Mac"
+    out = [h for h in order if hosts is None or h in hosts]
+    return out, {"repo": key, "scope": name, "berths": berths, "hosts": hosts, "source": source}
+
+
+def parse_sample(text):
+    """{"load", "cores", "busy", "max"} from a probe's two lines; a part it cannot read stays None."""
+    s = {"load": None, "cores": None, "busy": None, "max": None}
+    lines = [x.split() for x in (text or "").splitlines() if x.strip()]
+    if lines and len(lines[0]) == 2:
+        try:
+            s["load"], s["cores"] = float(lines[0][0]), int(lines[0][1])
+        except ValueError:
+            pass
+    if len(lines) > 1 and len(lines[1]) == 2:
+        try:
+            s["busy"], s["max"] = int(lines[1][0]), int(lines[1][1])
+        except ValueError:
+            pass
+    return s
+
+
+def sample_here():
+    t = os.environ.get("BERTH_LOADAVG")
+    load = t if t else "%.2f %d" % (os.getloadavg()[1], os.cpu_count() or 1)
+    slots = os.environ.get("BERTH_SLOTS")
+    if slots is None:
+        try:
+            slots = subprocess.run([str(HERE / "dispatch"), "--slots"], capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            slots = ""
+    s = parse_sample("%s\n%s" % (load, slots))
+    s["answered"] = True
+    return s
+
+
+def sample_peer(host):
+    alias = ssh_aliases().get(host)
+    if not alias:
+        return {"answered": False, "why": "no ssh alias for %s (wharf-runs/ssh)" % host}
+    cmd = shlex.split(os.environ.get("BERTH_SSH") or "ssh") + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_TIMEOUT, alias, PROBE]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=SSH_TIMEOUT + 20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"answered": False, "why": "%s: %s" % (host, e.__class__.__name__)}
+    if r.returncode and not r.stdout.strip():
+        return {"answered": False, "why": "%s: ssh exit %d" % (host, r.returncode)}
+    s = parse_sample(r.stdout)
+    s["answered"] = s["load"] is not None
+    if not s["answered"]:
+        s["why"] = "%s printed no load" % host
+    return s
+
+
+def per_core(s):
+    return s["load"] / max(s["cores"] or 1, 1) if s.get("load") is not None else None
+
+
+def free(s):
+    """A free slot, or None when unknown (a dispatch that predates --slots): taken as free."""
+    if s.get("busy") is None or s.get("max") is None:
+        return None
+    return s["busy"] < s["max"]
+
+
+def pick(cands, samples, load_max, margin):
+    """(the load rule's pick or None, why): the first that fits; a later one only when every earlier
+    one fails and it is lighter than the lightest of them by the margin."""
+    ok = [h for h in cands if samples[h].get("answered")]
+    for i, h in enumerate(ok):
+        pc, has_slot = per_core(samples[h]), free(samples[h]) is not False
+        if i == 0:
+            if has_slot and pc is not None and pc < load_max:
+                return h, "%s: a free slot, load %.2f per core under %.2f" % (h, pc, load_max)
+            continue
+        # every earlier one failed (else it was returned); the bar is the lightest of those that had a
+        # slot and failed on load — one that failed on slots alone sets none
+        bars = [per_core(samples[e]) for e in ok[:i] if free(samples[e]) is not False and per_core(samples[e]) is not None]
+        if has_slot and pc is not None and (not bars or pc <= min(bars) - margin):
+            return h, "%s: every earlier host full or loaded; %.2f per core%s" % (
+                h, pc, ", lighter by %.2f or more" % margin if bars else "")
+    if ok:
+        return ok[0], "%s: none fits; the first that answered (its cap refuses at fire time)" % ok[0]
+    return None, "no candidate answered"
+
+
+def berth(repo, write_log=True):
+    t0 = time.time()
+    me = here()
+    cands, why = candidates(repo, me)
+    load_max, log_max, set_max = load_key("wharf-runs/load-max")
+    margin, log_margin, set_margin = load_key("wharf-runs/load-margin")
+    # log-only while a set key says `log`, or neither is set; an unset key beside a set one is its default
+    log_only = (log_max and set_max) or (log_margin and set_margin) or not (set_max or set_margin)
+    row = dict(why, t=int(t0), host=me, candidates=cands, load_max=load_max, load_margin=margin,
+               enforced=not log_only, samples={})
+    if not cands:
+        row.update(pick=None, would=None, reason=("no host may take %s: %s" % (why["repo"], why["unreadable"]))
+                   if why.get("unreadable") else "no host may take %s: berths %s, clone hosts %s" % (
+            why["repo"], why["berths"], why["hosts"]))
+    else:
+        for h in cands:
+            row["samples"][h] = sample_here() if h == me else sample_peer(h)
+        would, reason = pick(cands, row["samples"], load_max, margin)
+        first = next((h for h in cands if row["samples"][h].get("answered")), None)
+        row.update(would=would, pick=would if not log_only else first,
+                   reason=reason if not log_only else "log-only: the first that answered (%s); the load rule would take %s — %s"
+                   % (first, would, reason))
+    row["ms"] = int((time.time() - t0) * 1000)
+    if write_log:
+        try:
+            p = log_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a") as f:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return row
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="berth", description=__doc__.split("\n\n")[0])
+    ap.add_argument("repo", help="a registry key, or a path under the projects folder")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-log", action="store_true", help="write no berth.jsonl row")
+    a = ap.parse_args(argv)
+    row = berth(a.repo, write_log=not a.no_log)
+    if a.json:
+        print(json.dumps(row, sort_keys=True))
+    else:
+        print("%s → %s (%s)" % (row["repo"], row["pick"] or "nowhere", row["reason"]))
+    return 0 if row["pick"] else 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

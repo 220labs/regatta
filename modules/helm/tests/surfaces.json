@@ -1,0 +1,19 @@
+{
+  "_": "Which backend each session-asks seam uses, in order of preference. bin/ask backends | bin/helm backends print it; bin/ask backends --set relay=file flips a row (a commit, so a switch-off is reviewed and dated). docs/session-asks-2026-10-09.md section 2, Seams.",
+  "ask": {
+    "relay": ["talk", "sendmessage", "file"],
+    "listen": "talk",
+    "parked": true
+  },
+  "helm": {
+    "render": ["local", "sheep", "artifact"],
+    "live": "stream",
+    "live_fallback": "redeploy",
+    "state": "state.json"
+  },
+  "notify": {
+    "laptop": ["banner"],
+    "buildbox": [],
+    "cloud": []
+  }
+}
