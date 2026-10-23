@@ -36,7 +36,7 @@ echo "scopes: the confidential flag and the login (knowledge-layers S1)"
 HD="$HOME"; PJ="$HD/projects"; mkdir -p "$PJ/k/memory" "$PJ/z-1" "$HD/.claude" "$HD/.claude-w"
 git init -q "$PJ/k"; git -C "$PJ/k" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git -C "$PJ/k" worktree add -q "$PJ/k-tree" -b w
-printf '{"accounts": [{"label": "w", "provider": "claude", "home": "~/.claude-w"}, {"label": "gone", "home": "~/.claude-gone"}]}\n' > "$T/acc.json"
+printf '{"accounts": [{"label": "w", "provider": "claude", "home": "~/.claude-w"}, {"label": "gone", "home": "~/.acct-gone"}]}\n' > "$T/acc.json"
 printf '{"repos": {"k": {}, "z-1": {}, "o": {}},\n "scopes": {"node": {"file": "n", "repos": ["k", "z-*"], "confidential": true, "login": "w"},\n  "half": {"file": "h", "repos": ["o"], "confidential": "yes"}}}\n' > "$T/sc.json"
 SP() { CLAUDE_REPOS_JSON="$T/sc.json" ACCOUNTS_FILE="$T/acc.json" py "$1"; }
 check "$(SP 'print(sorted(common.confidential_scopes()))')" "['node']" "confidential_scopes(): only a real true counts"
@@ -69,7 +69,7 @@ GF() { SP "f = common.gather_fence($1)
 for a in [$2]: print(f(*a) if isinstance(a, tuple) else f(a))" | tr '\n' ' ' | sed 's/ $//'; }
 check "$(GF '' "'$PJ/k/docs/x.md', '$WT/a', '$PJ/transcripts/z-1/s.jsonl', '$PJ/o/x', '$PJ/elsewhere'")" "fenced fenced fenced quote quote" \
   "no scope: the confidential scope's checkout, worktree and archive fenced; the rest quoted"
-check "$(GF '' "'$HD/.claude/projects/$SK/s.jsonl', '~/.claude-gone/projects/$SK--claude-worktrees-old/m.md', '$HD/.claude/projects/-other/s.jsonl'")" \
+check "$(GF '' "'$HD/.claude/projects/$SK/s.jsonl', '~/.acct-gone/projects/$SK--claude-worktrees-old/m.md', '$HD/.claude/projects/-other/s.jsonl'")" \
   "fenced fenced quote" "  a login's slug folder, a removed worktree's under a login no row lists: fenced by name"
 check "$(GF '' "(None, '$PJ/o/x'), ('$PJ/o/x', '$PJ/k'), (), (None,)")" "quote fenced fenced fenced" \
   "  any fenced path fences the item; one with no path is never quoted"

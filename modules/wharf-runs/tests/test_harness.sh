@@ -665,7 +665,7 @@ if sys.argv[1] == "pick":
     print(json.dumps({"account": "acct-b", "env": {"CLAUDE_CONFIG_DIR": "/orca data/acct-b"}, "skipped": []}))
 elif sys.argv[1] == "limits":
     lab = sys.argv[2]
-    print(json.dumps([{"label": lab, "here": lab != "claude-gone", "denied": "shop" if lab == "acct-c" else None,
+    print(json.dumps([{"label": lab, "here": lab != "acct-gone", "denied": "shop" if lab == "acct-c" else None,
                        "provider": "codex" if lab.startswith("codex-") else "claude",
                        "env": {} if lab == "acct-a" else {"CLAUDE_CONFIG_DIR": "/orca data/" + lab}, "why": "ok"}]))
 PY
@@ -701,7 +701,7 @@ check "$?" 1 "no login may run it (the ship's waits): exit 1"
 has "$T/err" "ship s stays on acct-b and waits" "  saying why"
 check "$(grep -c 'worktree create' "$STUB_ORCA_CALLS")" 0 "  nothing made in Orca first"
 H run --harness orca --repo "$T/scratch" --name acct6 --prompt x --account acct-c > /dev/null 2>"$T/err"; check "$?" 2 "a login whose deny list names the repo: refused"
-H run --harness orca --repo "$T/scratch" --name acct7 --prompt x --account claude-gone > /dev/null 2>"$T/err"; check "$?" 2 "a login not on this Mac: refused"
+H run --harness orca --repo "$T/scratch" --name acct7 --prompt x --account acct-gone > /dev/null 2>"$T/err"; check "$?" 2 "a login not on this Mac: refused"
 H run --harness orca --repo "$T/scratch" --name acct9 --prompt x --account codex-x > /dev/null 2>"$T/err"; check "$?" 2 "a Codex login named: refused (claude would run on the default login)"
 STUB_ACCOUNT_CODEX=1 H run --harness orca --repo "$T/scratch" --name acct10 --prompt x --account auto > /dev/null 2>"$T/err"; check "$?" 2 "a pick that answers a Codex login: refused"
 H run --harness orca --repo "$T/scratch" --name acct8 --prompt x --account auto --agent codex > /dev/null 2>"$T/err"; check "$?" 2 "--account with a codex worker: refused"
