@@ -35,10 +35,14 @@ jobs:
     # the variable only on a repo whose every writer you trust, never on one that takes forks' PRs.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # A self-hosted Mac's whole check took 18.5 and 22 min (2026-10-21) beside its own sessions,
-    # most of it wharf-runs (about 15) and wharf (about 7); 40 is about twice the slowest run seen
-    timeout-minutes: 40
-    # wharf is private until its scrub: the public twin gets this file but not the module, so its
-    # step runs only where the module is (B5 review).
+    # most of it wharf-runs (about 15) and wharf (about 7); keel (about 10) and helm (about 3)
+    # joined with their scrubs (2026-10-22), so 60 is about twice the slowest run expected
+    timeout-minutes: 60
+    # keel's step runs where its session gate is: hooks/sheep_gate.py stays off the allowlist until
+    # the owner's hand edit (modules/keel/AGENTS.md), and without it keel's sheep fails closed and
+    # its suite with it (178 cases on the twin's files, 2026-10-22). The twin skips keel until then.
+    # helm's step needs that gate too (talk_nudge's cases) and wharf-runs' bin/dispatch (test_helm
+    # reads its record types), one of the files its scrub's D1 holds private.
     steps:
       # On a machine of one's own the runner's login is a real one: HOME, git's global config and the
       # regatta config dir go to this job's temp dir (emptied at each job's start and end), never that
@@ -72,4 +76,4 @@ jobs:
           git config --global init.defaultBranch main
       - name: check
         run: |
-          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && { [ ! -d modules/wharf ] || bash modules/wharf/tests/check.sh; } && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh
+          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || [ ! -f modules/wharf-runs/bin/dispatch ] || bash modules/helm/tests/check.sh; }
