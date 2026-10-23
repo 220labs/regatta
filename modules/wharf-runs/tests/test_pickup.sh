@@ -311,7 +311,7 @@ check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --terminal --account acct-b --
 check "$(git -C "$R" worktree list | wc -l)" "$before" "…before any worktree, lock or fork was touched (code review S1)"
 check "$(AC open alpha --here --account acct-b --no-fetch)" "0" "--here with a named account"
 has "$T/out" "⚠ --account acct-b not applied: here starts nothing" "…says the account was not applied"
-printf '{"accounts":[{"label":"gone","home":"~/.claude-gone"},{"label":"oa","provider":"codex","home":"~/.codex-oa"},{"label":"off","home":"~/.acct-b","enabled":false},{"label":"acct-a","home":"~/.claude","primary":true}]}' > "$T/accounts.json"
+printf '{"accounts":[{"label":"gone","home":"~/.acct-gone"},{"label":"oa","provider":"codex","home":"~/.codex-oa"},{"label":"off","home":"~/.acct-b","enabled":false},{"label":"acct-a","home":"~/.claude","primary":true}]}' > "$T/accounts.json"
 for a in gone oa off; do
   check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account $a --no-fetch)" "1" "--account $a is refused, no traceback"
 done
