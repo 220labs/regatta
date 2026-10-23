@@ -609,9 +609,15 @@ def state(pid, at=None):
                                            "recommended": e.get("recommended"), "backend": e.get("backend"),
                                            "mode": e.get("mode")})
             a["status"] = st or a["status"]
-            for k in ("summary", "reversible", "recommended", "backend", "mode"):
+            for k in ("summary", "reversible", "recommended", "backend", "mode", "doc"):
                 if e.get(k):
                     a[k] = e[k]
+            # skipper-resilience S5: who the last relay went to (bin/ask relay's `to`, set or None),
+            # when, and whether the skipper escalated it — read by the re-hail and the deaf rule
+            if "to" in e:
+                a["to"], a["relayed_at"], a["to_host"] = e.get("to"), e.get("t"), e.get("to_host")
+            if e.get("escalated"):   # `helm skipper --escalate`: one ask the skipper handed the owner
+                a["escalated"] = True
         if e.get("answered"):
             a = asks.get(e["answered"])
             if a:
@@ -712,6 +718,11 @@ def public(st):
                          for b in t.get("blockers") or []]
     for t in out["tasks"]:
         t.pop("tail", None)
+        for a in t.get("asks") or []:
+            # a path on this Mac, a session id and a host (S5's re-hail and deaf rule read them): no
+            # reader of the copy needs them
+            for k in ("doc", "to", "to_host"):
+                a.pop(k, None)
         if t.get("guarded"):
             t["id"] = tokens[t["id"]]
             t["title"] = "a task in a guarded repo"

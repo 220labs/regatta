@@ -264,14 +264,15 @@ def cmd_relay(a):
     # a leased ship's answer names it, so the skipper's `answer` is fenced by that ship's lease (S4);
     # a ship with no lease keeps the reply it always had
     plan_flag = (" --plan " + ctx["plan"]) if leased(ctx.get("plan")) else ""
-    text = "ASK %s %s — %s — Reversible: %s — Recommended: %s%s — doc: %s:%s#L%d — from: %s%s — reply: bin/ask answer %s %s \"<text>\" --from <name> --to %s --task %s%s%s%s%s" % (
+    # the reply's road back, kept in the ship's event too: the scope skipper's re-hail carries it (S5)
+    reply_flags = "%s%s%s" % ((" --to-account " + shlex.quote(ctx["account"])) if ctx.get("account") else "",
+                              (" --space " + space) if listens else "", " --send-only" if remote else "")
+    text = "ASK %s %s — %s — Reversible: %s — Recommended: %s%s — doc: %s:%s#L%d — from: %s%s — reply: bin/ask answer %s %s \"<text>\" --from <name> --to %s --task %s%s%s" % (
         repo, a.item, title, rev, rec if not guarded else "—",
         (" — mode: ask (nobody answers but the owner: card it)" if mode == "ask" else " — mode: %s" % mode) if mode else "",
         repo, rel, it["start"] + 1,
         (ctx.get("session") or "?"), (" page " + space) if space else "",
-        doc, a.item, ctx.get("session") or "<session>", task,
-        (" --to-account " + ctx["account"]) if ctx.get("account") else "",
-        (" --space " + space) if listens else "", " --send-only" if remote else "", plan_flag)
+        doc, a.item, ctx.get("session") or "<session>", task, reply_flags, plan_flag)
     if a.print_curl:
         tctx = dict(ctx, manager=ctx.get("manager") or "$DISPATCH_SKIPPER", space=ctx.get("space") or "$DISPATCH_PLAN_SPACE")
         print(asklib.BACKENDS["talk"].curl(tctx, text))
@@ -293,11 +294,18 @@ def cmd_relay(a):
     data["verdict"] = verdict
     write_asks(top, data)
     status = "waiting" if verdict in ("none", "unreachable") else "relayed"
-    if ctx.get("plan") and helmlib.load_plan(ctx["plan"]):
+    # a skipper's own escalation is no question of the ship's: the ship's questions it batches are
+    # `--escalate`d already, and an event here would be an open ask the re-hail sends back to the
+    # skipper itself (the fifth finish review of S5); it reaches the owner by its WAITING line
+    if ctx.get("plan") and not os.environ.get("SKIPPER_SCOPE") and helmlib.load_plan(ctx["plan"]):
         helmlib.append_event(ctx["plan"], {"task": task, "status": status, "ask": "%s#%s" % (rel, a.item),
                                            "summary": title, "reversible": rev, "recommended": rec, "backend": name, "mode": mode,
                                            "session": ctx.get("session"), "host": helmlib.host(), "harness": helmlib.harness(),
-                                           "repo": str(main_checkout(top))})  # K6: state() guards by it
+                                           "repo": str(main_checkout(top)),  # K6: state() guards by it
+                                           # S5: the doc where it is (the run's worktree, not the main checkout)
+                                           # and who it went to — the scope skipper's re-hail and deaf rule read both
+                                           "doc": str(doc), "to": ctx.get("manager") if verdict not in ("none", "unreachable") else None,
+                                           "to_host": ctx.get("manager_host") or None, "reply_flags": reply_flags})
     if verdict in ("none", "unreachable"):
         pr_asks(top, branch, data["asks"])
         print("no live manager: the ask waits for the owner. Park what rests on %s, build the rest, then end on:" % a.item)

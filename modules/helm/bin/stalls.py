@@ -97,6 +97,7 @@ NOT_STALLS = re.compile(r"^(?:ended by dispatch --end|never started)")
 GONE_ENDS = re.compile(r"^(?:tidied: its claude was gone|claude exited by itself)")
 
 ACTIONS = {"S1": "retry", "S2": "start", "S4": "relaunch"}
+WONT_START = "skipper won't start"   # skipper-resilience S5's class: a scope's skipper failed three starts (raised)
 # a raise to the ship's live skipper: written `skipper` since rename S5, `manager` read forever (stalls.jsonl)
 RAISE_TO_SKIPPER = ("skipper", "manager")
 DISPATCH_KEYS = ("repo", "wt", "model", "effort", "yolo", "pin", "manager", "manager_host", "manager_account",
@@ -931,7 +932,37 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
 
 TITLES = {"S1": "gone %s", "S2": "next step refused by the run cap", "S3": "ended at max lifetime",
           "S4": "launch stopped by the network", "S5": "launch stopped", "S6": "waiting on the owner",
-          "S7": "ready, nobody started it"}
+          "S7": "ready, nobody started it", WONT_START: "(%d failed starts in a row)"}
+
+
+def judge_skippers(host, now, notes=None):
+    """skipper-resilience S5: a scope whose last three skipper starts failed (bin/skipperlib.py's starts
+    log) is one stall of the class `skipper won't start`, raised: the tick starts no fourth, and the
+    yard keeps holding its ships, driving their blocks while nobody answers their questions. A host
+    with no starts log has none; a skipperlib that will not load, or a read that fails, costs this class
+    only — and says so in NOTES (the judge's notes), never silently."""
+    try:
+        import skipperlib
+        found = skipperlib.wont_start_stalls(host)
+    except Exception as e:   # noqa: BLE001 — the class is S5's; the judge's other classes never wait on it
+        if notes is not None:
+            notes.append("stalls: the `%s` class not judged (%s: %s)" % (WONT_START, e.__class__.__name__, str(e)[:160]))
+        return []
+    out = []
+    for scope, fails, info in found:
+        last = fails[0]
+        ev = ["%s %s: %s" % (time.strftime("%m-%d %H:%M", time.localtime(float(f.get("t") or 0))), f.get("event"),
+                             f.get("why") or "?") for f in fails[:3]]
+        # the scope's anchor as the card's repo; a guarded or confidential scope's card is guarded —
+        # its failure text names repo keys, login labels and paths (the board's K6 scrub keeps the column)
+        s = _stall(WONT_START, host, {"topic": "skipper · %s" % scope, "repo": info.get("anchor")}, None,
+                   "%d failed starts in a row, the last: %s — the yard keeps holding; `helm skipper --start %s` from a "
+                   "shell on %s tries again once it is fixed" % (len(fails), last.get("why") or "?", scope, host),
+                   ev, now, float(last.get("t") or now), key=[host, "skipper", scope], key_kind="skipper",
+                   fails=len(fails))
+        s["guarded"] = bool(s.get("guarded") or info.get("guarded"))
+        out.append(s)
+    return out
 
 
 def title(s, now):
@@ -946,6 +977,8 @@ def title(s, now):
         what = "relayed to a manager that is gone"
     elif s["class"] == "S6" and s.get("key_kind") == "question":
         what = "an Orca worker asks"
+    elif s["class"] == WONT_START:
+        what = what % (s.get("fails") or 0)
     return "%s · %s %s" % (s.get("topic") or s.get("branch") or "?", s["class"], what)
 
 
@@ -1013,12 +1046,13 @@ def judge(peer=True, live_call=True):
         unsure += u
         notes += n
     stalls += judge_plans(me, live_ids, all_records, now)
+    stalls += judge_skippers(me, now, notes)
     for x in stalls:
         x["title"] = title(x, now)
         x["column"] = column(x)
     for x in unsure:
         x["title"] = "%s · unsure: %s" % (x.get("topic") or "?", x["rule"])
-    order = {c: i for i, c in enumerate(("S1", "S2", "S4", "S3", "S5", "S6", "S7"))}
+    order = {c: i for i, c in enumerate(("S1", "S2", "S4", "S3", "S5", "S6", "S7", WONT_START))}
     stalls.sort(key=lambda x: (order[x["class"]], -(x.get("since") or 0)))
     # every record, light: B3 matches a retry to the run it started by (repo, topic, brief blob,
     # started after the retry) — the launch review's "the retry died", which `run:` cannot carry

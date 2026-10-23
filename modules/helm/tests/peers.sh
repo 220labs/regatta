@@ -64,6 +64,19 @@ check "$out" "rc=0" "talk_nudge without keel's gate: silent, exit 0"
 out=$(printf '{"tool_name": "AskUserQuestion", "hook_event_name": "PreToolUse"}' | CLAUDE_UNATTENDED=1 python3 "$S/modules/helm/hooks/ask_guard.py" pretool)
 has "$out" '"permissionDecision": "deny"' "ask_guard denies an unattended AskUserQuestion with no peer"
 has "$out" "$S/modules/helm/bin/ask relay" "  … naming this module's bin/ask"
+out=$(python3 - "$SB" <<'PY' 2>&1
+import sys; sys.path.insert(0, sys.argv[1]); import skipperlib
+for f, a in ((skipperlib.pick, ("/x",)), (skipperlib.ensure_trusted, ("/x", {}))):
+    try:
+        f(*a)
+    except skipperlib.Refused as e:
+        print(e)
+print(skipperlib.ensure(True))
+PY
+)
+check "$out" "no login (lighthouse's account is not installed)
+no trust check (wharf-runs' dispatch-rc is not installed)
+[]" "S5's skipper without lighthouse or wharf-runs: a refusal naming each, no traceback; no lease, no line"
 
 echo "the core gone: the libraries raise or step aside, the CLIs say one line"
 N="$T/nocore"; mkdir -p "$N"; cp -R "$H" "$N/"; rm -f "$T/config/legacy"

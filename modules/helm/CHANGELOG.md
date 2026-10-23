@@ -1,18 +1,56 @@
 # Changelog — helm
 
-## 0.2.0 — 2026-10-22
+## Unreleased
 
-Public: the scrub.
-- No owner, host, person or overlay path in the module's text. The owner is the core's
-  `regatta/owner`; the people a human task waits on are `helm/people`; the laptop is
-  `regatta/laptop`, the peers and the build box's run cap `wharf-runs/ssh`; the Talk service's URL
-  and hosts are `helm/talk-url` and `helm/talk-hosts` (`config-keys`).
-- `asklib.relayed_by_owner` and `owner_source` replace the owner-named pair; an old
-  `relayed_by_*` name still resolves. Relay-log rows go to the core's log dir.
-- The board's people columns are `Needs <owner>` and `Needs <second person>` (or `others`); its
-  state's header is `needs_owner` and `owner`. Its buttons mark the pressed one with `data-on`.
-- Without keel, the guarded list is the core's (registry and `regatta/guarded`), not a copy.
-- The suites run on a synthetic config dir (`tests/config_fixture.sh`) and need no overlay.
+skipper-resilience S5, the per-scope skipper.
+- `helm skipper --start SCOPE [--dry-run]` and `--stop SCOPE [--why W]`, both refused under
+  `CLAUDE_CODE_SESSION_ID`: a one-shot launchd job per start (`dev.regatta.helm.skipper-<scope>-<start id>`,
+  RunAtLoad, no KeepAlive) around `screen -D -m -S skipper-<scope>`, every older label booted out and the
+  screen quit first; `--stop` hands the ships back to the yard first.
+- `libexec/skipper-run` → `bin/skipperlib.py run`: a login every repo of the scope allows (the anchor's
+  pick, else a denying repo's), refused at once when not signed in (`claude auth status`) or the anchor
+  stays untrusted; the scope's Talk page, the record `<host>-<scope>.json`, then `exec claude` with the fixed brief.
+- The tick's pass after wharf's (`ensure_skippers`, armed only): a lapse or a deaf skipper handed to the
+  yard, a start with no ship taken in 5 minutes failed, open questions re-hailed once per (question, gen),
+  the 30-minute belt, the 04:00 hand-over, at most one start per scope; three failed starts are the stall
+  class `skipper won't start`. `helm skipper --ships` says when nothing but the owner's blocks is open.
+- `asklib.standing_manager(host, scope)`; `resolve` and `ask_guard` take the run's scope's skipper first.
+- The finish review's fixes: `--stop --dry-run` stops nothing; the runner deletes its plist first and
+  refuses a stale or judged start; `CLAUDE_UNATTENDED=skipper`; `--start` over a live skipper stops it
+  first; screens quit by pid; an `account allowed` crash is "could not tell"; `ask relay`'s ship event
+  carries `doc` and `to`, so the re-hail names the doc where it is and the deaf rule charges only a
+  question that woke the holder; re-hails go by `talk` or `file` only, retried when no road took them;
+  escalation is marked on the ask; a start that took before its record went is `took`; the belt's
+  idle mark is per start; the pass that logs a third failure starts no fourth; asklib's scope reader
+  matches through the core's `scope_of_repo`.
+- Round 2: `--start`/`--stop` and the tick's acting pass refuse `CLAUDE_UNATTENDED` and any process below a
+  live session; one TAKE_WITHIN window (no 290 s gap) and a grace for a claude not yet registered; a
+  scope is read through a registry key only (a glob took a worktree path); only Talk wakes a skipper —
+  no Talk page refuses the start, a queued re-hail is a try, deafness counts Talk alone, a dialog
+  (`waiting`) is deafness too; the runner logs to its own file; `helm skipper --escalate PLAN REF`
+  (checked, stamps nothing); the stall carries the anchor, is guarded for a guarded or confidential
+  scope and goes once no ship is live; the re-hail keeps the relay's reply flags and leaves a question
+  relayed to another Mac alone; hand-backs are compare-and-swap (`leaselib.hand_back`); the tick's start
+  evicts no recordless holder; a hand start's own failure is not one of the tick's three.
+- Round 3: a relay goes to a scope skipper only for a ship its scope leases (read from skipper.json, no
+  path), never a skipper's own; the tick's stops hand back only the record's session's ships; a claude
+  that ends within 30 minutes of its start is a failed start though it took; questions held by mode
+  ask or dnd (the task's or the plan's mode, then the ask's recorded one, as `ask answer` reads it;
+  the re-hail tags the same) or answered in the doc are the owner's; a hand stop before the take
+  ends that start; the start makes SCREENDIR; one bad record costs one scope; the
+  stall class's read failure is a note; wharf relays a `skipper: scope` ship's Orca question by Talk
+  to its skipper, else the board, never the file road.
+- Its review: any end within 30 minutes of a start (a lapse, deafness, a sidecar that takes nothing,
+  a crash) is a failed start; after three the tick tries once an hour; record_alive and --stop check the
+  registry's procStart (UTC) against the pid's start; the runner refuses itself a minute inside
+  TAKE_WITHIN; the tick's pass re-reads the kill time before each scope; choose_login tries the walk's
+  other rows before refusing; a crashed `dispatch-rc trusted` is "could not tell"; the stall needs a ship
+  that needs a skipper; `--escalate` checks and marks under the plan's lock.
+- The finish review: a relay `resolve()` hands to the scope skipper for a missing manager never takes
+  the file road (wharf's yard-held or lapsed scope ship goes to the board); a skipper's own relay
+  writes no ship event; the re-hail tags the mode the question is judged in; session_ancestor checks
+  the registry's procStart; a torn lease costs that ship's hand-back only, and a holder whose every
+  hand-back failed is not stopped.
 
 crosstalk S11b, the helm side of the lookout's fixes before arming (S7's review; S6's landing review 19–22).
 - The tick runs on the laptop only, as the sweep: `poll_tick` returns on any other host.
@@ -64,6 +102,20 @@ skipper-modes S1, S3b, S5 and its landing review.
   refuses a skipper's answer in mode `ask`. The board: WAITING cards from both Macs (repo, "waiting
   on <owner>", a link; stalls' probe reads the last line only), a peer's permission prompts, course
   and GitHub links on ask cards, held dnd items in the owner's column; `ask poll` renders and deploys it.
+
+## 0.2.0 — 2026-10-22
+
+Public: the scrub.
+- No owner, host, person or overlay path in the module's text. The owner is the core's
+  `regatta/owner`; the people a human task waits on are `helm/people`; the laptop is
+  `regatta/laptop`, the peers and the build box's run cap `wharf-runs/ssh`; the Talk service's URL
+  and hosts are `helm/talk-url` and `helm/talk-hosts` (`config-keys`).
+- `asklib.relayed_by_owner` and `owner_source` replace the owner-named pair; an old
+  `relayed_by_*` name still resolves. Relay-log rows go to the core's log dir.
+- The board's people columns are `Needs <owner>` and `Needs <second person>` (or `others`); its
+  state's header is `needs_owner` and `owner`. Its buttons mark the pressed one with `data-on`.
+- Without keel, the guarded list is the core's (registry and `regatta/guarded`), not a copy.
+- The suites run on a synthetic config dir (`tests/config_fixture.sh`) and need no overlay.
 
 ## 0.1.0 — 2026-10-20
 

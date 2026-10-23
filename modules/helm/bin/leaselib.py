@@ -105,6 +105,11 @@ def _event(pid, word, rec, **extra):
     return helmlib.append_event(pid, ev)
 
 
+def note(pid, word, rec, **extra):
+    """One events.jsonl line about a lease that does not change it (S5's `skipper won't start`)."""
+    return _event(pid, word, rec, **extra)
+
+
 def write_yard(pid, scope, host, why, event="held by yard"):
     """The yard holds the ship: gen 0 on a ship with no lease yet (wharf apply --yard), else the gen
     after the file's (a skipper stood down, or S5's tick saw a lapse). One event, `event`."""
@@ -154,6 +159,21 @@ def stand_down(pid, session):
             raise Refused("%s: no longer this session's — left as it is" % pid)
         return write_yard(pid, cur.get("scope"), cur.get("host") or helmlib.host(), "stood down: %s" % cur["holder"],
                           event="stood down")
+
+
+def hand_back(pid, gen, session, why, event="held by yard", only_lapsed=False):
+    """The tick's hand-over (S5: a lapse, a deaf holder, a stop): the ship back to the yard only if the
+    lease is still at GEN and held by SESSION — and, with ONLY_LAPSED, still past its until — checked
+    and written under one lock, so a ship taken, handed back or renewed in between is left as it is
+    (Refused), never moved on from a read the pass made earlier."""
+    with helmlib.locked(pid):
+        cur = read(pid)
+        if cur is None or cur["holder"] == YARD or cur["gen"] != gen or cur.get("session") != session:
+            raise Refused("%s: moved since it was read (now %s at gen %s) — left as it is" % (
+                pid, (cur or {}).get("holder"), (cur or {}).get("gen")))
+        if only_lapsed and not lapsed(pid, rec=cur):
+            raise Refused("%s: renewed since it was read — left as it is" % pid)
+        return write_yard(pid, cur.get("scope"), cur.get("host") or helmlib.host(), why, event=event)
 
 
 def renew(pid, gen):
