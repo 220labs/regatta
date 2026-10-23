@@ -15,7 +15,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `bin/trust-projects` | accept Claude Code's folder-trust dialog for every repo under the projects folder |
 | `bin/tiling` | yabai's window layout, applied at every yabai start |
 | `hooks/account_guard.py` | refuses a prompt in a repo the session's login may not open |
-| `hooks/secrets_guard.py` | closes the secrets folders and the live settings file to agents |
+| `hooks/secrets_guard.py` | closes the secrets folders and the live settings file to agents, and a confidential scope's paths to a session outside it (the fence) |
 | `hooks/design_route.py` | a new design artifact is made on the primary login, and shared as it is made |
 | `hooks/tool_path.py` | the package managers' bin dirs on every session's Bash PATH |
 | `tests/check.sh` | every suite; scratch dirs only, no network |
@@ -84,7 +84,9 @@ an override is never exported.
 | `wharf-runs/serve-label` | the Orca serve agent's launchd label (wharf-runs' key, read here) | `health` | — | `org.regatta.orca-serve`; no such LaunchAgent on the Mac: the line is skipped |
 
 The core's own keys are read as the core reads them: `regatta/owner` (the name in a refusal),
-`regatta/projects`, `regatta/orca-deny` (ORCA_ROW's list). `install.sh --check` lists each key
+`regatta/projects`, `regatta/orca-deny` (ORCA_ROW's list), `regatta/log-dir` (where the fence
+writes `fence.log`); and wharf's `wharf/repos.json` (`CLAUDE_REPOS_JSON`), whose scopes' `confidential`
+flag the fence reads. `install.sh --check` lists each key
 found or not.
 
 A peer is found through the core (`common.tool()`): wharf's `fork_claude_session.py`,
@@ -98,6 +100,15 @@ verb that needs it says so in one line and the rest runs (the design's G16–G18
 nothing from the core, so it guards where the core is missing too; `account_guard` and
 `design_route` fail closed when the core is missing or broken (a refusal naming the repair). They
 stop accidents, not intent: each header says what it does not see.
+
+**The fence** (`secrets_guard`, since 2026-10-21): a scope the registry flags `"confidential": true`
+(wharf's `scopes set <scope> --confidential`) is closed to every session whose cwd — and start
+directory — is outside it: its checkouts and worktrees, its transcripts folder and each login's
+session folder for them (`projects/<slug>/`: the session logs and the memory dir), by Read, Edit,
+Write, NotebookEdit, Grep, Glob and Bash. A session inside the scope reads all
+of it, open scopes stay open, and each refusal adds one line (time, scope, tool, cwd, session; never
+the path) to `<log-dir>/fence.log`. The paths are the core's `scope_paths()`, mirrored in the stdlib;
+`tests/hooks.sh` proves the two agree.
 
 ## beacon — support: a site's contact form and its bot
 

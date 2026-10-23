@@ -7,7 +7,7 @@ contact books, third parties' phone numbers, read by the messaging tool in its o
 The owner, 2026-09-25: read-only at first, then "agents don't need reads in secrets either. They
 are passed via .env to whichever apps need them … But agents should be able to symlink to them."
 
-A PreToolUse hook on Read|Grep and Edit|Write|NotebookEdit|Bash, installed user-wide (the
+A PreToolUse hook on Read|Grep|Glob and Edit|Write|NotebookEdit|Bash, installed user-wide (the
 overlay's `bootstrap.sh --hooks`, or this plugin's hooks.json). The folder holds every repo's
 `.env`, and a repo's `.env` is a symlink into it (the home repo's docs/secrets-2026-09-24.md).
 Apps read their values themselves through that link — `python3 scripts/ha.py …` never names the
@@ -24,7 +24,7 @@ a hook, not a tool call, so nothing here reaches it.
 
 File tools: Read, Edit, Write, NotebookEdit on a path that resolves into the folder — through
 symlinks, so a repo's `.env` counts — and Grep on it or on a folder that holds it. Glob lists
-names only and is not matched.
+names only and is not matched for these folders (the fence below matches it).
 
 Bash, read from the command text as checkpoint.py's push guard is — it stops accidents, not
 intent. Refused: any word, redirection (`<`, `>`), `$(…)` / backtick body, `--opt=value` or
@@ -79,15 +79,45 @@ the verb inside the same string literal as `sessionpipe`, flags allowed between
 not `"sessionpipe" in l and "install" in l`, nor …/sessionpipe/dist/commands/install.js. Not
 seen: a command a program builds at run time, or one a script runs from its arguments.
 
+Also, since 2026-10-21 (knowledge-layers S2; the design's D3): the fence. A scope the registry flags
+`"confidential": true` is closed to every session whose cwd is outside it — its checkouts and their
+worktrees, its transcripts folder, each login's session folder for them (`projects/<slug>/`: the
+session transcripts and the memory dir both), the paths the core's scope_paths() names, mirrored here
+in the stdlib. Read, Edit, Write, NotebookEdit and Grep as above;
+Glob when its path is inside or its pattern descends into one; Bash as above, with three changes for
+names, not only contents: `ls` and `stat` are refused, a command after a `cd` or `pushd` into the
+scope is, and git is judged by the tree it runs in (`-C`, `--git-dir`, `GIT_DIR=`, the cwd) and the
+paths a diff, clone, fetch or `--output=` reads, never by its words, as a grep's pattern is text. A
+walker (`grep -r`, rg, ag, ack, find, du, tree, `ls -R`) is judged by the folders it walks — its
+arguments that exist, else its cwd, unless it reads a pipe — and refused over one that holds the
+scope, counting only the scope's folders this Mac has. A word the shell would expand
+(`<projects>/*/memory`) is expanded here and each match below a fenced folder judged; a match that is
+the folder's own name only names it (`ls -d <projects>/*`, `for r in <projects>/*/`, as a Glob of the
+repos' names), save for a walker or a plain `ls`. A removed worktree's session folder
+(`<slug>--claude-worktrees-<topic>`) is fenced too. A session inside the scope reads it all, and every
+open scope stays open. The refusal names the scope and the way out, and appends one line to the log
+dir's fence.log (the section's own comment says what it holds; a cwd in a scope's paths is `-`).
+Not seen: a path a program builds or a script reads by itself (week-digest, a dream's gather) — the
+passes bound those (S4), not this hook; brace expansion and zsh's recursive `**`; a differently cased
+path on a case-insensitive disk; a glob's matches past the first 2000; chained `-C`; the body of a
+`for` loop over the projects folder and `$(echo <path>)` handed to a reader; listers it does not know
+(`fd`, `mdfind`); a session folder of a subfolder of a checkout (`<slug>-<sub>`, which a sibling
+repo's name would also match).
+
 Fails open: an error in here lets the call through rather than blocking every tool in every
-session. Tests: tests/hooks.sh, "secrets_guard".
+session. Tests: tests/hooks.sh, "secrets_guard" and "the fence".
 """
+import fnmatch
 import glob
+import itertools
 import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+import time
+from pathlib import Path
 
 CONFIG = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or os.path.join("~", ".config", "regatta"))
 
@@ -222,6 +252,17 @@ def secrets_dirs():
     return [os.path.realpath(d) for d in ([override] if override else mounted())]
 
 
+class Rules:
+    """What one wall refuses: its folders (real paths), the raw-text pattern for a path the hook
+    cannot resolve, the token pattern code is judged by, the verbs that never open a file, and —
+    the fence only — whether a command after a `cd` into a folder counts as touching it, git
+    judged by the tree it runs in and a grep's pattern taken as text."""
+
+    def __init__(self, dirs, literal, candidate, harmless, fence=False):
+        self.dirs, self.literal, self.candidate, self.harmless, self.fence = dirs, literal, candidate, harmless, fence
+        self.present = [d for d in dirs if os.path.lexists(d)] if fence else dirs
+
+
 def resolve(path, cwd, follow=True):
     p = os.path.expanduser(os.path.expandvars(path))
     if not os.path.isabs(p):
@@ -231,19 +272,34 @@ def resolve(path, cwd, follow=True):
     return os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
 
 
-def inside(path, cwd, dirs, follow=True):
+def inside(path, cwd, r, follow=True):
     if not path:
         return False
-    if LITERAL and LITERAL.search(path):
+    if r.literal and r.literal.search(path):
         return True
+    if r.fence and any(c in path for c in "*?["):   # a word the shell expands: `cat <projects>/*/memory/x.md`
+        # a match below a fenced folder; the folder's own name is a name, as glob_reaches() lets a Glob
+        # of the repos' names pass (`ls -d <projects>/*`, `for r in <projects>/*/`); a walker counts it (fence_hit)
+        for hit in expand(path, cwd):
+            if any(x.startswith(d + os.sep) for x in (resolve(hit, cwd, follow),) for d in r.dirs):
+                return True
     p = resolve(path, cwd, follow)
-    return any(p == d or p.startswith(d + os.sep) for d in dirs)
+    return any(p == d or p.startswith(d + os.sep) for d in r.dirs)
 
 
-def holds(path, cwd, dirs):
-    """path is a folder the secrets folder sits somewhere under."""
+def holds(path, cwd, r):
+    """path is a folder one of the rules' folders sits somewhere under. The fence counts only the
+    folders this Mac has: a scope's checkout on another Mac leaves `find <projects>` alone here."""
     p = resolve(path, cwd)
-    return any(d.startswith(p.rstrip(os.sep) + os.sep) for d in dirs)
+    return any(d.startswith(p.rstrip(os.sep) + os.sep) for d in (r.present if r.fence else r.dirs))
+
+
+def expand(word, cwd):
+    """The shell's matches of a word with `*?[` (at most 2000), else the word itself."""
+    if not any(c in word for c in "*?["):
+        return [word]
+    e = os.path.expanduser(os.path.expandvars(word))
+    return list(itertools.islice(glob.iglob(e if os.path.isabs(e) else os.path.join(cwd, e)), 2000)) or [word]
 
 
 def unquoted_newlines_to_semicolons(cmd):
@@ -342,19 +398,142 @@ def verb_of(words):
     return os.path.basename(words[0]) if words else ""
 
 
-def code_hit(verb, code, cwd, dirs, depth):
+def code_hit(verb, code, cwd, r, depth):
     """A heredoc body or `-c` string: shell code is judged as a command, other code by the
     paths it names."""
     if verb in SHELL:
-        return bash_hit(code, cwd, dirs, depth + 1) if depth < 3 else None
-    for c in CANDIDATE.findall(code):
-        if inside(c, cwd, dirs):
+        return bash_hit(code, cwd, r, depth + 1) if depth < 3 else None
+    for c in r.candidate.findall(code):
+        if inside(c, cwd, r):
             return f"`{verb}` code that names {c}"
     return None
 
 
-def bash_hit(cmd, cwd, dirs, depth=0):
-    """What the command would read or write in the folder, or None."""
+GREPS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
+# git's options that name the tree it runs in: the fence judges git by that tree, not its words,
+# so a commit message or a log grep that names a fenced path passes.
+GIT_TREE_OPTS = ("-C", "--git-dir", "--work-tree")
+
+
+# A grep option that carries the pattern, so the first word is a file: `-e x`, `-ex`, `-rnex`,
+# `--regexp=x`, `-f list`; and rg's that take none at all (`rg --files <dir>` lists a tree).
+GREP_PATTERN_OPT = re.compile(r"^(-[A-Za-z0-9]*[ef]|--regexp(=|$)|--file(=|$))")
+GREP_NO_PATTERN = {"--files", "--type-list"}
+# The greps that recurse with no -r, and read the cwd when given no path.
+WALKS_BY_DEFAULT = {"rg", "ag", "ack"}
+# Walkers that walk the cwd when handed no path (find on macOS needs one).
+CWD_WALKERS = {"grep", "egrep", "fgrep", "ls", "du", "tree"} | WALKS_BY_DEFAULT
+# Copiers walk their sources, never their target (`cp x <projects>/` copies one file in).
+COPIERS = {"cp", "ditto", "rsync", "scp"}
+RECURSE_FLAG = re.compile(r"^(-[A-Za-z0-9]*[rR]|--recursive$|--dereference-recursive$|--directories=recurse$)")
+# Options whose value is the next word, not a path: rg's and grep's globs, types, counts, context.
+WALK_VALUE_OPTS = {"-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "--include", "--exclude",
+                   "--exclude-dir", "-f", "--file", "--ignore-file", "-m", "--max-count", "-A", "-B", "-C",
+                   "-e", "--regexp", "--max-depth", "-d"}
+
+
+def fence_walks(verb, opts):
+    """The command walks a tree (so a folder that holds the scope counts as touching it)."""
+    if verb in ("grep", "egrep", "fgrep", "rm", "chmod", "chown"):
+        return any(RECURSE_FLAG.match(o) for o in opts)
+    if verb == "ls":
+        return any(re.match(r"^(-[A-Za-z0-9]*R|--recursive$)", o) for o in opts)
+    if verb == "cp":
+        return any(re.match(r"^(-[A-Za-z0-9]*[rRa]|--recursive$|--archive$)", o) for o in opts)
+    return verb in {"find", "du", "tree", "tar", "zip", "ditto", "rsync", "scp"}   # rg, ag, ack: unless they read a pipe
+
+
+def walk_paths(verb, rest):
+    """The words a walker walks: find's before its expression, else every word that is not an
+    option or an option's value."""
+    if verb == "find":
+        out = []
+        for w in rest:
+            if w.startswith(("-", "(", "!")) and w not in ("-H", "-L", "-P"):
+                break
+            if not w.startswith("-"):
+                out.append(w)
+        return out
+    out, skip = [], False
+    for w in rest:
+        if skip:
+            skip = False
+        elif w in WALK_VALUE_OPTS:
+            skip = True
+        elif not w.startswith("-"):
+            out.append(w)
+    return out
+
+
+def _find_depth(rest):
+    """find's -maxdepth, or None."""
+    for i, w in enumerate(rest[:-1]):
+        if w == "-maxdepth" and rest[i + 1].isdigit():
+            return int(rest[i + 1])
+    return None
+
+
+# git's subcommands that read a path or another repository named in their arguments: a diff goes
+# --no-index by itself on a path outside the tree; clone, fetch and pull read the repo they name.
+GIT_READS_PATHS = {"diff", "clone", "fetch", "pull", "ls-remote", "archive", "hash-object"}
+# What a walker's help, version or list run prints: no tree.
+NO_WALK = {"--version", "-V", "-h", "--help", "--type-list"}
+
+
+def fence_hit(verb, rest, args, cwd, r, piped=False):
+    """The fence's own reading of one simple command, or (None, args) to go on with: git by the tree
+    it runs in and the paths it reads, any other verb by the cwd a `cd` left it in, a grep's first
+    word as its pattern, and a walker by the folders it walks — its arguments that exist, else the
+    cwd, unless it reads a pipe (review S2, 2026-10-22)."""
+    if verb == "git":
+        trees = [rest[i + 1] for i, w in enumerate(rest[:-1]) if w in GIT_TREE_OPTS]
+        trees += [w.split("=", 1)[1] for w in rest if w.startswith(("--git-dir=", "--work-tree=", "--output="))]
+        if GIT_READS_PATHS & set(args[:1] + [a for a in args[:3] if a in GIT_READS_PATHS]):
+            trees += [a for a in args[1:] if a not in GIT_READS_PATHS]
+        hit = next((t for t in trees for m in expand(t, cwd) if inside(m, cwd, r)), None) or (cwd if inside(cwd, cwd, r) else None)
+        return (f"`git` in {hit}" if hit else ""), args
+    if verb not in r.harmless and inside(cwd, cwd, r):
+        return f"`{verb}` in {cwd}", args
+    if verb in r.harmless:   # echo and printf print what a glob expands to: the scope's file names
+        hit = next((a for a in args if any(c in a for c in "*?[") and inside(a, cwd, r)), None)
+        return (f"`{verb}` of {hit}" if hit else None), args
+    opts = [w for w in rest if w.startswith("-")]
+    if (verb in GREPS and args and not any(GREP_PATTERN_OPT.match(o) for o in opts)
+            and not (GREP_NO_PATTERN & set(opts))):
+        args = args[1:]   # the pattern: text that may name a path, never a file it opens
+    walks = fence_walks(verb, opts) or (verb in WALKS_BY_DEFAULT and not piped and "-" not in rest
+                                        and not NO_WALK & set(opts))
+    if walks or (verb == "ls" and not any(re.match(r"^-[A-Za-z0-9]*d", o) for o in opts)):
+        # an option's value (`-g '*.md'`, `-m 5`, `-e x`) is no path: the walked folders are the
+        # words that exist, each glob expanded, a copier's sources only; none, and a walker that
+        # defaults to it walks the cwd
+        words = walk_paths(verb, rest)
+        if verb in GREPS and words and not any(GREP_PATTERN_OPT.match(o) for o in opts) and not (GREP_NO_PATTERN & set(opts)):
+            words = words[1:]
+        if verb in COPIERS:
+            words = words[:-1]
+        found = [m for a in words for m in expand(a, cwd) if os.path.lexists(resolve(m, cwd))]
+        depth = _find_depth(rest) if verb == "find" else None
+
+        def reaches(m):
+            if inside(m, cwd, r):
+                return True
+            if not walks or not holds(m, cwd, r):   # ls: one level
+                return False
+            if depth is None:
+                return True
+            base = resolve(m, cwd).rstrip(os.sep)   # `find <dir> -maxdepth N` lists names N levels down
+            return any(d.startswith(base + os.sep) and d[len(base) + 1:].count(os.sep) + 1 < depth for d in r.present)
+        hit = next((m for m in found if reaches(m)), None)
+        if hit:
+            return f"`{verb}` over {hit}, which holds the folder", args
+        if walks and verb in CWD_WALKERS and not any(os.path.isdir(resolve(m, cwd)) for m in found) and holds(cwd, cwd, r):
+            return f"`{verb}` over {cwd}, which holds the folder", args
+    return None, args
+
+
+def bash_hit(cmd, cwd, r, depth=0):
+    """What the command would read or write in the rules' folders, or None."""
     cmd, bodies = split_heredocs(cmd)
     for line, body, _ in bodies:   # a body is data unless an interpreter or a shell reads it
         try:
@@ -363,22 +542,22 @@ def bash_hit(cmd, cwd, dirs, depth=0):
             seg = line.split()
         verb = verb_of(seg)
         if INTERPRETER.match(verb) or verb in SHELL or verb == "eval":
-            hit = code_hit(verb, body, cwd, dirs, depth)
+            hit = code_hit(verb, body, cwd, r, depth)
             if hit:
                 return hit
     if depth < 3:   # $(…) and backticks run even inside double quotes; not inside single ones
         for m in SUBST.finditer(blank_single_quoted(cmd)):
-            hit = bash_hit(m.group(1) or m.group(2) or "", cwd, dirs, depth + 1)
+            hit = bash_hit(m.group(1) or m.group(2) or "", cwd, r, depth + 1)
             if hit:
                 return hit
     try:
-        segs = list(segments(cmd))
+        segs = list(segments_with_seps(cmd))
     except ValueError:   # unbalanced quotes: judge path-like mentions in the raw text
-        for c in CANDIDATE.findall(cmd):
-            if ("/" in c or c == ".env") and inside(c, cwd, dirs):
+        for c in r.candidate.findall(cmd):
+            if ("/" in c or c == ".env") and inside(c, cwd, r):
                 return f"{c}, in a command this guard could not parse"
         return None
-    for seg in segs:
+    for seg, sep in segs:
         words, skip = [], False
         for i, tok in enumerate(seg):
             if skip:
@@ -387,41 +566,58 @@ def bash_hit(cmd, cwd, dirs, depth=0):
             if is_redirect(tok):
                 nxt = seg[i + 1] if i + 1 < len(seg) else ""
                 skip = True
-                if nxt and not nxt.isdigit() and not nxt.startswith("&") and inside(nxt, cwd, dirs):
+                if nxt and not nxt.isdigit() and not nxt.startswith("&") and inside(nxt, cwd, r):
                     return f"a redirection {'into' if '>' in tok else 'from'} {nxt}"
                 continue
             words.append(tok)
-        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in WRAPPERS):
+        if r.fence and words and words[0] == "for":   # `for r in <projects>/*/`: names, as echo prints them
+            continue
+        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in WRAPPERS
+                         or (r.fence and words[0] in KEYWORDS)):
+            m = re.match(r"^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=(.*)$", words[0])
+            if r.fence and m and inside(m.group(2), cwd, r):
+                return f"`git` in {m.group(2)}"
             words.pop(0)
         if not words:
             continue
         verb, rest = os.path.basename(words[0]), words[1:]
         opts = [w for w in rest if w.startswith("-")]
         args = [w for w in rest if not w.startswith("-")]
-        if verb == "cd":
-            cwd = resolve(args[0], cwd) if args else os.path.expanduser("~")
+        if verb == "cd" or (r.fence and verb == "pushd"):   # the fence takes a glob's first match, as the shell does
+            cwd = resolve(expand(args[0], cwd)[0] if r.fence else args[0], cwd) if args else os.path.expanduser("~")
             continue
         if (verb == "secrets" or any(w.endswith("bin/secrets") for w in words)) and "--fix" in words:
             return ("`secrets check --fix` — link with `ln -s`; empty placeholders arrive at the "
                     "next session start")
-        if verb in HARMLESS:
+        if r.fence:
+            hit, args = fence_hit(verb, rest, args, cwd, r, sep in ("|", "|&"))
+            if hit is not None:
+                if hit:
+                    return hit
+                continue
+        if verb in r.harmless:
             continue
         if verb == "ln" and any(re.match(r"^-[A-Za-z]*s|^--symbolic$", o) for o in opts):
             continue
         follow = verb not in LINK_ITSELF
-        values = [words[0]] + args + [w.split("=", 1)[1] for w in rest if "=" in w]
+        # a fence grep's pattern is text, `--regexp=<path>` and `'X=<path>'` too
+        eq = [w for w in rest if "=" in w and not (r.fence and verb in GREPS and not (w.startswith("-") and not w.startswith("--regexp=")))]
+        values = [words[0]] + args + [w.split("=", 1)[1] for w in eq]
         for v in values:
-            if inside(v, cwd, dirs, follow):
+            if inside(v, cwd, r, follow):
                 return f"`{verb}` on {v}"
         if INTERPRETER.match(verb) or verb in SHELL or verb == "eval":
             code = [rest[j + 1] for j, o in enumerate(rest[:-1]) if re.match(r"^-[A-Za-z]*[ce]$", o)]
             for c in (code if verb != "eval" else rest):
-                hit = code_hit("sh" if verb == "eval" else verb, c, cwd, dirs, depth)
+                hit = code_hit("sh" if verb == "eval" else verb, c, cwd, r, depth)
                 if hit:
                     return hit
-        if verb in RECURSIVE or (verb == "find" and {"-exec", "-execdir", "-ok", "-okdir"} & set(rest)):
-            for a in args:
-                if holds(a, cwd, dirs):
+        if not r.fence and (verb in RECURSIVE or (verb == "find" and {"-exec", "-execdir", "-ok", "-okdir"} & set(rest))):   # the fence: fence_hit
+            # a grep walks only with -r, and never its pattern: `ls -p ~ | grep -v /` holds nothing
+            walked = ([] if not any(RECURSE_FLAG.match(o) for o in opts) and verb in ("grep", "egrep", "fgrep")
+                      else args[1:] if verb in GREPS and not any(GREP_PATTERN_OPT.match(o) for o in opts) else args)
+            for a in walked:
+                if holds(a, cwd, r):
                     return f"`{verb}` over {a}, which holds the folder"
     return None
 
@@ -666,6 +862,268 @@ def sheep():
     return "sheep"
 
 
+def module_tool(module, name):
+    """A regatta module's bin tool by the path a session can run, as sheep() finds keel's."""
+    for base, rel in ((config_lines("home"), ("modules", module, "bin", name)), (config_lines("legacy"), ("bin", name))):
+        if base and os.path.isfile(os.path.join(os.path.expanduser(base[0]), *rel)):
+            return os.path.join(os.path.expanduser(base[0]), *rel)
+    return name
+
+
+# ---- the fence (knowledge-layers S2, 2026-10-21) ------------------------------------------------
+# A scope flagged `"confidential": true` in the registry is a node nothing outside it reads: a
+# session whose cwd is outside the scope is refused the scope's paths, a session inside it is not,
+# and every open scope stays open. The paths are the core's scope_paths(), mirrored below in the
+# stdlib because the guard imports no core (tests/hooks.sh proves the two agree on a fixture; a
+# change to one is a change to both). Like the rest of this file it stops accidents, not intent.
+#
+# Inside means the hook's cwd is in one of the scope's paths and so is $CLAUDE_PROJECT_DIR when
+# Claude Code sets it: a session that only `cd`s into the scope keeps its outside start, as the
+# Bash tool carries a cd over into the next call's cwd. Every refusal appends one line to the
+# log dir's fence.log — time, scope, tool, cwd, session — and never the path asked for: the weekly
+# dream reads that log (G3), and a file name inside the scope is the scope's.
+
+def _registry():
+    """(repos, scopes), as the core's scope_registry(): ({}, {}) when the registry cannot be read."""
+    p = os.environ.get("CLAUDE_REPOS_JSON") or os.path.join(CONFIG, "wharf", "repos.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        repos, scopes = d.get("repos") or {}, d.get("scopes") or {}
+        return (repos, scopes) if isinstance(repos, dict) and isinstance(scopes, dict) else ({}, {})
+    except (OSError, ValueError, AttributeError):
+        return {}, {}
+
+
+def _path_key(name, default):
+    v = (config_lines("regatta/" + name) or [""])[0]
+    return Path(v).expanduser() if v and os.path.isabs(os.path.expanduser(v)) else default
+
+
+def _members(scope, repos):
+    out = []
+    listed = (scope or {}).get("repos")
+    for m in listed if isinstance(listed, list) else []:   # the core's scope_members: a list only
+        if not isinstance(m, str):
+            continue
+        hits = sorted(k for k in repos if fnmatch.fnmatchcase(k, m)) if any(c in m for c in "*?[") else [m]
+        out += [k for k in hits if k not in out]
+    return out
+
+
+def _login_dirs(home):
+    """The core's login_dirs(): the home folder's .claude and each accounts.json row's config dir
+    that exists, the Orca logins read back included, in the core's order (account_rows, account_home)."""
+    def load(p):
+        try:
+            return json.loads(Path(p).read_text())
+        except Exception:
+            return None
+    orca = os.environ.get("ACCOUNT_ORCA_FILE") or str(home / ".claude" / "account-orca.json")
+    try:
+        f = os.environ.get("ACCOUNTS_FILE") or os.path.join(CONFIG, "lighthouse", "accounts.json")
+        rows = json.loads(Path(f).read_text(encoding="utf-8")).get("accounts") or []
+    except (OSError, ValueError, AttributeError):
+        rows = []
+    rows = [dict(a) for a in rows or [] if isinstance(a, dict)]
+    synced = load(orca)
+    synced = synced if isinstance(synced, dict) else {}
+    named = {a.get("label") for a in rows}
+    extra = [{"label": label, "via": "orca", "provider": e.get("provider") if isinstance(e.get("provider"), str) else "claude"}
+             for label, e in synced.items() if not label.startswith("_") and label not in named and isinstance(e, dict)]
+    at = next((n for n, a in enumerate(rows) if a.get("primary")), len(rows))
+    out = [home / ".claude"]
+    for a in rows[:at] + extra + rows[at:]:
+        if a.get("provider", "claude") != "claude":
+            continue
+        try:
+            got = ((load(orca) or {}).get(a.get("label")) or {}).get("home") if a.get("via") == "orca" else a.get("home")
+            d = (home / got[2:] if got.startswith("~/") else Path(got)).absolute() if isinstance(got, str) and got else None
+        except Exception:
+            d = None
+        if d and d not in out:
+            out.append(d)
+    return [d for d in out if d.is_dir()]
+
+
+def scope_paths(name, home=None):
+    """[str] — the core's scope_paths(name): per repo of the scope its checkout and every
+    `git worktree list` entry, PROJECTS/transcripts/<repo>/, and each login dir's
+    projects/<slug>/ for each of those trees, its transcripts and memory both (S2's D1-A,
+    2026-10-21). [] for a scope the registry lacks."""
+    repos, scopes = _registry()
+    if name not in scopes:
+        return []
+    home = home or Path.home()
+    projects = _path_key("projects", Path.home() / "projects")
+    logins = _login_dirs(home)
+    out, seen = [], set()
+
+    def add(p):
+        r = os.path.realpath(p)
+        if r not in seen:
+            seen.add(r)
+            out.append(str(p))
+    for key in _members(scopes[name], repos):
+        if key not in repos:
+            continue
+        top = projects / key
+        trees = [top]
+        try:
+            g = subprocess.run(["git", "-C", str(top), "worktree", "list", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            trees += [Path(l[len("worktree "):]) for l in g.stdout.splitlines() if l.startswith("worktree ")] if g.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            pass
+        trees = [t for n, t in enumerate(trees) if os.path.realpath(t) not in {os.path.realpath(x) for x in trees[:n]}]
+        for t in trees:
+            add(t)
+        add(projects / "transcripts" / key.rsplit("/", 1)[-1])
+        for d in logins:
+            for t in trees:
+                add(d / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(t)))
+    return out
+
+
+def _forms(paths):
+    """Each path as the prefix test meets it: its real path, its parent's real path joined to its
+    own name (a link that is itself the path: `rm` of it), and the real path of a `memory` link in
+    it — a login's memory dir linked elsewhere (knowledge-home, a vault) is the scope's wherever it
+    points, as it was when scope_paths() named `…/<slug>/memory` itself."""
+    out = []
+    for p in paths:
+        m = os.path.join(p, "memory")
+        forms = [os.path.realpath(p), os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))]
+        for f in forms + ([os.path.realpath(m)] if os.path.islink(m) else []):
+            if f not in out:
+                out.append(f)
+    return out
+
+
+def _within(p, dirs):
+    r = os.path.realpath(p)
+    return any(r == d or r.startswith(d + os.sep) for d in dirs)
+
+
+# Path-ish words in code (python -c, a heredoc fed to node): anything holding a slash.
+FENCE_CANDIDATE = re.compile(r"[^\s'\"()\[\]{},;=<>|&`]*/[^\s'\"()\[\]{},;=<>|&`]*")
+# Only printing and testing: ls and stat are out, as a confidential folder's file names are its own.
+FENCE_HARMLESS = {"echo", "printf", "test", "[", "realpath", "readlink"}
+FENCE_REASON = ("⛔ {what}: that is `{scope}`'s, a confidential scope (the registry's `confidential: true`), "
+                "and nothing outside it reads its checkouts, worktrees, transcripts or memory ({owner}, "
+                "knowledge-layers D3, 2026-10-20). This session started outside it. The way out: do that "
+                "work in a session started inside the scope, in its knowledge repo {anchor} or a worktree "
+                "of it; what it learns reaches the rest through its own weekly pass, as generalised lines. "
+                "If the scope should be open, {owner} runs `{scopes} set {scope} --open`. The refusal is "
+                "logged; don't retry in another shape.")
+
+
+def fences(cwd):
+    """[(scope, Rules)] for each confidential scope this session is outside of."""
+    scopes = _registry()[1]
+    flagged = [n for n, s in scopes.items() if isinstance(s, dict) and s.get("confidential") is True]
+    starts = [cwd] + ([os.environ["CLAUDE_PROJECT_DIR"]] if os.environ.get("CLAUDE_PROJECT_DIR") else [])
+    repos, out = _registry()[0], []
+    fences.inner = []
+    for name in flagged:
+        dirs = _forms(scope_paths(name) + _gone_trees(name, repos, scopes))
+        if not dirs or all(_within(s, dirs) for s in starts):
+            fences.inner += dirs
+            continue
+        keys = [k.rsplit("/", 1)[-1] for k in _members(scopes[name], repos)]
+        # a path behind a shell variable the hook never sees: `$P/<repo>/…`
+        literal = re.compile(r"\$\{?\w+\}?/(?:%s)(?:/|$)" % "|".join(map(re.escape, keys))) if keys else None
+        out.append((name, Rules(dirs, literal, FENCE_CANDIDATE, FENCE_HARMLESS, fence=True)))
+    return out
+
+
+fences.inner = []   # the dirs of the scopes this session is inside: its cwd there is never logged
+
+
+def _gone_trees(name, repos, scopes):
+    """Each login's session folders of a scope's worktrees that are gone (`<slug>--claude-worktrees-<topic>`):
+    scope_paths() names only the trees alive now, and a merged worktree's logs outlive it (the core's
+    scope_paths() docstring leaves that prefix to the reader; review S2, 2026-10-22)."""
+    projects, out = _path_key("projects", Path.home() / "projects"), []
+    for key in _members(scopes.get(name), repos):
+        if key in repos:
+            slug = re.sub(r"[^A-Za-z0-9]", "-", str(projects / key))
+            for d in _login_dirs(Path.home()):
+                out += sorted(glob.glob(os.path.join(glob.escape(str(d / "projects")), glob.escape(slug) + "--claude-worktrees-*")))
+    return out
+
+
+def glob_reaches(pattern, base, cwd, r):
+    """A Glob of `pattern` under `base` lists a name inside the rules' folders: its literal head is
+    inside one, or holds one and the rest of the pattern descends into it (`**`, or a segment
+    each step matches, one past the folder itself). A pattern that stops at a folder's own name
+    lists only that name, which the registry already shows."""
+    absolute, parts, head = pattern.startswith("/"), pattern.split("/"), []
+    parts = parts[1:] if absolute else parts
+    while parts and not any(c in parts[0] for c in "*?[{"):
+        head.append(parts.pop(0))
+    root = resolve(os.path.join("/" if absolute else (base or cwd), *head), cwd)
+    if any(root == d or root.startswith(d + os.sep) for d in r.dirs):
+        return True
+    for d in r.present:
+        if not d.startswith(root.rstrip(os.sep) + os.sep):
+            continue
+        rel = d[len(root.rstrip(os.sep)) + 1:].split(os.sep)
+        for i, seg in enumerate(parts):
+            if seg == "**":
+                return True
+            if i >= len(rel):
+                return True
+            if "{" not in seg and not fnmatch.fnmatchcase(rel[i], seg):   # a brace set: taken as a match
+                break
+    return False
+
+
+def fence_what(tool, inp, cwd, r):
+    """What the call would touch behind this fence, or None."""
+    if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+        path = inp.get("file_path") or inp.get("notebook_path") or ""
+        return f"{tool} of {path}" if inside(path, cwd, r) else None
+    if tool == "Grep":
+        path = inp.get("path") or cwd
+        return f"Grep over {path}" if inside(path, cwd, r) or holds(path, cwd, r) else None
+    if tool == "Glob":
+        path, pattern = inp.get("path") or cwd, inp.get("pattern") or ""
+        return f"Glob of {pattern} in {path}" if inside(path, cwd, r) or glob_reaches(pattern, path, cwd, r) else None
+    if tool == "Bash":
+        return bash_hit(inp.get("command") or "", cwd, r)
+    return None
+
+
+def fence_log(scope, tool, cwd, session):
+    """One line in the log dir's fence.log; a log that cannot be written never stops the refusal."""
+    try:
+        d = _path_key("log-dir", Path.home() / ".local" / "state" / "regatta")
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "fence.log", "a", encoding="utf-8") as f:
+            f.write("\t".join((time.strftime("%Y-%m-%dT%H:%M:%S%z"), scope, tool or "", cwd, session or "")) + "\n")
+    except OSError:
+        pass
+
+
+def fence(data):
+    """The refusal for a call that crosses a confidential scope's fence, or None."""
+    cwd = data.get("cwd") or os.getcwd()
+    tool, inp = data.get("tool_name"), data.get("tool_input") or {}
+    fs = fences(cwd)
+    for scope, r in fs:
+        what = fence_what(tool, inp, cwd, r)
+        if what:
+            # a cwd in a scope's paths (the cd-in case, another scope's tree) is the scope's: never logged
+            fence_log(scope, tool, "-" if any(_within(cwd, x.dirs) for _, x in fs) or _within(cwd, fences.inner) else cwd,
+                      data.get("session_id"))
+            repos, scopes = _registry()
+            anchor = next(iter(_members(scopes[scope], repos)), "")
+            return FENCE_REASON.format(what=what, scope=scope, owner=OWNER, scopes=module_tool("wharf", "scopes"),
+                                       anchor=str(_path_key("projects", Path.home() / "projects") / anchor))
+    return None
+
+
 def main():
     data = json.loads(sys.stdin.read())
     if data.get("hook_event_name") != "PreToolUse":
@@ -689,20 +1147,29 @@ def main():
                 "permissionDecisionReason": SESSIONPIPE_REASON.format(what=hit, owner=OWNER, sheep=sheep(),
                                                                       front=FRONT or "its front end")}}, ensure_ascii=False))
             return
+    try:   # the fence fails open on its own, so the secrets check below still runs
+        why = fence(data)
+    except Exception:
+        why = None
+    if why:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": why}}, ensure_ascii=False))
+        return
     dirs = secrets_dirs()
     if not dirs:
         return
-    what = None
+    r, what = Rules(dirs, LITERAL, CANDIDATE, HARMLESS), None
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
         path = inp.get("file_path") or inp.get("notebook_path") or ""
-        if inside(path, cwd, dirs):
+        if inside(path, cwd, r):
             what = f"{tool} of {path}"
     elif tool == "Grep":
         path = inp.get("path") or cwd
-        if inside(path, cwd, dirs) or holds(path, cwd, dirs):
+        if inside(path, cwd, r) or holds(path, cwd, r):
             what = f"Grep over {path}"
     elif tool == "Bash":
-        what = bash_hit(inp.get("command") or "", cwd, dirs)
+        what = bash_hit(inp.get("command") or "", cwd, r)
     if what:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
