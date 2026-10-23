@@ -980,7 +980,11 @@ def standing(env=None):
     env = os.environ if env is None else env
     # the skipper under its new name or the old one (rename S5 writes both until S8, reads both forever)
     ctx = {"manager": env.get("DISPATCH_SKIPPER") or env.get("DISPATCH_MANAGER") or None,
-           "manager_host": env.get("DISPATCH_SKIPPER_HOST") or env.get("DISPATCH_MANAGER_HOST") or None}
+           "manager_host": env.get("DISPATCH_SKIPPER_HOST") or env.get("DISPATCH_MANAGER_HOST") or None,
+           # the run's ship and session, as bin/ask relay's ctx has them: a leased ship's relay goes to
+           # its scope's skipper, never a skipper's own (skipper-resilience S5)
+           "plan": env.get("DISPATCH_SHIP") or env.get("DISPATCH_PLAN") or None,
+           "session": env.get("ASK_SESSION") or env.get("CLAUDE_CODE_SESSION_ID") or None}
     try:
         lib = _asklib()
         if lib is None:  # no helm: no standing manager to relay to (G24)
@@ -1047,7 +1051,8 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
     if ask_verdict(cwd, session, sm) in ("none", "unreachable"):
         return []
     # named as bin/ask relay's RELAYED line names it when that is where the ask goes
-    who = (f"a manager (this Mac's standing one, manager · {sm.get('manager_host')})" if sm
+    who = (f"a skipper ({sm.get('manager_name')}, its scope's)" if sm and sm.get("scope") else
+           f"a manager (this Mac's standing one, manager · {sm.get('manager_host')})" if sm
            else "a manager (DISPATCH_MANAGER)")
     return [f"this run has {who}, so what it would hand the owner — {what} — goes "
             f"to the manager instead: write it in the doc as an item (a D-item, or a Do-this-now item "
