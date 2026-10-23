@@ -26,6 +26,26 @@
   installed in the build dir only. Tested against a stub Bot API and mail sender in Node and,
   opt-in, under `wrangler dev`; not deployed by this change.
 
+- The fence (knowledge-layers S2, 2026-10-21): `secrets_guard` refuses a confidential scope's paths
+  — checkouts, `git worktree list` entries, the transcripts folder, each login's session folder
+  (`projects/<slug>/`, its `.jsonl` logs and memory both: the digest's D1-A, as the core names it) — to a
+  session whose cwd or start directory is outside the scope, by Read, Edit, Write, NotebookEdit,
+  Grep, Glob and Bash (`ls`, `stat` and a command after a `cd` in refused too; git judged by its
+  tree, a grep's pattern as text). It reads the registry's flag with the stdlib, names the way out,
+  and logs one line per refusal to `<log-dir>/fence.log`. The hook's matcher gains Glob
+  (`Read|Grep|Glob`).
+  The landing review's gaps, closed (2026-10-22): a grep whose pattern rides its option (`-ex`,
+  `--regexp=x`) and `rg --files`; a walker with no path from a folder that holds the scope (`grep -r`,
+  `rg`, `find`, `ls -R`, `du`, `tree`) and find or `ls -R` over one; `echo`/`printf` of a glob into it;
+  `git diff --no-index`; a removed worktree's session folder (`<slug>--claude-worktrees-<topic>`). A cwd
+  inside a scope's paths is logged as `-`.
+  A walker's folders are its arguments that exist, else its cwd unless it reads a pipe; only the scope
+  folders this Mac has count, and a glob match that is a fenced folder's own name only names it
+  (`ls -d`, `for` loops over the projects folder pass). Plain `git diff <path>`, clone and fetch of the
+  scope, `GIT_DIR=` and `pushd` are judged too.
+  A copier walks only its sources (`cp x <projects>/` passes), `rm`/`chmod` only with `-r`; `cd` and
+  `git -C` take a glob's first match; `find -maxdepth` counts. The secrets wall no longer judges a
+  grep's pattern as a folder (`ls -p ~ | grep -v /`).
 - `account_guard` judges where the session started ($CLAUDE_PROJECT_DIR, else the event's cwd), not where
   its shell is now (2026-10-22). The event's cwd follows a `cd`, so a work-login session started in an open
   repo that later moved its shell to the projects folder had every following prompt blocked (it holds the vault): 18 in

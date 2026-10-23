@@ -86,7 +86,124 @@ check "$(sg_bash "git commit -m \"Secrets: .env reads through Drive's _secrets\"
 check "$(sg_bash "$(printf "git commit -F - <<'EOF'\nSecrets: .env and alpha_vault/_secrets/app.env\nEOF")")" 0 "  a heredoc that is only data"
 check "$(sg_bash "$(printf "python3 - <<'EOF'\nprint('\$SGV/_secrets/x')\nEOF")")" 0 "  a heredoc naming a fixture's _secrets"
 check "$(sg_bash 'grep -r TODO . && git status 2>&1 > /tmp/x')" 0 "  grep -r over the repo, unrelated redirections"
+check "$(sg_bash 'ls -p ~ | grep -v /') $(sg_bash 'grep -n x /dev/null')" "0 0" "  a grep's pattern is no folder, and a grep without -r walks none (review S2, 2026-10-22)"
 check "$(echo 'not json' | python3 "$SG"; echo $?)" 0 "garbage stdin: silent, exit 0 (fails open)"
+
+echo "the fence: a confidential scope's paths, closed to a session outside it (knowledge-layers S2)"
+FH="$T/home"; FP="$FH/projects"; FL="$T/fence-logs"; FD="$T/fence"
+mkdir -p "$FP/node-knowledge/memory" "$FP/node-app/src" "$FP/open/docs" "$FP/dream" "$FP/two-knowledge" "$FP/transcripts/node-app" \
+  "$FH/.claude" "$FH/.claude-w" "$FH/.claude-o" "$FD/out"
+for r in node-knowledge open two-knowledge; do git init -q "$FP/$r"; git -C "$FP/$r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; done
+echo "the client's plan" > "$FP/node-knowledge/memory/plan.md"; echo src > "$FP/node-app/src/a.py"; echo notes > "$FP/open/docs/n.md"
+echo t > "$FP/transcripts/node-app/s.md"; echo two > "$FP/two-knowledge/x.md"
+git -C "$FP/node-knowledge" worktree add -q "$FP/node-knowledge/trees/pass" -b pass
+git -C "$FP/node-knowledge" worktree add -q "$FD/out/away" -b away   # outside the checkout: only git worktree list finds it
+fslug() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+MEM="$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")/memory"; mkdir -p "$MEM"; echo m > "$MEM/MEMORY.md"
+SF="$(dirname "$MEM")"; echo '{"said": "the client"}' > "$SF/s-1.jsonl"   # the session folder: its transcripts beside memory (D1-A)
+OSF="$FH/.claude-w/projects/$(fslug "$FP/open")"; mkdir -p "$OSF"; echo '{}' > "$OSF/s-2.jsonl"
+VM="$FD/vault/memory/node-knowledge"; mkdir -p "$VM" "$FH/.claude-o/projects/$(fslug "$FP/node-knowledge")"; echo v > "$VM/v.md"
+ln -s "$VM" "$FH/.claude-o/projects/$(fslug "$FP/node-knowledge")/memory"   # a memory dir linked out (not yet adopted)
+ln -s "$FP/node-knowledge/memory/plan.md" "$FP/open/docs/plan-link.md"
+printf '{"accounts": [{"label": "w", "provider": "claude", "home": "~/.claude-w"}, {"label": "x", "provider": "codex", "home": "~/.claude"}]}\n' > "$FD/acc.json"
+printf '{"o": {"home": "~/.claude-o"}, "_default": {"enabled": true}}\n' > "$FD/orca.json"
+printf '{"repos": {"node-knowledge": {}, "node-app": {}, "open": {}, "dream": {}, "two-knowledge": {}},\n "scopes": {"node": {"file": "n", "repos": ["node-knowledge", "node-*"], "confidential": true},\n  "two": {"file": "t", "repos": ["two-knowledge"], "confidential": true},\n  "atlas": {"file": "a", "repos": ["open", "dream"], "confidential": "yes"}}}\n' > "$FD/repos.json"
+sed 's/"confidential": true/"confidential": false/g' "$FD/repos.json" > "$FD/open.json"
+echo "$FL" > "$REGATTA_CONFIG/regatta/log-dir"
+FENV() { env CLAUDE_REPOS_JSON="${FRJ:-$FD/repos.json}" ACCOUNTS_FILE="$FD/acc.json" ACCOUNT_ORCA_FILE="$FD/orca.json" CLAUDE_PROJECT_DIR="${FPD:-}" SECRETS_GUARD_DIR="$T/sg/no-such-vault" "$@"; }
+fraw() { python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","cwd":sys.argv[1],"tool_name":sys.argv[2],"tool_input":json.loads(sys.argv[3]),"session_id":"s-1"}))' "$1" "$2" "$3" | FENV python3 "$SG"; }
+fg() { fraw "$@" | python3 -c 'import json,sys; t=sys.stdin.read(); print(json.loads(t)["hookSpecificOutput"]["permissionDecision"] if t.strip() else "pass")'; }
+fpath() { fg "$1" "$2" "$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "$3" "$4")"; }
+fbash() { fg "$1" Bash "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$2")"; }
+fglob() { fg "$1" Glob "$(python3 -c 'import json,sys; print(json.dumps(dict({"pattern": sys.argv[1]}, **({"path": sys.argv[2]} if sys.argv[2] else {}))))' "$2" "${3:-}")"; }
+OUT="$FP/open"; IN="$FP/node-knowledge"; DREAM="$FP/dream"
+check "$(FENV python3 - "$R/modules/regatta/hooks" "$SG" <<'PY'
+import importlib.util as u, sys
+sys.path.insert(0, sys.argv[1]); import common
+s = u.spec_from_file_location("sg", sys.argv[2]); g = u.module_from_spec(s); s.loader.exec_module(g)
+print(" ".join("%s:%d:%s" % (n, len(common.scope_paths(n)), [str(p) for p in common.scope_paths(n)] == g.scope_paths(n))
+               for n in ("node", "two", "atlas", "nope")))
+PY
+)" "node:18:True two:5:True atlas:10:True nope:0:True" \
+  "the guard's stdlib scope_paths() agrees with the core's: trees, an outside worktree, a glob member, 3 logins (an Orca one; a codex row skipped)"
+check "$(fpath "$OUT" Read file_path "$IN/memory/plan.md") $(fpath "$OUT" Edit file_path "$FP/node-app/src/a.py") $(fpath "$OUT" Write file_path "$IN/new.md")" \
+  "deny deny deny" "from an open repo: Read, Edit and Write of the scope's checkouts (a glob's member too)"
+check "$(fpath "$OUT" Read file_path "$FD/out/away/x") $(fpath "$OUT" Read file_path "$FP/transcripts/node-app/s.md") $(fpath "$OUT" Read file_path "$MEM/MEMORY.md")" \
+  "deny deny deny" "  a worktree outside the checkout, the transcripts folder, a login's memory dir"
+check "$(fpath "$OUT" Read file_path "$SF/s-1.jsonl") $(fpath "$OUT" Grep path "$SF") $(fglob "$OUT" '*.jsonl' "$SF") $(fglob "$OUT" '**/*.jsonl' "$FH/.claude-w/projects") $(fbash "$OUT" "cat '$SF'/*.jsonl")" \
+  "deny deny deny deny deny" "  a login's session transcripts (projects/<slug>/*.jsonl): Read, Grep, Glob in it and from above, Bash (S2's D1-A)"
+check "$(fpath "$OUT" Read file_path "$VM/v.md") $(fpath "$OUT" Read file_path "$FH/.claude-o/projects/$(fslug "$FP/node-knowledge")/memory/v.md") $(fpath "$OUT" Read file_path "$OSF/s-2.jsonl")" \
+  "deny deny pass" "  a memory dir linked out, at its target and through the link; the open repo's own session folder passes"
+check "$(fpath "$OUT" Read file_path docs/plan-link.md) $(fpath "$OUT" NotebookEdit notebook_path "$IN/n.ipynb")" "deny deny" "  through a link in the open repo; NotebookEdit"
+check "$(fpath "$OUT" Grep path "$IN") $(fpath "$OUT" Grep path "$FP") $(fpath "$FP" Grep path "")" "deny deny deny" \
+  "  Grep inside it, over a folder that holds it, and from a cwd that holds it"
+check "$(fglob "$OUT" '**/*.md' "$IN") $(fglob "$OUT" '**/*.md' "$FP") $(fglob "$OUT" 'node-knowledge/*' "$FP") $(fglob "$OUT" "$IN/**")" \
+  "deny deny deny deny" "  Glob in it, a ** from above it, a pattern that names it, an absolute pattern"
+check "$(fglob "$OUT" '*' "$FP") $(fglob "$OUT" 'open/**/*.md' "$FP") $(fglob "$OUT" '**/*.md' "") $(fglob "$OUT" '*/x.md' "$FP/two-knowledge/..")" \
+  "pass pass pass deny" "  a Glob that stops at the repos' names, stays in the open repo or runs in it passes; one a level into a scope does not"
+check "$(fbash "$OUT" "cat '$IN/memory/plan.md'") $(fbash "$OUT" "git -C '$IN' log") $(fbash "$OUT" "cd '$IN' && git log") $(fbash "$OUT" "cd '$IN' && ls")" \
+  "deny deny deny deny" "Bash: cat, git -C, git and ls after a cd into it"
+check "$(fbash "$OUT" "ls '$IN/memory'") $(fbash "$OUT" "grep -r client '$FP'") $(fbash "$OUT" 'cat "$PJ/node-knowledge/memory/plan.md"') $(fbash "$OUT" "echo x > '$IN/x'")" \
+  "deny deny deny deny" "  ls of it, grep -r over ~/projects, a path behind an unseen variable, a redirection into it"
+check "$(fbash "$OUT" "cat $FP/*/memory/plan.md") $(fbash "$OUT" "grep -r client $FP/*") $(fbash "$OUT" "cat $OUT/docs/n*.md") $(fbash "$OUT" "cat $OUT/docs/*.md")" "deny deny pass deny" \
+  "  a word the shell expands is expanded and judged per match: into the scope refused, within the open repo not, unless a match is a link into it"
+check "$(fbash "$OUT" "grep --regexp=client '$IN/memory/plan.md'") $(fbash "$OUT" "grep -eclient '$IN/memory/plan.md'") $(fbash "$OUT" "grep -rne client '$IN/memory/plan.md'") $(fbash "$OUT" "rg --files '$IN'")" \
+  "deny deny deny deny" "  a grep whose pattern is attached to its option reads the first word as a file; rg --files lists the tree (review S2, 2026-10-22)"
+check "$(fbash "$FP" "grep -r client") $(fbash "$FP" "rg client") $(fbash "$FP" "find . -name '*.md'") $(fbash "$FP" "ls -R") $(fbash "$FP" "du -a") $(fbash "$FP" "tree")" \
+  "deny deny deny deny deny deny" "  a walker with no path, from a cwd that holds the scope, as the Grep tool from there"
+check "$(fbash "$OUT" "find '$FP' -name '*.md'") $(fbash "$OUT" "ls -R '$FP'") $(fbash "$OUT" "grep -r client") $(fbash "$OUT" "rg client") $(fbash "$OUT" "find . -name '*.md'") $(fbash "$FP" "grep client") $(fbash "$OUT" "ls '$FP'")" \
+  "deny deny pass pass pass pass pass" "  find and ls -R over a folder that holds it; the open repo's own walk, a grep of stdin and a plain ls pass"
+check "$(fbash "$OUT" "echo $IN/memory/*") $(fbash "$OUT" "printf '%s\n' $IN/memory/*") $(fbash "$OUT" "git diff --no-index /dev/null '$IN/memory/plan.md'") $(fbash "$OUT" "git diff --no-index docs/n.md docs/n.md")" \
+  "deny deny deny pass" "  echo and printf of a glob into it print its file names; git diff --no-index reads its paths, not a tree"
+check "$(fbash "$FP" "rg -g '*.md' client") $(fbash "$FP" "grep -rn --include '*.md' client") $(fbash "$FP" "grep -r -e client") $(fbash "$FP" "rg -e client") $(fbash "$FP" "grep -r -m 5 client")" \
+  "deny deny deny deny deny" "  an option's value is no path: the walker still walks the cwd that holds the scope"
+check "$(fbash "$FP" "ps aux | rg claude") $(fbash "$FP" "rg --version") $(fbash "$FP" "rg x -") $(fbash "$OUT" "echo $FP/*") $(fbash "$OUT" "ls -d $FP/*/") $(fbash "$OUT" "for r in $FP/*/; do git -C \$r status -s; done") $(fbash "$OUT" "if [ -d '$IN' ]; then echo y; fi")" \
+  "pass pass pass pass pass pass pass" "  a walker reading a pipe or printing its version, and names-only commands over the projects folder, pass"
+check "$(fbash "$OUT" "ls $FP/*") $(fbash "$OUT" "git diff /dev/null '$IN/memory/plan.md'") $(fbash "$OUT" "git clone '$IN' /tmp/x") $(fbash "$OUT" "GIT_DIR='$IN/.git' git show HEAD") $(fbash "$OUT" "pushd '$FP' >/dev/null && cat node-knowledge/memory/plan.md")" \
+  "deny deny deny deny deny" "  ls of a glob that lists it, a plain git diff and a clone of it, GIT_DIR=, a pushd into its parent"
+check "$(fbash "$OUT" "grep --regexp='$IN/memory' docs/n.md") $(fbash "$OUT" "git grep -n '$IN/memory'") $(FPATHS=1 fbash "$OUT" "find '$FP/nowhere-here' '$OUT' -name x")" \
+  "pass pass pass" "  a grep pattern that names it, in an option or git grep, is text"
+echo top > "$FP/README.md"
+check "$(fbash "$OUT" "cp docs/n.md '$FP/'") $(fbash "$OUT" "mv docs/n.md '$FH'") $(fbash "$FH" "rm -f nothere") $(fbash "$FH" "chmod +x nothere") $(fbash "$FP" "find . -maxdepth 1 -type d")" \
+  "pass pass pass pass pass" "  a copy into the projects folder or home, a plain rm or chmod, find one level down: no walk of the scope"
+check "$(fbash "$OUT" "cp -R '$FP' /tmp/x") $(fbash "$OUT" "cd $FP/node-k* && git log") $(fbash "$OUT" "git -C $FP/node-k* log") $(fbash "$FP" "rg client -g '*.md'") $(fbash "$FP" "grep -rn client --include '*.md'") $(fbash "$FP" "find . -maxdepth 3 -name '*.md'")" \
+  "deny deny deny deny deny deny" "  a recursive copy of a folder that holds it, a cd or git -C through a glob, a walker whose option value names a file, find deep enough"
+rm -f "$FP/README.md"
+MISSING="$T/fence-missing"; mkdir -p "$MISSING/projects/elsewhere"
+printf '{"repos": {"gone": {}}, "scopes": {"g": {"file": "g", "repos": ["gone"], "confidential": true}}}\n' > "$FD/gone.json"
+check "$(FRJ="$FD/gone.json" fbash "$OUT" "find '$FP' -name x") $(FRJ="$FD/gone.json" fbash "$FP" "du -a")" "pass pass" \
+  "  a scope whose checkout this Mac lacks: walkers over the projects folder pass"
+printf '{"repos": {"node-knowledge": {}, "open": {}}, "scopes": {"s": {"file": "s", "repos": "node-*", "confidential": true}}}\n' > "$FD/str.json"
+check "$(FRJ="$FD/str.json" fpath "$OUT" Read file_path "$FP/open/docs/n.md")" "pass" "  a scope whose repos is a string has no members, as the core reads it"
+GONE="$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")--claude-worktrees-old"; mkdir -p "$GONE" "$GONE-x" "$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")-site"
+echo '{}' > "$GONE/s-3.jsonl"; echo '{}' > "$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")-site/s-4.jsonl"
+check "$(fpath "$OUT" Read file_path "$GONE/s-3.jsonl") $(fbash "$DREAM" "cat '$GONE/s-3.jsonl'") $(fpath "$OUT" Read file_path "$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")-site/s-4.jsonl")" \
+  "deny deny pass" "  a removed worktree's session folder (<slug>--claude-worktrees-<topic>) stays fenced; a sibling slug's does not"
+check "$(fbash "$OUT" "python3 -c \"print(open('$IN/memory/plan.md').read())\"") $(fbash "$OUT" "$(printf "python3 - <<'X'\nopen('~/projects/node-knowledge/memory/plan.md')\nX")")" \
+  "deny deny" "  python -c and a python heredoc naming it"
+check "$(fbash "$OUT" "git commit -m 'Moves $IN/memory into the knowledge repo'") $(fbash "$OUT" "grep -n '$IN/memory' docs/n.md") $(fbash "$OUT" "echo '$IN' && ls '$FP' && cat docs/n.md")" \
+  "pass pass pass" "  but a commit message, a grep pattern, echo, ls of ~/projects and the open repo's files pass"
+check "$(fbash "$OUT" "ln -s '$IN/memory' '$MEM/../memory-link'") $(fbash "$OUT" "test -d '$IN' && realpath '$IN'")" "pass pass" "  ln -s, test and realpath name it without reading"
+check "$(fpath "$IN" Read file_path "$FP/node-app/src/a.py") $(fpath "$IN" Read file_path "$MEM/MEMORY.md") $(fbash "$IN" "cat memory/plan.md && git log && ls ../node-app")" \
+  "pass pass pass" "the scope's own session (the pass's cwd: its knowledge repo) reads every path of the scope"
+check "$(fpath "$IN" Read file_path "$SF/s-1.jsonl") $(fglob "$IN" '*.jsonl' "$SF") $(fpath "$IN" Read file_path "$VM/v.md")" "pass pass pass" \
+  "  its session transcripts and its linked-out memory too"
+check "$(FPD="$IN/trees/pass" fpath "$IN/trees/pass" Read file_path "$FD/out/away/x") $(fpath "$FD/out/away" Grep path "$IN")" "pass pass" \
+  "  from either of its worktrees too"
+check "$(fpath "$IN" Read file_path "$FP/two-knowledge/x.md") $(FPD="$OUT" fpath "$IN" Read file_path "$IN/memory/plan.md")" "deny deny" \
+  "  but not another confidential scope's, and not a session that started outside and cd'd in (CLAUDE_PROJECT_DIR)"
+check "$(fpath "$DREAM" Read file_path "$MEM/MEMORY.md") $(fbash "$DREAM" "cat '$FP/transcripts/node-app/s.md'") $(fpath "$DREAM" Read file_path "$SF/s-1.jsonl") $(fpath "$DREAM" Read file_path "$OUT/docs/n.md")" \
+  "deny deny deny pass" "the dream's cwd (an open scope's repo): the scope's memory, transcripts and session logs refused, the open scope read"
+check "$(FRJ="$FD/open.json" fpath "$OUT" Read file_path "$IN/memory/plan.md") $(FRJ=/no/such fpath "$OUT" Read file_path "$IN/memory/plan.md")" "pass pass" \
+  "no scope flagged (only a real true counts), or no registry: everything passes"
+rm -rf "$FL"; fpath "$OUT" Read file_path "$IN/memory/plan.md" >/dev/null; fglob "$DREAM" '**/*.md' "$IN" >/dev/null; fpath "$OUT" Read file_path "$OUT/docs/n.md" >/dev/null
+check "$(wc -l < "$FL/fence.log" | tr -d ' ') $(cut -f2,3,5 "$FL/fence.log" | tr '\t\n' ',;') $(grep -c 'plan.md\|memory' "$FL/fence.log")" "2 node,Read,s-1;node,Glob,s-1; 0" \
+  "one log line per refusal — scope, tool, cwd, session — and never the path asked for"
+check "$(cut -f4 "$FL/fence.log" | tr '\n' ';')" "$OUT;$DREAM;" "  the cwd it came from"
+rm -rf "$FL"; FPD="$OUT" fpath "$IN" Read file_path "$IN/memory/plan.md" >/dev/null; fpath "$FP/two-knowledge" Read file_path "$IN/memory/plan.md" >/dev/null
+check "$(cut -f2,4 "$FL/fence.log" | tr '\t\n' ',;')" "node,-;node,-;" "  a cwd in a scope's paths (the cd-in case, another scope's tree) is logged as -"
+check "$(fraw "$OUT" Read "{\"file_path\": \"$IN/memory/plan.md\"}" | python3 -c 'import json,sys; r=json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"]; print("`node`" in r, sys.argv[1] in r, "set node --open" in r, "Owner" in r, "plan.md" in r)' "$IN")" \
+  "True True True True True" "  the refusal names the scope, its knowledge repo as the way in, the verb that opens it, the owner"
 
 echo "claude-settings (docs/record/machine-settings-2026-09-29.md)"
 CS="$C/bin/claude-settings"; CSD="$T/cs"; mkdir -p "$CSD/cfg"
