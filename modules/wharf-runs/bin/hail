@@ -5,7 +5,7 @@ socket on this Mac (any login: the login dirs share one registry), `codex queue`
 Hail design, its section "Hail" and S2 (docs/crosstalk-2026-10-20.md on its branch).
 
     hail REF (--text T | --file F) [--kind event|report|ask] [--about REPO:BRANCH:DOC[#Dn]]
-         [--thread ID] [--host here|<peer>] [--when now|idle] [--dry-run] [--json]
+         [--thread ID] [--host here|<peer>] [--when now|idle] [--no-file] [--dry-run] [--json]
         REF as `harness status` takes it: a session id or a prefix of 6 or more, a session's title,
         a dispatch run's topic. --thread ID hails that Codex thread (REF is then only a label).
         Prints one record, {road, verdict, target, at, …}; verdict is delivered | queued | held |
@@ -26,8 +26,12 @@ The roads, in this order, the first whose preconditions hold:
     orca      an Orca worker: its mailbox, or its terminal when idle
     talk      helm's asklib: spacesheep Talk to the target's page — any Mac, any harness, any login.
               The page is HAIL_SPACE, else this run's manager page when the target is its manager
-              (DISPATCH_PLAN_SPACE), else the Mac's standing manager's. Sender unverified
+              (DISPATCH_PLAN_SPACE), else the Mac's standing manager's. A `--when idle` row keeps
+              the HAIL_SPACE it was made under, so the tick's fulfil posts to that page, not to
+              whatever its own environment names (skipper-resilience S6: wharf hails a scope's
+              skipper on the page its record names). Sender unverified
     file      helm's asklib: a line its next prompt prints; this Mac, a live process; wakes nobody
+              (--no-file skips it: for a target that never reads that queue, a scope's skipper)
 A refused road stops the hail (a busy session is waited for, never routed around); a held or
 unreachable one falls through to the next. Claude Code's SendMessage is never a road: it is a model's
 tool, and only within one login.
@@ -277,7 +281,11 @@ def adapter_road(rec, msg):
         return ROAD.get(rec.get("harness"), rec.get("harness")), {"verdict": "unreachable", "why": "%s" % e}
 
 
-def talk_space(sid):
+def talk_space(sid, space=None):
+    """The Talk page a hail to SID posts on: SPACE (a subscription's, recorded from the HAIL_SPACE it
+    was made under), else HAIL_SPACE, else the manager pages below; None when none names one."""
+    if space:
+        return space
     if os.environ.get("HAIL_SPACE"):
         return os.environ["HAIL_SPACE"]
     if sid and sid in (os.environ.get("DISPATCH_SKIPPER"), os.environ.get("DISPATCH_MANAGER")):
@@ -300,7 +308,7 @@ def relay_roads(sid, msg, tried, roads=("talk", "file")):
         tried.append(["talk", "no session id to address"])
         tried.append(["file", "no session id to address"])
         return None, None
-    ctx = {"manager": sid, "space": talk_space(sid), "session": os.environ.get("CLAUDE_CODE_SESSION_ID")}
+    ctx = {"manager": sid, "space": talk_space(sid, msg.get("space")), "session": os.environ.get("CLAUDE_CODE_SESSION_ID")}
     for name in roads:
         b = ask.BACKENDS.get(name)
         if b is None:
@@ -413,7 +421,9 @@ def deliver(args, msg):
 
     # after a held post Talk only, as the design's Risks line says: the file road reaches every live
     # session at its next prompt, beside the socket copy the owner may still release
-    road, res = relay_roads(sid, msg, tried, ("talk",) if held else ("talk", "file"))
+    # --no-file: a target that never reads the file queue (a scope's skipper, S6) — a line there would
+    # read as delivered and wait for a prompt that never comes
+    road, res = relay_roads(sid, msg, tried, ("talk",) if held or msg.get("no_file") else ("talk", "file"))
     if road:
         rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
         return rec_out
@@ -473,6 +483,10 @@ def subscribe(args, msg, rec):
     row = {"id": uuid.uuid4().hex[:12], "at": int(time.time()), "ref": args["ref"], "target": rec.get("target"),
            "thread": args.get("thread"), "host": args.get("host") or "here", "kind": msg["kind"],
            "text": args["text"], "frame": msg["frame"], "waiting_on": rec.get("why")}
+    if msg.get("space"):
+        row["space"] = msg["space"]   # the page the fulfil posts to: this caller's, not the tick's
+    if msg.get("no_file"):
+        row["no_file"] = True
     if not msg.get("dry"):
         with SubsLock():
             write_subs(read_subs() + [row])
@@ -505,7 +519,8 @@ def cmd_subs(args):
                        "sub": r.get("id"), "tried": []}
             else:
                 a = {"ref": r.get("target") or r.get("ref"), "thread": r.get("thread"), "host": r.get("host"), "text": r.get("text")}
-                msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S}
+                msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S,
+                       "space": r.get("space"), "no_file": bool(r.get("no_file"))}
                 res = deliver(a, msg)
                 res["sub"] = r.get("id")
         except Exception as e:   # noqa: BLE001 — one bad row never costs the pass: it stays for the next
@@ -537,7 +552,7 @@ def cmd_subs(args):
 # ---- the command line ----------------------------------------------------------------------
 
 VALUED = ("--text", "--file", "--kind", "--about", "--thread", "--host", "--when", "--frame")
-FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half")
+FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half", "--no-file")
 
 
 def parse(argv):
@@ -615,7 +630,8 @@ def main(argv):
     if why:
         rec.update(verdict="refused", why=why)
     else:
-        msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S}
+        msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S,
+               "space": os.environ.get("HAIL_SPACE") or None, "no_file": bool(a.get("no-file"))}
         rec = deliver(a, msg)
         # --when idle: a target still at work is a subscription, not a refusal
         if when == "idle" and rec["verdict"] == "refused" and rec.get("road") in ("socket", "orca"):
