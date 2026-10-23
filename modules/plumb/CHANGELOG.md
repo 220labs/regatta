@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The plumb scrub (2026-10-22): the files B8 moved in are public. Their private values come through
+  the config dir (README, "Private values"): `plumb/usage.json`, `plumb/dispatch-host` (G3's Mac, no
+  longer the first line of `wharf-runs/ssh`), `plumb/tier-rules`, and the core's, atlas's and
+  lighthouse's keys. The limits widget runs `regatta account`, found through the `home` file. The
+  suites run on fixtures of their own config dir and need no overlay. Two dated runs left `bench/` as
+  records (the design run of 2026-10-04, the reviewer model bench of 2026-09-29); `score.py` and
+  `review_sheet.py` take the post-hoc rule's repos as `--apply`.
 - Each scope pass's cost (knowledge-layers S5, 2026-10-22): `usage-report numbers` carries
   `scope_passes` — sessions and the API-price proxy per scope, from the sessions whose prompt is
   `/aurora dream --scope <scope>` — and `knowledge-numbers` prints it as one row (`--scope`: that
