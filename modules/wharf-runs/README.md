@@ -13,7 +13,8 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/harness` | one set of verbs over every coding-agent CLI (Claude Code, Codex, Orca), its adapters in `bin/harness_adapters/` |
 | `bin/hail` | a pointer delivered to any session `harness` names — Claude Code's inbox socket (only to one idle 60 s or more, read back from the receiver), `codex queue` by thread, Orca's mailbox, a peer Mac over ssh, else helm's Talk and file roads; `--when idle` keeps a subscription that `hail subs --fulfil` sends |
 | `bin/wharf`, `blueprintlib.py` | a ship's blueprint checked and applied, block by block (`wharf check`, `wharf apply`); `wharf apply --yard` lays it, pinned, on its scope's yard, and a plain apply of a ship whose scope has a yard is refused |
-| `bin/rc-hosts` | one Remote Control host per registry repo on this Mac |
+| `bin/rc-hosts` | one Remote Control host per registry repo on this Mac; `--agents` also judges the clock's automations (what each one's launcher line starts) |
+| `bin/clock` | the calendar: every agent-run job as an Orca automation, one launcher line on haiku in a neutral workspace (`schedule`, or `--launchd` for the OS form kept), launchd left the script jobs and `dispatch --at`; `list` both Macs, `check` (G5: an agent-run job on launchd, a confidential pass without its `--account`), `board` one page, `fire` a long job detached through launchd |
 | `bin/yard-node`, `node/` | the yard node: a hypervisor host (Ubuntu 24.04 autoinstall, an Incus preseed) and its agent guest's `#cloud-config`, rendered from the config dir and driven over `ssh <alias> incus …` (`render`, `apply`, `launch`, `snap`, `check`) |
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
 | `hooks/cold_prompt.py` | a typed `/finish` in a cold or expensive session handed to a fresh run instead |
@@ -23,8 +24,8 @@ through `common.tool()`: wharf (a hard edge: `branches`, `checkpoint`, `session_
 plumb's `tier_check`, lighthouse's `account` and the project-management tools `ask`, `helm` and
 `helmlib` (absent: a run's prompt drops the ask lines, `wharf check` refuses). Which Mac is which,
 who the owner is and where an overlay lives are config, below; the code names none of them.
-`yard-node`, its `node/` templates and their suite (the yard node's S2) are private until a scrub of
-their own (off `.helloworld/allowlist.txt`).
+`yard-node`, its `node/` templates and their suite (the yard node's S2), and `clock` with its suite
+(knowledge-layers S7) are private until a scrub of their own (off `.helloworld/allowlist.txt`).
 
 ## Install
 

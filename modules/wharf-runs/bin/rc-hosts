@@ -48,7 +48,9 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
                             job that starts claude, or a claude-starting script of the primary
                             checkout, without claude-host (a host holding a session, a job running
                             now: pending); --fix rewrites the idle <label prefix>.* ones, and
-                            --reap runs it hourly (hosts move by converge)
+                            --reap runs it hourly (hosts move by converge). Then the clock's Orca
+                            automations: Orca launches each run, and its launcher line must name the
+                            primary checkout's script (OUTSIDE otherwise; bin/clock)
   rc-hosts --launcher [PATH] claude-host's path when it may start PATH (an overlay script, claude),
                             else nothing and exit 1 — what every plist writer asks
   rc-hosts --tcc-survey [--host PEER] [--hours N] [--health]
@@ -1016,8 +1018,62 @@ def agent_problem(args):
     return None
 
 
+def automations(on):
+    """--agents' second half: the clock's Orca automations (wharf-runs' bin/clock, knowledge-layers S7).
+    Orca starts each run's claude itself — the app is that run's responsible process and its grants
+    are the app's — so a run is never bare. What the run launches is the question: its one launcher
+    line's script starts the real job, through a launchd one-shot that goes through claude-host only
+    for the primary checkout's script (dispatch's, or clock fire's job), so a line naming another
+    copy is OUTSIDE, counted once ready as a plist's is. A line naming no path is a `--` note: the
+    run's PATH picks the script. Returns the count; Orca unread is a note, never a failure. Notes are
+    tagged `note`, never `--`: the overlay's bootstrap.sh --check counts each `  --  ` line as a
+    LaunchAgent pending. No clock beside this file (the public twin, until its scrub): nothing to say."""
+    if not (BIN / "clock").is_file():
+        return 0
+    try:
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+        spec = spec_from_loader("clock_for_rc_hosts", SourceFileLoader("clock_for_rc_hosts", str(BIN / "clock")))
+        clock = module_from_spec(spec)
+        spec.loader.exec_module(clock)
+        autos = clock.read_orca(runs=False)["automations"]
+    except BaseException as e:   # no clock, no core, no Orca: SystemExit included (the core's require())
+        if isinstance(e, KeyboardInterrupt):
+            raise
+        print(f"  note     Orca automations: not read ({str(e).strip() or type(e).__name__})")
+        return 0
+    counted = 0
+    for a in autos:
+        name = a.get("name") or a.get("id")
+        line, _ = clock.launcher_line(a.get("prompt"))
+        parsed = clock.parse_line(line)[0] if line else None
+        if not parsed:
+            continue   # not the clock's shape: clock check judges it, nothing here starts a claimer
+        if parsed[1] == "fired":
+            # the fired line's own clock writes and loads the plist each night: the primary's, or
+            # this module's own (the copy rc-hosts runs from), never another checkout's
+            cl = shlex.split(line)[0]
+            ours = {str((PRIMARY / "bin" / "clock").resolve()), str((BIN / "clock").resolve())}
+            if "/" in cl and str(Path(os.path.expandvars(cl)).expanduser().resolve()) not in ours:
+                tag = "OUTSIDE " if on else "note    "
+                counted += on
+                print(f"  {tag} automation {name}: fires through {cl}, not the primary checkout's clock")
+                continue
+        hit = claimer(shlex.join(parsed[0]))
+        if hit is None:
+            print(f"  note     automation {name}: {Path(parsed[0][0]).name} named without a path — the run's PATH picks it")
+        elif not hit[1]:
+            tag = "OUTSIDE " if on else "note    "
+            counted += on
+            print(f"  {tag} automation {name}: launches {hit[0]} from outside {PRIMARY / 'bin'}, which claude-host's allowlist names")
+        else:
+            print(f"  ok       automation {name}: Orca starts its run; {hit[0]} is the primary checkout's")
+    return counted
+
+
 def agents(fix=False, quiet=False):
-    """--agents: every plist in LaunchAgents whose job starts claude bare. Exit 1 (a regression:
+    """--agents: every plist in LaunchAgents whose job starts claude bare, then the clock's Orca
+    automations (automations(), not in the reaper's quiet run). Exit 1 (a regression:
     some writer bypassed ready()) only once ready(), and only for what should have moved by now:
     an empty bare host or an idle bare job. A host holding a session (it moves once empty, up to
     the 12 h reap) and a job running right now (--fix takes it once it ends: the hourly --reap
@@ -1047,12 +1103,12 @@ def agents(fix=False, quiet=False):
         elif (args and str(args[0]) == str(LAUNCHER) and p.stem.startswith(OURS)
               and p.stem not in (PROBE, TCC_JOB) and not loaded(p.stem)):
             bad.append((p.stem, plist, "names claude-host, but launchd has not loaded it", "unloaded"))
+    on = ready()
     if not bad:
         if not quiet:
             print("  ok       LaunchAgents: every job " + ("it could read " if skipped else "")
                   + "that starts claude starts through claude-host")
-        return 0
-    on = ready()
+        return 1 if not quiet and automations(on) else 0
     counted = 0
     for label, plist, why, kind in bad:
         host = label.startswith(HOST_LABEL)
@@ -1085,11 +1141,14 @@ def agents(fix=False, quiet=False):
         if not quiet:
             print("           not yet this Mac's grant: the sitting is rc-hosts --grant"
                   " (docs/tcc-one-identity-2026-10-18.md)")
+            automations(on)
         return 0
     outside = sum(1 for b in bad if b[3] == "outside")
     if outside:
         print(f"           {outside} job(s) run a script outside {PRIMARY / 'bin'}: claude-host won't start"
               " them — point each at the primary checkout's script")
+    if not quiet:
+        counted += automations(on)
     return 1 if counted else 0
 
 
