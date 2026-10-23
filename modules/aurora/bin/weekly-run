@@ -39,7 +39,8 @@
 # macOS has no `timeout`, so `capped` is a Python process-group kill (bin/tend's way). Each step
 # that fails logs `FAILED …`, posts one bulletin line and the next still runs; a run past
 # midnight accepts what a section dated its own day. `weekly-run aurora <cwd> --dry-run` prints
-# tonight's order and runs nothing (AURORA_TODAY / AURORA_HOUR pick another night). WEEKLY_TEND
+# tonight's order and runs nothing (AURORA_TODAY / AURORA_HOUR pick another night); `--due` is the
+# same plan as a precheck, exit 3 on a night with nothing to run (the clock's Orca automation, S7). WEEKLY_TEND
 # and WEEKLY_CLASSIFY replace steps 1–2 for the suite: the real ones push and archive real
 # repos; WEEKLY_COMMIT replaces knowledge-commit (the quiet week's log.md line would push the vault).
 set -uo pipefail
@@ -107,6 +108,10 @@ if [ "${2:-}" = --scope ]; then
   [ "$job" = aurora ] || { echo "weekly-run: --scope is aurora's (one scope's dream)" >&2; exit 2; }
 else
   cwd="${2:?cwd}"; dry=""; [ "${3:-}" = --dry-run ] && dry=1
+  # --due: the dry run as the clock's precheck (knowledge-layers S7): the same plan, and exit 3 when
+  # the run would do nothing — no section due, or a host the loop skips — so Orca records the
+  # night as skipped_precheck and starts no session. --dry-run itself stays exit 0 for a reader.
+  due_gate=""; [ "${3:-}" = --due ] && { dry=1; due_gate=1; }
 fi
 sections=""
 if [ "$job" = dream ]; then job=aurora; sections="${AURORA_SECTIONS:-dream}"; fi  # the old plist (renamed 2026-10-03)
@@ -115,9 +120,12 @@ day=$(date +%Y-%m-%d)
 log="$LOGS/$day-$job${scope:+-$scope}.log"
 mkdir -p "$(dirname "$log")"
 say() { if [ -n "$dry" ]; then echo "$1"; else echo "$1" >> "$log"; fi; }
+# a refusal under --due passes the precheck: the run Orca then starts meets the same refusal and logs
+# and posts it, as the launchd night did — a failed precheck is only a silent skipped run (S7 review)
+refuse() { [ -n "${due_gate:-}" ] && exit 0; exit 1; }
 # The core and the repos the job writes are required; their absence is one line, never a guess.
 if [ -z "$REG" ]; then
-  say "$(date '+%H:%M') refused: the regatta core is missing (no modules/regatta beside $MOD, no REGATTA_HOME, no $RCFG/home)"; exit 1
+  say "$(date '+%H:%M') refused: the regatta core is missing (no modules/regatta beside $MOD, no REGATTA_HOME, no $RCFG/home)"; refuse
 fi
 # Present is not loaded: beside an overlay the core raises at import when a key is missing, and then
 # every `tool` lookup and the host name come back empty — a night with no peers, on a host it may be
@@ -125,7 +133,7 @@ fi
 # reached through the core too.
 HOOKS="$(dirname "$REG")/../hooks"
 if ! why=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common" "$HOOKS" 2>&1); then
-  say "$(date '+%H:%M') refused: the regatta core does not load — ${why##*$'\n'} (regatta check)"; exit 1
+  say "$(date '+%H:%M') refused: the regatta core does not load — ${why##*$'\n'} (regatta check)"; refuse
 fi
 # The peers, each optional to the night as a whole: a missing one fails its own step, said in the
 # log (a `<name>-missing` command where no step checks first), and the next step still runs.
@@ -146,7 +154,7 @@ if [ -z "${WEEKLY_ANY_HOST:-}" ]; then
   if [ ! -f "$RCFG/aurora/skip-hosts" ] && [ -e "$RCFG/legacy" ]; then
     say "$(date '+%H:%M') refused: no $RCFG/aurora/skip-hosts (your overlay's bootstrap.sh --config)"
     [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: no aurora/skip-hosts in $RCFG — bootstrap.sh --config writes it. Log: $log"
-    exit 1
+    refuse
   fi
   # Each line stripped as the core's config_read strips one (a BOM, CR, edge spaces, blank lines).
   skips=$(tr -d '\r' 2>/dev/null < "$RCFG/aurora/skip-hosts" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$')
@@ -156,10 +164,11 @@ if [ -z "${WEEKLY_ANY_HOST:-}" ]; then
     if [ -z "$host" ]; then
       say "$(date '+%H:%M') refused: this host's name is unknown, and aurora/skip-hosts lists hosts to skip"
       [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: the core gave no host name to match aurora/skip-hosts. Log: $log"
-      exit 1
+      refuse
     fi
     if grep -qixF "$host" <<<"$skips"; then
       say "$(date '+%H:%M') skipped: $job does not run on $host (aurora/skip-hosts; the installer's --schedule refuses here, --remove unloads a job loaded before)"
+      [ -n "${due_gate:-}" ] && exit 3
       exit 0
     fi
   fi
@@ -170,7 +179,7 @@ fi
 if [ -z "$P" ] || { [ "$job" = sextant ] && [ -z "$C" ]; }; then
   say "$(date '+%H:%M') refused: atlas's $([ -z "$P" ] && echo vault || echo layer) is not configured ($RCFG/atlas/: your overlay's bootstrap.sh --config)"
   [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: atlas's layer or vault is not configured in $RCFG/atlas/. Log: $log"
-  exit 1
+  refuse
 fi
 # A scope's pass runs from its anchor: the fence (lighthouse's secrets_guard) keeps a confidential
 # scope's paths from any other cwd, and the dream is a record on the anchor's main. Not ready — no
@@ -179,12 +188,12 @@ if [ -n "$scope" ]; then
   sp_where=$("$MOD/bin/scope-pass" where "$scope" 2>&1); sp_rc=$?
   sp() { sed -n "s/^$1 //p" <<<"$sp_where" | head -1; }
   if [ $sp_rc = 2 ]; then
-    say "$(date '+%H:%M') refused: ${sp_where##*$'\n'}"; exit 1
+    say "$(date '+%H:%M') refused: ${sp_where##*$'\n'}"; refuse
   fi
   if [ $sp_rc != 0 ]; then
     say "$(date '+%H:%M') refused: scope $scope is not ready — $(sp ready | sed 's/^no — //')"
     [ -z "$dry" ] && post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: not ready (scope-pass where $scope says why). Log: $log"
-    exit 1
+    refuse
   fi
   cwd=$(sp anchor); sp_login=$(sp login); sp_conf=$(sp confidential)
 fi
@@ -361,7 +370,7 @@ if [ -n "$scope" ]; then
 elif [ "$job" = aurora ]; then
   sections="${sections:-${AURORA_SECTIONS:-$(due | tr '\n' ' ')}}"
   sections="$(set -f; in_order "$sections")"  # squeeze spaces; set -f: a `*` must not glob the cwd
-  if [ -n "$dry" ]; then plan; exit 0; fi
+  if [ -n "$dry" ]; then plan; [ -n "${due_gate:-}" ] && [ -z "$sections" ] && exit 3; exit 0; fi
   if [ -z "$sections" ]; then
     echo "$(date '+%H:%M') aurora: no section due tonight" >> "$log"
     exit 0
