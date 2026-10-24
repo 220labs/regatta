@@ -6,6 +6,49 @@
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
   `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.
 
+skipper-resilience S8, the stall road and the yard's tick.
+- `ask poll` ticks on a host some scope's `yard` names, as on the laptop (`helmlib.yard_hosts`): wharf's
+  pass, the skippers' pass and its own stalls. Off the laptop a torn registry is no tick, one line. With
+  no yard set nothing changes on any host.
+- Each host acts on its own store: the laptop still reads and judges a yard over ssh (the board shows its
+  stalls; its records and live sessions are shared facts), but its tick acts on none of them
+  (`stalls.self_judging()`, read in `stalls_tick.acted_elsewhere`), and on no peer's at all while the
+  registry does not read (fail closed). A RELAYED run whose manager is on a host with no road from here
+  (a yard's to the laptop) is unknown there, never "manager gone"; the laptop's board still judges it.
+- The `github-issue` notify backend (`bin/ask`'s `notice()`; `surfaces.KNOWN["notify.*"]` and the schema
+  know the word): an issue in the config's `helm/inbox-repo`, its body led by `helm/mention`, labelled
+  `stall`, through the core's `api()` and `token()` (`ASK_GH_API` replaces it with a program called as
+  `gh api` is). It carries stalls only; an ask's banner is unchanged. Absent values are road `none`.
+- `stalls_tick.escalate()` after the decisions, on a yard only: a raised stall first seen 10 minutes ago
+  (never one raised to a live skipper, nor `braked`), a block of a ship the yard holds gated on a decision
+  doc or a person's task whose deps are done, quiet 10 minutes, and a question on such a ship by S5's owner
+  rule — the owner's (`helm skipper --escalate`, mode ask or dnd) after 10 minutes, the skipper's once 15
+  minutes pass unanswered, one answered in its doc never — each one row in `escalations.jsonl` (`open`, `class-changed`, `closed`) and one
+  issue per key: a class change a second issue naming the first, which is closed once the second is open;
+  a key missing 10 minutes with every store read a comment and the issue closed; the same class back
+  later its issue reopened. A failed open or close is tried once more; a config that gives no road is
+  `unrouted`, re-checked each pass without a call. At most 5 issues a pass, none within a minute of the
+  tick's kill time. `--dry-run` prints `would escalate` and when each is due. A guarded repo's issue
+  and its comments name its class and host only. GitHub is called only from an armed tick of launchd's
+  (no session, not `CLAUDE_UNATTENDED`), one at a time (a lock), while the registry and keel's guarded
+  list read (`helmlib.guard_unread`), before the judge and after; any other tick says `would …`. A key is
+  closed only where its source (runs, launches, Orca, skippers, the ship) was read. What the road
+  could not deliver or settle is a `road` card on the board (`helm_render.road_cards`).
+- After the finish review: a key closes only once missing 10 minutes and on two passes in a row, and a
+  refused pass keeps that clock; a second class move carries every followed issue still open (`also`)
+  and closes it; a close retried closes only what failed; the open's row is written before the issues
+  it follows are closed; a card names the issue left open and a failed close's card ages out after 7
+  days; a banner without osascript fails and the next backend is tried; one unreadable ship costs its
+  own keys; a yard acts on its own store only; no `regatta/guarded` at all is "the guarded list did not
+  read"; the judge without wharf-runs reads as nothing read; every road fault reaches the poll's stderr.
+- After the second finish review: a stall back before a partial close's retry reopens its own issue
+  (closed by the first try) and follows only what is still open; back after a close that left a
+  followed issue open carries it, still carded; a refused pass writes the absences' clock under the
+  road's lock, or not at all; a ship that raises half-way opens none of its keys and the pass names the
+  error's class; a card for a new issue that never opened says so, with the issue still open beside it;
+  a successful close is no fault line. The suite's in-process road case ran for the first time (bash 3.2
+  had skipped it: an apostrophe in a heredoc inside `"$(…)"`); its expectations follow the two-miss rule.
+
 skipper-resilience S7, `helm send`: a task handed to its scope's skipper.
 - `helm send <blueprint.md | claude/branch> | --text "<task>" --repo R` (bin/sendlib.py): a committed,
   pushed blueprint, the one blueprint a handoff branch adds (`--blueprint` names one of several), or a

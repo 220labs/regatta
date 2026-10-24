@@ -54,7 +54,11 @@ laptop's worktree may hold commits its gone session never pushed — so `--on he
 gets `helm report --status blocked`, then `running` once its retry's record appears; `failed`
 never (helmlib.ENDED would close its asks and let S7 fire on its successors).
 
-stalls.jsonl (~/Library/Logs/claude-weekly/, laptop-local, O_APPEND) is the log and the retry
+The tick runs on the laptop and, since skipper-resilience S8, on each scope's yard (bin/ask poll_tick),
+each judging its own store; on a yard what it raises also goes out by the stall road — escalations.jsonl
+and the `notify.<host>` row (escalate(), below the classifier).
+
+stalls.jsonl (~/Library/Logs/claude-weekly/, the host's own, O_APPEND) is the log and the retry
 memory in one: one JSON line per verdict that changed, never per tick (R6) — `{t, host, repo,
 branch, tip, topic, class, run, key, key_kind, action, why, …}` with action dry | wait | refused |
 raise | retry | started (the retry's record appeared) — and the classifier's answer, so a stall is
@@ -66,6 +70,7 @@ Stdlib, Python 3.9. STALLS_NOW pins the clock, STALLS_LOG and STALLS_STATE_DIR m
 STALLS_DISPATCH, STALLS_AUTOFINISH_RUN, STALLS_HARNESS and STALLS_ASK replace the tools (the tests'); the classifier's
 provider is the plan.stall row's (GATE_PLAN_STALL_PROVIDER overrides it, bin/gate).
 """
+import contextlib
 import datetime
 import json
 import os
@@ -238,9 +243,10 @@ def status_lines():
 
 # ---------------------------------------------------------------------------- the memory
 
-def read_log():
+def read_log(path=None):
+    """The log's lines (stalls.jsonl, or PATH: escalations.jsonl), a torn one skipped."""
     try:
-        text = log_path().read_text(encoding="utf-8")
+        text = Path(path or log_path()).read_text(encoding="utf-8")
     except OSError:
         return []
     out = []
@@ -254,9 +260,9 @@ def read_log():
     return out
 
 
-def append(line):
+def append(line, path=None):
     """One line, O_APPEND, as helmlib.append_event: two ticks never interleave a line."""
-    p = log_path()
+    p = Path(path or log_path())
     p.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
@@ -721,6 +727,17 @@ def follow_up(mem, res, t, write, mode_now):
     return out
 
 
+def acted_elsewhere(res):
+    """The hosts whose stalls this tick must not act on (stalls.self_judging, carried in the judge's
+    result): each yard but this one; every host but this one while the registry does not read, and
+    on a yard (its own store only: a yard whose ssh row names the laptop must not act on its runs)."""
+    me = helmlib.host()
+    others = {s.get("host") for s in res.get("stalls", []) + res.get("unsure", []) if s.get("host") != me}
+    if res.get("registry_torn") or me in helmlib.yard_hosts()[0]:
+        return others
+    return set(res.get("self_judging") or []) - {me}
+
+
 def tick(dry_run=False, peer=True):
     """Judge, gate, act: {"mode", "mode_why", "decisions": [(stall, line)], "followups", "notes", …}.
     dry_run: the verdicts as an armed tick would reach them, nothing called past the judge and
@@ -733,7 +750,23 @@ def tick(dry_run=False, peer=True):
         deadline = 0
     if dry_run:
         m, m_why = "dry-run", "--dry-run: nothing called, nothing written"
+    # the stall road's fence, asked before the judge: a guarded mark read off a torn registry is no mark
+    # (the gate's list reads no name then), so a registry torn at either moment sends nothing (S8)
+    try:
+        road_before = road_open()
+    except Exception as e:   # noqa: BLE001
+        road_before = (False, "the fence did not read (%s)" % e.__class__.__name__)
     res = stalls.judge(peer=peer)
+    # S8: the judge judges every store it read (the board shows a yard's stalls); the tick acts on none
+    # of a host that runs its own tick, and on no peer's while the registry cannot tell (fail closed)
+    left = acted_elsewhere(res)
+    if left:
+        res = dict(res, stalls=[s for s in res["stalls"] if s.get("host") not in left],
+                   unsure=[s for s in res["unsure"] if s.get("host") not in left],
+                   notes=list(res.get("notes") or []) + [
+                       "S8: the stalls of %s are left to %s (%d)" % (", ".join(sorted(left)), "their own tick" if not res.get(
+                           "registry_torn") else "nobody this pass — the registry does not read", sum(
+                           1 for s in res["stalls"] + res["unsure"] if s.get("host") in left))])
     mem = Memory(read_log())
     write = not dry_run
     followups = follow_up(mem, res, t, write, m)
@@ -821,11 +854,588 @@ def tick(dry_run=False, peer=True):
             notes.append("%s is %.1f MB (R6: a line per changed verdict should keep it small — look)" % (log_path(), size / 1e6))
     except OSError:
         pass
+    # skipper-resilience S8: the stall road, after the decisions (never in follow_up) — on a yard only
+    try:
+        esc = escalate(res, decisions, mem, t, dry=dry_run, road_before=road_before, mode_now=m)
+    except Exception as e:   # noqa: BLE001 — the road's fault costs its lines, never the tick's verdicts
+        esc = ["escalations: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
     return {"mode": m, "mode_why": m_why, "as_of": t, "hosts": res["hosts"], "decisions": decisions,
-            "followups": followups, "notes": notes, "log": str(log_path()), "wrote": write}
+            "followups": followups, "notes": notes, "log": str(log_path()), "wrote": write, "escalations": esc}
 
 
 CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SITE
+
+
+# ---------------------------------------------------------------------------- the stall road (skipper-resilience S8)
+#
+# On a yard nobody watches the board, so what the tick raises reaches the owner as one notify — the host's
+# `notify.<host>` row, `github-issue` on the yard: an issue in the config's helm/inbox-repo, its body led by
+# helm/mention (bin/ask notice()) — and one row in escalations.jsonl, beside stalls.jsonl, O_APPEND:
+#     {t, yard, ekey, plan, block, key, key_kind, kind, src, class, rule, title, guarded, road, issue, state, why}
+#     (ekey: kind and key in one string; plus was, was_class, was_open, was_tries, retried, transient,
+#     also (older followed issues still open), close_tries, close_left (what a first close left open),
+#     close_failed, close_failed_issues, reopened)
+#     state  open (the first notify of a key) | class-changed (the key's class moved: a second issue, which
+#            names the first; the first is closed once the second is open, a failed close of it tried once
+#            more) | unrouted (the config gives no road: nothing called, re-checked each pass without a
+#            row, opened once it does) | closed (the key missing CLEAR_AFTER with its source read: a comment
+#            naming what cleared it, then the issue closed; a failed close tried once more)
+# One issue per key at a time. Three kinds are wanted, on this host's own store only:
+#     stall  a decision whose verdict is raise (dry or not), first seen ESCALATE_AFTER ago — S3, S5, S6, S7,
+#            `skipper won't start`, a spent or refused retry, an unsure one the classifier refused — but
+#            never one raised to a live skipper (it hears it), nor a class in NEVER
+#     block  a block of a ship the yard holds (a lease here) that waits on the owner as a whole — gated on
+#            a decision doc (skipperlib.OWNER_PROGRESS) or a person's task whose deps are done — quiet
+#            ESCALATE_AFTER: the yard holds such a block by escalating it, and nothing else
+#     ask    an open question on such a ship, by S5's owner rule (skipperlib.owners_ask): the owner's —
+#            escalated by `helm skipper --escalate`, or asked in mode ask or dnd — after ESCALATE_AFTER;
+#            the skipper's, once RELAY_UNANSWERED (the deaf rule's 15 minutes) passes from the relay that
+#            reached it; one answered in its doc already, never. An escalation moves an unanswered one's
+#            class: a second issue, the first closed
+# Who acts: only a yard (a host some scope's `yard` names), only while the registry reads and keel's
+# gate can name every guarded repo (helmlib.guard_unread) — both asked before the judge and after —,
+# and only a tick armed past its dry hours, run by launchd (no session, not CLAUDE_UNATTENDED), one at a
+# time (a lock beside the log). Any other tick prints `would …` (with when each not yet due is) and
+# calls nothing; a refused one (not --dry-run) writes only the absences' clock, under the same lock. A guarded repo's escalation names its class and host alone: no ship, task,
+# key, holder or run, in the issue or its comments. A failed open is tried once more on the next pass;
+# one that fails again stays on the board as a card (helm_render.road_cards), never in a loop. At most
+# ESCALATE_MAX issues open in one pass, and no call starts within ESCALATE_LEFT of the tick's kill time.
+
+ESCALATE_AFTER = 10 * 60      # a raised stall's first sight, a quiet owner's block: with the 5-minute tick, G2's 15 min
+RELAY_UNANSWERED = 15 * 60    # an open question on a yard's ship (skipperlib.DEAF's 15 minutes)
+NEVER = ("braked",)           # the brake is the owner's own hold: never escalated (no judge names this class yet; S11 holds the road under the brake)
+OPEN_STATES = ("open", "class-changed")   # `unrouted` (no road by the config) and `closed` are not
+ESCALATE_MAX = 5              # issues opened in one pass at most: the rest wait for the next (a yard's first pass may hold dozens)
+ESCALATE_LEFT = 60            # no GitHub call with less of the tick's kill time (STALLS_DEADLINE) left
+CLEAR_AFTER = 10 * 60         # a key closes once it has been missing this long: one pass's glitch never closes and reopens it
+
+
+def escalations_path():
+    return Path(os.environ.get("STALLS_ESCALATIONS") or log_path().with_name("escalations.jsonl"))
+
+
+def read_escalations():
+    return [d for d in read_log(escalations_path()) if d.get("ekey")]
+
+
+def append_escalation(row):
+    append(row, escalations_path())
+
+
+def yard_here():
+    """True when this host is some scope's yard and the registry reads (helmlib.yard_hosts fails closed)."""
+    yards, torn = helmlib.yard_hosts()
+    return not torn and helmlib.host() in yards
+
+
+def road_open(fresh=False):
+    """(True, None), or (False, why) when what leaves the machine cannot be vouched for: this host no yard,
+    the registry torn, or keel's gate unable to name every guarded repo."""
+    if not yard_here():
+        return False, "no yard"
+    if helmlib.guard_unread(fresh=fresh):
+        return False, "the guarded list did not read (keel's gate, its regatta/guarded or the registry's confidential scopes)"
+    return True, None
+
+
+def act_refusal(mode_now):
+    """None when this tick may call GitHub; else why it only says `would …` (the tick's own acting rule:
+    armed past its dry hours, launchd's — never a session's tick beside the poll's, never an unattended run)."""
+    if mode_now != "armed":
+        return "the tick is %s" % mode_now
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return "an unattended caller (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"]
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return "the tick runs inside session %s: the stall road is launchd's tick's" % os.environ["CLAUDE_CODE_SESSION_ID"][:8]
+    return None
+
+
+def _shown_key(key):
+    return json.dumps(key, ensure_ascii=False)
+
+
+def wanted(res, decisions, mem, t):
+    """({ekey: what to escalate}, {"ships": bool, "plans": set}) — the three kinds above, each {kind, key,
+    key_kind, src, class, rule, plan, block, since, after, ready, title, body, guarded}; and what of the
+    yard's ships could not be read this pass (no lease reader: ships False; a ship unread: its id)."""
+    me = helmlib.host()
+    out = {}
+    for s, line, _ in decisions:
+        verdict = line.get("would") if line.get("action") == "dry" else line.get("action")
+        cls = s.get("class") or "unsure"
+        if verdict != "raise" or s.get("host") != me or cls in NEVER or s.get("raise_to") in stalls.RAISE_TO_SKIPPER:
+            continue
+        since = mem.first_t(ident(s)) or t
+        g = bool(s.get("guarded"))
+        if g:   # K6: its class and host, nothing else of it
+            title = "stall on %s: %s in a guarded repo" % (me, cls)
+            body = ["A stall in a guarded repo on %s has waited %d min: open the board there (`helm board`)." % (me, (t - since) // 60),
+                    "", "- class: %s" % cls]
+        else:
+            ev = [e for e in s.get("evidence") or [] if not e.startswith("record ")][:3]
+            title = "stall on %s: %s" % (me, s.get("title") or cls)
+            body = ["A stall on %s has waited %d min: %s" % (me, (t - since) // 60, s.get("title")), "",
+                    "- key: `%s`" % _shown_key(s.get("key")), "- class: %s — rule: %s" % (cls, s.get("rule"))]
+            body += ["- evidence: %s" % " · ".join(ev)] if ev else []
+            body += ["- why raised: %s" % line.get("why")] if line.get("why") else []
+            body += ["- board: %s — `helm board` on %s" % (s.get("column") or stalls.column(s), me)]
+        src = "orca" if s.get("harness") == "orca" else {"landing": "launches", "skipper": "skippers"}.get(s.get("key_kind"), "runs")
+        ek = _k(["stall", s.get("key_kind"), s.get("key")])
+        out[ek] = {"kind": "stall", "key": s.get("key"), "key_kind": s.get("key_kind"), "src": src, "class": cls,
+                   "rule": s.get("rule"), "plan": s.get("plan"), "block": s.get("task") or s.get("topic"), "since": since,
+                   "after": ESCALATE_AFTER, "ready": t - since >= ESCALATE_AFTER, "title": title, "body": body, "guarded": g}
+    unread = {"ships": True, "plans": set()}
+    try:
+        import leaselib
+        import skipperlib
+        ships = []
+        for p, r in leaselib.leases():
+            if isinstance(r, dict):
+                ships.append((p, r))
+            else:
+                unread["plans"].add(p)   # a torn lease: its keys are neither opened nor closed this pass
+    except Exception:   # noqa: BLE001 — no lease reader: no ship of the yard's read, none of their keys closed
+        unread["ships"] = False
+        return out, unread
+    # S5's owner rule, read once per pass as its own tick reads it (skipperlib's _PASS cache: each ship's
+    # merged tasks, each doc's answers)
+    saved, skipperlib._PASS = skipperlib._PASS, {}
+    try:
+        for pid, lease in ships:
+            if not _ship_wanted(out, pid, lease, me, t, skipperlib, unread.setdefault("errors", [])):
+                unread["plans"].add(pid)
+    finally:
+        skipperlib._PASS = saved
+    return out, unread
+
+
+def _ship_wanted(out, pid, lease, me, t, sk, errors=None):
+    """The block and ask kinds of one ship the yard holds, into OUT (wanted()'s); False when it did not read.
+    A ship's keys are merged only when all of it read: a raise half-way opens none of them."""
+    mine = {}
+    try:
+        ok = _ship_wanted1(mine, pid, lease, me, t, sk)
+    except Exception as e:   # noqa: BLE001 — one malformed or unreadable ship costs its own keys, never the pass
+        if errors is not None:
+            errors.append(type(e).__name__)   # the class only: a guarded ship's text never reaches the log
+        return False
+    if ok:
+        out.update(mine)
+    return ok
+
+
+def _ship_wanted1(out, pid, lease, me, t, sk):
+    try:
+        st = helmlib.state(pid)
+    except (FileNotFoundError, ValueError):
+        return False
+    tasks = {x["id"]: x for x in st["tasks"]}
+    ship = st.get("topic") or pid
+    for task in st["tasks"]:
+        if task["status"] in helmlib.ENDED:
+            continue
+        g = bool(task.get("guarded"))
+        prog = str(task.get("progress") or "")
+        cls = None
+        if task.get("kind") == "human":
+            deps = [tasks.get(d) for d in task["deps"]]
+            if not all(d and d["status"] in helmlib.DONE for d in deps):
+                continue   # not the owner's turn yet
+            cls, since = "person's", max([d.get("updated") or 0 for d in deps] + [task.get("updated") or 0]) or st.get("created") or t
+        elif task.get("status") == "waiting" and prog.startswith(sk.OWNER_PROGRESS):
+            cls, since = "gated", task.get("updated") or t
+        if cls:
+            key = [me, pid, task["id"]]
+            if g:   # K6: no ship, task, plan id or progress
+                title = "a guarded block on %s: waits on the owner (%s)" % (me, cls)
+                body = ["A block in a guarded repo on %s waits on you: open the board there (`helm board`)." % me, "",
+                        "- class: waits on the owner (%s)" % cls]
+            else:
+                asks = [a["ref"] for a in task["asks"] if a.get("open")]
+                title = "%s/%s on %s: waits on the owner (%s)" % (ship, task["id"], me, cls)
+                body = ["A block of ship %s on %s waits on you: %s." % (ship, me, prog or "a person's task"), "",
+                        "- key: `%s`" % _shown_key(key), "- class: waits on the owner (%s)" % cls]
+                body += ["- open questions: %s" % ", ".join(asks)] if asks else []
+                body += ["- the ship: `helm show %s` on %s" % (pid, me)]
+            out[_k(["block", key])] = {
+                "kind": "block", "key": key, "key_kind": "block", "src": "ships", "class": cls, "rule": "waits on the owner",
+                "plan": pid, "block": task["id"], "since": since, "after": ESCALATE_AFTER,
+                "ready": t - float(since) >= ESCALATE_AFTER, "guarded": g, "title": title, "body": body}
+            continue   # its questions are the doc's D-items this issue already names
+        for a in task["asks"]:
+            if not a.get("open") or sk.doc_answer(a):
+                continue   # answered in its doc already: nobody's to chase
+            # S5's rule (skipperlib.owners_ask): escalated by `helm skipper --escalate`, or asked in mode
+            # ask or dnd, the question is the owner's — escalated after ESCALATE_AFTER; else the skipper's,
+            # escalated once RELAY_UNANSWERED passes unanswered
+            amode = sk.ask_mode(pid, task, a)
+            mode = "escalated" if a.get("escalated") else "mode %s" % amode if amode in sk.OWNER_MODES else None
+            # the skipper's clock starts at the relay that reached it (a re-hail after a hand-over too), as the
+            # deaf rule's; the owner's at the question
+            opened = float((None if mode else a.get("relayed_at")) or a.get("opened") or t)
+            key = [me, pid, a["ref"]]
+            cls = "owner's (%s)" % mode if mode else "unanswered"
+            wait = ESCALATE_AFTER if mode else RELAY_UNANSWERED
+            if g:   # K6: no ship, task, ref, holder or text
+                title = "a guarded question on %s: %s" % (me, "for the owner" if mode else "unanswered")
+                body = ["A question in a guarded repo on %s has waited %d min%s: open the board there (`helm board`)." % (
+                    me, (t - opened) // 60, " for you" if mode else " with no answer from its skipper"), "", "- class: %s" % cls]
+            else:
+                title = "%s/%s on %s: %s %s" % (ship, task["id"], me, a["ref"], "for the owner" if mode else "unanswered")
+                body = ["A question on ship %s (%s) has waited %d min on %s%s." % (
+                    ship, task["id"], (t - opened) // 60, me, " for you (%s)" % mode if mode else " with no answer from its skipper"), "",
+                        "- key: `%s`" % _shown_key(key), "- class: %s (lease gen %s)" % (cls, lease.get("gen")),
+                        "- %s — Reversible: %s — Recommended: %s" % (a.get("summary") or a["ref"], a.get("reversible") or "unmarked",
+                                                                    a.get("recommended") or "none")]
+            out[_k(["ask", key])] = {
+                "kind": "ask", "key": key, "key_kind": "ask", "src": "ships", "class": cls,
+                "rule": "the owner's question" if mode else "a relay unanswered", "plan": pid, "block": task["id"],
+                "since": opened, "after": wait, "ready": t - opened >= wait, "guarded": g, "title": title, "body": body}
+    return True
+
+
+_ASK = None
+
+
+def ask_mod():
+    """bin/ask as a module: the notify seam (notice(), stall_road(), issue_state()) is its, as the poll's bell is."""
+    global _ASK
+    if _ASK is None:
+        _ASK = _load("ask_for_tick", HERE / "ask")
+    return _ASK
+
+
+def seen_path():
+    return state_dir() / "escalations-seen.json"
+
+
+def read_seen():
+    try:
+        d = json.loads(seen_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def write_seen(d):
+    p = seen_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.write_text(json.dumps(d, sort_keys=True))
+    tmp.replace(p)
+
+
+@contextlib.contextmanager
+def road_lock():
+    """One stall road at a time on this host: a non-blocking lock beside the log. Yields False when
+    another tick holds it (that pass then calls nothing: two at once would open each issue twice)."""
+    import fcntl
+    p = escalations_path().with_name(".escalations.lock")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def escalate(res, decisions, mem, t, dry=False, road_before=(True, None), mode_now="armed"):
+    """The stall road's pass (the block above): lines. Nothing on a host that is no yard. road_before:
+    road_open() as asked before the judge (the guarded marks were read then)."""
+    ok_after, why_after = road_open(fresh=True)
+    if not road_before[0] or not ok_after:
+        why = road_before[1] if not road_before[0] else why_after
+        return [] if why == "no yard" else ["escalations: none this pass — %s" % why]
+    refusal = None if dry else act_refusal(mode_now)
+    if dry:
+        lines = _escalate(res, decisions, mem, t, True)   # --dry-run writes nothing
+    elif refusal:
+        # a refused pass keeps the absences' clock (local state, no call), so the next acting pass
+        # never judges a key gone from a stale memory — under the lock, or a stale read it holds
+        # would overwrite what the acting pass just wrote; locked out, it writes nothing
+        with road_lock() as got:
+            lines = _escalate(res, decisions, mem, t, True, keep=got)
+    else:
+        with road_lock() as got:
+            if not got:
+                return ["escalations: another tick holds the stall road — none this pass"]
+            lines = _escalate(res, decisions, mem, t, False)
+    if refusal and lines:
+        lines.append("escalations: nothing called — %s" % refusal)
+    return lines
+
+
+def _escalate(res, decisions, mem, t, dry, keep=False):
+    """seen (escalations-seen.json) holds, per key, [last pass it was present, first pass it was missing
+    with its source read]: a key closes once missing CLEAR_AFTER and on two passes in a row, so a stale
+    memory (a stretch of refused or fenced passes) never closes it on one miss. keep: write it on a dry pass."""
+    me = helmlib.host()
+    want, ships_unread = wanted(res, decisions, mem, t)
+    if ships_unread.get("errors"):
+        lines_pre = ["escalations: %d ship(s) did not read (%s) — their keys kept" % (
+            len(ships_unread["errors"]), ", ".join(sorted(set(ships_unread["errors"]))))]
+    else:
+        lines_pre = []
+    last = {}
+    for row in read_escalations():
+        last[row["ekey"]] = row
+    seen = read_seen()
+    try:
+        deadline = float(os.environ.get("STALLS_DEADLINE") or 0)
+    except ValueError:
+        deadline = 0
+    lines, opened, held = lines_pre, 0, 0
+    road_ok, road_why = ask_mod().stall_road(me)
+
+    def row_of(ek, w, state, road, issue, why, **kw):
+        r = {"t": t, "yard": me, "ekey": ek, "plan": w.get("plan"), "block": w.get("block"), "key": w.get("key"),
+             "key_kind": w.get("key_kind"), "kind": w.get("kind"), "src": w.get("src"), "class": w.get("class"),
+             "rule": w.get("rule"), "title": w.get("title"), "guarded": bool(w.get("guarded")),
+             "road": road, "issue": issue, "state": state, "why": why}
+        r.update({k: v for k, v in kw.items() if v is not None})
+        return r
+
+    def say(w, prefix, extra=""):
+        lines.append("%s %s%s" % (prefix, w.get("title"), extra))
+
+    def late():
+        return bool(deadline) and deadline - time.time() < ESCALATE_LEFT
+
+    for ek, w in sorted(want.items()):
+        seen[ek] = [t, None]   # present: no absence to count
+        prev = last.get(ek) or {}
+        state = prev.get("state")
+        is_open = state in OPEN_STATES
+        same = prev.get("class") == w["class"]
+        if is_open and prev.get("close_tries") and not dry:
+            # back before its close's retry: the next clear starts with a fresh try. close_left names what
+            # the first try failed to close; the rest is closed on GitHub: its own issue is reopened (a live
+            # stall never keeps only a closed issue), a followed one is no longer followed
+            left = set(prev.get("close_left") or [])
+            own = prev.get("issue") if prev.get("road") == "github-issue" else None
+            fix = {}
+            if own and own not in left:
+                ok, why = ask_mod().issue_state(int(own), "open", "Back on %s: %s" % (me, w["title"]))
+                if not ok:
+                    # its issue stays closed: a new one opens below, as a failed open is tried once more
+                    lines.append("escalation: #%s not reopened (%s) — a new notify instead" % (own, why))
+                    fix = {"transient": True, "retried": None}
+            prev = dict(prev, t=t, close_tries=None, close_left=None,
+                        was_open=True if prev.get("was_open") and prev.get("was") in left else None,
+                        also=[n for n in (prev.get("also") or []) if n in left] or None, **fix)
+            append_escalation({k: v for k, v in prev.items() if v is not None})
+        # the issues an open row follows, still open after their close failed: tried once more, then a card
+        if is_open and prev.get("issue") and (prev.get("was_open") or prev.get("also")) and not prev.get("was_tries") \
+                and not dry and not late():
+            failed = []
+            for n in followed(prev):
+                ok, why = ask_mod().issue_state(int(n), "closed", "The class moved to %s: followed in #%s." % (
+                    prev.get("class"), prev.get("issue")))
+                lines.append("escalation: #%s %s" % (n, "closed" if ok else "not closed again (%s) — carded" % why))
+                if not ok:
+                    failed.append(n)
+            was_left = prev.get("was") if prev.get("was_open") and prev.get("was") in failed else None
+            prev = dict(prev, t=t, was_open=True if was_left else None, also=[n for n in failed if n != was_left] or None,
+                        was_tries=1 if failed else None,
+                        why="#%s not closed; left open" % ", #".join(map(str, failed)) if failed else prev.get("why"))
+            append_escalation({k: v for k, v in prev.items() if v is not None})
+        # a failed open that was no config absence (the API down, a refused token) is tried once more
+        retry = is_open and same and prev.get("transient") and not prev.get("retried")
+        if (is_open and same and not retry) or (not w["ready"] and not is_open):
+            if dry and not w["ready"] and not is_open:
+                say(w, "would escalate", " (due %s)" % hm(float(w["since"]) + w["after"]))
+            continue
+        moved = is_open and not same
+        # the same key and class back after it cleared: its own issue reopened, never a second
+        back = state == "closed" and same and prev.get("road") == "github-issue" and prev.get("issue")
+        # back after a clear, the issues its close left open (carded) are carried, still carded
+        left_open = [n for n in (prev.get("close_failed_issues") or []) if n != prev.get("issue")] if state == "closed" else []
+        if not road_ok:
+            if is_open:
+                continue   # the config lost its road: the open issue stays the stall's, nothing called
+            # no road by the config: nothing called; one row, re-checked each pass without another
+            if not (state == "unrouted" and same and prev.get("why") == road_why):
+                if dry:
+                    say(w, "would escalate", ": no road — %s" % road_why)
+                    continue
+                append_escalation(row_of(ek, w, "unrouted", "none", None, road_why))
+                say(w, "escalated", ": none — %s" % road_why)
+            continue
+        if dry:
+            say(w, "would escalate", " (the class moved from %s)" % prev.get("class") if moved else
+                " (#%s reopened)" % prev["issue"] if back else " (tried once more)" if retry else "")
+            continue
+        if opened >= ESCALATE_MAX or late():
+            held += 1
+            continue
+        opened += 1
+        if back:
+            ok, why = ask_mod().issue_state(int(prev["issue"]), "open", "Back on %s: %s" % (me, w["title"]))
+            if ok:
+                append_escalation(row_of(ek, w, "open", "github-issue", prev["issue"], "back after it cleared", reopened=True,
+                                         also=left_open or None, was_tries=1 if left_open else None))
+                say(w, "escalated", ": github-issue #%s, reopened" % prev["issue"])
+                continue
+            lines.append("escalation: #%s not reopened (%s) — a new notify instead" % (prev["issue"], why))
+        # the issue this one follows, and the class it had: on a move the row's own; on a retry of a moved
+        # one, the row's `was` and `was_class` (a second move reads the class it moved from, never the one before)
+        # (a move from a row whose own open failed follows that row's `was`, the issue still open)
+        was = (prev.get("issue") or prev.get("was")) if moved else prev.get("was") if retry and prev.get("was_open") else None
+        # older issues still open (a followed one whose close failed): carried, never dropped by a second move
+        also = [n for n in followed(prev) if n != was] if moved else list(prev.get("also") or []) if retry else left_open
+        from_cls = prev.get("class") if moved else prev.get("was_class")
+        body = list(w["body"])
+        if was:
+            body += ["", "The class moved from %s to %s: this follows #%s." % (from_cls, w["class"], was)]
+        body += ["", "The yard's tick opened this (helm tick, the stall road) and closes it when this clears."]
+        n = ask_mod().notice(w["title"], "\n".join(body), kind="stall", host=me)
+        new_state = "class-changed" if (moved or (retry and state == "class-changed")) else "open"
+        row = row_of(ek, w, new_state, n["road"], n["issue"],
+                     n["said"] if n["road"] == "none" else "the class moved from %s" % from_cls if moved else w["rule"],
+                     was=was, was_class=from_cls if was else None, retried=True if retry else None,
+                     transient=True if n["road"] == "none" else None, also=also or None,
+                     was_tries=1 if left_open and not moved and not retry else None)
+        # the issues it follows are closed only once this one is open: a stall is never left with none.
+        # The row is written first, its followed issues still open, so a kill before the closes leaves
+        # no issue that no row names; a second row says what closed.
+        if was:
+            row["was_open"] = True
+        append_escalation(row)
+        if was and n["issue"] and not late():
+            failed = []
+            for f in [was] + also:
+                ok, why = ask_mod().issue_state(int(f), "closed", "The class moved from %s to %s: followed in #%s." % (
+                    from_cls, w["class"], n["issue"]))
+                if not ok:
+                    failed.append(f)
+                    lines.append("escalation: #%s not closed (%s) — tried once more next pass" % (f, why))
+            row = dict(row, was_open=True if was in failed else None, also=[f for f in failed if f != was] or None)
+            append_escalation({k: v for k, v in row.items() if v is not None})
+        say(w, "escalated", ": %s%s" % (n["road"], " #%s" % n["issue"] if n["issue"] else " — %s" % n["said"]))
+    if held:
+        lines.append("escalations: %d more wait for the next pass (at most %d a pass, and none past the tick's kill time)"
+                     % (held, ESCALATE_MAX))
+
+    # a key's absence counts only where its source was read this pass
+    unread = res.get("unread") or {}
+    gaps = {"runs": not res.get("hosts") or bool(unread.get("hosts")), "launches": bool(unread.get("launches")),
+            "orca": bool(unread.get("orca")), "skippers": bool(unread.get("skippers")), "ships": not ships_unread["ships"]}
+    for ek, prev in sorted(last.items()):
+        if prev.get("state") not in OPEN_STATES + ("unrouted",) or ek in want or prev.get("yard") not in (None, me):
+            continue
+        src = prev.get("src") or ("ships" if prev.get("kind") in ("block", "ask") else "runs")
+        if gaps.get(src) or prev.get("plan") in ships_unread["plans"] and src == "ships":
+            continue   # its source unread this pass: a key missing from it may still be there
+        v = seen.get(ek)
+        last_p, absent = (list(v) + [None, None])[:2] if isinstance(v, list) else (v, None)
+        last_p = float(last_p or prev.get("t") or t)
+        if absent is None:
+            seen[ek] = [last_p, t]   # the first miss on a pass that read its source: never a clear by itself
+            continue
+        if t - last_p < CLEAR_AFTER:
+            continue   # one pass's absence is no clear: a glitch would close and reopen it
+        why = "cleared" if prev.get("guarded") else cleared(prev, mem)
+        if dry:
+            lines.append("would close the escalation of %s: %s" % (prev.get("title") or "?", why))
+            continue
+        note = None
+        # its own issue where it has one, and the one it followed while that is still open, whatever its road
+        live = [n for n in ((prev.get("issue") if prev.get("road") == "github-issue" and prev.get("state") != "unrouted" else None),
+                            ) if n] + followed(prev)
+        if prev.get("close_tries") and prev.get("close_left"):
+            live = list(prev["close_left"])   # the retry closes only what failed: no second comment on a closed one
+        if live and late():
+            continue   # no time left in this tick: tried on the next, no try spent
+        failed = []
+        for n in live:
+            ok, err = ask_mod().issue_state(int(n), "closed", "Cleared on %s: %s." % (me, why))
+            if not ok:
+                failed.append(n)
+                note = "#%s: %s" % (n, err)
+        if note and not prev.get("close_tries"):
+            # verify, then retry once: the row stays open, the next pass tries the close again
+            append_escalation(dict(prev, t=t, close_tries=1, close_left=failed,
+                                   why="its close failed (%s); tried once more next pass" % note))
+            lines.append("escalation: %s not closed — tried once more next pass" % note)
+            continue
+        seen.pop(ek, None)
+        append_escalation(row_of(ek, prev, "closed", prev.get("road"), prev.get("issue"), why, close_failed=note,
+                                 close_failed_issues=failed or None))
+        lines.append("escalation closed%s: %s — %s%s" % (" (#%s)" % prev["issue"] if prev.get("issue") else "",
+                                                          prev.get("title") or _shown_key(prev.get("key")), why,
+                                                          " (the issue not closed: %s — carded)" % note if note else ""))
+    if not dry or keep:
+        write_seen({k: v for k, v in seen.items() if k in want or (last.get(k) or {}).get("state") in OPEN_STATES + ("unrouted",)})
+    return lines
+
+
+def followed(row):
+    """The issues an open row follows that are still open: its `was` while `was_open`, then `also`."""
+    return ([row["was"]] if row.get("was_open") and row.get("was") else []) + list(row.get("also") or [])
+
+
+ROAD_CARD_DAYS = 7   # a close that failed twice is carded this long; the owner may have closed it by hand
+
+
+def road_faults(rows=None):
+    """[row]: the escalations the road could not deliver or settle, newest per key — an open row with no
+    issue after its one retry, a followed issue left open, a close that failed twice. helm_render cards
+    each (road_cards): the owner sees on the board what GitHub never got."""
+    last = {}
+    for row in read_escalations() if rows is None else rows:
+        last[row["ekey"]] = row
+    out = []
+    for r in last.values():
+        st = r.get("state")
+        if (st in OPEN_STATES and r.get("issue") is None and r.get("retried") and r.get("road") in (None, "none")) \
+                or (st in OPEN_STATES and followed(r) and r.get("was_tries")) \
+                or (st == "closed" and r.get("close_failed") and clock() - float(r.get("t") or 0) < ROAD_CARD_DAYS * 86400):
+            out.append(r)
+    return out
+
+
+def cleared(prev, mem=None):
+    """What cleared an unguarded escalation, in a phrase for the closing comment."""
+    kind, pid, block = prev.get("kind"), prev.get("plan"), prev.get("block")
+    if kind == "stall":
+        ls = (mem.by_key.get(_k(prev.get("key"))) if mem else None) or []
+        if ls and ls[-1].get("action") == "started":
+            return "its retry's run started (%s)" % ls[-1].get("new_run")
+        return "no longer judged a stall here"
+    if kind in ("block", "ask") and pid:
+        try:
+            st = helmlib.state(pid)
+        except (FileNotFoundError, ValueError):
+            return "its ship is gone from this host"
+        t = next((x for x in st["tasks"] if x["id"] == block), None)
+        if not t:
+            return "its block is gone from the ship"
+        if t.get("guarded"):
+            return "cleared"   # guarded since its issue opened (K6): nothing of it in the comment
+        if kind == "ask":
+            a = next((x for x in t["asks"] if x["ref"] == (prev.get("key") or [None] * 3)[2]), None)
+            if a and a.get("answered"):
+                return "answered%s" % (" by %s" % a["answer_from"] if a.get("answer_from") else "")
+            if t["status"] in helmlib.ENDED:
+                return "its block ended (%s)" % t["status"]
+            try:
+                import skipperlib
+                if a and skipperlib.doc_answer(a):
+                    return "answered in its doc"
+            except Exception:   # noqa: BLE001 — the plain phrase below
+                pass
+            return "no longer open"
+        if t["status"] in helmlib.ENDED:
+            return "the block ended (%s)" % t["status"]
+        return "the block is %s%s" % (t["status"], (" — %s" % t["progress"]) if t.get("progress") else "")
+    if kind in ("block", "ask"):
+        return "its ship ended or left the yard"
+    return "no longer judged a stall here"
 
 
 # ---------------------------------------------------------------------------- the scopes' skippers (skipper-resilience S5)
@@ -897,6 +1507,7 @@ def lines_of(r):
         if line["action"] == "dry":
             w = str(line.get("would") or "?").split(" ")[0]
             would[w] = would.get(w, 0) + 1
+    out += r.get("escalations") or []
     out += r["notes"]
     n_unsure = sum(1 for s, _, _ in r["decisions"] if s.get("class") is None)
     counts = ", ".join("%d %s" % (n, a) for a, n in sorted(by.items())) or "none"
@@ -915,5 +1526,5 @@ def as_json(r):
             "dry": r["mode"] != "armed",
             "stalls": [brief(s) for s, _, _ in r["decisions"] if s.get("class")],
             "unsure": [brief(s) for s, _, _ in r["decisions"] if not s.get("class")],
-            "followups": r["followups"], "log": r["log"], "wrote": r["wrote"],
+            "followups": r["followups"], "log": r["log"], "wrote": r["wrote"], "escalations": r.get("escalations") or [],
             "decisions": [dict(line, title=s.get("title"), rule=s.get("rule"), new=new) for s, line, new in r["decisions"]]}

@@ -58,6 +58,21 @@ def peer(name):
         return None
 
 
+def yard_hosts():
+    """(hosts, torn): the hosts some scope's `yard` names (the core's scope_yards(), skipper-resilience
+    S2), and whether that could not be told. torn is True, and hosts empty, when the registry is there
+    and does not read (the core's registry_unreadable(): a torn write, conflict markers) or there is no
+    core: a gate that lets a host act because it is a yard fails closed on it (the fence trap), while
+    one that only stops acting for a yard reads no yard. No registry file is no yard, never torn."""
+    try:
+        common = _common()
+        if common.registry_unreadable():
+            return set(), True
+        return set(common.scope_yards().values()), False
+    except Exception:   # noqa: BLE001 — no core, or one too old to know yards: nothing can be told
+        return set(), True
+
+
 def harness_adapter(name):
     """wharf-runs' harness adapter `name` (claude_code.py, orca.py): it sits in harness_adapters/
     beside bin/harness, which loads it so; tool() takes no path, so the adapter is found by its
@@ -606,6 +621,31 @@ def guarded(repo):
 
 
 _guarded_repo = guarded  # the older name, kept for its callers
+
+
+def guard_unread(fresh=False):
+    """True when guarded() cannot be trusted to name every guarded repo: keel's gate did not load (the
+    fallback list knows no confidential scope), its `regatta/guarded` key did not read where the
+    overlay is installed (PRIVATE_UNREAD), or its confidential roots did not read (None: a torn
+    registry, no core). What leaves the machine on guarded()'s word — the stall road's issues — fails
+    closed on it. fresh: the roots read again (they are cached per process). Never raises."""
+    g = _sheep_gate
+    if g is None:
+        return True
+    try:
+        if getattr(g, "PRIVATE_UNREAD", False):
+            return True
+        if getattr(g, "_GUARDED", ()) is None:
+            return True   # no `regatta/guarded` at all, overlay or not: an empty file is "nothing guarded", a missing one is unknown
+
+        roots = getattr(g, "confidential_roots", None)
+        if roots is None:
+            return False   # a gate from before confidential scopes: its list is the whole list
+        if fresh and hasattr(roots, "cache_clear"):
+            roots.cache_clear()
+        return roots() is None
+    except Exception:   # noqa: BLE001
+        return True
 
 
 def state(pid, at=None):

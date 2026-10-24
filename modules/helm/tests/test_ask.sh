@@ -726,8 +726,41 @@ hasnt "$out" "tick" "a dry run does not tick"
 # stalls.jsonl and count, and armed there would dispatch each stall twice
 cp "$T/cache/stalls.json" "$T/stalls.before"
 out=$(SURFACES_HOST=buildbox ASK_TICK_CMD="$T/tick-env" "$B/ask" poll --repos "$R" 2>&1)
-hasnt "$out" "tick" "a poll on a host that is not the laptop does not tick"
+hasnt "$out" "tick" "a poll on a host that is not the laptop does not tick (no registry, no yard)"
 check "$(cmp -s "$T/cache/stalls.json" "$T/stalls.before" && echo same)" "same" "  …and leaves the stall cache as it was"
+# skipper-resilience S8: …unless some scope's yard names it — each case names its registry
+echo '{"repos": {"r": {}}, "scopes": {"dock": {"repos": ["r"]}}}' > "$T/noyard.json"
+echo '{"repos": {"r": {}}, "scopes": {"dock": {"repos": ["r"], "yard": "yardhost-x"}}}' > "$T/yard.json"
+printf '{"repos": {"r": {}}, "scopes": {"dock": ' > "$T/torn.json"   # a write cut off mid-object
+LAPTOP=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common; print(common.LAPTOP)' "$B/../lib")
+out=$(CLAUDE_REPOS_JSON="$T/noyard.json" SURFACES_HOST=buildbox ASK_TICK_CMD="$T/tick-env" "$B/ask" poll --repos "$R" 2>&1)
+hasnt "$out" "tick" "a poll on a host that is not the laptop, and no scope's yard, does not tick (as before S8)"
+check "$(cmp -s "$T/cache/stalls.json" "$T/stalls.before" && echo same)" "same" "  …and leaves the stall cache as it was"
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=buildbox ASK_TICK_CMD="$T/tick-env" "$B/ask" poll --repos "$R" 2>&1)
+hasnt "$out" "tick" "  a yard named, but another host's: no tick"
+out=$(CLAUDE_REPOS_JSON="$T/torn.json" SURFACES_HOST=buildbox ASK_TICK_CMD="$T/tick-env" "$B/ask" poll --repos "$R" 2>&1)
+has "$out" "ask poll: tick skipped — the registry is there and does not read" "off the laptop a torn registry is no tick, and one line (it fails closed)"
+check "$(cmp -s "$T/cache/stalls.json" "$T/stalls.before" && echo same)" "same" "  …the cache untouched"
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=yardhost-x PLAN_HOST=yardhost-x ASK_TICK_CMD="$T/tick-ok" "$B/ask" poll --repos "$R" 2>&1)
+has "$out" "ask poll: tick — 3 stall(s), 1 unsure, dry" "a host some scope's yard names ticks (S8: wharf's pass, the skippers' and its own stalls)"
+cp "$T/stalls.before" "$T/cache/stalls.json"
+printf '#!/bin/sh\necho %s\n' "'{\"dry\": false, \"hosts\": [], \"unsure\": [], \"stalls\": [], \"escalations\": [\"escalated x: github-issue #1\", \"escalations: the pass failed (KeyError: x)\", \"escalation: #9 not closed (down) — tried once more next pass\", \"escalated y: none — no stall road on yardhost-x\"]}'" > "$T/tick-esc"; chmod +x "$T/tick-esc"
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=yardhost-x PLAN_HOST=yardhost-x ASK_TICK_CMD="$T/tick-esc" "$B/ask" poll --repos "$R" 2>&1 >/dev/null)
+check "$out" "ask poll: escalations: the pass failed (KeyError: x)
+ask poll: escalation: #9 not closed (down) — tried once more next pass
+ask poll: escalated y: none — no stall road on yardhost-x" "the stall road's own faults (a failed pass, a failed close, no road) reach the yard's poll log (stderr), its issue lines do not"
+cp "$T/stalls.before" "$T/cache/stalls.json"
+# the yard by helmlib.host(), as the tick and the registry name it: a Linux yard, which surfaces.host() calls `cloud`
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=cloud PLAN_HOST=yardhost-x ASK_TICK_CMD="$T/tick-ok" "$B/ask" poll --repos "$R" 2>&1)
+has "$out" "ask poll: tick — 3 stall(s)" "  named by the tick's own host (a Linux yard, which surfaces.host() calls cloud, still ticks)"
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=yardhost-x PLAN_HOST=elsewhere-x ASK_TICK_CMD="$T/tick-env" "$B/ask" poll --repos "$R" 2>&1)
+hasnt "$out" "tick" "  and a host the tick names otherwise does not"
+cp "$T/stalls.before" "$T/cache/stalls.json"
+for reg in noyard torn; do
+  out=$(CLAUDE_REPOS_JSON="$T/$reg.json" SURFACES_HOST="$LAPTOP" ASK_TICK_CMD="$T/tick-ok" "$B/ask" poll --repos "$R" 2>&1)
+  has "$out" "ask poll: tick — 3 stall(s)" "the laptop ticks as before S8 ($reg registry)"
+done
+cp "$T/stalls.before" "$T/cache/stalls.json"
 rm -f "$T/cache/stalls.json"; out=$(ASK_TICK_CMD="$T/tick-bad" "$B/ask" poll --repos "$R" 2>&1); rc=$?
 check "$rc" 0 "a failing tick (exit 3) leaves the poll's exit at 0"
 has "$out" "ask poll: tick failed (RuntimeError: exit 3: ssh: connect to host buildbox: timed out)" "  and says so in one line"
@@ -755,6 +788,74 @@ hasnt "$(SL)" "stalled" "statusline: zero stalls shows nothing"
 echo 'garbage' > "$T/cache/stalls.json"
 check "$(SL | wc -l | tr -d ' ')" 1 "statusline: a broken cache still prints one line"
 hasnt "$(SL)" "stalled" "  without stalled"
+
+echo "the stall road's notify (skipper-resilience S8): github-issue in notify.*, notice(), the stub API"
+# ASK_GH_API stands in for GitHub, called as `gh api` is: each call recorded, issues numbered from 100.
+# Copies of the suite's config dir, one with synthetic helm/inbox-repo and helm/mention values and
+# one without. No network, no real issue.
+C8="$T/cfg8"; cp -R "$REGATTA_CONFIG" "$C8"; cp -R "$REGATTA_CONFIG" "$T/cfg8-none"; mkdir -p "$C8/helm"
+echo "owner-x/inbox-x" > "$C8/helm/inbox-repo"; echo "@someone-x" > "$C8/helm/mention"
+cat > "$T/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+i = sys.argv.index("--method")
+method, path = sys.argv[i + 1], sys.argv[i + 2]
+body = json.load(sys.stdin)
+calls = os.environ["GH_CALLS"]
+n = sum(1 for _ in open(calls)) if os.path.exists(calls) else 0
+open(calls, "a").write(json.dumps({"method": method, "path": path, "body": body}) + "\n")
+if os.environ.get("GH_FAIL"):
+    print("gh: HTTP 401: Bad credentials", file=sys.stderr); sys.exit(1)
+print(json.dumps({"number": 100 + n} if method == "POST" and path.endswith("/issues") else {}))
+PY
+chmod +x "$T/gh"
+echo '{"notify": {"yardhost-x": ["github-issue"], "both-x": ["banner", "github-issue"]}, "ask": {"parked": true}}' > "$T/surf8.json"
+printf '#!/bin/sh\necho "$*" >> "%s/osa.calls"\n' "$T" > "$T/osa"; chmod +x "$T/osa"
+N8() { SURFACES_FILE="$T/surf8.json" ASK_GH_API="$T/gh" GH_CALLS="$T/gh8.calls" ASK_OSASCRIPT="$T/osa" REGATTA_CONFIG="${CFG8:-$C8}" \
+         python3 -c "import sys, json; sys.argv = ['ask']
+from importlib.machinery import SourceFileLoader as L
+m = L('ask', '$B/ask').load_module()
+$1"; }
+c8() { python3 -c 'import json, sys; c = [json.loads(x) for x in open(sys.argv[1])][int(sys.argv[2])]; b = c["body"]; print(eval(sys.argv[3]))' "$T/gh8.calls" "$1" "$2"; }
+# a heredoc, never `python3 -c "…{a, b}…"` inside "$(…)": bash 3.2 brace-expands that (AGENTS.md, Traps)
+check "$(python3 - "$B" "$T" <<'PY'
+import json, sys; sys.path.insert(0, sys.argv[1]); import surfaces
+for word in ("github-issue", "github-issues"):
+    p = sys.argv[2] + "/surf-v.json"
+    open(p, "w").write(json.dumps(dict(notify=dict(buildbox=[word]))))
+    print(*([surfaces.validate(surfaces.load(p))] + (["github-issue" in surfaces.KNOWN["notify.*"]] if word == "github-issue" else [])))
+PY
+)" \
+  "[] True
+[\"notify.buildbox: unknown backend 'github-issues' (known: banner, github-issue, telegram)\"]" "github-issue validates in notify.*; a misspelt word does not"
+out=$(cp "$T/surfaces.json" "$T/surf-set.json"; SURFACES_FILE="$T/surf-set.json" "$B/ask" backends --set notify.buildbox=github-issue 2>&1)
+has "$out" "set notify.buildbox → ['github-issue']" "  ask backends --set writes the row (the overlay's row for its build Mac)"
+check "$(SURFACES_HOST=yardhost-x N8 "print(m.notice('stall on yardhost-x: x · S3', 'A stall.', kind='stall'))")" \
+  "{'road': 'github-issue', 'issue': 100, 'said': 'issue #100'}" "notice(kind=stall) on a github-issue row: one issue, its number back"
+check "$(c8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/inbox-x/issues" "  POSTed to helm/inbox-repo"
+check "$(c8 0 'b["body"]')" "@someone-x
+
+A stall." "  the body led by helm/mention"
+check "$(c8 0 'b["labels"]')" "['stall']" "  labelled stall"
+check "$(SURFACES_HOST=yardhost-x N8 "print(m.notify('Ask waiting · r', 'r D1 — x'))")/$(wc -l < "$T/gh8.calls" | tr -d ' ')" \
+  "no banner on yardhost-x (notify.yardhost-x)/1" "an ask's bell never opens an issue (github-issue carries stalls only)"
+check "$(SURFACES_HOST=both-x N8 "print(m.notice('t', 'b', kind='stall')['road'])")/$(wc -l < "$T/gh8.calls" | tr -d ' ')" "banner/1" \
+  "  a row of banner, github-issue: the first that delivers"
+check "$(SURFACES_HOST=elsewhere-x N8 "print(m.notice('t', 'b', kind='stall'))")" \
+  "{'road': 'none', 'issue': None, 'said': 'no stall road on elsewhere-x (notify.elsewhere-x)'}" "  a host with no row: road none"
+check "$(CFG8="$T/cfg8-none" SURFACES_HOST=yardhost-x N8 "print(m.notice('t', 'b', kind='stall'))")/$(wc -l < "$T/gh8.calls" | tr -d ' ')" \
+  "{'road': 'none', 'issue': None, 'said': 'github-issue: no helm/inbox-repo value in the config dir'}/1" "no inbox-repo value: road none, nothing called"
+check "$(GH_FAIL=1 SURFACES_HOST=yardhost-x N8 "print(m.notice('t', 'b', kind='stall'))")" \
+  "{'road': 'none', 'issue': None, 'said': 'github-issue: gh: HTTP 401: Bad credentials'}" "a refused token: road none, the reason said"
+check "$(N8 "print(m.issue_state(100, 'closed', 'Cleared: it ran.'))")" "(True, None)" "issue_state: closed"
+check "$(c8 -2 'c["method"] + " " + c["path"] + " " + b["body"]')/$(c8 -1 'c["method"] + " " + c["path"] + " " + b["state"]')" \
+  "POST /repos/owner-x/inbox-x/issues/100/comments Cleared: it ran./PATCH /repos/owner-x/inbox-x/issues/100 closed" "  the comment first, then the state"
+n0=$(wc -l < "$T/gh8.calls" | tr -d ' ')
+check "$(SURFACES_HOST=elsewhere-x N8 "print(m.stall_road('yardhost-x'), m.stall_road('both-x'), m.stall_road('elsewhere-x'), m.notice('t', 'b', kind='stall', host='yardhost-x')['road'])")" \
+  "(True, None) (True, None) (False, 'no stall road on elsewhere-x (notify.elsewhere-x)') github-issue" \
+  "stall_road(host) reads the named host's row, and notice(host=) sends by it, whatever surfaces.host() says"
+check "$(CFG8="$T/cfg8-none" N8 "print(m.stall_road('yardhost-x'))")/$(( $(wc -l < "$T/gh8.calls" | tr -d ' ') - n0 ))" \
+  "(False, 'github-issue: no helm/inbox-repo value in the config dir')/1" "  no inbox value: no road, said, and stall_road calls nothing (the one call is the notice above)"
 
 echo
 [ "$fails" = 0 ] && echo "test_ask ($HELM_NAMES names): all passed" || { echo "test_ask ($HELM_NAMES names): $fails failed"; exit 1; }

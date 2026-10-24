@@ -786,6 +786,34 @@ PY
   check "$(got "print([(u['topic'], u['action'], u['class']) for u in d['unsure']])")" "[('unsure-step', 'classify', None)]" \
     "  no closing line: unsure, shaped for B3's classifier, never a stall"
   hasnt "$sj" "IBAN 5555" "  a guarded run's reply is never read"
+  # skipper-resilience S8: a peer some scope's yard names is read and judged (the board shows its stalls),
+  # and acted on only by its own tick; a torn registry: no peer's stall acted on (fail closed)
+  echo '{"repos": {}, "scopes": {"dock": {"repos": [], "yard": "buildbox"}}}' > "$T/yard-bb.json"
+  printf '{"repos": {}, "scopes": {"dock": ' > "$T/yard-torn.json"
+  yj=$(CLAUDE_REPOS_JSON="$T/yard-bb.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$yj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['topic'] for s in d['stalls'] if s['host']=='buildbox'], d['self_judging'], d['registry_torn'])")" \
+    "['lifetime-step'] ['buildbox'] False" "S8: the yard's S3 judged for the board, the yard named as acting on its own"
+  check "$(echo "$yj" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['stalls']))")" "$(got "print(len(d['stalls']))")" \
+    "  every stall as before"
+  yt=$(CLAUDE_REPOS_JSON="$T/yard-bb.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" STALLS_LOG="$T/yard-tick.jsonl" "$HM" tick --dry-run)
+  hasnt "$yt" "S3 buildbox" "  the laptop's tick acts on none of the yard's stalls"
+  has "$yt" "S8: the stalls of buildbox are left to their own tick (1)" "  and says so"
+  has "$yt" "S1 testhost demo gone-step" "  its own as before"
+  yt=$(CLAUDE_REPOS_JSON="$T/yard-torn.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" STALLS_LOG="$T/yard-tick.jsonl" "$HM" tick --dry-run)
+  has "$yt" "S8: the stalls of buildbox are left to nobody this pass — the registry does not read (1)" "a torn registry: no peer's stall acted on"
+  has "$yt" "S1 testhost demo gone-step" "  this host's own still are"
+  # …and a RELAYED run whose manager is on a host this one has no road to is unknown, never orphaned
+  git -C "$D" branch claude/t/2026-10-14-relay-far-step
+  rec 11-relay-far.json relay-far-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min" manager=mgr-far manager_host=farhost
+  say sid-relay-far-step "RELAYED TO mgr-far — D1 in docs/x.md"
+  check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-far-step'])")" \
+    "[]" "S8: RELAYED to a manager on a host with no road from here (a yard's to the laptop): no stall"
+  check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-step'])")" \
+    "['S6']" "  one whose manager has no host recorded is still orphaned"
+  sed -i.bak 's/"manager_host": "farhost"/"manager_host": "buildbox"/' "$R/11-relay-far.json"; rm -f "$R/11-relay-far.json.bak"
+  check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-far-step'])")" \
+    "['S6']" "  and one on a peer read here, its manager not live there, is orphaned as before"
+  rm -f "$R/11-relay-far.json" "$HOME/.claude/projects/-t/sid-relay-far-step.jsonl"   # the branch alone judges nothing
   printf '{"pid": %s, "sessionId": "mgr-1", "status": "busy", "statusUpdatedAt": %s000}' "$$" "$now" > "$T/sess/mgr.json"
   check "$(python3 "$B/stalls.py" --json | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['class']=='S7'][0]; print(s['raise_to'], s['column'])")" \
     "skipper Blocked" "  S7 goes to its skipper (raise_to, rename S5) while that session is live"
@@ -2442,6 +2470,448 @@ kill $SKP $WK $LPAR $SLEEPS 2>/dev/null
 unset PLANS_DIR ASK_MANAGER_DIR CLAUDE_REPOS_JSON HARNESS_SSH HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
       PICKUP_HOST GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 export PLANS_DIR="$T/plans"
+
+echo "the stall road (skipper-resilience S8): the yard's tick, escalations.jsonl, the github-issue road"
+# A stub GitHub API (ASK_GH_API, called as \`gh api\` is) records each call and numbers the issues from
+# 100; the yard is this host (testhost) by the registry's one scope; the config dir is two copies of
+# the suite's own, one with synthetic helm/inbox-repo and helm/mention values. A fresh store, HOME
+# (no run records) and logs. No network, no real issue, no skipper or wharf pass.
+S8="$T/s8"; mkdir -p "$S8/home" "$S8/st"
+cp -R "$REGATTA_CONFIG" "$S8/cfg"; cp -R "$REGATTA_CONFIG" "$S8/cfg0"; mkdir -p "$S8/cfg/helm"
+# the fixture's one peer, as the suite began: S7's block above adds its yard's alias to the suite's copy
+for c in cfg cfg0; do echo buildbox:buildbox-ssh > "$S8/$c/wharf-runs/ssh"; done
+echo "owner-x/inbox-x" > "$S8/cfg/helm/inbox-repo"; echo "@someone-x" > "$S8/cfg/helm/mention"
+cat > "$S8/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+i = sys.argv.index("--method")
+method, path = sys.argv[i + 1], sys.argv[i + 2]
+body = json.load(sys.stdin)
+calls = os.environ["GH_CALLS"]
+n = sum(1 for _ in open(calls)) if os.path.exists(calls) else 0
+open(calls, "a").write(json.dumps({"method": method, "path": path, "body": body}) + "\n")
+import re
+if os.environ.get("GH_FAIL") or (os.environ.get("GH_FAIL_MATCH") and re.search(os.environ["GH_FAIL_MATCH"], method + " " + path)):
+    print("gh: HTTP 401: Bad credentials", file=sys.stderr); sys.exit(1)
+print(json.dumps({"number": 100 + n} if method == "POST" and path.endswith("/issues") else {}))
+PY
+chmod +x "$S8/gh"
+echo '{"notify": {"testhost": ["github-issue"]}, "ask": {"parked": true}}' > "$S8/surfaces.json"
+cat > "$S8/repos.json" <<'EOF'
+{"repos": {"dockrepo": {}}, "scopes": {"dock": {"repos": ["dockrepo"], "yard": "testhost"}}}
+EOF
+echo '{"repos": {"dockrepo": {}}, "scopes": {"dock": {"repos": ["dockrepo"]}}}' > "$S8/noyard.json"
+printf '{"repos": {"dockrepo": {}}, "scopes": {"dock": ' > "$S8/torn.json"   # a write cut off mid-object
+export PLANS_DIR="$S8/plans" STALLS_LOG="$S8/stalls.jsonl" STALLS_STATE_DIR="$S8/st" CLAUDE_REPOS_JSON="$S8/repos.json" \
+       ASK_GH_API="$S8/gh" GH_CALLS="$S8/gh.calls" SURFACES_FILE="$S8/surfaces.json" SURFACES_HOST=testhost \
+       STALLS_PEERS= STALLS_REPOS= PLAN_NO_SKIPPERS=1 PLAN_NO_WHARF=1
+LP="$PLANS_DIR"; E8="$S8/escalations.jsonl"
+# launchd's tick, armed past its dry hours: no session, nothing unattended (the road acts only so)
+mkdir -p "$S8/st"; echo '{"by": "suite", "ts": "x", "t": 0}' > "$S8/st/armed"
+TK() { local at=$1; shift; env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED HOME="$S8/home" REGATTA_CONFIG="${CFG8:-$S8/cfg}" STALLS_NOW="$at" "$LX/helm" tick "$@" 2>&1; }
+ncalls() { [ -e "$GH_CALLS" ] && wc -l < "$GH_CALLS" | tr -d ' ' || echo 0; }
+call8() { python3 - "$GH_CALLS" "$1" "$2" <<'PY'
+import json, sys
+c = [json.loads(x) for x in open(sys.argv[1])][int(sys.argv[2])]
+print(eval(sys.argv[3], {"c": c, "b": c["body"]}))
+PY
+}
+erow() { python3 - "$E8" "$1" "$2" <<'PY'
+import json, sys
+r = [json.loads(x) for x in open(sys.argv[1])][int(sys.argv[2])]
+print(eval(sys.argv[3], {"r": r}))
+PY
+}
+nrows() { [ -e "$E8" ] && wc -l < "$E8" | tr -d ' ' || echo 0; }
+# an S7 (raised to the owner: its skipper is not live): b waits on a, done two hours ago, nobody started b
+s7ship() { "$HM" $SHIP "$1" --id "$1" ${2:+--repo "$2"} > /dev/null; "$HM" task "$1" a > /dev/null; "$HM" task "$1" b > /dev/null
+           "$HM" dep "$1" b --on a > /dev/null; PLAN_NO_RENDER=1 "$HM" report "$1" --task a --status done > /dev/null
+           python3 - "$LP/$1/events.jsonl" <<'PY'
+import json, sys, time
+p = sys.argv[1]; ls = [dict(json.loads(l), t=time.time() - 7200) for l in open(p) if l.strip()]
+open(p, "w").write("".join(json.dumps(e) + "\n" for e in ls))
+PY
+}
+N0=$(now)
+# the call after the C-th so far (0-based in gh.calls): `cn` keeps C before a step
+cn() { C=$(ncalls); }
+posts() { python3 -c 'import json, sys; print(sum(1 for x in open(sys.argv[1]) if json.loads(x)["method"] == "POST" and json.loads(x)["path"].endswith("/issues")))' "$GH_CALLS" 2>/dev/null || echo 0; }
+
+echo "  the yard's own host only"
+pe() { env -u STALLS_PEERS CLAUDE_REPOS_JSON="$1" REGATTA_CONFIG="$S8/cfg" python3 -c "import sys; sys.path.insert(0, '$B'); import stalls; h, torn = stalls.self_judging(); print(stalls.peers(), sorted(h), torn)"; }
+echo '{"repos": {}, "scopes": {"dock": {"repos": [], "yard": "buildbox"}}}' > "$S8/yard-bb.json"
+check "$(pe "$S8/noyard.json")" "{'buildbox': 'buildbox-ssh'} [] False" "no scope's yard: the laptop reads and judges its peer's store as before S8 (wharf-runs/ssh)"
+check "$(pe "$S8/yard-bb.json")" "{'buildbox': 'buildbox-ssh'} ['buildbox'] False" "a peer some scope's yard names: still read (the shared facts), judged by its own tick"
+check "$(pe "$S8/torn.json")" "{'buildbox': 'buildbox-ssh'} [] True" "  a torn registry: read, and said to be torn (the tick then acts on no peer's stall)"
+check "$(PLAN_HOST=buildbox pe "$S8/yard-bb.json")" "{} [] False" "  and the yard reads no peer of its own (itself left out)"
+
+echo "  a raised stall: one issue after 10 minutes, the mention and the key, never a second"
+s7ship r1
+out=$(TK "$N0"); has "$out" "S7 testhost" "the tick judges the S7"
+check "$(nrows)/$(ncalls)" "0/0" "  first seen now: no escalation yet"
+out=$(TK $((N0 + 300)) --dry-run); has "$out" "would escalate stall on testhost: b · S7 ready, nobody started it (due " "  --dry-run before it is due: would escalate, and when"
+out=$(TK $((N0 + 300))); check "$(nrows)/$(ncalls)" "0/0" "  5 minutes: none"
+out=$(TK $((N0 + 660)) --dry-run); has "$out" "would escalate stall on testhost: b · S7 ready, nobody started it" "  --dry-run at 11 minutes: would escalate"
+check "$(nrows)/$(ncalls)" "0/0" "  …and writes and calls nothing"
+out=$(TK $((N0 + 660)))
+has "$out" "escalated stall on testhost: b · S7 ready, nobody started it: github-issue #100" "  11 minutes: one issue"
+check "$(call8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/inbox-x/issues" "  POSTed to the config's inbox repo"
+check "$(call8 0 'b["body"].split(chr(10))[0]')" "@someone-x" "  the body starts with the config's mention"
+has "$(call8 0 'b["body"]')" '- key: `["testhost", "r1", "b"]`' "  and names the stall's key"
+has "$(call8 0 'b["body"]')" "- class: S7 — rule: ready, nobody started it" "  its class and rule"
+check "$(call8 0 'b["labels"]')" "['stall']" "  labelled stall"
+check "$(erow 0 '(r["state"], r["road"], r["issue"], r["class"], r["yard"], r["plan"], r["key"])')" \
+  "('open', 'github-issue', 100, 'S7', 'testhost', 'r1', ['testhost', 'r1', 'b'])" "  one escalations.jsonl row: open, the road, the issue number kept"
+out=$(TK $((N0 + 960))); check "$(nrows)/$(ncalls)" "1/1" "  the next tick: the same key, no second"
+PLAN_NO_RENDER=1 "$HM" report r1 --task b --status running > /dev/null
+out=$(TK $((N0 + 1260))); check "$(nrows)/$(ncalls)" "1/1" "the stall gone one pass: not closed (a glitch never closes and reopens it)"
+printf '#!/bin/sh\necho "ssh: connect to host buildbox port 22: Operation timed out" >&2; exit 255\n' > "$S8/ssh-down"; chmod +x "$S8/ssh-down"
+out=$(STALLS_PEERS=buildbox=nowhere STALLS_SSH="$S8/ssh-down" TK $((N0 + 1560)))
+has "$out" "buildbox: unreachable" "  a pass with a store unread…"
+check "$(nrows)/$(ncalls)" "1/1" "  …closes no stall's issue, however long it has been gone"
+out=$(TK $((N0 + 1860)))
+has "$out" "escalation closed (#100): stall on testhost: b · S7 ready, nobody started it — no longer judged a stall here" "gone 10 minutes, every store read: closed"
+check "$(call8 1 'c["method"] + " " + c["path"]')/$(call8 2 'c["method"] + " " + c["path"] + " " + b["state"]')" \
+  "POST /repos/owner-x/inbox-x/issues/100/comments/PATCH /repos/owner-x/inbox-x/issues/100 closed" "  a comment, then the issue closed"
+has "$(call8 1 'b["body"]')" "Cleared on testhost: no longer judged a stall here." "  the comment names what cleared it"
+check "$(erow 1 '(r["state"], r["issue"], r["why"])')" "('closed', 100, 'no longer judged a stall here')" "  a closed row"
+out=$(TK $((N0 + 2160))); check "$(nrows)/$(ncalls)" "2/3" "  and nothing more"
+
+echo "  a block the yard holds that waits on the owner: escalated only"
+"$HM" $SHIP r2 --id r2 > /dev/null; "$HM" task r2 g1 > /dev/null; ll yard r2 dock > /dev/null
+PLAN_NO_RENDER=1 "$HM" report r2 --task g1 --status waiting --progress "gated on docs/d.md (D1 open)" > /dev/null
+N0=$(now)   # each section's clock from its own events (the store stamps them with the real one)
+out=$(TK $((N0 + 300))); check "$(nrows)" "2" "a gated block quiet 5 minutes: not yet"
+cn; out=$(TK $((N0 + 700)))
+has "$out" "escalated r2/g1 on testhost: waits on the owner (gated): github-issue #$((100 + C))" "  quiet 10 minutes: one issue"
+has "$(call8 $C 'b["body"]')" "waits on you: gated on docs/d.md (D1 open)" "  saying what it waits on"
+cn; out=$(TK $((N0 + 1000))); check "$(ncalls)" "$C" "  the next tick: nothing new"
+PLAN_NO_RENDER=1 "$HM" report r2 --task g1 --status done > /dev/null
+out=$(TK $((N0 + 1300))); out=$(TK $((N0 + 1600)))
+has "$out" "r2/g1 on testhost: waits on the owner (gated) — the block ended (done)" "  the block done 10 minutes: closed, saying so"
+
+echo "  a question on a yard's ship: unanswered 15 minutes, a failed open tried once more, --escalate a class change"
+"$HM" $SHIP r3 --id r3 > /dev/null; "$HM" task r3 q1 > /dev/null; ll yard r3 dock > /dev/null
+PLAN_NO_RENDER=1 "$HM" report r3 --task q1 --status relayed --ask docs/q.md#D2 --summary "which one" --reversible yes --recommended A > /dev/null
+N0=$(now); cn
+out=$(TK $((N0 + 700))); check "$(ncalls)" "$C" "a relay 11 minutes old: not yet"
+out=$(GH_FAIL=1 TK $((N0 + 960)))
+has "$out" "escalated r3/q1 on testhost: docs/q.md#D2 unanswered: none — github-issue: gh: HTTP 401: Bad credentials" "  16 minutes, the API refusing: road none, said"
+check "$(erow -1 '(r["road"], r["issue"], r.get("transient"))')" "('none', None, True)" "  the row kept as a transient failure"
+cn; out=$(TK $((N0 + 1260))); Q1=$((100 + C))
+has "$out" "docs/q.md#D2 unanswered: github-issue #$Q1" "  the next tick tries once more, and opens it"
+check "$(erow -1 '(r["state"], r["road"], r.get("retried"), r["class"])')" "('open', 'github-issue', True, 'unanswered')" "  a retried open row"
+has "$(call8 $C 'b["body"]')" "which one — Reversible: yes — Recommended: A" "  the question as the relay carries it"
+cn; out=$(GH_FAIL=1 TK $((N0 + 1560))); check "$(ncalls)" "$C" "  once open, never sent again"
+# S5's owner rule: the skipper hands the question to the owner with --escalate (a plain shell passes the yard's fence)
+env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --escalate r3 D2 > /dev/null
+cn; out=$(GH_FAIL_MATCH='^POST .*/issues$' TK $((N0 + 1860)))
+check "$(erow -1 '(r["state"], r["road"], r.get("was"), r["class"], r.get("transient"))')" \
+  "('class-changed', 'none', $Q1, \"owner's (escalated)\", True)" "escalated by --escalate: the class moved; its new issue refused"
+check "$(ncalls)" "$((C + 1))" "  …and the first left open (no comment, no close): never a stall with none"
+cn; out=$(TK $((N0 + 2160))); Q2=$((100 + C))
+has "$out" "escalated r3/q1 on testhost: docs/q.md#D2 for the owner: github-issue #$Q2" "  the next tick: the second issue"
+has "$(call8 $C 'b["body"]')" "The class moved from unanswered to owner's (escalated): this follows #$Q1." "  noting the first"
+check "$(call8 $((C + 1)) 'c["path"]')/$(call8 $((C + 2)) 'c["path"] + " " + b["state"]')" \
+  "/repos/owner-x/inbox-x/issues/$Q1/comments//repos/owner-x/inbox-x/issues/$Q1 closed" "  and only then the first closed"
+has "$(call8 $((C + 1)) 'b["body"]')" "followed in #$Q2" "  pointing at the second"
+check "$(erow -1 '(r["state"], r["issue"], r["was"], r["class"])')" "('class-changed', $Q2, $Q1, \"owner's (escalated)\")" "  one class-changed row"
+PLAN_NO_RENDER=1 "$HM" report r3 --task q1 --answered docs/q.md#D2 > /dev/null
+out=$(TK $((N0 + 2460)))
+out=$(GH_FAIL_MATCH='^PATCH' TK $((N0 + 2760)))
+has "$out" "not closed — tried once more next pass" "a failed close: said"
+check "$(erow -1 '(r["state"], r.get("close_tries"))')" "('class-changed', 1)" "  the row kept open, the close to be tried once more"
+out=$(TK $((N0 + 3060))); has "$out" "escalation closed (#$Q2)" "  the next pass closes it"
+has "$out" "— answered" "  answered, it says"
+
+echo "  no inbox-repo value: unrouted, no call; opened once the value is there"
+s7ship r4; N0=$(now); cn
+out=$(CFG8="$S8/cfg0" TK "$N0"); out=$(CFG8="$S8/cfg0" TK $((N0 + 700)))
+has "$out" "b · S7 ready, nobody started it: none — github-issue: no helm/inbox-repo value in the config dir" "no key: road none, said"
+check "$(ncalls)/$(erow -1 '(r["state"], r["road"], r["issue"])')" "$C/('unrouted', 'none', None)" "  nothing called, an unrouted row"
+n4=$(nrows); out=$(CFG8="$S8/cfg0" TK $((N0 + 1000))); check "$(nrows)/$(ncalls)" "$n4/$C" "  re-checked each pass without a row or a call"
+out=$(TK $((N0 + 1300)))
+has "$out" "b · S7 ready, nobody started it: github-issue #" "  the value written: the next pass opens it"
+check "$(erow -1 '(r["state"], r["road"])')" "('open', 'github-issue')" "  an open row"
+PLAN_NO_RENDER=1 "$HM" report r4 --task b --status running > /dev/null
+out=$(TK $((N0 + 1600))); out=$(TK $((N0 + 1900))); has "$out" "escalation closed" "  and closed once it clears"
+
+echo "  a guarded stall keeps its text home"
+mkdir -p "$S8/projects/transcripts"; s7ship r5 "$S8/projects/transcripts"; N0=$(now)
+out=$(TK "$N0"); cn; out=$(TK $((N0 + 700)))
+has "$out" "escalated stall on testhost: S7 in a guarded repo: github-issue" "a guarded stall: its class and host only"
+hasnt "$(call8 $C 'b["title"] + b["body"]')" "r5" "  no ship, task or topic in the issue"
+hasnt "$(call8 $C 'b["body"]')" '["testhost"' "  nor its key"
+hasnt "$(call8 $C 'b["body"]')" "- key:" "  no key line at all (escalations.jsonl on the yard keeps it)"
+PLAN_NO_RENDER=1 "$HM" report r5 --task b --status running > /dev/null
+out=$(TK $((N0 + 1000))); out=$(TK $((N0 + 1300))); has "$out" "escalation closed" "  closed once it clears"
+
+echo "  at most 5 issues a pass"
+for i in 1 2 3 4 5 6; do s7ship "m$i"; done; N0=$(now)
+out=$(TK "$N0"); p0=$(posts); out=$(TK $((N0 + 700)))
+check "$(( $(posts) - p0 ))" "5" "six due at once: five opened"
+has "$out" "escalations: 1 more wait for the next pass" "  the sixth said"
+p0=$(posts); out=$(TK $((N0 + 1000))); check "$(( $(posts) - p0 ))" "1" "  and opened on the next"
+for i in 1 2 3 4 5 6; do PLAN_NO_RENDER=1 "$HM" report "m$i" --task b --status running > /dev/null; done
+out=$(TK $((N0 + 1300))); out=$(TK $((N0 + 1600)))
+
+echo "  who may call GitHub: an armed tick of launchd's, one at a time"
+s7ship r7; N0=$(now); cn
+out=$(TK "$N0"); mv "$S8/st/armed" "$S8/st/armed.off"
+out=$(TK $((N0 + 700)))
+has "$out" "would escalate stall on testhost: b · S7 ready, nobody started it" "a disarmed yard's tick: would escalate"
+has "$out" "escalations: nothing called — the tick is disarmed" "  and says it called nothing"
+check "$(ncalls)" "$C" "  nothing called"
+mv "$S8/st/armed.off" "$S8/st/armed"
+out=$(env CLAUDE_CODE_SESSION_ID=typed-1 HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" STALLS_NOW=$((N0 + 700)) "$LX/helm" tick 2>&1)
+has "$out" "escalations: nothing called — the tick runs inside session typed-1" "  a session's tick beside the poll's: nothing called"
+out=$(env -u CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED=1 HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" STALLS_NOW=$((N0 + 700)) "$LX/helm" tick 2>&1)
+has "$out" "escalations: nothing called — an unattended caller" "  an unattended caller's: nothing called"
+check "$(ncalls)" "$C" "  still nothing called"
+python3 -c 'import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(20)' \
+  "$S8/.escalations.lock" "$S8/locked" & LOCKER=$!
+for _ in $(seq 1 50); do [ -e "$S8/locked" ] && break; sleep 0.1; done
+out=$(TK $((N0 + 700))); kill $LOCKER 2>/dev/null; wait $LOCKER 2>/dev/null
+has "$out" "escalations: another tick holds the stall road — none this pass" "  another tick holding the road: this one calls nothing"
+check "$(ncalls)" "$C" "  …nothing"
+out=$(TK $((N0 + 1000))); has "$out" "escalated stall on testhost: b · S7" "  the lock free, armed, launchd's: it opens"
+PLAN_NO_RENDER=1 "$HM" report r7 --task b --status running > /dev/null
+out=$(TK $((N0 + 1300))); out=$(TK $((N0 + 1600)))
+
+echo "  K6: a guarded block's issue and its closing comment name nothing of it"
+"$HM" $SHIP gb --id gb --repo "$S8/projects/transcripts" > /dev/null; "$HM" task gb g9 > /dev/null; ll yard gb dock > /dev/null
+PLAN_NO_RENDER=1 "$HM" report gb --task g9 --status waiting --progress "gated on docs/secret-plan.md (D4 open)" > /dev/null
+N0=$(now); cn; out=$(TK $((N0 + 700)))
+has "$out" "escalated a guarded block on testhost: waits on the owner (gated): github-issue" "a guarded block: its class and host"
+for w in gb g9 secret-plan "helm show" "skipper ·"; do hasnt "$(call8 $C 'b["title"] + b["body"]')" "$w" "  no $w in the issue"; done
+PLAN_NO_RENDER=1 "$HM" report gb --task g9 --status done > /dev/null
+cn; out=$(TK $((N0 + 1000))); out=$(TK $((N0 + 1300)))
+check "$(call8 $C 'b["body"]')" "Cleared on testhost: cleared." "  its closing comment: cleared, nothing more"
+check "$(erow -1 'r["guarded"]')" "True" "  the row says it is guarded"
+
+echo "  the road's faults are board cards"
+s7ship r8; N0=$(now); out=$(TK "$N0")
+out=$(GH_FAIL=1 TK $((N0 + 700))); out=$(GH_FAIL=1 TK $((N0 + 1000)))
+check "$(erow -1 '(r["road"], r.get("retried"), r.get("transient"))')" "('none', True, True)" "an open that failed, and failed once more"
+c8=$(ncalls); out=$(GH_FAIL=1 TK $((N0 + 1300))); check "$(ncalls)" "$c8" "  never tried a third time"
+bd=$(env HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" "$LX/helm" board --json 2>/dev/null)
+has "$bd" "stall road: stall on testhost: b · S7 ready, nobody started it — not opened: github-issue: gh: HTTP 401: Bad credentials" "  …a card in the owner's column"
+check "$(echo "$bd" | python3 -c "import json,sys; d=json.load(sys.stdin); print([c['kind'] for c in d['columns'][0]['cards'] if c['kind'] == 'road'])")" "['road']" "  one, kind road"
+PLAN_NO_RENDER=1 "$HM" report r8 --task b --status running > /dev/null
+out=$(TK $((N0 + 1600))); out=$(TK $((N0 + 1900))); has "$out" "escalation closed" "  closed once it clears (no issue: no call)"
+
+echo "  the road's rules, one pass at a time (a stub GitHub in-process)"
+# the python goes to a file first: bash 3.2 misparses an apostrophe in a heredoc inside "$(…)" and skips the case
+cat > "$S8/unit.py" <<'PY'
+import sys, types
+sys.path.insert(0, sys.argv[1])
+import stalls_tick as st, helmlib
+calls, fail, failnums = [], set(), set()
+n = [200]
+def notice(title, body, kind="stall", host=None, labels=("stall",)):
+    calls.append(("open", title, body))
+    if "open" in fail:
+        return {"road": "none", "issue": None, "said": "github-issue: down"}
+    n[0] += 1
+    return {"road": "github-issue", "issue": n[0], "said": "issue #%d" % n[0]}
+def issue_state(num, state, comment):
+    calls.append((state, num, comment))
+    return (False, "down") if state in fail or num in failnums else (True, None)
+road = [True]
+st._ASK = types.SimpleNamespace(notice=notice, issue_state=issue_state, stall_road=lambda h=None: (road[0], None if road[0] else "github-issue: no helm/inbox-repo value in the config dir"))
+me = helmlib.host()
+def stall(cls, key="k1", **kw):
+    return dict({"class": cls, "host": me, "key": [me, key], "key_kind": "step", "run": "r", "title": "%s %s" % (key, cls),
+                 "evidence": [], "action": "raise", "column": "Blocked", "rule": "r"}, **kw)
+def run(stalls_, t, res=None, mem_t=1):
+    mem = st.Memory([dict(key_kind="step", key=s["key"], run="r", t=mem_t) for s in stalls_])
+    return st.escalate(res or {"hosts": [me]}, [(s, {"action": "raise"}, True) for s in stalls_], mem, t, mode_now="armed")
+out = []
+def last_of(k):   # a key's newest row: a pass writes other keys' clears after it
+    return [r for r in st.read_escalations() if r.get("key") == [me, k]][-1]
+# a second class move names the class it moved from, never the one before
+run([stall("S3")], 1000); run([stall("S5")], 1300); run([stall("S6")], 1600)
+bodies = [c[2] for c in calls if c[0] == "open"]
+out.append("from:%s" % ("The class moved from S5 to S6" in bodies[-1]))
+# a failed close of the followed issue: tried once more, then carded
+del calls[:]; fail.add("closed")
+run([stall("S7", "k2")], 1000); run([stall("S1", "k2")], 1300); run([stall("S1", "k2")], 1600); run([stall("S1", "k2")], 1900)
+out.append("was:%d" % sum(1 for c in calls if c[0] == "closed"))
+out.append("card:%s" % any(r.get("was_open") and r.get("was_tries") for r in st.road_faults()))
+fail.discard("closed")
+# no time left: no call, and no try spent
+import os, time
+os.environ["STALLS_DEADLINE"] = str(time.time() + 10)
+del calls[:]
+r = run([], 5000)
+out.append("late:%d:%s" % (len(calls), not any(x.get("close_tries") for x in st.read_escalations())))
+del os.environ["STALLS_DEADLINE"]
+# a config with no road: unrouted keys, none called; once routed, at most ESCALATE_MAX in one pass
+road[0] = False; del calls[:]
+keys = [stall("S3", "u%d" % i) for i in range(7)]
+run(keys, 9000)
+out.append("unrouted:%d" % sum(1 for c in calls if c[0] == "open"))
+road[0] = True
+lines = run(keys, 9300)
+out.append("routed:%d:%s" % (sum(1 for c in calls if c[0] == "open"), any("2 more wait" in l for l in lines)))
+# a key whose source was unread this pass is not closed; one whose source was read is
+run([stall("S3", "o1", harness="orca")], 20000); run([stall("S3", "h1")], 20000)
+del calls[:]
+run([], 21000, res={"hosts": [me], "unread": {"orca": True}}); run([], 21700, res={"hosts": [me], "unread": {"orca": True}})
+closed = [c[1] for c in calls if c[0] == "closed"]
+out.append("unread:%d" % len(closed))
+# a class move whose new open fails, and fails again on its retry: the first issue stays the stall's and
+# is closed with its clear (the second review's driver)
+run([stall("S3", "m1")], 30000)
+first = [c for c in calls if c[0] == "open"][-1]
+first_n = n[0]
+fail.add("open"); run([stall("S5", "m1")], 30300); run([stall("S5", "m1")], 30600); fail.discard("open")
+del calls[:]
+run([], 31300); run([], 32000)
+out.append("moved-clear:%s" % (first_n in [c[1] for c in calls if c[0] == "closed"]))
+# a block guarded since its issue opened: its closing comment says nothing of it
+real_state = st.helmlib.state
+st.helmlib.state = lambda pid, at=None: {"tasks": [{"id": "b", "guarded": True, "status": "running", "progress": "a secret", "asks": []}]}
+out.append("guarded-since:%s" % st.cleared({"kind": "block", "plan": "p", "block": "b"}))
+st.helmlib.state = real_state
+# a second move after the followed issue's close failed twice: the older issue is carried, closed at the clear
+del calls[:]; fail.add("closed")
+run([stall("S7", "x1")], 50000)
+older = last_of("x1")["issue"]
+run([stall("S1", "x1")], 50300); run([stall("S1", "x1")], 50600)
+fail.discard("closed"); del calls[:]
+run([stall("S5", "x1")], 50900)
+out.append("older:%s:%s" % (older in [c[1] for c in calls if c[0] == "closed"], st.followed(last_of("x1")) == []))
+# a retry delivered by banner is no card; a closed row's card names the issue left open, and ages out
+rows = [{"ekey": "b1", "state": "open", "road": "banner", "issue": None, "retried": True},
+        {"ekey": "c1", "state": "closed", "issue": 7, "close_failed": "#6: down", "close_failed_issues": [6], "t": st.clock()},
+        {"ekey": "c2", "state": "closed", "issue": 8, "close_failed": "#8: down", "t": st.clock() - 8 * 86400}]
+out.append("faults:%s" % [r["ekey"] for r in st.road_faults(rows)])
+# refused passes keep the absence clock: an acting pass that misses a key once closes nothing
+del calls[:]
+run([stall("S3", "y1")], 60000)
+yi = last_of("y1")["issue"]
+for t_ in (60300, 60600, 60900):
+    st.escalate({"hosts": [me]}, [(stall("S3", "y1"), {"action": "raise"}, True)], st.Memory([]), t_, mode_now="disarmed")
+run([], 61200)
+c1 = sum(1 for c in calls if c[:2] == ("closed", yi))
+run([], 61900)
+out.append("absent:%d:%d" % (c1, sum(1 for c in calls if c[:2] == ("closed", yi))))
+# a partial close: the retry closes only the issue that failed
+del calls[:]; fail.add("closed")
+run([stall("S3", "z1")], 70000); run([stall("S5", "z1")], 70300)
+fail.discard("closed")
+row = st.read_escalations()[-1]
+del calls[:]; failnums.add(row["was"])
+run([], 70400); run([], 71100)
+failnums.clear()
+run([], 71400)
+cl = [c[1] for c in calls if c[0] == "closed"]
+out.append("partial:%d:%d" % (cl.count(row["issue"]), cl.count(row["was"])))
+# back before a partial close's retry: its own issue (closed) reopened, the followed one (left open) closed
+del calls[:]; fail.add("closed")
+run([stall("S3", "w1")], 80000); run([stall("S5", "w1")], 80300)
+fail.discard("closed")
+wrow = last_of("w1")
+failnums.add(wrow["was"]); run([], 80400); run([], 81100); failnums.clear()
+del calls[:]
+run([stall("S5", "w1")], 81400)
+wl = last_of("w1")
+out.append("back-partial:%s:%s:%s" % (("open", wrow["issue"]) in [c[:2] for c in calls],
+                                      ("closed", wrow["was"]) in [c[:2] for c in calls], st.followed(wl) == []))
+# back after a clear whose close left a followed issue open: reopened, that issue carried and still carded
+del calls[:]; fail.add("closed")
+run([stall("S3", "v1")], 90000); run([stall("S5", "v1")], 90300)
+fail.discard("closed")
+vrow = last_of("v1")
+failnums.add(vrow["was"]); run([], 90400); run([], 91100); run([], 91400); failnums.clear()
+run([stall("S5", "v1")], 92000)
+vl = last_of("v1")
+out.append("back-carded:%s:%s" % (vl.get("reopened"), st.followed(vl) == [vrow["was"]] and vl in st.road_faults()))
+# one ship that raises costs its own keys, never the pass
+st.helmlib.state = lambda pid, at=None: {}["tasks"]
+out.append("ship:%s" % st._ship_wanted({}, "p", {}, me, 0, None))
+st.helmlib.state = real_state
+# a ship that raises half-way opens none of its keys, and the pass names the error's class
+real_sw1 = st._ship_wanted1
+def half(out_, *a):
+    out_["block:p:a"] = {}
+    raise KeyError("a secret")
+st._ship_wanted1 = half
+got, errs = {}, []
+out.append("half:%s:%s:%s" % (st._ship_wanted(got, "p", {}, me, 0, None, errs), got, errs))
+st._ship_wanted1 = real_sw1
+# a yard acts on its own store only, whatever peers it read
+real_yh = helmlib.yard_hosts
+helmlib.yard_hosts = lambda: ({me}, False)
+out.append("yard:%s" % sorted(st.acted_elsewhere({"stalls": [{"host": me}, {"host": "laptop-x"}], "self_judging": []})))
+helmlib.yard_hosts = real_yh
+# no osascript: the banner fails, never raises
+import os
+os.environ["ASK_OSASCRIPT"] = "/nonexistent/osascript"
+out.append("banner:%s" % st._load("ask_probe", st.HERE / "ask").banner("t", "b"))   # the real bin/ask: st._ASK is the stub above
+del os.environ["ASK_OSASCRIPT"]
+# the judge with no wharf-runs: every source unread, so no issue closes on its absences
+import stalls
+real_lb = stalls._load_bin; stalls._load_bin = lambda name: None
+out.append("noruns:%s" % sorted(k for k, v in stalls.judge(peer=False)["unread"].items() if v))
+stalls._load_bin = real_lb
+print(" ".join(out))
+PY
+check "$(env -u CLAUDE_CODE_SESSION_ID HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" STALLS_ESCALATIONS="$S8/unit.jsonl" STALLS_STATE_DIR="$S8/unit-st" PLANS_DIR="$S8/empty" python3 "$S8/unit.py" "$B"
+)" "from:True was:2 card:True late:0:True unrouted:0 routed:5:True unread:1 moved-clear:True guarded-since:cleared older:True:True faults:['c1'] absent:0:1 partial:1:2 back-partial:True:True:True back-carded:True:True ship:False half:False:{}:['KeyError'] yard:['laptop-x'] banner:banner failed: FileNotFoundError noruns:['launches', 'orca', 'skippers']" \
+  "a second move's from-class; a followed issue closed once more then carded; no call near the kill time; unrouted calls nothing, then 5 a pass; an unread source keeps its keys; a move whose new issue never opened closes the first at its clear; a block guarded since says nothing; a second move carries the older open issue and its clear closes it; a banner retry is no card, a closed card names the issue left open and ages out; refused passes keep the absence clock; a close retry closes only what failed; back before that retry reopens its own and closes the followed; back after a carded close carries it; a ship that raises costs its keys, all of them, and names its error's class; a yard acts on its own store; no osascript fails the banner; no wharf-runs reads as nothing read"
+
+echo "  a ship the yard could not read keeps its keys"
+"$HM" $SHIP r9 --id r9 > /dev/null; "$HM" task r9 g2 > /dev/null; ll yard r9 dock > /dev/null
+PLAN_NO_RENDER=1 "$HM" report r9 --task g2 --status waiting --progress "gated on docs/e.md (D1 open)" > /dev/null
+N0=$(now); out=$(TK $((N0 + 700))); has "$out" "escalated r9/g2" "a gated block opened"
+cp "$LP/r9/skipper.json" "$S8/r9-lease.json"; echo '{"holder": ' > "$LP/r9/skipper.json"
+cn; out="$(TK $((N0 + 1300)))$(TK $((N0 + 1600)))"
+hasnt "$out" "r9/g2 on testhost: waits on the owner (gated) —" "  its lease torn 15 minutes: not closed"
+check "$(ncalls)" "$C" "  nothing called"
+cp "$S8/r9-lease.json" "$LP/r9/skipper.json"; PLAN_NO_RENDER=1 "$HM" report r9 --task g2 --status done > /dev/null
+out="$(TK $((N0 + 1900)))$(TK $((N0 + 2200)))"; has "$out" "r9/g2 on testhost: waits on the owner (gated) — the block ended (done)" "  read again and done: closed"
+
+echo "  keel's gate unable to name every guarded repo: nothing leaves"
+check "$(env -u CLAUDE_CODE_SESSION_ID HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" python3 - "$B" <<'PY'
+import sys, types
+sys.path.insert(0, sys.argv[1])
+import helmlib, stalls_tick as st
+real = helmlib._sheep_gate
+out = [str(helmlib.guard_unread())]
+helmlib._sheep_gate = types.SimpleNamespace(PRIVATE_UNREAD=True); out.append(str(helmlib.guard_unread()))
+helmlib._sheep_gate = types.SimpleNamespace(PRIVATE_UNREAD=False, confidential_roots=lambda: None); out.append(str(helmlib.guard_unread()))
+helmlib._sheep_gate = None; out.append(str(helmlib.guard_unread()))
+helmlib._sheep_gate = types.SimpleNamespace(PRIVATE_UNREAD=False, _GUARDED=None, confidential_roots=lambda: ()); out.append(str(helmlib.guard_unread()))
+out.append(st.escalate({"hosts": []}, [], st.Memory([]), 0, mode_now="armed")[0])
+helmlib._sheep_gate = real
+print(" | ".join(out))
+PY
+)" "False | True | True | True | True | escalations: none this pass — the guarded list did not read (keel's gate, its regatta/guarded or the registry's confidential scopes)" \
+  "PRIVATE_UNREAD, unread confidential roots, no gate or no regatta/guarded at all: the road sends nothing"
+
+echo "  no yard here, or a torn registry: nothing escalated, both Macs as before"
+s7ship r6; N0=$(now); c3=$(ncalls); n3=$(nrows)
+out=$(CLAUDE_REPOS_JSON="$S8/noyard.json" TK "$N0"); out=$(CLAUDE_REPOS_JSON="$S8/noyard.json" TK $((N0 + 700)))
+has "$out" "S7 testhost" "a host that is no scope's yard judges the stall"
+check "$(ncalls)/$(nrows)" "$c3/$n3" "  and escalates nothing"
+hasnt "$out" "escalat" "  not a line of it"
+out=$(CLAUDE_REPOS_JSON="$S8/torn.json" TK $((N0 + 800))); check "$(ncalls)/$(nrows)" "$c3/$n3" "a torn registry: nothing escalated"
+mkdir -p "$S8/empty"
+check "$(PLANS_DIR="$S8/empty" python3 - "$B" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import stalls_tick
+s = {"class": "braked", "host": "testhost", "key": ["testhost", "x"], "key_kind": "step", "run": "r", "title": "x", "evidence": [],
+     "action": "raise", "column": "Needs Sam"}
+w = stalls_tick.wanted({}, [(s, {"action": "raise", "why": "x"}, True)], stalls_tick.Memory([]), 10 ** 10)[0]
+s2 = dict(s, **{"class": "S3"})
+w2 = stalls_tick.wanted({}, [(s2, {"action": "raise", "why": "x"}, True), (dict(s2, raise_to="skipper", key=["y"]), {"action": "raise"}, True)],
+                        stalls_tick.Memory([]), 10 ** 10)[0]
+print(len(w), len(w2))
+PY
+)" "0 1" "the class braked is never escalated, nor a raise to a live skipper"
+unset PLANS_DIR STALLS_LOG STALLS_STATE_DIR CLAUDE_REPOS_JSON ASK_GH_API GH_CALLS SURFACES_HOST STALLS_REPOS PLAN_NO_SKIPPERS
+export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

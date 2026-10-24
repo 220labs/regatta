@@ -46,8 +46,9 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         Every pass runs under one deadline, ASK_POLL_BUDGET (20 min): each peer's job gets what is left
         of it, capped by its own limit, and starts none with under a minute left. In order:
         `hail subs --fulfil` (the `--when idle` subscriptions) first, on every host (crosstalk S6, F7);
-        the repos' scan; on the laptop, a real run's `helm tick --json` (orchestration B4), its stall
-        count cached in ~/Library/Caches/ask/stalls.json for the statusline's `stalled N`, then
+        the repos' scan; on the laptop and on a host some scope's `yard` names (skipper-resilience S8),
+        a real run's `helm tick --json` (orchestration B4), its stall
+        count cached in ~/Library/Caches/ask/stalls.json for the statusline's `stalled N`; then on the laptop
         `keel stand --sweep --if-armed` (entry S3: at most hourly, and only once the owner armed it) and
         `keel sheep drain --if-due` (crew design S6: the pages' heartbeats into reads.jsonl, at most
         every 6 h); on every host, `keel lookout --if-due` (its own 15 minutes; a pass acts only
@@ -860,19 +861,151 @@ def scan_repo(repo, m, dry=False):
     return out
 
 
+# What each notify backend carries (skipper-resilience S8). A banner rings for an ask and for a stall
+# alike; a GitHub issue is the stall road's alone: an ask on a claude/* branch is on GitHub already (its
+# pull request's Asks section), and the poll runs on both Macs over the same branches, so an issue per ask
+# would double every one. `telegram` is a word the row may hold (surfaces.KNOWN) with no sender here: skipped.
+CARRIES = {"banner": ("ask", "stall"), "github-issue": ("stall",)}
+# The stall road's two config-dir values (the overlay writes them; module code never names a repo or a person)
+INBOX_KEY, MENTION_KEY = "helm/inbox-repo", "helm/mention"
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
 def notify(title, body):
-    """S3: the banner where `notify.<host>` lists it (D4: the laptop's only)."""
-    rows = surfaces.load()["notify"]
-    h = surfaces.host()
-    if "banner" not in (rows.get(h) or []):
-        return "no banner on %s (notify.%s)" % (h, h)
+    """S3: an ask's bell — the banner where `notify.<host>` lists it (D4: the laptop's only); the line said."""
+    return notice(title, body)["said"]
+
+
+def notify_row(kind, host=None):
+    """The backends of `notify.<host>` that carry KIND, in order (host: surfaces.host() unless named)."""
+    h = host or surfaces.host()
+    return h, [b for b in (surfaces.load()["notify"].get(h) or []) if kind in CARRIES.get(b, ())]
+
+
+def stall_road(host=None):
+    """(True, None) when a stall's notify has somewhere to go on HOST — a banner, or github-issue with a
+    readable inbox-repo value — else (False, why). Reads the config only: nothing is called, so the stall
+    road re-checks a key it could not route on every pass at no cost (stalls_tick: `unrouted`)."""
+    h, row = notify_row("stall", host)
+    if not row:
+        return False, "no stall road on %s (notify.%s)" % (h, h)
+    if "banner" in row and os.path.exists(os.environ.get("ASK_OSASCRIPT", "/usr/bin/osascript")):
+        return True, None
+    if "github-issue" not in row:
+        return False, "no stall road on %s: banner without osascript" % h
+    repo, why = inbox()
+    return (True, None) if repo else (False, "github-issue: %s" % why)
+
+
+def notice(title, body, kind="ask", labels=("stall",), host=None):
+    """{"road", "issue", "said"}: TITLE and BODY through the first backend of `notify.<host>` that carries
+    KIND (CARRIES) and delivers — road `banner`, or `github-issue` with the issue's number — else road
+    `none`, `said` naming why (no backend for KIND, each failure). A stall's caller keeps road and issue
+    in its escalations row (stalls_tick.escalate), and names its host (helmlib.host(), the one the yard
+    is named by); an ask's bell reads surfaces.host(), as before S8."""
+    h, row = notify_row(kind, host)
+    if not row:
+        return {"road": "none", "issue": None,
+                "said": "no banner on %s (notify.%s)" % (h, h) if kind == "ask" else "no %s road on %s (notify.%s)" % (kind, h, h)}
+    failed = []
+    for b in row:
+        if b == "banner":
+            r = banner(title, body)
+            if r == "banner":
+                return {"road": "banner", "issue": None, "said": r}
+            failed.append(r)
+        else:
+            n, why = issue_open(title, body, labels)
+            if n:
+                return {"road": b, "issue": n, "said": "issue #%d" % n}
+            failed.append("github-issue: %s" % why)
+    return {"road": "none", "issue": None, "said": "; ".join(failed)}
+
+
+def banner(title, body):
     osa = os.environ.get("ASK_OSASCRIPT", "/usr/bin/osascript")
 
     def q(s):
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    r = subprocess.run([osa, "-e", "display notification %s with title %s" % (q(body[:200]), q(title[:80]))],
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run([osa, "-e", "display notification %s with title %s" % (q(body[:200]), q(title[:80]))],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:   # no osascript (a Linux yard): the next backend is tried
+        return "banner failed: %s" % e.__class__.__name__
     return "banner" if r.returncode == 0 else "banner failed: %s" % r.stderr.strip()[:100]
+
+
+def config_value(key):
+    """A config-dir value through the core's config_line, "" when absent, unreadable or no core."""
+    try:
+        return helmlib._common().config_line(key).strip()
+    except Exception:   # noqa: BLE001 — no core: no value, and the road is `none`
+        return ""
+
+
+def gh_api(method, path, body=None):
+    """(status, JSON or None, why): one GitHub REST call. Through ASK_GH_API when set — a program called
+    as `gh api` is (`<prog> api --method M PATH --input -`, the body on stdin, the reply JSON on stdout;
+    the tests' stub, or a yard's own gh named in its plist), its exit 0 read as 200 — else the core's
+    api() with its token() (GH_TOKEN, then the machine account's git credential, then `gh auth token`):
+    gh is off launchd's PATH on the yard, and S2's issues were opened this way. status 0: no answer."""
+    exe = os.environ.get("ASK_GH_API")
+    if exe:
+        try:
+            r = subprocess.run([exe, "api", "--method", method, path, "--input", "-"], input=json.dumps(body or {}),
+                               capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return 0, None, "%s: %s" % (Path(exe).name, e.__class__.__name__)
+        try:
+            data = json.loads(r.stdout) if r.stdout.strip() else None
+        except ValueError:
+            data = None
+        if r.returncode:
+            return 0, data, (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]
+        return 200, data, None
+    try:
+        st, data = helmlib._common().api(method, path, body)
+    except Exception as e:   # noqa: BLE001 — no core, or a reply that is no JSON: no answer, said
+        return 0, None, "%s: %s" % (e.__class__.__name__, str(e)[:120])
+    return st, data, None if 200 <= st < 300 else ("no token, or no answer" if st == 0 else "HTTP %d" % st)
+
+
+def inbox():
+    """(repo, why): the stall road's repo from the config dir (helm/inbox-repo, `owner/name`), or (None, why)."""
+    repo = config_value(INBOX_KEY)
+    if not repo:
+        return None, "no %s value in the config dir" % INBOX_KEY
+    if not REPO_RE.match(repo):
+        return None, "%s is %r, not owner/name" % (INBOX_KEY, repo[:60])
+    return repo, None
+
+
+def issue_open(title, body, labels=("stall",)):
+    """(number, None) or (None, why): an issue in the inbox repo, its body led by the config's mention
+    (helm/mention) so the owner's phone hears it."""
+    repo, why = inbox()
+    if not repo:
+        return None, why
+    mention = config_value(MENTION_KEY)
+    text = ("%s\n\n" % mention if mention else "") + body
+    st, data, why = gh_api("POST", "/repos/%s/issues" % repo, {"title": title[:200], "body": text, "labels": list(labels)})
+    n = data.get("number") if isinstance(data, dict) else None
+    if why or not isinstance(n, int):
+        return None, why or "the reply named no issue number"
+    return n, None
+
+
+def issue_state(number, state, comment):
+    """(True, None) or (False, why): COMMENT on issue NUMBER of the inbox repo, then its state set to
+    STATE (closed | open) — the comment first, so a closed issue always says what cleared it."""
+    repo, why = inbox()
+    if not repo:
+        return False, why
+    st, _, why = gh_api("POST", "/repos/%s/issues/%d/comments" % (repo, number), {"body": comment})
+    if why:
+        return False, "the comment: %s" % why
+    st, _, why = gh_api("PATCH", "/repos/%s/issues/%d" % (repo, number), {"state": state})
+    return (False, "the %s: %s" % (state, why)) if why else (True, None)
 
 
 def cmd_poll(a):
@@ -980,12 +1113,25 @@ def poll_tick(deadline=None):
     cache sits beside asks.json in the poll's own cache dir (the design said Caches/plan): the
     statusline tests in hooks/test_hooks.sh already point ASK_CACHE_DIR at an empty dir, so a live
     count on this Mac cannot leak into them, and no file in hooks/ had to change.
-    The laptop's only, as the sweep (S11, S7's review): stalls.jsonl and the statusline's count are
-    laptop-local, and a tick armed on the build Mac too would dispatch each stall twice.
+    The laptop's, and since skipper-resilience S8 also a yard's: a host some scope's `yard` names
+    (helmlib.yard_hosts) ticks too — wharf's pass over the ships it holds, S5's skipper pass, and the
+    stalls of its own runs, which only it judges (stalls.self_judging(): the laptop reads a yard's store
+    and judges none of it, so no stall is judged, nor dispatched, on two hosts). Any other host returns at once, as before S8
+    (S11, S7's review). Off the laptop the gate fails closed: a registry that is there and does not read
+    is no tick, and one line. Arming each host stays its own `helm tick --arm`, by the owner.
     A failure here must not break the poll, which has already done its job: one line, then on. A
     failed tick leaves the last cache, which the statusline hides once it is 15 minutes old."""
+    # the laptop as the poll's other jobs name it (surfaces.host(), poll_jobs); a yard as the tick and the
+    # registry name it (helmlib.host(): PLAN_HOST, else LocalHostName, else the hostname — so a Linux
+    # yard, where surfaces.host() says `cloud`, is still itself)
     if surfaces.host() != laptop_name():
-        return
+        yards, torn = helmlib.yard_hosts()
+        if torn:
+            print("ask poll: tick skipped — the registry is there and does not read (or no core): a yard's tick "
+                  "fails closed", file=sys.stderr)
+            return
+        if helmlib.host() not in yards:
+            return
     cmd = shlex.split(os.environ.get("ASK_TICK_CMD") or "") or [sys.executable, str(HERE.parent / "libexec" / "helm"), "tick", "--json"]
     try:
         # its own process group: a timeout kills the tick's ssh children too, which subprocess.run's kill of
@@ -1020,6 +1166,13 @@ def poll_tick(deadline=None):
         tmp.write_text(json.dumps(cache, ensure_ascii=False))
         tmp.replace(d / "stalls.json")  # the statusline never reads half a file
         print("ask poll: tick — %d stall(s), %d unsure%s" % (cache["n"], cache["unsure"], ", dry" if cache["dry"] else ""))
+        # the stall road's faults reach the yard's launchd log (S8): a pass that failed, or sent nothing, and why
+        for line in res.get("escalations") or []:
+            # a pass's fault, an issue left open or carded, a key with no road; never a delivered issue's line
+            line = str(line)
+            if (line.startswith(("escalations: ", "escalation: ")) and not line.endswith(" closed")) or " — carded" in line \
+                    or (line.startswith("escalated ") and ": none — " in line):
+                print("ask poll: %s" % line, file=sys.stderr)
     except Exception as e:  # incl. TimeoutExpired, bad JSON, a missing key
         print("ask poll: tick failed (%s: %s)" % (type(e).__name__, str(e)[:160]), file=sys.stderr)
 
@@ -1036,7 +1189,8 @@ def poll_jobs(a):
     - then on the laptop only: the stand sweep (entry S3; bin/keel keeps the hourly limit and the arm
       switch) and the pages' drain (crew design S6; keel keeps its 6 hours).
     - last, on every host: the lookout's pass (crosstalk S6; the build Mac's lookout acts on its own
-      branches). The tick is not a peer's job: poll_tick() runs it between the two, on the laptop."""
+      branches). The tick is not a peer's job: poll_tick() runs it between the two, on the laptop and
+      on a scope's yard (S8); the stand sweep and the drain stay the laptop's."""
     if a.dry_run or a.repos:
         return [], []
     first = [("the subscriptions' fulfil", "hail", ["subs", "--fulfil"], 300)]

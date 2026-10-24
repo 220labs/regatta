@@ -676,7 +676,8 @@ def cmd_board(a):
 
 def cmd_tick(a):
     """The tick (orchestration B1, B3; bin/stalls_tick.py's header): every stall on
-    both Macs judged by bin/stalls.py, gated, and acted on only when armed and past its 3 dry hours;
+    this Mac (and a peer that is no scope's yard: S8) judged by bin/stalls.py, gated, and acted on only
+    when armed and past its 3 dry hours; on a yard, what it raises also goes out by the stall road (S8);
     --dry-run calls nothing past the judge and writes nothing but wharf's said-once note per ship
     (wharf-<ship>.said, so a dry tick does not repeat itself every 5 min). --arm, --disarm and --status are the
     switch (~/.local/state/stalls/armed); arming is refused under CLAUDE_UNATTENDED."""
