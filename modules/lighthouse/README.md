@@ -119,7 +119,8 @@ as a GitHub issue, and with the `telegram` sink each form send, chat hand-off or
 site's address opens a topic in the people's Telegram group (a chat hand-off files the issue only
 when the visitor left an address), where their reply goes back to the visitor in the chat or by
 mail. A visitor who asks the bot for a person is handed over the same way. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
-whose word list scans what it builds. Its chart is `beacon/README.md`.
+whose word list scans what it builds. Its chart is `beacon/README.md`: read "What it cannot do"
+and "Before the first deploy" there first.
 
 ## deadman — the switch for the Macs nobody watches
 

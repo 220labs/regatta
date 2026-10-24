@@ -13,8 +13,8 @@ for s in "$D"/*.sh; do
   bash "$s" || rc=1
 done
 # beacon's Worker against stubs: node --test, with node:sqlite (Node 22.13 or later) standing in
-# for the Durable Object's storage. beacon is off the allowlist until listed, so the public twin has
-# this file but not the suite: absent, it is skipped; present, Node is required.
+# for the Durable Object's storage. Absent (a copy without beacon), it is skipped; present, Node
+# is required.
 if [ -f "$D/worker.test.mjs" ]; then
   echo "== worker"
   if ! command -v node >/dev/null 2>&1 || ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)'; then
@@ -25,7 +25,7 @@ if [ -f "$D/worker.test.mjs" ]; then
   fi
 fi
 # deadman's Worker against stubs (a fake KV, a stub GitHub and mail): node --test, Node 20 or later
-# for the global WebCrypto. Off the allowlist until listed, as beacon: absent, skipped; present, Node is required.
+# for the global WebCrypto. Off the allowlist until listed: absent, skipped; present, Node is required.
 if [ -f "$D/deadman.test.mjs" ]; then
   echo "== deadman worker"
   if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(Number(process.versions.node.split(".")[0])>=20?0:1)'; then
