@@ -15,6 +15,8 @@
 - The core's check derives class 1 (autofinish-exclude S1, 2026-10-23): it walks what the eleven judges
   import or exec and fails on a file off `autofinish_exclude`, and prints the week's landings the list
   held (G1). The coverage case no longer counts a `libexec/` file live by itself; the class-1 walk does.
+- `read_registry(path)` (2026-10-23): the registry and registry_unreadable's verdict from one parse;
+  `scope_of_repo(..., reg=)` takes the parsed registry, so a caller judging the tear reads one file once.
 - `gather_fence(scope)` and `scope_match(scope)` (knowledge-layers S4, 2026-10-22): what a Gather
   reader may do with an item, by the paths it came from — `quote`, `fenced` (a confidential scope's:
   count it, never quote it) or `outside` (not the scope asked for); a scope's folders matched by

@@ -443,6 +443,15 @@ def list_plans():
 # hint; then the scope's `mode` in repos.json; then `default`. A session the owner types in has no mode
 # (stated, was D2): run_mode says None for it, and nothing suspends or answers for it.
 MODES = ("default", "ask", "dnd", "yolo")
+# task_mode's `where` for a scope read while repos.json is torn: `ask` for this decision only. A writer
+# that would keep the mode (dispatch's DISPATCH_MODE and run record, wharf's `mode_refused`) asks
+# torn_read() first and keeps nothing, so the mode heals with the registry (the follow-ups' landing review)
+TORN_WHERE = "the registry is unreadable (repos.json): read as ask"
+
+
+def torn_read(pair):
+    """True when a (mode, where) pair is task_mode's torn-registry `ask`, which no writer may keep."""
+    return bool(pair) and pair[1] == TORN_WHERE
 
 
 def task_mode(pid=None, task=None, repo=None, hint=None):
@@ -458,17 +467,23 @@ def task_mode(pid=None, task=None, repo=None, hint=None):
     if hint in MODES:
         return hint, "the run's DISPATCH_MODE"
     repo = repo or (plan or {}).get("repo")
+    # a torn or conflicted repos.json reads as no scopes (the core's registry_unreadable trap), so a
+    # scope's `ask` would read `default` and every refusal keyed on it would fail open: read as ask,
+    # the bottom of the ladder, until it reads again (follow-ups item 6). One parse judges the tear and
+    # reads the scope (item 9), so the two cannot see two different files
+    c, reg, torn = None, None, False
     try:
-        # a torn or conflicted repos.json reads as no scopes (the core's registry_unreadable trap), so a
-        # scope's `ask` would read `default` and every refusal keyed on it would fail open: read as ask,
-        # the bottom of the ladder, until it reads again (follow-ups item 6)
-        torn = bool(repo) and _common().registry_unreadable()
-    except Exception:  # a core without registry_unreadable: the reading below, as before
+        c = _common()
+        if repo and hasattr(c, "read_registry"):
+            reg, torn = c.read_registry()
+        elif repo:   # a core from before read_registry: two reads, as before
+            torn = c.registry_unreadable()
+    except Exception:  # a core without them: the reading below, as before
         torn = False
     if torn:
-        return "ask", "the registry is unreadable (repos.json): read as ask"
+        return "ask", TORN_WHERE
     try:
-        name, sc = _common().scope_of_repo(repo) if repo else (None, {})
+        name, sc = (c.scope_of_repo(repo, reg=reg) if reg is not None else c.scope_of_repo(repo)) if repo else (None, {})
     except Exception:  # a core without scope_of_repo, a registry that will not read: the default
         name, sc = None, {}
     if isinstance(sc, dict) and sc.get("mode") in MODES:
@@ -524,14 +539,20 @@ def branch_modes_locked():
         yield
 
 
+LEGACY = " (no repo: a lowering only)"   # branch_override's `where` suffix for a key-less entry
+
+
 def under_ship(over, tm):
     """A `helm mode --branch` entry (OVER) beside a sent task's mode (TM, task_mode's pair): for a task
     of a ship, the lower of the two — a ship's mode is a ceiling no branch entry outlasts, so a ship
     lowered to `ask` stays ask whatever an older `--branch B yolo` says (the follow-ups' landing
-    review); for a run with no ship, the entry, the lowering verb it was made for. None: TM."""
+    review); for a run with no ship, the entry, the lowering verb it was made for. An entry written
+    before entries named their repo (LEGACY) can only lower: it may be another repo's same-named
+    branch (item 7). None: TM. The one combiner of the ladder: fire_mode and branch_mode both end here."""
     if not over:
         return tm
-    if tm and str(tm[1]).startswith("ship ") and MODE_RANK.get(tm[0], 1) < MODE_RANK.get(over[0], 1):
+    lower = tm and MODE_RANK.get(tm[0], 1) < MODE_RANK.get(over[0], 1)
+    if lower and (str(tm[1]).startswith("ship ") or str(over[1]).endswith(LEGACY)):
         return tm
     return over
 
@@ -542,21 +563,58 @@ def fire_mode(pid, task, repo, hint, branch):
     return under_ship(branch_override(branch, repo), task_mode(pid, task, repo, hint))
 
 
-def branch_override(branch, repo=None):
-    """(mode, where) a `helm mode --branch` set on BRANCH (this repo's key first, then a key-less
-    one), else None. dispatch's fire-time and launch reads ask it before task_mode (item 5)."""
-    if not branch:
-        return None
-    bm = load_branch_modes()
+def branch_key(branch, repo):
+    """branch-modes.json's key for BRANCH of REPO: "<repo key>|<branch>" (item 7: every entry names its
+    repo, branch names repeat across repos by design), None without a repo."""
     try:
         key = _common().repo_key(repo) if repo else None
     except Exception:
         key = None
-    for k in ([("%s|%s" % (key, branch))] if key else []) + ["|%s" % branch]:
-        e = bm.get(k)
-        if isinstance(e, dict) and e.get("mode") in MODES:
-            return e["mode"], "helm mode --branch %s" % branch
+    if key and key.startswith("/"):   # outside the projects folder a key is the path: one spelling per checkout
+        key = str(Path(key).resolve())
+    return "%s|%s" % (key, branch) if key and branch else None
+
+
+def branch_override(branch, repo=None):
+    """(mode, where) a `helm mode --branch` set on BRANCH of REPO, else None. dispatch's fire-time and
+    launch reads ask it before task_mode (item 5). A key-less entry — written before entries named
+    their repo — still counts, marked LEGACY, so under_ship lets it lower only; a reader with no repo
+    reads only that one (the follow-ups' landing review, item 7)."""
+    if not branch:
+        return None
+    bm = load_branch_modes()
+    key = branch_key(branch, repo)
+    e = bm.get(key) if key else None
+    if isinstance(e, dict) and e.get("mode") in MODES:
+        return e["mode"], "helm mode --branch %s" % branch
+    e = bm.get("|%s" % branch)
+    if isinstance(e, dict) and e.get("mode") in MODES:
+        return e["mode"], "helm mode --branch %s%s" % (branch, LEGACY)
     return None
+
+
+def yield_branch_entry(branch, repo, mode):
+    """A newer `dispatch --mode MODE` on BRANCH of REPO, once its job is scheduled: an entry the branch
+    has (keyed, or a key-less one from before) is replaced by MODE, keyed by REPO, under the file's lock;
+    the entry it read ({"mode", "ts"}) or None, and then nothing is written. The last writer wins without
+    a reader comparing clocks (item 7). Replaced, not dropped: a dropped entry let the branch's older run
+    record read through until the new run fired, a higher mode than either word, and stayed dropped when
+    the schedule refused afterwards (the second landing review). A key-less entry stays: it may be
+    another repo's same-named branch's lowering, and the keyed one is read before it here."""
+    key = branch_key(branch, repo)
+    if not key or mode not in MODES:
+        return None
+    with branch_modes_locked():
+        bm = load_branch_modes()
+        was = bm.get(key) if isinstance(bm.get(key), dict) else bm.get("|%s" % branch)
+        if not isinstance(was, dict):
+            return None
+        bm[key] = {"mode": mode, "ts": int(time.time()), "by": "dispatch --mode"}
+        f = branch_modes_file()
+        tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+        tmp.write_text(json.dumps(bm, indent=1, sort_keys=True) + "\n")
+        os.replace(tmp, f)
+    return was
 
 
 def load_branch_modes():
@@ -601,8 +659,6 @@ def branch_mode(branch, repo=None):
             if isinstance(t, dict) and branch in (t.get("branch"), t.get("seeded_branch")) \
                     and _same_repo(repo, t.get("repo") or plan.get("repo")):
                 return under_ship(over, task_mode(pid, tid, repo or t.get("repo")))
-    if over:
-        return over
     best = None
     try:
         for f in runs_dir().glob("*.json"):
@@ -612,8 +668,11 @@ def branch_mode(branch, repo=None):
                 continue
             # a record with neither `task_mode` nor `plan` is no sent task: dispatch --start (autofinish's
             # /finish launch) and probes write none, and the launch's own record must not hide the build
-            # run's mode from the next judge — a retried dnd launch read `default` (skipper-modes S3b)
-            if not isinstance(r, dict) or r.get("branch") != branch or not (r.get("task_mode") or r.get("plan")) \
+            # run's mode from the next judge — a retried dnd launch read `default` (skipper-modes S3b).
+            # `mode_unread`: a sent task whose fire-time mode was read while repos.json was torn, kept
+            # with no mode so it heals (the follow-ups' landing review)
+            if not isinstance(r, dict) or r.get("branch") != branch \
+                    or not (r.get("task_mode") or r.get("plan") or r.get("mode_unread")) \
                     or not _same_repo(repo, r.get("repo")):
                 continue
             if best is None or (r.get("started") or 0) > (best.get("started") or 0):
@@ -621,8 +680,13 @@ def branch_mode(branch, repo=None):
     except OSError:
         pass
     if best is None:
-        return None, "no sent task on %s" % branch
-    return task_mode(best.get("plan"), best.get("topic"), repo or best.get("repo"), best.get("task_mode"))
+        # a key-less entry may be another repo's (LEGACY): with no sent task here to lower, it is no mode
+        # of this branch's — returned bare, it raised a mode-less branch (the second landing review)
+        if over and str(over[1]).endswith(LEGACY):
+            return None, "no sent task on %s (a key-less helm mode --branch entry lowers only)" % branch
+        return over or (None, "no sent task on %s" % branch)
+    # the ladder's one combiner (item 8): the entry beside the record's mode, as at fire time
+    return under_ship(over, task_mode(best.get("plan"), best.get("topic"), repo or best.get("repo"), best.get("task_mode")))
 
 
 # ---------------------------------------------------------------------------- the merge
