@@ -49,6 +49,16 @@ pr.common.merge_pr_waiting = lambda slug, n, tok=None, automerge=False: (print("
 CARRY = sys.argv[2] == "carried"  # `pr carried`: say which PR number the flag gave; every other verb carries nothing
 pr.carried = lambda *a, **k: ["CARRIED %s" % k.get("launched_via")] if CARRY else []
 pr.common.api = lambda m, path, *a, **k: (print("API", m, path) or (200, {}))
+# the mode unreadable at the re-check (follow-ups' landing review, item 5): a helmlib whose reader raises,
+# or none found — landing_mode imports it from sys.modules first, and finds it through common.tool
+if os.environ.get("PR_HELM") == "raise":
+    import types
+    stub = types.ModuleType("helmlib")
+    stub.branch_mode = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("torn"))
+    sys.modules["helmlib"] = stub
+elif os.environ.get("PR_HELM") == "absent":
+    real_tool = pr.common.tool
+    pr.common.tool = lambda name, *a, **k: None if name == "helmlib.py" else real_tool(name, *a, **k)
 if sys.argv[2] == "FAILGIT":  # every git call fails: the check must refuse, never pass
     import subprocess
     real = subprocess.run
@@ -169,6 +179,37 @@ else
   printf '{"by": "ship", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"; mplan ask
   PLANS_DIR="$T/mplans" sw run "$T/sw-shipask.out" ready --title t --body-file /dev/null
   has "$T/sw-shipask.out" "touches a gate (held: mode ask" "  …but a ship set to ask since: held"
+  # item 5: a mode that cannot be read now holds, whatever the start judged (the eff_mode yolo below would ready it)
+  printf '{"by": "yolo", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"; mplan yolo
+  PR_HELM=raise PLANS_DIR="$T/mplans" sw run "$T/sw-torn.out" ready --title t --body-file /dev/null
+  has "$T/sw-torn.out" "touches a gate (held: the mode is unreadable now (the mode is unreadable (RuntimeError))" \
+    "a yolo launch whose mode reader raises at the re-check: held (follow-ups' landing review, item 5)"
+  lacks "$T/sw-torn.out" "READIED" "  and it stays a draft"
+  PR_HELM=absent PLANS_DIR="$T/mplans" sw run "$T/sw-nohelm.out" ready --title t --body-file /dev/null
+  has "$T/sw-nohelm.out" "touches a gate (held: the mode is unreadable now (helm is not installed here)" "  helm absent at the re-check: held"
+  PLANS_DIR="$T/mplans" sw run "$T/sw-readable.out" ready --title t --body-file /dev/null
+  has "$T/sw-readable.out" "READIED" "  the same record with the mode readable: readied"
+  # item 8: a hold names the mode landing() read at the start beside the mode now
+  printf '{"by": "dnd", "session": "5e55-run", "ended": null, "eff_mode": "dnd", "land_mode": "dnd"}\n' > "$ST"; mplan default
+  PLANS_DIR="$T/mplans" sw run "$T/sw-landmode.out" ready --title t --body-file /dev/null
+  has "$T/sw-landmode.out" "held: mode default — a taken answer never lands there (yolo-veto D1); mode dnd at the start" \
+    "a dnd launch lowered since: the hold names the start's mode (follow-ups' landing review, item 8)"
+  # item 4: a held launch's own session may not merge, whatever its permissions say; the owner's terminal may
+  printf '{"by": "dnd", "session": "5e55-run", "ended": null, "eff_mode": "dnd", "hold": "mode ask — nothing lands by itself"}\n' > "$ST"; mplan yolo
+  PR_HEAD=$(g rev-parse HEAD) PLANS_DIR="$T/mplans" sw run "$T/sw-held.out" merge
+  has "$T/sw-held.out" "pr: NOT merged — this launch is held at a ready PR (mode ask — nothing lands by itself)" \
+    "a held launch's session runs pr merge: refused (follow-ups' landing review, item 4)"
+  has "$T/sw-held.out" "API POST /repos/o/r/issues/7/labels" "  and the ready PR is labelled hold"
+  lacks "$T/sw-held.out" "MERGE CALLED" "  before asking GitHub to merge"
+  printf '{"by": "ship", "session": "5e55-run", "ended": null, "eff_mode": "yolo", "keel_hold": true}\n' > "$ST"
+  PR_HEAD=$(g rev-parse HEAD) PLANS_DIR="$T/mplans" sw run "$T/sw-keelheld.out" merge
+  has "$T/sw-keelheld.out" "pr: NOT merged — this launch is held at a ready PR (the keel holds it (--hold))" "  a keel_hold alone holds it too"
+  PLANS_DIR="$T/mplans" sw run "$T/sw-heldready.out" ready --title t --body-file /dev/null
+  has "$T/sw-heldready.out" "API POST /repos/o/r/issues/7/labels" \
+    "  its pr ready without --hold labels the PR hold before it leaves draft (second landing review)"
+  has "$T/sw-heldready.out" "readied with the \`hold\` label" "    and says so"
+  PR_HEAD=$(g rev-parse HEAD) PLANS_DIR="$T/mplans" AUTOFINISH_LAUNCHER=repo CLAUDE_CODE_SESSION_ID= run "$T/sw-tap.out" merge
+  lacks "$T/sw-tap.out" "held at a ready PR" "  the owner's pr merge from a terminal (no session id) is not that run"
   state sweep 5e55-run
   mkdir -p "$R/hooks"; echo x > "$R/hooks/x.py"; g add -A; g commit -qm "Fix: a hook, in step 1"; g branch -f claude/t/topic-raw HEAD
   sw run "$T/sw-ready.out" ready --title t --body-file /dev/null
