@@ -9,7 +9,8 @@
                                   opens the PR if the hook could not. Prints the URL. --hold
                                   labels it `hold` before it leaves draft, and keeps the label:
                                   a `/finish --yolo` launch outside a `merge: auto` repo stops
-                                  at a ready PR, which automerge would otherwise launch (E12).
+                                  at a ready PR, which automerge would otherwise launch (E12);
+                                  a held launch's own session (held_launch()) gets it unasked.
                                   Both ready and merge refuse a PR that changes a path the
                                   branch's `<branch>-raw` never changed — main's newer work
                                   undone by a stale rebuild (strays()); --drops-ok if meant.
@@ -236,6 +237,17 @@ def run_record(me):
     return None
 
 
+def held_launch():
+    """Why this session's own launch is held at a ready PR (autofinish-run's `hold`: mode ask, the dnd
+    slice; or the keel's `keel_hold`), or None. The launch's own session only: the owner's `pr merge`
+    from a terminal (no session id) is the tap it waits for."""
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    st = run_record(me)
+    if st and me and st.get("session") == me and not st.get("ended") and (st.get("hold") or st.get("keel_hold")):
+        return st.get("hold") or "the keel holds it (--hold)"
+    return None
+
+
 def refuse_sweep_gate(up, base, verb, hold=None):
     """Stop `ready`/`merge` in an unattended `/finish` the sweep started (autofinish-run's state:
     by=sweep, or yolo — a retry the sweep starts for a yolo run that died, bin/autofinish
@@ -253,6 +265,15 @@ def refuse_sweep_gate(up, base, verb, hold=None):
     autofinish's brief_held, not the whole list: the yes covers class 1 and 3, never class 2 or the list."""
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
     st = run_record(me)
+    why = held_launch() if verb == "merged" else None
+    if why:
+        # a held launch stops at a ready PR; its prompt says so and its permissions deny `pr merge` —
+        # this is the third wall, for a session whose rules were widened by hand (follow-ups' landing
+        # review, item 4); `ready` labels it `hold` itself (the second landing review)
+        keep = "" if hold is None else (" The PR is labelled `hold`, so automerge leaves it." if hold()
+                                        else " The PR could not be labelled `hold`: label it, or automerge may launch it.")
+        sys.exit(f"pr: NOT merged — this launch is held at a ready PR ({why}); it lands by "
+                 f"{common.OWNER_NAME or 'the owner'}'s tap, never by its own run.{keep}")
     if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief") or st.get("ended"):
         return
     from importlib.machinery import SourceFileLoader
@@ -274,30 +295,20 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         if not gate and not problem and st.get("by") != "brief" and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
                                          or st.get("by") == "ship"):
             mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
-            # a mode that cannot be read now (helm absent, a reader that raised) is no "no sent task":
-            # it holds, never falls back to the start's eff_mode (held_slice's rule: what it cannot
-            # read is a hold; the follow-ups' landing review)
-            unreadable = mode is None and (str(why_mode).startswith("the mode is unreadable")
-                                           or why_mode == "helm is not installed here")
-            # the mode now; with none, the mode autofinish-run's landing() judged the start by (its
-            # `eff_mode`: E12's standing yes is `yolo` there only in a "merge": "auto" repo from a
-            # person's caller, a ship launch with no mode `yolo`) — never a bare `by: yolo`, which any caller may type (follow-ups item 4).
-            # A record from before the key reads None, and None holds
-            if unreadable:
-                eff = None
-            elif st.get("by") == "ship":
-                # the keel's yes, judged at the start: landing() records eff_mode yolo for a ship with no
-                # landing mode, and branch_mode reads such a ship's task as `default`, never None, so the
-                # plain fallback below would hold every one; a dnd, yolo or ask mode set since is the mode now
-                eff = mode if mode in af.LAND_MODES or mode == "ask" else st.get("eff_mode")
-            else:
-                eff = mode if mode is not None else st.get("eff_mode")
+            # autofinish's effective_mode, the rule landing() judged the start by (follow-ups' landing review,
+            # item 8): a mode that cannot be read now holds, never falls back to the start's eff_mode; with no
+            # mode now, the start's `eff_mode` (a record from before the key reads None, and None holds);
+            # a ship's mode-less task reads `default`, so a ship takes the start's eff_mode there too
+            eff = af.effective_mode(st.get("by"), mode, recorded=st.get("eff_mode"),
+                                    unreadable=af.mode_unreadable(why_mode))
             try:
-                held = af.held_slice(primary, git("rev-parse", "--show-toplevel"), base, eff)
+                held = (f"the mode is unreadable now ({why_mode})" if af.mode_unreadable(why_mode)
+                        else af.held_slice(primary, git("rev-parse", "--show-toplevel"), base, eff))
             except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
                 held = f"the held slice could not be read ({type(e).__name__})"
             if held:
-                gate = f"held: {held}"
+                was = st.get("land_mode")   # the mode landing() read at the start (item 8)
+                gate = f"held: {held}" + (f"; mode {was} at the start" if was and was != mode else "")
     if gate or problem:
         why = f"the curated diff touches a gate ({gate})" if gate else f"its gates could not be read ({problem})"
         if hold is None:
@@ -369,6 +380,11 @@ def main():
         # step 9 runs `pr strays` before the push too
         refuse_strays(up, branch, "readied", args)
         refuse_sweep_gate(up, base, "readied")
+        if not hold and held_launch():
+            # a held launch leaves draft labelled, --hold or not: unlabelled, automerge.yml launches a ready
+            # claude/* PR, and the merge wall above never runs (the second landing review)
+            hold = True
+            print(f"pr: this launch is held ({held_launch()}) — readied with the `hold` label", file=sys.stderr)
         if not title:
             title = git("log", "--reverse", "--format=%s", rng).splitlines()[0]
         if body is None:

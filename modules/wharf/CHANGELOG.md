@@ -11,6 +11,18 @@
 - `review-gate plan`'s path rule (autofinish-exclude S5, 2026-10-23): a branch that changes a path under
   the base's `autofinish_exclude` or `review_xhigh` gets reviewer xhigh + `/code-review` xhigh at any size
   (a tight week still lowers the second to high); `plan` prints the path, `--json` carries it as `gated`.
+- The second landing review of skipper-modes-followups-2 (2026-10-24), main's denials restored: the shed
+  guard's command start counts `if`/`elif`/`while`/`until`, `time` and `eval` again; the record guard reads
+  a redirect inside awk's quoted program and sed's `w` again, catches sed's combined `-Ei`/`-ni` and gawk's
+  `inplace.awk`, follows a `cd` as typed (a two-step `cd`, a relative path from the parent folder, a
+  subshell's `cd` ending at its `)`, a loop's own line), judges a redirect by where its target lands, and
+  skips heredoc bodies. `pr ready` labels a held launch `hold` itself, `--hold` or not (`held_launch()`).
+- The follow-ups' landing review, its smaller findings (2026-10-23): the shed guard reads `unset`, the
+  setters and an un-export only at a command's start (`rg export DISPATCH_LABEL=` is a search); the record
+  guard catches `awk -i inplace`, reads a `cd` into a record folder as a read and what writes after it
+  there as a write, and ignores a commit message quoting a redirect. `pr merge` refuses a held launch's
+  own session (`hold` or `keel_hold` in autofinish.json), and the re-check judges by wharf-runs'
+  `effective_mode`, naming the start's `land_mode` beside the mode now.
 - `pr ready` and `pr merge` judge a `--by ship` run's gates and held slice again, as a sweep or mode
   run's (skipper-resilience S6's finish review, 2026-10-23): the keel's yes predates the run's own edits.
 - The skipper-modes follow-ups (2026-10-23): the checkpoint hook's shed guard reads the shell's setters
