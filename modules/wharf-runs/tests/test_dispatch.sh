@@ -1333,7 +1333,8 @@ mkdir -p docs
   [ -n "\${YDUP:-}" ] && { echo "- **D1 — Again.** Twice."; echo; echo "  ➤ Answer:"; echo; }
   echo "---"; echo; echo "## Open feedback"; } > docs/d.md
 python3 "$KEEL" \${YCMD:-yolo} docs/d.md >> "$T/claude.calls" 2>&1; echo "memo exit \$?" >> "$T/claude.calls"
-git add docs/d.md; git -c user.email=t@t -c user.name=t commit -qm "doc" >/dev/null
+if [ -n "\${YNODOC:-}" ]; then git rm -q --cached --ignore-unmatch docs/d.md; rm -f docs/d.md; echo x > note.txt; git add note.txt; else git add docs/d.md; fi
+git -c user.email=t@t -c user.name=t commit -qm "doc" \${YDEPLOY:+-m "Deployed: \$YDEPLOY"} >/dev/null
 [ -n "\${YLOWER:-}" ] && sh -c "\$YLOWER"   # S3b: the owner lowers the mode while the run builds
 # its transcript, where yolo_launch reads the last reply (\$YREPLY)
 sid=""; prev=""; for a in "\$@"; do [ "\$prev" = --session-id ] && sid="\$a"; prev="\$a"; done
@@ -1450,6 +1451,18 @@ has "$HOME/mode-dnd.log" "== dnd: the build run ended clean — starting the lau
   "  …but a dnd launch (S3b, the owner: \"dnd: I want to automerge as well\")"
 has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by dnd" "  through autofinish-run --rule M --by dnd, which holds the slice itself"
 : > "$T/af.calls"
+# the follow-ups' landing review, item 1: a deployed build is the sweep's rule L unless it holds a taken doc
+DW="$T/repo/.claude/worktrees/demo"; pre=$(git -C "$DW" rev-parse HEAD)
+YNODOC=1 YDEPLOY="the service" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" \
+  DISPATCH_LOG="$HOME/mode-dnd-live.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-dnd-live.log" "== dnd: deployed (the service) with no taken doc — rule L's start, as the sweep's" \
+  "a deployed dnd build with no taken doc: rule L's start (the follow-ups' landing review, item 1)"
+has "$T/af.calls" "afrun $DW --rule L --by sweep" "  through autofinish-run --rule L --by sweep: at once, no held slice"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YDEPLOY="the service" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" \
+  DISPATCH_LOG="$HOME/mode-dnd-taken.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "afrun $DW --rule M --by dnd" "  deployed with a taken doc: rule M, which applies the held slice (as the sweep's start)"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
 mkdir -p "$PLANS_DIR/lship"; echo '{"id": "lship", "mode": "dnd", "tasks": {}}' > "$PLANS_DIR/lship/plan.json"
 YLOWER="echo '{\"id\": \"lship\", \"mode\": \"default\", \"tasks\": {}}' > $PLANS_DIR/lship/plan.json" YMARK=yes YCMD="yolo --dnd" DISPATCH_SHIP=lship \
   DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/mode-lowered.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
@@ -1500,21 +1513,53 @@ python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "ask", "tasks": 
 DISPATCH_SHIP=mship DISPATCH_MODE=yolo DISPATCH_LOG="$HOME/mode-ship.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-ship.log" "== mode ask" "no task mode: the ship's mode beats the hint"
 grep -q "== yolo" "$HOME/mode-ship.log"; check "$?" "1" "  …a yolo hint overruled by the ship is no yolo run: no launch"
-# follow-ups item 5: a `helm mode --branch` lowering is read at fire time and at launch — under the
-# ship's mode, a ceiling no branch entry raises (the follow-ups' code review): here the ship says ask
-printf '{"|%s": {"mode": "default", "ts": 1}}\n' "$BR" > "$PLANS_DIR/branch-modes.json"
-DISPATCH_SHIP=mship DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-branch.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
-has "$HOME/mode-branch.log" "== mode ask" "a helm mode --branch above the ship's ask: the ship's ceiling holds at fire time"
+# follow-ups item 5: a `helm mode --branch` lowering is read at fire time and at launch, before plan.json;
+# every entry names its repo (the follow-ups' landing review, item 7), keyed as helmlib keys it
+BK=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib; print(helmlib.branch_key(sys.argv[2], sys.argv[3]))' "$B/../../helm/bin" "$BR" "$T/repo")
+# — under the ship's mode, a ceiling since the follow-ups' code review: the ship in dnd, the entry lowers it
+printf '{"%s": {"mode": "default", "ts": 1}}\n' "$BK" > "$PLANS_DIR/branch-modes.json"
 python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "dnd", "tasks": {}}, open(sys.argv[1], "w"))' "$PLANS_DIR/mship/plan.json"
 DISPATCH_SHIP=mship DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-branch-dnd.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
-has "$HOME/mode-branch-dnd.log" "== mode default" "  a helm mode --branch below the ship's dnd lowers the run at fire time (follow-ups item 5)"
+has "$HOME/mode-branch-dnd.log" "== mode default" "a helm mode --branch on the run's branch lowers the ship's dnd and the hint at fire time (follow-ups item 5)"
 python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "ask", "tasks": {}}, open(sys.argv[1], "w"))' "$PLANS_DIR/mship/plan.json"
+DISPATCH_SHIP=mship DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-branch.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-branch.log" "== mode ask" "  the same entry over a ship in ask: the ship's ceiling (the follow-ups' code review)"
 rm -f "$PLANS_DIR/branch-modes.json"; : > "$T/af.calls"
-YLOWER="printf '{\"|%s\": {\"mode\": \"default\", \"ts\": 1}}' $BR > $PLANS_DIR/branch-modes.json" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd \
+YLOWER="printf '{\"%s\": {\"mode\": \"default\", \"ts\": 1}}' '$BK' > $PLANS_DIR/branch-modes.json" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd \
   DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/mode-branch-low.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-branch-low.log" "== dnd: no launch — the mode is now default" "  …and a lowering while the run built stops its launch (mode_now)"
 check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "    autofinish-run never called"
+printf '{"%s": {"mode": "default", "ts": 1}, "%s|%s": {"mode": "ask", "ts": 1}}\n' "$BK" "/elsewhere/repo" "$BR" > "$PLANS_DIR/branch-modes.json"
+env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --mode dnd > /dev/null 2> "$T/yield.err"
+has "$T/yield.err" "the helm mode --branch entry on $BR (default) gives way to --mode dnd, the newer word" \
+  "a newer dispatch --mode on the branch replaces its older helm mode --branch entry (item 7)"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d[sys.argv[2]]["mode"], d["/elsewhere/repo|" + sys.argv[3]]["mode"])' "$PLANS_DIR/branch-modes.json" "$BK" "$BR")" "dnd ask" \
+  "  replaced by the new word, not dropped (the second landing review); a same-named branch of another repo keeps its entry"
+"$B/dispatch" $BR --repo "$T/repo" --cancel >/dev/null
+# the second landing review: the entry changes only once the job is scheduled — a refusal after the raise
+# check (here the depth cap) leaves it, so the branch's older record never reads through
+printf '{"%s": {"mode": "default", "ts": 1}}\n' "$BK" > "$PLANS_DIR/branch-modes.json"
+env -u DISPATCH_LABEL DISPATCH_DEPTH=9 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --mode ask > /dev/null 2> "$T/yield-deep.err"
+check "$?" "2" "a --mode dispatch refused at the depth cap…"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]["mode"])' "$PLANS_DIR/branch-modes.json" "$BK")" "default" \
+  "  …leaves the helm mode --branch entry as it was"
 rm -f "$PLANS_DIR/branch-modes.json"
+# the follow-ups' landing review, item 6: a mode read while repos.json is torn is ask for this run only
+printf '{"repos": {"x": ' > "$T/torn-repos.json"; : > "$T/env.calls"; rm -rf "$PLANS_DIR/mship"
+CLAUDE_REPOS_JSON="$T/torn-repos.json" DISPATCH_LOG="$HOME/mode-torn.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-torn.log" "== mode ask (repos.json is unreadable: ask for this run only, kept nowhere)" "a torn registry at fire time: ask for this run (item 6)"
+grep -q "DISPATCH_MODE=" "$T/env.calls"; check "$?" "1" "  …not into the session's DISPATCH_MODE, which would outlive the tear"
+check "$(newest_rec task_mode) $(newest_rec mode_unread)" "None 1" "  …nor the record's task_mode: mode_unread marks a sent task with no mode"
+CLAUDE_REPOS_JSON="$T/torn-repos.json" DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-torn-hint.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-torn-hint.log" "== mode dnd" "  a plist's hint comes before the scope: read whole, kept as before"
+# the second landing review: read_mode's own python over a helmlib from before fire_mode and torn_read
+# (a peer's, an older checkout's) reads the ship as item 5 did, not the bare hint of a crash
+mkdir -p "$T/oldhelm"
+printf 'import os\nfrom pathlib import Path\ndef tool(name):\n    return Path(os.environ["OLDHELM"]) / name\n' > "$T/oldhelm/common.py"
+printf 'def branch_override(b, r):\n    return None\ndef task_mode(pid, task, repo, hint):\n    return ("ask", "ship %%s" %% pid)\n' > "$T/oldhelm/helmlib.py"
+awk '/^read_mode\(\) \{/ {a=1} a && !on && /<<.PY./ {on=1; next} on && /^PY$/ {exit} on' "$B/dispatch" > "$T/read_mode.py"
+check "$(OLDHELM="$T/oldhelm" python3 "$T/read_mode.py" "$T/oldhelm" s1 t /r dnd b 2>&1)" "0 ask" \
+  "  read_mode over a helmlib without fire_mode or torn_read: the ship's ask, not the plist's dnd"
 unset PLANS_DIR
 : > "$T/claude.calls"
 DISPATCH_LOG="$HOME/mode-none.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1

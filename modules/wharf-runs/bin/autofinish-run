@@ -242,10 +242,11 @@ START_LOCK = STATE + ".lock"
 WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
-OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode")   # written only when set: a launch without --merge or a hold keeps the file it always had
+OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode", "land_mode")   # written only when set: a launch without --merge or a hold keeps the file it always had
 # eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
 # (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
-# has no mode now, never a bare `by: yolo` (follow-ups item 4)
+# has no mode now, never a bare `by: yolo` (follow-ups item 4). land_mode: the branch's mode landing() read
+# beside it (None: no sent task), so a hold at bin/pr names what changed since the start (item 8)
 LAND_BY = ("yolo", "dnd")   # the mode launches (skipper-modes S3b): `--by` names the mode, plan.json decides
 PERSON_BY = ("override", "typed")   # a person's own launch: mode ask does not hold it (landing())
 MERGE_BY = PERSON_BY + ("ship",)   # whose yes --merge may carry: a person's, or the keel's for a ship (the header)
@@ -779,7 +780,11 @@ def landing(t, by, rule):
     if af is None:
         return ("the lander's judge did not load (bin/autofinish)"
                 if by in LAND_BY or rule == "M" or by in ("ship", "brief") else None), None, None
-    mode = af.landing_mode(t.branch, t.primary or None)[0]  # with the repo, as the sweep's verdict reads it
+    mode, why_mode = af.landing_mode(t.branch, t.primary or None)  # with the repo, as the sweep's verdict reads it
+    # a mode that cannot be read (helm absent, a reader that raised) is no "no mode": a mode or ship launch
+    # holds, as bin/pr's re-check does — read as None, a ship was judged yolo and E12 took its standing
+    # yes (the second landing review)
+    unread = af.mode_unreadable(why_mode)
     # `ship` is the keel's yes to merge, not a person at the keyboard: mode ask holds it too
     person = by in PERSON_BY and not os.environ.get("CLAUDE_UNATTENDED")
     if mode == "ask" and not person:
@@ -791,11 +796,11 @@ def landing(t, by, rule):
             return "the brief's held paths could not be read (%s)" % type(e).__name__, mode, None
     if by not in LAND_BY and rule != "M" and by != "ship":
         return None, mode, None
-    if by == "ship":
-        eff = mode if mode in af.LAND_MODES else "yolo"
-    else:
-        eff = mode if mode in af.LAND_MODES else ("yolo" if by == "yolo" and mode is None and merge_auto(t)
-                                                  and not os.environ.get("CLAUDE_UNATTENDED") else mode)
+    # bin/autofinish's effective_mode: the one rule bin/pr's re-check reads too (follow-ups' landing review, item 8)
+    standing = by == "yolo" and mode is None and not unread and not os.environ.get("CLAUDE_UNATTENDED") and merge_auto(t)
+    eff = af.effective_mode(by, mode, standing_yes=standing, unreadable=unread)
+    if unread:
+        return "the mode is unreadable now (%s)" % why_mode, mode, eff
     try:
         return af.held_slice(t.primary, t.path, main_of(t), eff), mode, eff
     except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
@@ -1574,7 +1579,7 @@ def start(t, args):
         args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
-          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff}
+          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff, "land_mode": mode}
     cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")

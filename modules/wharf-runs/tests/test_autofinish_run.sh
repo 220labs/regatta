@@ -771,6 +771,7 @@ has "$T/out" "mode yolo: may merge" "  an unattended caller gets what plan.json 
 modefix dnd
 af --dry --by dnd > "$T/out" 2>&1; check "$?" "0" "mode dnd, --by dnd --dry"
 has "$T/out" '"eff_mode": "dnd"' "  autofinish.json records the mode landing() judged it by (follow-ups item 4)"
+has "$T/out" '"land_mode": "dnd"' "  …and the branch's mode it read, which bin/pr names beside the mode now (follow-ups' landing review, item 8)"
 has "$T/out" "mode dnd: may merge" "  plain work in a physical: none repo lands under dnd"
 has "$T/out" "/finish\ $BR\ --unattended\ --dnd --session-id" "  /finish is told --dnd"
 af --dry --by yolo > "$T/out" 2>&1
@@ -818,9 +819,15 @@ shipland() { python3 - "$B/autofinish-run" "$W" "$R" "$BR" "$1" "$2" <<'PYSL'
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish_run_sl", sys.argv[1]).load_module()
+real = SourceFileLoader("autofinish_sl", sys.argv[1].rsplit("/", 1)[0] + "/autofinish").load_module()
 class Af:
     LAND_MODES = ("yolo", "dnd")
-    def landing_mode(self, branch, repo): return (None if sys.argv[6] == "-" else sys.argv[6],)
+    effective_mode = staticmethod(real.effective_mode)   # the one rule, shared with bin/pr (item 8)
+    mode_unreadable = staticmethod(real.mode_unreadable)
+    def landing_mode(self, branch, repo):
+        if sys.argv[6] == "!":
+            return None, "the mode is unreadable (RuntimeError)"
+        return (None, "no sent task") if sys.argv[6] == "-" else (sys.argv[6], "ship s")
     def held_slice(self, repo, wt, main, mode): return "gated under %s" % mode
 m._lander = (lambda: None) if sys.argv[5] == "absent" else (lambda: Af())
 t = type("T", (), {"path": sys.argv[2], "primary": sys.argv[3], "branch": sys.argv[4]})()
@@ -837,7 +844,8 @@ from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish_run_bl", sys.argv[1]).load_module()
 class Af:
     LAND_MODES = ("yolo", "dnd")
-    def landing_mode(self, branch, repo): return (None if sys.argv[6] == "-" else sys.argv[6],)
+    def landing_mode(self, branch, repo): return (None if sys.argv[6] == "-" else sys.argv[6], "the mode")
+    def mode_unreadable(self, why): return False
     def brief_held(self, repo, wt, main): return None if sys.argv[5] == "lands" else "a held path (leak/l.py)"
     def held_slice(self, repo, wt, main, mode): return "held_slice was asked"
 m._lander = (lambda: None) if sys.argv[5] == "absent" else (lambda: Af())
@@ -849,6 +857,8 @@ check "$(briefland lands -)" "None" "a --by brief launch whose diff is class 1 o
 check "$(briefland held -)" "a held path (leak/l.py)" "  class 2 or the list in the diff: held at a ready PR, by brief_held, not held_slice"
 check "$(briefland lands ask)" "mode ask — nothing lands by itself" "  mode ask holds it: the yes at the brief is no person at the keyboard"
 check "$(briefland absent -)" "the lander's judge did not load (bin/autofinish)" "  the lander absent: held"
+check "$(shipland af !)" "the mode is unreadable now (the mode is unreadable (RuntimeError))" \
+  "  a mode the start cannot read: held, never judged yolo as no mode (the second landing review)"
 
 echo "--hold: the keel's no (skipper-resilience S6), whatever the mode"
 next_tip "s6: hold"

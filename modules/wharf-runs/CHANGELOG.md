@@ -23,6 +23,12 @@
   and in a session the typed `/autofinish` must name it; `runner_by` starts `override` only while the
   worktree's marker reads, else `brief`. A chain relaunch stays a brief or ship launch and keeps its hold.
 
+- The second landing review of skipper-modes-followups-2 (2026-10-24): `dispatch --mode` replaces a
+  `helm mode --branch` entry once its job is scheduled (`yield_branch_entry`), never drops it before a
+  refusal; `read_mode` keeps the fallbacks for a helmlib without `fire_mode` or `torn_read`; a torn read
+  writes no `DISPATCH_MODE` (the hint branches that never fired are gone); `yolo_launch` judges a taken doc
+  by autofinish's `mode_asks`, the run's own seed aside. autofinish-run's `landing()` holds a mode it cannot
+  read. `wharf apply` judges a blueprint's mode refusal and the tear from one read (`bp_mode_judge`).
 - An unattended `/finish` is allowed one rule per tool the finish skill names in the regatta main
   checkout (`FINISH_TOOLS`), and dispatch denies `regatta pr ready` and `regatta pr merge` beside
   `bin/pr` and `libexec/pr` (B14b, 2026-10-23). rc-hosts finds `claude-host.c` in the overlay's
@@ -72,6 +78,12 @@
   that branch is judged by rule C and started `--by brief`; `autofinish-run`'s `landing()` holds it at a
   ready PR on `brief_held`: the launcher's gates, `in_place`, `.claude/workflow.json` and the base's
   `autofinish_leaks` (class 2; absent, every listed path). `override off` removes it.
+- The follow-ups' landing review, its smaller findings (2026-10-23): a deployed dnd or yolo build with no
+  taken doc launches `--rule L --by sweep`, as the sweep's start; `effective_mode` (bin/autofinish) is the
+  one rule `landing()` and `pr`'s re-check read, and autofinish.json records `land_mode` beside `eff_mode`;
+  dispatch reads the mode through one `read_mode` (helmlib.fire_mode) at fire time and at launch, keeps a
+  torn registry's `ask` out of DISPATCH_MODE and the record (`mode_unread`), and a `--mode`/`--yolo` drops
+  the branch's older `helm mode --branch` entry; wharf's apply keeps no `mode_refused` judged while torn.
 - The yard's relays and landing call (skipper-resilience S6, 2026-10-22). A `skipper: scope` ship's
   Orca question is hailed to the scope's skipper while it holds the ship's lease (`hail <session> --kind
   ask --when idle --no-file`, its Talk page as `HAIL_SPACE`), in place of S5's Talk relay: a pointer naming
