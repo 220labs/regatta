@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `knowledge-commit`'s code launch no longer runs the layer's `hooks/test_checkpoint.sh`: the
+  checkpoint hook's suite is wharf's, which regatta's own `check:` line and CI run, and the layer deletes its copy
+  with its shims (B14b's prerequisites, 2026-10-24). Its hooks suite and `bootstrap.sh --check` stay.
+
 - `bin/knowledge-home` (knowledge-layers S3, 2026-10-21): a confidential scope's memory in its
   knowledge repo, the rest in the vault — `where`, `adopt`, `init`, `check`; `tests/knowledge-home.sh`.
 
