@@ -1011,8 +1011,10 @@ def column(s):
     return helmlib.columns()[0]
 
 
-def judge(peer=True, live_call=True):
-    """{"stalls", "unsure", "notes", "as_of", "hosts"} over both Macs."""
+def judge(peer=True, live_call=True, orca_held=None):
+    """{"stalls", "unsure", "notes", "as_of", "hosts"} over both Macs. `orca_held` is the studio brake's
+    reason (helmlib.brake_refusal, skipper-resilience S11): the brake freezes Orca serve's tree, so a
+    read of Orca would spend ORCA_TIMEOUT against a frozen serve and read nothing — none is made, and the card says so."""
     now = time.time()
     me = helmlib.host()
     rc = _load_bin("dispatch-rc")
@@ -1066,7 +1068,11 @@ def judge(peer=True, live_call=True):
     notes += n
     unread["launches"] = bool(n)
     orca_runs = []
-    if orca_on():   # Orca runs on this Mac only (design F6, F8): the build box's workers wait for B11
+    if orca_on() and orca_held:
+        # the studio brake freezes Orca serve's tree: a read would spend ORCA_TIMEOUT and read nothing (S11)
+        notes.append("orca: not read — the studio brake holds (%s)" % orca_held)
+        unread["orca"] = True   # an absence says nothing: the stall road closes no issue on it
+    elif orca_on():   # Orca runs on this Mac only (design F6, F8): the build box's workers wait for B11
         live_states = {x["session_id"]: x.get("state") for x in views[me].get("live") or []}
         try:
             s, u, orca_runs, n = judge_orca(me, live_states, live_ids, asked, now)
@@ -1108,7 +1114,7 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-peer", action="store_true", help="this Mac's records only (no ssh)")
     a = ap.parse_args(argv)
-    res = judge(peer=not a.no_peer)
+    res = judge(peer=not a.no_peer, orca_held=helmlib.brake_refusal())
     if a.json:
         print(json.dumps(res, ensure_ascii=False, sort_keys=True))
         return 0

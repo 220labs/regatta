@@ -94,6 +94,22 @@ Read `README.md` first. For an agent:
   judge and after. It calls GitHub only from an armed tick of launchd's (no session, not
   `CLAUDE_UNATTENDED`), under a lock beside the log: a case that wants calls arms the suite's tick
   and runs it with `env -u CLAUDE_CODE_SESSION_ID`. What it could not deliver is a `road` card.
+- The yard's ping and the studio brake (`stalls_tick.deadman_ping`, `helmlib.brake_refusal`,
+  skipper-resilience S11): `helm tick` pings last, after the Orca read and every pass, so a tick killed
+  at its deadline (every Orca read is time-limited and returns a note, so a dead Orca is not that: the
+  ping still goes, plain, with the Orca source unread — health's Orca line watches it) goes silent; that
+  silence is the signal, so nothing may ping earlier in the tick. The brake is re-read before the wharf
+  and skipper passes, since the tick may have run minutes. A `--fail` reason is the exception's class and
+  function only (it leaves the machine in an issue, K6). A
+  ping failure is a line and never a `--fail` (the switch would report its own unreachability to
+  itself); only a pass that raises is. While the brake holds there is no Orca read, no wharf pass,
+  no skipper start or stop (a skipper booted out while frozen leaves its claude orphaned and frozen)
+  and no retry of the tick's own (a `wait` line: dispatch and the harness do not read the brake), and
+  the ping is `--braked`. Only launchd's tick pings: a session's or an unattended run's says
+  `not pinged` (the stall road's caller rule; a session's plain ping would hide a dead poll). `helmlib.brake_refusal()` is wharf's own function loaded as a module,
+  never a second copy of the rule. Tests stub `deadman` (`HELM_DEADMAN`, set at the suite's head to a path that is no file — an
+  absent peer — so no case outside S11's block reaches lighthouse's), the harness (`STALLS_HARNESS`) and `WHARF_LAUNCHCTL`, and move the brake with a file in
+  the suite's `HOME`; a real ping or Orca read is a regression.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)` on a
   Mac (2026-10-22; `REGATTA_LEGACY` is read by nothing since B14b, 2026-10-23). A Linux runner is untried.

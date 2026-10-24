@@ -61,8 +61,10 @@ unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPA
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_TASK DISPATCH_MODE DISPATCH_BRIEF \
       SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT \
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
-      HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first)
+      HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST \
+      DEADMAN_CONFIG DEADMAN_URL DEADMAN_PING_SECRET DEADMAN_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first); deadman's (S11)
 export CLAUDE_CODE_SESSION_ID=mgr-1
+export HELM_DEADMAN="$T/no-deadman"   # an absent peer: no case reaches lighthouse's real deadman (S11's block stubs it)
 mkdir -p "$T/home" "$T/sess"
 cp "$TD/surfaces.json" "$T/surfaces.json"
 echo '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-01-04"}}}' > "$COST_RATIO"
@@ -998,6 +1000,10 @@ PY
   out=$(scen full DISPATCH_MAX_RUNS=0)
   has "$out" "S1 testhost demo gone-step: waits — the run cap is full here (" "the run cap full: a step waits"
   check "$(call "print(sorted(x['tool'] for x in c))" "$X/full.calls")" "['autofinish-run']" "  a relaunch is no run of dispatch's cap: it goes on"
+  : > "$HOME/.studio-brake"; out=$(scen brake); rm -f "$HOME/.studio-brake"
+  has "$out" "S1 testhost demo gone-step: waits — held — the studio brake holds ($HOME/.studio-brake exists)" \
+    "the studio brake holds the tick's own retries too (S11): dispatch and the harness do not read it"
+  check "$(ncalls "$X/brake.calls")" "0" "  nothing started, nothing relaunched"
 
   out=$(tk "$ta")
   has "$out" "helm tick: armed — armed by test-sam" "3 h after arming: armed"
@@ -2963,6 +2969,200 @@ PY
 )" "0 1" "the class braked is never escalated, nor a raise to a live skipper"
 unset PLANS_DIR STALLS_LOG STALLS_STATE_DIR CLAUDE_REPOS_JSON ASK_GH_API GH_CALLS SURFACES_HOST STALLS_REPOS PLAN_NO_SKIPPERS
 export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json"
+
+echo "the yard's tick pings the dead-man's switch, and holds Orca and the skippers under the studio brake (skipper-resilience S11)"
+# Stubs only: `deadman` (a python script the tick runs as lighthouse's is) and the harness (the Orca read)
+# both append to one sequence file, so their order is read, not assumed; launchctl records any call. The
+# yard is this host (testhost) by the S8 registry; the brake is the file wharf's brake_refusal() reads in
+# HOME. A fresh store and HOME. No Worker, no Orca app, no real job.
+S11="$T/s11"; mkdir -p "$S11/hd" "$S11/st" "$S11/plans"
+cat > "$S11/harness" <<EOF
+#!/bin/sh
+echo "orca \$*" >> "$S11/seq"
+echo '[]'
+EOF
+cat > "$S11/deadman" <<EOF
+#!/usr/bin/env python3
+import os, sys
+open("$S11/seq", "a").write("ping " + " ".join(sys.argv[2:]) + "\n")   # argv[1] is the verb
+if os.environ.get("DM_EXIT"):
+    print("deadman: the Worker answered HTTP 503", file=sys.stderr); sys.exit(int(os.environ["DM_EXIT"]))
+if os.environ.get("DM_WARN"):
+    print("deadman: the secret file is mode 644", file=sys.stderr)
+print("pinged for " + sys.argv[2] + (" (braked)" if "--braked" in sys.argv else ""))
+EOF
+cat > "$S11/launchctl" <<EOF
+#!/bin/sh
+echo "\$*" >> "$S11/lc.calls"
+EOF
+cat > "$S11/false-launchctl" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$S11/harness" "$S11/deadman" "$S11/launchctl" "$S11/false-launchctl"
+export PLANS_DIR="$S11/plans" STALLS_LOG="$S11/stalls.jsonl" STALLS_STATE_DIR="$S11/st" CLAUDE_REPOS_JSON="$S8/repos.json" \
+       SURFACES_FILE="$S8/surfaces.json" SURFACES_HOST=testhost STALLS_PEERS= STALLS_REPOS= PLAN_NO_SKIPPERS=1 PLAN_NO_WHARF=1 \
+       STALLS_ORCA=1 STALLS_HARNESS="$S11/harness" HELM_DEADMAN="$S11/deadman" HELM_LAUNCHCTL="$S11/launchctl" \
+       WHARF_LAUNCHCTL="$S11/false-launchctl"   # a brake label in the caller's config dir must not reach the suite
+unset DM_EXIT
+T11() { env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED HOME="$S11/hd" "$LX/helm" tick "$@" 2>&1; }   # launchd's tick: no session, not unattended
+seq11() { [ -e "$S11/seq" ] && tr '\n' '|' < "$S11/seq" | sed 's/|$//' || true; }
+rm -f "$S11/seq" "$S11/lc.calls"
+
+echo "  a yard's tick: the Orca read, then the ping"
+out=$(T11); rc=$?
+check "$rc" "0" "the tick ends cleanly"
+check "$(seq11)" "orca list --harness orca --unsettled --json|ping testhost" "the Orca read comes first, then the ping for this host (no --fail, no --braked)"
+has "$out" "deadman: pinged for testhost" "  the ping's line is printed"
+rm -f "$S11/seq"
+out=$(T11 --json); json=$(printf '%s' "$out" | tail -1)
+check "$(printf '%s' "$json" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["deadman"], d["brake"])')" "['deadman: pinged for testhost'] None" "--json carries the ping's lines and no brake"
+rm -f "$S11/seq"
+out=$(T11 --dry-run); check "$(seq11)" "orca list --harness orca --unsettled --json" "--dry-run reads Orca and pings nothing"
+hasnt "$out" "deadman" "  nor prints a deadman line"
+rm -f "$S11/seq"
+T11 --status > /dev/null; check "$(seq11)" "" "--status pings nothing"
+
+echo "  a loud failure of the pass: --fail with a one-line why, the tick's exit unchanged"
+rm -f "$S11/seq"
+out=$(STALLS_NOW=notanumber T11); rc=$?
+check "$rc" "1" "the tick still exits 1 (ask poll logs its failure as before)"
+check "$(seq11)" "ping testhost --fail --why helm tick: ValueError in clock" "  the switch is told once, with the exception class and the function it came from, never its message (K6)"
+has "$out" "helm tick: could not convert string to float: 'notanumber'" "  and helm's own failure line is still printed"
+rm -f "$S11/seq"
+out=$(STALLS_NOW=notanumber DM_EXIT=1 T11); rc=$?
+check "$rc/$(seq11)" "1/ping testhost --fail --why helm tick: ValueError in clock" "  a --fail the switch refuses does not loop and does not change the exit"
+rm -f "$S11/seq"
+
+echo "  only launchd's tick pings: a session's and an unattended run's say so in one line"
+out=$(env CLAUDE_CODE_SESSION_ID=sess-abcdefgh HOME="$S11/hd" "$LX/helm" tick 2>&1)
+check "$(seq11)" "orca list --harness orca --unsettled --json" "a tick inside a session: no ping (a plain one would hide a dead poll)"
+has "$out" "deadman: not pinged — the tick runs inside session sess-abc: the ping is launchd's tick's" "  said in one line"
+rm -f "$S11/seq"
+out=$(env -u CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED=1 HOME="$S11/hd" "$LX/helm" tick 2>&1)
+check "$(seq11)" "orca list --harness orca --unsettled --json" "an unattended caller: no ping"
+has "$out" "deadman: not pinged — an unattended caller (CLAUDE_UNATTENDED=1)" "  said in one line"
+rm -f "$S11/seq"
+out=$(env CLAUDE_CODE_SESSION_ID=sess-abcdefgh STALLS_NOW=notanumber HOME="$S11/hd" "$LX/helm" tick 2>&1); rc=$?
+check "$rc/$(seq11)" "1/" "  nor a --fail from a session's failing tick (it would open an issue)"
+rm -f "$S11/seq"
+out=$(DM_WARN=1 T11)
+has "$out" "deadman: pinged for testhost" "a ping that went with a warning on stderr: the ping's line is kept"
+has "$out" "deadman: the secret file is mode 644" "  and the warning is its own line"
+rm -f "$S11/seq"
+
+echo "  deadman failing or absent: one line, never the tick's failure, never a --fail"
+out=$(DM_EXIT=1 T11); rc=$?
+check "$rc/$(seq11)" "0/orca list --harness orca --unsettled --json|ping testhost" "a ping that fails: the tick exits 0, one ping"
+has "$out" "deadman: ping failed (exit 1): the Worker answered HTTP 503" "  said in one line"
+rm -f "$S11/seq"
+out=$(HELM_DEADMAN="$S11/not-installed" T11); rc=$?
+check "$rc/$(seq11)" "0/orca list --harness orca --unsettled --json" "deadman absent: the tick exits 0 and pings nothing"
+has "$out" "deadman: not pinged — not installed (lighthouse)" "  one quiet line"
+check "$(printf '%s\n' "$out" | grep -c deadman)" "1" "  and only that line"
+rm -f "$S11/seq"
+
+echo "  only a host some scope's yard names pings"
+out=$(CLAUDE_REPOS_JSON="$S8/noyard.json" T11); rc=$?
+check "$rc/$(seq11)" "0/orca list --harness orca --unsettled --json" "no scope has a yard (every scope today): no ping"
+hasnt "$out" "deadman" "  and not a line of it"
+rm -f "$S11/seq"
+out=$(CLAUDE_REPOS_JSON="$S8/torn.json" T11); check "$(seq11)" "orca list --harness orca --unsettled --json" "a torn registry reads no yard here: no ping"
+hasnt "$out" "deadman" "  and not a line of it"
+rm -f "$S11/seq"
+out=$(PLAN_HOST=otherhost SURFACES_HOST=otherhost T11); check "$(seq11)" "orca list --harness orca --unsettled --json" "a host the yard is not (the laptop): no ping"
+hasnt "$out" "deadman" "  and not a line of it"
+rm -f "$S11/seq"
+out=$(HELM_DEADMAN="$S11/not-installed" PLAN_HOST=otherhost T11)
+hasnt "$out" "deadman" "a host that is no yard with deadman absent: silent too"
+rm -f "$S11/seq"
+
+echo "  under the studio brake: no Orca read, no wharf pass, no skipper start or stop, and --braked"
+: > "$S11/hd/.studio-brake"
+out=$(T11); rc=$?
+check "$rc/$(seq11)" "0/ping testhost --braked" "no Orca read; the ping is --braked"
+has "$out" "helm tick: the studio brake holds ($S11/hd/.studio-brake exists)" "  the tick says so"
+has "$out" "orca: not read — the studio brake holds" "  and so does the card for the Orca read"
+has "$out" "deadman: pinged for testhost (braked)" "  the ping's line"
+rm -f "$S11/seq"
+out=$(PLAN_NO_WHARF= T11)
+has "$out" "wharf: skipped — the studio brake holds ($S11/hd/.studio-brake exists): its pass reads Orca" "wharf's pass reads Orca: held, and said"
+check "$(seq11)" "ping testhost --braked" "  (no Orca read there either)"
+rm -f "$S11/seq"
+out=$(CLAUDE_REPOS_JSON="$S8/noyard.json" T11)
+check "$(seq11)" "" "a host that is no yard under the brake: no Orca read, and no ping"
+has "$out" "orca: not read — the studio brake holds" "  the brake holds Orca reads on any host"
+rm -f "$S11/seq"
+out=$(STALLS_NOW=notanumber T11)
+check "$(seq11)" "ping testhost --fail --why helm tick: ValueError in clock" "a loud failure with the brake file present is still --fail, never --braked (raised before the brake is read; the in-tick brake is the cases above)"
+rm -f "$S11/seq"
+out=$(T11 --json); json=$(printf '%s' "$out" | tail -1)
+check "$(printf '%s' "$json" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["brake"] == sys.argv[1], d["deadman"])' "$S11/hd/.studio-brake exists")" "True ['deadman: pinged for testhost (braked)']" "--json: the brake's reason and the ping"
+rm -f "$S11/hd/.studio-brake" "$S11/seq"
+out=$(T11); check "$(seq11)" "orca list --harness orca --unsettled --json|ping testhost" "the brake lifted: the Orca read and a plain ping again"
+hasnt "$out" "studio brake" "  and no line of the brake"
+rm -f "$S11/seq"
+
+echo "  the skipper pass: held under the brake, armed or not, and silent where no scope is held"
+SK11() { env -u CLAUDE_CODE_SESSION_ID HOME="$S11/hd" python3 - "$B" "$1" "$2" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import skipperlib, stalls_tick
+calls = []
+skipperlib.ensure = lambda act, why=None: calls.append(act) or ["would act"]
+brake = sys.argv[3] or None
+print(stalls_tick.ensure_skippers(sys.argv[2], brake), calls)
+PY
+}
+unset PLAN_NO_SKIPPERS
+check "$(SK11 armed 'brake file exists')" "[] []" "the brake, no scope held here: no line, ensure not reached"
+check "$(SK11 armed '')" "[] []" "  and no brake, no scope held: nothing either (the tick as before S5)"
+LP="$PLANS_DIR"
+"$HM" $SHIP s11a --id s11a > /dev/null; "$HM" task s11a b1 > /dev/null; ll yard s11a dock > /dev/null
+check "$(SK11 armed '')" "['would act'] [True]" "no brake: an armed pass with a scope held reaches skipperlib.ensure, acting"
+check "$(SK11 armed 'brake file exists')" "['skippers: held — the studio brake holds (brake file exists): none started or stopped'] []" "a scope held here: one line, ensure not reached (no start, no stop, no lease written)"
+check "$(SK11 dry 'brake file exists')" "['skippers: held — the studio brake holds (brake file exists): none started or stopped'] []" "  a dry pass too"
+: > "$S11/hd/.studio-brake"; : > "$S11/lc.calls"
+out=$(T11)
+has "$out" "skippers: held — the studio brake holds" "the tick prints it with a scope held"
+check "$(cat "$S11/lc.calls")" "" "  and no launchctl call was made"
+check "$(lf s11a holder)" "yard" "  the lease untouched"
+rm -f "$S11/hd/.studio-brake" "$S11/seq"
+out=$(CLAUDE_REPOS_JSON="$S8/noyard.json" T11)
+hasnt "$out" "skippers: held" "no brake: no held line"
+export PLAN_NO_SKIPPERS=1
+
+echo "  brake_refusal() is wharf-runs' own"
+check "$(HOME="$S11/hd" python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; print(helmlib.brake_refusal())")" "None" "no brake file, no label: None"
+: > "$S11/hd/.studio-brake"
+check "$(HOME="$S11/hd" python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; print(helmlib.brake_refusal())")" "$S11/hd/.studio-brake exists" "the brake file: its reason, from wharf's own text"
+check "$(HOME="$S11/hd" python3 -c "
+import sys; sys.path.insert(0, '$B'); import helmlib; n = list(sys.path); helmlib.brake_refusal(); print(sys.path == n)")" "True" "  and it leaves sys.path as it found it (wharf puts its folders first)"
+rm -f "$S11/hd/.studio-brake"
+
+echo "  the stall road under the brake: Orca is unread, so no escalation of an Orca stall is closed"
+: > "$S11/hd/.studio-brake"
+check "$(HOME="$S11/hd" python3 -c "
+import sys; sys.path.insert(0, '$B'); import stalls
+r = stalls.judge(peer=False, live_call=False, orca_held='held'); print(r['unread']['orca'], [n for n in r['notes'] if 'studio brake' in n][:1] != [])")" \
+  "True True" "judge(orca_held=): the Orca source is unread, and a card says so"
+rm -f "$S11/hd/.studio-brake"
+check "$(HOME="$S11/hd" python3 -c "
+import sys; sys.path.insert(0, '$B'); import stalls
+r = stalls.judge(peer=False, live_call=False); print(r['unread']['orca'])")" "False" "  with no brake it is read, as before"
+printf '%s\n' '{"t": 1, "yard": "testhost", "ekey": "k-orca", "kind": "stall", "key": ["o"], "src": "orca", "class": "S1", "state": "open", "road": "none", "title": "an Orca stall"}' > "$S11/esc.jsonl"
+mkdir -p "$S11/escst"; printf '%s\n' '{"k-orca": [1, 2]}' > "$S11/escst/escalations-seen.json"   # missing for two passes already: only the unread Orca source holds it
+cat > "$S11/esc.py" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import stalls_tick
+unread = {"orca": True} if sys.argv[2] == "held" else {}
+print(stalls_tick._escalate({"hosts": ["testhost"], "unread": unread, "stalls": [], "unsure": []}, [], stalls_tick.Memory([]), 10 ** 9, True))
+PY
+check "$(STALLS_STATE_DIR="$S11/escst" STALLS_ESCALATIONS="$S11/esc.jsonl" python3 "$S11/esc.py" "$B" held)" "[]" "  an open Orca escalation, Orca unread: nothing would be closed"
+has "$(STALLS_STATE_DIR="$S11/escst" STALLS_ESCALATIONS="$S11/esc.jsonl" python3 "$S11/esc.py" "$B" read)" "would close the escalation of an Orca stall" "  the same row with Orca read and the stall gone: it would close (so the first is the brake's doing)"
+unset STALLS_NOW DM_EXIT HELM_DEADMAN HELM_LAUNCHCTL WHARF_LAUNCHCTL STALLS_HARNESS SURFACES_HOST CLAUDE_REPOS_JSON STALLS_LOG STALLS_STATE_DIR PLAN_NO_SKIPPERS
+export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json" STALLS_ORCA=0 PLAN_NO_WHARF=1 STALLS_PEERS= STALLS_REPOS=
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

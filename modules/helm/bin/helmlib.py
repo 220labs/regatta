@@ -73,6 +73,29 @@ def yard_hosts():
         return set(), True
 
 
+def brake_refusal():
+    """Why the studio brake holds this Mac, or None: wharf-runs' own brake_refusal() (S1), so the tick
+    and wharf read one rule — the brake file, or the job the brake stops, in state T. wharf is a script
+    with a dash-free name and no CLI for this, so it is loaded as a module. None when wharf-runs is
+    not installed or does not load: an unreadable brake is no brake, as it is to wharf's own starts."""
+    exe = peer("wharf")
+    if not exe:
+        return None
+    import sys
+    path = list(sys.path)   # wharf puts its own folders first on import; the tick's later imports must not see them
+    try:
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+        loader = SourceFileLoader("wharf_for_brake", str(exe))
+        mod = module_from_spec(spec_from_loader(loader.name, loader))
+        loader.exec_module(mod)
+        return mod.brake_refusal()
+    except (Exception, SystemExit):   # noqa: BLE001 — wharf exits at import when it cannot find its peers
+        return None
+    finally:
+        sys.path[:] = path
+
+
 def harness_adapter(name):
     """wharf-runs' harness adapter `name` (claude_code.py, orca.py): it sits in harness_adapters/
     beside bin/harness, which loads it so; tool() takes no path, so the adapter is found by its

@@ -607,7 +607,7 @@ def stall_cards():
     decided. A classifier that fails costs its cards, never the board: judged carries the error."""
     try:
         import stalls
-        res = stalls.judge(peer=not os.environ.get("PLAN_NO_PEER"))
+        res = stalls.judge(peer=not os.environ.get("PLAN_NO_PEER"), orca_held=helmlib.brake_refusal())
     except Exception as e:
         return [], {"error": "stalls: %s: %s" % (e.__class__.__name__, str(e)[:200])}
     cards = []

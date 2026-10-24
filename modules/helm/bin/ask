@@ -1173,6 +1173,11 @@ def poll_tick(deadline=None):
             if (line.startswith(("escalations: ", "escalation: ")) and not line.endswith(" closed")) or " — carded" in line \
                     or (line.startswith("escalated ") and ": none — " in line):
                 print("ask poll: %s" % line, file=sys.stderr)
+        # S11: a ping that did not go (deadman absent, refused, failed) or that warned reaches the log too:
+        # in --json the tick's own line is otherwise thrown away, and a yard that never pings arms nothing
+        for line in res.get("deadman") or []:
+            if not str(line).startswith("deadman: pinged"):
+                print("ask poll: %s" % line, file=sys.stderr)
     except Exception as e:  # incl. TimeoutExpired, bad JSON, a missing key
         print("ask poll: tick failed (%s: %s)" % (type(e).__name__, str(e)[:160]), file=sys.stderr)
 

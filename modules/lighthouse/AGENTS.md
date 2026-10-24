@@ -60,7 +60,7 @@ its chart is `deadman/README.md`.
   `tests/deadman.test.mjs` stay off `.helloworld/allowlist.txt`; what this file, `README.md`,
   `CHANGELOG.md` and `tests/check.sh` say of it is written for the twin.
 - Unlike beacon, `bin/deadman` is in the root `autofinish_exclude`: a yard's tick runs it after
-  every pass (from skipper-resilience S11, which wires it), so a broken `ping` silences every yard at once and opens an alarm for each.
+  every pass (helm's `stalls_tick.deadman_ping`, skipper-resilience S11), so a broken `ping` silences every yard at once and opens an alarm for each.
 - The Worker loads under plain Node: `cloudflare:email` is imported in `entry.js` only. Its Node
   suite needs Node 20 or later.
 - Every yard, repo, mention and address comes from `lighthouse/deadman.json` in the config dir; a

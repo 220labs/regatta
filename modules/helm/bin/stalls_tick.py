@@ -741,8 +741,12 @@ def acted_elsewhere(res):
 def tick(dry_run=False, peer=True):
     """Judge, gate, act: {"mode", "mode_why", "decisions": [(stall, line)], "followups", "notes", …}.
     dry_run: the verdicts as an armed tick would reach them, nothing called past the judge and
-    nothing written."""
+    nothing written. While the studio brake holds (helmlib.brake_refusal, read here and returned as
+    "brake") no Orca is read — the brake freezes Orca serve's tree, and a read would spend ORCA_TIMEOUT
+    against it and read nothing — no retry starts, and the caller reads it again before its later passes
+    (wharf's, the skippers'), taking the result's when set."""
     t = clock()
+    brake = helmlib.brake_refusal()
     m, m_why = mode(t)
     try:
         deadline = float(os.environ.get("STALLS_DEADLINE") or 0)   # epoch; ask poll passes its kill time
@@ -756,7 +760,7 @@ def tick(dry_run=False, peer=True):
         road_before = road_open()
     except Exception as e:   # noqa: BLE001
         road_before = (False, "the fence did not read (%s)" % e.__class__.__name__)
-    res = stalls.judge(peer=peer)
+    res = stalls.judge(peer=peer, orca_held=brake)
     # S8: the judge judges every store it read (the board shows a yard's stalls); the tick acts on none
     # of a host that runs its own tick, and on no peer's while the registry cannot tell (fail closed)
     left = acted_elsewhere(res)
@@ -816,6 +820,10 @@ def tick(dry_run=False, peer=True):
             dec = decide(s, mem, t, m)
         if m != "armed" and dec["action"] != "dry":
             dec = {"action": "dry", "would": dec["action"] if dec["action"] != "go" else dec.get("what"), "why": dec["why"]}
+        if brake and dec["action"] == "go":
+            # S11: no redispatch, start, relaunch or relay while the studio brake holds: dispatch and the
+            # harness do not read it, and a relay to a frozen skipper is no delivery; the retry waits, unspent
+            dec = {"action": "wait", "why": "held — the studio brake holds (%s)" % brake}
         if dec["action"] == "go" and deadline and time.time() + tool_timeout(s, dec.get("what")) > deadline:
             dec = {"action": "wait", "why": "no time left in this tick for %s (ask poll's timeout)" % dec["what"]}
         if dec["action"] == "go":
@@ -860,7 +868,8 @@ def tick(dry_run=False, peer=True):
     except Exception as e:   # noqa: BLE001 — the road's fault costs its lines, never the tick's verdicts
         esc = ["escalations: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
     return {"mode": m, "mode_why": m_why, "as_of": t, "hosts": res["hosts"], "decisions": decisions,
-            "followups": followups, "notes": notes, "log": str(log_path()), "wrote": write, "escalations": esc}
+            "followups": followups, "notes": notes, "log": str(log_path()), "wrote": write, "escalations": esc,
+            "brake": brake}
 
 
 CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SITE
@@ -903,7 +912,7 @@ CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SIT
 
 ESCALATE_AFTER = 10 * 60      # a raised stall's first sight, a quiet owner's block: with the 5-minute tick, G2's 15 min
 RELAY_UNANSWERED = 15 * 60    # an open question on a yard's ship (skipperlib.DEAF's 15 minutes)
-NEVER = ("braked",)           # the brake is the owner's own hold: never escalated (no judge names this class yet; S11 holds the road under the brake)
+NEVER = ("braked",)           # the brake is the owner's own hold: never escalated (no judge names this class yet; under the brake S11 holds the Orca read and the tick's own retries)
 OPEN_STATES = ("open", "class-changed")   # `unrouted` (no road by the config) and `closed` are not
 ESCALATE_MAX = 5              # issues opened in one pass at most: the rest wait for the next (a yard's first pass may hold dozens)
 ESCALATE_LEFT = 60            # no GitHub call with less of the tick's kill time (STALLS_DEADLINE) left
@@ -1440,16 +1449,27 @@ def cleared(prev, mem=None):
 
 # ---------------------------------------------------------------------------- the scopes' skippers (skipper-resilience S5)
 
-def ensure_skippers(mode_now):
+def ensure_skippers(mode_now, brake=None):
     """The pass over the scopes' skippers (bin/skipperlib.py's ensure, after wharf's pass): lines. It
     acts only when the tick is armed past its dry hours and its caller passes `helm skipper --start`'s
     own refusal (skipperlib.session_refusal: no session, none directly above it, no CLAUDE_UNATTENDED) — a
     session typing `helm tick` must not get round it by calling it in-process — and otherwise prints
     `would …`. A host with no lease and no
     skipper record prints nothing: the tick is what it was before S5. TICK_STARTS is not this
-    pass's (one start per scope per pass is its own limit). A failure is one line, never the tick's."""
+    pass's (one start per scope per pass is its own limit). A failure is one line, never the tick's.
+    While the studio brake holds (`brake`, skipper-resilience S11) the pass starts and stops nothing, armed
+    or not: the brake freezes a skipper's whole tree, and a job booted out while frozen would leave its
+    claude orphaned and frozen with nothing listing it. It says so only where a scope is held here, so a
+    host with no lease and no record still prints no line."""
     if os.environ.get("PLAN_NO_SKIPPERS"):
         return []
+    if brake:
+        try:
+            import skipperlib
+            held = skipperlib.scopes_here()
+        except Exception:   # noqa: BLE001 — a fault in the look is no reason to act under the brake
+            held = ["?"]
+        return ["skippers: held — the studio brake holds (%s): none started or stopped" % brake] if held else []
     try:
         import skipperlib
         if not skipperlib.scopes_here():
@@ -1470,6 +1490,68 @@ def ensure_skippers(mode_now):
         return ["skippers: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
 
 
+# ---------------------------------------------------------------------------- the dead-man's switch (skipper-resilience S11)
+# A yard's tick ends by telling the switch off the yard that it ran (lighthouse's bin/deadman, a Cloudflare
+# Worker that opens an issue when a yard that has pinged goes silent). It is the tick's last act, after the
+# Orca read, wharf's pass and the skippers', so a tick killed at its deadline never gets here and the yard
+# goes silent — the point. (Each Orca read is time-limited and returns a note, so an Orca that does not answer
+# does not stop the ping; its source is only marked unread.) Three pings: plain (alive), `--braked` (alive, and the owner's
+# studio brake holds: the Worker holds its alarm off until a plain ping), `--fail --why` (the pass raised).
+# Only a host some scope's `yard` names pings (helmlib.yard_hosts: a torn registry reads no yard here, as the
+# poll's own gate fails closed), so the laptop pings nothing; deadman itself pings only for the host it is
+# on and only when its config lists that host.
+
+PING_TIMEOUT = 40   # deadman's own request is 15 s; a vault read on Drive can be slow
+
+
+def deadman_exe():
+    """lighthouse's deadman through the core's tool(); HELM_DEADMAN replaces it (the tests': a path that
+    is no file stands for an absent peer)."""
+    v = os.environ.get("HELM_DEADMAN")
+    if v is not None:
+        return Path(v) if v and Path(v).is_file() else None
+    return helmlib.peer("deadman")
+
+
+def deadman_ping(brake=None, fail=None):
+    """The ping, as lines: nothing on a host that is no yard; one quiet line when deadman is absent or
+    the ping did not go (its failure is never the tick's, and never a `--fail`: that would be the switch
+    reporting its own unreachability to itself). `fail` is the pass's one-line why."""
+    yards, torn = helmlib.yard_hosts()
+    me = helmlib.host()
+    if torn or me not in yards:
+        return []
+    # the stall road's caller rule (act_refusal, less its mode): a session's or an unattended run's tick beside
+    # launchd's would cover a dead poll with a plain ping, or open an issue from a run the owner typed
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return ["deadman: not pinged — an unattended caller (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"]]
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return ["deadman: not pinged — the tick runs inside session %s: the ping is launchd's tick's" % os.environ["CLAUDE_CODE_SESSION_ID"][:8]]
+    exe = deadman_exe()
+    if not exe:
+        return ["deadman: not pinged — not installed (lighthouse)"]
+    argv = [sys.executable, str(exe), "ping", me]
+    if fail:
+        argv += ["--fail", "--why", " ".join(str(fail).split())[:300]]
+    elif brake:
+        argv.append("--braked")
+    try:
+        # deadman pings only for the name it has for itself: hand it the tick's, so the two cannot differ
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=PING_TIMEOUT, env=dict(os.environ, DEADMAN_HOST=me))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return ["deadman: ping failed (%s)" % e.__class__.__name__]
+    def tail(text):
+        said = [x.strip() for x in (text or "").splitlines() if x.strip()]
+        return re.sub(r"^deadman: ", "", said[-1])[:200] if said else ""
+    out, err = tail(p.stdout), tail(p.stderr)
+    if p.returncode:
+        last = err or out
+        return ["deadman: ping failed (exit %d)%s" % (p.returncode, ": " + last if last else "")]
+    # a warning on stderr (a secret file at the wrong mode, an alarm the Worker could not close) is its own
+    # line: it never replaces the line that says the ping went
+    return ["deadman: " + (out or "pinged")] + (["deadman: " + err] if err else [])
+
+
 def summary(line):
     a = line.get("action")
     if a == "retry":
@@ -1487,6 +1569,8 @@ def summary(line):
 
 def lines_of(r):
     out = ["helm tick: %s — %s" % (r["mode"], r["mode_why"])]
+    if r.get("brake"):
+        out.append("helm tick: the studio brake holds (%s) — no Orca read, no wharf pass, no skipper start or stop" % r["brake"])
     for f in r["followups"]:
         out.append("follow-up %s %s %s: %s" % (f.get("host"), f.get("repo"), f.get("topic"), f.get("why")))
     by, would = {}, {}
@@ -1527,4 +1611,5 @@ def as_json(r):
             "stalls": [brief(s) for s, _, _ in r["decisions"] if s.get("class")],
             "unsure": [brief(s) for s, _, _ in r["decisions"] if not s.get("class")],
             "followups": r["followups"], "log": r["log"], "wrote": r["wrote"], "escalations": r.get("escalations") or [],
+            "brake": r.get("brake"),
             "decisions": [dict(line, title=s.get("title"), rule=s.get("rule"), new=new) for s, line, new in r["decisions"]]}
