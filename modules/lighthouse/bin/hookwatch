@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+"""hookwatch — a hook fault after a landing, read from the transcripts, pinned back without a session
+(docs/autofinish-exclude-2026-10-23.md S3, S4; D3-B). Stdlib only, Python 3.9, and no find_core: it is
+the one tool that must still run when the core it watches is what broke.
+
+    hookwatch scan [--window MIN] [--json] [--dry-run] [--no-pr]   one pass; launchd runs it every 10 min
+    hookwatch status [--json]                                       the state: the clean sha, a pin
+    hookwatch unpin                                                 after the fix: `git checkout main`, the pin cleared
+    hookwatch replay [--days N] [--window MIN]                      read-only: which of the last N days' moves would pin
+    hookwatch install [--dry-run]                                   the LaunchAgent (refused unattended)
+
+Every login dir's settings.json names each hook by absolute path under the primary checkout, so what
+every session runs is that checkout's HEAD. A pass reads the hook records (`hook_success`,
+`hook_blocking_error`, `hook_non_blocking_error`, `hook_cancelled` attachments) appended to the
+transcripts since its last pass (a byte offset per file; the records of the last WINDOW minutes are
+kept in the state), keeps those whose command runs from the checkout — or whose output holds a
+traceback through it, which is how an overlay shim that execs the checkout shows (the overlay's own
+hooks are not this checkout's: the landing review, findings 13 and 16) — and counts a fault when,
+since HEAD last moved:
+  crash     a hook's output holds a Python traceback through a file of the checkout's modules/
+  judge     a hook's error, or a deny's reason, says it could not judge (CANNOT_JUDGE) — a hook that
+            merely prints such words (a bulletin quoting one) is no fault (finding 8)
+  timeout   one hook timed out in TIMEOUT_SESSIONS sessions
+  denies    one PreToolUse hook denied over DENY_SHARE of DENY_CALLS calls or more
+            (in practice it never fires, nor does a deny's reason under `judge`: Claude Code writes no
+            transcript record for a PreToolUse deny or a silent allow, as of 2026-10-24; the pin sees
+            crashes, an error's judge words and timeouts, so 7 days with no false pin is weaker evidence)
+and only for a hook the move changed: its file, a file it imports (Python `import`, transitively, by
+module name), or a file its traceback names, in `git diff <clean> <head>` (finding 13: a move that never
+touched sheep_gate.py is not its timeouts' cause). `replay` runs the same judgement over the primary's
+reflog, each move against the HEAD before it.
+
+A counted fault within WINDOW minutes of HEAD moving pins: `git checkout --detach <clean>`, where <clean>
+is the last HEAD this tool saw stand WINDOW minutes with no fault — never a guess (finding 9: the first
+pass knows none), and never a sha without this file (the pin would strand the LaunchAgent). sync.py and
+health fast-forward only a checked-out `main`, so the pin holds; checkpoint.py denies writes in the
+detached primary as on main. Only from a checked-out `main` with no tracked change, to an ancestor of
+HEAD; anything else is reported, never forced. A fault later than the window is reported, not pinned.
+
+The pin ends by itself once origin/main (fetched each pass) descends from the pinned head and every file
+the faults implicated differs there from the pinned head — the revert landed, or a later fix did: main is
+checked out, fast-forwarded, and on probation again (finding 14). `hookwatch unpin`, or a person's own
+checkout, ends it too, and either starts probation (finding 19).
+
+The revert (D3-B): when origin/main, fetched first, is still the pinned HEAD, one commit whose tree IS
+the clean sha's tree, its one parent that HEAD — the inverse of the pinned range — pushed as its own
+claude/* branch. It is opened ready, for the repo's automerge to land once `check` passes, unless the
+range touches what the design keeps the owner's (the base's `autofinish_leaks`, `in_place` or
+`.claude/workflow.json`): then it opens as a draft, which automerge never lands (finding 1). Nothing
+downstream recognises the shape; the draft is the guard. origin/main past the pin: no PR; a person reverts.
+
+Posts: a pin's line is printed, appended to hookwatch.log beside the state, and handed to HOOKWATCH_POST
+(the bulletin or a helm card) once — again only when origin/main moves or a day passes (finding 18);
+--dry-run only prints (finding 15). `regatta check`, health and sync.py name a pin from the state file.
+
+State: lighthouse/hookwatch.json in the config dir (REGATTA_CONFIG, else .config/regatta in the home; HOOKWATCH_STATE):
+  {"head", "moved_at", "clean", "pinned": {"at", "root", "from", "to", "why", "pr", "paths", "posted"} | null,
+   "last_scan", "offsets": {file: bytes}, "records": [the matched records of the last WINDOW minutes]}
+
+Seams, all environment: HOOKWATCH_ROOT (the primary checkout; default the one this file is in),
+HOOKWATCH_LOGINS (login dirs, colon-separated; default the home's .claude and each .claude-* dir),
+HOOKWATCH_STATE, HOOKWATCH_NOW (epoch), HOOKWATCH_GH (the gh command), HOOKWATCH_HOST (the
+branch's host word), HOOKWATCH_POST; `install` carries each one set, and REGATTA_CONFIG, into the plist.
+Tests: tests/hookwatch.sh.
+"""
+import argparse
+import datetime
+import glob
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+WINDOW = 30            # minutes: the scan's reach, and how long a new HEAD is on probation
+TIMEOUT_SESSIONS = 3   # one hook timing out in this many sessions is a fault
+DENY_CALLS, DENY_SHARE = 20, 0.8   # one PreToolUse hook denying over 80 % of 20 calls or more
+REPOST_S = 86400       # a held pin is posted again after a day, or when origin/main moves
+CANNOT_JUDGE = re.compile(r"core missing|core not found|cannot judge|could not judge|did not load|"
+                          r"could not be loaded|ModuleNotFoundError|ImportError: ", re.I)
+DENY_JSON = re.compile(r'"permissionDecision"\s*:\s*"deny"')
+TRACEBACK = "Traceback (most recent call last)"
+IMPORT = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+KEEP_TEXT = 6000       # characters of a hook's output kept per record (head and tail)
+SELF = "modules/lighthouse/bin/hookwatch"   # a clean sha lacking it would strand the LaunchAgent
+HELD = (".claude/workflow.json",)           # with the base's autofinish_leaks and in_place: a revert's draft
+LABEL = "regatta.hookwatch"
+HERE = Path(__file__).resolve().parent
+
+
+def now():
+    return float(os.environ.get("HOOKWATCH_NOW") or datetime.datetime.now().timestamp())
+
+
+def git(root, *args, check=False, timeout=120):
+    try:
+        r = subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if check:
+            raise RuntimeError("git %s: timed out" % " ".join(args))
+        return None
+    if check and r.returncode:
+        raise RuntimeError("git %s: %s" % (" ".join(args), (r.stderr or r.stdout).strip()[:200]))
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def ok(root, *args):
+    """True when the git command exits 0."""
+    try:
+        return subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, timeout=120).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def config_dir():
+    return Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+
+
+def root_dir():
+    """The primary checkout: HOOKWATCH_ROOT, else the main worktree of the checkout this file is in."""
+    if os.environ.get("HOOKWATCH_ROOT"):
+        return Path(os.environ["HOOKWATCH_ROOT"]).expanduser()
+    common = git(HERE, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return Path(common).parent if common else HERE.parent.parent.parent
+
+
+def state_path():
+    return Path(os.environ.get("HOOKWATCH_STATE") or config_dir() / "lighthouse" / "hookwatch.json").expanduser()
+
+
+def load_state():
+    try:
+        s = json.loads(state_path().read_text())
+        return s if isinstance(s, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(s):
+    p = state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.write_text(json.dumps(s, indent=1, sort_keys=True) + "\n")
+    os.replace(tmp, p)
+
+
+def post(line, dry=False):
+    """The pin's word: printed; unless `dry`, logged beside the state and handed to HOOKWATCH_POST."""
+    print(line, flush=True)
+    if dry:
+        return
+    stamp = datetime.datetime.fromtimestamp(now()).astimezone().isoformat(timespec="seconds")
+    try:
+        with open(state_path().with_name("hookwatch.log"), "a") as f:
+            f.write("%s %s\n" % (stamp, line))
+    except OSError:
+        pass
+    cmd = os.environ.get("HOOKWATCH_POST")
+    if cmd:
+        try:
+            subprocess.run(shlex.split(cmd) + [line], timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            print("hookwatch: the post failed (%s)" % type(e).__name__, file=sys.stderr)
+
+
+# ---- reading the transcripts ----------------------------------------------------------------
+
+def login_dirs():
+    if os.environ.get("HOOKWATCH_LOGINS"):
+        return [Path(p).expanduser() for p in os.environ["HOOKWATCH_LOGINS"].split(":") if p]
+    home = Path.home()
+    return [p for p in [home / ".claude"] + sorted(home.glob(".claude-*")) if (p / "projects").is_dir()]
+
+
+def epoch(iso):
+    try:
+        return datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def text_of(a):
+    """Everything a hook said: its stdout, stderr, content and blocking error, as one string."""
+    parts = [a.get(k) for k in ("stdout", "stderr", "content")]
+    b = a.get("blockingError")
+    parts.append(b.get("blockingError") if isinstance(b, dict) else b)
+    text = "\n".join(p for p in parts if isinstance(p, str))
+    return text if len(text) <= KEEP_TEXT else text[:KEEP_TEXT // 3] + "\n…\n" + text[-2 * KEEP_TEXT // 3:]
+
+
+def parse(line, since, root):
+    """One transcript line as a record [epoch, session, type, event, command, text, timed_out], or None
+    (read_new adds an eighth field, where it was read):
+    a hook attachment newer than `since` that runs from `root` or tracebacks through it."""
+    if '"hook_' not in line:
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    a = rec.get("attachment") if isinstance(rec, dict) else None
+    if not isinstance(a, dict) or not str(a.get("type", "")).startswith("hook_"):
+        return None
+    ts = epoch(rec.get("timestamp"))
+    if ts is None or ts < since:
+        return None
+    b = a.get("blockingError")
+    cmd = a.get("command") or (b.get("command") if isinstance(b, dict) else None) or ""
+    text = text_of(a)
+    prefix = str(root).rstrip("/") + "/"
+    if prefix not in cmd and ('File "%smodules/' % prefix) not in text:
+        return None
+    return [ts, rec.get("sessionId") or "", a["type"], a.get("hookEvent") or "", cmd, text, bool(a.get("timedOut"))]
+
+
+def read_new(s, since, root, files=None):
+    """The records appended since the last pass: each file read from its remembered offset (the
+    landing review, finding 17: a pass no longer re-reads every long transcript), up to its last whole
+    line. `s` gains the new offsets, pruned to files written within the window."""
+    offsets, fresh, out = s.get("offsets") or {}, {}, []
+    for f in files if files is not None else [f for d in login_dirs()
+                                              for f in glob.glob(str(d / "projects" / "**" / "*.jsonl"), recursive=True)]:
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        if st.st_mtime < since:
+            continue
+        start = offsets.get(f, 0)
+        if not isinstance(start, int) or start > st.st_size:
+            start = 0   # rewritten or truncated: from the top, the timestamps drop what is old
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(start)
+                data = fh.read()
+        except OSError:
+            continue
+        end, pos = data.rfind(b"\n") + 1, start
+        for line in data[:end].split(b"\n"):
+            r = parse(line.decode("utf-8", "replace"), since, root)
+            if r:
+                out.append(r + ["%s:%d" % (f, pos)])   # where: the dedupe key across passes
+            pos += len(line) + 1
+        fresh[f] = start + end
+    s["offsets"] = fresh
+    return out
+
+
+def hook_records(s, since, root):
+    """The records of [since, now]: the state's kept ones and the newly read, deduplicated; the
+    state keeps them for the next pass."""
+    seen, out = set(), []
+    for r in (s.get("records") or []) + read_new(s, since, root):
+        if not isinstance(r, list) or len(r) != 8 or not isinstance(r[0], (int, float)) or r[0] < since:
+            continue
+        if r[7] not in seen:   # a file read again from the top (rewritten) yields its records once
+            seen.add(r[7])
+            out.append(r)
+    s["records"] = out
+    return out
+
+
+def hook_name(cmd):
+    """The hook a command runs, by its file's name: the first word that is a path."""
+    word = next((w.strip('"\'') for w in cmd.split() if "/" in w), cmd)
+    return os.path.basename(word) or cmd
+
+
+# ---- which files a fault implicates ---------------------------------------------------------
+
+class Tree:
+    """The checkout's module files, for the import walk: by relative path, and by module name."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.by_name = {}
+        for p in sorted(self.root.glob("modules/*/*/*")):
+            if p.is_file() and p.parent.name in ("hooks", "lib", "bin", "libexec"):
+                rel = p.relative_to(self.root).as_posix()
+                self.by_name.setdefault(p.stem if p.suffix == ".py" else p.name, []).append(rel)
+
+    def rel(self, path):
+        prefix = str(self.root).rstrip("/") + "/"
+        return path[len(prefix):] if path.startswith(prefix) else None
+
+    def closure(self, rels):
+        """`rels` and every module file they import, transitively, by module name (a sibling first)."""
+        seen, queue = set(), [r for r in rels if r]
+        while queue:
+            p = queue.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            try:
+                text = (self.root / p).read_text(errors="replace")
+            except OSError:
+                continue
+            for name in set(IMPORT.findall(text)):
+                sib = (Path(p).parent / (name + ".py")).as_posix()
+                queue += [sib] if (self.root / sib).is_file() else self.by_name.get(name, [])
+        return seen
+
+
+def implicated(tree, cmd, text):
+    """The checkout files a record points at: the hook's own file and its imports, and every file
+    its traceback names, with theirs."""
+    prefix = str(tree.root).rstrip("/") + "/"
+    own = [tree.rel(w.strip('"\'')) for w in cmd.split() if w.strip('"\'').startswith(prefix)]
+    tb = re.findall(r'File "%s(modules/[^"]+)"' % re.escape(prefix), text)
+    return tree.closure([r for r in own if r] + tb)
+
+
+def faults(records, root, changed=None):
+    """The faults the records show, each one line: [(kind, command, detail, files)], counted only for a
+    hook whose implicated files meet `changed` (the move's diff; None counts every one)."""
+    mods = 'File "%s/modules/' % str(root).rstrip("/")
+    tree = Tree(root)
+    found, timeouts, pre, impl = [], {}, {}, {}
+
+    def hit(cmd, text):
+        if changed is None:
+            return set()
+        if (cmd, text) not in impl:
+            impl[(cmd, text)] = implicated(tree, cmd, text) & changed
+        return impl[(cmd, text)]
+
+    for ts, sid, kind, event, cmd, text, timed_out in (r[:7] for r in records):
+        deny_json = DENY_JSON.search(text) is not None
+        if TRACEBACK in text and mods in text:
+            last = [l for l in text.strip().splitlines() if l.strip()][-1:]
+            found.append(("crash", cmd, (last[0] if last else "a traceback")[:160], text))
+        elif CANNOT_JUDGE.search(text) and (kind in ("hook_blocking_error", "hook_non_blocking_error")
+                                            or (kind == "hook_success" and deny_json)):
+            found.append(("judge", cmd, CANNOT_JUDGE.search(text).group(0), text))
+        if kind == "hook_cancelled" and timed_out:
+            timeouts.setdefault(cmd, set()).add(sid)
+        if event == "PreToolUse":
+            deny = kind == "hook_blocking_error" or deny_json
+            n, d = pre.get(cmd, (0, 0))
+            pre[cmd] = (n + 1, d + (1 if deny else 0))
+    for cmd, sids in sorted(timeouts.items()):
+        if len(sids) >= TIMEOUT_SESSIONS:
+            found.append(("timeout", cmd, "timed out in %d sessions" % len(sids), ""))
+    for cmd, (n, d) in sorted(pre.items()):
+        if n >= DENY_CALLS and d > DENY_SHARE * n:
+            found.append(("denies", cmd, "denied %d of %d calls" % (d, n), ""))
+    seen, uniq = set(), []
+    for kind, cmd, detail, text in found:
+        files = hit(cmd, text)
+        if (kind, cmd) not in seen and (changed is None or files):
+            seen.add((kind, cmd))
+            uniq.append((kind, cmd, detail, sorted(files)))
+    return uniq
+
+
+def changed_files(root, a, b):
+    """The files `a..b` changed, or None when git cannot say (then every fault counts)."""
+    out = git(root, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", a, b) if a and b else None
+    return set(out.splitlines()) if out is not None else None
+
+
+# ---- the pin and the revert ---------------------------------------------------------------
+
+def moved_time(root):
+    """When HEAD last moved: its newest reflog entry's time (a fast-forward, a checkout), or None."""
+    m = re.search(r"\{(\d+)\}", git(root, "reflog", "-1", "--date=unix", "--format=%gd", "HEAD") or "")
+    return float(m.group(1)) if m else None
+
+
+def pin_refusal(root, head, clean):
+    """Why the checkout may not be pinned at `clean`, or None."""
+    if git(root, "symbolic-ref", "--quiet", "--short", "HEAD") != "main":
+        return "the primary is not on a checked-out main"
+    if not clean:
+        return "no clean sha is known yet (a HEAD hookwatch saw stand %d min with no fault)" % WINDOW
+    if clean == head:
+        return "the clean sha is HEAD itself"
+    if not ok(root, "merge-base", "--is-ancestor", clean, head):
+        return "the clean sha %s is no ancestor of HEAD" % clean[:12]
+    if not ok(root, "cat-file", "-e", "%s:%s" % (clean, SELF)):
+        return "the clean sha %s has no hookwatch: pinned there, the LaunchAgent would run nothing" % clean[:12]
+    if git(root, "status", "--porcelain", "--untracked-files=no"):
+        return "the primary has tracked changes"
+    return None
+
+
+def fetch(root):
+    """origin/main after a fetch, or None when the fetch fails (then nothing is opened or cleared)."""
+    if not ok(root, "fetch", "-q", "origin", "main"):
+        return None
+    return git(root, "rev-parse", "--verify", "--quiet", "origin/main")
+
+
+def held_paths(root, ref, paths):
+    """The paths of `paths` the base at `ref` keeps the owner's: its autofinish_leaks, in_place and the
+    list itself. A list that will not read holds every path (fails closed)."""
+    out = git(root, "show", "%s:.claude/workflow.json" % ref)
+    if out is None:
+        # no list at that ref is no list (the HELD paths still hold); git failing to say (a timeout, a bad
+        # ref) holds every path, never reads as an empty list (the re-review)
+        absent = git(root, "rev-parse", "--verify", "-q", "%s^{commit}" % ref) is not None \
+            and git(root, "ls-tree", "--name-only", ref, ".claude/workflow.json") == ""
+        if not absent:
+            return sorted(paths) or ["(.claude/workflow.json unreadable)"]
+        out = "{}"
+    try:
+        wf = json.loads(out)
+    except ValueError:
+        wf = None
+    if not isinstance(wf, dict):
+        return sorted(paths)
+    keep = HELD + tuple(p for k in ("autofinish_leaks", "in_place") for p in (wf.get(k) or [])
+                        if isinstance(p, str) and p)
+    return sorted(p for p in paths if p.startswith(keep))
+
+
+def host_word():
+    return (os.environ.get("HOOKWATCH_HOST") or socket.gethostname().split(".")[0] or "mac").lower()
+
+
+def revert_pr(root, head, clean, why):
+    """Open the revert PR (D3-B), or say why not. Returns (pr url or None, line)."""
+    origin = fetch(root)
+    if origin != head:
+        return None, "no revert PR: origin/main (%s, fetched) is not the pinned HEAD %s — a person reverts" % (
+            (origin or "unknown: the fetch failed")[:40], head[:12])
+    tree = git(root, "rev-parse", clean + "^{tree}", check=True)
+    msg = ("Revert: hookwatch pinned %s back to %s\n\n%s\n\nThe tree is %s's, on top of %s: the inverse "
+           "of %s..%s (docs/autofinish-exclude-2026-10-23.md D3-B).\n" % (head[:12], clean[:12], why, clean[:12],
+                                                                         head[:12], clean[:12], head[:12]))
+    # every landing the revert undoes, so an innocent one beside the faulty one can be landed again (the re-review)
+    landed = git(root, "log", "--oneline", "--first-parent", "%s..%s" % (clean, head))
+    if landed:
+        msg += "\nReverted, to land again what was not at fault:\n" + "".join("  %s\n" % l for l in landed.splitlines())
+    sha = subprocess.run(["git", "-C", str(root), "commit-tree", tree, "-p", head, "-F", "-"], input=msg,
+                         capture_output=True, text=True, timeout=60)
+    if sha.returncode:
+        return None, "no revert PR: commit-tree failed (%s)" % sha.stderr.strip()[:120]
+    sha = sha.stdout.strip()
+    ch = changed_files(root, clean, head)
+    # an unreadable range is held, never read as "nothing held" (the re-review)
+    held = held_paths(root, head, ch) if ch is not None else ["(the range's files unreadable)"]
+    stamp = datetime.datetime.fromtimestamp(now()).strftime("%Y-%m-%d")
+    branch = "claude/%s/%s-hookwatch-revert-%s" % (host_word(), stamp, head[:7])
+    push = subprocess.run(["git", "-C", str(root), "push", "-q", "origin", "%s:refs/heads/%s" % (sha, branch)],
+                          capture_output=True, text=True, timeout=120)
+    if push.returncode:
+        return None, "no revert PR: the push of %s failed (%s)" % (branch, push.stderr.strip()[:120])
+    gh = shlex.split(os.environ.get("HOOKWATCH_GH") or "gh")
+    if held:
+        body = msg + ("\nOpened as a draft by hookwatch: the range touches what stays the owner's (%s), so "
+                      "automerge never lands it — the owner readies it. Until then each pinned Mac stays pinned.\n"
+                      % ", ".join(held[:5]))
+    else:
+        body = msg + "\nOpened ready by hookwatch: automerge lands it once `check` passes; each pinned Mac " \
+                     "unpins itself once origin/main carries it.\n"
+    try:
+        r = subprocess.run(gh + ["pr", "create", "--head", branch, "--base", "main", "--title",
+                                 "Revert: hookwatch pinned %s" % head[:12], "--body", body] + (["--draft"] if held else []),
+                           cwd=str(root), capture_output=True, text=True, timeout=120)
+    except OSError as e:
+        return None, "no revert PR: %s pushed, gh did not run (%s)" % (branch, type(e).__name__)
+    if r.returncode:
+        return None, "no revert PR: %s pushed, gh refused (%s)" % (branch, (r.stderr or r.stdout).strip()[:120])
+    url = (r.stdout.strip().splitlines() or [branch])[-1]
+    return url, "revert PR opened%s: %s (%s, tree = %s's)" % (
+        " as a draft — it touches %s, the owner's to ready" % held[0] if held else "", url, branch, clean[:12])
+
+
+def cleared(root, pin, origin):
+    """True when origin/main carries the revert or a later fix: it descends from the pinned head and
+    every file the faults implicated differs there from that head."""
+    frm = pin.get("from")
+    if not origin or not frm or origin == frm or not ok(root, "merge-base", "--is-ancestor", frm, origin):
+        return False
+    paths = pin.get("paths") or sorted(changed_files(root, pin.get("to"), frm) or [])
+    moved = changed_files(root, frm, origin)
+    return bool(paths) and moved is not None and set(paths) <= moved
+
+
+def end_pin(root, s, t, origin):
+    """Check out main and fast-forward it to `origin`; probation starts. Returns the line, or None when
+    it may not (tracked changes, a local main that cannot fast-forward)."""
+    if git(root, "status", "--porcelain", "--untracked-files=no"):
+        return None
+    if not ok(root, "merge-base", "--is-ancestor", "main", origin):
+        return None
+    if not ok(root, "checkout", "-q", "main") or not ok(root, "merge", "-q", "--ff-only", origin):
+        return None
+    s["pinned"], s["head"], s["moved_at"] = None, git(root, "rev-parse", "HEAD"), t
+    return "hookwatch: %s unpinned itself — origin/main %s carries the revert or a fix; on main, on probation %d min" % (
+        root.name, origin[:12], WINDOW)
+
+
+# ---- the verbs ------------------------------------------------------------------------------
+
+def scan(window, dry, no_pr, as_json):
+    root, t = root_dir(), now()
+    s = load_state()
+    head = git(root, "rev-parse", "HEAD")
+    if not head:
+        sys.exit("hookwatch: %s is no git checkout" % root)
+    report = {"root": str(root), "head": head, "faults": [], "action": None}
+    pinned = s.get("pinned")
+    if pinned:
+        if head == pinned.get("to") and not git(root, "symbolic-ref", "--quiet", "HEAD"):
+            origin = git(root, "rev-parse", "--verify", "--quiet", "origin/main") if dry else fetch(root)
+            if not dry and cleared(root, pinned, origin):
+                line = end_pin(root, s, t, origin)
+                if line:
+                    report["action"] = "unpinned"
+                    post(line)
+                    s["last_scan"] = t
+                    save_state(s)
+                    return out(report, as_json)
+            moved = origin and origin != pinned.get("from")
+            report["action"] = "pinned"
+            line = "hookwatch: %s pinned at %s since %s (%s)%s — `hookwatch unpin` once the fix is in" % (
+                root.name, head[:12], datetime.datetime.fromtimestamp(pinned.get("at", 0)).isoformat(timespec="minutes"),
+                pinned.get("why"), ", main moved to %s" % origin[:12] if moved else ", main has not moved")
+            last = pinned.get("posted") or {}
+            if not dry and (last.get("origin") != origin or t - (last.get("at") or 0) >= REPOST_S):
+                post(line)
+                pinned["posted"] = {"origin": origin, "at": t}
+            else:
+                print(line)
+            if not dry:
+                s["last_scan"] = t
+                save_state(s)
+            return out(report, as_json)
+        # a person moved it off the pin: their checkout is a new HEAD, on probation as any move
+        s["pinned"], s["head"], s["moved_at"] = None, head, t
+    if s.get("head") != head:
+        # the reflog's time, not this pass's: a fault between the move and the pass counts
+        s["moved_at"] = min(moved_time(root) or t, t)
+        s["head"] = head
+    since = max(t - window * 60, s.get("moved_at") or 0)
+    records = hook_records(s, since, root)
+    fresh = t - (s.get("moved_at") or 0) <= window * 60
+    clean = s.get("clean")
+    # no clean sha: every fault counts (and the pin is refused for it); a HEAD that stood: nothing moved
+    found = faults(records, root, None if not clean else set() if clean == head else changed_files(root, clean, head))
+    report["faults"] = [{"kind": k, "command": c, "detail": d, "files": f} for k, c, d, f in found]
+    if not found:
+        if not fresh:
+            s["clean"] = head   # this tool saw it stand the window with no fault
+    elif not fresh:
+        report["action"] = "reported"
+        print("hookwatch: %d fault(s) on %s, which has stood over %d min: reported, not pinned" % (len(found), head[:12], window))
+    else:
+        why = "; ".join("%s: %s (%s)" % (k, hook_name(c), d) for k, c, d, _ in found[:3])
+        refusal = pin_refusal(root, head, clean)
+        if refusal:
+            report["action"] = "not pinned"
+            line = "hookwatch: %s has %d fault(s) since %s moved (%s), not pinned: %s" % (root.name, len(found), head[:12], why, refusal)
+            key = "%s %s" % (head, refusal)
+            if not dry and s.get("refused") != key:   # once per HEAD and reason, as a pin
+                post(line)
+                s["refused"] = key
+            else:
+                print(line)
+        elif dry:
+            report["action"] = "would pin"
+            print("hookwatch: would pin %s at %s (%s)" % (root.name, clean[:12], why))
+        else:
+            git(root, "checkout", "-q", "--detach", clean, check=True)
+            if git(root, "rev-parse", "HEAD") != clean:
+                sys.exit("hookwatch: the checkout did not move to %s" % clean[:12])
+            pr, line = (None, "no revert PR (--no-pr)") if no_pr else revert_pr(root, head, clean, why)
+            s["pinned"] = {"at": t, "root": str(root), "from": head, "to": clean, "why": why, "pr": pr,
+                           "paths": sorted({p for f in found for p in f[3]}), "posted": {"at": t}}
+            report["action"] = "pinned"
+            post("hookwatch: pinned %s at %s, back from %s (%s); %s" % (root.name, clean[:12], head[:12], why, line))
+            s["pinned"]["posted"]["origin"] = git(root, "rev-parse", "--verify", "--quiet", "origin/main")
+    if not dry:
+        s["last_scan"] = t
+        save_state(s)
+    return out(report, as_json)
+
+
+def out(report, as_json):
+    if as_json:
+        print(json.dumps(report, indent=1))
+    return 0
+
+
+def replay(days, window):
+    """Read-only: each move of the primary's HEAD in the last `days` days, judged as a pass would have
+    judged it (the HEAD before it as the clean sha), and how many would have pinned. Writes nothing."""
+    root, t = root_dir(), now()
+    since = t - days * 86400
+    moves = []
+    for line in (git(root, "reflog", "--date=unix", "--format=%H %gd", "HEAD") or "").splitlines():
+        m = re.match(r"([0-9a-f]+) .*\{(\d+)\}", line)
+        if m:
+            moves.append((float(m.group(2)), m.group(1)))
+    moves.sort()
+    s = {}
+    records = read_new(s, since - window * 60, root)
+    pins = judged = 0
+    for i, (at, sha) in enumerate(moves):
+        if at < since or i == 0 or moves[i - 1][1] == sha:
+            continue
+        judged += 1
+        end = min(at + window * 60, moves[i + 1][0] if i + 1 < len(moves) else t)
+        found = faults([r for r in records if at <= r[0] <= end], root, changed_files(root, moves[i - 1][1], sha))
+        if found:
+            pins += 1
+            print("would pin: %s at %s (%s)" % (sha[:12], datetime.datetime.fromtimestamp(at).isoformat(timespec="minutes"),
+                                                "; ".join("%s: %s (%s)" % (k, hook_name(c), d) for k, c, d, _ in found[:3])))
+    print("replay: %d of %d moves in %d days would pin; %d hook records read" % (pins, judged, days, len(records)))
+    return 0
+
+
+def status(as_json):
+    s = load_state()
+    if as_json:
+        print(json.dumps({k: v for k, v in s.items() if k not in ("offsets", "records")}, indent=1, sort_keys=True))
+        return 0
+    p = s.get("pinned")
+    print("state: %s" % state_path())
+    print("head %s, moved %s, clean %s" % ((s.get("head") or "?")[:12],
+          datetime.datetime.fromtimestamp(s["moved_at"]).isoformat(timespec="minutes") if s.get("moved_at") else "?",
+          (s.get("clean") or "none yet")[:12]))
+    print("pinned at %s (from %s): %s%s" % (p["to"][:12], p["from"][:12], p.get("why"), "; PR " + p["pr"] if p.get("pr") else "")
+          if p else "not pinned")
+    return 0
+
+
+def unpin():
+    root, s = root_dir(), load_state()
+    p = s.get("pinned")
+    if not p:
+        print("hookwatch: not pinned")
+        return 0
+    if git(root, "status", "--porcelain", "--untracked-files=no"):
+        sys.exit("hookwatch: %s has tracked changes; unpin by hand (`git checkout main`)" % root)
+    git(root, "checkout", "-q", "main", check=True)
+    s["pinned"], s["head"], s["moved_at"] = None, git(root, "rev-parse", "HEAD"), now()
+    save_state(s)
+    print("hookwatch: unpinned %s — on main at %s, on probation %d min; sync.py fast-forwards it again" % (
+        root.name, s["head"][:12], WINDOW))
+    return 0
+
+
+def launch_env():
+    """What the LaunchAgent runs with (the landing review, finding 12): launchd's PATH lacks gh, so
+    helm's install.sh's PATH; and every seam set at install, so the job reads what the install read."""
+    env = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin" % Path.home()}
+    for k in ("REGATTA_CONFIG", "HOOKWATCH_ROOT", "HOOKWATCH_LOGINS", "HOOKWATCH_STATE", "HOOKWATCH_GH",
+              "HOOKWATCH_HOST", "HOOKWATCH_POST"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    return env
+
+
+def plist():
+    logs = Path.home() / "Library" / "Logs" / "regatta"
+    env = "".join("<key>%s</key><string>%s</string>" % (escape(k), escape(v)) for k, v in sorted(launch_env().items()))
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>%s</string><string>scan</string></array>
+  <key>EnvironmentVariables</key><dict>%s</dict>
+  <key>StartInterval</key><integer>600</integer>
+  <key>StandardOutPath</key><string>%s/hookwatch.out</string>
+  <key>StandardErrorPath</key><string>%s/hookwatch.out</string>
+</dict>
+</plist>
+""" % (LABEL, escape(str(root_dir() / SELF)), env, escape(str(logs)), escape(str(logs)))
+
+
+def install(dry):
+    target = Path.home() / "Library" / "LaunchAgents" / (LABEL + ".plist")
+    if dry:
+        print("# %s" % target)
+        print(plist(), end="")
+        return 0
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        sys.exit("hookwatch install: refused in an unattended session — the LaunchAgent is a person's install")
+    (Path.home() / "Library" / "Logs" / "regatta").mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(plist())
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), LABEL)], capture_output=True)
+    r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % os.getuid(), str(target)], capture_output=True, text=True)
+    print("hookwatch: %s %s" % (target, "loaded" if r.returncode == 0 else "written, not loaded (%s)" % r.stderr.strip()))
+    return r.returncode
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="hookwatch", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sc = sub.add_parser("scan")
+    sc.add_argument("--window", type=int, default=WINDOW)
+    sc.add_argument("--json", action="store_true")
+    sc.add_argument("--dry-run", action="store_true")
+    sc.add_argument("--no-pr", action="store_true")
+    st = sub.add_parser("status")
+    st.add_argument("--json", action="store_true")
+    sub.add_parser("unpin")
+    rp = sub.add_parser("replay")
+    rp.add_argument("--days", type=int, default=3)
+    rp.add_argument("--window", type=int, default=WINDOW)
+    ins = sub.add_parser("install")
+    ins.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args(argv)
+    if a.cmd == "scan":
+        return scan(a.window, a.dry_run, a.no_pr, a.json)
+    if a.cmd == "status":
+        return status(a.json)
+    if a.cmd == "unpin":
+        return unpin()
+    if a.cmd == "replay":
+        return replay(a.days, a.window)
+    return install(a.dry_run)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
