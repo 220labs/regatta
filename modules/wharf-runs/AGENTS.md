@@ -41,16 +41,15 @@ Read `README.md` first: it is the chart. For an agent:
   Every private value is a line under `${REGATTA_CONFIG}/wharf-runs/node/`; a template placeholder
   is `@@NAME@@`, and one alone on its line becomes one line per value. `agent.user-data.yaml` names
   nothing of Incus (its suite greps for it): the same file boots a cloud instance. All four files and
-  `tests/node.sh` are private-first until a scrub of their own (the module's of 2026-10-22 came
-  before them), off `.helloworld/allowlist.txt`,
-  though written as if public; the suite replays both word scans on them.
+  `tests/node.sh` are off `.helloworld/allowlist.txt` until listed (root AGENTS.md, Rules) and
+  written as if public; the suite replays both word scans on them (N6).
 - `clock` (knowledge-layers S7) changes a live scheduler with `schedule` and `fire`: in a session,
-  `list`, `check`, `board` and `--dry-run` only, unless the owner asked for the job. It is private-first
-  like `yard-node` (off the allowlist until a scrub of its own) and written as if public: hosts, labels, the workspace and
-  the script-job list are `wharf-runs/clock-*` config keys (its header). Its suite,
-  `tests/test_clock.sh`, runs against stand-ins for orca, launchctl, ssh and scutil only. Its scrub also owes
-  the defaults without an overlay (`clock-scripts` empty reads the modules' own script jobs as
-  agent-run), the fixture's `buildbox` names and a stand-in for the peer's `launchctl list` (S7 landing review).
+  `list`, `check`, `board` and `--dry-run` only, unless the owner asked for the job. Like `yard-node`
+  it is off the allowlist until listed and written as if public: hosts, labels, the workspace and the
+  script-job list are `wharf-runs/clock-*` config keys (its header); without `clock-scripts` the
+  modules' own script jobs are the default (`DEFAULT_SCRIPTS`). Its suite, `tests/test_clock.sh`, runs
+  against stand-ins for orca, launchctl (here and on the peer), ssh and scutil only, with the
+  fixture's `laptop` and `buildbox`.
 - Claude Code deletes a claude version that a Remote Control host still runs, and the host then
   fails every new session `spawn error: ENOENT`. Its cleanup (every claude start) keeps the
   cleaner's own version, the symlink's, each locked one and the 2 newest others, and the version

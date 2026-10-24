@@ -586,5 +586,46 @@ PY
 printf '%s\n' "$out" | grep -v '^RESULT ' | sed 's/^/    /'
 check "$(printf '%s\n' "$out" | sed -n 's/^RESULT //p')" none "no live path lies outside autofinish_exclude"
 
+
+# Every module targets going public, and nothing forces it (the owner, 2026-10-23: "target every
+# module to go opensource. But not enforce it … swap a failure to a regular message, so that we
+# don't forget"). A tracked file under modules/ off `.helloworld/allowlist.txt` stays out of the twin
+# unseen otherwise (atlaslib.py was, B10), so this note names each; it never fails the check.
+# No `.helloworld/` (the public twin) or no git: skipped.
+notpublic() {
+  python3 -I - "$1" <<'PY'
+import os, subprocess, sys
+root = sys.argv[1]
+conf = os.path.join(root, ".helloworld", "allowlist.txt")
+if not os.path.isfile(conf):
+    print("SKIP no .helloworld/allowlist.txt in this tree (the public twin has none)")
+    sys.exit(0)
+try:
+    tracked = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", "modules"], capture_output=True,
+                             check=True).stdout.decode("utf-8").split("\0")
+except (OSError, subprocess.CalledProcessError):
+    print("SKIP not a git checkout")
+    sys.exit(0)
+with open(conf, encoding="utf-8") as fh:
+    allow = {l.strip() for l in fh if l.strip() and not l.lstrip().startswith("#")}
+off = sorted({p for p in tracked if p} - allow)
+print("COUNT %d of %d module files not yet public" % (len(off), len({p for p in tracked if p})))
+for p in off:
+    print("OFF " + p)
+PY
+}
+echo "module files not yet public (a note: every module targets the twin, none is forced)"
+out=$(notpublic "$ROOT")
+printf '%s\n' "$out" | sed -n 's/^COUNT /  --   /p'
+printf '%s\n' "$out" | sed -n 's/^OFF /  --     /p'
+L="$T/listed"; mkdir -p "$L/.helloworld" "$L/modules/m/bin"
+git init -q "$L"; for f in a b c; do : > "$L/modules/m/bin/$f"; done; : > "$L/top"
+git -C "$L" add -A
+printf '# a comment\nmodules/m/bin/a\n' > "$L/.helloworld/allowlist.txt"
+check "$(notpublic "$L" | sed -n 's/^OFF //p' | tr '\n' ' ')" "modules/m/bin/b modules/m/bin/c " "  the note names each off-list module file, never a listed one or a root file"
+check "$(notpublic "$L" | sed -n 's/^COUNT //p')" "2 of 3 module files not yet public" "  and counts them"
+rm -rf "$L/.helloworld"
+check "$(notpublic "$L" | sed -n 's/^SKIP //p')" "no .helloworld/allowlist.txt in this tree (the public twin has none)" "  no .helloworld/: skipped"
+
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]

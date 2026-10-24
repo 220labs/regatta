@@ -28,9 +28,9 @@ agent:
 beacon (a site's contact form and its bot, one Cloudflare Worker) joined after the upkeep tools;
 its chart is `beacon/README.md`.
 
-- Private until its scrub: the upkeep files are on `.helloworld/allowlist.txt`, beacon's are not
-  (`beacon/`, `bin/beacon`, `tests/beacon.sh`, `tests/dev.sh`, `tests/upstream_stub.py`,
-  `tests/worker.test.mjs`, `.gitignore`). A new beacon file stays off it too; this file,
+- The upkeep files are on `.helloworld/allowlist.txt`; beacon's are off it until listed (root
+  AGENTS.md, Rules: `beacon/`, `bin/beacon`, `tests/beacon.sh`, `tests/dev.sh`, `tests/upstream_stub.py`,
+  `tests/worker.test.mjs`, `.gitignore`), scrubbed and written as if public. This file,
   `README.md`, `CHANGELOG.md`, `plugin.json` and `tests/check.sh` are public, so what they say of
   beacon is written for the twin, and `tests/check.sh` skips beacon's Node suite where it is absent.
 - Every site value comes from the site's config file, never from this module: a test or example
@@ -56,8 +56,8 @@ its chart is `beacon/README.md`.
 deadman (a dead-man's switch the unattended Macs ping, one Cloudflare Worker) joined after beacon;
 its chart is `deadman/README.md`.
 
-- Private until lighthouse's scrub, as beacon: `deadman/`, `bin/deadman`, `tests/deadman.sh` and
-  `tests/deadman.test.mjs` stay off `.helloworld/allowlist.txt`; what this file, `README.md`,
+- Off `.helloworld/allowlist.txt` until listed, as beacon: `deadman/`, `bin/deadman`, `tests/deadman.sh`
+  and `tests/deadman.test.mjs`; what this file, `README.md`,
   `CHANGELOG.md` and `tests/check.sh` say of it is written for the twin.
 - Unlike beacon, `bin/deadman` is in the root `autofinish_exclude`: a yard's tick runs it after
   every pass (helm's `stalls_tick.deadman_ping`, skipper-resilience S11), so a broken `ping` silences every yard at once and opens an alarm for each.

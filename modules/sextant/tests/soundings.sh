@@ -192,7 +192,7 @@ python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["entries"][0
 if python3 "$D/../regatta/bin/regatta" which pickup >/dev/null 2>&1 && python3 "$D/../regatta/bin/regatta" which keel >/dev/null 2>&1; then
   out=$(env -u SOUNDINGS_BY_HAND python3 "$D/bin/soundings" next)
   has "$out" "pickup seed sounding-g --file" "the peers present (this checkout): the commands, as before"
-else echo "  skip  the peers are not in this checkout (keel and wharf-runs are private until their scrub)"; fi
+else echo "  skip  the peers are not in this checkout (an install of sextant without keel and wharf-runs)"; fi
 export SOUNDINGS_QUEUE="$T/pool/soundings.json"
 
 echo; [ "$fails" = 0 ] && echo "soundings: all passed" || { echo "soundings: $fails FAILED"; exit 1; }

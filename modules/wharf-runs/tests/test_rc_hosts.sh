@@ -632,8 +632,8 @@ has "$T/out" "BARE     com.example.bare: starts claude itself, whose path every 
 check "$(pargs com.example.bare)" "$HOME/.local/bin/claude -p hi" "…never rewritten"
 rm -f "${LA:?}/com.example.bare.plist"
 # the clock's Orca automations (knowledge-layers S7): Orca launches the run, never bare; what its one
-# launcher line starts must be the primary checkout's script. clock is private-first: the public twin
-# has none, so the block runs only beside it
+# launcher line starts must be the primary checkout's script. clock is not yet public: the twin has
+# none, so the block runs only beside it, and says so when it skips
 if [ -f "$B/clock" ]; then
 HEAD=$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("c", sys.argv[1]); s=u.spec_from_loader("c", l); c=u.module_from_spec(s); l.exec_module(c); print(c.PROMPT_HEAD)' "$B/clock")
 python3 - "$T/autos.json" "$HEAD" "$P" "$HOME" <<'PY'
@@ -664,6 +664,7 @@ printf '#!/bin/sh\nexit 1\n' > "$T/stub/orca.down"; chmod +x "$T/stub/orca.down"
 check "$(ORCA_HOST_CLI="$T/stub/orca.down" RC --agents)" "0" "Orca unread: a note, never a failure"
 has "$T/out" "note     Orca automations: not read" "…said"
 hasnt "$T/out" "--       Orca automations" "…in no line the overlay's bootstrap.sh --check counts as a pending LaunchAgent"
+else echo "  --   the clock's Orca automations skipped: no bin/clock beside rc-hosts"
 fi
 mkplist org.example.claude.dispatch.x.z.202611010900 "$P/dispatch" claude/z
 rm -f "${G:?}"

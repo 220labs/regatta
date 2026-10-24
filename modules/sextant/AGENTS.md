@@ -6,10 +6,8 @@ Read `README.md` first: it is the chart. For an agent:
   host, a vault or a path of the owner's. Private values come through the regatta config dir
   (`sextant/sparks.json`, `sextant/sextant.json`, `sextant/log`, `sextant/source`), test
   fixtures are made up (speakers `sam`, `alex`; addresses invented). This module is public.
-- One file is private until its scrub: `agents/sounder.md`. Its body below the `<!-- shared:` marker
-  is the architects' (wharf's, private), byte for byte, and names the owner; it stays off
-  `.helloworld/allowlist.txt` until wharf's scrub cleans that body. Its head is written as if
-  public already. Edit the body in wharf's `agents/architect.md` and copy it to all three.
+- `agents/sounder.md`'s body below the `<!-- shared:` marker is the architects' (wharf's), byte for
+  byte. Edit the body in wharf's `agents/architect.md` and copy it to all three.
 - `bin/sparks --help` prints its calls and an unknown argument exits 2, but a bare `sparks` runs a
   pass on the Mac's own config. Use `sparks --route <note>`, `--inboxes`, `--dry-run`, or the suite.
 - `bin/redactions show` refuses inside Claude Code (`CLAUDECODE`): a transcript is read again by

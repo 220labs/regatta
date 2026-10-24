@@ -56,7 +56,7 @@ if [ "$(uname)" = Darwin ] && command -v cc >/dev/null 2>&1; then
 else echo "  skipped: launcher.c.in is macOS-only (or no cc)"; fi
 # /sounding (the Sounding's S4): its frontmatter, and every `keel <verb> … --flag` it tells a session
 # to run is one keel takes — a renamed flag would otherwise fail only when a sounding reaches it.
-# keel is a peer (its own module, private until its scrub): absent, those cases are skipped.
+# keel is a peer (its own module): absent, as in an install of sextant alone, those cases are skipped.
 SK="$D/skills/sounding/SKILL.md"
 # Without PyYAML, a text check; with it, a description that does not parse fails (no fallback then).
 python3 -c '
@@ -74,7 +74,7 @@ if [ -n "$KEEL" ]; then
   for f in --check --plan --write --record --review --why; do printf '%s' "$lh" | grep -q -- "$f"; ok $? "  keel light $f, which it runs, is a flag"; done
   python3 "$KEEL" yolo --help 2>&1 | grep -q -- --dry-run; ok $? "  keel yolo --dry-run, which it runs, is a flag"
   python3 "$KEEL" lint --help 2>&1 | grep -q -- --strict; ok $? "  keel lint --strict, which it runs, is a flag"
-else echo "  skipped: keel is not installed here (its module is private until its scrub)"; fi
+else echo "  skipped: keel is not installed here (an install of sextant alone)"; fi
 # the sounding queue (the Sounding's S7): scratch dirs and git only, any OS
 bash "$D/tests/soundings.sh" | tail -1; ok "${PIPESTATUS[0]}" "the sounding queue's suite (tests/soundings.sh)"
 python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings --help prints its usage"
