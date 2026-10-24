@@ -916,7 +916,7 @@ kill $WP 2>/dev/null; wait $WP 2>/dev/null; rm -f "$RUNS/00000000-000006-repo.de
 DISPATCH_HOST=studio HEADROOM_SAMPLE="50 1 500" DISPATCH_LOG="$HOME/mem.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$HOME/mem.log" "FAILED: studio: no room: 500 MB/s swapping, over 50 MB/s" "a start on a host swapping past its limit is refused, said in the log"
 check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  and starts no session"
-# three live runs of other topics: a fourth is refused, not queued (the laptop's cap; the dispatch host's is 10)
+# three live runs of other topics: a fourth is refused, not queued (the laptop's cap; the dispatch host's is 8)
 for i in 1 2 3; do
   sleep 60 & lp=$!
   printf '{"mode":"headless","repo":"%s","topic":"busy%s","pid":%s,"proc_start":"%s","session":"b%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00001$i-repo.busy$i.json"
@@ -1127,13 +1127,16 @@ for i in 1 2 3; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","top
 FIRE=" " DISPATCH_HOST=laptop nx > "$T/out" 2>&1; check "$?" "2" "--next with three runs live: refused (the laptop)"
 has "$T/out" "3 runs are busy already" "  saying so"
 own sess-A
-FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  on the dispatch host three live runs leave room (its cap is 10)"
-for i in 4 5 6 7 8 9 10; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","topic":"cap%s","pid":%s,"proc_start":"%s","session":"c%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00002$i-repo.cap$i.json"; done
+FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  on the dispatch host three live runs leave room (its cap is 8)"
+for i in 4 5 6 7; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","topic":"cap%s","pid":%s,"proc_start":"%s","session":"c%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00002$i-repo.cap$i.json"; done
 own sess-A
-FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "2" "  and ten are its cap: refused"
-has "$T/out" "10 runs are busy already" "    saying so"
+FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  seven: the last free slot is taken, not refused"
+for i in 8; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","topic":"cap%s","pid":%s,"proc_start":"%s","session":"c%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00002$i-repo.cap$i.json"; done
+own sess-A
+FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "2" "  and eight are its cap: refused"
+has "$T/out" "8 runs are busy already" "    saying so"
 reap "$RUNS"/00000000-00002*
-# wharf and stalls_tick.py hold their own copy of the cap; both went stale at 5 -> 8 -> 10 (2026-10-20)
+# wharf and stalls_tick.py hold their own copy of the cap; both went stale at 5 -> 8 -> 10 (2026-10-20); 8 since 2026-10-23
 # dispatch's first max_runs default is the dispatch host's; each copy is the first number its
 # DISPATCH_MAX_RUNS fallback names, whatever host test guards it
 cap_d=$(sed -nE 's/^ *max_runs="\$\{DISPATCH_MAX_RUNS:-([0-9]+)\}"$/\1/p' "$B/dispatch" | head -1)

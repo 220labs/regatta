@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The dispatch host's run cap is 8, from 10 (the owner, 2026-10-23): at 10 the build Mac sat at load
+  110–130 for hours (uptime that evening) beside its CI runner, and every check there took twice its
+  quiet time. The copies in `bin/wharf` and helm's `stalls_tick.py` follow, as
+  test_dispatch checks. The same evening the build Mac got a second CI runner instance for this
+  repo, installed by hand with ci-provider's recipe (a verb for a second instance is owed): the one
+  runner was the queue every landing waited in.
 - An unattended `/finish` is allowed one rule per tool the finish skill names in the regatta main
   checkout (`FINISH_TOOLS`), and dispatch denies `regatta pr ready` and `regatta pr merge` beside
   `bin/pr` and `libexec/pr` (B14b, 2026-10-23). rc-hosts finds `claude-host.c` in the overlay's
