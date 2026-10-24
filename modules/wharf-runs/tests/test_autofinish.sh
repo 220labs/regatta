@@ -936,6 +936,76 @@ out=$(cd "$T/projects/$D" && $AF override dup-x 2>&1); check "$?:$(echo "$out" |
 rm -f "$(gd $D ov-dup-x)/claude/autofinish"
 rm -f "$(gd $D ov-verb)/claude/autofinish"
 
+echo "the yes at the brief (autofinish-exclude S7, D2-C): override <unborn branch>, rule C, re-judged by brief_held"
+newrepo bf '{"checkpoint": true, "main": "main", "autofinish": "all", "autofinish_exclude": ["hooks/", "leak/", ".claude/workflow.json"], "autofinish_leaks": ["leak/"], "in_place": ["memory/"]}'
+newrepo bn '{"checkpoint": true, "main": "main", "autofinish": "all", "autofinish_exclude": ["hooks/", "leak/"]}'
+cd "$T" || exit 1
+BRIEF="$(git -C "$T/projects/bf" rev-parse --absolute-git-dir)/claude/autofinish-briefs/$(br bf-hook | sed 's|/|%2F|g').json"
+out=$(cd "$T/projects/bf" && CLAUDE_UNATTENDED=dispatch $AF override "$(br bf-hook)" 2>&1); rc=$?
+check "$rc:$([ -e "$BRIEF" ] && echo set || echo none)" "1:none" "an unattended caller never gives the yes at the brief"
+out=$(cd "$T/projects/bf" && $AF override now "$(br bf-hook)" 2>&1); rc=$?
+check "$rc:$(echo "$out" | grep -c 'has no worktree in bf, so no turn ends there')" "1:1" "  \`now\` for an unborn branch is refused, and says why"
+out=$(cd "$T/projects/bf" && $AF override bf-hook 2>&1); rc=$?
+check "$rc:$([ -e "$BRIEF" ] && echo set || echo none)" "1:none" "  a topic word names no unborn branch: only a full claude/* name does"
+out=$(cd "$T/projects/bf" && $AF override claude/laptop/bf-hook 2>&1); rc=$?
+check "$rc:$(echo "$out" | grep -c 'must be spelled whole')" "1:1" "  a full name off the house shape is refused (finding 21)"
+mk bf bf-typo docs/t.md "x"
+out=$(cd "$T/projects/bf" && $AF override claude/laptop/2026-10-04-bf-typo 2>&1); rc=$?
+check "$rc:$(echo "$out" | grep -c "but $(br bf-typo) carries its topic")" "1:1" "  a full name whose topic a worktree carries is refused as a typo (finding 21)"
+mkdir -p "$(git -C "$T/projects/bf" rev-parse --absolute-git-dir)/claude"
+echo '[{"session": "s", "ts": 1, "prompt": "/autofinish override"}]' > "$(git -C "$T/projects/bf" rev-parse --absolute-git-dir)/claude/prompts.json"
+out=$(cd "$T/projects/bf" && CLAUDECODE=1 $AF override "$(br bf-hook)" 2>&1); rc=$?
+check "$rc:$([ -e "$BRIEF" ] && echo set || echo none):$(echo "$out" | grep -c 'does not name')" "1:none:1" "  in a session, the typed /autofinish must name the unborn branch itself"
+echo "[{\"session\": \"s\", \"ts\": 1, \"prompt\": \"/autofinish override $(br bf-hook)\"}]" > "$(git -C "$T/projects/bf" rev-parse --absolute-git-dir)/claude/prompts.json"
+out=$(cd "$T/projects/bf" && CLAUDECODE=1 $AF override "$(br bf-hook)" 2>&1); rc=$?
+check "$rc:$([ -e "$BRIEF" ] && echo set || echo none)" "0:set" "    and one that names it gives the yes"
+rm -f "$BRIEF"
+rm -f "$(git -C "$T/projects/bf" rev-parse --absolute-git-dir)/claude/prompts.json"
+for t in bf-hook bf-leak bf-list bf-mem; do (cd "$T/projects/bf" && $AF override "$(br $t)" > "$T/brief-$t.out" 2>&1); done
+check "$(sed -n 1p "$T/brief-bf-hook.out" | grep -cF "the yes at the brief set: $(br bf-hook) in bf — rule C")" "1" "override <claude/* branch> no worktree carries: the yes at the brief"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["by"], d["branch"], d["brief"])' "$BRIEF")" "sam $(br bf-hook) True" \
+  "  the marker: by the owner, naming its branch, in the repo's common git dir"
+mk bf bf-hook hooks/h.py "x"; mk bf bf-leak leak/l.py "x"; mk bf bf-list .claude/workflow.json '{"autofinish": "all"}'; mk bf bf-mem memory/m.md "x"
+mk bf bf-none hooks/n.py "x"; mk bn bf-hook hooks/h.py "x"; mk bf bf-ci .github/workflows/automerge.yml "x"
+mk bf bf-bin docs/b.md "x"; printf '\000\001\002' > "$(wtp bf bf-bin)/docs/b.bin"
+git -C "$(wtp bf bf-bin)" add -A && git -C "$(wtp bf bf-bin)" commit -qm bin && git -C "$(wtp bf bf-bin)" push -q
+ghjson
+echo "{\"repos\": {\"bf\": {}, \"bn\": {}}}" > "$T/repos-bf.json"
+AUTOFINISH_REPOS="$T/repos-bf.json" $AF --dry-run "$T/projects/bf" > "$T/out-bf" 2>&1
+AUTOFINISH_REPOS="$T/repos-bf.json" $AF --dry-run "$T/projects/bn" > "$T/out-bn" 2>&1
+check "$(line "$T/out-bf" bf-hook)" "start (C)" "  a worktree on that branch is judged by rule C: a gated path starts"
+case "$(line "$T/out-bf" bf-none)" in "skip: touches a gate (hooks/n.py)"*) echo "  ok     a branch with no yes still skips the gate";;
+  *) echo "  FAIL   no yes, gated: $(line "$T/out-bf" bf-none)"; fails=$((fails+1));; esac
+case "$(line "$T/out-bn" bf-hook)" in "skip: touches a gate (hooks/h.py)"*) echo "  ok     a sibling repo's same-named branch never takes the yes";;
+  *) echo "  FAIL   the sibling's verdict: $(line "$T/out-bn" bf-hook)"; fails=$((fails+1));; esac
+(cd "$(wtp bf bf-none)" && $AF override > /dev/null 2>&1)   # the worktree's own marker, after the dry runs: --by override
+python3 - "$B/autofinish" "$T/projects/bf" "$T/projects/bn" <<'PYBRIEF' > "$T/brief-held" 2>&1
+import os, sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish", sys.argv[1]).load_module()
+bf, bn = sys.argv[2:4]
+w = lambda r, t: os.path.join(r, ".claude", "worktrees", t)
+for t in ("bf-hook", "bf-leak", "bf-list", "bf-mem"):
+    print(m.brief_held(bf, w(bf, t), "main"))
+print(m.brief_held(bn, w(bn, "bf-hook"), "main"))
+print(m.runner_by(w(bf, "bf-hook"), "C"), m.runner_by(w(bf, "bf-none"), "C"))
+for t in ("bf-bin", "bf-ci"):
+    print(m.brief_held(bf, w(bf, t), "main"))
+m.raw = lambda *a, **k: None   # git failing or timing out: the diff reads empty
+print(m.brief_held(bf, w(bf, "bf-hook"), "main"))
+PYBRIEF
+check "$(sed -n 1p "$T/brief-held")" "None" "brief_held: class 1 and 3 land on the yes at the brief"
+check "$(sed -n 2,4p "$T/brief-held" | sed 's/ (\([^;]*\);.*/ \1/' | tr '\n' '|')" "a held path leak/l.py|a held path .claude/workflow.json|a held path memory/m.md|" \
+  "  class 2 (autofinish_leaks), the list itself and in_place hold at a ready PR"
+check "$(sed -n 5p "$T/brief-held")" "a held path (hooks/h.py; no autofinish_leaks on the base: every listed path holds)" \
+  "  a base with no autofinish_leaks holds every listed path: the class-2 list fails closed"
+check "$(sed -n 6p "$T/brief-held")" "brief override" "  runner_by: rule C from the yes at the brief starts --by brief; the worktree's marker stays --by override"
+check "$(sed -n 7p "$T/brief-held")" "a binary (docs/b.bin): no landing carries one unread" "  a binary holds (finding 7)"
+check "$(sed -n 8p "$T/brief-held" | cut -d';' -f1)" "a held path (.github/workflows/automerge.yml" "  .github/workflows/ holds: check and the hold brake run from the PR's copy (finding 4)"
+check "$(sed -n 9p "$T/brief-held")" "the branch's diff could not be read (or is empty)" "  a diff that will not read holds, never merges (finding 7)"
+out=$(cd "$(wtp bf bf-hook)" && $AF override off 2>&1)
+check "$(echo "$out" | sed -n 1p):$([ -e "$BRIEF" ] && echo there || echo gone)" "the yes at the brief off: $(br bf-hook):gone" "  override off in its worktree removes the yes at the brief"
+
 echo "the sweep: always logged; armed, one start, never the same tip twice (R7, R12)"
 newrepo sw '{"checkpoint": true, "main": "main", "records": ["docs/"]}'
 for t in s1 s2 s3; do mk sw $t docs/$t.md "x"; done

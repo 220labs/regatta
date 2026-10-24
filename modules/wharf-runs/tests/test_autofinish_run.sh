@@ -736,6 +736,22 @@ check "$(grep -c -- "--undeny 'Bash(\*bin/pr merge\*)'" "$T/out")" "0" "  and bi
 STUB_REPLY="$T/net.txt" af --rule C --by chain > /dev/null 2>&1; ended
 check "$(field by)" "yolo" "  the state says yolo, so the next chain relaunch reads it as one"
 rm -f "$CHAINF"
+echo "  a brief launch stays one on a chain relaunch, and a relaunch carries the hold (autofinish-exclude landing review, finding 5)"
+next_tip "chain: brief"
+BRIEFF="$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)/claude/autofinish-briefs/$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$BR").json"
+mkdir -p "$(dirname "$BRIEFF")"; echo '{}' > "$BRIEFF"
+STUB_REPLY="$T/net.txt" af --rule C --by brief > /dev/null 2>&1; ended
+check "$(field by)/$(field gate):$([ -e "$BRIEFF" ] && echo there || echo gone)" "brief/no-landing:gone" \
+  "the brief landing stopped at no-landing, and the yes at the brief is used up (finding 7)"
+af --dry --by chain > "$T/out" 2>&1; check "$?" "0" "--by chain --dry"
+has "$T/out" ", by brief via=chain" "  runs it as brief: landing() and bin/pr judge it by brief_held again"
+python3 - "$STATE" <<'PYH'
+import json, sys
+d = json.load(open(sys.argv[1])); d.update(by="sweep", hold="held for the test"); json.dump(d, open(sys.argv[1], "w"))
+PYH
+af --dry --by chain > "$T/out" 2>&1
+has "$T/out" "held at a ready PR — held for the test" "  a run held at its start: the chain relaunch keeps the hold"
+rm -f "$CHAINF"
 
 echo "the landing ladder (skipper-modes S3b): autofinish-run reads the mode from plan.json itself"
 MRUNS="$HOME/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$MRUNS"
@@ -814,6 +830,25 @@ PYSL
 check "$(shipland af -)" "gated under yolo" "a --by ship launch with no landing mode: held_slice under yolo (the gates, autofinish_exclude, in_place)"
 check "$(shipland af dnd)" "gated under dnd" "  a ship in dnd: dnd's held slice"
 check "$(shipland absent -)" "the lander's judge did not load (bin/autofinish)" "  the lander absent: held, never merged unjudged"
+echo "  a brief launch is judged by brief_held: the yes at the brief predates the diff (autofinish-exclude S7)"
+briefland() { python3 - "$B/autofinish-run" "$W" "$R" "$BR" "$1" "$2" <<'PYBL'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish_run_bl", sys.argv[1]).load_module()
+class Af:
+    LAND_MODES = ("yolo", "dnd")
+    def landing_mode(self, branch, repo): return (None if sys.argv[6] == "-" else sys.argv[6],)
+    def brief_held(self, repo, wt, main): return None if sys.argv[5] == "lands" else "a held path (leak/l.py)"
+    def held_slice(self, repo, wt, main, mode): return "held_slice was asked"
+m._lander = (lambda: None) if sys.argv[5] == "absent" else (lambda: Af())
+t = type("T", (), {"path": sys.argv[2], "primary": sys.argv[3], "branch": sys.argv[4]})()
+print(m.landing(t, "brief", "C")[0])
+PYBL
+}
+check "$(briefland lands -)" "None" "a --by brief launch whose diff is class 1 or 3: may merge"
+check "$(briefland held -)" "a held path (leak/l.py)" "  class 2 or the list in the diff: held at a ready PR, by brief_held, not held_slice"
+check "$(briefland lands ask)" "mode ask — nothing lands by itself" "  mode ask holds it: the yes at the brief is no person at the keyboard"
+check "$(briefland absent -)" "the lander's judge did not load (bin/autofinish)" "  the lander absent: held"
 
 echo "--hold: the keel's no (skipper-resilience S6), whatever the mode"
 next_tip "s6: hold"

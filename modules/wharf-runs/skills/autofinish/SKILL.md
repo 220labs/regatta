@@ -31,6 +31,13 @@ the marker by hand, and never run `autofinish arm` or `disarm` from here: arming
 made once for the Mac, not per branch. An exit with a message (not a claude/* worktree, no such
 branch, two branches match) is the answer: relay it and stop.
 
+A full `claude/*` branch name that no worktree of this repo carries yet is the yes at the brief
+(autofinish-exclude S7): typed while the brief is written, it waits in the repo's
+`<common git dir>/claude/autofinish-briefs/` and becomes rule C once a worktree carries that branch,
+started `--by brief`. The yes predates the diff, so the landing re-judges it: a leak gate (the base's
+`autofinish_leaks`), `in_place` or `.claude/workflow.json` in the diff holds it at a ready PR; the
+judges and the hooks land. `now` is refused for an unborn branch; `off` removes it, before or after.
+
 Who may run it is checked, not trusted: `override` refuses in an unattended session
 (`CLAUDE_UNATTENDED` — a runner, any dispatch session), and inside any Claude session unless the
 last prompt queued in this checkout (`<git dir>/claude/prompts.json`) is the owner's typed
