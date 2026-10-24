@@ -97,12 +97,19 @@ Read `README.md` first. For an agent:
 - The yard's ping and the studio brake (`stalls_tick.deadman_ping`, `helmlib.brake_refusal`,
   skipper-resilience S11): `helm tick` pings last, after the Orca read and every pass, so a tick killed
   at its deadline (every Orca read is time-limited and returns a note, so a dead Orca is not that: the
-  ping still goes, plain, with the Orca source unread — health's Orca line watches it) goes silent; that
-  silence is the signal, so nothing may ping earlier in the tick. The brake is re-read before the wharf
+  ping still goes, with the Orca source unread — health's Orca line watches it) goes silent; that
+  silence is the signal, so nothing may ping earlier in the tick. Every pass before it runs under a
+  deadline `PING_RESERVE` (40 s) before ask poll's kill (`stalls_tick.ping_reserved`, S13a), on a host
+  whose tick pings only, bar the judge's own Orca reads (`harness list`'s 120 s, 60 s per owned Run), which
+  read no deadline yet (TODO.md); the ping takes what is left when a pass overran. The brake is re-read before the wharf
   and skipper passes, since the tick may have run minutes. A `--fail` reason is the exception's class and
-  function only (it leaves the machine in an issue, K6). A
+  function only (it leaves the machine in an issue, K6); S13a's Orca `--fail` (the third pass in a row
+  Orca did not answer, the brake off, some ship here with an Orca Run; the count in `orca-unread.json`)
+  carries only `stalls.ORCA_DEAD`'s fixed words, never a note's own text, and a new note that means "no
+  answer" is added there with its words. One Run's task-list unread is not one (Orca may have answered an
+  error for a Run it no longer knows); only none of the asked Runs answering is. A
   ping failure is a line and never a `--fail` (the switch would report its own unreachability to
-  itself); only a pass that raises is. While the brake holds there is no Orca read, no wharf pass,
+  itself); only a pass that raises, or Orca unread so, is. While the brake holds there is no Orca read, no wharf pass,
   no skipper start or stop (a skipper booted out while frozen leaves its claude orphaned and frozen)
   and no retry of the tick's own (a `wait` line: dispatch and the harness do not read the brake), and
   the ping is `--braked`. Only launchd's tick pings: a session's or an unattended run's says
@@ -110,6 +117,15 @@ Read `README.md` first. For an agent:
   never a second copy of the rule. Tests stub `deadman` (`HELM_DEADMAN`, set at the suite's head to a path that is no file — an
   absent peer — so no case outside S11's block reaches lighthouse's), the harness (`STALLS_HARNESS`) and `WHARF_LAUNCHCTL`, and move the brake with a file in
   the suite's `HOME`; a real ping or Orca read is a regression.
+- The brake's windows (`helmlib.note_brake_pass`, `braked_within`, S13a): the tick records each pass's
+  sight of the brake in `brake-windows.json` (the tick's state dir), only on a yard with a lease or a
+  skipper record, never from `--dry-run`; `leaselib.lapsed`, `skipperlib.deaf`, `ensure_scope`'s
+  TAKE_WITHIN and stale-take clocks and the stall road's RELAY_UNANSWERED subtract the time inside a
+  window (`helmlib.braked_within`), so a skipper the brake froze is never handed over, stopped or
+  escalated for it; a new skipper clock does the same. Every lease reader goes
+  through `lapsed()` (wharf's `skipper()`, `helm send`, the tick), never its own `until` comparison. A
+  window's ends are the tick's passes and err towards keeping the skipper; a test pins them by calling
+  `note_brake_pass(braked, t)` with its own times, as `helmlib.now()` takes no override.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)` on a
   Mac (2026-10-22; `REGATTA_LEGACY` is read by nothing since B14b, 2026-10-23). A Linux runner is untried.

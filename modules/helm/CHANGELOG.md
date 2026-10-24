@@ -27,12 +27,34 @@
   `branch_mode` ends in `under_ship` as `fire_mode` does; `task_mode` parses repos.json once and names a
   torn read (`TORN_WHERE`, `torn_read`) so no writer keeps it.
 
+skipper-resilience S13a, three fixes before sitting A arms the yard's tick.
+- An Orca that does not answer reaches the dead-man's switch: with the brake off, the third pass in a row
+  whose Orca read went unanswered, on a host where some ship has an Orca Run, pings `deadman ping <host>
+  --fail --why "orca unread: <what>"`, `<what>` in `stalls.ORCA_DEAD`'s fixed words (no run id, path or
+  message leaves, K6); one or two such passes, no such ship, a warning Orca answered with, or one Run's
+  task-list unread while another answered stay plain. The count is `orca-unread.json` in the tick's state
+  dir, reset by a read pass or a braked one, kept by a pass that raises, and written only by a tick that
+  pings (deadman installed, launchd's tick).
+- The skipper clocks through a brake: the tick records each pass's sight of the studio brake
+  (`brake-windows.json`, `helmlib.note_brake_pass`; launchd's tick only, before the stall road) on a yard
+  with a lease or a skipper record, and
+  `leaselib.lapsed`, `skipperlib.deaf`, the skipper pass's two start clocks (a take within 5 minutes, a
+  yard-held ship its sidecar should have taken in 15), the crash-after-start clock and the stall road's unanswered-relay clock
+  subtract the time inside a window, so the first pass after a release no longer hands over, stops or
+  escalates a skipper that was only frozen. A window runs from the pass before the
+  first braked one to the first pass after; one left open credits at most 10 minutes past its last
+  braked pass. Recording the window was the smaller change: pushing each lease's `until` on would still
+  leave the deaf rule's hail times to rewrite.
+- The ping's reserved time: on a host whose tick pings, the stalls', wharf's and the skippers' passes run
+  under ask poll's kill time less 40 s (`stalls_tick.ping_reserved`), and the ping's timeout is what is
+  left of the kill when a pass overran anyway. The judge's own Orca reads keep their fixed timeouts (TODO.md). No yard set: every host's passes keep the kill time as before.
+
 skipper-resilience S11, the yard's tick pings the dead-man's switch and holds under the studio brake.
 - `helm tick` ends with `deadman ping <host>` (lighthouse's `bin/deadman`, through `helmlib.peer`) on a host
   some scope's `yard` names (`helmlib.yard_hosts`; a torn registry reads no yard): after the Orca read, wharf's
   pass and the skippers', so a tick killed at its deadline never pings and the yard goes silent. (An Orca that
   does not answer is a time-limited read, not a hang: the ping still goes, plain, and the Orca source is
-  marked unread; whether that should withhold the ping is open: TODO.md.) A pass that raises first runs `deadman ping --fail --why "<one line>"`, then fails as before. A ping
+  marked unread; S13a above makes the third such pass in a row a `--fail`.) A pass that raises first runs `deadman ping --fail --why "<one line>"`, then fails as before. A ping
   that fails or a deadman that is absent is one line, never the tick's failure; `ask poll` copies every
   deadman line but a plain ping's into the yard's launchd log. A tick run inside a session or by an
   unattended caller pings nothing (the stall road's caller rule), and says so in one line. `--dry-run`, `--status` and the

@@ -1231,7 +1231,8 @@ def deaf(pid, lease, now):
     or stopped at a dialog: STILL), or None. Only a question that woke this holder counts: a run's
     relay to it after it took the ship by Talk (HEARD), or a re-hail at its
     gen that Talk sent. A queued line is never heard (it is re-hailed by Talk instead), and a question
-    relayed to another session is that one's."""
+    relayed to another session is that one's. DEAF counts the holder's own time only: minutes inside a
+    studio brake's window are not its (S13a)."""
     reg = registry_of(lease.get("session"))
     if not reg or reg.get("status") not in STILL:
         return None
@@ -1244,8 +1245,10 @@ def deaf(pid, lease, now):
         if reached(a, lease, pid, t):
             ats.append(float(a.get("relayed_at") or 0))
         at = max(ats)
-        if at and now - at > DEAF:
-            return "%s %s unanswered %dm, the session %s" % (pid, a["ref"], (now - at) // 60, reg.get("status"))
+        # the time the studio brake froze the holder is never charged (helmlib.braked_within, S13a)
+        quiet = now - at - helmlib.braked_within(at, now) if at else 0
+        if at and quiet > DEAF:
+            return "%s %s unanswered %dm, the session %s" % (pid, a["ref"], quiet // 60, reg.get("status"))
     return None
 
 
@@ -1438,23 +1441,25 @@ def ensure_scope(scope, act, now, belt):
     # record yet: within TAKE_WITHIN a live pid is a start still coming up, never a failure
     proc = bool(rec) and pid_alive(rec.get("pid"))
     taken = took(scope, rec.get("session")) if rec else False
-    young = bool(rec) and now - float(rec.get("started") or 0) <= TAKE_WITHIN
+    # its own minutes since the start: a start the studio brake froze before its take is no failed start (S13a)
+    own = (now - float(rec.get("started") or 0) - helmlib.braked_within(float(rec.get("started") or 0), now)) if rec else 0
+    young = bool(rec) and own <= TAKE_WITHIN
     if not stopped and rec:
         sid8 = str(rec.get("session"))[:8]
-        age = now - float(rec.get("started") or 0)
         if taken and not outcome(log_, rec.get("start")) and act:
             log_start(scope, "took", rec.get("start"), session=rec.get("session"))
         if not taken and not proc:
             stopped = "failed start: its claude ended without taking a ship"
         elif not taken and not young:
-            stopped = "failed start: no ship taken in %dm (a dialog, a refused tool)" % (age // 60)
+            stopped = "failed start: no ship taken in %dm (a dialog, a refused tool)" % (own // 60)
         elif taken and not alive:
             stopped = "its claude has ended (session %s)" % sid8
             # an end within CRASH_WITHIN of the start is a failed start too, though it took a ship:
             # a skipper that takes and then crashes would otherwise reset the count every time and be
             # restarted forever with nothing on the board (the third review of S5)
-            if age < CRASH_WITHIN and not any(x.get("event") == "failed" and x.get("start") == rec.get("start") for x in log_):
-                why = "its claude ended %dm after its start, having taken a ship" % (age // 60)
+            # its own minutes, as TAKE_WITHIN's: a skipper the brake froze that crashes soon after is still a failed start (S13a)
+            if own < CRASH_WITHIN and not any(x.get("event") == "failed" and x.get("start") == rec.get("start") for x in log_):
+                why = "its claude ended %dm after its start, having taken a ship" % (own // 60)
                 if act:
                     log_start(scope, "failed", rec.get("start"), why=why, session=rec.get("session"))
                 else:
@@ -1495,8 +1500,12 @@ def ensure_scope(scope, act, now, belt):
         for pid, lease in ls:
             if lease.get("session") == rec.get("session"):
                 out += rehail(pid, lease, act)
-        stale = [p for p, r in ls if r["holder"] == leaselib.YARD and p in work
-                 and real - max(float(r.get("since") or 0), float(rec.get("started") or 0)) > leaselib.TTL]
+        # waited since the yard's hold or the start, whichever is later, less the brake's time (S13a): a
+        # sidecar the brake froze has taken nothing for that long through no fault of its own
+        def waited(r):
+            s = max(float(r.get("since") or 0), float(rec.get("started") or 0))
+            return real - s - helmlib.braked_within(s, real)
+        stale = [p for p, r in ls if r["holder"] == leaselib.YARD and p in work and waited(r) > leaselib.TTL]
         if stale:
             stopped = "its sidecar has taken %s in %dm" % (", ".join(stale), leaselib.TTL // 60)
     b = belt.setdefault(scope, {})

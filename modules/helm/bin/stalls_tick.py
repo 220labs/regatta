@@ -139,7 +139,7 @@ def home():
 
 
 def state_dir():
-    return Path(os.environ.get("STALLS_STATE_DIR") or home() / ".local/state/stalls")
+    return helmlib.tick_state_dir()   # one rule: helmlib's lease clock reads the brake's windows here too (S13a)
 
 
 def log_path():
@@ -754,6 +754,10 @@ def tick(dry_run=False, peer=True):
         deadline = 0
     if dry_run:
         m, m_why = "dry-run", "--dry-run: nothing called, nothing written"
+    # S13a: the pass's sight of the brake before the stall road, whose unanswered-relay clock subtracts it:
+    # recorded only after, the first braked pass would charge a frozen skipper (the landing review). The
+    # caller's second call in the same pass is harmless: an unbraked one moves `pass`, a braked one `seen`
+    brake_lines = note_brake(brake, m)
     # the stall road's fence, asked before the judge: a guarded mark read off a torn registry is no mark
     # (the gate's list reads no name then), so a registry torn at either moment sends nothing (S8)
     try:
@@ -855,7 +859,7 @@ def tick(dry_run=False, peer=True):
             mem = Memory(mem.lines + [line])
         decisions.append((s, line, new))
 
-    notes = list(res.get("notes") or [])
+    notes = list(res.get("notes") or []) + brake_lines
     try:
         size = log_path().stat().st_size
         if size > LOG_WARN:
@@ -869,7 +873,7 @@ def tick(dry_run=False, peer=True):
         esc = ["escalations: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
     return {"mode": m, "mode_why": m_why, "as_of": t, "hosts": res["hosts"], "decisions": decisions,
             "followups": followups, "notes": notes, "log": str(log_path()), "wrote": write, "escalations": esc,
-            "brake": brake}
+            "brake": brake, "orca_dead": res.get("orca_dead")}
 
 
 CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SITE
@@ -1082,6 +1086,8 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
             # the skipper's clock starts at the relay that reached it (a re-hail after a hand-over too), as the
             # deaf rule's; the owner's at the question
             opened = float((None if mode else a.get("relayed_at")) or a.get("opened") or t)
+            # S13a: the skipper's clock, as the deaf rule's, is never charged the time the studio brake froze it
+            frozen = 0 if mode else helmlib.braked_within(opened, t)
             key = [me, pid, a["ref"]]
             cls = "owner's (%s)" % mode if mode else "unanswered"
             wait = ESCALATE_AFTER if mode else RELAY_UNANSWERED
@@ -1099,7 +1105,7 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
             out[_k(["ask", key])] = {
                 "kind": "ask", "key": key, "key_kind": "ask", "src": "ships", "class": cls,
                 "rule": "the owner's question" if mode else "a relay unanswered", "plan": pid, "block": task["id"],
-                "since": opened, "after": wait, "ready": t - opened >= wait, "guarded": g, "title": title, "body": body}
+                "since": opened, "after": wait, "ready": t - opened - frozen >= wait, "guarded": g, "title": title, "body": body}
     return True
 
 
@@ -1490,18 +1496,121 @@ def ensure_skippers(mode_now, brake=None):
         return ["skippers: the pass failed (%s: %s)" % (e.__class__.__name__, str(e)[:160])]
 
 
+def note_brake(brake, mode_now):
+    """The pass's sight of the brake into helmlib's brake windows (S13a), which the lease and deaf clocks
+    subtract: lines, empty unless the record would not write. Only where a skipper can be frozen — a yard
+    (yard_here: the registry reads and names this host) with a lease or a skipper record
+    (skipperlib.scopes_here), or one whose record is still open — and never from a --dry-run, which writes
+    nothing; every other host writes no file, as before S13a."""
+    if mode_now == "dry-run":
+        return []
+    try:
+        if not yard_here():
+            return []
+        # one writer, launchd's tick (ping_refusal's caller rule): a session's or an unattended run's tick
+        # beside it would read-modify-write the record with no lock, and the last writer drops a window
+        if ping_refusal():
+            return []
+        import skipperlib
+        if not (skipperlib.scopes_here() or helmlib._brake_state()["since"] is not None):
+            return []
+        helmlib.note_brake_pass(bool(brake))
+    except Exception as e:   # noqa: BLE001 — a record not written credits nothing: the clocks run as before S13a
+        return ["skippers: the brake's window did not write (%s)" % e.__class__.__name__]
+    return []
+
+
 # ---------------------------------------------------------------------------- the dead-man's switch (skipper-resilience S11)
 # A yard's tick ends by telling the switch off the yard that it ran (lighthouse's bin/deadman, a Cloudflare
 # Worker that opens an issue when a yard that has pinged goes silent). It is the tick's last act, after the
 # Orca read, wharf's pass and the skippers', so a tick killed at its deadline never gets here and the yard
 # goes silent — the point. (Each Orca read is time-limited and returns a note, so an Orca that does not answer
-# does not stop the ping; its source is only marked unread.) Three pings: plain (alive), `--braked` (alive, and the owner's
-# studio brake holds: the Worker holds its alarm off until a plain ping), `--fail --why` (the pass raised).
+# does not stop the ping; its source is marked unread, and the third such pass in a row is a `--fail`: S13a,
+# ORCA_UNREAD_PASSES.) Three pings: plain (alive), `--braked` (alive, and the owner's studio brake holds: the
+# Worker holds its alarm off until a plain ping), `--fail --why` (the pass raised, or Orca stayed unread).
 # Only a host some scope's `yard` names pings (helmlib.yard_hosts: a torn registry reads no yard here, as the
 # poll's own gate fails closed), so the laptop pings nothing; deadman itself pings only for the host it is
 # on and only when its config lists that host.
 
 PING_TIMEOUT = 40   # deadman's own request is 15 s; a vault read on Drive can be slow
+# S13a: the ping's own time. ask poll kills the tick's whole group at STALLS_DEADLINE, and wharf's pass
+# alone may run to 15 s before it, so every pass before the ping (the stalls', wharf's, the skippers')
+# sees a deadline PING_RESERVE earlier (ping_reserved); the ping then has its full timeout, or what is
+# left when a pass overran anyway. Only where the ping goes (ping_refusal is None): a host that is no
+# yard keeps every pass's time as before.
+PING_RESERVE = PING_TIMEOUT
+# S13a: an Orca that does not answer. Each read is time-limited and returns a note, so a dead Orca never
+# stops the ping, and a plain ping would cover it for ever. After ORCA_UNREAD_PASSES unread passes in a
+# row, with the brake off, on a host where some ship has an Orca Run (stalls.plan_runs: a wharf ship's
+# blueprint record, or a plan's own `orca_run`), the ping is a `--fail` naming what went unanswered in
+# stalls.ORCA_DEAD's fixed words; one or two such passes (a busy app, a restart) and a host with no such
+# ship stay plain, and so does a warning Orca answered with (the board's `unread` flag counts that too).
+# A read pass and a braked one (no read is made) reset the count. Kept beside escalations-seen.json,
+# only by a tick that pings.
+ORCA_UNREAD_PASSES = 3
+
+
+def ping_refusal():
+    """None when this tick pings the switch; else why not, as the line's text, or "" for a host that is
+    no yard (which prints nothing). The stall road's caller rule (act_refusal, less its mode): a session's
+    or an unattended run's tick beside launchd's would cover a dead poll with a plain ping, or open an
+    issue from a run the owner typed."""
+    yards, torn = helmlib.yard_hosts()
+    if torn or helmlib.host() not in yards:
+        return ""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return "an unattended caller (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"]
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return "the tick runs inside session %s: the ping is launchd's tick's" % os.environ["CLAUDE_CODE_SESSION_ID"][:8]
+    return None
+
+
+def kill_time():
+    """ask poll's kill time for this tick (STALLS_DEADLINE, epoch), or 0 when none was given."""
+    try:
+        return float(os.environ.get("STALLS_DEADLINE") or 0)
+    except ValueError:
+        return 0
+
+
+@contextlib.contextmanager
+def ping_reserved():
+    """The tick's passes under a deadline PING_RESERVE before the kill (STALLS_DEADLINE moved for the
+    block, restored after it), on a host whose tick pings; unchanged anywhere else and with no deadline."""
+    kill = kill_time()
+    if not kill or ping_refusal() is not None:
+        yield
+        return
+    old = os.environ.get("STALLS_DEADLINE")
+    os.environ["STALLS_DEADLINE"] = str(int(kill - PING_RESERVE))
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("STALLS_DEADLINE", None)
+        else:
+            os.environ["STALLS_DEADLINE"] = old
+
+
+def orca_unread_path():
+    return state_dir() / "orca-unread.json"
+
+
+def orca_unread_count(unread, note, brake):
+    """The passes in a row Orca did not answer, this one counted: 0 after a read pass or under the brake.
+    Written by an atomic replace; a record that does not read counts from 0 (a missed --fail, never a false one)."""
+    p = orca_unread_path()
+    try:
+        d = json.loads(p.read_text())
+        n = int(d.get("n") or 0) if isinstance(d, dict) else 0
+    except (OSError, ValueError, TypeError):
+        n = 0
+    n = n + 1 if unread and not brake else 0
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.write_text(json.dumps({"n": n, "t": clock(), "note": note if n else None}, sort_keys=True))
+    tmp.replace(p)
+    return n
 
 
 def deadman_exe():
@@ -1513,43 +1622,62 @@ def deadman_exe():
     return helmlib.peer("deadman")
 
 
-def deadman_ping(brake=None, fail=None):
+def deadman_ping(brake=None, fail=None, orca=None):
     """The ping, as lines: nothing on a host that is no yard; one quiet line when deadman is absent or
     the ping did not go (its failure is never the tick's, and never a `--fail`: that would be the switch
-    reporting its own unreachability to itself). `fail` is the pass's one-line why."""
-    yards, torn = helmlib.yard_hosts()
-    me = helmlib.host()
-    if torn or me not in yards:
+    reporting its own unreachability to itself). `fail` is the pass's one-line why; `orca` the pass's Orca
+    read: stalls.orca_dead's fixed words when Orca did not answer, "" when it did, counted toward
+    ORCA_UNREAD_PASSES (None: not counted, the count kept). Those words are the only Orca text that
+    leaves the machine (K6)."""
+    refused = ping_refusal()
+    if refused == "":
         return []
-    # the stall road's caller rule (act_refusal, less its mode): a session's or an unattended run's tick beside
-    # launchd's would cover a dead poll with a plain ping, or open an issue from a run the owner typed
-    if os.environ.get("CLAUDE_UNATTENDED"):
-        return ["deadman: not pinged — an unattended caller (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"]]
-    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return ["deadman: not pinged — the tick runs inside session %s: the ping is launchd's tick's" % os.environ["CLAUDE_CODE_SESSION_ID"][:8]]
+    if refused:
+        return ["deadman: not pinged — %s" % refused]
+    me = helmlib.host()
     exe = deadman_exe()
-    if not exe:
+    if not exe:   # before the Orca count: it is written only by a tick that pings
         return ["deadman: not pinged — not installed (lighthouse)"]
+    pre = []
+    if orca is not None and not fail:
+        try:
+            n = orca_unread_count(bool(orca), orca or None, brake)
+        except OSError as e:   # the count's own fault: a plain ping, said
+            n, pre = 0, ["deadman: the Orca count did not write (%s)" % e.__class__.__name__]
+        if n >= ORCA_UNREAD_PASSES:
+            try:
+                runs = stalls.plan_runs()
+            except Exception as e:   # noqa: BLE001 — the ships did not read: the ping stays plain, said
+                runs, pre = {}, pre + ["deadman: the ships did not read (%s)" % e.__class__.__name__]
+            if runs:
+                fail = "orca unread: %s" % orca
+                pre.append("deadman: Orca unread %d passes in a row — the ping is a --fail" % n)
+            else:
+                pre.append("deadman: Orca unread %d passes in a row, no ship here has an Orca Run — the ping stays plain" % n)
     argv = [sys.executable, str(exe), "ping", me]
     if fail:
         argv += ["--fail", "--why", " ".join(str(fail).split())[:300]]
     elif brake:
         argv.append("--braked")
+    # the ping's time is reserved (ping_reserved); a pass that overran still leaves it what is left, never
+    # nothing — a ping cut off is the silence the switch reads as a dead yard anyway
+    kill = kill_time()
+    timeout = max(1.0, min(PING_TIMEOUT, kill - time.time() - 1)) if kill else PING_TIMEOUT
     try:
         # deadman pings only for the name it has for itself: hand it the tick's, so the two cannot differ
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=PING_TIMEOUT, env=dict(os.environ, DEADMAN_HOST=me))
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=dict(os.environ, DEADMAN_HOST=me))
     except (OSError, subprocess.TimeoutExpired) as e:
-        return ["deadman: ping failed (%s)" % e.__class__.__name__]
+        return pre + ["deadman: ping failed (%s)" % e.__class__.__name__]
     def tail(text):
         said = [x.strip() for x in (text or "").splitlines() if x.strip()]
         return re.sub(r"^deadman: ", "", said[-1])[:200] if said else ""
     out, err = tail(p.stdout), tail(p.stderr)
     if p.returncode:
         last = err or out
-        return ["deadman: ping failed (exit %d)%s" % (p.returncode, ": " + last if last else "")]
+        return pre + ["deadman: ping failed (exit %d)%s" % (p.returncode, ": " + last if last else "")]
     # a warning on stderr (a secret file at the wrong mode, an alarm the Worker could not close) is its own
     # line: it never replaces the line that says the ping went
-    return ["deadman: " + (out or "pinged")] + (["deadman: " + err] if err else [])
+    return pre + ["deadman: " + (out or "pinged")] + (["deadman: " + err] if err else [])
 
 
 def summary(line):

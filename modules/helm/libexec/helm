@@ -717,16 +717,19 @@ def cmd_tick(a):
         print("\n".join(stalls_tick.status_lines()))
         return
     try:
-        r = stalls_tick.tick(dry_run=a.dry_run, peer=not os.environ.get("PLAN_NO_PEER"))
-        brake = r.get("brake")
-        # S11: wharf's pass reads Orca (a ship's Run and Tasks), which the studio brake freezes: its reads
-        # would spend their timeouts and read nothing, so under the brake it does not run (its starts are held by the brake anyway)
-        brake = brake or helmlib.brake_refusal()   # the tick may have run for minutes since it was read
-        ships = (["wharf: skipped — the studio brake holds (%s): its pass reads Orca" % brake]
-                 if brake and not os.environ.get("PLAN_NO_WHARF") else wharf_once(a.dry_run or r["mode"] != "armed"))
-        # S5: the scopes' skippers, after wharf's pass has moved the ships (a hand-over, a start, the belt)
-        brake = brake or helmlib.brake_refusal()
-        skippers = stalls_tick.ensure_skippers(r["mode"], brake)
+        # S13a: every pass ends PING_RESERVE before ask poll's kill, so the ping, the tick's last act, has its time
+        with stalls_tick.ping_reserved():
+            r = stalls_tick.tick(dry_run=a.dry_run, peer=not os.environ.get("PLAN_NO_PEER"))
+            brake = r.get("brake")
+            # S11: wharf's pass reads Orca (a ship's Run and Tasks), which the studio brake freezes: its reads
+            # would spend their timeouts and read nothing, so under the brake it does not run (its starts are held by the brake anyway)
+            brake = brake or helmlib.brake_refusal()   # the tick may have run for minutes since it was read
+            ships = (["wharf: skipped — the studio brake holds (%s): its pass reads Orca" % brake]
+                     if brake and not os.environ.get("PLAN_NO_WHARF") else wharf_once(a.dry_run or r["mode"] != "armed"))
+            # S5: the scopes' skippers, after wharf's pass has moved the ships (a hand-over, a start, the belt)
+            brake = brake or helmlib.brake_refusal()
+            # S13a: the brake's window first, so the skippers' deaf and lease clocks never charge a frozen skipper
+            skippers = stalls_tick.note_brake(brake, r["mode"]) + stalls_tick.ensure_skippers(r["mode"], brake)
     except Exception as e:   # noqa: BLE001 — a loud failure of the pass: told to the switch, then raised as before
         if not a.dry_run:
             # the issue this opens leaves the machine: the exception's class and the function it came from, never
@@ -737,7 +740,8 @@ def cmd_tick(a):
                 print(line, file=sys.stderr)
         raise
     # S11: the yard's last act, after the Orca read and every pass. --dry-run calls nothing, so it pings nothing
-    ping = [] if a.dry_run else stalls_tick.deadman_ping(brake=brake)
+    # S13a: the Orca read's outcome is counted there: three unread passes in a row turn the ping into a --fail
+    ping = [] if a.dry_run else stalls_tick.deadman_ping(brake=brake, orca=r.get("orca_dead") or "")
     if a.json:
         print(json.dumps(dict(stalls_tick.as_json(r), wharf=ships, skippers=skippers, deadman=ping), ensure_ascii=False, sort_keys=True))
         return
