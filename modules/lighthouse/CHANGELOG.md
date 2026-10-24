@@ -9,7 +9,11 @@
   points into the same drive. A refusal for a tenant whose listed labels give it no login names them.
   An `ACCOUNTS_FILE` naming the live key is no fixture; the guard's check after a `cd` passes a
   tenants-file refusal on with its own way in.
-
+- `deadman ping` reads the secret from `lighthouse/deadman-ping-secret` in the config dir between
+  `$DEADMAN_PING_SECRET` and the vault's secrets file (skipper-resilience S11): a yard's launchd job
+  may be refused the vault's folder on Drive, and the owner can place the secret there once. The file is
+  read only at mode 600 or stricter; a looser one is refused in one line that names the path and mode,
+  never the value, and the vault is tried next.
 - deadman joins as lighthouse's switch for the unattended Macs (private until its scrub; chart:
   `deadman/README.md`): one Cloudflare Worker, cron every 5 minutes, one KV namespace; a Mac that
   pinged and went quiet past the period and grace is one GitHub issue that mentions the owner,
