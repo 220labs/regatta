@@ -12,7 +12,9 @@
   per change of origin/main; `--dry-run` only prints. `replay` judges the last days' moves read-only
   (the always-on Mac, 2026-10-24: 0 of 59). The plist carries PATH, REGATTA_CONFIG and the HOOKWATCH_* seams.
 - `health` names hookwatch's pin and posts it once, whichever check it runs.
-- beacon is public (2026-10-24), after a publish-readiness review whose fixes land with it: the
+- beacon held off the allowlist until the extensions design decides its home (2026-10-24); its
+  exemptions left with it.
+- beacon's publish-readiness review (2026-10-24), its fixes: the
   Telegram webhook answers 200 to another chat once its secret matches (Telegram retries every
   other reply); a `+token` mail reply counts against its sender's send limits; `build` refuses a
   sitemap page whose host, as listed or after redirects, is not one of `origins`' (a site whose

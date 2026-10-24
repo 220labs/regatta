@@ -53,7 +53,7 @@ is gone (the drive behind it away) that copy holds: tenancy never fails open ont
 a Mac whose link has never read has tenancy off, said on stderr and by `account doctor`, which also names a copy in force, a file that does not parse, and a tenant left with no login. To end tenancy, write `{}`.
 
 Install: `claude plugin marketplace add <this repo>`, then `claude plugin install lighthouse@regatta`
-(it needs the core, `regatta`, and `helloworld`, for beacon's build scan). From a clone: `sh modules/lighthouse/install.sh --check`.
+(it needs the core, `regatta`, and `helloworld`, which beacon's build scan uses). From a clone: `sh modules/lighthouse/install.sh --check`.
 
 ## Private values
 
@@ -120,7 +120,8 @@ site's address opens a topic in the people's Telegram group (a chat hand-off fil
 when the visitor left an address), where their reply goes back to the visitor in the chat or by
 mail. A visitor who asks the bot for a person is handed over the same way. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
 whose word list scans what it builds. Its chart is `beacon/README.md`: read "What it cannot do"
-and "Before the first deploy" there first.
+and "Before the first deploy" there first. beacon's files stay in the private repo until its home
+is decided: it is no Claude Code plugin, and may move to a repo of its own.
 
 ## deadman — the switch for the Macs nobody watches
 

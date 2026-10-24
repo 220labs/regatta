@@ -28,11 +28,16 @@ agent:
 beacon (a site's contact form and its bot, one Cloudflare Worker) joined after the upkeep tools;
 its chart is `beacon/README.md`.
 
-- Public since its publish review (2026-10-24): `beacon/`, `bin/beacon`, `tests/beacon.sh`,
-  `tests/dev.sh`, `tests/upstream_stub.py` and `tests/worker.test.mjs` are on
-  `.helloworld/allowlist.txt`, and a new beacon file is listed in the change that adds it. Their
-  synthetic pattern hits (example addresses, made-up home folders, test keys) are exempted under that
-  date's headers in `.helloworld/exemptions.txt`. `.gitignore` stays off: it names deadman's build.
+- Off `.helloworld/allowlist.txt` until listed: `beacon/`, `bin/beacon`, `tests/beacon.sh`,
+  `tests/dev.sh`, `tests/upstream_stub.py` and `tests/worker.test.mjs`. They passed the publish
+  review (2026-10-24) and are held off until the extensions design decides beacon's home (it is no
+  Claude Code plugin; the owner, 2026-10-24). The gate refuses an exemption for a file it does not
+  publish, so their 99 exemptions (106 lines with headers) (example addresses, made-up home folders, test keys) left
+  with them; the commit that listed them holds both, to carry wherever beacon goes:
+  `git log -S beacon/README.md -- .helloworld/allowlist.txt` in the private repo, its oldest hit;
+  run the gate afresh when they are carried, as an exemption quoting a changed line goes stale. What this file,
+  `README.md`, `CHANGELOG.md`, `plugin.json` and `tests/check.sh` say of beacon is written for the
+  twin. `.gitignore` stays off: it names deadman's build.
 - Every site value comes from the site's config file, never from this module: a test or example
   uses `example` names, and a real site's config and persona live in that site's own repo.
 - `beacon/lib/bot.js` is a library: no route, storage or secret in it. Its `PRICES` table is
@@ -56,7 +61,7 @@ its chart is `beacon/README.md`.
 deadman (a dead-man's switch the unattended Macs ping, one Cloudflare Worker) joined after beacon;
 its chart is `deadman/README.md`.
 
-- Off `.helloworld/allowlist.txt` until listed: `deadman/`, `bin/deadman`, `tests/deadman.sh`
+- Off `.helloworld/allowlist.txt` until listed, as beacon: `deadman/`, `bin/deadman`, `tests/deadman.sh`
   and `tests/deadman.test.mjs`; what this file, `README.md`,
   `CHANGELOG.md` and `tests/check.sh` say of it is written for the twin.
 - Unlike beacon, `bin/deadman` is in the root `autofinish_exclude`: a yard's tick runs it after
