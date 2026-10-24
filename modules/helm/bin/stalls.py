@@ -2,12 +2,13 @@
 """Stalls: work that stopped without saying so, sorted into the chain manager's classes S1–S7
 (docs/chain-manager-2026-10-11.md section 4 and its launch review; orchestration B1).
 
-    stalls.py [--json] [--no-peer]   every stall on both Macs, one line each
+    stalls.py [--json] [--no-peer]   every stall on this Mac and each peer that is no yard, one line each
 
 `helm board` draws a card per stall and `helm tick --dry-run` prints what it would do; both call
 judge(). Nothing here acts: the one live call is `dispatch-rc live --no-reap` (the run count an S2
 needs; it never reaps), and the build box is read over one ssh, never written (ssh runs laptop → build
-box only). The actions are B3's, bin/stalls_tick.py, and so are the gates (armed, the week, `account
+box only) — while it is no scope's yard: a yard judges its own store on its own tick (skipper-resilience
+S8), and the laptop leaves it out (peers()). The actions are B3's, bin/stalls_tick.py, and so are the gates (armed, the week, `account
 pick`, the lock, the depth cap, the retry memory in stalls.jsonl): a stall here carries the class's
 action and the facts those gates read, nothing decided past that.
 
@@ -74,8 +75,9 @@ import helmlib  # noqa: E402
 # wharf-runs is not installed, and then there are no runs to judge (judge() says so)
 ADAPTER = helmlib.harness_adapter("claude_code.py")
 # machine → the ssh alias the laptop reads it with (pickup's PEERS, the config dir's `wharf-runs/ssh`):
-# the build box has none for the laptop, which sleeps, so a stall is judged from the laptop only
-# (chain-manager D2 = digest D5 A)
+# the build box has none for the laptop, which sleeps, so a stall is judged from the laptop
+# (chain-manager D2 = digest D5 A) — until the box is a scope's yard, which judges its own
+# (skipper-resilience S8, peers())
 PEERS = helmlib.ssh_peers()
 SSH_TIMEOUT = 10        # ConnectTimeout: a sleeping peer holds a connect ~75 s (R2)
 PROBE_TIMEOUT = 90      # the whole read, transcripts included
@@ -308,7 +310,9 @@ def probe_source(rc):
 
 
 def peers():
-    """{host: ssh alias} to read, this Mac left out. STALLS_PEERS overrides: `name=alias,…`, empty for none."""
+    """{host: ssh alias} to read, this Mac left out. STALLS_PEERS overrides: `name=alias,…`, empty for none.
+    Every peer is read, a yard too: its records and live sessions are the facts both Macs share (the
+    superseded test, a manager live over there). Which of them are judged is self_judging()'s."""
     if "STALLS_PEERS" in os.environ:
         spec = os.environ["STALLS_PEERS"].strip()
         out = dict(x.split("=", 1) for x in spec.split(",") if "=" in x)
@@ -316,6 +320,17 @@ def peers():
         out = dict(PEERS)
     out.pop(helmlib.host(), None)
     return out
+
+
+def self_judging():
+    """(hosts, torn): the hosts, other than this one, whose runs are acted on where they are
+    (skipper-resilience S8) — each host some scope's `yard` names runs its own tick (bin/ask
+    poll_tick) — and whether that could not be told (helmlib.yard_hosts: a torn registry, no core).
+    The judge still judges their records (the board shows them); the tick acts on no stall of a host
+    in `hosts`, and on none of any peer's while `torn` (fail closed, the fence trap: a yard and the
+    laptop must never both act on one run). With no yard set and a registry that reads, nothing changes."""
+    yards, torn = helmlib.yard_hosts()
+    return yards - {helmlib.host()}, torn
 
 
 def read_peer(host, alias, rc):
@@ -423,9 +438,12 @@ def _stall(cls, host, st, name, rule, evidence, now, since=None, **kw):
     return rec
 
 
-def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None):
+def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, read=None):
     """(stalls, unsure) of one host's run records. `all_records` is every record of both Macs, as
-    (host, name, st), for the superseded test; `live_ids` every live session id on both."""
+    (host, name, st), for the superseded test; `live_ids` every live session id on both; `read` the
+    hosts this one has a road to (itself and its peers, read or not; None: no rule) — a manager on any
+    other host cannot be seen from here, so its RELAYED run is never called orphaned (a yard reads no
+    laptop; skipper-resilience S8). A peer that did not answer this pass keeps the rule it had."""
     stalls, unsure = [], []
     raw = view.get("raw") or {}
     # a stall B3 may act on carries its worktree's lock as facts() read it on its host (`owner`):
@@ -494,6 +512,9 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None):
         if kind in ("waiting on skipper", "waiting on manager"):
             if managed and managed in live_ids:
                 continue   # A4: RELAYED, and its manager is live
+            far = st.get("manager_host")
+            if managed and read is not None and far and far not in read:
+                continue   # its manager runs on a host with no road from here (a yard to the laptop): unknown, never "gone" (S8)
             stalls.append(_stall("S6", host, st, name, "closing line: RELAYED, its manager gone", ev, now, since))
             continue
         if kind == "waiting on its own work":   # session_status.PENDING: ended, or idle past A4, and nothing woke it
@@ -1000,7 +1021,9 @@ def judge(peer=True, live_call=True):
         # wharf-runs is the runs' module (dispatch-rc reads them, its adapter reads a transcript):
         # without it there is no run to stall, which is said, never a traceback (G-guard, B12)
         return {"as_of": now, "host": me, "hosts": [], "stalls": [], "unsure": [],
-                "notes": ["stalls: wharf-runs not installed (dispatch-rc, its harness adapter) — no runs to judge"], "runs": []}
+                "notes": ["stalls: wharf-runs not installed (dispatch-rc, its harness adapter) — no runs to judge"], "runs": [],
+                # nothing was read: the stall road closes no issue on this pass's absences
+                "unread": {"hosts": [], "launches": True, "orca": True, "skippers": True}}
     views, notes = {me: local_view(rc, ad)}, []
     if peer:
         for h, alias in sorted(peers().items()):
@@ -1028,13 +1051,20 @@ def judge(peer=True, live_call=True):
             return "?"
 
     stalls, unsure = [], []
+    # every store read is judged, a yard's too: the board shows its stalls; only the tick's acting is
+    # left to the yard's own tick (stalls_tick, by `self_judging` below) — S8
     for h, v in views.items():
-        s, u = judge_runs(h, v, all_records, live_ids, asked, now, live_count if h == me else None)
+        s, u = judge_runs(h, v, all_records, live_ids, asked, now, live_count if h == me else None,
+                          read=set(views) | set(peers()) if peer else None)
         stalls += s
         unsure += u
+    # what this pass could not read, by source: the stall road closes no issue on an absence it cannot vouch for
+    unread = {"hosts": sorted(set(peers()) - set(views)) if peer else [], "launches": False, "orca": False,
+              "skippers": False}
     s, n = judge_launches(me, live_branches, now)
     stalls += s
     notes += n
+    unread["launches"] = bool(n)
     orca_runs = []
     if orca_on():   # Orca runs on this Mac only (design F6, F8): the build box's workers wait for B11
         live_states = {x["session_id"]: x.get("state") for x in views[me].get("live") or []}
@@ -1045,8 +1075,11 @@ def judge(peer=True, live_call=True):
         stalls += s
         unsure += u
         notes += n
+        unread["orca"] = bool(n)
     stalls += judge_plans(me, live_ids, all_records, now)
+    k = len(notes)
     stalls += judge_skippers(me, now, notes)
+    unread["skippers"] = len(notes) > k
     for x in stalls:
         x["title"] = title(x, now)
         x["column"] = column(x)
@@ -1064,8 +1097,10 @@ def judge(peer=True, live_call=True):
     waiting = [dict(w, host=h) for h, v in views.items() for w in v.get("waiting") or []]
     prompts = [dict(x, host=h) for h, v in views.items() if h != me for x in v.get("live") or []
                if x.get("state") == "input-required"]
+    own, torn = self_judging()
     return {"as_of": now, "host": me, "hosts": sorted(views), "stalls": stalls, "unsure": unsure, "notes": notes,
-            "runs": runs, "waiting": waiting, "prompts": prompts}
+            "runs": runs, "waiting": waiting, "prompts": prompts, "unread": unread,
+            "self_judging": sorted(own), "registry_torn": torn}
 
 
 def main(argv=None):

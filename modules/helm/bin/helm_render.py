@@ -625,6 +625,30 @@ def tag_re():
     return re.compile(r"@(%s)\b" % "|".join(re.escape(p) for p in helmlib.people()), re.I)
 
 
+def road_cards():
+    """skipper-resilience S8: one card in the owner's column per escalation the stall road could not
+    deliver or settle (stalls_tick.road_faults: an issue that never opened after its one retry, a
+    followed issue or a cleared one left open) — what GitHub never got is on the board instead. Quiet
+    with no escalations.jsonl (every host that is no yard)."""
+    try:
+        import stalls_tick
+        faults = stalls_tick.road_faults()
+    except Exception:   # noqa: BLE001 — the road's reader costs its cards, never the board
+        return []
+    out = []
+    for r in faults:
+        closed = r.get("state") == "closed"
+        left = [n for n in ((r.get("close_failed_issues") or [r.get("issue")]) if closed else stalls_tick.followed(r)) if n]
+        if not closed and r.get("issue") is None:
+            # its new issue never opened: that is the fault; the one it follows stays the stall's
+            what = "not opened: %s%s" % (r.get("why") or "?", " (#%s still open)" % ", #".join(map(str, left)) if left else "")
+        else:
+            what = ("#%s left open" % ", #".join(map(str, left))) if left else "not opened: %s" % (r.get("why") or "?")
+        out.append(_card("road", "stall road: %s — %s" % (r.get("title") or r.get("class") or "?", what), helmlib.columns()[0],
+                         by=r.get("yard"), updated=r.get("t"), rule=r.get("class"), guarded=r.get("guarded")))
+    return out
+
+
 def todo_cards():
     out = []
     tag = tag_re()
@@ -771,6 +795,7 @@ def overview_state():
     cards += stalled
     # a WAITING session a stall already cards (a run's S6) keeps the stall's card alone
     cards += [c for c in waiting_cards(judged) if not (c.get("session") and c["session"] in covered)]
+    cards += road_cards()
     cards += todo_cards()
     held = held_cards()
     cards += held

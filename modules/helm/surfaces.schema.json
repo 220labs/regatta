@@ -26,8 +26,8 @@
     "plan": {"$ref": "#/properties/helm", "description": "the helm row's name before rename S5, read as helm's"},
     "notify": {
       "type": "object",
-      "description": "per host (surfaces.host()): how an ask nobody relays reaches the owner",
-      "additionalProperties": {"type": "array", "items": {"enum": ["banner", "telegram"]}}
+      "description": "per host — an ask's by surfaces.host(), a stall's by helmlib.host() (the yard's own name, never cloud): how an ask nobody relays, or a stall the yard's tick escalates, reaches the owner; github-issue carries stalls only",
+      "additionalProperties": {"type": "array", "items": {"enum": ["banner", "github-issue", "telegram"]}}
     }
   }
 }

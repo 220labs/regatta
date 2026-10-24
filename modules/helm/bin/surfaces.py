@@ -46,7 +46,9 @@ KNOWN = {
     "helm.render": {"local", "sheep", "artifact"},
     "helm.live": {"stream", "redeploy", "records", "local-sse"},
     "helm.live_fallback": {"redeploy", "none"},
-    "notify.*": {"banner", "telegram"},
+    # github-issue (skipper-resilience S8): the stall road's — an issue in the config key helm/inbox-repo
+    # mentioning helm/mention, opened and closed by the tick's escalate(); it carries stalls only (bin/ask's notice())
+    "notify.*": {"banner", "github-issue", "telegram"},
 }
 
 
@@ -74,7 +76,7 @@ def row(name, path=None):
 
 
 def host():
-    """laptop | buildbox | cloud | <other>: the notify row's key. A cloud VM has no LocalHostName."""
+    """laptop | buildbox | cloud | <other>: an ask's notify row key (the stall road keys by helmlib.host()). A cloud VM has no LocalHostName."""
     if os.environ.get("SURFACES_HOST"):
         return os.environ["SURFACES_HOST"]
     if os.environ.get("CLAUDE_CODE_REMOTE") or not Path("/usr/sbin/scutil").exists():

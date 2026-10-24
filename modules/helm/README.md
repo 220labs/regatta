@@ -14,7 +14,7 @@ question takes instead of a prompt nobody would answer, and the board that shows
 | `bin/skipperlib.py`, `libexec/skipper-run` | the scope's skipper: one Claude session per scope on the yard host, started by the tick as a one-shot launchd job (`regatta helm skipper --start`, refused inside a session) when a ship the yard holds needs one, on a login every repo of the scope allows; ended by `--stop` when no ship has needed it for 30 minutes, at the 04:00 pass once 24 h old, or when its lease lapses or it goes deaf — its ships back to the yard, its open questions re-hailed to the next one. Three failed starts in a row are the stall `skipper won't start` |
 | `bin/helm_render.py` | the ship's page and the board (six columns, the timeline), served locally or deployed |
 | `bin/sendlib.py` | `regatta helm send`: a blueprint, a handoff branch or a `--text` task handed to its scope's skipper — pinned on a pushed `claude/*` branch with `skipper: scope`, laid on the scope's yard over ssh (`wharf apply --yard`), then a wait for the pickup (`PICKED UP … this session may close`); `--listen` pulls `helm skipper --line` every 5 minutes into the sending session, `--detach` returns once laid |
-| `bin/stalls.py`, `bin/stalls_tick.py` | the tick: finds unattended runs that stopped without their closing line (S1–S7), retries a step at most twice, raises the rest to the skipper or the owner |
+| `bin/stalls.py`, `bin/stalls_tick.py` | the tick: finds unattended runs that stopped without their closing line (S1–S7), retries a step at most twice, raises the rest to the skipper or the owner. It runs on the laptop and on each scope's yard, every host judging its own runs; on a yard a raised stall, a block waiting on the owner and a question unanswered 15 minutes go out by the stall road — one row in `escalations.jsonl` and one issue in the config's `helm/inbox-repo` mentioning `helm/mention` (`notify.<host>: ["github-issue"]`), closed when it clears |
 | `bin/ask`, `bin/asklib.py` | asks: an unattended run never prompts; it writes the question as a D-item and `ask relay` sends it to its skipper (Talk, SendMessage or a file); `ask answer`, `listen`, `apply`, and `ask poll`, the 5-minute bell |
 | `bin/surfaces.py`, `surfaces.schema.json` | which backend each seam takes (relay, render, live, notify), from `surfaces.json` |
 | `hooks/ask_guard.py` | PreToolUse: denies AskUserQuestion in an unattended run, with the relay instruction; UserPromptSubmit: prints relays queued for the session; Notification: a banner for an ask nobody relays |
@@ -51,8 +51,12 @@ Or `claude plugin install helm@regatta` for the session face.
   absent, none).
 - The guarded repos come from keel's gate; without keel, from the core's registry `guarded` and
   `regatta/guarded`.
+- The stall road (a yard's tick, skipper-resilience S8): `helm/inbox-repo` (`owner/name`, the repo
+  the issues open in) and `helm/mention` (the line each issue's body starts with). Optional: absent,
+  an escalation is written with road `none` and nothing is opened.
 
-`config-keys` lists the three keys of helm's own, which `regatta check` reports where missing.
+`config-keys` lists the three keys of helm's own that must be there, which `regatta check` reports
+where missing; the stall road's two are optional and not listed.
 
 ## Peers
 

@@ -23,9 +23,13 @@ Read `README.md` first. For an agent:
 - `ask poll` runs from launchd every 5 minutes (`install.sh --schedule`, or the overlay's): any
   change to `bin/ask` or what it loads is proven under `env -i HOME=$HOME PATH=/usr/bin:/bin`.
 - `ask poll`'s peer jobs are one list and one loop (`poll_jobs`, `run_jobs`): `hail subs --fulfil` first,
-  then the scan, then on the laptop only the tick (`poll_tick`), the stand sweep and the drain, and last
-  `keel lookout --if-due`; the fulfil and the lookout run on every host (the build Mac too), the tick never off the
-  laptop (`stalls.jsonl` is laptop-local; armed on two hosts it would dispatch each stall twice). One
+  then the scan, then the tick (`poll_tick`) on the laptop and on a host some scope's `yard` names
+  (skipper-resilience S8), the stand sweep and the drain on the laptop only, and last
+  `keel lookout --if-due`; the fulfil and the lookout run on every host (the build Mac too). Each ticking
+  host judges its own store: the laptop still reads a yard over ssh for the shared facts and judges none
+  of its runs (`stalls.self_judging()`), so no stall is judged or dispatched twice; off the laptop a torn registry is no tick (`helmlib.yard_hosts`, fail
+  closed), and with no yard set every host behaves as before S8 — a test of it names its registry
+  (`CLAUDE_REPOS_JSON`), never the caller's, whose yard would otherwise reach the case. One
   deadline (`ASK_POLL_BUDGET`, 20 min) bounds them all; each child is offered its own kill time as `ASK_POLL_DEADLINE`, which nothing reads yet. Tests
   stub them with `ASK_KEEL` / `ASK_HAIL` (a path that is no file stands for an absent peer, for every job)
   and the board with `PLAN_KEEL`; the board's peer reads (stall and lookout cards) go through `STALLS_SSH`; a peer's lookout cards replace
@@ -80,6 +84,16 @@ Read `README.md` first. For an agent:
   yard (its own config dir, a stand-in wharf), never a real alias. The caller reads the yard's store only
   through that ssh. A `sent` lives in the task's `send` field, never in `status`, which wharf drives; a
   listener's tests set `HELM_LISTEN_PARENT`, as the sidecar's set `HELM_HOLD_PARENT`.
+- The stall road (`stalls_tick.escalate`, skipper-resilience S8) acts only on a yard and opens real
+  GitHub issues there: its cases stub the API with `ASK_GH_API` (a program called as `gh api` is) and
+  write synthetic `helm/inbox-repo` and `helm/mention` values into the suite's own config dir. The
+  repo and the mention are config values only: no module file names either. An issue leaves the
+  machine, so a guarded repo's escalation carries its class and host alone — no ship, task, key,
+  holder, run or what cleared it (K6) — and the road sends nothing while `helmlib.guard_unread()`
+  (keel's gate, its guarded key, the confidential roots) or the registry cannot vouch, asked before the
+  judge and after. It calls GitHub only from an armed tick of launchd's (no session, not
+  `CLAUDE_UNATTENDED`), under a lock beside the log: a case that wants calls arms the suite's tick
+  and runs it with `env -u CLAUDE_CODE_SESSION_ID`. What it could not deliver is a `road` card.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)` on a
   Mac (2026-10-22; `REGATTA_LEGACY` is read by nothing since B14b, 2026-10-23). A Linux runner is untried.
