@@ -17,6 +17,23 @@
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
   `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.
 
+skipper-resilience S11, the yard's tick pings the dead-man's switch and holds under the studio brake.
+- `helm tick` ends with `deadman ping <host>` (lighthouse's `bin/deadman`, through `helmlib.peer`) on a host
+  some scope's `yard` names (`helmlib.yard_hosts`; a torn registry reads no yard): after the Orca read, wharf's
+  pass and the skippers', so a tick killed at its deadline never pings and the yard goes silent. (An Orca that
+  does not answer is a time-limited read, not a hang: the ping still goes, plain, and the Orca source is
+  marked unread; whether that should withhold the ping is open: TODO.md.) A pass that raises first runs `deadman ping --fail --why "<one line>"`, then fails as before. A ping
+  that fails or a deadman that is absent is one line, never the tick's failure; `ask poll` copies every
+  deadman line but a plain ping's into the yard's launchd log. A tick run inside a session or by an
+  unattended caller pings nothing (the stall road's caller rule), and says so in one line. `--dry-run`, `--status` and the
+  switch ping nothing; no yard set (every scope today), nothing changes on any host.
+- While wharf's `brake_refusal()` holds (`helmlib.brake_refusal()` loads it, so one rule): no Orca read
+  (`stalls.judge(orca_held=)` says so on a card; no stall escalation closes, as an unread stall's absence
+  says nothing), no wharf pass (it reads Orca), no skipper start or stop (`ensure_skippers(brake=)`: one
+  `skippers: held` line where a scope is held, none otherwise), no retry, relaunch or relay of the tick's own
+  (each waits, unspent: dispatch and the harness do not read the brake), and the ping is `--braked`. The brake is
+  read at the tick's start, returned in its result (`brake`), and read again before wharf's and the skippers' passes. The brake gates a tick on any host, yard or not.
+
 skipper-resilience S8, the stall road and the yard's tick.
 - `ask poll` ticks on a host some scope's `yard` names, as on the laptop (`helmlib.yard_hosts`): wharf's
   pass, the skippers' pass and its own stalls. Off the laptop a torn registry is no tick, one line. With

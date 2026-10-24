@@ -48,6 +48,14 @@ check "$(cd "$T" && "$S/modules/helm/libexec/helm" render d1 2>&1 | grep -c 'loc
 check "$(py 'import importlib.machinery as m; h = m.SourceFileLoader("h", "'"$S"'/modules/helm/libexec/helm").load_module(); print(h.keel("list")[2]); print(h.wharf_once(True))')" \
       "keel not installed (the keel module): no doc read
 ['wharf: skipped — not installed (wharf-runs)']" "helm's keel() and wharf pass: one line each"
+printf '%s\n' '{"repos": {}, "scopes": {"s": {"repos": [], "yard": "testhost"}}}' > "$T/yard.json"
+mkdir -p "$T/cfg-plain"   # a stranger's install: no overlay (`legacy`), so the core's private values keep their defaults
+# launchd's tick (no session, not unattended): a caller's session id would answer before the absent peer
+check "$(unset CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED; REGATTA_CONFIG="$T/cfg-plain" CLAUDE_REPOS_JSON="$T/yard.json" py 'import helmlib, stalls_tick; print(helmlib.brake_refusal()); print(stalls_tick.deadman_ping(brake="x")); print(stalls_tick.ensure_skippers("armed", "x"))')" \
+      "None
+['deadman: not pinged — not installed (lighthouse)']
+[]" "S11 without wharf-runs or lighthouse: no brake read, the yard's ping is one quiet line, the held skippers pass says nothing"
+check "$(REGATTA_CONFIG="$T/cfg-plain" CLAUDE_REPOS_JSON="$T/none.json" py 'import stalls_tick; print(stalls_tick.deadman_ping())')" "[]" "S11: a host that is no yard pings nothing, with or without lighthouse"
 out=$("$S/modules/helm/libexec/helm" task d1 t1 --done-when pr_merged 2>&1); check "$?" "1" "--done-when without blueprintlib (wharf-runs): refused …"
 has "$out" "blueprintlib.py (wharf-runs), which is not installed" "  … in one line"
 git init -q "$T/repo"; printf '# Doc\n\n**D1 — x?** Reversible: yes\n➤ Recommended: A\n➤ Answer:\n' > "$T/repo/doc.md"

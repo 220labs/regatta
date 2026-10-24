@@ -750,6 +750,10 @@ check "$out" "ask poll: escalations: the pass failed (KeyError: x)
 ask poll: escalation: #9 not closed (down) — tried once more next pass
 ask poll: escalated y: none — no stall road on yardhost-x" "the stall road's own faults (a failed pass, a failed close, no road) reach the yard's poll log (stderr), its issue lines do not"
 cp "$T/stalls.before" "$T/cache/stalls.json"
+printf '#!/bin/sh\necho %s\n' "'{\"dry\": false, \"hosts\": [], \"unsure\": [], \"stalls\": [], \"deadman\": [\"deadman: pinged for yardhost-x\", \"deadman: ping failed (exit 1): no secret\"]}'" > "$T/tick-dm"; chmod +x "$T/tick-dm"
+out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=yardhost-x PLAN_HOST=yardhost-x ASK_TICK_CMD="$T/tick-dm" "$B/ask" poll --repos "$R" 2>&1 >/dev/null)
+check "$out" "ask poll: deadman: ping failed (exit 1): no secret" "a ping that did not go reaches the yard's poll log (S11), a plain ping's line does not"
+cp "$T/stalls.before" "$T/cache/stalls.json"
 # the yard by helmlib.host(), as the tick and the registry name it: a Linux yard, which surfaces.host() calls `cloud`
 out=$(CLAUDE_REPOS_JSON="$T/yard.json" SURFACES_HOST=cloud PLAN_HOST=yardhost-x ASK_TICK_CMD="$T/tick-ok" "$B/ask" poll --repos "$R" 2>&1)
 has "$out" "ask poll: tick — 3 stall(s)" "  named by the tick's own host (a Linux yard, which surfaces.host() calls cloud, still ticks)"
