@@ -265,6 +265,7 @@ check "$(git -C "$P" rev-parse "$TIP1^")" "$TIP0" "the Save is one commit on the
 has <(git -C "$P" log -1 --format=%B "$BA") "Taken-By: keel sheep pull --plumb" "…its trailer names the tool"
 check "$(answers "$BA")" "D1=B — the other way D2=" "…with the Save's answer in the doc"
 has <(git -C "$P" log -1 --format=%B "$BA") "Saved-By: owner" "…and who saved it (Saved-By)"
+has <(git -C "$P" log -1 --format=%B "$BA") "Saved-Items: D1" "…and the items it took in (Saved-Items, lookout-echo)"
 check "$(git -C "$T/origin.git" rev-parse "$BA")" "$TIP1" "…pushed to origin"
 check "$(git -C "$P" symbolic-ref --short HEAD) $(git -C "$P" status --porcelain | wc -l | tr -d ' ')" "main 0" "…the primary checkout untouched"
 check "$(hails)" "1" "the doc's session is hailed"
@@ -954,6 +955,12 @@ except RuntimeError:
 print([p["id"] for p in m.lookout_state()["pending"] if p["id"] == "answer:thirty"], (d / "thirty.out.json").exists())
 EOF
 )" "['answer:thirty'] False" "item 30: an exception after the starts are collected keeps a GATED start's event in the state"
+# item 30's event is synthetic (no branch): out of the state before the next pass meets it
+python3 - "$T/state/lookout-state.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["pending"] = [p for p in d["pending"] if p.get("id") != "answer:thirty"]
+json.dump(d, open(sys.argv[1], "w"))
+PY
 check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("k", sys.argv[1]).load_module(); t = m.released_brief("# x\nTask: y\nSteps: S1, S4 of docs/d.md\n", "dispatch failed"); print(len(list(m.BRIEF_STEPS_RE.finditer(t))), t.split("\n")[2].split(" (")[0])' "$B/keel")" \
   "0 Released: S1, S4 of docs/d.md — no run started" "item 9: a released brief holds no step for keel landing"
 check "$(python3 - "$B/keel" <<'EOF'
@@ -1006,6 +1013,301 @@ res = json.loads((d / "u.out.json").read_text())["result"]
 print(calls, res["start"], "unknown: dispatch --status says" in res["card"], "/stub" in res["card"])
 EOF
 )" "['/stub/pickup', '/stub/dispatch'] failed True False" "finish review: a dispatch that timed out is not released (the peer may have the job), its card says so"
+
+echo "lookout — the joint test's findings (S12): a Save's take-in is no second hail; an answer no pass saw open is one"
+session sessidle idle
+# the echo (S8 finding 1): the session holds its worktree, so the Save is not plumbed; it is hailed, takes
+# the Save in itself with `sheep pull --write`, and its checkpoint (no trailer naming it) reaches origin
+BS=claude/laptop/2026-10-23-s
+doc "$BS"; pin "$BS" sp-s
+gitc "$P" worktree add -q "$P/.claude/worktrees/s" "$BS" 2>/dev/null
+SGD=$(git -C "$P/.claude/worktrees/s" rev-parse --absolute-git-dir)
+mkdir -p "$SGD/claude"; printf '{"session": "sesstake", "branch": "%s", "seen": %s}\n' "$BS" "$(date +%s)" > "$SGD/claude/owner.json"
+session sesstake idle
+asks "$BS=D1,D2"
+lk   # seeds D1, D2 open
+save sp-s 1 owner D1 "B — the other way"
+N0=$(hails); lk
+has "$T/out" "save demo@$BS:docs/d.md D1 — hailed · sesstake-0000-full · delivered · refused:" "a held worktree's Save: not plumbed, its session hailed"
+check "$(tail -1 "$T/hail.log" | grep -c 'a Save waits')" "1" "…to take it in itself"
+"$B/keel" sheep pull "$P/.claude/worktrees/s/docs/d.md" --write > "$T/pull" 2>&1
+check "$(answers "$BS"; cd "$P/.claude/worktrees/s" && git status --porcelain | wc -l | tr -d ' ')" "D1= D2=
+1" "…which it does: the doc rewritten in its worktree"
+gitc "$P/.claude/worktrees/s" commit -qam "Docs: checkpoint"; gitc "$P/.claude/worktrees/s" push -q origin "$BS" 2>/dev/null
+asks "$BS=D2"
+N1=$(hails); lk
+check "$(hails)" "$N1" "its checkpoint on origin: no second hail (the echo)"
+has "$T/out" "answer demo@$BS:docs/d.md D1 — skipped · a Save taken in: its own event acted" "…read as the Save it took in, by the pin's sheep pull mark"
+check "$((N1 - N0))" "1" "…one hail for the one Save"
+# a commit with Saved-By and Saved-Items and no Taken-By (a curated one): the items it names are a Save's
+BT=claude/laptop/2026-10-23-t
+doc "$BT" "Claude-Session: sessidle"; pin "$BT" sp-t
+asks "$BS=D2" "$BT=D1,D2"
+lk
+gh_answer "$BT" D2 "yes" "Saved-By: owner
+Saved-Items: D2"
+asks "$BS=D2" "$BT=D1"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BT:docs/d.md D2 — skipped · a Save taken in" "a Saved-Items trailer: a Save taken in"
+check "$(hails)" "$N0" "…nobody hailed"
+# one commit holding a taken-in answer (D1, the mark's) and a hand-typed one (D2): only D2 wakes anyone
+BU=claude/laptop/2026-10-23-u
+doc "$BU" "Claude-Session: sessidle"; pin "$BU" sp-u
+python3 - "$MEMO_SHEEP_STATE/sheep.json" "demo@$BU:docs/d.md" <<'EOF'
+import json, sys
+import time
+d = json.load(open(sys.argv[1])); d[sys.argv[2]].update(applied={"D1": "A"}, applied_at={"D1": time.time()})
+json.dump(d, open(sys.argv[1], "w"), indent=1)
+EOF
+asks "$BS=D2" "$BT=D1" "$BU=D1,D2"
+lk
+git -C "$T/gh" fetch -q origin 2>/dev/null; gitc "$T/gh" checkout -q -B "$BU" "origin/$BU"
+python3 - "$T/gh/docs/d.md" <<'EOF'
+import sys
+f = sys.argv[1]; t = open(f).read()
+open(f, "w").write(t.replace("➤ Answer:", "➤ Answer: A", 1).replace("➤ Answer:\n", "➤ Answer: no\n", 1))
+EOF
+gitc "$T/gh" commit -qam "answers"; gitc "$T/gh" push -q origin "$BU" 2>/dev/null
+asks "$BS=D2" "$BT=D1"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BU:docs/d.md D1 — skipped · a Save taken in" "a commit with both: the mark's answer is the Save's"
+has "$T/out" "answer demo@$BU:docs/d.md D2 — hailed" "…the hand-typed one an event"
+check "$(hails)" "$((N0 + 1))" "…one hail"
+
+# the miss (S8 finding 2): D1 answered on GitHub before any pass saw the doc open
+BM=claude/laptop/2026-10-23-m
+doc "$BM" "Claude-Session: sessidle"; pin "$BM" sp-m
+gh_answer "$BM" D1 "B"
+asks "$BS=D2" "$BT=D1" "$BM=D2"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BM:docs/d.md D1 — hailed · sessidle" "an answer no pass saw open: judged against the doc before it, an event"
+check "$(hails)" "$((N0 + 1))" "…hailed once"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["open"][sys.argv[2]]["answered"])' "$T/state/lookout-state.json" "demo@$BM:docs/d.md")" "['D1']" "…the state keeps what the pass saw answered"
+lk
+check "$(hails)" "$((N0 + 1))" "…and never again"
+# opened and answered between two passes, on a doc a pass has seen: D3 added, then answered on GitHub
+gitc "$P" checkout -q "$BM"; gitc "$P" pull -q --ff-only origin "$BM" 2>/dev/null
+python3 - "$P/docs/d.md" <<'EOF'
+import sys
+f = sys.argv[1]; t = open(f).read()
+open(f, "w").write(t.replace("\n---\n", "\n- **D3 — And this?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n", 1))
+EOF
+gitc "$P" commit -qam "D3" -m "Claude-Session: sessidle"; gitc "$P" push -q origin "$BM" 2>/dev/null; gitc "$P" checkout -q main
+GHREL=docs/d.md gh_answer "$BM" D3 "yes"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BM:docs/d.md D3 — hailed" "an item opened and answered inside one pass: an event"
+check "$(hails)" "$((N0 + 1))" "…once"
+# the baseline: an answer older than the arm time is no event; an item that came answered is skipped, logged
+BO=claude/laptop/2026-10-23-o
+doc "$BO" "Claude-Session: sessidle"; pin "$BO" sp-o
+GIT_COMMITTER_DATE="2020-01-02T00:00:00Z" gh_answer "$BO" D1 "A"
+BW2=claude/laptop/2026-10-23-w
+python3 - "$T/doc.md" "$T/doc-w.md" <<'EOF'
+import sys
+t = open(sys.argv[1]).read()
+open(sys.argv[2], "w").write(t.replace("➤ Answer:", "➤ Answer: A", 1))
+EOF
+gitc "$P" checkout -q -b "$BW2" main; mkdir -p "$P/docs"; cp "$T/doc-w.md" "$P/docs/d.md"
+gitc "$P" add docs/d.md; gitc "$P" commit -q -m "a doc, D1 answered as written" -m "Claude-Session: sessidle"
+gitc "$P" push -q origin "$BW2" 2>/dev/null; gitc "$P" checkout -q main
+asks "$BS=D2" "$BT=D1" "$BO=D2" "$BW2=D2"
+N0=$(hails); lk
+lacks "$T/out" "demo@$BO:docs/d.md D1" "the first armed pass: an answer from before the arm is no event"
+has "$T/out" "answer demo@$BW2:docs/d.md D1 — skipped · came answered in the commit that wrote it" "an item written answered: judged once, skipped"
+check "$(hails)" "$N0" "…neither hails"
+check "$(python3 - "$B/keel" "$T/deep" <<'EOF'
+import sys, subprocess
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+r = Path(sys.argv[2]); (r / "docs").mkdir(parents=True)
+g = lambda *a: subprocess.run(["git", "-C", str(r), "-c", "user.name=t", "-c", "user.email=t@t"] + list(a), capture_output=True, check=True)
+g("init", "-q", "-b", "main")
+d = r / "docs/d.md"
+d.write_text(open(sys.argv[2] + "/../doc.md").read()); g("add", "."); g("commit", "-qm", "doc")
+d.write_text(d.read_text().replace("➤ Answer:", "➤ Answer: A", 1)); g("commit", "-qam", "answer")
+for i in range(30):
+    d.write_text(d.read_text() + "\nnote %d\n" % i); g("commit", "-qam", "note %d" % i)
+ev = m.answer_events(r, "HEAD", "docs/d.md", [], None, [], unseen=["D1"], after=0)
+print([(e["part"], e["items"], e["card"][:40]) for e in ev], m.answer_events(r, "HEAD", "docs/d.md", [], None, [], unseen=["D1"], after=2e9))
+EOF
+)" "[('unjudged', ['D1'], 'answered before the lookout saw it open,')] []" "an unseen answer past the window's 30 commits, all newer than the arm: a card, not dropped; with every commit older, nothing"
+
+echo "lookout — S12's finish review (lookout-echo): the five findings"
+# 1: a doc whose only item opened and closed between two passes — in no asks.json, nor the last state —
+# is read through this Mac's pin: a page deployed within LOOKOUT_DAYS
+BX=claude/laptop/2026-10-23-x
+python3 - "$T/doc.md" "$T/doc-x.md" <<'EOF'
+import sys
+t = open(sys.argv[1]).read()
+i, j = t.index("- **D2 —"), t.index("---\n")
+open(sys.argv[2], "w").write(t[:i] + t[j:])
+EOF
+gitc "$P" checkout -q -b "$BX" main; mkdir -p "$P/docs"; cp "$T/doc-x.md" "$P/docs/d.md"
+gitc "$P" add docs/d.md; gitc "$P" commit -q -m "a doc, one item" -m "Claude-Session: sessidle"
+gitc "$P" push -q origin "$BX" 2>/dev/null; gitc "$P" checkout -q main
+pin "$BX" sp-x
+python3 - "$MEMO_SHEEP_STATE/sheep.json" "demo@$BX:docs/d.md" <<'EOF'
+import datetime as dt, json, sys
+d = json.load(open(sys.argv[1])); d[sys.argv[2]]["deployed"] = dt.datetime.now().isoformat(timespec="seconds")
+json.dump(d, open(sys.argv[1], "w"), indent=1)
+EOF
+gh_answer "$BX" D1 "B"
+git -C "$P" fetch -q origin 2>/dev/null   # a pin alone is read from the last fetch (helm's mirror, live)
+asks "$BS=D2" "$BT=D1" "$BO=D2" "$BW2=D2"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BX:docs/d.md D1 — hailed · sessidle" "a one-item doc answered between two passes: read through its pin, hailed"
+check "$(hails)" "$((N0 + 1))" "…once"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["open"][sys.argv[2]])' "$T/state/lookout-state.json" "demo@$BX:docs/d.md" | sed 's/.tip.: .[0-9a-f]*./tip/')" \
+  "{'answered': ['D1'], 'items': [], tip}" "…its record kept with no open item, so a later item is no first meeting"
+lk
+check "$(hails)" "$((N0 + 1))" "…and never again"
+# the third round: a poll that carried stale asks still lists D1 after it was answered on GitHub —
+# the pass hails it then, never moving the record past the answer
+BY=claude/laptop/2026-10-23-y
+doc "$BY" "Claude-Session: sessidle"
+asks "$BS=D2" "$BT=D1" "$BO=D2" "$BW2=D2" "$BY=D1,D2"; lk
+gh_answer "$BY" D1 "A"
+N0=$(hails); lk
+has "$T/out" "answer demo@$BY:docs/d.md D1 — hailed" "an answer the stale asks still list as open: hailed"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["open"][sys.argv[2]]["items"])' "$T/state/lookout-state.json" "demo@$BY:docs/d.md")" \
+  "['D2']" "…its record keeps open items only, so a rewrite while asks stay stale finds no gone D1 to hail again"
+asks "$BS=D2" "$BT=D1" "$BO=D2" "$BW2=D2" "$BY=D2"; lk
+check "$(hails)" "$((N0 + 1))" "…once, when the asks catch up too"
+python3 - "$MEMO_SHEEP_STATE/sheep.json" "demo@$BX:docs/d.md" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1])); d[sys.argv[2]]["deployed"] = "2020-01-01T00:00:00"; json.dump(d, open(sys.argv[1], "w"), indent=1)
+EOF
+lk
+check "$(python3 -c 'import json,sys; print(sys.argv[2] in json.load(open(sys.argv[1]))["open"])' "$T/state/lookout-state.json" "demo@$BX:docs/d.md")" \
+  "False" "…a pin past the horizon: no longer read, its record lapses"
+# 2-5 against answer_events itself, in scratch repos with set commit times
+check "$(python3 - "$B/keel" "$T/five" "$T/doc.md" <<'EOF'
+import os, sys, subprocess
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+base, doc = Path(sys.argv[2]), open(sys.argv[3]).read()
+def repo(name):
+    r = base / name; (r / "docs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(r)], check=True)
+    return r
+def commit(r, text, msg, at, branch=None):
+    (r / "docs/d.md").write_text(text)
+    env = dict(os.environ, GIT_COMMITTER_DATE="@%d +0000" % at, GIT_AUTHOR_DATE="@%d +0000" % at)
+    g = lambda *a: subprocess.run(["git", "-C", str(r), "-c", "user.name=t", "-c", "user.email=t@t"] + list(a),
+                                  env=env, capture_output=True, text=True, check=True).stdout.strip()
+    g("add", "."); g("commit", "-qm", msg)
+    return g("rev-parse", "HEAD")
+def ans(t, d, a):
+    j = t.index("➤ Answer:", t.index("**%s —" % d)) + len("➤ Answer:")
+    return t[:j] + " " + a + t[j:]
+short = lambda ev: [(e["part"], e["items"], e["skip"] or e.get("card", "")[:30]) for e in ev]
+T0 = 1_800_000_000
+# 2: D1 "A" taken in (the mark, its time just after), cleared to re-ask, then "A" typed by hand
+r = repo("two")
+s0 = commit(r, doc, "doc", T0)
+s1 = commit(r, ans(doc, "D1", "A"), "taken in", T0 + 10)
+s2 = commit(r, doc, "re-ask D1", T0 + 100)
+commit(r, ans(doc, "D1", "A"), "answer D1 on GitHub", T0 + 200)
+mark, at = {"D1": "A"}, {"D1": T0 + 11}
+print("2", short(m.answer_events(r, "HEAD", "docs/d.md", ["D1"], s2, [], applied=mark, applied_at=at)),
+      short(m.answer_events(r, s1, "docs/d.md", ["D1"], s0, [], applied=mark, applied_at=at)),
+      short(m.answer_events(r, s1, "docs/d.md", ["D1"], s0, [], applied=mark)))
+# 3: D1 answered on main after the arm and landed; a new branch adds D3, first met with no record
+r = repo("three")
+commit(r, doc, "doc", T0)
+commit(r, ans(doc, "D1", "A"), "answer D1", T0 + 100)
+subprocess.run(["git", "-C", str(r), "checkout", "-qb", "claude/x"], check=True)
+commit(r, ans(doc, "D1", "A").replace("\n---\n", "\n- **D3 — More?** Body.\n\n  ➤ Answer:\n\n---\n", 1), "D3", T0 + 200)
+print("3", short(m.answer_events(r, "refs/heads/claude/x", "docs/d.md", [], None, [], unseen=["D1"], after=T0 + 50)),
+      m.fork_base(r, "refs/heads/claude/x"), m.fork_base(r, "refs/heads/main"))
+# 4: the doc at the parent does not parse (D1 twice); the commit that fixes it answers D1
+r = repo("four")
+broken = doc.replace("- **D2 — Ship it?**", "- **D1 — Ship it?**", 1)
+p4 = commit(r, broken, "doc, broken", T0)
+commit(r, ans(doc, "D1", "A"), "fix and answer", T0 + 100)
+print("4", m.answers_in(r, p4, "docs/d.md"), m.answers_in(r, p4, "docs/none.md"),
+      short(m.answer_events(r, "HEAD", "docs/d.md", [], None, [], unseen=["D1"], after=T0 + 50)))
+# 5: one commit holds a Save D1 (Saved-By, Saved-Items: D1) and a hand-typed D2; an old one, Saved-By alone
+r = repo("five")
+s0 = commit(r, doc, "doc", T0)
+commit(r, ans(ans(doc, "D1", "A"), "D2", "no"), "squashed\n\nSaved-By: owner\nSaved-Items: D1", T0 + 100)
+commit(r, doc, "re-ask", T0 + 200)
+s3 = commit(r, ans(doc, "D2", "yes"), "old trailer\n\nSaved-By: owner", T0 + 300)
+print("5", short(m.answer_events(r, "HEAD~2", "docs/d.md", ["D1", "D2"], s0, [])),
+      short(m.answer_events(r, s3, "docs/d.md", ["D2"], s3 + "~1", [])), sorted(m.saved_items("x\n\nSaved-Items: D1, D3\n")))
+# the finish review, second round: 6, D1 open at the last pass, a commit breaks the doc, the next fixes
+# it and answers D1 — a hail, as before S12; 7, D1 answered on main before the fork, a branch commit
+# breaks the doc, the next fixes it and answers D2 — D2 alone, D1 never swept into a card
+r = repo("six")
+s0 = commit(r, doc, "doc", T0)
+commit(r, broken, "broken", T0 + 100)
+commit(r, ans(doc, "D1", "A"), "fix and answer", T0 + 200)
+r7 = repo("seven")
+commit(r7, doc, "doc", T0)
+commit(r7, ans(doc, "D1", "A"), "answer D1", T0 + 100)
+subprocess.run(["git", "-C", str(r7), "checkout", "-qb", "claude/x"], check=True)
+commit(r7, ans(doc, "D1", "A").replace("- **D2 — Ship it?**", "- **D1 — Ship it?**", 1), "broken", T0 + 200)
+commit(r7, ans(ans(doc, "D1", "A"), "D2", "yes"), "fix and answer D2", T0 + 300)
+print("6", short(m.answer_events(r, "HEAD", "docs/d.md", ["D1"], s0, [])),
+      short(m.answer_events(r7, "refs/heads/claude/x", "docs/d.md", [], None, [], unseen=["D1", "D2"], after=T0 + 50)))
+# 8: a take-in at T0+10, a code commit at T0+20, the doc checkpoint at T0+30 — the Save; with the doc
+# time unreadable the mark never counts; a pull stamps only what it changed
+r = repo("eight")
+s0 = commit(r, doc, "doc", T0)
+(r / "x.txt").write_text("x")
+commit(r, doc, "code", T0 + 20)
+commit(r, ans(doc, "D1", "A"), "checkpoint", T0 + 30)
+mark, at = {"D1": "A"}, {"D1": T0 + 10}
+real = m.git
+m.git = lambda gd, *a, **k: subprocess.CompletedProcess(a, 0, "", "") if a[:3] == ("log", "-1", "--format=%ct") else real(gd, *a, **k)
+blind = short(m.answer_events(r, "HEAD", "docs/d.md", ["D1"], s0, [], applied=mark, applied_at=at))
+m.git = real
+print("8", short(m.answer_events(r, "HEAD", "docs/d.md", ["D1"], s0, [], applied=mark, applied_at=at)), blind,
+      m.take_in_times({"D1": "A", "D2": "yes", "D3": ""}, {"D2": "yes "}, 7))
+# the finish review, third round: 9, D1 answered before the arm, the doc broken, then fixed with no
+# answer: a card, never a hail; 10, D3 written answered, reopened, then answered by hand: the hand
+# answer hails; 11, an empty Saved-Items trailer never takes the next line; 12, a capped window whose
+# tip card and end card share a commit: one card naming both
+with3 = lambda t: t.replace("\n---\n", "\n- **D3 — More?** Body.\n\n  ➤ Answer:\n\n---\n", 1)
+r = repo("nine")
+commit(r, doc, "doc", T0)
+subprocess.run(["git", "-C", str(r), "checkout", "-qb", "claude/x"], check=True)
+commit(r, ans(doc, "D1", "A"), "answer D1", T0 + 100)
+commit(r, ans(doc, "D1", "A").replace("- **D2 — Ship it?**", "- **D1 — Ship it?**", 1), "broken", T0 + 200)
+commit(r, ans(doc, "D1", "A") + "\nfixed\n", "fix", T0 + 900)
+nine = short(m.answer_events(r, "refs/heads/claude/x", "docs/d.md", [], None, [], unseen=["D1"], after=T0 + 500))
+r = repo("ten")
+s0 = commit(r, doc, "doc", T0)
+commit(r, ans(with3(doc), "D3", "A"), "D3 came answered", T0 + 100)
+commit(r, with3(doc), "reopen D3", T0 + 200)
+commit(r, ans(with3(doc), "D3", "B"), "answer D3 on GitHub", T0 + 300)
+ten = short(m.answer_events(r, "HEAD", "docs/d.md", [], s0, [], unseen=["D3"], after=T0 + 50))
+r = repo("twelve")
+d1 = ans(doc, "D1", "A")
+commit(r, d1, "doc", T0)
+for i in range(28):
+    commit(r, d1 + "\nfiller %d\n" % i, "filler", T0 + 1 + i)
+commit(r, d1.replace("- **D2 — Ship it?**", "- **D1 — Ship it?**", 1), "broken", T0 + 40)
+commit(r, ans(with3(d1), "D3", "C"), "fix and add D3", T0 + 50)
+twelve = short(m.answer_events(r, "HEAD", "docs/d.md", [], None, [], unseen=["D1", "D3"], after=T0))
+r = repo("thirteen")
+s0 = commit(r, with3(doc), "doc", T0)
+commit(r, ans(with3(doc), "D3", "A"), "D3 answered before the arm", T0 + 10)
+commit(r, with3(doc), "reopen D3", T0 + 100)
+commit(r, ans(ans(with3(doc), "D3", "B"), "D2", "yes"), "D3 and D2 by hand", T0 + 200)
+thirteen = short(m.answer_events(r, "HEAD", "docs/d.md", ["D2"], s0, [], unseen=["D3"], after=T0 + 50))
+print("9", nine, "10", ten, "11", sorted(m.saved_items("x\n\nSaved-Items:\nTaken-By: keel\n")), "12", twelve, "13", thirteen)
+EOF
+)" "2 [('', ['D1'], '')] [('save', ['D1'], 'a Save taken in: its own event acted')] [('', ['D1'], '')]
+3 [] refs/heads/main None
+4 None {} [('unjudged', ['D1'], 'answered in a commit whose par')]
+5 [('', ['D2'], ''), ('save', ['D1'], 'a Save taken in: its own event acted')] [('', ['D2'], '')] ['D1', 'D3']
+6 [('', ['D1'], '')] [('', ['D2'], '')]
+8 [('save', ['D1'], 'a Save taken in: its own event acted')] [('', ['D1'], '')] {'D1': 7}
+9 [('unjudged', ['D1'], 'answered in a commit whose par')] 10 [('new', ['D3'], 'came answered in the commit that wrote it'), ('', ['D3'], '')] 11 [] 12 [('unjudged', ['D1', 'D3'], 'answered in a commit whose par')] 13 [('', ['D2', 'D3'], '')]" \
+  "2: a re-typed answer after a take-in is a person's; the take-in itself is the Save's; a mark with no time never counts · 3: a doc first met looks back over its branch's own commits only · 4: an unreadable parent is a card, never \"came answered\" · 5: Saved-Items: only the items it names are a Save's · 6: an open item's answer past an unreadable parent is a hail; an old answer is never swept into its card · 8: a code commit is no re-ask; an unreadable time never counts; a pull stamps only what it changed · 9: a pre-arm skip forgets the last read: a card, never a hail · 10: a hand answer after a reopen hails · 11: an empty Saved-Items takes no next line · 12: one card per commit · 13: an answer before the arm, then a reopen: the hand answer hails, a gone item pending or not"
 
 echo "sheep pull --plumb — fast-forward first, refuse a held or dirty worktree"
 BP=claude/laptop/2026-10-21-p

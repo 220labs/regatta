@@ -8,6 +8,29 @@
 - `bin/owed`, `hooks/sheep_gate.py` and `tests/owed.sh` are public (keel-held, 2026-10-23): the
   vaults whose `_secrets` stay closed come from the `lighthouse/vaults` key only, and `owed.sh` writes
   its own config dir, with a case for the key and one for the wider net without it.
+- The joint test's two lookout findings (crosstalk S12, 2026-10-23), with its finish review's five
+  (lookout-echo, 2026-10-23). The echo: an answer a Save's take-in wrote is no GitHub answer — its
+  Save's own event hailed already, so the session's checkpoint of a Save it was hailed about raises
+  no second hail. An answer counts as taken in when the pin's `sheep pull` mark (`applied`) holds it
+  and the mark's new `applied_at` is no older than the doc's last change before the answer, so the
+  same words re-typed after a re-ask are a person's while a code commit in between is no re-ask; a
+  mark with no time, or a doc time git cannot read, never counts, and a pull stamps only the items
+  it changed. A plumbed commit names
+  the items it took in in a `Saved-Items:` trailer, and only those are the Save's: a hand-typed
+  answer in the same commit still hails, whatever `Saved-By:` says. The miss: an answer is an event
+  when the last pass did not see the item answered, so an item opened and answered between two
+  passes, or before the first, is judged against the doc at the answer's parent; only answers newer
+  than the arm time count, and an item written already answered is skipped (logged). A pass reads
+  the docs open now or at the last pass and this Mac's pins on a `claude/*` branch deployed or seen
+  within 14 days, so a doc whose only item opened and closed between passes is read too; the state
+  keeps a record for every doc read, open items or none. A doc first met looks back over its
+  branch's own commits since it forked from main (the last 30 only where no main line is there, and
+  past them a card). A doc that does not read at the answer's parent is judged against the
+  doc as it last read in the window: an item open at the last pass hails, and only an unseen item
+  that state cannot account for is a card, never "came answered". An item still in asks but
+  answered at the tip counts as gone, so a poll carrying stale asks never moves the record past the
+  answer; an item written answered stays judged, so a hand answer after a reopen hails; the end
+  card and a tip's card join under one id.
 - The rest of the lookout's fixes before arming (crosstalk S11c, 2026-10-22; items 9–16 and 23–30 of
   `docs/lookout-s5-2026-10-22.md`): a brief whose run did not start is briefed again with its
   `Steps:` hold turned into a `Released:` line, so `keel landing` holds nothing for it; a run takes

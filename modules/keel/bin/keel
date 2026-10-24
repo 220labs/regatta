@@ -5162,7 +5162,9 @@ def sheep_pull(memo, write=False, plumb=False):
         record_touch(p, "save")  # the owner's act from the page, as a form Save was: the doc no longer stands (F9)
     elif new_text != text:
         took = [sv for sv in saves if all(sv is not r for r, _ in refused)]
-        committed = plumb_commit(loc, new_text, what, saved_by=[save_viewer(sv) for sv in took])
+        wrote_ = answers_of(new_text)[0]
+        carried = sorted((d for d, a in wrote_.items() if " ".join(a.split()) and " ".join(a.split()) != " ".join((now.get(d) or "").split())), key=id_key)
+        committed = plumb_commit(loc, new_text, what, saved_by=[save_viewer(sv) for sv in took], items=carried)
         print("  committed %s on %s (%s)" % (committed[0][:7], branch, committed[1]))
         touch_row(pin_row(key, pin), "save")
     done = {(s.get("seq"), s.get("at")) for s in saves}
@@ -5178,8 +5180,10 @@ def sheep_pull(memo, write=False, plumb=False):
         seen[t["id"]] = [c["id"] for c in t["replies"] if own_words(c)]
     wrote = answers_of(new_text)[0]
     applied = {d: " ".join(wrote.get(d, "").split()) for d in answers["items"]}
+    applied_at = take_in_times(applied, now, now_ts())
     update_pin(key, lambda pin: dict(pin, saves=[s for s in pin.get("saves") or [] if (s.get("seq"), s.get("at")) not in done],
                                      applied=dict(pin.get("applied") or {}, **applied),
+                                     applied_at=dict(pin.get("applied_at") or {}, **applied_at),
                                      taken=sorted(set(pin.get("taken") or []) | ids),
                                      seen_replies=dict(pin.get("seen_replies") or {}, **seen),
                                      resolved_seen=sorted(set(pin.get("resolved_seen") or []) | {t["id"] for t in unread}),
@@ -5451,13 +5455,15 @@ def plumb_advance(top, wt, branch, new, old):
         git(top, "update-ref", "refs/heads/" + branch, new, old)
 
 
-def plumb_commit(loc, new_text, what, saved_by=()):
+def plumb_commit(loc, new_text, what, saved_by=(), items=()):
     """One commit of `new_text` at loc's path on top of loc's base, made as pickup's `seed` makes
     one (hash-object, a scratch index, write-tree, commit-tree: no checkout), the branch moved to it
     and pushed. Returns (sha, "pushed" | why not). Its trailer names the tool, not an agent: the
     answer is the page's, and stand and `keel_dates` read it as such. Every Save is taken in (the owner on
     lookout S3's D1, 2026-10-21: "just record who made it"): a `Saved-By:` trailer per viewer whose
-    Save it holds — the room's display name, never verified (`viewer`)."""
+    Save it holds — the room's display name, never verified (`viewer`) — and a `Saved-Items:` trailer
+    naming the D-items it answered, so the lookout on either Mac reads them, and only them, as taken
+    in (lookout-echo, finding 5)."""
     import tempfile
     top, rel = loc["top"], loc["rel"]
     blob_sha = subprocess.run(["git", "-C", str(top), "hash-object", "-w", "--stdin"], input=new_text,
@@ -5470,7 +5476,7 @@ def plumb_commit(loc, new_text, what, saved_by=()):
         tree = subprocess.run(["git", "-C", str(top), "write-tree"], env=env, capture_output=True, text=True, check=True).stdout.strip()
     names = sorted({viewer_name(n) for n in saved_by})
     msg = "Keel: %s — %s, taken in by the lookout\n\n%s\n" % (rel, what, "".join(
-        "%s %s\n" % (SAVED_BY, n) for n in names) + TAKEN_BY)
+        "%s %s\n" % (SAVED_BY, n) for n in names) + ("%s %s\n" % (SAVED_ITEMS, ", ".join(items)) if items else "") + TAKEN_BY)
     sha = subprocess.run(["git", "-C", str(top), "commit-tree", tree, "-p", loc["base"], "-F", "-"], input=msg,
                          capture_output=True, text=True, check=True).stdout.strip()
     plumb_advance(top, loc["wt"], loc["branch"], sha, loc["base"])
@@ -7141,8 +7147,9 @@ def embark_print(rows, hours=EMBARK_HOURS):
 
 # docs/crosstalk-2026-10-20.md, "Lookout": one pass every LOOKOUT_EVERY on each Mac, from helm's ask
 # poll (its S6). Events: a Save drained from a page whose doc has open items and still lacks it (the
-# laptop's pins only — only the laptop holds a Save), an item open at the last pass and answered on
-# origin since by a commit no automation made, and new comments on a page with open items. Each
+# laptop's pins only — only the laptop holds a Save), an item the last pass did not see answered and
+# answered on origin since — by a commit no automation made, nor one taking in a Save (S12) — and
+# new comments on a page with open items. Each
 # finds the doc's session and hails it with a pointer, never the answer's words (K13); a working
 # session waits a pass; with none live, answers on the branch and an open step waiting on them, the
 # pass puts a brief on the branch and dispatches one run (S5, lookout_gone), else raises a card.
@@ -7168,6 +7175,7 @@ LOOKOUT_KEEP_DAYS = 30  # lookout.jsonl keeps this long: past LOOKOUT_DAYS, whic
 PICKUP_PASSING_RE = re.compile(r"run it again|try again|could not fetch|let it finish first|must end, or idle|commits them first", re.I)
 TAKEN_BY = "Taken-By: keel sheep pull --plumb"
 SAVED_BY, SAVED_BY_NONE = "Saved-By:", "(no name)"   # a plumbed commit's trailer per Save's viewer
+SAVED_ITEMS = "Saved-Items:"   # and the D-ids its take-in answered (lookout-echo)
 SESSION_TRAILER_RE = re.compile(r"^Claude-Session:\s*(\S+)\s*$", re.M)
 SESSION_URL_RE = re.compile(r"\bsession_[A-Za-z0-9]{8,}\b")
 HAIL_TEXT = {"save": "a Save from the doc's page is on its branch: keel pull, then act on the answers",
@@ -7281,51 +7289,180 @@ def dispatched(sid, runs):
 
 
 def answers_in(gd, ref, rel):
-    """{D-id: answer} of the doc at `ref`, {} when git or the parse cannot say."""
-    text = git(gd, "show", "%s:%s" % (ref, rel), check=False).stdout if ref else ""
-    try:
-        return answers_of(text)[0] if text else {}
-    except Stop:
+    """{D-id: answer} of the doc at `ref`; {} when the doc is not there (no ref, no such path); None
+    when it is there and git or the parse cannot say — a doc that does not parse, a blob a partial
+    mirror could not fetch. An unreadable doc is never "no answers" (lookout-echo, finding 4: an
+    unseen answer in the commit that fixed a parse error read as written answered, and was skipped)."""
+    if not ref:
         return {}
+    r = git(gd, "ls-tree", "--name-only", ref, "--", rel, check=False)
+    if r.returncode:
+        return None
+    if not r.stdout.strip():
+        return {}
+    text = git(gd, "show", "%s:%s" % (ref, rel), check=False).stdout
+    try:
+        return answers_of(text)[0] if text else None
+    except Stop:
+        return None
 
 
-def not_owners_answer(body, now, got, runs):
+def fork_base(gd, ref):
+    """The main line `ref` forked from, in the same git dir: refs/heads/main or master in helm's
+    poll mirror, refs/remotes/origin/… in a checkout; None when `ref` is that line itself or none
+    exists. A doc first met looks back over its branch's own commits only (lookout-echo, finding 3:
+    a window over main's history raised answers settled a round ago as new)."""
+    full = git(gd, "rev-parse", "--symbolic-full-name", ref, check=False).stdout.strip() or ref
+    pre = "refs/remotes/origin/" if full.startswith("refs/remotes/origin/") else "refs/heads/"
+    for b in ("main", "master"):
+        if pre + b == full:
+            return None
+        if git(gd, "rev-parse", "-q", "--verify", pre + b, check=False).returncode == 0:
+            return pre + b
+    return None
+
+
+def take_in_times(applied, before, ts):
+    """{D-id: ts} for each item a `sheep pull` write changed — the times the pin's mark keeps, which the
+    lookout reads only where the doc's last change before the answer is no newer (lookout-echo). An item the write left as it was keeps its
+    old time, or none: a Save that re-sent an answer typed on GitHub took nothing in, and stamping it
+    would file that answer as the Save's (lookout-echo's finish review)."""
+    return {d: ts for d, a in applied.items() if a and a != " ".join((before.get(d) or "").split())}
+
+
+def saved_items(body):
+    """The D-ids a commit's `Saved-Items:` trailers name (the items its Saves carried), or None when
+    it has none — a commit from before lookout-echo, or no take-in."""
+    found = re.findall(r"^%s[ \t]*(.*)$" % re.escape(SAVED_ITEMS), body, re.M)   # [ \t]: an empty trailer never takes the next line
+    return None if not found else {d for v in found for d in re.split(r"[,\s]+", v) if d}
+
+
+def not_owners_answer(body, now, got, runs, own_save=True):
     """Why a commit's answers are not a person's and wake nobody, or None: stand
     --apply's trailer, keel yolo's `Taken unattended`, a dispatched run's session, the lookout's own
-    plumbed Save (its Save event has acted already)."""
+    plumbed Save (its Save event has acted already) — unless `own_save` is False: the commit's
+    Saved-Items name what the Save carried, and the rest of it is judged."""
     if STOOD_TRAILER in body:
         return "stand --apply's"
     if any(YOLO_ANSWER_RE.match(now.get(d) or "") for d in got):
         return "keel yolo's"
-    if TAKEN_BY in body:
+    if own_save and TAKEN_BY in body:
         return "the lookout's own Save"
     if any(dispatched(s, runs) for s in session_marks(body)):
         return "a dispatched run's"
     return None
 
 
-def answer_events(gd, ref, rel, items, since, runs):
-    """[{sha, items, skip, sessions}]: each commit on `ref` past `since` (the last pass's tip; the
-    last 30 doc commits when it is unknown or rewritten) that answered one of `items` — open at the
-    last pass, empty before it and not after. Oldest first."""
+def answer_events(gd, ref, rel, items, since, runs, unseen=(), after=0, applied=None, applied_at=None):
+    """[{sha, part, items, skip, sessions}]: each commit on `ref` past `since` (the last pass's tip;
+    when it is unknown or rewritten, the branch's own commits since it forked from main, or the last
+    30 doc commits where no main line is there) that answered one of `items` — open at the last pass,
+    empty before it and not after. Oldest first.
+    `unseen` (S12, the joint test's miss): items the last pass never saw, open nor answered, that
+    are answered now — opened and answered between two passes, or before the first. Each is judged
+    the same way against the doc at its answer's parent, by a commit newer than `after` only (the arm
+    time: an answer older is no event); one absent from that parent came answered with the item
+    (part `new`, skipped, and still judged should a later commit reopen and answer it). One whose answer the window cannot reach — 30 commits, all newer than
+    `after` — is part `unjudged`, a card: never dropped unseen. A commit whose parent's doc git
+    cannot read or parse is judged against the doc as it last read in the window; an unseen item that
+    state cannot account for is part `unjudged` too (lookout-echo, finding 4, narrowed in round two).
+    `applied`: the pin's `sheep pull` mark (the answers its last write took in), `applied_at` when it
+    took each in. An item answered as that mark says, where the doc's last change before the commit
+    is no newer than the take-in, is a Save taken in — the mark grows forever, and an answer re-typed with the same words
+    after it is a person's (lookout-echo, finding 2); a mark with no time never counts. A commit with
+    `Saved-Items:` trailers (plumb_commit's) names the items its Saves carried: those are the Save's,
+    the rest are judged (finding 5). The Save's own event hailed already, so its items are part
+    `save`, skipped (S12, the joint test's echo)."""
     if since and git(gd, "merge-base", "--is-ancestor", since, ref, check=False).returncode == 0:
-        rng = ["%s..%s" % (since, ref)]
+        rng, capped, start = ["%s..%s" % (since, ref)], False, since
     else:
-        rng = ["-n", "30", ref]
-    raw = git(gd, "log", "--reverse", "--format=%H%x1f%P%x1f%B%x1e", *rng, "--", rel, check=False).stdout
-    pending, out = set(items), []
+        base = fork_base(gd, ref)
+        rng, capped = (["%s..%s" % (base, ref)], False) if base else (["-n", "30", ref], True)
+        start = git(gd, "merge-base", base, ref, check=False).stdout.strip() if base else ""
+    raw = git(gd, "log", "--reverse", "--format=%H%x1f%P%x1f%ct%x1f%B%x1e", *rng, "--", rel, check=False).stdout
+    recs = []
     for rec in raw.split("\x1e"):
         parts = rec.strip("\n").split("\x1f")
-        if len(parts) < 3 or not pending:
+        if len(parts) >= 4:
+            recs.append((parts[0], parts[1].split(), int(parts[2] or 0), parts[3]))
+    unseen = set(unseen)
+    pending, out = set(items) | unseen, []
+    came = set()   # unseen items that came answered (part new): still judged, should a later commit reopen and answer them
+    # the doc as it last read in the window — at its start until a commit in it reads; None when the
+    # start does not read or is unknown (the capped window). A commit whose parent's doc does not read
+    # is judged against it (lookout-echo's finish review: an open item's answer there was a card, not a hail)
+    last = [answers_in(gd, start, rel) if start else None]
+    norm = lambda s: " ".join((s or "").split())
+
+    def taken_in(d, parents):   # the pin's mark says this answer is the one its take-in wrote, then
+        if not (applied and applied_at and d in applied and norm(now.get(d)) == norm(applied[d])):
+            return False
+        # the doc's last change before this commit, not the parent itself: a code commit between the
+        # take-in and the doc's checkpoint is no re-ask; a time git cannot read never counts (fail closed)
+        at = git(gd, "log", "-1", "--format=%ct", parents[0], "--", rel, check=False).stdout.strip() if parents else ""
+        try:
+            return bool(at) and float(applied_at.get(d) or 0) >= int(at)
+        except (TypeError, ValueError):
+            return False
+    for sha, parents, ct, body in recs:
+        if not pending:
+            break
+        if pending <= unseen and ct <= after:   # only unseen items left, and this commit predates the arm
+            last[0] = None   # its doc went unread: a later unreadable parent is judged against nothing, a card
             continue
-        sha, parents, body = parts[0], parts[1].split(), parts[2]
         now = answers_in(gd, sha, rel)
+        if now is None:   # unreadable here: the next commit that reads is judged against it, as a card
+            continue
         before = answers_in(gd, parents[0], rel) if parents else {}
-        got = sorted((d for d in pending if (now.get(d) or "").strip() and not (before.get(d) or "").strip()), key=id_key)
-        if got:
-            pending -= set(got)
-            out.append({"sha": sha, "items": got, "skip": not_owners_answer(body, now, got, runs),
-                        "sessions": session_marks(body)})
+        marks = session_marks(body)
+        shaky, prior = before is None, last[0]
+        last[0] = now
+        if shaky:   # items open at the last pass were empty at `since`; an unseen one is known only if `prior` holds it
+            before = prior or {}
+        got = [d for d in pending if (now.get(d) or "").strip() and not (before.get(d) or "").strip()]
+        if not got:
+            continue
+        pending -= {d for d in got if not (d in unseen and ct <= after)}   # pre-arm: still pending, as the skip leaves it
+        came -= set(got)
+        got = [d for d in got if not (d in unseen and ct <= after)]
+        if shaky:
+            odd = sorted((d for d in got if d in unseen and d not in before), key=id_key)
+            if odd:
+                out.append({"sha": sha, "part": "unjudged", "items": odd, "skip": None, "sessions": marks,
+                            "card": "answered in a commit whose parent's doc does not read — look at it"})
+            got = [d for d in got if d not in odd]
+        new = sorted((d for d in got if d in unseen and d not in before), key=id_key)
+        got = sorted((d for d in got if d not in new), key=id_key)
+        pending |= set(new)
+        came |= set(new)
+        if new:
+            out.append({"sha": sha, "part": "new", "items": new, "skip": "came answered in the commit that wrote it",
+                        "sessions": marks})
+        if not got:
+            continue
+        carried = saved_items(body)
+        if carried is not None:
+            took = [d for d in got if d in carried]
+            skip = not_owners_answer(body, now, [d for d in got if d not in carried], runs, own_save=False)
+        else:
+            skip = not_owners_answer(body, now, got, runs)
+            took = [] if skip else [d for d in got if taken_in(d, parents)]
+        rest = [d for d in got if d not in took]
+        if rest:
+            out.append({"sha": sha, "part": "", "items": rest, "skip": skip, "sessions": marks})
+        if took:
+            out.append({"sha": sha, "part": "save", "items": took, "sessions": marks, "skip": "the lookout's own Save"
+                        if TAKEN_BY in body else "a Save taken in: its own event acted"})
+    left = sorted(pending & unseen - came, key=id_key)
+    if left and capped and len(recs) >= 30 and recs[0][2] > after:
+        card = "answered before the lookout saw it open, past the doc's last 30 commits — look at it"
+        same = [e for e in out if e["sha"] == recs[-1][0] and e["part"] == "unjudged"]
+        if same:   # one event id per commit and part: the pass keeps one card per id, so join the tip's card
+            same[0]["items"] = sorted(set(same[0]["items"]) | set(left), key=id_key)
+            same[0]["card"] += "; " + card
+        else:
+            out.append({"sha": recs[-1][0], "part": "unjudged", "items": left, "skip": None, "sessions": [],
+                        "card": card})
     return out
 
 
@@ -7780,7 +7917,7 @@ def lookout_gone(ev, kind, row, laptop, dry):
     ref = ev["view"] if kind == "answer" and ev["view"] else (top, "refs/heads/" + branch)
     sha = git(ref[0], "rev-parse", ref[1], check=False).stdout.strip()
     if kind == "answer":   # the answer's own commit, not a tip that moved on since (S11c item 14)
-        sha = ev["id"].partition(":")[2] or sha
+        sha = ev["id"].split(":")[1] if ev["id"].count(":") else sha   # answer:<sha>[:<part>]
     sets, slug, plan = set_at(ref[0], ref[1], ev["rel"])
     # a dry pass never writes the Save onto the branch it reads: its items count as answered (S11c item 23)
     steps, where = waiting_steps(git(ref[0], "show", "%s:%s" % (ref[1], ev["rel"]), check=False).stdout, ev["items"],
@@ -8108,6 +8245,27 @@ def lookout_armed():
     return (state_dir() / LOOKOUT_ARMED).is_file()
 
 
+def lookout_after():
+    """The time an answer the lookout never saw open must be newer than to count (S12): the arm
+    time, so the first armed pass does not fire on every old answered doc; a dry pass on a disarmed
+    Mac looks back one pass. Never past lookout.jsonl's horizon, whose rows remember the acts."""
+    try:
+        at = float(json.loads((state_dir() / LOOKOUT_ARMED).read_text()).get("ts"))
+    except (OSError, ValueError, AttributeError, TypeError):
+        at = now_ts() - LOOKOUT_EVERY
+    return max(at, now_ts() - LOOKOUT_KEEP_DAYS * 86400)
+
+
+def seen_answered(was, gd, rel):
+    """The items the last pass saw answered: its record's `answered`; a record from before S12 has
+    none, so the doc at its tip says (one pass after the upgrade); none for a doc never seen."""
+    if not was:
+        return []
+    if isinstance(was.get("answered"), list):
+        return was["answered"]
+    return [d for d, a in (answers_in(gd, was.get("tip"), rel) or {}).items() if a.strip()] if was.get("tip") else []
+
+
 def lookout_arm(on):
     # arming starts runs since S5: the owner's yes (AGENTS.md, Traps); disarming is the safe way and
     # stays open to an unattended run that sees the lookout misbehave (S5 landing review)
@@ -8148,24 +8306,59 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
                 raise Stop("no SPACESHEEP_KEY")
             mcp_box[0] = Mcp(k)
         return mcp_box[0]
-    # GitHub: an item open at the last pass and answered at origin's tip now
-    for key in sorted(set(prev["open"]) | set(asks)):
+    # GitHub: an item the last pass did not see answered and answered at origin's tip now — open at
+    # the last pass, or never seen (S12: opened and answered between two passes, or before the first).
+    # The docs read: those open now or at the last pass, and this Mac's pins on a session's branch
+    # deployed or seen within LOOKOUT_DAYS — a doc whose only item opened and closed between two
+    # passes has no open item at either (lookout-echo, finding 1; the managing session's call:
+    # "recent course docs" are docs with a page, helm's poll stays as it is). A pin alone is read
+    # from helm's mirror or the last fetch, never fetched for: a landed branch is pruned there.
+    after, horizon = lookout_after(), now_ts() - LOOKOUT_DAYS * 86400
+    def session_branch(k):
+        try:
+            return key_parts(k)[1].startswith("claude/")
+        except Stop:
+            return False
+    watched = {k for k, r in prev["open"].items() if (r or {}).get("items")} | set(asks)
+    paged = {k for k, pin in pinned.items() if isinstance(pin, dict) and drain_due_ts(pin) >= horizon
+             and session_branch(k)} - watched
+    for key in sorted(watched | paged):
         name, branch, rel = key_parts(key)
         top = tops.get(name)
-        view = origin_view(top, branch, fetch_first=not dry) if top else None
+        view = origin_view(top, branch, fetch_first=not dry and key not in paged) if top else None
         tip = git(view[0], "rev-parse", view[1], check=False).stdout.strip() if view else ""
-        if key in asks:
-            new_open[key] = {"items": asks[key], "tip": tip}
+        at_tip = answers_in(view[0], tip, rel) if tip else None
+        answered = sorted((d for d, a in at_tip.items() if a.strip()), key=id_key) if at_tip is not None else None
         was = prev["open"].get(key)
-        gone = [d for d in (was or {}).get("items") or [] if d not in asks.get(key, [])]
-        if was and gone and not view:   # origin unread this pass: keep the last record, look again next pass
-            new_open[key] = was
+        # every doc read keeps its record, open items or none, so a closed doc that gains an item is
+        # no first meeting (finding 5 of the review list); a pin's lapses with its horizon
+        if view and answered is not None:
+            # open items only: one answered at the tip is settled here, never gone again on a later
+            # pass while stale asks list it (a rewrite would find its answer under a new sha)
+            new_open[key] = {"items": [d for d in asks.get(key, []) if d not in answered], "tip": tip, "answered": answered}
+        elif was:   # origin unread, or the doc unreadable at its tip: the last record stands, read again next pass
+            new_open[key] = was if [d for d in was.get("items") or [] if d not in asks.get(key, [])] else \
+                dict(was, items=[d for d in asks.get(key, []) if d not in (was.get("answered") or [])])
             continue
-        if not (was and gone):
+        elif key in asks:
+            new_open[key] = {"items": asks[key], "tip": ""}
             continue
-        for a in answer_events(view[0], view[1], rel, gone, was.get("tip"), runs):
-            events.append({"doc": key, "kind": "answer", "id": "answer:" + a["sha"], "items": a["items"],
-                           "skip": a["skip"], "sessions": a["sessions"], "top": top, "branch": branch, "rel": rel, "view": view})
+        if not view or answered is None:
+            continue
+        # an item still in asks but answered at the tip is gone too: a scan that carried stale asks would
+        # otherwise move the record's tip past the answer, and no later window would hold it (S12's third round)
+        gone = [d for d in (was or {}).get("items") or [] if d not in asks.get(key, []) or d in answered]
+        seen = set((was or {}).get("items") or []) | set(seen_answered(was, view[0], rel))
+        unseen = [d for d in answered or [] if d not in seen]
+        if not (gone or unseen):
+            continue
+        applied, applied_at = ((pinned.get(key) or {}).get(f) for f in ("applied", "applied_at"))
+        for a in answer_events(view[0], view[1], rel, gone, (was or {}).get("tip"), runs, unseen=unseen, after=after,
+                               applied=applied if isinstance(applied, dict) else None,
+                               applied_at=applied_at if isinstance(applied_at, dict) else None):
+            events.append(dict({"doc": key, "kind": "answer", "id": "answer:" + a["sha"] + (":" + a["part"] if a["part"] else ""),
+                                "items": a["items"], "skip": a["skip"], "sessions": a["sessions"], "top": top,
+                                "branch": branch, "rel": rel, "view": view}, **({"card": a["card"]} if a.get("card") else {})))
     # the pages of docs with open items: Saves (the laptop's), then comments; the drain's breaker —
     # three spacesheep failures in a row end the pages for this pass (each can wait 30 s)
     fails = 0
@@ -8246,6 +8439,8 @@ def lookout_act(ev, here, laptop, runs, dry):
         # another host's GitHub answer is that host's lookout's, to hail as to start (S11 item 17: each
         # Mac's lookout.jsonl is its own, so both would hail); a Save or a comment is only the laptop's
         return dict(row, action="skipped", why="another host's branch: its own lookout acts on a GitHub answer")
+    if ev.get("card"):   # an answer the lookout cannot judge (S12): the owner's to look at, once
+        return dict(row, action="card", card="%s %s %s" % (ev["doc"], ", ".join(ev["items"]), ev["card"]))
     # origin's history first (the newest trailer is there), else the local branch
     ref = ev["view"] or ((ev["top"], "refs/heads/" + ev["branch"]) if ev["top"] and git(
         ev["top"], "rev-parse", "-q", "--verify", "refs/heads/" + ev["branch"], check=False).returncode == 0 else None)
