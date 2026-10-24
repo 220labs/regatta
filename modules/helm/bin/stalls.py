@@ -722,6 +722,33 @@ ORCA_TIMEOUT = 120
 DOC_ITEM_RE = re.compile(r"(?P<doc>[\w./~-]+\.md)(?:#|:|\s+|\s*,\s*)(?P<item>D\d+)\b")
 
 
+# S13a: the notes that say Orca did not answer — the dead-man's count (stalls_tick.ORCA_UNREAD_PASSES) counts
+# only these, never a warning Orca answered with (a registry the adapter could not read, a harness stderr
+# line beside its JSON), which would turn every ping on a yard into a --fail. Each maps to fixed words, the
+# only text a --fail carries off the machine (K6: no run id, path or exception message). A Run with no
+# coordinator is left out: Orca answered, and a Run may have none. One Run's task-list unread is left out
+# too — the adapter cannot tell an Orca that did not answer from one that answered an error for a Run it no
+# longer knows, which would --fail every pass — so only "no Run's task-list answered" counts (the landing
+# review). The judge's own failure counts: three in a row is a yard that reads no Orca, which the switch
+# is for, and its words say it was the judge.
+ORCA_DEAD = ((re.compile(r"^orca: harness list did not answer"), "harness list did not answer"),
+             (re.compile(r"^orca: harness list printed no JSON"), "harness list printed no JSON"),
+             (re.compile(r"^orca: harness not installed"), "harness not installed"),
+             (re.compile(r"^orca: no Run's task-list answered"), "no Run's task-list answered"),
+             (re.compile(r"^orca: no reader"), "no Orca reader (wharf-runs not installed)"),
+             (re.compile(r"^orca: the judge failed \((\w+)"), "the judge failed (%s)"))
+
+
+def orca_dead(notes):
+    """The fixed words of the first note that says Orca did not answer, or None."""
+    for n in notes or []:
+        for rx, words in ORCA_DEAD:
+            m = rx.match(str(n))
+            if m:
+                return words % m.group(1) if m.groups() else words
+    return None
+
+
 def orca_on():
     """STALLS_ORCA=0 turns the Orca read off (the tests that are not about it: never the real app)."""
     return os.environ.get("STALLS_ORCA", "1") not in ("0", "", "off")
@@ -818,10 +845,14 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
     # Orca keeps every Dispatch it ever ran: a Run no plan owns is read only while one of its
     # Dispatches could still be a stall — its worktree there, not stopped (calls grow with history)
     live_runs = {run for run, rs in by_run.items() if any(r.get("branch") and r.get("state") != "canceled" for r in rs)}
-    for run in sorted(live_runs | set(owned)):
+    asked_runs, unread_runs = sorted(live_runs | set(owned)), 0
+    for run in asked_runs:
         tasks = ad.tasks(ctx, run)
         if tasks is None:
             notes.append("orca: task-list --run %s unread: its workers are not judged this tick" % run)
+            unread_runs += 1
+            if unread_runs == len(asked_runs):   # the last asked, and none answered: what the dead-man's count reads (S13a)
+                notes.append("orca: no Run's task-list answered (%d asked)" % unread_runs)
             continue
         tmap = {t.get("id"): t for t in tasks}
         plan = owned.get(run) or {}
@@ -1025,7 +1056,9 @@ def judge(peer=True, live_call=True, orca_held=None):
         return {"as_of": now, "host": me, "hosts": [], "stalls": [], "unsure": [],
                 "notes": ["stalls: wharf-runs not installed (dispatch-rc, its harness adapter) — no runs to judge"], "runs": [],
                 # nothing was read: the stall road closes no issue on this pass's absences
-                "unread": {"hosts": [], "launches": True, "orca": True, "skippers": True}}
+                "unread": {"hosts": [], "launches": True, "orca": True, "skippers": True},
+                # counted only while the Orca read is on: STALLS_ORCA=0 reads no Orca, so none went unread
+                "orca_dead": orca_dead(["orca: no reader"]) if orca_on() else None}
     views, notes = {me: local_view(rc, ad)}, []
     if peer:
         for h, alias in sorted(peers().items()):
@@ -1067,7 +1100,7 @@ def judge(peer=True, live_call=True, orca_held=None):
     stalls += s
     notes += n
     unread["launches"] = bool(n)
-    orca_runs = []
+    orca_runs, dead = [], None
     if orca_on() and orca_held:
         # the studio brake freezes Orca serve's tree: a read would spend ORCA_TIMEOUT and read nothing (S11)
         notes.append("orca: not read — the studio brake holds (%s)" % orca_held)
@@ -1082,6 +1115,7 @@ def judge(peer=True, live_call=True, orca_held=None):
         unsure += u
         notes += n
         unread["orca"] = bool(n)
+        dead = orca_dead(n)   # what the dead-man's count counts and names (S13a): a warning Orca answered with is not it
     stalls += judge_plans(me, live_ids, all_records, now)
     k = len(notes)
     stalls += judge_skippers(me, now, notes)
@@ -1105,7 +1139,7 @@ def judge(peer=True, live_call=True, orca_held=None):
                if x.get("state") == "input-required"]
     own, torn = self_judging()
     return {"as_of": now, "host": me, "hosts": sorted(views), "stalls": stalls, "unsure": unsure, "notes": notes,
-            "runs": runs, "waiting": waiting, "prompts": prompts, "unread": unread,
+            "runs": runs, "waiting": waiting, "prompts": prompts, "unread": unread, "orca_dead": dead,
             "self_judging": sorted(own), "registry_torn": torn}
 
 

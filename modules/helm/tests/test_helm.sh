@@ -1945,6 +1945,13 @@ nap; SY=$NAP
 mkrec dock sk-y $SY "$(( $(now) - 60 ))" 20260104-000000-00a1
 out=$(SK ensure act); has "$out" "skipper · dock: waits: start 20260104-000000-00a1 is" "a live pid not yet registered, 60 s old: waits"
 hasnt "$out" "failed start" "  never a failed start"
+# S13a: a brake window by hand (`bwin <dir> <start> <end>`, epoch seconds), the record helmlib reads
+bwin() { mkdir -p "$1"; printf '{"windows": [[%s, %s]], "since": null, "seen": null, "pass": null}' "$2" "$3" > "$1/brake-windows.json"; }
+bwin "$STALLS_STATE_DIR" $(( $(now) - 400 )) $(( $(now) - 60 ))
+mkrec dock sk-y $SY "$(( $(now) - 400 ))" 20260104-000000-00a1
+out=$(SK ensure act); has "$out" "skipper · dock: waits: start 20260104-000000-00a1 is" "a start 400 s old, 340 s of them under the studio brake: its own 60 s, it waits (S13a)"
+hasnt "$out" "failed start" "  never a failed start"
+rm -f "$STALLS_STATE_DIR/brake-windows.json"
 mkrec dock sk-y $SY "$(( $(now) - 400 ))" 20260104-000000-00a1
 out=$(SK ensure act); has "$out" "stopped skipper · dock (failed start: no ship taken in 6m" "  400 s old and still no ship: a failed start"
 # a registry record left over a reboot names a pid another process holds now: its start tells them apart
@@ -2267,6 +2274,15 @@ CLAUDE_CODE_SESSION_ID=sk-7 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --sco
 check "$(lf df1 gen)" "$((g6 + 2))" "  the next skipper holds it at gen + 2"
 out=$(SK ensure act)
 has "$out" "re-hailed df1 docs/q.md#D1 to skipper · dock at gen $((g6 + 2))" "  and hears the open question again, at its own gen"
+# S13a: a ship the yard holds that this healthy skipper's sidecar has not taken in 16 minutes — unless the brake froze it
+lay df9 dock
+python3 -c 'import json, sys, time; p = sys.argv[1]; r = json.load(open(p)); r["since"] = time.time() - 1000; open(p, "w").write(json.dumps(r))' "$LP/df9/skipper.json"
+mkrec dock sk-7 $SP "$(( $(now) - 1000 ))" 20260108-000000-0002
+has "$(SK ensure dry)" "would stop: its sidecar has taken df9 in 15m" "a yard-held ship its sidecar left 16 minutes: the skipper would be stopped"
+bwin "$STALLS_STATE_DIR" $(( $(now) - 990 )) $(( $(now) - 30 ))
+hasnt "$(SK ensure dry)" "its sidecar has taken" "  the same 16 minutes, all but 40 s of them under the studio brake: not stopped (S13a)"
+rm -f "$STALLS_STATE_DIR/brake-windows.json"; rm -rf "$LP/df9"
+mkrec dock sk-7 $SP "$(now)" 20260108-000000-0002
 check "$(SK open df1)" "2" "the open questions a skipper may answer: listed (D1, D2)"
 # an escalation is marked on the ask: a later report of the block's status never un-escalates it
 out=$(CLAUDE_CODE_SESSION_ID=other-9 "$LX/helm" skipper --escalate df1 D1 2>&1); check "$?" "4" "--escalate from a session that holds no lease of the ship: fenced, exit 4"
@@ -2704,6 +2720,10 @@ echo "  a question on a yard's ship: unanswered 15 minutes, a failed open tried 
 PLAN_NO_RENDER=1 "$HM" report r3 --task q1 --status relayed --ask docs/q.md#D2 --summary "which one" --reversible yes --recommended A > /dev/null
 N0=$(now); cn
 out=$(TK $((N0 + 700))); check "$(ncalls)" "$C" "a relay 11 minutes old: not yet"
+# S13a: as the deaf rule, the skipper's 15 minutes are its own: a 10-minute brake window inside them is not charged
+printf '{"windows": [[%s, %s]], "since": null, "seen": null, "pass": null}' "$N0" "$((N0 + 600))" > "$STALLS_STATE_DIR/brake-windows.json"
+out=$(TK $((N0 + 960))); check "$(ncalls)" "$C" "a relay 16 minutes old, 10 of them under the studio brake: not yet"
+rm -f "$STALLS_STATE_DIR/brake-windows.json"
 out=$(GH_FAIL=1 TK $((N0 + 960)))
 has "$out" "escalated r3/q1 on testhost: docs/q.md#D2 unanswered: none — github-issue: gh: HTTP 401: Bad credentials" "  16 minutes, the API refusing: road none, said"
 check "$(erow -1 '(r["road"], r["issue"], r.get("transient"))')" "('none', None, True)" "  the row kept as a transient failure"
@@ -3216,5 +3236,262 @@ has "$(STALLS_STATE_DIR="$S11/escst" STALLS_ESCALATIONS="$S11/esc.jsonl" python3
 unset STALLS_NOW DM_EXIT HELM_DEADMAN HELM_LAUNCHCTL WHARF_LAUNCHCTL STALLS_HARNESS SURFACES_HOST CLAUDE_REPOS_JSON STALLS_LOG STALLS_STATE_DIR PLAN_NO_SKIPPERS
 export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json" STALLS_ORCA=0 PLAN_NO_WHARF=1 STALLS_PEERS= STALLS_REPOS=
 
+
+echo "before sitting A (skipper-resilience S13a): an Orca that does not answer, the skipper clocks through a brake, the ping's reserved time"
+# Stubs only, as S11's: the harness and orca (the Orca read; down while orca.down exists) and deadman append
+# to one sequence file; the yard is this host by S8's registry; the brake is the file in HOME. Every Python
+# harness is a file, never a heredoc inside $(…) (bash 3.2).
+S13="$T/s13"; mkdir -p "$S13/hd" "$S13/st" "$S13/plans" "$S13/sess"
+cat > "$S13/harness" <<EOF
+#!/bin/sh
+echo "orca \$*" >> "$S13/seq"
+[ -e "$S13/orca.down" ] && { echo "orca is not answering"; exit 1; }
+[ -e "$S13/orca.warn" ] && echo "adapter claude-code: its sessions unread" >&2
+echo '[]'
+EOF
+cat > "$S13/orca" <<EOF
+#!/bin/sh
+[ -e "$S13/orca.down" ] && { echo "the app is not answering" >&2; exit 1; }
+case "\$2" in
+  task-list) echo '{"ok": true, "result": {"tasks": []}}';;
+  run-show) echo '{"ok": true, "result": {"run": {"coordinator_handle": "term-1"}}}';;
+  *) echo '{"ok": true, "result": {"messages": []}}';;
+esac
+EOF
+cat > "$S13/deadman" <<EOF
+#!/usr/bin/env python3
+import os, sys, time
+open("$S13/seq", "a").write("ping " + " ".join(sys.argv[2:]) + "\n")
+if os.environ.get("DM_SLEEP"):
+    time.sleep(float(os.environ["DM_SLEEP"]))
+print("pinged for " + sys.argv[2])
+EOF
+chmod +x "$S13/harness" "$S13/orca" "$S13/deadman"
+export PLANS_DIR="$S13/plans" STALLS_LOG="$S13/stalls.jsonl" STALLS_STATE_DIR="$S13/st" CLAUDE_REPOS_JSON="$S8/repos.json" \
+       SURFACES_FILE="$S8/surfaces.json" SURFACES_HOST=testhost STALLS_PEERS= STALLS_REPOS= PLAN_NO_SKIPPERS=1 PLAN_NO_WHARF=1 \
+       STALLS_ORCA=1 STALLS_HARNESS="$S13/harness" HARNESS_ORCA="$S13/orca" HELM_DEADMAN="$S13/deadman" \
+       HELM_LAUNCHCTL="$S11/launchctl" WHARF_LAUNCHCTL="$S11/false-launchctl" ASK_SESSIONS_DIR="$S13/sess"
+unset DM_SLEEP STALLS_DEADLINE STALLS_NOW
+T13() { env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HOME="$S13/hd" "$LX/helm" tick "$@" 2>&1; }
+pings13() { [ -e "$S13/seq" ] && grep '^ping' "$S13/seq" | tr '\n' '|' | sed 's/|$//' || true; }
+n13() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["n"])' "$S13/st/orca-unread.json" 2>/dev/null || echo none; }
+rm -f "$S13/seq"
+
+echo "  an Orca that does not answer: plain twice, then --fail on the third unread pass in a row"
+: > "$S13/orca.down"
+T13 > /dev/null; T13 > /dev/null; out=$(T13)
+check "$(pings13)" "ping testhost|ping testhost|ping testhost" "no ship here has an Orca Run: three unread passes stay plain"
+has "$out" "deadman: Orca unread 3 passes in a row, no ship here has an Orca Run — the ping stays plain" "  and the tick says why"
+check "$(n13)" "3" "  the count is kept in the tick's state dir"
+rm -f "$S13/seq" "$S13/st/orca-unread.json"
+LP="$PLANS_DIR"
+"$HM" $SHIP s13o --id s13o > /dev/null; "$HM" task s13o b1 > /dev/null
+cat > "$S13/orca_run.py" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d.setdefault("blueprints", {})["dock"] = {"orca_run": "run-s13"}
+open(p, "w").write(json.dumps(d))
+PY
+python3 "$S13/orca_run.py" "$LP/s13o/plan.json"
+out=$(T13); check "$(pings13)" "ping testhost" "a ship with an Orca Run, Orca unread once: plain"
+hasnt "$out" "Orca unread" "  and no line of the count"
+out=$(T13); check "$(pings13)" "ping testhost|ping testhost" "  twice: plain"
+out=$(T13)
+check "$(pings13)" "ping testhost|ping testhost|ping testhost --fail --why orca unread: harness list printed no JSON" \
+  "  the third unread pass in a row: --fail, the why the Orca note in one line"
+has "$out" "deadman: Orca unread 3 passes in a row — the ping is a --fail" "  said in the tick's lines"
+rm -f "$S13/seq"
+T13 > /dev/null; check "$(pings13)" "ping testhost --fail --why orca unread: harness list printed no JSON" "  a fourth: --fail still"
+rm -f "$S13/seq" "$S13/orca.down"
+out=$(T13); check "$(pings13)/$(n13)" "ping testhost/0" "Orca read again: a plain ping, the count reset"
+hasnt "$out" "Orca unread" "  and no line of it"
+rm -f "$S13/seq"
+: > "$S13/orca.down"; T13 > /dev/null; T13 > /dev/null
+: > "$S13/hd/.studio-brake"; out=$(T13)
+check "$(n13)" "0" "two unread passes, then a braked one: the count reset (no read is made under the brake)"
+rm -f "$S13/hd/.studio-brake"; T13 > /dev/null
+check "$(pings13)" "ping testhost|ping testhost|ping testhost --braked|ping testhost" "  so the next unread pass is the first again: plain"
+rm -f "$S13/seq"; T13 > /dev/null; T13 > /dev/null; rm -f "$S13/seq"
+: > "$S13/hd/.studio-brake"; out=$(T13)
+check "$(pings13)" "ping testhost --braked" "past three unread, the brake on: --braked, never --fail"
+rm -f "$S13/hd/.studio-brake" "$S13/seq" "$S13/st/orca-unread.json"
+out=$(T13 --dry-run); out=$(T13 --dry-run); out=$(T13 --dry-run)
+check "$(pings13)/$(n13)" "/none" "--dry-run pings nothing and counts nothing"
+T13 > /dev/null; T13 > /dev/null; rm -f "$S13/seq"
+out=$(STALLS_NOW=notanumber T13)
+check "$(pings13)/$(n13)" "ping testhost --fail --why helm tick: ValueError in clock/2" "a pass that raises: its own --fail, the count kept as it was"
+rm -f "$S13/seq" "$S13/st/orca-unread.json"
+for i in 1 2 3; do out=$(env -u CLAUDE_UNATTENDED -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID=sess-s13 HOME="$S13/hd" "$LX/helm" tick 2>&1); done
+check "$(pings13)/$(n13)" "/none" "a session's tick neither pings nor counts (only launchd's tick pings)"
+has "$out" "deadman: not pinged — the tick runs inside session sess-s13" "  for the session's refusal"
+rm -f "$S13/orca.down"; : > "$S13/orca.warn"
+out=$(T13); out=$(T13); out=$(T13)
+check "$(pings13)/$(n13)" "ping testhost|ping testhost|ping testhost/0" "a warning Orca answered with (the board's unread flag): never counted, three passes plain"
+rm -f "$S13/orca.warn" "$S13/seq"
+cat > "$S13/dead.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import stalls
+for n in sys.argv[2:]:
+    print(stalls.orca_dead([n]))
+PY
+check "$(python3 "$S13/dead.py" "$B" "orca: harness list did not answer (TimeoutExpired)" "orca: task-list --run run-transcripts-1 unread: its workers are not judged this tick" \
+        "orca: no Run's task-list answered (2 asked)" "orca: the judge failed (KeyError: 'transcripts at /x/y')" "orca: adapter claude-code: its sessions unread" "orca: run r1 names no coordinator: its questions are unread")" \
+  "harness list did not answer
+None
+no Run's task-list answered
+the judge failed (KeyError)
+None
+None" "the --fail's words are fixed (K6: no run id, path or message leaves); one Run unread, a warning or a Run with no coordinator is no dead Orca"
+
+echo "  no yard set: both Macs as today — no count, no brake record, the deadline untouched"
+rm -rf "$S13/st"; mkdir -p "$S13/st"; rm -f "$S13/seq"; : > "$S13/orca.down"
+"$HM" $SHIP s13n --id s13n > /dev/null; "$HM" task s13n b1 > /dev/null; ll yard s13n dock > /dev/null   # a lease held here: the brake record is the yard's, not the lease's
+for i in 1 2 3; do CLAUDE_REPOS_JSON="$S8/noyard.json" T13 > /dev/null; done
+: > "$S13/hd/.studio-brake"; CLAUDE_REPOS_JSON="$S8/noyard.json" T13 > /dev/null; rm -f "$S13/hd/.studio-brake"
+CLAUDE_REPOS_JSON="$S8/noyard.json" T13 > /dev/null
+check "$(pings13)/$(ls "$S13/st" | grep -c 'orca-unread\|brake-windows' | tr -d ' ')" "/0" "no ping, and neither new record written"
+rm -f "$S13/orca.down"
+cat > "$S13/reserve.py" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import stalls_tick
+before = os.environ.get("STALLS_DEADLINE")
+with stalls_tick.ping_reserved():
+    inside = os.environ.get("STALLS_DEADLINE")
+print(before, inside, os.environ.get("STALLS_DEADLINE"))
+PY
+check "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED CLAUDE_REPOS_JSON="$S8/noyard.json" STALLS_DEADLINE=5000 python3 "$S13/reserve.py" "$B")" \
+  "5000 5000 5000" "no yard: the passes keep ask poll's deadline as it is"
+check "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED STALLS_DEADLINE=5000 python3 "$S13/reserve.py" "$B")" \
+  "5000 4960 5000" "a yard: the passes see it 40 s sooner, and it is restored for the ping"
+check "$(env -u CLAUDE_UNATTENDED CLAUDE_CODE_SESSION_ID=sess-s13 STALLS_DEADLINE=5000 python3 "$S13/reserve.py" "$B")" \
+  "5000 5000 5000" "  a session's tick on a yard (it pings nothing): as it is"
+check "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED -u STALLS_DEADLINE python3 "$S13/reserve.py" "$B")" \
+  "None None None" "  no deadline given (an attended tick): none made up"
+
+echo "  the ping's reserved time: every pass ends 40 s before the kill, the ping gets the rest"
+cat > "$S13/plumb.py" <<'PY'
+import os, sys, types
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+sys.path.insert(0, sys.argv[1])
+loader = SourceFileLoader("helm_cli_s13", sys.argv[2])
+helm = module_from_spec(spec_from_loader(loader.name, loader)); loader.exec_module(helm)
+import stalls_tick
+seen = []
+dl = lambda what: seen.append("%s=%s" % (what, os.environ.get("STALLS_DEADLINE")))
+def tick(**kw):
+    dl("stalls")
+    return {"mode": "armed", "mode_why": "suite", "followups": [], "decisions": [], "notes": [], "hosts": [], "log": "-",
+            "wrote": True, "brake": None, "orca_dead": None}
+stalls_tick.tick = tick
+helm.wharf_once = lambda dry: dl("wharf") or []
+stalls_tick.ensure_skippers = lambda mode, brake: dl("skippers") or []
+stalls_tick.deadman_ping = lambda **kw: dl("ping") or []
+helm.cmd_tick(types.SimpleNamespace(arm=False, disarm=False, status=False, dry_run=False, json=False, by=None))
+print(" ".join(seen))
+PY
+check "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED HOME="$S13/hd" STALLS_DEADLINE=5000 python3 "$S13/plumb.py" "$B" "$LX/helm" | tail -1)" \
+  "stalls=4960 wharf=4960 skippers=4960 ping=5000" "the stalls', wharf's and the skippers' passes under kill - 40 s, the ping under the kill itself"
+check "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED HOME="$S13/hd" CLAUDE_REPOS_JSON="$S8/noyard.json" STALLS_DEADLINE=5000 python3 "$S13/plumb.py" "$B" "$LX/helm" | tail -1)" \
+  "stalls=5000 wharf=5000 skippers=5000 ping=5000" "  no yard: every pass keeps the kill time, as before"
+rm -f "$S13/seq"
+t0=$(now)
+out=$(DM_SLEEP=30 STALLS_DEADLINE=$((t0 + 4)) T13)
+el=$(( $(now) - t0 ))
+check "$(pings13)" "ping testhost" "less than the reserve left: the ping still goes"
+has "$out" "deadman: ping failed (TimeoutExpired)" "  with what is left, not its full 40 s"
+check "$([ "$el" -lt 20 ] && echo quick || echo "slow: ${el}s")" "quick" "  so the tick ends near the kill time, not 40 s past it"
+rm -f "$S13/seq"
+
+echo "  the brake's window: opened by the pass before it, closed by the first pass after, bounded both ways"
+cat > "$S13/bw.py" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+t0, step = 10 ** 9, 300
+helmlib.note_brake_pass(False, t0)
+for i in range(1, 10):
+    helmlib.note_brake_pass(True, t0 + i * step)
+mid = helmlib.braked_within(t0, t0 + 9 * step)
+helmlib.note_brake_pass(False, t0 + 10 * step)
+d = json.load(open(helmlib.brake_windows_path()))
+print(d["windows"] == [[t0, t0 + 10 * step]], d["since"], mid == 9 * step,
+      helmlib.braked_within(t0 - 600, t0 + 20 * step) == 10 * step, helmlib.braked_within(t0 + 20 * step, t0 + 30 * step))
+# a tick that goes quiet under the brake: the open window credits BRAKE_LEAD past its last braked pass, no more
+helmlib.note_brake_pass(False, t0 + 100 * step)
+helmlib.note_brake_pass(True, t0 + 101 * step)
+print(helmlib.braked_within(t0 + 100 * step, t0 + 200 * step) == step + helmlib.BRAKE_LEAD)
+# a braked pass after the quiet gap: the gap past BRAKE_LEAD is no braked time, a new window opens BRAKE_LEAD back
+helmlib.note_brake_pass(True, t0 + 141 * step)
+print(helmlib.braked_within(t0 + 101 * step, t0 + 141 * step) == 2 * helmlib.BRAKE_LEAD)
+# the first pass ever braked (no record): BRAKE_LEAD back from it
+helmlib.brake_windows_path().unlink()
+helmlib.note_brake_pass(True, t0)
+print(helmlib.brake_windows(t0) == [(t0 - helmlib.BRAKE_LEAD, t0)])
+helmlib.brake_windows_path().write_text("{not json")
+print(helmlib.braked_within(0, t0))
+PY
+rm -rf "$S13/bw"; check "$(STALLS_STATE_DIR="$S13/bw" python3 "$S13/bw.py" "$B")" "True None True True 0.0
+True
+True
+True
+0.0" "nine braked passes between two plain ones: one window from the pass before to the pass after; an open one bounded, across a quiet tick too; a torn record credits nothing"
+rm -rf "$S13/st"; mkdir -p "$S13/st"
+"$HM" $SHIP s13b --id s13b > /dev/null; "$HM" task s13b b1 > /dev/null; ll yard s13b dock > /dev/null
+: > "$S13/hd/.studio-brake"; T13 > /dev/null
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["since"] is not None, d["windows"])' "$S13/st/brake-windows.json")" \
+  "True []" "the tick under the brake, a scope held here: a window opens"
+rm -f "$S13/hd/.studio-brake"; T13 > /dev/null
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["since"], len(d["windows"]))' "$S13/st/brake-windows.json")" \
+  "None 1" "  the first tick after release closes it"
+T13 --dry-run > /dev/null; : > "$S13/hd/.studio-brake"; T13 --dry-run > /dev/null; rm -f "$S13/hd/.studio-brake"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["since"], len(d["windows"]))' "$S13/st/brake-windows.json")" \
+  "None 1" "  a --dry-run tick writes none"
+
+echo "  the skipper's clocks through a brake: frozen time is never charged"
+# the lease, an open question re-hailed to the holder by Talk, the holder's registry record idle: all by hand
+cat > "$S13/clocks.py" <<'PY'
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import helmlib, leaselib, skipperlib
+pid, case = "s13c", sys.argv[2]
+N = time.time()
+m = lambda x: N - x * 60
+renewed, hailed = {"frozen": (45, 44), "after": (5, 20), "before": (60, 60), "lapse": (50, 50), "none": (45, 44)}[case]
+lease = {"holder": "skipper · dock", "scope": "dock", "host": "testhost", "account": None, "gen": 1, "since": m(renewed),
+         "until": m(renewed) + leaselib.TTL, "session": "sk-s13", "pid": None, "why": "taken by the suite"}
+leaselib._save(pid, lease)
+helmlib.append_event(pid, {"task": "b1", "status": "waiting", "ask": "docs/q.md#D1", "summary": "which one", "reversible": "yes",
+                           "recommended": "A", "session": "run-9", "repo": "/x/dockrepo", "to": None, "t": m(hailed), "plan": pid})
+with helmlib.locked(pid):
+    p = helmlib.load_plan(pid)
+    p["relayed"] = [{"question": "docs/q.md#D1", "gen": 1, "t": m(hailed), "to": "sk-s13", "backend": "talk", "verdict": "sent", "task": "b1"}]
+    helmlib.save_plan(p)
+open(os.path.join(os.environ["ASK_SESSIONS_DIR"], "sk-s13.json"), "w").write(json.dumps({"pid": 1, "sessionId": "sk-s13", "status": "idle", "updatedAt": 2}))
+# the passes a tick made, five minutes apart: plain before the brake, braked through it, plain after
+spans = {"frozen": (45, 0), "after": (80, 20), "before": (55, 35), "lapse": (48, 30), "none": None}[case]
+try:
+    helmlib.brake_windows_path().unlink()
+except OSError:
+    pass
+if spans:
+    a, b = spans
+    helmlib.note_brake_pass(False, m(a))
+    for k in range(a - 5, b, -5):
+        helmlib.note_brake_pass(True, m(k))
+    helmlib.note_brake_pass(False, m(b))
+# a second on: N less a minute count is not always a whole number of seconds in floats
+print(leaselib.lapsed(pid, now=N + 1), skipperlib.deaf(pid, leaselib.read(pid), N + 1))
+PY
+"$HM" $SHIP s13c --id s13c > /dev/null; "$HM" task s13c b1 > /dev/null
+C13() { env -u CLAUDE_CODE_SESSION_ID python3 "$S13/clocks.py" "$B" "$1" 2>&1; }
+check "$(C13 none)" "True s13c docs/q.md#D1 unanswered 44m, the session idle" "no brake: 45 minutes since the renewal is lapsed, 44 idle minutes deaf (the clocks as before)"
+check "$(C13 frozen)" "False None" "the same skipper frozen 40 minutes under the brake (its passes 40 to 5 minutes ago): on the first pass after release neither lapsed nor deaf"
+check "$(C13 after)" "False s13c docs/q.md#D1 unanswered 20m, the session idle" "idle 20 minutes after the release: deaf as before (its lease, renewed since, not lapsed)"
+check "$(C13 before)" "True s13c docs/q.md#D1 unanswered 40m, the session idle" "a 20-minute brake inside an hour's silence: only the 40 minutes outside it are charged"
+check "$(C13 lapse)" "True s13c docs/q.md#D1 unanswered 32m, the session idle" "a sidecar 50 minutes quiet, 18 of them braked: lapsed on the 32 that were its own"
+unset STALLS_DEADLINE DM_SLEEP HELM_DEADMAN HELM_LAUNCHCTL WHARF_LAUNCHCTL STALLS_HARNESS HARNESS_ORCA SURFACES_HOST CLAUDE_REPOS_JSON STALLS_LOG STALLS_STATE_DIR PLAN_NO_SKIPPERS
+export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json" STALLS_ORCA=0 PLAN_NO_WHARF=1 STALLS_PEERS= STALLS_REPOS= ASK_SESSIONS_DIR="$T/sess"
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

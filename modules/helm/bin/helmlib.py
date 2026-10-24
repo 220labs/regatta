@@ -96,6 +96,105 @@ def brake_refusal():
         sys.path[:] = path
 
 
+# ---------------------------------------------------------------------------- the brake's windows (S13a)
+# The studio brake freezes a skipper's whole tree (claude and its lease sidecar), but not the wall clock:
+# the lease's `until` stops being renewed and a hailed question's minutes keep counting, so the first pass
+# after the brake let go would hand over, as lapsed or deaf, a skipper that was only frozen. The tick
+# records when the brake held (brake-windows.json beside its other state, note_brake_pass) and the two
+# clocks subtract that time (braked_within): leaselib.lapsed for every lease reader (wharf's, helm send's,
+# the tick's), skipperlib.deaf for the deaf rule, and the skipper pass's two start clocks (a take within
+# TAKE_WITHIN, a yard-held ship its sidecar should have taken) and the stall road's unanswered-relay
+# clock beside them. Chosen over pushing each lease's `until` on at every
+# braked pass because one record serves both clocks; the deaf rule's start is a hail time in the plan's
+# `relayed` list and the ask's events, which would otherwise need rewriting too.
+# The brake carries no time of its own, so a window is bounded by the tick's passes: it opens at the last
+# pass before the first that saw the brake (no earlier than BRAKE_LEAD before that one) and closes at the
+# first pass that does not see it (no later than BRAKE_LEAD after the last that did). Both ends err
+# towards keeping a skipper: at worst a deaf or lapsed one is handed over one pass period later. A window
+# still open — the brake holding, or the tick gone quiet under it — credits time only up to BRAKE_LEAD
+# past its last braked pass, so a tick that dies under the brake does not keep every lease alive forever.
+# No file is no brake ever seen: both clocks run as before S13a (every host with no lease writes none).
+
+BRAKE_LEAD = 10 * 60          # two of ask poll's 5-minute passes
+BRAKE_KEEP = 7 * 24 * 3600    # a closed window older than this is dropped (the daily hand-over ends any lease long before)
+BRAKE_MAX = 200               # windows kept at most
+
+
+def tick_state_dir():
+    """The tick's state dir (stalls_tick.state_dir's one rule: STALLS_STATE_DIR, else .local/state/stalls under HOME)."""
+    return Path(os.environ.get("STALLS_STATE_DIR") or Path(os.environ.get("HOME") or Path.home()) / ".local/state/stalls")
+
+
+def brake_windows_path():
+    return tick_state_dir() / "brake-windows.json"
+
+
+def _brake_state():
+    """{"windows": [[start, end], …], "since": the open window's start or None, "seen": its last braked
+    pass or None, "pass": the last pass}; an empty record when the file is absent or does not read."""
+    try:
+        d = json.loads(brake_windows_path().read_text())
+    except (OSError, ValueError):
+        d = None
+    if not isinstance(d, dict):
+        d = {}
+    ws = [w for w in d.get("windows") or [] if isinstance(w, list) and len(w) == 2
+          and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in w) and w[0] <= w[1]]
+    num = lambda x: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+    return {"windows": ws, "since": num(d.get("since")), "seen": num(d.get("seen")), "pass": num(d.get("pass"))}
+
+
+def brake_windows(t=None):
+    """[(start, end)] of every time the brake held here: the closed windows, and an open one ending at
+    min(t, its last braked pass + BRAKE_LEAD)."""
+    t = now() if t is None else t
+    d = _brake_state()
+    out = [tuple(w) for w in d["windows"]]
+    if d["since"] is not None:
+        out.append((d["since"], min(t, (d["seen"] or d["since"]) + BRAKE_LEAD)))
+    return out
+
+
+def braked_within(a, b):
+    """Seconds of [a, b] the brake held here (brake_windows); 0 with no record. Never raises: a record that
+    does not read credits nothing, and the clocks run as they did before S13a."""
+    try:
+        a, b = float(a), float(b)
+        if b <= a:
+            return 0.0
+        return float(sum(max(0.0, min(b, e) - max(a, s)) for s, e in brake_windows(b)))
+    except Exception:   # noqa: BLE001
+        return 0.0
+
+
+def note_brake_pass(braked, t=None):
+    """One tick pass seen, braked or not (the tick's, before its skipper pass): a braked pass opens a
+    window or moves its last-seen on; the first unbraked one closes it. Written by an atomic replace;
+    returns the record."""
+    t = now() if t is None else t
+    d = _brake_state()
+    if braked:
+        if d["since"] is not None and d["seen"] is not None and t - d["seen"] > BRAKE_LEAD:
+            # the tick was quiet under the brake: what the header promises — the gap past BRAKE_LEAD is
+            # no braked time — closes the window there and opens a new one BRAKE_LEAD back (the landing review)
+            d["windows"].append([d["since"], d["seen"] + BRAKE_LEAD])
+            d["since"] = t - BRAKE_LEAD
+        elif d["since"] is None:   # no pass seen before this one (a first tick, a record lost): BRAKE_LEAD back
+            d["since"] = max(d["pass"], t - BRAKE_LEAD) if d["pass"] is not None else t - BRAKE_LEAD
+        d["seen"] = t
+    elif d["since"] is not None:
+        d["windows"].append([d["since"], max(d["since"], min(t, (d["seen"] or d["since"]) + BRAKE_LEAD))])
+        d["since"] = d["seen"] = None
+    d["pass"] = t
+    d["windows"] = [w for w in d["windows"] if w[1] >= t - BRAKE_KEEP][-BRAKE_MAX:]
+    p = brake_windows_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.write_text(json.dumps(d, sort_keys=True))
+    tmp.replace(p)
+    return d
+
+
 def harness_adapter(name):
     """wharf-runs' harness adapter `name` (claude_code.py, orca.py): it sits in harness_adapters/
     beside bin/harness, which loads it so; tool() takes no path, so the adapter is found by its

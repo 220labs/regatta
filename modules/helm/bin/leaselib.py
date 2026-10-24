@@ -297,7 +297,9 @@ def fence(pid, verb, given=None, environ=None, record=True):
 
 
 def lapsed(pid, now=None, rec=None):
-    """True when a skipper's lease is past its `until` (the yard's hold never lapses)."""
+    """True when a skipper's lease is past its `until` (the yard's hold never lapses), less the time the
+    studio brake held since its last renewal (`until` - TTL): a frozen sidecar renews nothing, and its
+    skipper was only frozen (helmlib.braked_within, S13a; no record, no credit)."""
     if rec is None:
         try:
             rec = read(pid)
@@ -305,7 +307,11 @@ def lapsed(pid, now=None, rec=None):
             return False
     if not rec or rec.get("holder") == YARD or rec.get("until") is None:
         return False
-    return (helmlib.now() if now is None else now) > float(rec["until"])
+    t = helmlib.now() if now is None else now
+    until = float(rec["until"])
+    if t <= until:
+        return False   # the common case reads no brake record
+    return t - helmlib.braked_within(until - TTL, t) > until
 
 
 def ended(pid):
