@@ -130,22 +130,21 @@ HERE = Path(__file__).resolve().parent
 HOME = Path.home()
 
 
-def _legacy():
-    """The overlay's checkout (`REGATTA_LEGACY`, else the config dir's `legacy` file: the core's
-    legacy_root, read here without loading the core, as GATE is fixed at import), or None."""
-    v = os.environ.get("REGATTA_LEGACY")
-    if not v:
-        cfg = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
-        try:
-            v = next((l.strip() for l in (cfg / "legacy").read_text(encoding="utf-8-sig").splitlines() if l.strip()), "")
-        except (OSError, UnicodeDecodeError):
-            v = ""
+def _overlay():
+    """The overlay's checkout (the config dir's `regatta/overlay` marker: the core's overlay_root,
+    read here without loading the core, as GATE is fixed at import), or None. Only its `.env` is
+    read there since B14b (2026-10-23): the overlay keeps no sheep and no gate."""
+    cfg = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+    try:
+        v = next((l.strip() for l in (cfg / "regatta" / "overlay").read_text(encoding="utf-8-sig").splitlines() if l.strip()), "")
+    except (OSError, UnicodeDecodeError):
+        v = ""
     return Path(v).expanduser() if v else None
 
 
 def _home():
     """The regatta main checkout (`REGATTA_HOME`, else the config dir's `home` file), or None: read
-    here without loading the core, as _legacy() is. A worktree resolves to its main checkout, as
+    here without loading the core, as _overlay() is. A worktree resolves to its main checkout, as
     dispatch resolves the overlay: `gate` writes this path into every login dir, and a worktree's
     path breaks every hook once /finish removes it (B14a landing review, 2026-10-23)."""
     v = os.environ.get("REGATTA_HOME")
@@ -260,10 +259,12 @@ def _common():
 
 
 def _sheep_cmd():
-    """How a message names this tool: the overlay's shim while it has one (its allow rules name it), else this file."""
-    p = (_legacy() or HERE.parent) / "bin" / "sheep"
+    """How a message names this tool: the main checkout's copy (never a worktree's, which /finish
+    removes; _home(), as GATE is built), else this file, under `~` (the overlay's shim went with B14b)."""
     import pwd
-    s = str(p if _legacy() and p.is_file() else Path(__file__).resolve())
+    main = _home()
+    s = str(Path(main) / "modules" / "keel" / "bin" / "sheep") if main else ""
+    s = s if s and Path(s).is_file() else str(Path(__file__).resolve())
     for home in (str(HOME), pwd.getpwuid(os.getuid()).pw_dir):   # the login's own when a suite moved HOME
         if home and s.startswith(home.rstrip("/") + "/"):
             return "~" + s[len(home.rstrip("/")):]
@@ -335,7 +336,10 @@ def web_url(url, port=None):
 
 
 def claude_dirs():
-    """sessionpipe's own discovery (claudeDirs), so the gate covers every file it writes."""
+    """sessionpipe's own discovery (claudeDirs), so the gate covers every file it writes, plus each
+    login dir the account registry names that holds a settings.json: an Orca profile's dir sits
+    outside `~/.claude*`, and its entries kept the overlay's gate path after B14a's `gate` (that
+    landing's review; B14b deleted the shim). The registry is read through the core, never raised on."""
     out = []
     def add(d):
         if d:
@@ -350,6 +354,15 @@ def claude_dirs():
                     ((e / "projects").exists() or (e / "settings.json").exists()):
                 add(e)
     except OSError:
+        pass
+    try:
+        c = _common()
+        reg = Path(os.environ.get("ACCOUNTS_FILE") or c.CONFIG / "lighthouse" / "accounts.json")
+        for a in c.account_rows(json.loads(reg.read_text()).get("accounts"), HOME):
+            h = c.account_home(a, HOME) if isinstance(a, dict) and a.get("provider", "claude") == "claude" else None
+            if h and (h / "settings.json").is_file():
+                add(h)
+    except Exception:   # no core, no registry, a torn file: sessionpipe's own list, as before
         pass
     return [d for i, d in enumerate(out) if i == 0 or d.exists()]
 
@@ -427,7 +440,7 @@ def env_value(key):
     if os.environ.get(key):
         return os.environ[key]
     secrets = _load("secrets_tool", _common().tool("secrets"))  # the core's bin/secrets
-    for env in (os.environ.get("SHEEP_ENV_FILE"), _common().CONFIG / "regatta" / ".env", (_legacy() or HERE.parent) / ".env"):
+    for env in (os.environ.get("SHEEP_ENV_FILE"), _common().CONFIG / "regatta" / ".env", (_overlay() or HERE.parent) / ".env"):
         if not env or not os.path.lexists(str(env)):
             continue
         real = Path(env).resolve()
@@ -464,14 +477,10 @@ def gated(cmd):
 
 
 def is_gated(cmd):
-    """Behind this gate, and the gate file is there: a missing script makes python3 exit 2. Behind
-    the overlay's shim counts too while that file is there (B14a: `check` stays green on a Mac whose
-    settings still name it; `gate` moves them, as it moves any other path). B14b drops the second."""
-    if cmd == gated(cmd) and GATE.is_file():
-        return True
-    m, old = GATED.match(cmd), _legacy()
-    shim = old / "hooks" / "sheep_gate.py" if old else None
-    return bool(m and shim and Path(m.group(1)) == shim and shim.is_file())
+    """Behind this gate, and the gate file is there: a missing script makes python3 exit 2. The
+    overlay's shim counted too from B14a until B14b (2026-10-23), which deleted it; `gate` moves an
+    entry still at that path, as it moves any other."""
+    return cmd == gated(cmd) and GATE.is_file()
 
 
 def _cmds(g):

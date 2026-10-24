@@ -49,9 +49,9 @@ check "$(sg "$e5")" dropped "an event that names the confidential repo's slug un
 # the fence fails closed when a registry is there but cannot be read (the /finish review of S1)
 cp "$REGATTA_CONFIG/wharf/repos.json" "$T/good.json"; head -c 60 "$T/good.json" > "$REGATTA_CONFIG/wharf/repos.json"
 check "$(sg "{\"cwd\":\"$P/open\"}")" dropped "a torn registry: every event dropped, an open repo's too"
-cp "$T/good.json" "$REGATTA_CONFIG/wharf/repos.json"; echo "$T/nowhere" > "$REGATTA_CONFIG/legacy"
+cp "$T/good.json" "$REGATTA_CONFIG/wharf/repos.json"; mkdir -p "$REGATTA_CONFIG/regatta"; echo "$T/nowhere" > "$REGATTA_CONFIG/regatta/overlay"
 check "$(sg "{\"cwd\":\"$P/open\"}")" dropped "a core that does not import beside a registry (config incomplete): every event dropped"
-rm "$REGATTA_CONFIG/legacy"
+rm "$REGATTA_CONFIG/regatta/overlay"
 check "$(sg "{\"cwd\":\"$P/open\"}")" sent "…the config whole again: an open repo's sent"
 reg false
 check "$(sg "{\"cwd\":\"$P/know\"}")" sent "the flag off: the same repo is sent"
@@ -68,5 +68,19 @@ git -C "$R" init -q && git -C "$R" add -A && git -C "$R" -c user.name=t -c user.
 gate_at() { REGATTA_HOME="$1" SHEEP_GATE= python3 -c 'import importlib.machinery,sys; sys.argv=["sheep"]; print(importlib.machinery.SourceFileLoader("sheep", "'"$H"'/../bin/sheep").load_module().GATE)' 2>&1; }
 check "$(gate_at "$T/rg-wt")" "$(cd "$R" && pwd -P)/modules/keel/hooks/sheep_gate.py" "sheep: REGATTA_HOME at a worktree gates at its main checkout"
 check "$(gate_at "$R")" "$R/modules/keel/hooks/sheep_gate.py" "  …and the main checkout itself as given"
+
+# sheep's claude_dirs: sessionpipe's own list plus each login dir the account registry names that
+# holds a settings.json — an Orca profile sits outside the home folder's .claude* dirs (B14b: its entries kept the
+# overlay's gate path after B14a's `gate`); a row whose dir has no settings.json is left out
+SH="$T/sh"; mkdir -p "$SH/.claude" "$T/orca-prof" "$T/bare-prof"; echo '{}' > "$T/orca-prof/settings.json"
+printf '{"accounts": [{"label": "a", "provider": "claude", "home": "%s"}, {"label": "b", "provider": "claude", "home": "%s"}, {"label": "c", "provider": "codex", "home": "%s"}]}\n' \
+  "$T/orca-prof" "$T/bare-prof" "$T/orca-prof" > "$T/acc.json"
+dirs_at() { HOME="$SH" ACCOUNTS_FILE="$1" CLAUDE_CONFIG_DIR= python3 -c 'import importlib.machinery,sys; sys.argv=["sheep"]; print(" ".join(str(d) for d in importlib.machinery.SourceFileLoader("sheep", "'"$H"'/../bin/sheep").load_module().claude_dirs()))' 2>&1; }
+check "$(dirs_at "$T/acc.json")" "$(cd "$SH/.claude" && pwd -P) $(cd "$T/orca-prof" && pwd -P)" "sheep: claude_dirs adds a registry row's login dir that holds a settings.json"
+check "$(dirs_at "$T/none.json")" "$(cd "$SH/.claude" && pwd -P)" "  no registry: sessionpipe's own list, as before"
+# is_gated: the overlay's shim no longer counts (B14b deleted it); only this gate file does
+check "$(SHEEP_GATE="$R/modules/keel/hooks/sheep_gate.py" python3 -c 'import importlib.machinery,sys; sys.argv=["sheep"]; s = importlib.machinery.SourceFileLoader("sheep", "'"$H"'/../bin/sheep").load_module()
+print(s.is_gated(s.gated("node x.js claude-code Stop")), s.is_gated("python3 \"/old/overlay/hooks/sheep_gate.py\" node x.js claude-code Stop"))' 2>&1)" "True False" \
+  "sheep: is_gated takes this gate's path, never the overlay's old shim"
 
 [ $fails -eq 0 ] && echo "sheep_gate: all ok" || { echo "sheep_gate: $fails failing"; exit 1; }

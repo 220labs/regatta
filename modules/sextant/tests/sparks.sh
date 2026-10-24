@@ -6,8 +6,8 @@ set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # A config dir of the suite's own, before any case moves HOME: the core is found from this
-# checkout (lib/find_core.py), and no private value of the Mac's leaks into a case — no `legacy`
-# file, so it reads as a stranger's install: every sextant/ key absent, its default in force.
+# checkout (lib/find_core.py), and no private value of the Mac's leaks into a case — no overlay
+# marker, so it reads as a stranger's install: every sextant/ key absent, its default in force.
 export REGATTA_CONFIG="$T/regatta-config"; mkdir -p "$REGATTA_CONFIG"
 unset REGATTA_HOME CLAUDE_REPOS_JSON
 mkdir -p "$T/out" "$T/archive" "$T/bin"   # not "$T/in": the first case is a missing inbox
@@ -1197,13 +1197,13 @@ say -o "$D/in/source.aiff" "a recording that waits for its source" 2>/dev/null
 redcfg '{}'; mkdir -p "$REGATTA_CONFIG/sextant"; printf 'owner-vault\n' > "$REGATTA_CONFIG/sextant/source"
 out=$(red)
 echo "$out" | grep -q "refused: data from owner-vault goes to typesafe only with"; check $? 0 "sextant/source names the guarded source the refusal states"
-rm -f "$REGATTA_CONFIG/sextant/source"; : > "$REGATTA_CONFIG/legacy"
+rm -f "$REGATTA_CONFIG/sextant/source"; mkdir -p "$REGATTA_CONFIG/regatta"; : > "$REGATTA_CONFIG/regatta/overlay"
 for k in owner guarded orca-deny log-dir projects; do mkdir -p "$REGATTA_CONFIG/regatta"; printf 'x\n' > "$REGATTA_CONFIG/regatta/$k"; done
 printf '%s\n' "$T" > "$REGATTA_CONFIG/regatta/log-dir"; printf '%s\n' "$T" > "$REGATTA_CONFIG/regatta/projects"
 redcfg '{"typesafe": "test: the fake server only"}'
 out=$(red)
 echo "$out" | grep -q "sextant/source is missing"; check $? 0 "an overlay installed and sextant/source missing: redaction refuses, fail-closed"
-rm -rf "$REGATTA_CONFIG/legacy" "$REGATTA_CONFIG/regatta"
+rm -rf "$REGATTA_CONFIG/regatta"
 printf '%s\n' "$T/where.log" > "$REGATTA_CONFIG/sextant/log"
 check "$(env -u SPARKS_LOG python3 -c "from importlib.machinery import SourceFileLoader as L; print(L('sparks', '$B/sparks').load_module().CFG['log'])")" "$T/where.log" "sextant/log moves the log; SPARKS_LOG still wins"
 rm -f "$REGATTA_CONFIG/sextant/log"

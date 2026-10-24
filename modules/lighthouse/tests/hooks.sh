@@ -440,12 +440,15 @@ check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c '"block"')" 1 
 rm "$T/guard-drive.json"
 check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "its drive away: the last good copy holds, the secondary still blocked (review 2026-10-22)"
 check "$(agl "" "$GH/projects/acme-one" | grep -c '"block"')" 1 "  …and the default dir too"
-# A config dir the overlay installed (a legacy file) without the private values: a core from B2b on
+out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")
+check "$(echo "$out" | grep -c "acme-one is off work: it is acme's, which runs on lab only")" 1 "a secondary whose shell moved into the file's tenant's repo: blocked with the tenant's way in…"
+check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …not the deny list's, which names a login tenancy refuses (review 2026-10-23)"
+# A config dir the overlay installed (its regatta/overlay marker) without the private values: a core from B2b on
 # refuses to load, bin/account cannot answer, and the deny hook fails closed. Judged by what the
 # core does (config_problems), so a core from before B2b skips the case.
 if python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); import common; sys.exit(not hasattr(common, 'config_problems'))" 2>/dev/null; then
   AGC="$T/ag-cfg"; mkdir -p "$AGC/regatta"
-  python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); import common; print(common.regatta_root())" > "$AGC/home"; echo "$C" > "$AGC/legacy"
+  python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); import common; print(common.regatta_root())" > "$AGC/home"; echo "$C" > "$AGC/regatta/overlay"
   out=$(echo "{\"cwd\":\"$GH/projects/app2\"}" | HOME="$GH" REGATTA_CONFIG="$AGC" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")
   check "$(echo "$out" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])' 2>&1) $(echo "$out" | tail -1)" "block rc=0" \
     "the core refusing an incomplete config: a prompt anywhere is blocked, exit 0 (fails closed)"
@@ -540,7 +543,7 @@ check "$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["
 
 echo "the overlay installed, lighthouse's keys not written: the deny hooks fail closed (B9 review)"
 HM="$HOME"; AGK="$T/ag-keys"; mkdir -p "$AGK/regatta" "$AGK/lighthouse"
-python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); import common; print(common.regatta_root())" > "$AGK/home"; echo "$T/overlay" > "$AGK/legacy"
+python3 -c "import sys; sys.path.insert(0, '$R/modules/regatta/hooks'); import common; print(common.regatta_root())" > "$AGK/home"; echo "$T/overlay" > "$AGK/regatta/overlay"
 echo Owner > "$AGK/regatta/owner"; echo privy > "$AGK/regatta/guarded"; echo privy > "$AGK/regatta/orca-deny"
 echo "$T/usage" > "$AGK/regatta/log-dir"; echo "$HM/projects" > "$AGK/regatta/projects"
 out=$(echo "{\"cwd\":\"$HM/projects/app2\"}" | env -u ACCOUNTS_FILE REGATTA_CONFIG="$AGK" CLAUDE_CONFIG_DIR="$HM/.claude-work" python3 "$H/account_guard.py")

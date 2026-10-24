@@ -9,7 +9,7 @@ that path, for a test suite or one shell — an installer whose scripts already 
 `ATLAS_VAULT` and `ATLAS_LAYER` override them always. An installer writes the files (on the
 owner's Macs, the overlay's `bootstrap.sh --config`).
 
-Where the overlay is installed (a `legacy` file in the config dir) a missing key is None, never a
+Where the overlay is installed (its `regatta/overlay` marker in the config dir) a missing key is None, never a
 guess: a bulletin posted to a default folder while the real one sits elsewhere would be lost
 without a word. Without the overlay (a stranger's install) the vault defaults to `atlas` in the XDG
 data folder, a plain folder the bulletin can use; the layer has no default.
@@ -48,8 +48,8 @@ def env_name(role):
     return lines[2] if len(lines) > 2 and lines[2].isidentifier() else ENV[role]
 
 
-def overlay():   # the core's overlay_installed(): B14a's marker, or legacy until B14b drops it
-    return (CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()
+def overlay():   # the core's overlay_installed(): the overlay's marker (the `legacy` file went with B14b)
+    return (CONFIG / "regatta" / "overlay").exists()
 
 
 def repo(role):

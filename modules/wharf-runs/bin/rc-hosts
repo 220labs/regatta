@@ -21,17 +21,22 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
   rc-hosts                  write and load every host that is missing; retire an empty host
                             whose repo is no longer wanted here
   rc-hosts --check          report only: in sync / missing / differs / not cloned, and every
-                            repo under ~/projects that is not in repos.json (no host until it is)
+                            repo under ~/projects that is not in repos.json (no host until it is);
+                            FAIL (exit 1) on a host whose claude version was deleted under it
+  rc-hosts --broken         only that FAIL, for every host, exit 3 on one: what bin/health asks daily
   rc-hosts --restart NAME   restart a running host, applying a changed plist; it ends the
                             host's sessions, so it refuses while one of them is busy
   rc-hosts --idle           every host's sessions: busy or idle, and for how long
   rc-hosts --reap [--hours N] [--only NAME] [--dry-run]
                             end the host sessions idle N hours or more (default 12), then
+                            restart a host whose claude was deleted under it, idle sessions and
+                            all, unless one is busy or idle under 10 min (heal), then
                             restart an empty host that reconnected since the last run, then
                             converge: load a missing or unloaded host, reload an empty one whose
                             plist changed, retire an empty unwanted one — wanted or not, every
                             host's idle sessions are reaped, so a changed flag reaches a host and
-                            an unwanted one retires once its last session is gone
+                            an unwanted one retires once its last session is gone; last, cut
+                            every host log over 32 MB to its head and last 8 MB
   rc-hosts --end ID [--dry-run]
                             end one host session by its session id (a prefix is enough), once
                             it is idle — the slot /finish and pickup name for the owner to free
@@ -97,7 +102,9 @@ the owner's to run or schedule — an agent's own attempt is refused as interfer
 
 A host holding a session is never restarted unasked: `launchctl bootout` ends every session it
 holds, and the session running this script is usually one of them. It is reported as "differs"
-instead. An empty host is restarted unasked by the hourly --reap: revive() after a reconnect,
+instead. The one exception is heal(): a host whose claude was deleted under it can spawn nothing,
+so the reaper restarts it once every session has been idle HEAL_IDLE_MIN minutes, never a busy one.
+An empty host is restarted unasked by the hourly --reap: revive() after a reconnect,
 converge() when its plist changed (loading the new plist either way), retire() when it is no
 longer wanted.
 
@@ -137,6 +144,9 @@ PROJECTS = HOME / "projects"
 AGENTS = HOME / "Library" / "LaunchAgents"
 LOGS = HOME / "Library" / "Logs" / "claude-host"
 CLAUDE = HOME / ".local" / "bin" / "claude"
+VERSIONS = HOME / ".local" / "share" / "claude" / "versions"   # the native installer's, where CLAUDE points
+LOG_CAP, LOG_HEAD, LOG_TAIL = 32 << 20, 64 << 10, 8 << 20       # cap_logs(): over 32 MB, keep 64 KB + 8 MB
+HEAL_IDLE_MIN = 10                                                # heal(): a session idle less is spared
 LAUNCHER = HOME / ".local" / "bin" / "claude-host"          # bin/claude-host.c; holds the grant
 LABEL_PREFIX = ((common.config_line("wharf-runs/label-prefix") if common else "")
                 or "org.regatta.claude")                   # dispatch's launchd prefix (wharf-runs/label-prefix)
@@ -153,7 +163,7 @@ def primary():
     """The checkout claude-host's allowlist names (never a worktree): the overlay's, where one is
     installed (its claude-host.c lists its scripts), else this module in the main checkout (the
     config dir's `home`), else the module this file sits in."""
-    old = common.legacy_root() if common else None
+    old = common.overlay_root() if common else None   # the overlay's marker (the `legacy` file until B14b)
     if old:
         return old
     home = common.config_line("home") if common else ""
@@ -289,11 +299,17 @@ def registry():
 
 def source():
     """claude-host.c — the launcher's source, the overlay's file (it names the overlay's scripts):
-    RC_HOSTS_SOURCE for the tests, else wherever the core finds it; None when nowhere."""
+    RC_HOSTS_SOURCE for the tests, else the overlay's bin/ (B14b: tool() has no overlay fallback
+    any more, and the file lives nowhere else), else wherever the core finds it; None when nowhere."""
     v = os.environ.get("RC_HOSTS_SOURCE")
     if v:
         return Path(v)
-    return common.tool("claude-host.c") if common else None
+    if not common:
+        return None
+    ov = common.overlay_root()
+    if ov and (Path(ov) / "bin" / "claude-host.c").is_file():
+        return Path(ov) / "bin" / "claude-host.c"
+    return common.tool("claude-host.c")
 
 
 def wanted(host):
@@ -422,6 +438,209 @@ def alive(pid):
         return True
     except OSError:
         return False
+
+
+def exe_of(pid):
+    """The file a process runs, as the kernel mapped it: lsof's first txt entry, which still names a
+    file deleted since. Neither cheaper read does: proc_pidpath fails with ENOENT once the file is
+    gone, and ps prints the path as exec'd — CLAUDE, the symlink, for a host (probes on
+    the build Mac, 2026-10-23). `-b -w` and a timeout: the hourly reaper and the daily health job
+    run this, and a plain lsof can block on a stat of a network mount (`man lsof`, BLOCKS AND
+    TIMEOUTS; a first call took 4 s on the laptop) — `-b` still names a deleted txt file. About
+    20 ms a process. None when it cannot be read."""
+    try:
+        out = subprocess.run(["lsof", "-b", "-w", "-a", "-p", str(pid), "-d", "txt", "-Fn"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return next((line[1:] for line in out.splitlines() if line.startswith("n")), None)
+
+
+def gone_version(pid):
+    """The claude version pid runs when Claude Code's updater has deleted that file, else None."""
+    state, v = version_state(pid)
+    return v if state == "gone" else None
+
+
+def version_state(pid):
+    """("ok", None) when pid's claude file is still installed, ("gone", version) when Claude Code's
+    updater deleted it, ("unknown", None) when neither read could tell.
+
+    A host spawns every session from its own executable, the versioned file the symlink named when
+    it started; once that file is gone each new session fails `spawn error: ENOENT … posix_spawn
+    '…/versions/2.1.304'`, while the host goes on logging Connected (a film repo's host on the build Mac,
+    2026-10-23, three days). Why the updater deletes a version still running: docs/rc-hosts-versions-2026-10-23.md."""
+    exe = exe_of(pid)
+    if exe and Path(exe).parent == VERSIONS:
+        return ("ok", None) if Path(exe).exists() else ("gone", Path(exe).name)
+    # lsof names a deleted file from the vnode name cache, probed seconds after the delete, not days:
+    # a name evicted since must not read as healthy. proc_pidpath's ENOENT on a live claude says the
+    # file is gone; the version is its session record's, where one is (a host has none of its own).
+    # The inode is gone, but a version installed again at the same path spawns fine.
+    if pidpath_gone(pid):
+        v = (record(pid) or {}).get("version")
+        if v and (VERSIONS / v).exists():
+            return ("ok", None)
+        return ("gone", v or "(version unknown)")
+    return ("unknown", None)
+
+
+def pidpath_gone(pid):
+    """True when proc_pidpath fails with ENOENT for a live pid: its executable was deleted.
+    RC_HOSTS_GONE_PIDS, when set, answers instead (the suite's stub pids are not this Mac's)."""
+    if "RC_HOSTS_GONE_PIDS" in os.environ:
+        return str(pid) in os.environ["RC_HOSTS_GONE_PIDS"].split()
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        buf = ctypes.create_string_buffer(4096)
+        return lib.proc_pidpath(int(pid), buf, 4096) <= 0 and ctypes.get_errno() == 2 and alive(int(pid))
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def broken(label):
+    """(version, host pid) when the host's claude — or, when that cannot be read, one of its
+    sessions' — runs a version the updater deleted; None otherwise or when the host is down."""
+    pid = host_pid(label)
+    if not pid:
+        return None
+    state, v = version_state(pid)
+    if state == "ok":
+        return None
+    # a session is spawned from the host's own file: one on a gone version says the host is too, and
+    # its record names the version when lsof no longer can — asked only when the host's own read
+    # could not tell or named no version, so a healthy host costs one lsof
+    if v is None or v.startswith("("):
+        v = next((g for c, _ in sessions_of(pid) if (g := gone_version(c)) and not g.startswith("(")), v)
+    return (v, pid) if v else None
+
+
+def broken_line(v):
+    return f"broken: its claude {v} was removed; new sessions fail"
+
+
+def busy_of(pid, idle_min=0):
+    """A host's children that are not idle; one with no record to read counts as busy (--end's rule),
+    and so does one idle under idle_min minutes (heal's floor)."""
+    kids_ = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    return [int(c) for c in kids_ if (rec := record(int(c)) or {}).get("status") != "idle"
+            or idle_hours(rec) * 60 < idle_min]
+
+
+def heal(host, only, dry):
+    """Restart a host whose claude was deleted under it, once none of its sessions is busy: unlike
+    every other restart here it ends idle sessions, since a host that cannot spawn is worse than an
+    ended idle session (a film repo's host held one idle session for three days and spawned
+    nothing, 2026-10-23). A busy one is mid-turn: the host waits, said once per run. So does one idle
+    under HEAL_IDLE_MIN: between two turns of a conversation from the phone (review, 2026-10-23)."""
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    for label, name, plist, repo in served(host):
+        if only and name.split(" · ")[0] not in only:
+            continue
+        hit = broken(label)
+        if not hit:
+            continue
+        v, pid = hit
+        busy = busy_of(pid, HEAL_IDLE_MIN)
+        if busy:
+            print(f"  broken     {name}: its claude {v} was removed; session(s) {busy} busy or idle under"
+                  f" {HEAL_IDLE_MIN} min — restarts once they are idle  ({stamp})")
+            continue
+        ends = sessions_of(pid)
+        said = "; ".join(f"{c} idle {idle_hours(rec):.1f} h {where(rec)} {rec.get('name', '')!r}" for c, rec in ends)
+        print(f"  {'would restart' if dry else 'restarting'} {name}: its claude {v} was removed, new sessions"
+              f" fail — {'would end' if dry else 'ending'} {len(ends)} idle session(s){': ' + said if said else ''}  ({stamp})")
+        if dry:
+            continue
+        if busy_of(pid, HEAL_IDLE_MIN):   # re-read, as reap() does: a session woken since is left alone
+            print(f"             {name}: a session woke since the listing — left alone")
+            continue
+        # served() gives wanted()'s plist for a wanted host and the one on disk for the rest
+        if read_plist(AGENTS / f"{label}.plist") != plist:
+            load(label, plist)   # a changed plist is loaded, as revive() does
+        else:
+            restart_job(label)
+        up = settled(label) and host_pid(label) not in (None, pid)
+        for _ in range(20):   # restart_job's wait was sized for an empty host; sessions take longer
+            if not any(alive(c) for c, _ in ends) and (up or host_pid(label) != pid):
+                break
+            time.sleep(1)
+            up = up or (running(label) and host_pid(label) not in (None, pid))
+        left = [c for c, _ in ends if alive(c)]
+        print(f"             {name}: {'restarted, pid ' + str(host_pid(label)) if up else 'NOT RUNNING — see ' + plist['StandardOutPath']}"
+              f"{f'; session(s) {left} still running — rc-hosts --orphans' if left else ''}")
+
+
+def cap_logs(dry):
+    """Cut every host log over LOG_CAP to its first LOG_HEAD bytes (the link a host prints at start)
+    and its last LOG_TAIL. A host redraws its status line many times a minute: the build Mac's
+    largest log was 434 MB, a film repo's 181 MB (2026-10-23), and capacity() reads the whole file.
+    In place, never a new file: launchd opens StandardOutPath for append (lsof's `AP`, 2026-10-23),
+    so the host's next write lands at the new end. revive()'s offsets move with the cut: one in the
+    kept tail keeps its line, one before it moves to the tail's start (all of it unread). A host
+    revive() is `waiting` on is not cut: its offset marks the reconnect line the flag stands on."""
+    state_file = LOGS / "reap-state.json"
+    try:
+        state = json.loads(state_file.read_text())
+    except (OSError, ValueError):
+        state = {}
+    moved = False
+    # revive()'s state is keyed by label, and a repo's own rc.label need not end in the log's name
+    log_of = {label: str((read_plist(AGENTS / f"{label}.plist") or {}).get("StandardOutPath", ""))
+              for label in state}
+    for log in sorted(LOGS.glob("*.log")):
+        if log.name == "reap.log":
+            continue
+        try:
+            size = log.stat().st_size
+        except OSError:
+            continue
+        if size <= LOG_CAP:
+            continue
+        mine = [seen for label, seen in state.items() if isinstance(seen, dict) and log_of.get(label) == str(log)]
+        if any(seen.get("waiting") for seen in mine):
+            continue
+        print(f"  {'would cap' if dry else 'capping  '}  {log.name}: {size / 1e6:.0f} MB → {(LOG_HEAD + LOG_TAIL) / 1e6:.0f} MB")
+        if dry:
+            continue
+        try:
+            with open(log, "r+b") as f:
+                head = f.read(LOG_HEAD)
+                f.seek(-LOG_TAIL, os.SEEK_END)
+                tail = f.read()
+                f.seek(0)
+                f.truncate()
+                f.write(head + f"\n[rc-hosts cut {size - len(head) - len(tail)} bytes, {time.strftime('%Y-%m-%d %H:%M')}]\n".encode() + tail)
+                new = f.tell()
+        except OSError as e:
+            print(f"             {log.name}: not capped ({e})")
+            continue
+        for seen in mine:
+            off = seen.get("offset", 0)
+            seen["offset"] = new - min(size - off, len(tail)) if off < size else new
+            moved = True
+    if moved:
+        state_file.write_text(json.dumps(state, indent=1) + "\n")
+
+
+def broken_report():
+    """--broken: one FAIL line per host whose claude was deleted under it; exit 3 when any is
+    (bin/health posts it), never 1, which any crash exits with (the core's AGENTS.md, Traps). Read-only, and fast: it walks the host plists in LaunchAgents, never
+    repos.json — wanted() may fetch a repo it would call idle, and an unknown machine name would
+    read as a failure."""
+    found = 0
+    for p in sorted(AGENTS.glob(f"{HOST_LABEL}*.plist")):
+        args = (read_plist(p) or {}).get("ProgramArguments") or []
+        label, name = p.stem, args[args.index("--name") + 1] if "--name" in args[:-1] else p.stem
+        hit = broken(label)
+        if hit:
+            found += 1
+            print(f"  FAIL     {name}: {broken_line(hit[0])} — the hourly --reap restarts it once no"
+                  f" session is busy; now: rc-hosts --reap --only {name.split(' · ')[0]}")
+    if not found:
+        print("  ok       every host's claude is still installed")
+    return 3 if found else 0
 
 
 def capacity(plist):
@@ -729,7 +948,7 @@ def restart_stale(host, quiet=False):
 
 
 def converge(host, only, dry):
-    """The reaper's last step, silent unless it acts: load a wanted host that is missing, reload
+    """The reaper's step after revive(), silent unless it acts: load a wanted host that is missing, reload
     an empty one whose plist changed, retire an empty unwanted one. A host holding a session is
     never reloaded — its sessions would end — so a new flag reaches it after the reaper has
     ended its last idle session. Untrusted repos are left to `rc-hosts --check` to name."""
@@ -1637,7 +1856,7 @@ def launcher_report():
 
 FLAGS = {"--check", "--restart", "--only", "--idle", "--schedule-reap", "--unschedule-reap", "--end",
          "--dry-run", "--reap", "--hours", "--grant", "--launcher", "--tcc-run", "--agents", "--fix",
-         "--tcc-survey", "--host", "--health", "--orphans", "--probe-all"}
+         "--tcc-survey", "--host", "--health", "--orphans", "--probe-all", "--broken"}
 
 
 def main():
@@ -1694,6 +1913,8 @@ def main():
                   " rc-hosts --grant rebuilds it first")
             return 1
         return probe_all()
+    if "--broken" in args:
+        return broken_report()
     host = machine()
     only = {args[i + 1] for i, a in enumerate(args) if a == "--only" and i + 1 < len(args)}
     if "--idle" in args:
@@ -1715,8 +1936,11 @@ def main():
         hours = next((float(args[i + 1]) for i, a in enumerate(args)
                       if a == "--hours" and i + 1 < len(args)), REAP_HOURS)
         reap(host, hours, only, "--dry-run" in args)
+        heal(host, only, "--dry-run" in args)   # before revive: a restart here is a new pid it leaves alone
         revive(host, only, "--dry-run" in args)
         converge(host, only, "--dry-run" in args)
+        if not only:
+            cap_logs("--dry-run" in args)
         if not only and "--dry-run" not in args and ready():
             agents(fix=True, quiet=True)   # a job --grant skipped while it ran heals by itself
         return 0
@@ -1730,6 +1954,7 @@ def main():
           + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else "not scheduled (--schedule-reap)"))
     print(f"  {launcher_report()}")
     hosts = wanted(host)
+    failed = 0
     refused = restart - {n.split(" · ")[0] for _, n, _, _ in hosts} - {l for l, _, _, _ in hosts}
     for r in refused:
         print(f"  --       {r}: no such host here ({', '.join(n.split(' · ')[0] for _, n, _, _ in hosts)})")
@@ -1740,6 +1965,12 @@ def main():
             continue
         have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
         asked = name.split(" · ")[0] in restart or label in restart
+        hit = broken(label) if have is not None and not asked else None
+        if hit:   # before "in sync" and "differs": either read as fine while every new session fails
+            print(f"  FAIL     {name}: {broken_line(hit[0])} — the hourly --reap restarts it once no session"
+                  f" is busy; now: rc-hosts --restart {name.split(' · ')[0]} (ends its sessions)")
+            failed += 1
+            continue
         if have is not None and running(label) and asked and not check:
             if not restart_one(label, name, plist):   # in sync or not (2026-09-30: it used to say "in sync")
                 refused.add(label)
@@ -1775,7 +2006,7 @@ def main():
     for r in unregistered() if check else []:   # --check's question; a plain run (repos --clone) acts
         print(f"  unregistered  {r.relative_to(PROJECTS)}: no host until repos.json lists it"
               f" (bin/github-repo registers it; /new-project adopts a folder)")
-    return 1 if refused else 0   # a --restart that did not happen is not a success
+    return 1 if refused or failed else 0   # a --restart that did not happen is not a success
 
 
 if __name__ == "__main__":

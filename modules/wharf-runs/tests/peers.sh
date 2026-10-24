@@ -40,7 +40,7 @@ check "$(load autofinish 'print(m.default_week())')" "(False, None)" "  …and n
 
 echo "G22: dispatch with no helm — its lookup (the prompt case is test_dispatch.sh's)"
 mkdir -p "$T/stub"; printf '#!/bin/sh\necho "$*" >> "%s/claude.calls"\n' "$T" > "$T/stub/claude"; chmod +x "$T/stub/claude"
-check "$(E bash -c 'here="$(cd "$(dirname "$1")/.." && pwd)"; eval "$(sed -n "/^core=\"\"; legacy=/,/^)\"$/p" "$1")"; echo "core=${core:+found} ask=[$p_ask] helm=[$p_helm] keel=[$p_keel] account=[$p_account]"' sh "$R/bin/dispatch" 2>&1 | sed "s|$T|T|g")" \
+check "$(E bash -c 'here="$(cd "$(dirname "$1")/.." && pwd)"; eval "$(sed -n "/^core=\"\"; overlay=/,/^)\"$/p" "$1")"; echo "core=${core:+found} ask=[$p_ask] helm=[$p_helm] keel=[$p_keel] account=[$p_account]"' sh "$R/bin/dispatch" 2>&1 | sed "s|$T|T|g")" \
       "core=found ask=[] helm=[] keel=[] account=[]" "dispatch's lookup: the core found, every optional peer empty"
 
 echo "the core missing: one line, never a traceback"

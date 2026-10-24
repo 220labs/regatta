@@ -81,5 +81,5 @@ Read `README.md` first. For an agent:
   through that ssh. A `sent` lives in the task's `send` field, never in `status`, which wharf drives; a
   listener's tests set `HELM_LISTEN_PARENT`, as the sidecar's set `HELM_HOLD_PARENT`.
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
-  dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)
-  REGATTA_LEGACY=/nonexistent` on a Mac (2026-10-22). A Linux runner is untried.
+  dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)` on a
+  Mac (2026-10-22; `REGATTA_LEGACY` is read by nothing since B14b, 2026-10-23). A Linux runner is untried.

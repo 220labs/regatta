@@ -854,19 +854,16 @@ def sessionpipe_hit(cmd, depth=0):
 
 
 def sheep():
-    """keel's `sheep`, by the path a session can run: the regatta checkout's module, else the
-    overlay's (the config dir's `legacy`), else the bare name."""
-    for base, rel in ((config_lines("home"), ("modules", "keel", "bin", "sheep")), (config_lines("legacy"), ("bin", "sheep"))):
-        if base and os.path.isfile(os.path.join(os.path.expanduser(base[0]), *rel)):
-            return os.path.join(os.path.expanduser(base[0]), *rel)
-    return "sheep"
+    """keel's `sheep`, by the path a session can run: the regatta checkout's module, else the bare
+    name (the overlay's copy was the second choice until B14b, 2026-10-23, which deleted it)."""
+    return module_tool("keel", "sheep")
 
 
 def module_tool(module, name):
-    """A regatta module's bin tool by the path a session can run, as sheep() finds keel's."""
-    for base, rel in ((config_lines("home"), ("modules", module, "bin", name)), (config_lines("legacy"), ("bin", name))):
-        if base and os.path.isfile(os.path.join(os.path.expanduser(base[0]), *rel)):
-            return os.path.join(os.path.expanduser(base[0]), *rel)
+    """A regatta module's bin tool by the path a session can run (the `home` file's checkout), else its bare name."""
+    base = config_lines("home")
+    if base and os.path.isfile(os.path.join(os.path.expanduser(base[0]), "modules", module, "bin", name)):
+        return os.path.join(os.path.expanduser(base[0]), "modules", module, "bin", name)
     return name
 
 

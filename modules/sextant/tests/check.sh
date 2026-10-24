@@ -34,7 +34,7 @@ print(' '.join(sorted(SourceFileLoader('sparks', '$D/bin/sparks').load_module().
 [ "$(cands r2.json)" = "local" ]; ok $? "  and every GitHub repo when no knowledge repo names an owner"
 # `redactions audit` and `trial` reach the classifier through classify_sentences(), not gate_ready():
 # it refuses on its own, before any request, without sextant/source or the vendor's quote
-C="$T/c"; mkdir -p "$C/regatta" "$T/proj" "$T/logs"; touch "$C/legacy"
+C="$T/c"; mkdir -p "$C/regatta" "$T/proj" "$T/logs"; touch "$C/regatta/overlay"
 echo me >"$C/regatta/owner"; echo _vault >"$C/regatta/guarded"; echo none >"$C/regatta/orca-deny"
 echo "$T/logs" >"$C/regatta/log-dir"; echo "$T/proj" >"$C/regatta/projects"
 echo '{"sites": {"sparks.redact": {"kind": "classify", "provider": "jev", "when_off": "fail"}}}' >"$C/regatta/models.json"

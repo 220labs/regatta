@@ -13,7 +13,12 @@ hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; fail
 
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
 export HOME="$T/home"
-export REGATTA_LEGACY="$HOME/projects/overlay"   # a stand-in overlay: the checkout claude-host's allowlist names (rc-hosts primary())
+# a stand-in overlay: the checkout claude-host's allowlist names (rc-hosts primary()), marked in the
+# suite's config dir with the core's keys beside it (B14b: the marker is how an overlay is named)
+echo "$HOME/projects/overlay" > "$REGATTA_CONFIG/regatta/overlay"
+for k in guarded orca-deny; do [ -e "$REGATTA_CONFIG/regatta/$k" ] || : > "$REGATTA_CONFIG/regatta/$k"; done
+[ -e "$REGATTA_CONFIG/regatta/log-dir" ] || echo "$T/logs" > "$REGATTA_CONFIG/regatta/log-dir"
+[ -e "$REGATTA_CONFIG/regatta/projects" ] || echo "$HOME/projects" > "$REGATTA_CONFIG/regatta/projects"
 mkdir -p "$HOME/projects/demo" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/.claude/sessions" "$T/coding/bin" "$T/stub" "$T/pids" "$T/kids"
 touch "$HOME/.local/bin/claude"
 # Links, not copies (B7): rc-hosts finds the core from its own resolved path (lib/core_path.py), and
@@ -21,9 +26,9 @@ touch "$HOME/.local/bin/claude"
 ln -s "$B/rc-hosts" "$T/coding/bin/rc-hosts"
 mkdir -p "$HOME/projects/overlay/bin"; ln -s "$B/rc-hosts" "$HOME/projects/overlay/bin/rc-hosts"   # the primary's, which the walk's job runs
 export CLAUDE_REPOS_JSON="$T/coding/repos.json" RC_HOSTS_SOURCE="$T/coding/bin/claude-host.c"
-# claude-host.c is the overlay's (it names the overlay's scripts), found through the core; the
-# launcher cases build it, so without one the suite says so and stops
-CH=$(REGATTA_LEGACY="$SUITE_OVERLAY" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.add(); import common; print(common.tool("claude-host.c") or "")' "$B/../lib" 2>/dev/null)
+# claude-host.c is the overlay's (it names the overlay's scripts), in the caller's overlay checkout
+# (SUITE_OVERLAY); the launcher cases build it, so without one the suite says so and stops
+CH="${SUITE_OVERLAY:+$SUITE_OVERLAY/bin/claude-host.c}"; [ -f "$CH" ] || CH=""
 [ -n "$CH" ] || { echo "  --   test_rc_hosts skipped: no claude-host.c here (the overlay's launcher source)"; exit 0; }
 echo '{"repos": {"demo": {"hosts": ["laptop"], "rc": true}}}' > "$T/coding/repos.json"
 # launchctl: a host is running while $T/pids/<label> holds its pid; every call is logged.
@@ -77,13 +82,19 @@ cat > "$T/stub/ps" <<PSEOF
 #!/bin/sh
 case "\$*" in *lstart*) cat "$T/lstart-\$4" 2>/dev/null;; *-axo*) cat "$T/ps-ax" 2>/dev/null;; esac
 PSEOF
+# lsof: the file a process runs (-d txt -Fn), from $T/exe-PID; none: unreadable, as for a process
+# that is not ours (rc-hosts exe_of)
+# (the pid is the word after -p, wherever the flags put it); RC_HOSTS_GONE_PIDS keeps every stub pid
+# from the real proc_pidpath, where a live process of this Mac could answer for it
+printf '#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != -p ]; do shift; done; pid=$2\n[ -f "%s/exe-$pid" ] && printf "p%%s\\nftxt\\nn%%s\\n" "$pid" "$(cat "%s/exe-$pid")"\nexit 0\n' "$T" "$T" > "$T/stub/lsof"
+export RC_HOSTS_GONE_PIDS=""
 chmod +x "$T/stub/"*
 export PATH="$T/stub:$PATH"
 L=org.example.claude.host.demo; LOG="$HOME/Library/Logs/claude-host/demo.log"
 RC() { python3 "$T/coding/bin/rc-hosts" "$@" > "$T/out" 2>&1; echo $?; }
-session() {  # session <pid> <idle|busy>: a host child with Claude Code's record of it
+session() {  # session <pid> <idle|busy> [minutes since]: a host child with Claude Code's record of it
   echo "$1" > "$T/kids/$(cat "$T/pids/$L")"
-  echo "{\"pid\":$1,\"sessionId\":\"5e55$1-0000\",\"status\":\"$2\",\"statusUpdatedAt\":$(( $(date +%s) * 1000 )),\"cwd\":\"$HOME/projects/demo\"}" > "$HOME/.claude/sessions/$1.json"
+  echo "{\"pid\":$1,\"sessionId\":\"5e55$1-0000\",\"status\":\"$2\",\"statusUpdatedAt\":$(( ($(date +%s) - ${3:-0} * 60) * 1000 )),\"cwd\":\"$HOME/projects/demo\"}" > "$HOME/.claude/sessions/$1.json"
 }
 nosession() { rm -f "$T/kids/"*; }
 repo() {  # repo <dir> [days ago]: a git repo whose one commit is that old (rc-hosts wants activity)
@@ -157,6 +168,83 @@ printf 'Error: This folder is already served by a terminal `claude remote-contro
 check "$(RC --reap)" "0" "still served"
 check "$(grep -c . "$T/out")" "0" "…said once"
 rm -f "$T/down/$L"
+
+echo "a host whose claude version was deleted under it (a film repo's host on the build Mac, 2026-10-23)"
+V="$HOME/.local/share/claude/versions"; mkdir -p "$V"; touch "$V/2.1.307"
+echo 520 > "$T/pids/$L"; echo "$V/2.1.307" > "$T/exe-520"
+check "$(RC --check)" "0" "--check, the host's version installed"
+hasnt "$T/out" "FAIL" "…no failure"
+check "$(RC --broken)" "0" "--broken, the same"
+has "$T/out" "ok       every host's claude is still installed" "…says so"
+echo "$V/2.1.304" > "$T/exe-520"
+session 8071 idle 30; echo "$V/2.1.304" > "$T/exe-8071"
+check "$(RC --check)" "1" "--check, the host runs a version gone from versions/"
+has "$T/out" "FAIL     demo · laptop: broken: its claude 2.1.304 was removed; new sessions fail" "…prints the failure"
+hasnt "$T/out" "in sync" "…never in sync, as it read before"
+check "$(RC --broken)" "3" "--broken, what bin/health asks: 3, never a crash's 1"
+has "$T/out" "FAIL     demo · laptop: broken: its claude 2.1.304 was removed" "…the same line"
+: > "$T/calls"
+check "$(RC --reap --dry-run)" "0" "--reap --dry-run, one idle session"
+has "$T/out" "would restart demo · laptop: its claude 2.1.304 was removed, new sessions fail" "…plans its restart"
+has "$T/out" "would end 1 idle session(s): 8071 idle" "…naming the session it would end"
+hasnt "$T/calls" "kill" "…and ends nothing"
+session 8071 busy
+check "$(RC --reap --dry-run)" "0" "--reap --dry-run, the session busy"
+has "$T/out" "broken     demo · laptop: its claude 2.1.304 was removed; session(s) [8071] busy" "…refuses, naming it"
+hasnt "$T/out" "would restart demo" "…and plans no restart"
+session 8071 idle 2
+check "$(RC --reap --dry-run)" "0" "--reap --dry-run, the session idle 2 min (between two turns from the phone)"
+has "$T/out" "session(s) [8071] busy or idle under 10 min" "…spares it"
+hasnt "$T/out" "would restart demo" "…and plans no restart"
+session 8071 idle 30; rm -f "$T/exe-520"
+check "$(RC --broken)" "3" "the host's file unreadable, its session on a gone version"
+check "$(RC_HOSTS_GONE_PIDS=8071 RC --broken)" "3" "…lsof without a name, proc_pidpath's ENOENT: the session record's version"
+has "$T/out" "its claude 2.1.304 was removed" "…named"
+touch "$V/2.1.304"
+check "$(RC_HOSTS_GONE_PIDS=8071 RC --broken)" "0" "…but that version installed again spawns: not broken"
+rm -f "$V/2.1.304"
+echo "$V/2.1.304" > "$T/exe-520"; : > "$T/calls"
+check "$(RC --reap)" "0" "--reap, the session idle"
+has "$T/out" "restarting demo · laptop: its claude 2.1.304 was removed" "…restarts the host"
+has "$T/out" "ending 1 idle session(s): 8071" "…logging the session it ends"
+has "$T/calls" "kill SIGTERM gui/$(id -u)/$L" "…by SIGTERM, as every restart here"
+has "$T/out" "restarted, pid 521" "…and reads the new pid back"
+check "$(RC --broken)" "0" "the restarted host"
+check "$(python3 - "$T/coding/bin/rc-hosts" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)
+r.exe_of = lambda pid: None   # lsof lost the name of the deleted file, proc_pidpath says ENOENT
+r.pidpath_gone = lambda pid: True
+r.record = lambda pid: {"version": "2.1.304"} if pid == 8071 else None
+print(r.gone_version(520), r.gone_version(8071))
+PY
+)" "(version unknown) 2.1.304" "lsof without a name: proc_pidpath's ENOENT still reads gone, the version from the session record"
+nosession; rm -f "$T/exe-"* "$HOME/.claude/sessions/8071.json"
+python3 - "$T/coding/bin/rc-hosts" "$LOG" <<'PY' > "$T/out" 2>&1
+import importlib.machinery as m, importlib.util as u, json, sys
+l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)
+r.LOG_CAP, r.LOG_HEAD, r.LOG_TAIL = 1000, 10, 100
+log = r.Path(sys.argv[2]); body = b"H" * 10 + b"x" * 4890 + b"T" * 100
+def setoff(off, **kw):
+    st = r.LOGS / "reap-state.json"; state = json.loads(st.read_text())
+    state["org.example.claude.host.demo"] = {**state["org.example.claude.host.demo"], "offset": off, **kw}; st.write_text(json.dumps(state))
+def off():
+    return json.loads((r.LOGS / "reap-state.json").read_text())["org.example.claude.host.demo"]["offset"]
+log.write_bytes(body); setoff(4000)
+r.cap_logs(True); print("dry", log.stat().st_size)
+r.cap_logs(False); b = log.read_bytes()
+print(len(b) < 200, b.startswith(b"H" * 10 + b"\n[rc-hosts cut 4890 bytes"), b.endswith(b"T" * 100), off() == len(b) - 100)
+log.write_bytes(body); setoff(4950); r.cap_logs(False); b = log.read_bytes()
+print("tail", off() == len(b) - 50, b[off():] == b"T" * 50)
+log.write_bytes(body); setoff(4000, waiting=True); r.cap_logs(False)
+print("waiting", log.stat().st_size, off())
+PY
+has "$T/out" "would cap  demo.log" "cap_logs --dry-run names the log"
+has "$T/out" "dry 5000" "…and leaves it whole"
+has "$T/out" "True True True True" "cap_logs keeps the head and the tail in place; an offset before the tail moves to its start"
+has "$T/out" "tail True True" "…one inside the tail keeps its line"
+has "$T/out" "waiting 5000 4000" "…and a host revive() waits on is not cut"
+printf 'Ready · demo · main\n    Capacity: 0/2\n' > "$LOG"
 
 echo "every repo gets a host unless it says \"rc\": false (2026-10-07)"
 repo "$HOME/projects/plain"; repo "$HOME/projects/off"

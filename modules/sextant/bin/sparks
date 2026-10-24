@@ -172,7 +172,7 @@ HOME = Path.home()
 #   sextant/sparks.json  the default config (a link into the vault); $SPARKS_CONFIG wins
 #   sextant/log          the log file's path, one line; else ~/Library/Logs/sparks.log
 #   sextant/source       the guarded source a recording counts as for bin/gate; required where an
-#                        overlay is installed (a `legacy` file), else `sparks`
+#                        overlay is installed (its `regatta/overlay` marker), else `sparks`
 CONFIG = Path(os.environ.get("SPARKS_CONFIG") or common.CONFIG / "sextant" / "sparks.json").expanduser()
 
 

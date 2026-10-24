@@ -258,7 +258,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"   # this module (wharf-runs), anchored 
 # The regatta core (lib/core_path.py, C2) and the peers it finds (common.tool): keel (M4), account and
 # trust-projects (lighthouse, G12), ask and helm (helm, G22; the overlay's until B12). One call, read
 # once; a missing peer is an empty value and its caller's fallback.
-core=""; legacy=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
+core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
 # The private values (the scrub's conventions): the peers and their ssh aliases (`wharf-runs/ssh`,
 # <host>:<alias> a line), the dispatch host (`wharf-runs/dispatch-host`), the launchd label prefix
 # (`wharf-runs/label-prefix`), the laptop and the owner (the core's), the projects folder. Read
@@ -293,13 +293,13 @@ out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") o
 out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
 out["projects"] = str(common.PROJECTS) if common else os.path.expanduser("~/projects")
 if common:
-    old = common.legacy_root()
+    old = common.overlay_root()
     if old and (old / "bin").is_dir():
         # its main checkout, as the old code anchored on its own: a worktree goes away at /finish
         import subprocess
         gd = subprocess.run(["git", "-C", str(old), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                             capture_output=True, text=True).stdout.strip()
-        out["legacy"] = os.path.dirname(gd) if gd.endswith("/.git") else str(old.resolve())
+        out["overlay"] = os.path.dirname(gd) if gd.endswith("/.git") else str(old.resolve())
     for var, name in (("p_account", "account"), ("p_trust", "trust-projects"), ("p_keel", "keel"),
                       ("p_ask", "ask"), ("p_helm", "helm")):
         found = common.tool(name)
@@ -316,14 +316,15 @@ CORE
 [ -n "${DISPATCH_ASK+x}" ] && p_ask="$DISPATCH_ASK"
 [ -n "${DISPATCH_HELM+x}" ] && p_helm="$DISPATCH_HELM"
 [ -n "$core" ] || { echo "dispatch: the regatta core is missing — install the \`regatta\` plugin, or name a clone in the regatta config dir's \`home\` file" >&2; exit 2; }
-# The default repo: the overlay's checkout where one is installed (the config dir's `legacy`), else
-# the main checkout of the clone this file sits in — never a worktree, whose branch is not the run's.
-# The job's script path likewise: the overlay's shim (the path its jobs always named), else this
-# module in the main checkout; a worktree's copy goes away at /finish.
+# The default repo: the overlay's checkout where one is installed (the config dir's `regatta/overlay`),
+# else the main checkout of the clone this file sits in — never a worktree, whose branch is not the run's.
+# The job's script path likewise: the overlay's shim (the path its jobs always named, kept for good:
+# claude-host starts only the overlay's scripts, B14a's D2), else this module in the main checkout; a
+# worktree's copy goes away at /finish.
 mainco="$(cd "$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)"
-primary="${legacy:-$mainco}"
+primary="${overlay:-$mainco}"
 jobbin="$mainco/modules/wharf-runs/bin/dispatch"
-[ -n "$legacy" ] && [ -f "$legacy/bin/dispatch" ] && jobbin="$legacy/bin/dispatch"
+[ -n "$overlay" ] && [ -f "$overlay/bin/dispatch" ] && jobbin="$overlay/bin/dispatch"
 RCH="${DISPATCH_RCHOSTS:-$here/bin/rc-hosts}"
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }   # host names compare lower-case (bash 3.2 has no ${x,,})
 # --on NAME: a host `wharf-runs/ssh` names, case-blind -> $pname (as the key spells it) and $peer (its
@@ -575,12 +576,16 @@ ACCT="${DISPATCH_ACCOUNT:-${p_account:-$here/bin/account}}"   # the tests stand 
 case "${DISPATCH_DEPTH:-}" in ''|*[!0-9]*) d0=0;; *) d0=$DISPATCH_DEPTH;; esac
 if [ -n "${DISPATCH_LABEL:-}" ]; then depth=$(( d0 > 0 ? d0 : 1 )); else depth=$((d0 + 1)); fi
 maxdepth=${DISPATCH_MAX_DEPTH:-5}
-# skipper-modes S1: the run's mode at fire time (header, --mode): plan.json's task, then its ship (both on
-# this Mac only), the plist's DISPATCH_MODE a hint, the repo's scope, `default` — helmlib.task_mode, the
-# one reader. Without helm here, the hint or `default`. Into the session's environment and the record.
+# skipper-modes S1: the run's mode at fire time (header, --mode): a `helm mode --branch` on this branch
+# first (helmlib.branch_override, with the repo: the lowering verb for a run with no ship, which the
+# landing already read and fire time did not — follow-ups item 5), then plan.json's task, then its ship
+# (both on this Mac only), the plist's DISPATCH_MODE a hint, the repo's scope, `default` —
+# helmlib.task_mode, the one reader. Not branch_mode whole: its newest run record may be an earlier
+# step's (a --next drops yolo per step). Without helm here, the hint or `default`. Into the session's
+# environment and the record.
 resolve_mode() {
   local out
-  out=$(python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" <<'PY' 2>/dev/null
+  out=$(python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" "$branch" <<'PY' 2>/dev/null
 import sys
 sys.path.insert(0, sys.argv[1])
 import common
@@ -589,7 +594,13 @@ if not p:
     print(sys.argv[5] or "default"); sys.exit()
 sys.path.insert(0, str(p.parent))
 import helmlib
-print(helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None)[0])
+# fire_mode: the branch entry under the ship's mode, a ceiling (the follow-ups' landing review); a helmlib
+# from before it reads the entry first, as item 5 did
+if hasattr(helmlib, "fire_mode"):
+    print(helmlib.fire_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None, sys.argv[6])[0])
+else:
+    over = getattr(helmlib, "branch_override", lambda b, r: None)(sys.argv[6], sys.argv[4])
+    print((over or helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None))[0])
 PY
 ) || out=""
   mode="${out:-${mode:-default}}"
@@ -1046,10 +1057,10 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
        "Bash(git log:*)" "Bash(git show:*)" "Bash(git add:*)" "Bash(git commit:*)")
 # a bound run is account work (hooks/design_route.py): it publishes Artifacts and shares them in Chrome
 [ "$account" = bound ] && tools+=(Artifact mcp__claude-in-chrome)
-# bin/pr (and wharf's libexec/pr, the no-overlay path /finish names) by its launch verbs only: `*bin/pr*` would also refuse /usr/bin/printf and `git log -- bin/pr`
+# bin/pr (and wharf's libexec/pr, the no-overlay path /finish names, and the core's `regatta pr`, its C1 way in) by its launch verbs only: `*bin/pr*` would also refuse /usr/bin/printf and `git log -- bin/pr`
 # AskUserQuestion: nobody watches a run, and in auto mode the classifier would answer it (R2 of
 # docs/session-asks-2026-10-09.md); the PreToolUse hook (hooks/ask_guard.py) is the guard, this the belt
-denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(python3 scripts/deploy.py:*)" AskUserQuestion)
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" AskUserQuestion)
 # --start's changes to both lists (bash 3.2: an empty array under set -u needs the ${a[@]+…} form)
 for t in ${extra_allow[@]+"${extra_allow[@]}"}; do
   case " ${tools[*]} " in *" $t "*) ;; *) tools+=("$t");; esac
@@ -1288,7 +1299,8 @@ run_rc() {   # PROMPT DIR SCREEN [probe] — with the start lock held; drops it 
   chain_record
   record mode=rc background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" \
     started="$(date +%s)" log="$log" screen="$scr" screendir="$SCREENDIR" runner="$runner" rc_name="$name · $shown" \
-    title="$title" wt="$2" screen_pid="$spid" ${4:+probe=1} ${idle_for:+idle="$idle_for"} "${crec[@]}"
+    title="$title" wt="$2" screen_pid="$spid" ${4:+probe=1} ${idle_for:+idle="$idle_for"} "${crec[@]}" \
+    ${CLAUDE_CONFIG_DIR:+config_dir="$CLAUDE_CONFIG_DIR"}   # the run's registry: dispatch-rc's registry_dirs
   drop_lock
   echo "== claude $cpid, session $sid, screen $scr, Remote Control \"$name · $shown\"; state $state"
   # the window: the laptop only (regatta/laptop; the build Mac has nobody at its screen); a failure
@@ -1416,7 +1428,7 @@ PY
 #     and holds the slice at a ready PR, never trusting this `--by`.
 AFRUN="${DISPATCH_AUTOFINISH_RUN:-$here/bin/autofinish-run}"   # the tests stand one in
 mode_now() {   # the run's mode at this moment, helmlib.task_mode as resolve_mode reads it; the start's without helm
-  python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" <<'PY' 2>/dev/null || echo "$mode"
+  python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" "$branch" <<'PY' 2>/dev/null || echo "$mode"
 import sys
 sys.path.insert(0, sys.argv[1])
 import common
@@ -1425,7 +1437,13 @@ if not p:
     print(sys.argv[5]); sys.exit()
 sys.path.insert(0, str(p.parent))
 import helmlib
-print(helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None)[0])
+# fire_mode: the branch entry under the ship's mode, a ceiling (the follow-ups' landing review); a helmlib
+# from before it reads the entry first, as item 5 did
+if hasattr(helmlib, "fire_mode"):
+    print(helmlib.fire_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None, sys.argv[6])[0])
+else:
+    over = getattr(helmlib, "branch_override", lambda b, r: None)(sys.argv[6], sys.argv[4])
+    print((over or helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None))[0])
 PY
 }
 yolo_launch() {   # RC — the build run's exit
@@ -1632,11 +1650,11 @@ fi
   if [ -n "$p_ask" ] && [ -n "$p_helm" ]; then
     prompt="$prompt
 
-First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
+First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. Whether to land the branch is never such a decision: no D-item for it — end with the WAITING line asking it (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc). Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
   else
     prompt="$prompt
 
-When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it."
+When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it. Whether to land the branch is never such a decision: no D-item for it — end with the WAITING line asking it (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc)."
   fi
   prompt="$prompt When the brief names steps of a Course doc (a \`Steps:\` line), mark each one done once its check is green — \`python3 ${p_keel:-$here/bin/keel} step <doc> <S> done --branch $branch --stamp\` — and commit it: /finish and autofinish refuse a branch whose brief names an open step."
   # The gate per mode travels in the prompt (E12: "the brief carries the gate"; skipper-modes S3): keel

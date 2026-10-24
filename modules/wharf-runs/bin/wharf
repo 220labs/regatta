@@ -54,6 +54,17 @@ Talk page, a pointer naming the plan, the block and the question id (the questio
 Orca: the pointer says how to read it), under hail's 400 characters. Never the file road, which a
 scope skipper never reads: a hail no road took, or a ship no live skipper holds, is carded on the
 board.
+Work already on main is never built again (skipper-resilience S9): before a worker block starts, and
+before an S1 retry of one, after one `git fetch origin <main>` per pass, `Ship.on_main` reads, cheapest
+first: (1) done_when's `file` or `marker` on origin/<main>; (2) a merged PR whose head is the block's
+branch (GitHub, PLAN_NO_GH skips it); (3) every file the block's branch changed identical on origin/<main>
+(branches.prove, as `bin/pr` proves a carried branch); a hit ends the block `launched via <sha>` or
+`launched via #N`. (4), before the first start only: an owned path (`owns:`, else the files its
+predecessors' branches changed) moved on origin/<main> since the plan was made by a commit of no block of
+this ship raises `a sibling may have built this (<sha>)` to the skipper, a `waiting` report; any later
+report of the block (`helm report --status planned`) clears it, `--status launched` closes it. A fetch or
+API failure is no hit, with one line on stderr: the reads only prevent duplicate work.
+A `launch: finish` block whose predecessors were ended that way is ended too (launch_on_main).
     wharf status [<blueprint.md> | <ship>] [--plan ID] [--json]
         Where each block stands: the plan's status, Orca's Task, its newest Dispatch. Reads only.
     wharf status --orphans [--json]
@@ -105,12 +116,14 @@ environment is paired under the host's name. A claude-code block there starts by
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
 import subprocess
 import sys
 import time
+import types
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -416,7 +429,13 @@ def memo_answered(bp, rec=None, mode=None):
         # yolo_settled, not answered: a session's own `> Proceeding with B` must not open a gate
         ok = all(memo.yolo_settled(got[i], lines) for i in items)
         if not ok and mode in ("dnd", "yolo"):
-            physical = memo.doc_physical(path) if mode == "dnd" and path else None
+            # keel's doc_physical reads the checkout from the doc's folder, and a pinned doc new on its
+            # branch has no folder in the ship's main: there, the nearest folder that is (the pinned
+            # dnd case, skipper-modes follow-ups — it read None, so dnd held every such doc)
+            at = path
+            while at and not at.parent.is_dir() and at.parent != at.parent.parent:
+                at = at.parent
+            physical = memo.doc_physical(at) if mode == "dnd" and at else None
             open_ = [i for i in items if not memo.yolo_settled(got[i], lines)]
             if all(takeable(got[i], lines, physical) for i in open_):
                 return True, "taken unattended (%s): %s" % (mode, "; ".join(
@@ -436,7 +455,8 @@ def bp_mode(pid, bp):
     """The blueprint's `mode:` as this caller may record it (skipper-modes S3b): None when it would raise
     the ship's mode and the caller is unattended — a blueprint is a file any run can write, and a raise
     is a yes to merge. The refusal's words, for the apply's line, from bp_mode_refusal. None too once an
-    apply refused it (plan.json's `mode_refused`): a refusal stands until the owner runs `helm mode`."""
+    apply refused it (plan.json's `mode_refused`): a refusal stands until the owner runs `helm mode` on the
+    ship, which drops it; an attended apply says it again meanwhile."""
     if (helmlib.load_plan(pid) or {}).get("mode_refused"):
         return None
     return None if bp_mode_refusal(pid, bp) else bp["meta"].get("mode")
@@ -685,6 +705,31 @@ echo "$p"
 
 # ---------------------------------------------------------------------------- apply: one ship
 
+def marker_built(lines, anchor):
+    """Whether a done_when marker holds in the doc's lines: its anchor's item says "built" (the one reader,
+    for the worktree's file and for a blob on origin/main alike)."""
+    # the convention (iac section 6): the block wrote "Built" under its item — the item's own
+    # lines only (up to the next item or heading), and the word, never "not built" or "rebuilt"
+    item = re.compile(r"(^#|^\s*(?:[-*]|\d+\.)\s|^\s*\*\*|^\s*\|)")
+    built = re.compile(r"(?<![\w-])built(?![\w-])", re.I)   # never "built-ins"
+    unbuilt = re.compile(r"\b(?:not(?:\s+yet)?|never|un)\s*-?\s*built\b|\bbuilt\s*\?|\bonce\b[^.]*\bbuilt\b|\bis\s+built\s+(?:before|first)\b", re.I)
+    # the anchor's own item: a heading, list item, bold lead or table row that starts with
+    # the anchor (after its marker), never a line that merely mentions it ("starts S3 once S1 is built")
+    # also an item line that names it bold anywhere ("1. **Built 2026-10-16** — … **B6a — x**":
+    # this repo rewrites a step's line when it is built)
+    e = re.escape(anchor)
+    lead = re.compile(r"^\s*(?:#+|[-*]|\d+\.|\|)?\s*(?:\*\*|`)?%s(?![\w-])|^\s*(?:#+|[-*]|\d+\.|\|)\s.*?\*\*%s(?![\w-])" % (e, e))
+    for i, line in enumerate(lines):
+        if not lead.match(line):
+            continue
+        for j, x in enumerate(lines[i:i + 12]):
+            if j and item.match(x) and not x.lstrip().startswith(">"):
+                break
+            if built.search(x) and not unbuilt.search(x):
+                return True
+    return False
+
+
 class Ship:
     """One apply over one blueprint in one plan: the plan, its record of the ship, the ledger."""
 
@@ -726,6 +771,11 @@ class Ship:
                 fresh["started"] = self.p["started"]
             if self.p.get("mode") and "mode" not in fresh:   # the blueprint's, once; `helm mode` since wins
                 fresh["mode"] = self.p["mode"]
+            # a refusal this apply wrote (apply_ship), kept as `mode` is: without it the key never reached
+            # plan.json and the next tick recorded the run-written mode (the follow-ups' landing review).
+            # Only this apply's own: one `helm mode` cleared since, or a mode set since, stays as it is
+            if getattr(self, "refused_now", None) and "mode" not in fresh and not fresh.get("mode_refused"):
+                fresh["mode_refused"] = self.refused_now
             fresh.setdefault("blueprints", {})[self.bp["name"]] = self.rec
             ft = fresh.setdefault("tasks", {})
             for sid, t in (self.p.get("tasks") or {}).items():
@@ -743,7 +793,7 @@ class Ship:
             helmlib.save_plan(fresh)
             self.p = fresh
 
-    WHARF_KEYS = {"orca_task", "orca_dispatches", "seeded_branch", "branch", "stopped", "wt_deferred"}
+    WHARF_KEYS = {"orca_task", "orca_dispatches", "seeded_branch", "branch", "stopped", "wt_deferred", "sibling_seen", "on_main"}
 
     def owned_keys(self, sid):
         st = self.bp["by_id"].get(sid)
@@ -875,7 +925,7 @@ class Ship:
 
     def worktree(self, st):
         """(path, branch) of a block's worktree: `.claude/worktrees/<topic>` on its branch from local
-        main, the .env linked (rules/git-workflow.md's recipe; B6a's pick A). Made once; a second
+        main (or the newer origin/<main> on_main fetched this pass), the .env linked (rules/git-workflow.md's recipe; B6a's pick A). Made once; a second
         apply finds it."""
         br = blueprintlib.branch_of(self.bp, st, self.here)
         topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", br.rsplit("/", 1)[-1])
@@ -895,8 +945,16 @@ class Ship:
                                           capture_output=True).returncode:
                 raise Refused("%s does not fork from local main" % br, 2)
             return path, br
+        # a new branch starts from the origin/<main> this pass fetched (on_main) when local main is behind
+        # it: a predecessor the on-main reads ended is on origin only. --no-track: never upstream onto main
+        # (rules: a branch tracking origin/main is pushed onto it). R1 below still holds.
+        base, fetched = "main", (_cache.get("onmain") or {}).get(str(self.repo))
+        if fetched and _git(self.repo, "rev-parse", "main") != _git(self.repo, "rev-parse", fetched) and \
+                not subprocess.run(["git", "-C", str(self.repo), "merge-base", "--is-ancestor", "main", fetched],
+                                   capture_output=True).returncode:
+            base = fetched
         argv = ["worktree", "add", str(path), br] if _git(self.repo, "show-ref", "--verify", "--quiet", "refs/heads/" + br) is not None \
-            else ["worktree", "add", str(path), "-b", br, "main"]
+            else ["worktree", "add", "--no-track", "-b", br, str(path), base]
         try:
             r = subprocess.run(["git", "-C", str(self.repo)] + argv, capture_output=True, text=True, timeout=60)
         except subprocess.TimeoutExpired:
@@ -1034,6 +1092,9 @@ class Ship:
         built = self.built_before_retry(st, task)
         if built:
             return built
+        onmain = self.on_main(st, task)
+        if onmain:
+            return onmain
         spent = self.spent(st)
         if spent:
             return spent
@@ -1216,6 +1277,9 @@ class Ship:
         run again blindly (dangling(): it fails the Task instead)."""
         s, sid = st["raw"], st["id"]
         if s.get("launch") == "finish":
+            ended = self.launch_on_main(st)
+            if ended:
+                return ended
             if self.launch is not None:
                 return self.start_launch(st, task)
             said = "launch: finish — %s's /finish launches it (a gate file is in it)" % (skipper(self.bp, self.pid) or "the skipper")
@@ -1268,6 +1332,391 @@ class Ship:
         report(self.pid, sid, "done", "built; the worker ended with no report (dispatch %s): %s" % (did[-1], what))
         self.did += ["%s: %s" % (sid, x) for x in self.release_builder(st)]
         return "built: %s holds — ended, not started again" % what
+
+    # -- work already on main: never rebuilt (skipper-resilience S9) ---------------------------------
+
+    SIBLING = "a sibling may have built this"
+    SHARED = {"AGENTS.md", "CLAUDE.md", "TODO.md", "CHANGELOG.md"}   # read (4)'s default paths leave them out
+
+    def branches_mod(self):
+        """wharf's branches.py (the proof `bin/pr` carries a branch by), through the core's tool lookup;
+        None when wharf is not here: the reads that need it are then no hit."""
+        if "branches" not in _cache:
+            path = common.tool("branches.py")
+            try:
+                _cache["branches"] = _mod("branches", path) if path else None
+            except Exception as x:  # noqa: BLE001 — a file mid-edit, or a core it cannot find: no reads, never a dead apply
+                self.onmain_log("branches.py: %s" % x)
+                _cache["branches"] = None
+        return _cache["branches"]
+
+    def onmain_log(self, text):
+        """One line on stderr for a read that could not be made, once per process: the reads only
+        prevent duplicate work, so a failure is "no hit" and never holds a start back."""
+        said = _cache.setdefault("onmain_said", set())
+        if text not in said:
+            said.add(text)
+            print("wharf: on-main reads: %s" % text, file=sys.stderr)
+
+    def main_ref(self):
+        """`origin/<main>` after one `git fetch origin <main>` per pass, or None: no origin (nothing to
+        read), no branches.py, or a fetch that failed (said once). A dry run fetches nothing and reads
+        the ref as it stands."""
+        cache = _cache.setdefault("onmain", {})
+        key = str(self.repo)
+        if key in cache:
+            return cache[key]
+        ref, bm = None, self.branches_mod()
+        if bm and _git(self.repo, "config", "--get", "remote.origin.url"):
+            main = bm.main_branch(self.repo)
+            ok = True
+            if not self.dry:
+                env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+                # never over the caller's own ssh command (the variable outranks core.sshCommand)
+                if not env.get("GIT_SSH_COMMAND") and not _git(self.repo, "config", "--get", "core.sshCommand"):
+                    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=15"
+                try:
+                    r = subprocess.run(["git", "-C", str(self.repo), "fetch", "-q", "origin", main], capture_output=True,
+                                       text=True, timeout=60, env=env)
+                    ok = r.returncode == 0
+                    if not ok:
+                        self.onmain_log("git fetch origin %s failed (%s)" % (main, (r.stderr or "").strip()[-120:]))
+                except (OSError, subprocess.TimeoutExpired) as x:
+                    ok = False
+                    self.onmain_log("git fetch origin %s: %s" % (main, type(x).__name__))
+            if ok and _git(self.repo, "rev-parse", "--verify", "-q", "origin/%s^{commit}" % main):
+                ref = "origin/%s" % main
+        cache[key] = ref
+        return ref
+
+    def branch_obj(self, br, archived=False):
+        """The branch as branches.prove reads one (it asks for `.tips`): its tips, local and on origin, each
+        with its ref; None when neither exists. `archived` reads sync's `refs/archive/…` copies too: a
+        landed branch is archived at the next session start."""
+        if not br or not self.branches_mod():
+            return None
+        refs = ["refs/heads/%s" % br, "refs/remotes/origin/%s" % br]
+        if archived:
+            refs += ["refs/archive/%s" % br, "refs/archive/origin/%s" % br]
+        refs = [(r, _git(self.repo, "rev-parse", "--verify", "-q", "%s^{commit}" % r)) for r in refs]
+        refs = [(r, sha) for r, sha in refs if sha]
+        if not refs:
+            return None
+        return types.SimpleNamespace(name=br, refs=refs, tips=sorted({sha for _, sha in refs}))
+
+    def own_work(self, b, ref):
+        """Whether a branch holds work of its own. A tip that is not on main has commits main lacks. A
+        tip that is an ancestor of main is either merged or a branch cut from main and never written to,
+        and branches.prove cannot tell them apart: a local branch with a `commit` entry in its reflog (a
+        commit, an amend, a merge concluded by commit) whose commit the tip still holds was written to; a
+        rebase, a fast-forward or a rename onto a newer main is not a commit, and a commit a reset took
+        away (a skipper forcing a rebuild) no longer counts, so neither is read as merged. A tip on origin
+        alone that main holds is not counted: its reflog says nothing of who wrote it."""
+        def anc(a, b):
+            return not subprocess.run(["git", "-C", str(self.repo), "merge-base", "--is-ancestor", a, b],
+                                      capture_output=True).returncode
+        for name, tip in b.refs:
+            if not anc(tip, ref):
+                return True
+            if name.startswith("refs/heads/"):
+                for x in (_git(self.repo, "reflog", "show", "--format=%H %gs", name) or "").splitlines():
+                    sha, _, what = x.partition(" ")
+                    if what.startswith("commit") and anc(sha, tip):
+                        return True
+        return False
+
+    def on_main(self, st, task):
+        """Work already on main is never built again: read before a block starts and before a retry of
+        one, cheapest first, after one fetch of origin/<main> a pass. Returns the line (`launched via
+        <sha>` / `launched via #N`: the block is ended; `raised: a sibling may have built this (<sha>)`:
+        the skipper decides), or None, today's start. (1) done_when's file or marker on origin/<main>;
+        (2) a merged PR whose head is the block's branch; (3) the branch's changed files all identical
+        on main (branches.prove, bin/pr's proof for a carried branch); (4), before the first start only,
+        the owned paths moved on main by a commit of no block of this ship. A read that cannot be made is
+        no hit, with a line said once. Blocks that build (an Orca worker, a seeded session) only."""
+        s, sid = st["raw"], st["id"]
+        if st["kind"] != "block" or s.get("provider") not in ("orca", "claude-code") or s.get("launch"):
+            return None
+        left = time_left()
+        if left is not None and left < 120:
+            return None   # the fetch and the API are not worth the start's own seconds
+        try:
+            ref = self.main_ref()
+        except Exception as x:  # noqa: BLE001
+            self.onmain_log("main_ref: %s" % x)
+            ref = None
+        if not ref:
+            return None
+        op = "worker-start" if s["provider"] == "orca" else "seed"
+        ran = [e for e in self.rec.get("ledger") or [] if e.get("block") == sid and e.get("op") == op
+               and e.get("state") != "failed" and (op == "seed" or e.get("task") in (None, task))]
+        for read in (self.read_done_when_main, self.read_merged_pr, self.read_proved):
+            try:
+                hit = read(st, ref)
+            except Exception as x:  # noqa: BLE001 — a read that breaks is no hit
+                self.onmain_log("%s: %s" % (read.__name__, x))
+                hit = None
+            if hit:
+                how, what = hit
+                if self.dry:
+                    return "%s — %s: would end it, not start it" % (how, what)
+                report(self.pid, sid, "launched", how)
+                # what launch_on_main reads: a block these reads ended, not one a launch landed
+                self.task(sid)["on_main"] = how
+                self.save()
+                if ran:   # before a first start no builder of this ship ran: a lock there is someone else's
+                    self.did += ["%s: %s" % (sid, x) for x in self.release_builder(st)]
+                return "%s — %s: ended, not started" % (how, what)
+        if ran:
+            return None
+        try:
+            return self.read_sibling(st, ref)
+        except Exception as x:  # noqa: BLE001
+            self.onmain_log("read_sibling: %s" % x)
+            return None
+
+    def dw_parts(self, st):
+        """(kind, value, path) of a block's done_when when it is a `file` or a `marker` (the two a blob can
+        answer), else None. `check` and `memo_answered` need a worktree and are skipped."""
+        dw = st["raw"].get("done_when")
+        if not isinstance(dw, dict) or len(dw) != 1:
+            return None
+        (k, v), = dw.items()
+        if k not in ("file", "marker") or not isinstance(v, str):
+            return None
+        path = v.partition("#")[0] if k == "marker" else v
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            return None
+        return k, v, path
+
+    def dw_holds(self, st, rev):
+        """Whether the block's done_when (file or marker) holds in the tree of `rev` (`git cat-file -e`,
+        then the blob); None when it is neither kind."""
+        parts = self.dw_parts(st)
+        if not parts:
+            return None
+        k, v, path = parts
+        if _git(self.repo, "cat-file", "-e", "%s:%s" % (rev, path)) is None:
+            return False
+        if k == "marker":
+            text = _git(self.repo, "show", "%s:%s" % (rev, path))
+            return text is not None and marker_built(text.splitlines(), v.partition("#")[2])
+        return True
+
+    def main_at_created(self, ref):
+        """origin/<main> as it stood when the plan was made (first parents only: a merged side branch's
+        older commit was never main's state), or None."""
+        created = self.p.get("created")
+        return _git(self.repo, "rev-list", "-1", "--first-parent", "--before=%d" % math.ceil(created), ref) if created else None
+
+    def read_done_when_main(self, st, ref):
+        """(1) done_when's `file` or `marker` read from origin/<main>: (`launched via <sha>`, what) of the
+        commit that last touched it, else None. Not evidence when it already held on main when the plan was
+        made (a path that always existed, a marker line that only describes the work): the block starts as
+        today. A marker counts only against its doc as it stood on main then: a doc that landed later
+        (a ship laid from its design branch) may say "built" of a step that is not started."""
+        parts = self.dw_parts(st)
+        if not parts or not self.dw_holds(st, ref):
+            return None
+        k, v, path = parts
+        base = self.main_at_created(ref)
+        if k == "marker" and (not base or _git(self.repo, "cat-file", "-e", "%s:%s" % (base, path)) is None):
+            return None
+        if base and self.dw_holds(st, base):
+            return None
+        sha = _git(self.repo, "log", "-1", "--format=%h", ref, "--", path) or _git(self.repo, "rev-parse", "--short", ref)
+        return "launched via %s" % sha, "done_when %s %s is on %s" % (k, v, ref)
+
+    def read_merged_pr(self, st, ref):
+        """(2) a merged pull request whose head is the block's branch (GitHub, `common.api` on the pulls
+        list: `merged_at` set): (`launched via #N`, what) or None. A PR closed unmerged (rename S5's #428)
+        is no hit, and neither is an answer that never came. While the branch is still here, the PR's
+        head must be one of its tips (common.merged_pr's rule): a branch that went on committing after
+        its PR merged, or a name reused for later work, has work no PR landed."""
+        if os.environ.get("PLAN_NO_GH") or self.dry:
+            return None
+        br = self.branch(st)
+        slug = common.repo_slug(_git(self.repo, "config", "--get", "remote.origin.url") or "")
+        if not br or not slug:
+            return None
+        from urllib.parse import quote
+        status, prs = common.api("GET", "/repos/%s/pulls?state=closed&per_page=10&head=%s:%s"
+                                 % (slug, slug.split("/")[0], quote(br, safe="")))
+        if status != 200 or not isinstance(prs, list):
+            self.onmain_log("GitHub's pulls list for %s gave %s" % (br, status or "no answer"))
+            return None
+        # the newest tip: the local branch where there is one (origin's ref is as old as the last push)
+        b = self.branch_obj(br)
+        newest = (dict(b.refs).get("refs/heads/%s" % br) or b.refs[0][1]) if b else None
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            head = pr.get("head") or {}
+            if pr.get("merged_at") and head.get("ref") == br and pr.get("number") \
+                    and (newest is None or head.get("sha") == newest):
+                return "launched via #%s" % pr["number"], "its PR #%s merged" % pr["number"]
+        return None
+
+    def read_proved(self, st, ref):
+        """(3) the content proof of a worker block's branch (prove_branch); when its done_when is a file or
+        a marker, it must hold at one of the branch's tips too: a branch that never made the thing it was
+        to make is not proved by files that are the predecessors' own."""
+        b = self.branch_obj(self.branch(st))
+        if b is not None and self.dw_parts(st) and not any(self.dw_holds(st, tip) for tip in b.tips):
+            return None
+        return self.prove_branch(self.branch(st), self.wt_of(st["id"]), ref)
+
+    def prove_branch(self, br, wt, ref):
+        """(`launched via <sha>`, what) when every file the branch changed is identical on origin/<main>, or
+        its tips are merged into it (branches.prove): not for a branch with nothing of its own (own_work),
+        nor one whose commits net to nothing (branches.prove's vacuous "no net change": nothing was built),
+        nor while its worktree holds uncommitted work (the proof speaks for commits only)."""
+        bm = self.branches_mod()
+        b = self.branch_obj(br)
+        if b is None or not self.own_work(b, ref):
+            return None
+        if wt and bm.uncommitted(wt) != 0:
+            return None   # uncommitted work, or git could not say
+        proof = bm.prove(self.repo, b, ref)
+        if not proof or "no net change" in proof:
+            return None
+        return "launched via %s" % _git(self.repo, "rev-parse", "--short", ref), "%s on %s (%s)" % (b.name, ref, proof)
+
+    def launch_on_main(self, st):
+        """A `launch: finish` block with nothing left to land: every predecessor was ended by the on-main
+        reads (the task's `on_main`, never the progress text: a launch's own landing says `launched via
+        #N` too) and it names no branch of its own, or its one branch is proved on origin/<main> (read 3,
+        the #442 shape: a branch carried across by another's PR, with none of its own). Reported
+        `launched`; None otherwise, and every earlier path of the launch stands. The line, or None."""
+        deps = st["deps"]
+        ps = plan_status(self.pid)
+        how = [(self.p.get("tasks") or {}).get(d, {}).get("on_main") for d in deps]
+        hit = None
+        # the flag counts while the reads' report is still the latest: a block reopened and rebuilt since
+        # reports again, and its rebuild is the launch's to land
+        if deps and not st["raw"].get("branch") and all((ps.get(d) or {}).get("status") in ENDED and h
+                                                         and str((ps.get(d) or {}).get("progress") or "") == h for d, h in zip(deps, how)):
+            hit = (how[0], "its predecessor%s already on main" % ("s are" if len(deps) > 1 else " is"))
+        else:
+            try:
+                brs = [st["raw"]["branch"]] if st["raw"].get("branch") else [b for b in (self.branch(self.bp["by_id"][d]) for d in deps) if b]
+                ref = self.main_ref() if len(brs) == 1 else None
+                hit = self.prove_branch(brs[0], self.launch_wt(st), ref) if ref else None
+            except Exception as x:  # noqa: BLE001
+                self.onmain_log("launch_on_main: %s" % x)
+        if not hit:
+            return None
+        how, what = hit
+        if self.dry:
+            return "%s — %s: would end it" % (how, what)
+        report(self.pid, st["id"], "launched", how)
+        return "%s — %s: ended" % (how, what)
+
+    def block_sessions(self):
+        """The session ids of this ship's blocks, from the plan's reports."""
+        return {str(t.get("session")) for sid, t in plan_status(self.pid).items() if sid in self.bp["by_id"] and t.get("session")}
+
+    def own_commit_ids(self, ref):
+        """(shas, patch ids) of what this ship's own block branches hold: /finish rewrites a branch and drops
+        its trailers, so a commit that landed from one of them is told by its patch. A branch sync has
+        archived is read from `refs/archive/…` (launched, gone on GitHub, or empty: an empty one's range
+        may hold main's own commits, which only errs toward no raise); a tip already on main has its
+        commits since the plan was made. Once a pass, per ship."""
+        key = (self.pid, self.bp["name"], str(self.repo))
+        cache = _cache.setdefault("onmain_own", {})
+        if key in cache:
+            return cache[key]
+        shas, ids, base = set(), set(), self.main_at_created(ref)
+        for st in self.bp["blocks"]:
+            if st["kind"] != "block" or st["raw"].get("provider") not in ("orca", "claude-code"):
+                continue
+            b = self.branch_obj(self.branch(st), archived=True)
+            live = [(n, t) for n, t in (b.refs if b else []) if not n.startswith("refs/archive/")]
+            if b is None or (live and not self.own_work(types.SimpleNamespace(refs=live), ref)):
+                continue
+            for tip in b.tips:
+                shas.add(tip)
+                mb = _git(self.repo, "merge-base", ref, tip)
+                if mb == tip:   # on main already: the range from the merge base is empty
+                    mb = base
+                for c in (_git(self.repo, "rev-list", "--no-merges", "%s..%s" % (mb, tip)) or "").split() if mb else []:
+                    got = self.patch_id(c)
+                    if got:
+                        ids.add(got)
+        cache[key] = (shas, ids)
+        return shas, ids
+
+    def patch_id(self, sha):
+        try:
+            d = subprocess.run(["git", "-C", str(self.repo), "diff-tree", "-p", "--root", "--no-ext-diff", sha],
+                               capture_output=True, timeout=30)
+            r = subprocess.run(["git", "-C", str(self.repo), "patch-id", "--stable"], input=d.stdout, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.stdout.split()[0].decode() if r.returncode == 0 and r.stdout.split() else None
+
+    def read_sibling(self, st, ref):
+        """(4) before the first start: the paths this block owns (`owns:`, else the files its predecessors'
+        branches changed) moved on origin/<main> since the plan was made, by a commit of no block of this
+        ship (no `Claude-Session` trailer of one of its sessions, and not the patch of one of its branches'
+        own commits). Raised to the skipper, once: `waiting`, with the commit's sha. The skipper closes the
+        block (`helm report --status launched`) or clears it (any later report, `--status planned`); a later
+        stranger raises again."""
+        sid, created, bm = st["id"], self.p.get("created"), self.branches_mod()
+        if not created:
+            return None
+        paths = [x for x in (st["raw"].get("owns") or []) if isinstance(x, str) and x.strip() and not x.startswith("/")
+                 and ".." not in x.split("/")]
+        if not paths:
+            for d in st["deps"]:
+                dst = self.bp["by_id"].get(d)
+                b = self.branch_obj(self.branch(dst), archived=True) if dst and dst["kind"] == "block" else None
+                for tip in (b.tips if b else []):
+                    mb = _git(self.repo, "merge-base", ref, tip)
+                    paths += (bm.changed_paths(self.repo, mb, tip) or []) if mb else []
+            # files every landing touches say nothing of who built this block
+            paths = [x for x in paths if x.rsplit("/", 1)[-1] not in self.SHARED and not x.startswith(".helloworld/")]
+        paths = sorted(set(paths))
+        if not paths:
+            return None
+        # rounded up to the second: git compares whole seconds, and a commit in the second the plan was made
+        # in, made before it, is not a sibling's
+        since = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(math.ceil(created)))
+        r = subprocess.run(["git", "-C", str(self.repo), "log", ref, "--no-merges", "--since=" + since,
+                            "--format=%H%x1f%B%x1e", "--"] + paths, capture_output=True, text=True, timeout=30)
+        if r.returncode:
+            return None
+        mine, theirs = self.block_sessions(), None
+        strangers = []
+        for rec in r.stdout.split("\x1e"):
+            sha, _, msg = rec.strip().partition("\x1f")
+            if not sha:
+                continue
+            marks = re.findall(r"^Claude-Session:\s*(\S+)\s*$", msg, re.M)
+            if any(m.startswith(v) or v.startswith(m) for m in marks for v in mine):
+                continue
+            if theirs is None:
+                theirs = self.own_commit_ids(ref)
+            if sha in theirs[0] or self.patch_id(sha) in theirs[1]:
+                continue
+            strangers.append(sha[:7])
+            break   # one is enough to ask
+        if not strangers:
+            return None
+        sha, t = strangers[0], self.task(sid)
+        said = "%s (%s)" % (self.SIBLING, sha)
+        cur = plan_status(self.pid).get(sid) or {}
+        if sha in (t.get("sibling_seen") or []):
+            if cur.get("status") == "waiting" and str(cur.get("progress") or "").startswith(self.SIBLING):
+                return "raised: " + said   # still the skipper's
+            return None   # cleared (the skipper's later report)
+        if not self.dry:
+            # the report first: a pass killed between the two then asks twice, never reads a raise
+            # nobody saw as cleared
+            report(self.pid, sid, "waiting", said)
+            t.setdefault("sibling_seen", []).append(sha)
+            self.save()
+        return "raised: " + said
 
     def release_builder(self, st):
         """A block the yard has ended: its worktree's lock marked handed over (owner.json's
@@ -1592,25 +2041,8 @@ class Ship:
             if not p.is_file():
                 return False, "marker: %s not found" % doc
             lines = p.read_text().splitlines()
-            # the convention (iac section 6): the block wrote "Built" under its item — the item's own
-            # lines only (up to the next item or heading), and the word, never "not built" or "rebuilt"
-            item = re.compile(r"(^#|^\s*(?:[-*]|\d+\.)\s|^\s*\*\*|^\s*\|)")
-            built = re.compile(r"(?<![\w-])built(?![\w-])", re.I)   # never "built-ins"
-            unbuilt = re.compile(r"\b(?:not(?:\s+yet)?|never|un)\s*-?\s*built\b|\bbuilt\s*\?|\bonce\b[^.]*\bbuilt\b|\bis\s+built\s+(?:before|first)\b", re.I)
-            # the anchor's own item: a heading, list item, bold lead or table row that starts with
-            # the anchor (after its marker), never a line that merely mentions it ("starts S3 once S1 is built")
-            # also an item line that names it bold anywhere ("1. **Built 2026-10-16** — … **B6a — x**":
-            # this repo rewrites a step's line when it is built)
-            e = re.escape(anchor)
-            lead = re.compile(r"^\s*(?:#+|[-*]|\d+\.|\|)?\s*(?:\*\*|`)?%s(?![\w-])|^\s*(?:#+|[-*]|\d+\.|\|)\s.*?\*\*%s(?![\w-])" % (e, e))
-            for i, line in enumerate(lines):
-                if not lead.match(line):
-                    continue
-                for j, x in enumerate(lines[i:i + 12]):
-                    if j and item.match(x) and not x.lstrip().startswith(">"):
-                        break
-                    if built.search(x) and not unbuilt.search(x):
-                        return True, "marker %s" % v
+            if marker_built(lines, anchor):
+                return True, "marker %s" % v
             return False, "marker %s: no \"built\" under it" % v
         if k == "check":
             if self.dry:
@@ -1842,6 +2274,8 @@ class Ship:
         lines = []
         for n in range(1 if once else PASSES):
             _cache.pop("fetched", None)   # a pinned ship's decision docs: fetched at most once a pass
+            _cache.pop("onmain", None)    # origin/<main>: fetched at most once a pass (on_main)
+            _cache.pop("onmain_own", None)   # a ship's own commits (own_commit_ids), read again each pass
             reads = None
             if run:
                 reads, why = orca_reads(run, coord)
@@ -2004,7 +2438,7 @@ def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, lau
             # record the run-written mode (landing review 9)
             why = bp_mode_refusal(pid, bp, once)
             if why:
-                ship.p["mode_refused"] = {"mode": bp["meta"]["mode"], "why": why, "ts": helmlib.now()}
+                ship.p["mode_refused"] = ship.refused_now = {"mode": bp["meta"]["mode"], "why": why, "ts": helmlib.now()}
                 ship.save()
                 ship.did.append("mode %s not recorded, and never by a later apply (`helm mode %s %s` records it): %s"
                                 % (bp["meta"]["mode"], pid, bp["meta"]["mode"], why))
@@ -2012,6 +2446,8 @@ def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, lau
                 ship.p["mode"] = bp["meta"]["mode"]
                 ship.save()
                 ship.did.append("mode %s recorded (the blueprint's)" % bp["meta"]["mode"])
+        elif not once and refused_line(pid, bp, ship.p):
+            ship.did.append(refused_line(pid, bp, ship.p))
         if not dry and not ship.p.get("started"):
             # the ship's start, once (H1), here and not in the digest branch: a blueprint accepted
             # first with `wharf check --accept` has its digest already. A ship applied before rename
@@ -2068,6 +2504,18 @@ def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, lau
     return 0
 
 
+def refused_line(pid, bp, p):
+    """A blueprint mode an unattended apply refused (plan.json's `mode_refused`), said again to a person's
+    apply with the line that lifts it, or None: it was said once, to a run nobody watched, and stood
+    silent after (follow-ups item 3). Not once the ship has a mode: `helm mode` spoke, and drops it."""
+    r = p.get("mode_refused")
+    m = isinstance(r, dict) and (r.get("mode") or bp["meta"].get("mode"))
+    if not m or "mode" in p or os.environ.get("CLAUDE_UNATTENDED"):
+        return None
+    return "mode %s refused %s, and not recorded since (`helm mode %s %s` records it): %s" % (
+        m, helmlib.iso(r.get("ts")) or "earlier", pid, m, r.get("why") or "a raise by an unattended apply")
+
+
 def dry_run(pid, path, as_json=False):
     """B6's dry run (`plan apply --dry-run`): the diff against Orca and the plan, nothing written."""
     bp = load_blueprint(path, pid)
@@ -2097,6 +2545,8 @@ def dry_run(pid, path, as_json=False):
         say("digest %s: %s" % (d[:12], change_text(rec, d, sd)))
     else:
         say("digest %s: not recorded — the first apply records it (wharf check --accept records it now)" % d[:12])
+    if refused_line(pid, bp, p):
+        say(refused_line(pid, bp, p))
     if reads is None:
         say("orca: no Run recorded for this blueprint — run-create \"%s/%s (wharf apply)\" first; nothing to read" % (bp["meta"]["repo"], bp["name"]))
     else:
@@ -2368,21 +2818,16 @@ def yard_alias(yard):
 
 
 # The caller's side over ssh, read by `sh -s -- <flags>` on the yard: the yard's own wharf, found by the
-# yard's own config — the overlay's bin/wharf where an overlay is installed (the allow rules name its
-# shim: the module-path trap), else the core's module. ssh carries no environment, so nothing here is
-# the caller's but the flags.
+# yard's own config — the core's module in the checkout its `home` names (the overlay's shim came first
+# until B14b, 2026-10-23, which deleted it). ssh carries no environment, so nothing here is the caller's
+# but the flags.
 REMOTE_WHARF = r'''set -u
 c=${REGATTA_CONFIG:-$HOME/.config/regatta}
 w=
-l=$(head -n 1 "$c/legacy" 2>/dev/null)
-case $l in "~"*) l=$HOME${l#"~"};; esac
-if [ -n "$l" ] && [ -x "$l/bin/wharf" ]; then w=$l/bin/wharf; fi
-if [ -z "$w" ]; then
-  h=$(head -n 1 "$c/home" 2>/dev/null)
-  case $h in "~"*) h=$HOME${h#"~"};; esac
-  if [ -n "$h" ] && [ -x "$h/modules/wharf-runs/bin/wharf" ]; then w=$h/modules/wharf-runs/bin/wharf; fi
-fi
-[ -n "$w" ] || { echo "no wharf on $(hostname -s): neither an overlay's bin/wharf nor the core's module ($c)" >&2; exit 2; }
+h=$(head -n 1 "$c/home" 2>/dev/null)
+case $h in "~"*) h=$HOME${h#"~"};; esac
+if [ -n "$h" ] && [ -x "$h/modules/wharf-runs/bin/wharf" ]; then w=$h/modules/wharf-runs/bin/wharf; fi
+[ -n "$w" ] || { echo "no wharf on $(hostname -s): no core's module ($c)" >&2; exit 2; }
 PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH
 export PATH
 exec "$w" apply --yard "$@" </dev/null

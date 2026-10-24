@@ -46,11 +46,9 @@ def _config_line(name):
 
 
 def _keel_cmd():
-    """`keel` as the message names it: the overlay's shim while it has one (its allow rules name
-    it), else this module's own bin/keel; under `~` either way when it is there."""
-    old = os.environ.get("REGATTA_LEGACY") or _config_line("legacy")
-    p = Path(old).expanduser() / "bin" / "keel" if old else None
-    p = p if p and p.is_file() else Path(__file__).resolve().parent.parent / "bin" / "keel"
+    """`keel` as the message names it: this module's own bin/keel, under `~` when it is there (the
+    overlay's shim came first until B14b, 2026-10-23, which deleted it)."""
+    p = Path(__file__).resolve().parent.parent / "bin" / "keel"
     import pwd
     s = str(p)
     for home in (str(Path.home()), pwd.getpwuid(os.getuid()).pw_dir):   # the login's own when HOME moved

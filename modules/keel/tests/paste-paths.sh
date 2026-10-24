@@ -716,11 +716,11 @@ check "$(mf_ mgr-5 no real talk)" 0 "  the same pid with another start time is n
 kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
 
 # regatta-modules G9, G24: helm (asklib, surfaces, bin/ask) and wharf-runs (dispatch-rc) absent —
-# REGATTA_LEGACY at no checkout, and run from a scratch tree of the core and keel alone, since
+# run from a scratch tree of the core and keel alone, since
 # wharf-runs lives in this repo since B7 (the AGENTS.md trap: a peer that moves in is found by
 # tool()'s modules/*/ search). The hand-over finding still blocks, the manager reminder and the
 # standing-manager test are skipped, never a traceback.
-NP="REGATTA_LEGACY=$T/no-legacy"
+NP="KEEL_NO_PEERS=1"   # no variable the code reads: the scratch tree hides the peers
 G24="$T/g24tree"; mkdir -p "$G24/.claude-plugin" "$G24/modules"; : > "$G24/.claude-plugin/marketplace.json"
 cp -R "$B/../../regatta" "$G24/modules/regatta"; cp -R "$B/.." "$G24/modules/keel"
 check "$(printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$T/b7.jsonl" "$R" | env "$NP" python3 "$G24/modules/keel/bin/paste-paths" --stop-hook | grep -c 'hand-over line is not right')" 1 "G9: peers absent — the hand-over finding still blocks"

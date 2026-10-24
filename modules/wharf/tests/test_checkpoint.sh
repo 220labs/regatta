@@ -25,7 +25,7 @@ export CLAUDE_CONFIG_DIR="$T/claude-config"   # no plugin registry but the suite
 core() { python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import checkpoint, common; $1" "$MOD/hooks"; }
 # keel is a peer (G4): the D-list cases need it, and skip when it is not installed
 KEEL=$(core 'print(common.tool("keel") or "")')
-# …and keel's session gate: without hooks/sheep_gate.py (the public twin until keel D1's hand edit)
+# …and keel's session gate: without hooks/sheep_gate.py (a copy without it)
 # never_mirrored fails closed and no mirror case can pass (the scrubs' integration review)
 [ -n "$KEEL" ] && [ ! -f "$(dirname "$(dirname "$KEEL")")/hooks/sheep_gate.py" ] && KEEL=
 # Trees for the cases that need the module without a peer or without the core: copies, never the
@@ -1277,14 +1277,42 @@ import importlib.util as u
 s = u.spec_from_file_location("cp_shed", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
 deny = ["env -u CLAUDE_UNATTENDED bin/dispatch b --mode yolo", "unset CLAUDE_UNATTENDED; bin/dispatch b",
         "CLAUDE_UNATTENDED= bin/helm mode s yolo", "CLAUDE_UNATTENDED='' bin/helm mode s yolo",
-        "DISPATCH_LABEL=x bin/dispatch b --yolo", "cd x && env FOO=1 DISPATCH_LABEL=y bin/dispatch b", "env -i bin/dispatch b"]
+        "DISPATCH_LABEL=x bin/dispatch b --yolo", "cd x && env FOO=1 DISPATCH_LABEL=y bin/dispatch b", "env -i bin/dispatch b",
+        "export CLAUDE_UNATTENDED= && bin/helm mode s yolo", "export CLAUDE_UNATTENDED=''; bin/x", "export DISPATCH_LABEL=x; bin/dispatch b",
+        "export FOO=1 DISPATCH_LABEL=x", "export FOO DISPATCH_LABEL=x", "declare -x DISPATCH_LABEL=x", "typeset -gx CLAUDE_UNATTENDED=",
+        "export -n CLAUDE_UNATTENDED; bin/x", "declare +x CLAUDE_UNATTENDED", "typeset +x CLAUDE_UNATTENDED", "declare -g +x CLAUDE_UNATTENDED",
+        "local DISPATCH_LABEL=y"]
+# a shed inside a quoted second shell passes on purpose: that is intent, not accident (the hook's header)
 allow = ['git commit -qm "Fix: env -u CLAUDE_UNATTENDED is denied"', "grep -n DISPATCH_LABEL= bin/dispatch",
-         "CLAUDE_UNATTENDED=dispatch bash tests/x.sh"]
+         "CLAUDE_UNATTENDED=dispatch bash tests/x.sh", "export CLAUDE_UNATTENDED=dispatch; bash t.sh", "export PATH=/x:$PATH && make",
+         "declare -x FOO=1", "export -n FOO", "bash -c 'unset CLAUDE_UNATTENDED; bin/x'", "grep -n 'export -n CLAUDE_UNATTENDED' x"]
 print([c for c in deny if "sheds" not in (m.unattended_live(c, "/tmp") or "")], [c for c in allow if m.unattended_live(c, "/tmp")])
 PYSHED
 )
-ok "unattended: shedding CLAUDE_UNATTENDED or typing DISPATCH_LABEL is denied; a mention is no act (skipper-modes landing review 20)" \
+ok "unattended: shedding CLAUDE_UNATTENDED (export, declare, an un-export too) or typing DISPATCH_LABEL is denied; a mention is no act (skipper-modes landing review 20, follow-ups item 2)" \
   '[ "$shed" = "[] []" ]'
+rec=$(cd "$MOD/hooks" && CLAUDE_UNATTENDED=dispatch HOME="$T/rh" PLANS_DIR="$T/rh/pl" python3 - <<'PYREC'
+import importlib.util as u
+s = u.spec_from_file_location("cp_rec", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+deny = ["echo '{}' > ~/Library/Logs/claude-weekly/plans/s1/plan.json", "printf x >> $HOME/Library/Logs/claude-weekly/plans/branch-modes.json",
+        "jq . /tmp/x > ${HOME}/Library/Logs/claude-weekly/run-seed-runs/a.json", "sed -i.bak s/ask/yolo/ ~/Library/Logs/claude-weekly/run-seed-runs/a.json",
+        "cp /tmp/r.json ~/Library/Logs/claude-weekly/run-seed-runs/r.json", "python3 -c 'import json' ~/Library/Logs/claude-weekly/plans/s/plan.json",
+        "tee ~/Library/Logs/claude-weekly/plans/branch-modes.json < /tmp/y", "find ~/Library/Logs/claude-weekly/run-seed-runs -name x -delete",
+        "printf x > " + m.os.environ["PLANS_DIR"] + "/s/plan.json",
+        "echo '{\"by\": \"yolo\", \"eff_mode\": \"yolo\"}' > .git/claude/autofinish.json",
+        "cp /tmp/a.json /r/.git/worktrees/w/claude/autofinish.json"]
+allow = ["cat ~/Library/Logs/claude-weekly/plans/s1/plan.json", "jq .mode ~/Library/Logs/claude-weekly/run-seed-runs/a.json",
+         "cat .git/worktrees/w/claude/autofinish.json", "jq .hold /r/.git/claude/autofinish.json",
+         "ls ~/Library/Logs/claude-weekly/run-seed-runs", "bin/plan report --task x --status running", "ls ~/Library/Logs/claude-weekly/plans-old"]
+print([c for c in deny if "skipper's record" not in (m.unattended_live(c, "/tmp") or "")], [c for c in allow if m.unattended_live(c, "/tmp")])
+PYREC
+)
+ok "unattended: a hand edit of plan.json, branch-modes.json or a run record by Bash is denied; a read is not (follow-ups item 7)" \
+  '[ "$rec" = "[] []" ]'
+mkdir -p "$T/rh/Library/Logs/claude-weekly/plans/s1"
+RJ=$(jq -nc --arg p "$T/rh/Library/Logs/claude-weekly/plans/s1/plan.json" '{file_path:$p,content:"{}"}')
+ok "  …and by the Write tool, unattended only" \
+  '[ "$(HOME="$T/rh" CLAUDE_UNATTENDED=dispatch tool A Write "$RJ" "$UW")" = deny ] && [ "$(HOME="$T/rh" tool A Write "$RJ" "$UW")" = allow ]'
 ok "unattended outside any opted-in repo: a consent flag is denied too, and nothing else is" \
   '[ "$(CLAUDE_UNATTENDED=dispatch tool A Bash "{\"command\":\"x --live-ok\"}" "$P")" = deny ] \
    && [ "$(CLAUDE_UNATTENDED=dispatch tool A Bash "{\"command\":\"python3 scripts/deploy.py x\"}" "$P")" = allow ]'
@@ -1546,9 +1574,9 @@ g1() { jq -nc --arg c "$AF1" --arg s "$T/padA" '{hook_event_name:"SessionEnd",se
   | env -u CLAUDE_HOOK_NO_AUTOFINISH -u CLAUDE_AUTOFINISH_BIN AUTOFINISH_STATE_DIR="$T/g1-state" REGATTA_CONFIG="$T/g1-cfg" "$@" \
     python3 "$T/tree-core/modules/wharf/hooks/checkpoint.py" 2>"$T/g1.err"; echo "rc=$?"; }
 mkdir -p "$T/g1-state"; echo "x" > "$AF1/g1.txt"
-ok "  absent (no module has it, no legacy checkout): the turn ends, exit 0, nothing on stderr" \
+ok "  absent (no module has it; an overlay's copy is no fallback since B14b): the turn ends, exit 0, nothing on stderr" \
   '[ "$(g1)" = rc=0 ] && [ ! -s "$T/g1.err" ] && sleep 0.5 && [ ! -e "$T/g1-calls" ]'
-ok "  found at the legacy path: the child starts" \
-  '[ "$(g1 REGATTA_LEGACY="$T/g1-legacy")" = rc=0 ] && i=0 && while [ ! -s "$T/g1-calls" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done && grep -q -- "--worktree $AF1" "$T/g1-calls"'
+ok "  found (CLAUDE_AUTOFINISH_BIN, the stand-in for common.tool's answer): the child starts" \
+  '[ "$(g1 CLAUDE_AUTOFINISH_BIN="$T/g1-legacy/bin/autofinish")" = rc=0 ] && i=0 && while [ ! -s "$T/g1-calls" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done && grep -q -- "--worktree $AF1" "$T/g1-calls"'
 
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }

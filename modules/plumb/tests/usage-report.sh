@@ -471,7 +471,7 @@ echo '{"name":"peerless","owner":{"name":"t"},"plugins":[]}' > "$PL/.claude-plug
 cp -R "$core" "$PL/modules/regatta"; cp "$fc" "$PM/lib/"
 for f in usage-report knowledge-numbers statusline interruptions; do cp "$PR/bin/$f" "$PM/bin/"; done
 cp "$PR/hooks/tier_check.py" "$PR/hooks/attention.py" "$PM/hooks/"; cp -R "$PR/bench" "$PM/bench"
-peerless() { env REGATTA_HOME="$PL" REGATTA_LEGACY="$T/no-legacy" CLAUDE_CONFIG_DIR="$T/no-plugins" "$@"; }
+peerless() { env REGATTA_HOME="$PL" CLAUDE_CONFIG_DIR="$T/no-plugins" "$@"; }
 load() {  # load(file, name, expr): the file as a module, then print expr
   python3 -c "import sys; from importlib.machinery import SourceFileLoader as L; from pathlib import Path
 $2 = L('$2', '$1').load_module(); print($3)"

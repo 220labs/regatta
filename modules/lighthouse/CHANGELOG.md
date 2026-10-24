@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `account doctor` reports the tenants file's own state (2026-10-23): a link that reads nothing with
+  no copy (tenancy off), the last good copy in force and its age, a file that does not parse, a tenant
+  whose `repos` match nothing or that has no enabled login, a label in two tenants' `logins`, and one no
+  enabled row has (parked, off in Orca, a Codex row). Also with no logins file, since the tenants link
+  points into the same drive. A refusal for a tenant whose listed labels give it no login names them.
+  An `ACCOUNTS_FILE` naming the live key is no fixture; the guard's check after a `cd` passes a
+  tenants-file refusal on with its own way in.
+
 - deadman joins as lighthouse's switch for the unattended Macs (private until its scrub; chart:
   `deadman/README.md`): one Cloudflare Worker, cron every 5 minutes, one KV namespace; a Mac that
   pinged and went quiet past the period and grace is one GitHub issue that mentions the owner,

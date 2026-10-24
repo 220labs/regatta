@@ -7,9 +7,9 @@ description: Hand the owner a memo's D-list (the ➤ Answer format every digest 
 travel as commits on the doc's own branch, never by launching the doc on `main` to be answered
 (docs/feedback-2026-09-29.md). Run the command, relay its lines. $ARGUMENTS
 
-A command written `<bin>/<tool>` below runs `bin/<tool>` from the overlay checkout the regatta
-config dir's `legacy` file names, where an overlay is installed (its allow rules name those paths);
-elsewhere the tool's own path, as `regatta which <tool>` prints it (`keel` is this module's).
+A command written `<bin>/<tool>` below runs the tool's own path, as `regatta which <tool>` prints
+it (`keel` is this module's; `regatta` is `<home>/modules/regatta/bin/regatta`, `<home>` the first
+line of the regatta config dir's `home` file). No overlay keeps a copy since B14b (2026-10-23).
 
 **When a memo channel fails** (a page that will not load, a Save that does not arrive, a mirror
 that is down), take the D-answers in chat and copy them verbatim into the doc's `➤ Answer:` blocks

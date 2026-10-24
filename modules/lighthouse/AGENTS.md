@@ -5,14 +5,18 @@ agent:
 
 - Nothing here names a host, a login, an account or a person, not even in a test: a private value
   is a config-dir key (README), a peer is `common.tool(<name>)`, the overlay is the core's
-  `legacy_root()`. Test names are made up (`work`, `main`, `privy`, `server`).
+  `overlay_root()`. Test names are made up (`work`, `main`, `privy`, `server`).
 - `bin/account` is read at start time by wharf-runs' dispatch and autofinish-run: prove
-  `account pick --repo <repo>` and `account limits` through the overlay's shim before a change
+  `account pick --repo <repo>` and `account limits` through `modules/lighthouse/bin/account` in the main checkout before a change
   lands, or every unattended run stops.
+- `account` typed over a plain ssh on the other Mac needs Claude Code's `.local/bin` on PATH first:
+  without it `claude_bin()` is a bare `claude`, `auth status` cannot start, and orca-sync and
+  doctor read a signed-in login as absent (a false "no login" on a work login, 2026-10-23). The
+  laptop's doctor leg sets it; a hand-typed ssh does not.
 - The deny hooks fail closed (README, "The guards"); `secrets_guard` imports no core on purpose.
   A hook's own refusal text is a test case (`tests/hooks.sh`).
 - A key only the overlay writes (`lighthouse/accounts.json`, `lighthouse/vault`) is an error where
-  the overlay is installed (the config dir's `legacy`), never "nothing to deny": `bin/account`'s
+  the overlay is installed (the config dir's `regatta/overlay`), never "nothing to deny": `bin/account`'s
   `overlay_key_missing()`. An absent key read as empty is how a deny hook fails open (B9 review).
   A suite also unsets `SSH_CONNECTION` and the like when the tool reads them: dispatched runs come in over ssh.
 - A suite moves HOME and pins `REGATTA_CONFIG` to a scratch dir first; one that needs macOS

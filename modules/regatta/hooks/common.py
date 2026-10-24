@@ -61,7 +61,7 @@ def config_lines(name):
 
 # ---- the core's private values (B2b; README, "Private values") --------------------------------
 # Each is one file under <config>/regatta/, which the overlay writes; the core carries only a
-# neutral default. Where the overlay is installed (a `legacy` file in the config dir), a key it
+# neutral default. Where the overlay is installed (the `regatta/overlay` marker), a key it
 # must write and did not — or one that cannot be read — is an ImportError naming the keys: a
 # guarded source sent unrefused, an Orca login let into a denied repo, every closing line and relay
 # missed would each be silent. Hooks already fail closed (the deny hooks) or quiet (the rest) on an
@@ -74,9 +74,9 @@ PATH_KEYS = ("log-dir", "projects")
 
 def overlay_installed():
     """An overlay is installed here: the config dir's `regatta/overlay` marker, which the overlay
-    writes since B14a (2026-10-23), or its `legacy` file, the only marker until then. B14b drops
-    `legacy` with the shims; every reader of "an overlay is installed" asks this, or reads both."""
-    return (CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()
+    writes (since B14a, 2026-10-23). The only marker since B14b, which dropped the `legacy` file
+    and `REGATTA_LEGACY` with the shims; every reader of "an overlay is installed" asks this."""
+    return (CONFIG / "regatta" / "overlay").exists()
 
 
 def config_problems():
@@ -166,11 +166,15 @@ def _installed_roots():
     return out
 
 
-def legacy_root():
-    """The old checkout whose files have not moved yet (`REGATTA_LEGACY`, else the `legacy`
-    file), or None. Dropped once every shim is gone (the design's B14)."""
-    v = os.environ.get("REGATTA_LEGACY") or config_line("legacy")
+def overlay_root():
+    """The overlay's checkout, the path its `regatta/overlay` marker holds, or None. Since B14b
+    (2026-10-23) no tool of a module is looked up there: it keeps only the shims a launcher names,
+    its private files and its own scripts. A caller wants it for those, never for a module's tool."""
+    v = config_line("regatta/overlay")
     return Path(v).expanduser() if v else None
+
+
+legacy_root = overlay_root   # the old name (B1 to B14a), for a module copy older than B14b; read the marker
 
 
 TOOL_DIRS = ("bin", "libexec", "hooks")   # libexec: a tool reached as `regatta <name>`, kept off PATH (C1)
@@ -191,12 +195,7 @@ def tool(name):
         for d in TOOL_DIRS:
             if (base / d / name).is_file():
                 return base / d / name
-    old = legacy_root()
-    if old:
-        for d in TOOL_DIRS:
-            if (old / d / name).is_file():
-                return old / d / name
-    return None
+    return None   # the overlay's checkout is no fallback since B14b: its shims are gone
 
 
 def module_path(name):

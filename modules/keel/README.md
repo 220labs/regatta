@@ -44,7 +44,7 @@ keel reads its own keys and three of its peers', each without loading the core w
 | `atlas/layer`, `atlas/vault` | the two knowledge repos (first item: the name) | `keel` (knowledge-commit's hint; the layer's `rules/` never mirrored) | no repo gets either |
 | `keel/machines` | `<host>:<board name>` per line, sessionpipe's name for each Mac | `sheep` | the host name itself |
 | `keel/course-site`, `keel/course-mcp` | the course page's web app and MCP endpoint | `keel` | spacesheep's public addresses |
-| `legacy` | the overlay checkout: its shims are the paths messages name (its allow rules name them) | `keel`, `paste-paths`, `sheep`, `doc_answers` | the module's own paths |
+| `regatta/overlay` | the overlay checkout (the core's marker): `sheep` reads a `.env` there last | `sheep` | none |
 
 The suites run on a scratch config dir (`tests/config.sh`: the owner `Sam`), so they pass with no
 overlay and an empty `REGATTA_CONFIG`.

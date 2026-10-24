@@ -7,7 +7,7 @@
 set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 # helm's bin/ (plan, helm, stalls — the overlay's until B12) and the overlay's checkout, found as
-# bin/wharf finds helmlib (the core's tool, legacy_root): wharf runs on helm's ships, so without helm
+# bin/wharf finds helmlib (the core's tool; the overlay's checkout, overlay_root): wharf runs on helm's ships, so without helm
 # the suite has nothing to drive and says so
 # The console and its old name are found each where it lives (B12): helm's module ships the console
 # in libexec/ (regatta helm, G28) and no bin/plan, which stays the overlay's shim until S8; an overlay
@@ -18,7 +18,7 @@ sys.path.insert(0, sys.argv[1])
 import core_path
 core_path.require()
 import common
-h, old = common.tool("helmlib.py"), common.legacy_root()
+h, old = common.tool("helmlib.py"), common.overlay_root()
 print("HELMBIN=%s" % shlex.quote(str(h.parent) if h else ""))
 con = h and next((c for c in (h.parent.parent / "libexec" / "helm", h.parent / "helm") if c.is_file()), None)
 plans = [h.parent / "plan"] if h else []
@@ -447,6 +447,25 @@ smode ask
 check "$(cd "$CR" && O apply docs/blueprints/2026-10-16-demo.md --plan cp --dry-run | grep '^  resolve\|^  ok       pick')" \
   "  ok       pick    gate gate_1 waits on docs/d.md#D1, D2" "mode ask: the gate waits on the owner's answer"
 smode -
+# a pinned ship's doc taken under dnd (follow-ups): memo_answered reads it from the pin's branch on origin,
+# and the contract's physical: from the ship's main checkout, which has neither the doc nor its folder
+PO="$T/pin-origin.git"; PM="$T/pin-main"; git init -q --bare "$PO"; git init -q -b main "$PM"
+printf -- '- physical: none\n' > "$PM/AGENTS.md"; git -C "$PM" add -A; git -C "$PM" commit -qm contract; git -C "$PM" remote add origin "$PO"
+git -C "$PM" push -q origin main; git -C "$PM" checkout -q -b claude/pin/doc; mkdir -p "$PM/docs"; cp "$T/d.md.orig" "$PM/docs/d.md"
+git -C "$PM" add -A; git -C "$PM" commit -qm doc; git -C "$PM" push -q origin claude/pin/doc; git -C "$PM" checkout -q main; rm -rf "$PM/docs"
+pinned() { python3 - "$B/wharf" "$PM" "$1" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_pin", sys.argv[1]).load_module()
+rec = {"pin": {"branch": "claude/pin/doc", "repo": sys.argv[2], "rel": "docs/blueprints/x.md"}, "main": sys.argv[2]}
+bp = {"path": "/nowhere/x.md", "meta": {"repo": sys.argv[2]}}
+print(w.memo_answered(bp, rec, sys.argv[3] or None)("docs/d.md", ["D1", "D2"]))
+PY
+}
+check "$(pinned dnd)" "(True, 'taken unattended (dnd): D2 A')" "a pinned ship's doc in mode dnd: read from its branch on origin, D2 taken (physical: none in the ship's main)"
+check "$(pinned '')" "(False, None)" "  with no mode, the same doc waits on the owner"
+printf -- '- physical: the box\n' > "$PM/AGENTS.md"
+check "$(pinned dnd)" "(False, None)" "  the ship's main says physical: dnd holds the item, the gate waits"
 rm -f "$CR/AGENTS.md"
 # skipper-modes S3b: a blueprint's mode is a file any run can write, and a raise is a yes to merge
 wm() { python3 - "$B/wharf" "$1" <<'PY'
@@ -471,6 +490,35 @@ PY
 mkdir -p "$T/wplans/mr"; echo '{"id": "mr", "tasks": {}, "mode_refused": {"mode": "dnd", "why": "x", "ts": 1}}' > "$T/wplans/mr/plan.json"
 check "$(env -u CLAUDE_UNATTENDED PLANS_DIR="$T/wplans" bash -c "$(declare -f wm9); B='$B' wm9")" "True None" \
   "  the helm tick's --once apply (launchd, no CLAUDE_UNATTENDED) is no person: refused; a ship that refused once never records it (landing review 9)"
+# the refusal an apply writes reaches plan.json: Ship.save reloads the plan and copies back only what it
+# names, and dropped mode_refused, so the next tick recorded the run's mode (the follow-ups' landing review)
+mkdir -p "$T/wplans/ms"; echo '{"id": "ms", "tasks": {}}' > "$T/wplans/ms/plan.json"
+check "$(PLANS_DIR="$T/wplans" python3 - "$B/wharf" <<'PY'
+import json, os, sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_save", sys.argv[1]).load_module()
+s = w.Ship.__new__(w.Ship)
+s.dry, s.pid, s.rec = False, "ms", {}
+s.bp = {"name": "b", "by_id": {}}
+s.p = {"id": "ms", "tasks": {}}
+s.p["mode_refused"] = s.refused_now = {"mode": "dnd", "why": "a raise by a run", "ts": 1}
+s.save()
+on_disk = json.load(open(os.path.join(os.environ["PLANS_DIR"], "ms", "plan.json")))
+print(on_disk.get("mode_refused", {}).get("mode"), s.p.get("mode_refused", {}).get("mode"))
+PY
+)" "dnd dnd" "an apply's refusal is saved to plan.json and kept in the ship (landing review 9 holds on the next tick)"
+# follow-ups item 3: a standing refusal is said again to a person's apply, with the line that lifts it
+OA() { HARNESS_ORCA="$T/orca-plan" STUB_STATE="$T/orca-plan.json" STUB_CALLS="$T/orca-plan.calls" ELECTRON_RUN_AS_NODE=1 SW apply docs/blueprints/2026-10-16-demo.md --plan cp --dry-run 2>&1; }
+cp "$CF" "$T/cf.orig"; cp "$T/ship_plans/cp/plan.json" "$T/cp-plan.orig"   # both put back byte for byte below
+python3 -c 'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("created: ", "mode: dnd\ncreated: ", 1))' "$CF"
+SW check "$CF" --plan cp --accept > /dev/null
+python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d.pop("mode", None); d["mode_refused"] = {"mode": "dnd", "why": "a raise by a run", "ts": 1}; json.dump(d, open(p, "w"))' "$T/ship_plans/cp/plan.json"
+out=$(cd "$CR" && env -u CLAUDE_UNATTENDED bash -c "$(declare -f OA SW); T='$T' WH='$WH' OA")
+has "$out" "mode dnd refused " "a person's apply says a standing refusal again (follow-ups item 3)"
+has "$out" "(\`helm mode cp dnd\` records it): a raise by a run" "  with the helm mode line that lifts it"
+out=$(cd "$CR" && CLAUDE_UNATTENDED=dispatch OA)
+hasnt "$out" "refused " "  an unattended apply does not: it was said to that caller once"
+cp "$T/cp-plan.orig" "$T/ship_plans/cp/plan.json"; cp "$T/cf.orig" "$CF"
 python3 - "$CR/docs/d.md" <<'PY'
 import sys
 p = sys.argv[1]; t = open(p).read()
@@ -1623,6 +1671,214 @@ out=$(Y env CLAUDE_REPOS_JSON="$YD/inyard.json" "$WH" check "$YNR/inflight.md" 2
 has "$out" "block if2: host: farhost has no launcher from the yard" "    says so"
 rm -f "$T/config/wharf-runs/ssh"
 unset -f Y YH yp gt ybp shellblock pushed
+echo "  the on-main reads (skipper-resilience S9): work already on main is never built again"
+# a scratch bare origin (reached through insteadOf, so origin's URL still names a GitHub repo: the PR
+# read needs a slug), the ship's repo cloned from it, and a second clone that plays the sibling
+OM="$T/onmain"; OMO="$OM/origin.git"; OMR="$OM/repo"; OMS="$OM/sibling"; mkdir -p "$OM"
+GC=(-c user.name=t -c user.email=t@t)
+git init -q --bare -b main "$OMO"
+git clone -q "$OMO" "$OMR" 2>/dev/null; git clone -q "$OMO" "$OMS" 2>/dev/null
+git -C "$OMR" symbolic-ref HEAD refs/heads/main; git -C "$OMS" symbolic-ref HEAD refs/heads/main
+mkdir -p "$OMR/docs/blueprints" "$OMR/old"
+printf '# om\n\n- physical: none\n' > "$OMR/AGENTS.md"; echo base > "$OMR/base.txt"; echo old > "$OMR/old/o.txt"
+mkdir -p "$OMR/docs"; printf -- '- **M1** — not built yet\n- **M2** — not built yet\n' > "$OMR/docs/om.md"   # the design doc, on main before the plan
+git -C "$OMR" add AGENTS.md base.txt old docs/om.md; git -C "$OMR" "${GC[@]}" commit -qm "Init"; git -C "$OMR" push -q origin main 2>/dev/null
+git -C "$OMS" pull -q origin main 2>/dev/null
+git -C "$OMR" config "url.$OMO.insteadOf" "https://github.com/testowner/demo.git"
+git -C "$OMR" remote set-url origin https://github.com/testowner/demo.git
+check "$(git -C "$OMR" config --get remote.origin.url)" "https://github.com/testowner/demo.git" "  the scratch repo's origin names a GitHub repo and fetches from the bare one"
+omstranger() {   # omstranger <file> <content> [message [trailer]]: a commit by someone else, pushed to origin's main
+  git -C "$OMS" pull -q --ff-only origin main 2>/dev/null; mkdir -p "$(dirname "$OMS/$1")"; printf '%s\n' "$2" > "$OMS/$1"
+  git -C "$OMS" add -A; git -C "$OMS" "${GC[@]}" commit -q -m "${3:-sibling}" ${4:+-m "$4"}; git -C "$OMS" push -q origin main 2>/dev/null; }
+omwt() {   # omwt <block>: the path of the worktree holding the block's branch, asked of git (wharf's house folder is wharf's to name)
+  git -C "$OMR" worktree list --porcelain | awk -v b="branch refs/heads/claude/testhost/2026-10-23-$1" '/^worktree /{p=substr($0, 10)} $0 == b {print p}'; }
+ombranch() {   # ombranch <block> <file> <content>: the block's branch at wharf's house worktree (OMWD, read from the first one wharf made), one commit on it
+  git -C "$OMR" worktree add -q "$OMWD/$1" -b "claude/testhost/2026-10-23-$1" main 2>/dev/null
+  mkdir -p "$(dirname "$OMWD/$1/$2")"; printf '%s\n' "$3" > "$OMWD/$1/$2"
+  git -C "$OMWD/$1" add -A; git -C "$OMWD/$1" "${GC[@]}" commit -qm "work $1"; }
+ombp() {   # ombp <ship> <block> <extra keys, one printf format>: a one-block ship in the scratch repo, briefed
+  { printf -- '---\nship: %s\nrepo: %s\ncreated: 2026-10-23\nblocks:\n  - id: %s\n    provider: orca\n    agent: claude\n' "$1" "$OMR" "$2"; printf "${3:-}"
+    printf -- '---\n'; brief "$2" "t" "t"; } > "$OMR/docs/blueprints/2026-10-23-$1.md"; echo "$OMR/docs/blueprints/2026-10-23-$1.md"; }
+OT() { W env WHARF_TRUST="$WS/trust" STUB_TRUST_CALLS="$TC" STUB_TRUST_REPO="$OMR" "$@"; }
+oms() { grep -c "orchestration worker-start --task $(python3 -c "import json; print(json.load(open('$T/wplans/omp/plan.json'))['tasks']['$1']['orca_task'])")" "$WS/calls"; }
+omst() { W "$HM" state omp | python3 -c "import json,sys; t=[t for t in json.load(sys.stdin)['tasks'] if t['id'] == '$1'][0]; print(t['status'] + ':' + (t['progress'] or ''))"; }
+omq() { python3 -c "import json; st=json.load(open('$WS/state.json')); print([t['status'] for t in st['tasks'] if t['task_title'] == '$1'][-1])"; }
+echo '{"projects": {}}' > "$HOME/.claude.json"
+W "$HM" $SHIP wharf --id omp > /dev/null; sleep 2   # the plan's `created`: the sibling's commits below come after it, the setup's before
+OMMAIN=$(git -C "$OMR" rev-parse main)
+
+# (1) done_when against origin/main
+omstranger out/fa.txt "built elsewhere" "Docs: fa landed by a sibling"
+FA=$(ombp oma fa '    done_when: {file: out/fa.txt}\n')
+out=$(OT "$WH" apply "$FA" --plan omp 2>&1)
+has "$out" "launched via $(git -C "$OMR" log -1 --format=%h origin/main -- out/fa.txt)" "(1) a done_when file on origin/main: the block ends, launched via the commit that put it there"
+check "$(oms fa)/$(omst fa | cut -d: -f1)" "0/launched" "  no worker started; the plan says launched"
+check "$([ -n "$(omwt fa)" ] && echo made || echo none)/$(git -C "$OMR" rev-parse main)" "none/$OMMAIN" "  no worktree made, the local main untouched (a fetch of origin's main only)"
+check "$(omq fa)" "completed" "  and Orca's Task completed by the next pass"
+omstranger docs/om.md "- **M1** — Built 2026-10-23
+- **M2** — not built yet" "Docs: M1 built"
+MB=$(ombp omb mb '    done_when: {marker: docs/om.md#M1}\n')
+out=$(OT "$WH" apply "$MB" --plan omp 2>&1); has "$out" "launched via" "(1) a done_when marker whose item says Built on origin/main: ended"
+MC=$(ombp omc mc '    done_when: {marker: docs/om.md#M2}\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$MC" --plan omp 2>&1)
+check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  an item that says not built: no hit, the block starts"
+NC=$(ombp omn nc '    done_when: {file: out/nc.txt}\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$NC" --plan omp 2>"$OM/err"); check "$(( $(wstarts) - before ))" "1" "no hit (the file is not on main): today's start"
+check "$(cat "$OM/err")" "" "  and nothing said on stderr"
+OMWD=$(dirname "$(omwt nc)")
+
+# (2) a merged PR by head; common.api stubbed (this runner patches it in the wharf process)
+cat > "$OM/wharf-api" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+from importlib.machinery import SourceFileLoader
+b = os.environ["WHARF_BIN"]
+sys.path[:0] = [b, b + "/../lib"]
+import core_path
+core_path.require()
+import common
+def api(method, path, body=None, tok=None, timeout=15):
+    open(os.environ["STUB_API_CALLS"], "a").write("%s %s\n" % (method, path))
+    for k, v in json.load(open(os.environ["STUB_API"])).items():
+        if path.endswith(k):
+            return v[0], v[1]
+    return 404, None
+common.api = api
+sys.exit(SourceFileLoader("wharf_run", b + "/wharf").load_module().main(sys.argv[1:]))
+PY
+chmod +x "$OM/wharf-api"
+prj() { printf '[%s, [{"number": %s, "merged_at": %s, "head": {"ref": "claude/testhost/2026-10-23-%s"}}]]' "$1" "$2" "$3" "$4"; }
+{ printf '{"-pa": %s, "-pb": %s, "-pc": [500, null]}' "$(prj 200 7 '"2026-10-23T00:00:00Z"' pa)" "$(prj 200 8 null pb)"; } > "$OM/api.json"
+OA() { OT env -u PLAN_NO_GH WHARF_BIN="$B" STUB_API="$OM/api.json" STUB_API_CALLS="$OM/api.calls" "$OM/wharf-api" "$@"; }
+PA=$(ombp ompa pa); before=$(wstarts)
+out=$(OA apply "$PA" --plan omp 2>&1)
+has "$out" "launched via #7" "(2) a merged PR whose head is the block's branch: launched via #N"
+check "$(( $(wstarts) - before )) $(head -1 "$OM/api.calls")" "0 GET /repos/testowner/demo/pulls?state=closed&per_page=10&head=testowner:claude%2Ftesthost%2F2026-10-23-pa" "  nothing started; asked for the closed pulls of that head"
+PB=$(ombp ompb pb); before=$(wstarts)
+out=$(OA apply "$PB" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a PR closed unmerged (merged_at null): no hit, the block starts"
+PC=$(ombp ompc pc); before=$(wstarts)
+out=$(OA apply "$PC" --plan omp 2>&1); check "$(( $(wstarts) - before ))" "1" "  GitHub answering 500: no hit, the block starts"
+has "$out" "wharf: on-main reads: GitHub's pulls list for claude/testhost/2026-10-23-pc gave 500" "    with one line saying so"
+PD=$(ombp ompd pd); n=$(wc -l < "$OM/api.calls"); out=$(OT env WHARF_BIN="$B" STUB_API="$OM/api.json" STUB_API_CALLS="$OM/api.calls" "$OM/wharf-api" apply "$PD" --plan omp 2>&1)
+check "$(wc -l < "$OM/api.calls")" "$n" "  PLAN_NO_GH set: GitHub is not asked (through the stub, which counts any call)"
+ombranch pe src/pe.txt "later work"
+{ printf '{"-pe": [200, [{"number": 9, "merged_at": "2026-10-23T00:00:00Z", "head": {"ref": "claude/testhost/2026-10-23-pe", "sha": "%s"}}]]}' \
+    "$(git -C "$OMR" rev-parse main)"; } > "$OM/api.json"
+PE=$(ombp ompe pe); before=$(wstarts)
+out=$(OA apply "$PE" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a merged PR whose head is not the branch's tip (it went on committing): no hit, the block starts"
+
+# (3) the content proof
+ombranch ea src/ea.txt "x"; omstranger src/ea.txt "x" "Feat: the same file, by a sibling"
+EA=$(ombp omea ea); before=$(wstarts)
+out=$(OT "$WH" apply "$EA" --plan omp 2>&1)
+has "$out" "every changed file identical on main" "(3) every file the branch changed is identical on origin/main: ended, with the proof said"
+check "$(( $(wstarts) - before ))/$(omst ea | cut -d: -f1)" "0/launched" "  not started; launched"
+ombranch eb src/eb.txt "mine"; omstranger src/eb.txt "different" "Feat: another eb"
+EB=$(ombp omeb eb); before=$(wstarts)
+out=$(OT "$WH" apply "$EB" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a changed file that differs on main: no hit, the block starts on its branch"
+git -C "$OMR" branch claude/testhost/2026-10-23-ec main; omstranger src/other.txt "o" "Feat: main moves on"
+EC=$(ombp omec ec); before=$(wstarts)
+out=$(OT "$WH" apply "$EC" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a branch cut from main and never written to (an ancestor of main): not read as merged"
+ombranch ed src/ed.txt "d"; omstranger src/ed.txt "d" "Feat: ed by a sibling"; echo late > "$OMWD/ed/late.txt"
+ED=$(ombp omed ed); before=$(wstarts)
+out=$(OT "$WH" apply "$ED" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a worktree with uncommitted work: the proof speaks for commits only, no hit"
+
+git -C "$OMR" branch claude/testhost/2026-10-23-ee main; omstranger src/ee-other.txt "o" "Feat: main moves again"; git -C "$OMR" fetch -q origin
+git -C "$OMR" branch -f claude/testhost/2026-10-23-ee origin/main
+EE=$(ombp omee ee); before=$(wstarts)
+out=$(OT "$WH" apply "$EE" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a branch fast-forwarded onto main by a reset, no commit of its own in its reflog: not read as merged"
+ombranch ef src/ef.txt "x"; git -C "$OMWD/ef" rm -q src/ef.txt; git -C "$OMWD/ef" "${GC[@]}" commit -qm "undo ef"
+EF=$(ombp omef ef); before=$(wstarts)
+out=$(OT "$WH" apply "$EF" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a branch whose commits net to nothing: nothing built, not read as merged"
+ombranch eg src/eg.txt "g"; git -C "$OMWD/eg" reset -q --hard main
+EG=$(ombp omeg eg); before=$(wstarts)
+out=$(OT "$WH" apply "$EG" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "  a branch whose commit a reset took away (a rebuild forced): not read as merged"
+omstranger docs/late.md "- **L1** — Built 2026-10-23" "Docs: a design doc that landed after the plan"
+ML=$(ombp omml ml '    done_when: {marker: docs/late.md#L1}\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$ML" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "(1) a marker in a doc that was not on main when the plan was made: no evidence, the block starts"
+BH=$(ombp ombh bh '    done_when: {file: base.txt}\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$BH" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'launched via')" "1/0" "(1) a done_when file that was on main before the plan was made: no evidence, the block starts"
+
+# (4) the owned paths moved by a stranger, before the first start
+omstranger sib/x.txt "theirs" "Feat: x"; SIBSHA=$(git -C "$OMS" rev-parse --short=7 HEAD)
+SA=$(ombp omsa sa '    owns: [sib/]\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$SA" --plan omp 2>&1)
+has "$out" "raised: a sibling may have built this ($SIBSHA)" "(4) an owned path moved on main by a commit of no block of this ship: raised, naming it"
+check "$(( $(wstarts) - before ))/$(omst sa)" "0/waiting:a sibling may have built this ($SIBSHA)" "  not started; a waiting report for the skipper"
+OT "$WH" apply "$SA" --plan omp --once > /dev/null 2>&1
+check "$(grep -c "a sibling may have built this" "$T/wplans/omp/events.jsonl")" "1" "  the next pass holds it and reports nothing again"
+W "$HM" report omp --task sa --status planned --progress "checked: not a sibling" > /dev/null
+OT "$WH" apply "$SA" --plan omp --once > /dev/null 2>&1; check "$(( $(wstarts) - before ))" "1" "  cleared by the skipper's report: it starts"
+omstranger sib/y.txt "again" "Feat: y"
+SA2=$(ombp omsa2 sa2 '    owns: [sib/]\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$SA2" --plan omp 2>&1); has "$out" "raised: a sibling may have built this" "  a second block owning the same path: raised again for its own"
+omstranger sib2/z.txt "mine" "Feat: z" "Claude-Session: sess1234"
+SB=$(ombp omsb sb '    owns: [sib2/]\n'); before=$(wstarts)
+W "$HM" report omp --task sb --status planned --session sess1234-0000-aaaa > /dev/null   # before any apply: only the trailer can make the commit this ship's
+out=$(OT "$WH" apply "$SB" --plan omp 2>&1)
+check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'sibling may')" "1/0" "  a commit with a Claude-Session trailer of this ship's own session: not a stranger's, it starts"
+SC=$(ombp omsc sc '    owns: [old/]\n'); before=$(wstarts)
+out=$(OT "$WH" apply "$SC" --plan omp 2>&1); check "$(( $(wstarts) - before ))/$(printf '%s' "$out" | grep -c 'sibling may')" "1/0" "  a commit older than the plan: not read, it starts"
+# the ship's own landed block: /finish rewrote it and dropped its trailer, the PR was rebased in: new sha, same patch
+ombranch sd src/own.txt "own"
+git -C "$OMS" pull -q --ff-only origin main 2>/dev/null; git -C "$OMS" fetch -q "$OMR" claude/testhost/2026-10-23-sd 2>/dev/null
+git -C "$OMS" "${GC[@]}" cherry-pick FETCH_HEAD > /dev/null 2>&1; git -C "$OMS" push -q origin main 2>/dev/null
+{ printf -- '---\nship: chain\nrepo: %s\ncreated: 2026-10-23\nblocks:\n  - id: sd\n    provider: orca\n    agent: claude\n    done_when: {file: src/own.txt}\n' "$OMR"
+  printf '  - id: se\n    provider: orca\n    agent: claude\n    depends_on: [sd]\n---\n'; brief sd t t; brief se t t; } > "$OMR/docs/blueprints/2026-10-23-chain.md"
+before=$(wstarts); out=$(OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-chain.md" --plan omp 2>&1)
+check "$(omst sd | cut -d: -f1)/$(oms se)/$(printf '%s' "$out" | grep -c 'sibling may')" "launched/1/0" "  the predecessor landed as a rebased copy: it ends, and the next block starts (its own patch is no stranger's)"
+check "$(git -C "$OMR" merge-base --is-ancestor origin/main claude/testhost/2026-10-23-se && echo on)/$(git -C "$OMR" config --get branch.claude/testhost/2026-10-23-se.merge || echo none)" "on/none" \
+  "  and its branch starts from the origin/main that holds the predecessor's work (local main is behind), tracking nothing"
+SF=$(ombp omsf sf '    owns: [src/own.txt]\n'); out=$(OT "$WH" apply "$SF" --plan omp 2>&1)
+has "$out" "raised: a sibling may have built this" "  the same commit seen by a ship that has no branch of that patch: a stranger's, raised"
+
+# a launch: finish block whose predecessor the reads ended has nothing to land: it ends too
+omstranger out/lw.txt "built" "Feat: lw elsewhere"
+{ printf -- '---\nship: lship\nrepo: %s\ncreated: 2026-10-23\nblocks:\n  - id: lw\n    provider: orca\n    agent: claude\n    done_when: {file: out/lw.txt}\n' "$OMR"
+  printf '  - id: ll\n    provider: shell\n    command: "true"\n    depends_on: [lw]\n    launch: finish\n---\n'; brief lw t t; } > "$OMR/docs/blueprints/2026-10-23-lship.md"
+before=$(wstarts); out=$(OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-lship.md" --plan omp 2>&1)
+check "$(omst lw | cut -d: -f1)/$(omst ll | cut -d: -f1)/$(( $(wstarts) - before ))" "launched/launched/0" "a launch: finish block after a worker the reads ended: launched too, no skipper to wait for"
+check "$(printf '%s' "$out" | grep -c "launch: finish is the skipper's")" "0" "  and not raised as the skipper's"
+omstranger out/lx.txt "built" "Feat: lx elsewhere"
+{ printf -- '---\nship: lship3\nrepo: %s\ncreated: 2026-10-23\nblocks:\n  - id: lx\n    provider: orca\n    agent: claude\n    done_when: {file: out/lx.txt}\n' "$OMR"
+  printf '  - id: ly\n    provider: shell\n    command: "true"\n    depends_on: [lx]\n    launch: finish\n---\n'; brief lx t t; } > "$OMR/docs/blueprints/2026-10-23-lship3.md"
+touch "$HOME/.studio-brake"; OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-lship3.md" --plan omp > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
+check "$(omst lx | cut -d: -f1)/$(omst ly | cut -d: -f1)" "launched/planned" "  (the reads end a worker under the brake; its launch block waits)"
+W "$HM" report omp --task lx --status done --progress "rebuilt by hand" > /dev/null
+out=$(OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-lship3.md" --plan omp 2>&1)
+check "$(omst ly | cut -d: -f1)" "waiting" "  once the predecessor reports a rebuild since, its on_main flag no longer ends the launch block"
+{ printf -- '---\nship: lship2\nrepo: %s\ncreated: 2026-10-23\nblocks:\n  - id: lv\n    provider: orca\n    agent: claude\n' "$OMR"
+  printf '  - id: lm\n    provider: shell\n    command: "true"\n    depends_on: [lv]\n    launch: finish\n---\n'; brief lv t t; } > "$OMR/docs/blueprints/2026-10-23-lship2.md"
+touch "$HOME/.studio-brake"; OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-lship2.md" --plan omp > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
+W "$HM" report omp --task lv --status launched --progress "launched via #12" > /dev/null   # landed by a launch, not by the reads
+out=$(OT "$WH" apply "$OMR/docs/blueprints/2026-10-23-lship2.md" --plan omp 2>&1)
+check "$(omst lm | cut -d: -f1)" "waiting" "  a predecessor a launch landed (its progress says launched via #N too): the launch block is not ended by it"
+
+# before a retry: (1)-(3) again, (4) not
+RA=$(ombp omra ra '    retries: 1\n    owns: [rsib/]\n    done_when: {file: out/ra.txt}\n'); before=$(wstarts)
+OT "$WH" apply "$RA" --plan omp > /dev/null 2>&1; check "$(oms ra)" "1" "a retry: the first start went ahead"
+settle_w ra exit; omstranger rsib/q.txt "q" "Feat: q"
+OT "$WH" apply "$RA" --plan omp --once > /dev/null 2>&1; check "$(oms ra)" "2" "  an owned path moved by a stranger does not hold a retry (the sibling read is for the first start)"
+settle_w ra exit; omstranger out/ra.txt "built" "Feat: ra elsewhere"
+out=$(OT "$WH" apply "$RA" --plan omp --once 2>&1)
+has "$out" "launched via" "  its done_when file reaching main before the retry: ended"
+check "$(oms ra)/$(omst ra | cut -d: -f1)" "2/launched" "  no third start, though the starts were used up"
+
+# a dry run fetches nothing
+DA=$(ombp omda da '    done_when: {file: out/da.txt}\n')
+touch "$HOME/.studio-brake"; OT "$WH" apply "$DA" --plan omp > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
+omstranger out/da.txt "d" "Feat: da"; tip=$(git -C "$OMR" rev-parse origin/main)
+out=$(OT "$WH" apply "$DA" --plan omp --once --dry-run 2>&1); has "$out" "would start" "a dry run reads the refs as they stand: the block would start"
+check "$(git -C "$OMR" rev-parse origin/main)" "$tip" "  and fetched nothing"
+out=$(OT "$WH" apply "$DA" --plan omp --once 2>&1); has "$out" "launched via" "  the real pass fetches and ends it"
+out=$(OT "$WH" apply "$DA" --plan omp --once --dry-run 2>&1); hasnt "$out" "would start" "  a dry run after: nothing to start"
+DB=$(ombp omdb db '    done_when: {file: out/db.txt}\n')
+touch "$HOME/.studio-brake"; OT "$WH" apply "$DB" --plan omp > /dev/null 2>&1; rm -f "$HOME/.studio-brake"
+omstranger out/db.txt "d" "Feat: db"; git -C "$OMR" fetch -q origin
+out=$(OT "$WH" apply "$DB" --plan omp --once --dry-run 2>&1); has "$out" "would end it, not start it" "  a hit in a dry run: said as would, nothing reported"
+check "$(omst db | cut -d: -f1)" "planned" "    the plan not touched"
+rm -f "$HOME/.claude.json"
+unset -f omstranger ombranch omwt ombp OT OA oms omst omq prj
 rm -f "$HOME/.claude.json"
 unset -f WT oneblock wstarts ledger compiled
 unset -f W n sq pj pst brief settle_w ws L skp

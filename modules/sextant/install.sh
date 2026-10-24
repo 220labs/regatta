@@ -25,7 +25,7 @@
 # SEXTANT_WEEKDAY and SEXTANT_HOUR (1 and 2: Monday 02:00), SEXTANT_LAUNCH_DIR and SEXTANT_LAUNCHCTL
 # (the tests). An overlay that had the job under its own label passes that label and log, so the job
 # is replaced in place, never doubled; an overlay's own installer takes --plist, and --schedule
-# refuses where one is installed (the config dir's `legacy`, as aurora's does) unless
+# refuses where one is installed (the config dir's `regatta/overlay` marker, as aurora's does) unless
 # SEXTANT_SCHEDULE_BESIDE_OVERLAY is set. A host `aurora/skip-hosts` lists gets no job either. Like the launcher, the plist names the main checkout's files
 # when run from a linked worktree.
 #
@@ -178,8 +178,8 @@ case "${1:-}" in
     fi
     [ -z "${2:-}" ] || { echo "usage: install.sh --schedule [--dry-run]" >&2; exit 2; }
     [ "$(uname)" = Darwin ] || [ -n "${SEXTANT_LAUNCHCTL:-}" ] || { echo "install.sh --schedule: macOS only (launchd)" >&2; exit 2; }
-    if { [ -e "$cfgdir/legacy" ] || [ -e "$cfgdir/regatta/overlay" ]; } && [ -z "${SEXTANT_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "install.sh --schedule: an overlay is installed here ($cfgdir/legacy or $cfgdir/regatta/overlay): it schedules /sextant itself; not loading a second job" >&2
+    if [ -e "$cfgdir/regatta/overlay" ] && [ -z "${SEXTANT_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "install.sh --schedule: an overlay is installed here ($cfgdir/regatta/overlay): it schedules /sextant itself; not loading a second job" >&2
       exit 1
     fi
     # A host aurora/skip-hosts lists gets no job: the run would only log its skip each week

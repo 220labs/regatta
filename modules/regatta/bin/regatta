@@ -5,7 +5,7 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta root                the regatta checkout the core belongs to (exit 1: none)
     regatta has <module>        the module's path, or "<module> not installed" (exit 1)
     regatta which <tool>        a peer's path through common.tool(), or "<tool> not installed" (exit 1)
-    regatta check               the config directory: home, legacy, each link with its target, the private values
+    regatta check               the config directory: home, the overlay, each link with its target, the private values
     regatta shim <path>         the shim an old path keeps for <path> (relative to the root): a
                                 source shim for a Python file, an exec shim for any other
     regatta shim --hook <path>  a hook's source shim: run with no core, one line and exit 0 (C4)
@@ -253,14 +253,22 @@ def check():
         bad += 1
     else:
         print("  ok  home: %s" % home)
-    old = common.legacy_root()
+    old = common.overlay_root()
     if old:
-        print(("  ok  legacy: %s" if old.is_dir() else "  --  legacy: %s is no directory") % old)
+        print(("  ok  overlay: %s" if old.is_dir() else "  --  overlay: %s is no directory") % old)
         bad += 0 if old.is_dir() else 1
-    # the overlay marker (B14a): reported where an overlay is installed, never failed — a config
-    # dir from before the step marks the overlay by `legacy` alone, which the core still accepts
-    if old and not (common.CONFIG / "regatta" / "overlay").exists():
-        print("  ..  regatta/overlay: none yet (the overlay's bootstrap.sh --config writes it; B14b needs it)")
+    # the `legacy` file and REGATTA_LEGACY are read by nothing since B14b (2026-10-23): named, so a
+    # config dir from before the step is tidied by the overlay's bootstrap.sh --config
+    if (common.CONFIG / "legacy").exists() and not old:
+        # an overlay from before B14a: it now reads as a stranger's install, so its keys fail open
+        # (guarded, orca-deny, the schedules' refusals) — a failure, not a note (B14b landing review)
+        print("  --  legacy without regatta/overlay: the overlay reads as absent and its keys fail open"
+              " (run the overlay's bootstrap.sh --config)")
+        bad += 1
+    elif (common.CONFIG / "legacy").exists():
+        print("  ..  legacy: read by nothing since B14b (the overlay's bootstrap.sh --config removes it)")
+    if os.environ.get("REGATTA_LEGACY"):
+        print("  ..  REGATTA_LEGACY is set and read by nothing since B14b")
     problems = list(common.CONFIG_PROBLEMS) + module_problems()
     refused = {x.split()[0] for x in problems}   # said once, below, never also `ok`
     if common.CONFIG.is_dir():

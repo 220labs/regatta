@@ -31,7 +31,7 @@ with a traceback, which account_guard takes as no answer and fails closed on. A 
 found through `common.tool()`: wharf's fork_claude_session.py (a Terminal window; without it the
 command is printed) and worktree_allow.py (without it that check is skipped), plumb's usage-report
 (without it no usage column) — the design's G16, G18. The overlay's bootstrap.sh (the core's
-`legacy` checkout) is named where a fix is its; without one the fix says so.
+`overlay_root()`) is named where a fix is its; without one the fix says so.
 
 The registry: {"accounts": [{label, provider, home, rules, primary?, enabled?}, …],
 "capabilities": {provider: [kind, …]}}. Order is the walk order for free work; the one row with
@@ -175,8 +175,18 @@ CONFIG = Path(os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").
 REGISTRY = Path(os.environ.get("ACCOUNTS_FILE") or CONFIG / "lighthouse" / "accounts.json")
 # A registry named by ACCOUNTS_FILE (a suite's fixture) has its own tenants file beside it, never the
 # live key: a fixture must not take the Mac's tenancy, nor write its last good copy (review 2026-10-22).
+# ACCOUNTS_FILE naming the live key itself (bootstrap.sh's `account check`) is no fixture (review 2026-10-23).
+def _fixture_registry():
+    if not os.environ.get("ACCOUNTS_FILE"):
+        return False
+    try:
+        return REGISTRY.resolve() != (CONFIG / "lighthouse" / "accounts.json").resolve()
+    except (OSError, RuntimeError):   # 3.9's resolve() raises RuntimeError on a link loop; this runs at import
+        return True
+
+
 TENANTS = Path(os.environ.get("TENANTS_FILE")
-               or (REGISTRY.with_name(REGISTRY.name + ".tenants") if os.environ.get("ACCOUNTS_FILE")
+               or (REGISTRY.with_name(REGISTRY.name + ".tenants") if _fixture_registry()
                    else CONFIG / "lighthouse" / "tenants.json"))
 BIN = Path(__file__).resolve().parent
 CACHE_S = 60          # a probe answers for this long (R4: one probe per minute per account)
@@ -223,10 +233,10 @@ ORCA_MEMORY_STUB = "@~/.claude/CLAUDE.md\n"   # what Orca 1.4.2xx writes into a 
 
 
 def overlay_key_missing(rel, env=None):
-    """ImportError when the overlay is installed (the config dir's `regatta/overlay` or `legacy`) and its key `rel` is
+    """ImportError when the overlay is installed (the config dir's `regatta/overlay` marker) and its key `rel` is
     not written, nor named by `env`: a guard reading an absent key as "nothing to deny" fails open,
     so this one fails closed, as the core does for its own keys (B2b; B9 review)."""
-    if ((CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()) and not (env and os.environ.get(env)) and not (CONFIG / rel).exists():
+    if (CONFIG / "regatta" / "overlay").exists() and not (env and os.environ.get(env)) and not (CONFIG / rel).exists():
         raise ImportError(f"{rel} missing in {CONFIG} — write it with the overlay's bootstrap.sh --config")
 
 
@@ -267,9 +277,9 @@ def core():
 
 
 def overlay(*rel):
-    """A path in the overlay's checkout (the core's `legacy`), or None without one."""
+    """A path in the overlay's checkout (the core's overlay_root, the marker's path), or None without one."""
     try:
-        old = core().legacy_root()
+        old = core().overlay_root()
     except ImportError:
         return None
     return old.joinpath(*rel) if old else None
@@ -285,10 +295,10 @@ BOOTSTRAP_PLACEHOLDER = "<your overlay's bootstrap.sh>"
 
 
 def remote_account():
-    """This tool as the peer runs it: the path sessions know (the overlay's while it holds a shim
-    there, else this file), written from the home folder so the peer's own home applies."""
-    old = overlay("bin", "account")
-    mine = old if old and old.is_file() else Path(__file__).resolve()
+    """This tool as the peer runs it: this file, written from the home folder so the peer's own home
+    applies. Never the overlay's shim, which B14b deletes: a peer whose overlay moved first would
+    be sent a path it no longer has (the B14b landing review)."""
+    mine = Path(__file__).resolve()
     try:
         return "$HOME/" + str(mine.relative_to(HOME))
     except ValueError:
@@ -471,11 +481,10 @@ def apply_tenants(reg):
         for a in reg.get("accounts") or []:
             a.pop("tenant", None)
         for n, t in raw.items():
-            logins = t.get("logins") if isinstance(t, dict) else None
-            logins = [logins] if isinstance(logins, str) else logins   # one label, as a row's `tenant` was
+            logins = tenant_logins(t)
             for a in reg.get("accounts") or []:
-                if isinstance(logins, list) and a.get("label") in logins:
-                    a["tenant"] = n
+                if a.get("label") in logins:
+                    a["tenant"] = n   # a label in two tenants' logins is the later one's: doctor says so
     raw = raw if isinstance(raw, dict) else {}
     # `repos` must be a list: a string would split into one-letter entries, and a `*` among them routes
     # every repo; a number would crash every command (code review 2026-10-20). An entry is a key under
@@ -486,6 +495,13 @@ def apply_tenants(reg):
                       for n, t in raw.items() if isinstance(n, str) and isinstance(t, dict)}
     for a in reg.get("accounts") or []:
         a["routed"] = routes_for(reg, a)
+
+
+def tenant_logins(t):
+    """→ the labels a tenants-file entry's `logins` names: a string is one label, as a row's `tenant` was."""
+    logins = t.get("logins") if isinstance(t, dict) else None
+    logins = [logins] if isinstance(logins, str) else logins
+    return [l for l in logins if isinstance(l, str)] if isinstance(logins, list) else []
 
 
 def tenants_file():
@@ -505,6 +521,16 @@ def read_tenants_file():
     drive behind a link away) that copy holds: failing open would let every seat, another employer's
     included, into a tenant's repos (review 2026-10-22). Neither readable: {} — tenancy off — said on
     stderr, except under --json, which dispatch parses with stderr merged in."""
+    got, source, err = tenants_read()
+    if source == "none" and "--json" not in sys.argv:
+        print(f"account: {TENANTS} unreadable ({err}), and no last good copy — tenancy is off until it reads", file=sys.stderr)
+    return got
+
+
+def tenants_read(write=True):
+    """→ (object, source, error): source "file", "last" (the copy holds; error says why the file did
+    not read) or "none" ({}). write=False skips the copy's write: doctor's second read, after
+    load_registry's has already refreshed it on a good read (on a failed read nothing writes either)."""
     last = tenants_last()
     try:
         got = json.loads(TENANTS.read_text())
@@ -516,19 +542,21 @@ def read_tenants_file():
         except (OSError, ValueError):
             got = None
         if isinstance(got, dict):
-            return got
-        if "--json" not in sys.argv:
-            print(f"account: {TENANTS} unreadable ({e}), and no last good copy — tenancy is off until it reads", file=sys.stderr)
-        return {}
+            return got, "last", e
+        return {}, "none", e
+    if not write:
+        return got, "file", None
     try:
         text = json.dumps(got, sort_keys=True)
         if not last.is_file() or last.read_text() != text:
             tmp = last.with_name(f"{last.name}.{os.getpid()}")
             tmp.write_text(text)
             os.replace(tmp, last)
+        else:   # its mtime is the last good read, which doctor reports as the copy's age
+            os.utime(last)
     except OSError:
         pass   # a config dir that takes no write: the file still reads, only the fallback is lost
-    return got
+    return got, "file", None
 
 
 def tenants_source():
@@ -537,8 +565,14 @@ def tenants_source():
 
 
 def no_login(name):
-    """→ (why, fix) for a tenant no enabled login is marked for, in the form tenancy was written in."""
+    """→ (why, fix) for a tenant no enabled login is marked for, in the form tenancy was written in. Labels
+    the file already lists are named: asking to add one that is there sends the reader nowhere."""
     if tenants_file():
+        listed = tenant_logins(tenants_read(write=False)[0].get(name))
+        if listed:
+            # parked, a typo, or a label another tenant lists too (the later one takes it): doctor names which
+            return (f"{name}'s \"logins\" in {TENANTS.name} ({', '.join(listed)}) give it no enabled login (account doctor names why)",
+                    f"{BIN / 'account'} doctor --local")
         return (f"no enabled login is {name}'s in {TENANTS.name}", f"add its login's label to {name}'s \"logins\" in {TENANTS}")
     return (f"no enabled login has tenant {name!r} in {REGISTRY.name}", f"add \"tenant\": \"{name}\" to its login's row")
 
@@ -668,15 +702,20 @@ def seat_of(a):
         return None
 
 
+def env_prefix(a):
+    """The start env as a command prefix (`CLAUDE_CONFIG_DIR=… `), empty for the default dir."""
+    return "".join(f"{k}={shlex.quote(v)} " for k, v in env_of(a).items())
+
+
 def login_line(a, peer=None):
     """The command that signs this dir in. For a peer it is the `ssh -t` form: a plain ssh has no
     TTY for the code paste, `claude` is not on a non-login ssh PATH, and the keychain is locked to
     ssh there, so the login lands in <dir>/.credentials.json (work-account P1)."""
     if via_orca(a):
-        return orca_login_line(a)
-    env ="".join(f"{k}={shlex.quote(v)} " for k, v in env_of(a).items())
+        return orca_relogin_line(a, peer)
+    env = env_prefix(a)
     if peer:
-        return f"ssh -t {peer} {shlex.quote(env + claude_bin() + ' auth login')}"
+        return wrap_peer(env + claude_bin() + " auth login", peer, tty=True)
     return f"{env}claude auth login"
 
 
@@ -685,8 +724,7 @@ def relogin_line(a):
     # duplicate arose — so the line says which one to be in
     if via_orca(a):
         return orca_login_line(a)
-    env = "".join(f"{k}={shlex.quote(v)} " for k, v in env_of(a).items())
-    return f"{env}claude auth login, in a browser signed in as {a['label']}'s account (a private window)"
+    return f"{env_prefix(a)}claude auth login, in a browser signed in as {a['label']}'s account (a private window)"
 
 
 def orca_login_line(a):
@@ -695,6 +733,24 @@ def orca_login_line(a):
                 f"then {BIN / 'account'} orca-sync")
     return (f"sign {a['label']} in again in Orca's Accounts screen, or `orca account add --agent claude` in a "
             f"browser signed in as {a['label']}'s account (a private window); then {BIN / 'account'} orca-sync")
+
+
+def orca_relogin_line(a, peer=None):
+    """An Orca login whose dir is here but holds no login Claude Code reads. On the laptop, Orca's
+    screen. On the other Mac (PEER, or this host is not the core's LAPTOP) the runs arrive over
+    ssh, where the keychain Orca's sign-in writes is locked: the login must land in
+    <dir>/.credentials.json, which only `ssh -t … auth login` from the laptop does (work-account
+    P1). Orca's screen alone left a work login's runs there logged out (2026-10-22). A dir not
+    synced yet is Orca's to make: the Orca line."""
+    if a.get("provider") == "codex" or not Path(a["home"]).is_dir():
+        return orca_login_line(a)
+    if not peer and this_mac().lower() == core().LAPTOP.lower():
+        return orca_login_line(a)
+    cmd = env_prefix(a) + claude_bin() + " auth login"
+    how = f"`{wrap_peer(cmd, peer, tty=True)}`" if peer else f"`{cmd}` in an `ssh -t` session"
+    return (f"sign {a['label']} in with {how} from the laptop, in a browser signed in as {a['label']}'s "
+            f"account (a private window or its own profile) — Orca's Accounts screen writes only the "
+            f"keychain, which ssh cannot read; then {wrap_peer(str(BIN / 'account') + ' orca-sync', peer)}")
 
 
 @functools.lru_cache(maxsize=256)  # one git call per path, not one per row (review 2026-10-06)
@@ -1927,7 +1983,7 @@ def cmd_orca_sync(reg, off=False):
         st = auth_status(a) or {}
         if not st.get("loggedIn"):
             bad += 1
-            print(f"  ⚠   {label}: Claude Code reads no login in {home} — nothing recorded; {orca_login_line(a)}")
+            print(f"  ⚠   {label}: Claude Code reads no login in {home} — nothing recorded; {orca_relogin_line(a)}")
             continue
         for n in ("projects", "sessions"):
             p = a["home"] / n
@@ -2292,6 +2348,81 @@ def tenant_ties(reg):
     return out
 
 
+def age(s):
+    s = max(0, s)
+    return f"{int(s // 60)} min" if s < 5400 else f"{int(s // 3600)} h" if s < 172800 else f"{int(s // 86400)} days"
+
+
+def tenancy_state(reg, peer=None):
+    """→ [(label, level, text, fix)] on the tenants file itself, for doctor: a key that reads nothing with
+    no copy (tenancy off, every login runs every tenant's repo), tenancy held by the last good copy, a
+    file that reads but does not parse, a tenant whose repos match nothing or that has no enabled login,
+    a label in two tenants' `logins`, and one no enabled row has. The guard's own stderr line reaches
+    nobody (a UserPromptSubmit hook, exit 0), so doctor is where these surface (2026-10-22). Which login
+    is whose comes from the rows apply_tenants assigned, as routes_for reads them, never a second
+    derivation from the raw lists (review 2026-10-23)."""
+    if not tenants_file():
+        return []
+    raw, source, err = tenants_read(write=False)   # no second write; load_registry's read came first
+    relink = wrap_peer(f"{bootstrap_cmd()} --config", peer) + "   (relinks it; the drive it points into must be mounted)"
+    out = []
+    if source in ("none", "last") and TENANTS.exists():
+        # the file reads but is no JSON object: a relink cannot help, the edit can
+        what = f"{TENANTS} does not parse ({err})"
+        fix = f"correct the JSON in {TENANTS.resolve()}"
+    else:
+        what, fix = f"{TENANTS} reads nothing ({err})", relink
+    if source == "none":
+        out.append(("-", "fix", f"{what}, and there is no last good copy — tenancy is off: "
+                    "every login may run every tenant's repo", fix))
+    elif source == "last":
+        try:   # the filesystem's clock, never ACCOUNT_NOW (a suite's fake time)
+            old = f"{age(time.time() - tenants_last().stat().st_mtime)} old"
+        except OSError:
+            old = "age unknown"
+        out.append(("-", "info" if fix == relink else "fix",
+                    f"tenancy runs on the last good copy ({tenants_last().name}, last read good {old}): {what}", fix))
+    elif not raw:
+        out.append(("-", "info", f"tenancy is off: {TENANTS.name} is {{}}"))
+    rows = {a.get("label"): a for a in reg.get("accounts") or []}
+    for n, t in raw.items():
+        repos = t.get("repos") if isinstance(t, dict) else None
+        if not (reg.get("tenants") or {}).get(n):
+            out.append(("-", "fix", f"{n} in {TENANTS.name}: its \"repos\" name nothing tenancy can match "
+                        f"(got {json.dumps(repos)[:80]}) — every login may run its repos",
+                        f"give {n} a \"repos\" list of repo keys or globs in {TENANTS}"))
+        elif not any(r.get("tenant") == n and r.get("enabled") and r.get("provider") == "claude" for r in rows.values()):
+            out.append(("-", "fix", f"{n}'s repos run nowhere: no enabled claude login is {n}'s",
+                        f"name its login in {n}'s \"logins\" in {TENANTS}"))
+    named = {}
+    for n, t in raw.items():
+        for l in tenant_logins(t):
+            named.setdefault(l, [])
+            if n not in named[l]:
+                named[l].append(n)
+    for l, names in named.items():
+        a = rows.get(l)
+        if a and a.get("enabled") and a.get("provider") == "claude":
+            if len(names) > 1:
+                owner = a.get("tenant")
+                others = [n for n in names if n != owner]
+                out.append((l, "fix", f"{l} is in the \"logins\" of {', '.join(names)} in {TENANTS.name}: it is "
+                            f"{owner}'s login only, and is refused {', '.join(others)}'s repos",
+                            f"keep {l} in one tenant's \"logins\" in {TENANTS}"))
+            continue
+        if a is None:
+            why, fix = "no row in accounts.json has it", f"correct the label in {TENANTS}"
+        elif not a.get("enabled") and not a.get("parked") and a.get("via") == "orca":
+            why, fix = "it is off in Orca on this Mac", wrap_peer(f"{BIN / 'account'} orca on {l}", peer)
+        elif not a.get("enabled"):
+            why, fix = "its row is parked", f"enable {l} in {REGISTRY}, or take it out of {TENANTS}"
+        else:
+            why, fix = f"its row is a {a.get('provider')} login, not claude", f"take {l} out of {TENANTS}"
+        # info: whether its tenant still has a login is the per-tenant line above
+        out.append((l, "info", f"{l}, in the \"logins\" of {', '.join(names)} in {TENANTS.name}, is no enabled login: {why}", fix))
+    return out
+
+
 def attribution(label, days=7):
     """→ sessions usage-report attributed to label on this host in the last days (E6), or None
     when the attribution file does not exist yet."""
@@ -2362,7 +2493,8 @@ def doctor_local(reg, logins, peer=None, record=True):
         raw = auth_status(a) if email and not blind else None
         st = raw or {}
         if blind:
-            f(lab, "info", "its login is in the keychain, which ssh cannot read — auth status and the live call not checked here")
+            f(lab, "info", "its login is in the keychain, which ssh cannot read — auth status and the live call not checked here; "
+                       f"a run that arrives over ssh reads {a['home']}/.credentials.json instead, so if one ends logged out: {login_line(a, peer)}")
         want = e.get("email")
         if not email:
             problems += 1
@@ -2497,6 +2629,8 @@ def doctor_local(reg, logins, peer=None, record=True):
               "open it with the default profile" if on else None)
         for t in tenant_ties(reg):
             f(*t)
+    for t in tenancy_state(reg, peer):   # VS Code or not: the tenants file is the guard's, not the panel's
+        f(*t)
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
         f("-", "info", "credential expiry: the keychain is not read here (it would prompt)")
     known = {a["home"] for a in reg["accounts"]}
@@ -2510,6 +2644,9 @@ def cmd_doctor(reg, local=False, as_json=False, peer=None):
     path, logins = load_logins()
     if not logins:
         print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
+        # the tenants link points into the same drive, so this is when its state matters most (review 2026-10-23)
+        for label, level, text, fix in tenancy_state(reg, peer):
+            print(f"  {'⚠  ' if level == 'fix' else '-- '} {label}: {text}" + (f"\n      {fix}" if fix else ""))
         return 1
     found = doctor_local(reg, logins, peer=peer, record=not local)
     if not local:

@@ -80,7 +80,10 @@ Terminal's own process tree that Apple event needs no Automation grant (probed: 
 in 1 s). yabai's --close stays first, for a window in view.
 AeroSpace did this until 2026-10-05 (workspace 6, a hand-built grid); the owner replaced it with native
 desktops, and yabai's bsp makes the grid itself.
-Python 3.9, stdlib only. Session records are read with bin/rc-hosts' own record()/idle_hours().
+Python 3.9, stdlib only. Session records are read by pid from every login's sessions/ (registry_dirs:
+an Orca profile keeps its own) and judged with bin/rc-hosts' idle_hours(). A `shell` session whose
+only open background tasks are listeners (LISTENERS: the Session-tab waiter, `ask listen`) reads
+`idle`, from its transcript; any other open task keeps it busy (S13 of the crosstalk design).
 
 A pid is this run's only while its start time is the one recorded (`proc_start`, `ps -o lstart` in
 UTC, compared as bin/pickup's running() does): a pid reused after a crash or reboot is someone else's,
@@ -93,6 +96,7 @@ A record whose claude is gone without an end is
 ignored: not live, not counted, shown as gone.
 """
 import calendar
+import datetime
 import glob
 import importlib.machinery
 import importlib.util
@@ -104,6 +108,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -162,8 +167,8 @@ API_ERROR_END = "its last turn ended on an API error"
 
 
 def rc_hosts():
-    """bin/rc-hosts as a module: its record() and idle_hours() are the one reader of
-    ~/.claude/sessions/<pid>.json (the file has a dash, so a plain import cannot load it)."""
+    """bin/rc-hosts as a module: its idle_hours() and SESSIONS, ~/.claude's registry (the file has a
+    dash, so a plain import cannot load it). A run's own record is session_record()'s, every login's dir."""
     loader = importlib.machinery.SourceFileLoader("rc_hosts", os.path.join(HERE, "rc-hosts"))
     spec = importlib.util.spec_from_loader("rc_hosts", loader)
     mod = importlib.util.module_from_spec(spec)
@@ -275,13 +280,174 @@ def alive(pid):
         return False
 
 
+def registry_dirs(st=None):
+    """Every sessions/ dir a run's record may sit in, each once by its real path: the run's own config
+    dir first (dispatch records `config_dir`, the pick's CLAUDE_CONFIG_DIR), then ~/.claude's
+    (RC.SESSIONS), then every login's (the core's login_dirs). A login dir links its sessions/ to
+    ~/.claude's, but an Orca profile keeps its own where `account orca-sync` found Orca's dir there
+    first ("⚠ left"): a run on that login had no record here, so its watcher read "no record" for
+    5 h and never ended it (S13 of the crosstalk design; trial B, 2026-10-23)."""
+    cands = []
+    if st and st.get("config_dir"):
+        cands.append(os.path.join(st["config_dir"], "sessions"))
+    cands.append(str(RC.SESSIONS))
+    if common is not None:
+        try:
+            cands += [os.path.join(str(d), "sessions") for d in common.login_dirs(Path(HOME))]
+        except Exception:  # noqa: BLE001 — a broken registry costs only the extra dirs
+            pass
+    out, seen = [], set()
+    for d in cands:
+        real = os.path.realpath(d)
+        if real not in seen and os.path.isdir(d):
+            seen.add(real)
+            out.append(d)
+    return out
+
+
+_REC_DIR = {}   # session id → the sessions/ dir its record was last found in (the nudge's registry)
+
+
 def session_record(st):
-    """The record of THIS run's session, or None: a pid reused by another process has another id."""
+    """The record of THIS run's session, or None: a pid reused by another process has another id,
+    which the id test also keeps out of every other login's dir. A `shell` session whose only open
+    background tasks are listeners reads `idle` (listening_only)."""
     try:
-        rec = RC.record(int(st["pid"]))
+        pid = int(st["pid"])
     except (KeyError, TypeError, ValueError):
         return None
-    return rec if rec and rec.get("sessionId") == st.get("session") else None
+    for d in registry_dirs(st):
+        try:
+            with open(os.path.join(d, "%d.json" % pid)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("sessionId") == st.get("session"):
+            sid = rec.get("sessionId")
+            if sid:
+                _REC_DIR[sid] = d
+                if rec.get("status") == "shell" and listening_only(sid, rec.get("statusUpdatedAt")):
+                    rec = dict(rec, status="idle", listening=True)
+            return rec
+    return None
+
+
+# The background commands that only wait to be told something, and so are no work: the Session-tab
+# waiter talk_nudge starts (`sessionpipe wait`) and its unpaired form (`spacesheep talk listen`).
+# Claude Code reports a session holding any background shell as `shell`, not `idle` — every session
+# with the waiter, so a finished run read busy (the shell note in bin/autofinish-run's header). A tuple
+# is a command's basename and the words after it; a command line with a shell operator in it is never
+# a listener. Not `ask listen`: a relayed run holds it for its manager's answer, and nothing
+# re-dispatches the parked work if the run is ended meanwhile, so it stays busy as before S13
+# (the S13 landing review, 2026-10-23).
+LISTENERS = (("sessionpipe", "wait"), ("spacesheep", "talk", "listen"))
+_OPS = re.compile(r"[;&|<>`\n]|\$\(")
+_NOTE_ID = re.compile(r"<tool-use-id>([^<\s]+)</tool-use-id>")
+_BG = {}   # transcript path → (size, {tool use id: Bash command or None}, last notification's epoch ms)
+
+
+def is_listener(cmd):
+    if not isinstance(cmd, str) or _OPS.search(cmd):
+        return False
+    words = cmd.split()
+    if not words:
+        return False
+    words[0] = os.path.basename(words[0])
+    return any(tuple(words[:len(l)]) == l for l in LISTENERS)
+
+
+def _epoch_ms(ts):
+    try:
+        return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp() * 1000
+    except (TypeError, ValueError):
+        return None
+
+
+def _scan_background(path):
+    """(open tasks, last notification's epoch ms) of one transcript; see open_background."""
+    started, ended, last_note = {}, set(), None
+    with open(path, errors="replace") as f:
+        for line in f:
+            note = "<task-notification>" in line
+            if note:
+                ended.update(_NOTE_ID.findall(line))
+            flat = line.replace(" ", "")
+            if not (note or '"run_in_background":true' in flat or '"backgroundTaskId":"' in flat):
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            # a reader's fault never kills the watcher: any odd shape is skipped, not raised
+            try:
+                if note:
+                    t = _epoch_ms(e.get("timestamp"))
+                    if t is not None and (last_note is None or t > last_note):
+                        last_note = t
+                content = (e.get("message") or {}).get("content")
+                for b in content if isinstance(content, list) else []:
+                    if not isinstance(b, dict):
+                        continue
+                    inp = b.get("input")
+                    if b.get("type") == "tool_use" and isinstance(inp, dict) and inp.get("run_in_background"):
+                        started[b.get("id")] = inp.get("command") if b.get("name") == "Bash" else None
+                    # a call that ran past its timeout and was moved to the background: its result
+                    # names the task, its call had no flag. Its command is not looked up (that would
+                    # parse every Bash call), so it counts as work: the safe side.
+                    res = e.get("toolUseResult")
+                    if (b.get("type") == "tool_result" and isinstance(res, dict)
+                            and res.get("backgroundTaskId") and b.get("tool_use_id") not in started):
+                        started[b.get("tool_use_id")] = None
+            except AttributeError:
+                continue
+    return {k: v for k, v in started.items() if k not in ended}, last_note
+
+
+def background_state(sid):
+    """(open tasks, last notification's epoch ms) of session `sid`, or None; cached by size."""
+    path = transcript(sid)
+    try:
+        size = os.path.getsize(path) if path else None
+    except OSError:
+        size = None
+    if size is None:
+        return None
+    if _BG.get(path, (None,))[0] != size:
+        try:
+            tasks, last_note = _scan_background(path)
+        except OSError:
+            return None
+        _BG[path] = (size, tasks, last_note)
+    return _BG[path][1], _BG[path][2]
+
+
+def open_background(sid):
+    """{tool use id: command} of each background task session `sid` started and that has not ended,
+    read from its transcript — the registry has no field for them (2.1.30x's record: pid, status,
+    statusUpdatedAt and the like). A start is a tool_use with `run_in_background` (a Bash command,
+    or None for an Agent or any other tool), or a tool result carrying `backgroundTaskId` (a call
+    moved to the background at its timeout, None); an end is the `<task-notification>` naming that
+    tool use id, as the queue enqueues it (completed, failed or killed by the harness; probed on three
+    transcripts, 2026-10-23 — a TaskStop leaves none, so a stopped task stays open: the safe side).
+    None when no transcript is found or it cannot be read."""
+    got = background_state(sid)
+    return None if got is None else got[0]
+
+
+def listening_only(sid, since=None):
+    """Session `sid`, reported `shell`, holds no work: every background task still open is a listener
+    (LISTENERS), at least one is open, no task ended after `since` (the record's statusUpdatedAt, ms:
+    a notification no turn has taken yet is work about to start, and the old `shell` time would read
+    it long idle), and no subagent or task file wrote within QUIET_S (working_under). Anything else —
+    another shell, a background agent, an unreadable transcript, a `shell` with no open task found —
+    stays busy: the safe side, as before."""
+    got = background_state(sid)
+    if got is None:
+        return False
+    tasks, last_note = got
+    if last_note is not None and (not isinstance(since, (int, float)) or last_note >= since):
+        return False
+    return bool(tasks) and all(is_listener(c) for c in tasks.values()) and not working_under(sid)
 
 
 def same(st):
@@ -423,7 +589,7 @@ def claude_code_adapter():
             loader = importlib.machinery.SourceFileLoader("claude_code_adapter", f)
             mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("claude_code_adapter", loader))
             loader.exec_module(mod)
-            mod.sessions_dir = lambda: str(RC.SESSIONS)
+            mod.sessions_dir = lambda: str(RC.SESSIONS)   # nudge_api_error points it at the run's own
         except Exception as e:  # noqa: BLE001
             say("nudge unavailable: %s did not load (%s)" % ("harness_adapters/claude_code.py", e))
             mod = None
@@ -482,6 +648,8 @@ def nudge_api_error(path, st, rec):
     if at in sent or len(sent) >= NUDGE_MAX:
         return False
     mod = claude_code_adapter()
+    # the run's registry is where its record was found: an Orca login's own sessions/ (registry_dirs)
+    mod.sessions_dir = lambda d=_REC_DIR.get(sid, str(RC.SESSIONS)): d
     frame = NUDGE_FRAME % (turn["kind"], " ".join(turn["text"].split())[:60])
     target = {"session_id": sid, "pid": st["pid"]}
     try:
@@ -556,7 +724,8 @@ def parked(st):
     2.1.296 says "waiting" when one subagent waits on a permission prompt and others keep working
     (review of 2026-10-10) — that run still spends, so it counts. Only the count: a waiting run is
     mid-turn, so end_warm still treats it as busy and does not launch under it. A fourth status,
-    "shell" (idle with a background shell running), counts as busy: the safe side."""
+    "shell" (idle with a background shell running), counts as busy, the safe side — unless its only
+    open tasks are listeners, which session_record reads as idle (S13)."""
     rec = session_record(st)
     if warm(st):
         return True
@@ -721,19 +890,23 @@ SHELLS = {"-zsh", "zsh", "-bash", "bash", "-sh", "sh", "login"}
 
 
 def sessions_live():
-    """Every live Claude Code session on this machine, from ~/.claude/sessions. The record outlives
-    its process (a dead session's file stays), so each one is checked against `ps` the way same()
-    checks a run's claude. bin/rc-hosts reads these by pid, one host's children at a time; a sweep
-    has no pid to start from and reads them all."""
-    out = []
-    for p in sorted(glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json"))):
-        try:
-            with open(p) as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if isinstance(rec.get("pid"), int) and running(rec["pid"], rec.get("procStart")):
-            out.append(rec)
+    """Every live Claude Code session on this machine, from every login's sessions/ (registry_dirs).
+    The record outlives its process (a dead session's file stays), so each one is checked against
+    `ps` the way same() checks a run's claude. bin/rc-hosts reads these by pid, one host's children at
+    a time; a sweep has no pid to start from and reads them all."""
+    out, seen = [], set()
+    for d in registry_dirs():
+        for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+            try:
+                with open(p) as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(rec, dict) or (rec.get("pid"), rec.get("sessionId")) in seen:
+                continue
+            if isinstance(rec.get("pid"), int) and running(rec["pid"], rec.get("procStart")):
+                seen.add((rec["pid"], rec.get("sessionId")))
+                out.append(rec)
     return out
 
 
@@ -1333,9 +1506,10 @@ TIDIER = label_prefix() + ".dispatch-tidy"
 def primary_bin(name):
     """The path a launchd job calls, never this file's own: a worktree is removed once it launches and
     the job would be left calling a path that no longer exists (bin/tiling's install does the same).
-    Where an overlay is installed (the core's legacy_root) its shim, the path its jobs always named;
-    else this module's copy in the main checkout of the clone it sits in."""
-    old = common.legacy_root() if common else None
+    Where an overlay is installed (the core's overlay_root) its shim, the path its jobs always named
+    (dispatch and the launcher's other scripts stay there for good, B14a's D2); else this module's copy
+    in the main checkout of the clone it sits in."""
+    old = common.overlay_root() if common else None
     if old:
         top = main_checkout(str(old)) or str(old)
         if os.path.isfile(os.path.join(top, "bin", name)):

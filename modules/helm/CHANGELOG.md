@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `skipper-run` drops every `DISPATCH_*` variable by pattern: its fixed list had missed
+  `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
+  `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.
+
 skipper-resilience S7, `helm send`: a task handed to its scope's skipper.
 - `helm send <blueprint.md | claude/branch> | --text "<task>" --repo R` (bin/sendlib.py): a committed,
   pushed blueprint, the one blueprint a handoff branch adds (`--blueprint` names one of several), or a
@@ -74,6 +78,11 @@ skipper-resilience S5, the per-scope skipper.
   writes no ship event; the re-hail tags the mode the question is judged in; session_ancestor checks
   the registry's procStart; a torn lease costs that ship's hand-back only, and a holder whose every
   hand-back failed is not stopped.
+
+- The skipper-modes follow-ups (2026-10-23): a person's `helm mode` on a ship, set or clear, drops a
+  refused blueprint mode (`mode_refused`); `helm mode --branch … --clear` no longer asks for a ship;
+  branch-modes.json is written under `branch-modes.lock`; `helmlib.branch_override` is the branch read
+  dispatch asks first; `task_mode` reads a torn registry as `ask`.
 
 crosstalk S11b, the helm side of the lookout's fixes before arming (S7's review; S6's landing review 19–22).
 - The tick runs on the laptop only, as the sweep: `poll_tick` returns on any other host.

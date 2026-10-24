@@ -58,7 +58,7 @@ export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" P
        COST_RATIO="$T/ratio.json" PLAN_NO_MEMO=1 PLAN_NO_GH=1 PLAN_PROJECTS_ROOT="$T/projects-root" \
        STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 PLAN_NO_WHARF=1   # no wharf pass in a tick outside B7's own block, whose stub it reaches; the stall cards: no ssh to buildbox, no real repo's autofinished, no Orca app (B8's block turns its stub on)
 unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
-      DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT \
+      DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_TASK DISPATCH_MODE DISPATCH_BRIEF \
       SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT \
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
       HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first)
@@ -93,6 +93,12 @@ check "$(hl 'helmlib.branch_mode("claude/x")[0]')" "ask" "branch_mode: the plan 
 check "$(hl 'helmlib.branch_mode("claude/nobody")[0]')" "None" "  a branch no sent task names: no mode"
 printf '{"repos": {"rx": {}}, "scopes": {"s1": {"repos": ["r*"], "mode": "ask"}, "s2": {"repos": ["q"], "mode": "loud"}}}\n' > "$T/modes-repos.json"
 check "$(CLAUDE_REPOS_JSON="$T/modes-repos.json" hl 'helmlib.task_mode(None, None, "rx")')" "('ask', 'scope s1')" "a task with no ship and no hint: its repo's scope mode (a glob)"
+printf '{"repos": {"rx": ' > "$T/torn-repos.json"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" hl 'helmlib.task_mode(None, None, "rx")')" "('ask', 'the registry is unreadable (repos.json): read as ask')" \
+  "a torn registry reads as ask, never default: a scope's ask cannot fail open (follow-ups item 6)"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" hl 'helmlib.task_mode(None, None, "rx", "dnd")[0]')" "dnd" "  a hint still comes first: the registry is read only for the scope"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" CLAUDE_UNATTENDED=x hl 'bool(helmlib.raise_refusal(helmlib.task_mode(None, None, "rx")[0], "default"))')" "True" \
+  "  so an unattended caller's default over it is a raise: refused"
 check "$(CLAUDE_REPOS_JSON="$T/modes-repos.json" hl 'helmlib.task_mode(None, None, "q")[0]')" "default" "  a scope's word that is no mode: the default"
 "$HM" mode mgr-1 --task build --clear > /dev/null; "$HM" mode mgr-1 --clear > /dev/null
 check "$("$HM" mode mgr-1 --task build)" "mgr-1 task build: default (the default)" "--clear drops both"
@@ -121,13 +127,39 @@ CLAUDE_UNATTENDED=dispatch "$HM" mode --branch claude/rm yolo > /dev/null 2>&1; 
 CLAUDE_UNATTENDED=dispatch "$HM" mode --branch claude/rm --clear > /dev/null 2>&1; check "$?" "1" "  a run clearing it (the record's dnd decides) is a raise: refused"
 check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "default" "    …the lowered mode stands"
 "$HM" mode --branch claude/rm --clear > /dev/null; check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "dnd" "  the owner's --clear: the run record decides again"
+env -u DISPATCH_SHIP -u DISPATCH_PLAN "$HM" mode --branch claude/rm default > /dev/null 2>&1
+env -u DISPATCH_SHIP -u DISPATCH_PLAN "$HM" mode --branch claude/rm --clear > "$T/bclear.out" 2>&1
+check "$?" "0" "--branch --clear outside a session: no ship asked for (follow-ups item 5)"
+check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "dnd" "  …and cleared"
+for i in 1 2 3 4 5 6 7 8; do "$HM" mode --branch "claude/par-$i" ask > /dev/null 2>&1 & done; wait
+check "$(python3 -c 'import json, sys; print(sum(k.startswith("|claude/par-") for k in json.load(open(sys.argv[1]))))' "$PLANS_DIR/branch-modes.json")" "8" \
+  "  eight writers at once keep every branch: branch-modes.json is written under its lock"
+for i in 1 2 3 4 5 6 7 8; do "$HM" mode --branch "claude/par-$i" --clear > /dev/null 2>&1; done
 echo "a ship's mode is a ceiling (landing review 6)"
 "$HM" mode mgr-1 yolo --task build > /dev/null
 out=$("$HM" mode mgr-1 default)
 has "$out" "task build: mode yolo cleared — now default" "helm mode <ship> default clears a task's yolo, and says so"
 check "$(hl 'helmlib.branch_mode("claude/x")[0]')" "default" "  the branch now reads default"
+# a --branch entry stays under the ship's mode: a ship lowered to ask stays ask whatever an older
+# `--branch … yolo` says, at landing (branch_mode) and at dispatch's fire time (fire_mode)
+"$HM" mode --branch claude/x yolo > /dev/null; "$HM" mode mgr-1 ask > /dev/null
+check "$(hl 'helmlib.branch_mode("claude/x")[0]')" "ask" "a branch entry above the ship's ask: the ship's ceiling wins (the follow-ups' landing review)"
+check "$(hl 'helmlib.fire_mode("mgr-1", "build", None, None, "claude/x")[0]')" "ask" "  and at fire time"
+check "$(hl 'helmlib.fire_mode(None, None, None, None, "claude/x")[0]')" "yolo" "  a run with no ship: the entry, the verb it was made for"
+"$HM" mode --branch claude/x --clear > /dev/null
 "$HM" mode mgr-1 --clear > /dev/null
 rm -f "$HOME/Library/Logs/claude-weekly/run-seed-runs/build.json" "$HOME/Library/Logs/claude-weekly/run-seed-runs/finish.json"
+
+echo "a refused blueprint mode stands until a person's helm mode on the ship (follow-ups item 3)"
+refuse() { python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["mode_refused"] = {"mode": "dnd", "why": "x", "ts": 1}; json.dump(d, open(p, "w"))' "$PLANS_DIR/mgr-1/plan.json"; }
+refused() { python3 -c 'import json, sys; print("mode_refused" in json.load(open(sys.argv[1])))' "$PLANS_DIR/mgr-1/plan.json"; }
+refuse; CLAUDE_UNATTENDED=dispatch "$HM" mode mgr-1 ask > /dev/null 2>&1
+check "$(refused)" "True" "an unattended lower leaves the refusal"
+"$HM" mode mgr-1 dnd --task build > /dev/null; check "$(refused)" "True" "  a task's mode leaves it too: it speaks of one task"
+out=$("$HM" mode mgr-1 --clear); check "$(refused)" "False" "a person's --clear drops it"
+has "$out" "the blueprint's mode dnd, refused " "  …and says so"
+refuse; "$HM" mode mgr-1 default > /dev/null; check "$(refused)" "False" "  and so does a person's set"
+"$HM" mode mgr-1 --task build --clear > /dev/null; "$HM" mode mgr-1 --clear > /dev/null
 
 echo "the board's deploy only on a change (landing review 10)"
 check "$(env -u PLAN_NO_DEPLOY PLAN_CACHE_DIR="$T/bcache" python3 - "$B" <<'PY'

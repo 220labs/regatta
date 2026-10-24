@@ -7,7 +7,7 @@
 #                local time (a night with no section due ends before claude starts)
 #   --remove     unload that agent and delete its plist
 # Nothing here runs by itself: the job exists only after someone runs --schedule. Where an
-# overlay is installed (the config dir's `legacy` file) it schedules the night itself — on the
+# overlay is installed (the config dir's `regatta/overlay` marker) it schedules the night itself — on the
 # owner's Macs through its old path, an exec shim into this module — so --schedule refuses there:
 # two jobs would dream the week twice.
 #
@@ -51,8 +51,8 @@ case "${1:-}" in
     exit $rc
     ;;
   --schedule)
-    if { [ -e "$cfg/legacy" ] || [ -e "$cfg/regatta/overlay" ]; } && [ -z "${AURORA_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "aurora: an overlay is installed here ($cfg/legacy or $cfg/regatta/overlay): it schedules the night itself; not loading a second job" >&2
+    if [ -e "$cfg/regatta/overlay" ] && [ -z "${AURORA_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "aurora: an overlay is installed here ($cfg/regatta/overlay): it schedules the night itself; not loading a second job" >&2
       exit 1
     fi
     vault=$(where vault)

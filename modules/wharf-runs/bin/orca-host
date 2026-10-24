@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """orca-host — Orca on this Mac, kept to what the registry declares: the app, its projects grouped
-by scope, and its pairings with the other Macs.
+by scope, and its pairings with the other Macs. A Linux peer (a yard-node guest, a cloud VM) runs
+the same verbs against its headless `orca-ide serve` (below).
 
   orca-host [check]       what this Mac's Orca holds against what it should; exit 1 naming each
                           gap in the app or the scopes. Pairings and the relay sign-in are listed,
@@ -30,8 +31,8 @@ Which Macs are which is private and comes from the config dir (the design's C3),
   wharf-runs/orca-pairs   <host>:<peer> — PEER's Orca is an environment of HOST's (PAIRS)
   wharf-runs/ssh          <peer>:<ssh alias> — how `--on PEER` reaches it (PEERS)
 
-Without them no Mac pairs and `--on` knows no peer; where an overlay is installed (a `legacy`
-file in the config dir) a missing one is an error naming it, as the core does for its own keys.
+Without them no Mac pairs and `--on` knows no peer; where an overlay is installed (its
+`regatta/overlay` marker in the config dir) a missing one is an error naming it, as the core does for its own keys.
 The registry is the core's `repos_json()`; `scopes` (its scope order, anchor and twins) and
 `account` (orca-sync) are peers found by `common.tool()`.
 
@@ -68,6 +69,19 @@ v1.4.227) on 2026-10-17, checked again against the installed 1.4.229 bundle on 2
   checkpoint hook, the locks and sync.py look. `worktreeBasePath` places `<base>/<name>` only while
   the global `nestWorkspaces` is off (src/main/ipc/worktree-logic.ts), so `check` names it when on.
 
+- **On Linux** (Orca's remote-servers.mdx at v1.4.237): the CLI is `orca-ide` — GNOME's screen
+  reader owns `/usr/bin/orca`, and the bare `orca` a starting `orca-ide serve` writes into
+  ~/.local/bin is never the command to call. The app comes as the release's `.deb`: `setup` runs the
+  guest's own installer where its cloud-init wrote one (`/usr/local/sbin/orca-ide-install`, the
+  pinned release), else fetches the `.deb` of `wharf-runs/node/orca-release` (else the latest) for
+  this machine's architecture and hands it to `sudo -n apt-get install`. No Homebrew, no app bundle,
+  no symlink step. The server is a systemd user unit (`orca-serve-agent here` writes it; the guest's
+  cloud-init writes the same one), restarted with `systemctl --user restart`; with no unit and no
+  display, `setup` names `orca-serve-agent` rather than `orca open`. The data dir is Electron's
+  default for the app name `orca`, ${XDG_CONFIG_HOME:-~/.config}/orca (inferred from the Mac's
+  `Application Support/orca`; no Linux Orca has run here yet). There is no clipboard: `pair` there
+  takes the link only with `--link -`, as `--on` sends it.
+
 Nothing here removes: a group or repo Orca holds that no scope names is listed in `check`, not
 deleted (scratch repos earlier probes registered are other sessions' to clear).
 
@@ -76,6 +90,7 @@ Python 3.9, stdlib only. Tests: tests/orca-host.sh.
 import base64
 import json
 import os
+import platform
 import plistlib
 import re
 import shlex
@@ -83,6 +98,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -123,9 +139,25 @@ def core_hooks():
 sys.path.insert(0, core_hooks())
 import common  # noqa: E402
 
-ORCA_DATA = Path(os.environ.get("ORCA_HOST_DATA") or HOME / "Library/Application Support/orca")
+# ORCA_HOST_PLATFORM stands in for sys.platform in tests. Functions read LINUX at call time, so a
+# case can flip it on the loaded module; ORCA_DATA below is fixed at import and does not follow.
+LINUX = (os.environ.get("ORCA_HOST_PLATFORM") or sys.platform).startswith("linux")
+
+
+def default_data(linux):
+    """Orca's data dir: Electron's userData for the app name `orca` on each platform."""
+    if linux:
+        return Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "orca"
+    return HOME / "Library/Application Support/orca"
+
+
+ORCA_DATA = Path(os.environ.get("ORCA_HOST_DATA") or default_data(LINUX))
 ORCA_APP = Path(os.environ.get("ORCA_HOST_APP") or "/Applications/Orca.app")
 CASK = "stablyai/orca/orca"
+LINUX_CLI = "orca-ide"
+# the agent guest's own installer (node/agent.user-data.yaml writes it, the release pinned)
+DEB_INSTALLER = Path(os.environ.get("ORCA_HOST_INSTALLER") or "/usr/local/sbin/orca-ide-install")
+RELEASES = "https://api.github.com/repos/stablyai/orca/releases/"
 REMOTE_COPY = "~/.cache/orca-host/orca-host"
 # Orca's own badge palette (src/shared/constants.ts REPO_COLORS) minus its neutral grey, which a
 # scope past the seventh falls back to.
@@ -181,7 +213,7 @@ def scopes_mod():
     if not _SCOPES:
         p = common.tool("scopes")
         if not p:
-            raise OrcaError("no `scopes` tool found (the wharf module, or the overlay's legacy checkout)")
+            raise OrcaError("no `scopes` tool found (the wharf module)")
         _SCOPES.append(_load("scopes", p))
     return _SCOPES[0]
 
@@ -206,17 +238,35 @@ def registry():
 
 def orca_bin():
     """The app's own CLI first: a bare `orca` on PATH may be plotly's chart tool (homebrew/cask's
-    `orca`, above), which every call here would run with --json and fail on."""
+    `orca`, above), which every call here would run with --json and fail on. On Linux only
+    `orca-ide`: a bare `orca` there is the screen reader, or serve's start-up shim."""
+    if os.environ.get("ORCA_HOST_CLI"):
+        return os.environ["ORCA_HOST_CLI"]
+    if LINUX:
+        return shutil.which(LINUX_CLI)
     app_cli = ORCA_APP / "Contents/Resources/bin/orca"
-    return os.environ.get("ORCA_HOST_CLI") or (str(app_cli) if app_cli.exists() else shutil.which("orca"))
+    return str(app_cli) if app_cli.exists() else shutil.which("orca")
 
 
 def orca_env():
-    """The env the app's CLI runs in: /opt/homebrew/bin first, ELECTRON_RUN_AS_NODE dropped (the
-    CLI's launcher sets it itself on 1.4.229; dropping an inherited one costs nothing)."""
+    """The env the app's CLI runs in: /opt/homebrew/bin first on a Mac, ELECTRON_RUN_AS_NODE
+    dropped (the CLI's launcher sets it itself on 1.4.229; dropping an inherited one costs nothing)."""
     env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
-    env["PATH"] = "/opt/homebrew/bin:" + env.get("PATH", "")
+    if not LINUX:
+        env["PATH"] = "/opt/homebrew/bin:" + env.get("PATH", "")
     return env
+
+
+def clipboard():
+    """The clipboard's text, or None where there is none to read (Linux: `--link -` instead)."""
+    if LINUX:
+        return None
+    return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+
+
+def clipboard_clear():
+    if not LINUX:
+        subprocess.run(["pbcopy"], input="", text=True)
 
 
 def cli(*args, stdin=None, timeout=120):
@@ -482,13 +532,81 @@ def runtime_up():
         return False
 
 
+def deb_arch_ok(name):
+    """True when a release asset is this machine's .deb: the arm64 one on arm, the other elsewhere
+    (the guest's installer takes the non-arm one, as Orca ships one of each)."""
+    arm = platform.machine().lower() in ("aarch64", "arm64")
+    return name.endswith(".deb") and bool(re.search(r"arm64|aarch64", name)) == arm
+
+
+def deb_url(release):
+    """The download URL of RELEASE's .deb for this machine, asked of GitHub's releases API."""
+    import urllib.request
+    path = f"tags/{release}" if release != "latest" else "latest"
+    try:
+        with urllib.request.urlopen(RELEASES + path, timeout=30) as r:
+            assets = json.loads(r.read().decode()).get("assets") or []
+    except (OSError, ValueError) as e:
+        raise OrcaError(f"GitHub's releases API for Orca {release}: {e}")
+    url = next((a.get("browser_download_url") for a in assets if deb_arch_ok(a.get("name") or "")), None)
+    if not url:
+        raise OrcaError(f"Orca {release} has no .deb for {platform.machine()}")
+    return url
+
+
+# The release yard-node's guest pins (its ORCA_RELEASE): one missing key gives one version on both.
+ORCA_RELEASE = "v1.4.237"
+
+
+def orca_release():
+    """The release the node pins (`wharf-runs/node/orca-release`), else yard-node's default."""
+    lines, _ = common.config_read("wharf-runs/node/orca-release")
+    release = (lines or [ORCA_RELEASE])[0]
+    if not re.fullmatch(r"v?\d+(\.\d+){1,3}|latest", release):
+        raise OrcaError(f"wharf-runs/node/orca-release {release!r}: a release tag like {ORCA_RELEASE}, or latest")
+    return release
+
+
+def install_deb(dry):
+    """orca-ide from its .deb: the guest's installer where cloud-init wrote one, else the release's
+    .deb fetched here and installed by apt. 0, or 1 having said why."""
+    if DEB_INSTALLER.exists():
+        argv = ["sudo", "-n", str(DEB_INSTALLER)]
+        print(f"  {'·' if dry else '→'} install orca-ide: {shlex.join(argv)}")
+        if not dry and subprocess.run(argv).returncode != 0:
+            print("  ✗ install orca-ide failed")
+            return 1
+        return 0
+    release = orca_release()
+    if dry:
+        print(f"  · install orca-ide: the {release} .deb from {RELEASES}, then sudo -n apt-get install -y <deb>")
+        return 0
+    url = deb_url(release)
+    with tempfile.TemporaryDirectory() as tmp:
+        deb = str(Path(tmp) / "orca-ide.deb")   # apt reads a local file only by a path with a slash
+        print(f"  → install orca-ide: {url}")
+        if subprocess.run(["curl", "-fsSL", url, "-o", deb]).returncode != 0:
+            print("  ✗ the .deb did not download")
+            return 1
+        argv = ["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", deb]
+        print(f"  → {shlex.join(argv)}")
+        if subprocess.run(argv).returncode != 0:
+            print("  ✗ apt-get install failed")
+            return 1
+    return 0
+
+
 def cmd_setup(dry):
     steps = []
-    if not ORCA_APP.exists():
-        steps.append(("install the app", ["brew", "install", "--cask", CASK]))
-    if not shutil.which("orca", path=orca_env()["PATH"]):
-        steps.append(("put its CLI on PATH", ["ln", "-sf", str(ORCA_APP / "Contents/Resources/bin/orca"),
-                                              "/opt/homebrew/bin/orca"]))
+    if LINUX:
+        if not orca_bin() and install_deb(dry):
+            return 1
+    else:
+        if not ORCA_APP.exists():
+            steps.append(("install the app", ["brew", "install", "--cask", CASK]))
+        if not shutil.which("orca", path=orca_env()["PATH"]):
+            steps.append(("put its CLI on PATH", ["ln", "-sf", str(ORCA_APP / "Contents/Resources/bin/orca"),
+                                                  "/opt/homebrew/bin/orca"]))
     for what, argv in steps:
         print(f"  {'·' if dry else '→'} {what}: {shlex.join(argv)}")
         if not dry and subprocess.run(argv).returncode != 0:
@@ -498,8 +616,10 @@ def cmd_setup(dry):
         agent = serve_agent()
         if agent:  # a headless Mac (one since 2026-10-18): `orca open` would take the lock serve needs
             # -k: a serve that runs but does not answer is wedged, and a plain kickstart of a running
-            # service is a no-op that still exits 0 (man launchctl)
-            argv = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{agent}"]
+            # service is a no-op that still exits 0 (man launchctl); systemd's restart stops a
+            # running unit first
+            argv = (["systemctl", "--user", "restart", agent] if LINUX
+                    else ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{agent}"])
             print(f"  {'·' if dry else '→'} restart its headless Orca: {shlex.join(argv)}")
             if not dry:
                 if subprocess.run(argv).returncode != 0:
@@ -512,6 +632,10 @@ def cmd_setup(dry):
                 else:
                     print(f"  ✗ {agent} restarted, but Orca's runtime did not answer within a minute")
                     return 1
+        elif LINUX and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            # no window to open: the headless server is an always-on service, the owner's to install
+            print("  ✗ no Orca server unit here and no display: run `orca-serve-agent here` from your own terminal")
+            return 1
         else:
             print(f"  {'·' if dry else '→'} start Orca: orca open")
             if not dry:
@@ -530,6 +654,10 @@ def cmd_setup(dry):
         rc = 1
     if dry:
         return rc
+    if LINUX:   # account's orca-sync reads the Mac app's data dir and runs a bare `orca`: off on Linux
+        print("  · account orca-sync skipped: a Mac's step (it reads the Orca app's data)")
+        checked = cmd_check()
+        return rc or checked
     account = common.tool("account")
     if not account:   # the logins Orca holds are the account tool's to read back; none here, nothing to sync
         print("  · account orca-sync skipped: no `account` tool found (the lighthouse module, or the overlay)")
@@ -543,9 +671,27 @@ def cmd_setup(dry):
     return rc or r.returncode or checked
 
 
+def serve_unit():
+    """The name of a systemd user unit whose ExecStart runs Orca's server here, or None — the line
+    names orca and serve (`orca-ide serve`, or the guest's `orca-serve-node` wrapper), as
+    orca-serve-agent's own refusal reads them."""
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "systemd" / "user"
+    for path in sorted(root.glob("*.service")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"(?im)^ExecStart=.*orca.*serve", text):
+            return path.name
+    return None
+
+
 def serve_agent():
     """The Label of a LaunchAgent whose program runs `orca serve` here (a headless Orca), or None —
-    read from each plist's ProgramArguments, one argument or inside an `sh -c` string."""
+    read from each plist's ProgramArguments, one argument or inside an `sh -c` string. On Linux the
+    systemd user unit's name (serve_unit)."""
+    if LINUX:
+        return serve_unit()
     for path in sorted((HOME / "Library/LaunchAgents").glob("*.plist")):
         try:
             with open(path, "rb") as f:
@@ -617,8 +763,8 @@ def prove(peer):
 
 def clear_link_from_clipboard():
     """Empties the clipboard when it holds an Orca pairing link (a credential), and only then."""
-    if subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip().startswith("orca://"):
-        subprocess.run(["pbcopy"], input="", text=True)
+    if (clipboard() or "").strip().startswith("orca://"):
+        clipboard_clear()
 
 
 def cmd_pair(peer, link_from, dry):
@@ -635,8 +781,12 @@ def cmd_pair(peer, link_from, dry):
     addresses = tailscale_addresses(peer)
     ip = next(iter(sorted(a for a in addresses if a[:1].isdigit())), peer + "’s Tailscale IP")
     how = (f"On {peer}'s Orca app: Settings → Remote Orca Servers → New Link, address {ip}; on a headless "
-           f"{peer}: the link `orca serve --pairing-address {ip}` prints when it starts. Copy it, then run this again")
-    link = sys.stdin.read() if link_from == "-" else subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+           f"{peer}: the link `orca serve --pairing-address {ip}` (`orca-ide serve` on Linux) prints when it "
+           f"starts. Copy it, then run this again")
+    link = sys.stdin.read() if link_from == "-" else clipboard()
+    if link is None:
+        print(f"orca-host pair: no clipboard here; pipe the link in with --link -. {how}")
+        return 1
     if not link.strip().startswith("orca://"):
         print(f"orca-host pair: no link {'on stdin' if link_from == '-' else 'on the clipboard'}. {how}")
         return 1
@@ -656,7 +806,7 @@ def cmd_pair(peer, link_from, dry):
             return 1
     finally:  # the link is a credential: off the clipboard after any read of one, refusals included —
         if link_from != "-" and not dry:   # bar a dry run, whose link the real run still needs
-            subprocess.run(["pbcopy"], input="", text=True)
+            clipboard_clear()
     print(f"orca-host pair: ✓ {peer} paired; its Orca answers with {n} repos")
     return 0
 
@@ -665,13 +815,18 @@ def cmd_pair(peer, link_from, dry):
 
 def cmd_check():
     faults, notes = [], []
-    if not ORCA_APP.exists():
-        faults.append(f"Orca.app is not installed: orca-host setup (brew install --cask {CASK})")
-    if not orca_bin():
-        faults.append("the orca CLI is not on PATH: orca-host setup")
+    if LINUX:   # the .deb is the app and its CLI at once
+        if not orca_bin():
+            faults.append(f"{LINUX_CLI} is not installed: orca-host setup (the release .deb)")
+    else:
+        if not ORCA_APP.exists():
+            faults.append(f"Orca.app is not installed: orca-host setup (brew install --cask {CASK})")
+        if not orca_bin():
+            faults.append("the orca CLI is not on PATH: orca-host setup")
     rt = Runtime()
     if not runtime_up():
-        faults.append("Orca's runtime is not running: orca-host setup (orca open)")
+        faults.append("Orca's runtime is not running: orca-host setup "
+                      + ("(its server unit, or orca-serve-agent here)" if LINUX else "(orca open)"))
     else:
         # a missing peer tool, registry or config key is a fault line, never the end of the
         # report: the app's, the pairings' and the relay's lines still print
@@ -732,8 +887,9 @@ def run_on(peer, argv, stdin=None):
         if put.returncode != 0:
             print(f"orca-host: could not copy the script to {peer}: {put.stderr.strip()[-200:]}")
             return put.returncode
-        remote = ("PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH python3 " + REMOTE_COPY + " "
-                  + " ".join(shlex.quote(a) for a in argv))
+        # the peer's own shell picks its PATH: Homebrew's only where the peer is a Mac that has it
+        remote = ('p=$HOME/.local/bin:$PATH; [ ! -d /opt/homebrew/bin ] || p=/opt/homebrew/bin:$p; '
+                  "PATH=$p python3 " + REMOTE_COPY + " " + " ".join(shlex.quote(a) for a in argv))
         return subprocess.run(ssh + [remote], input=stdin, text=True, timeout=600).returncode
     except subprocess.TimeoutExpired as e:   # a peer asleep or off the tailnet: one line, never a traceback
         print(f"orca-host: {peer} did not answer within {int(e.timeout)} s")
@@ -761,7 +917,7 @@ def main(argv):
             # the link is read here, where the owner copied it (or from stdin with --link -), checked
             # here, and travels on ssh's stdin, never argv; nothing else on the clipboard leaves this Mac
             piped = "--link" in rest
-            link = sys.stdin.read() if piped else subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+            link = sys.stdin.read() if piped else (clipboard() or "")
             if not link.strip().startswith("orca://"):
                 print(f"orca-host pair: no Orca pairing link {'on stdin' if piped else 'on the clipboard'}; nothing sent")
                 return 1
@@ -778,7 +934,7 @@ def main(argv):
                 return run_on(on, [verb, *args], stdin=link)
             finally:   # off the clipboard, whatever the peer said — bar a dry run, as `pair --dry-run` here
                 if not dry and not piped:
-                    subprocess.run(["pbcopy"], input="", text=True)
+                    clipboard_clear()
         return run_on(on, [verb, *rest])
     try:
         if verb == "check":

@@ -45,7 +45,7 @@ rm "$REGATTA_CONFIG/regatta/owner"
 mv "$REGATTA_CONFIG/atlas" "$REGATTA_CONFIG/atlas.off"
 check "$(wh vault)" "$HOME/.local/share/atlas" "no key and no overlay: atlas's default vault"
 check "$(wh layer)" "MISSING" "  and no layer"
-touch "$REGATTA_CONFIG/legacy"
+mkdir -p "$REGATTA_CONFIG/regatta"; touch "$REGATTA_CONFIG/regatta/overlay"
 # Beside an overlay the core loads only with its five keys (common.OVERLAY_KEYS), made up here.
 for k in owner guarded orca-deny log-dir projects; do echo "$T/$k" > "$REGATTA_CONFIG/regatta/$k"; done
 check "$(wh vault)" "MISSING" "no key beside an overlay: no vault, never a guess"
@@ -67,7 +67,7 @@ out=$("$W" aurora "$T" --dry-run); check $? 1 "no aurora/skip-hosts beside an ov
 echo "$out" | grep -q "refused: no .*aurora/skip-hosts"; check $? 0 "  naming the key"
 "$W" aurora "$T" --due >/dev/null; check $? 0 "  --due on a refusal: exit 0, so the run Orca starts logs and posts it (a failed precheck is a silent skip)"
 check "$(WEEKLY_ANY_HOST=1 "$W" aurora "$T" --dry-run | head -1 | cut -c1-6)" "aurora" "  WEEKLY_ANY_HOST runs anyway"
-rm "$REGATTA_CONFIG/legacy"
+rm "$REGATTA_CONFIG/regatta/overlay"
 "$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "no key and no overlay: no host is skipped"
 host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks")
 printf 'elsewhere\n%s\n' "$(printf %s "$host" | tr a-z A-Z)" > "$REGATTA_CONFIG/aurora/skip-hosts"
@@ -247,11 +247,11 @@ case "\$1" in print) exit 1 ;; esac
 EOF
 chmod +x "$T/launchctl"
 export AURORA_LAUNCH_DIR="$T/agents" AURORA_LAUNCHCTL="$T/launchctl" AURORA_LABEL=test.aurora
-touch "$REGATTA_CONFIG/legacy"
+touch "$REGATTA_CONFIG/regatta/overlay"
 out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule beside an overlay: refused"
 echo "$out" | grep -q "schedules the night itself"; check $? 0 "  and says why"
 check "$(ls "$T/agents" 2>/dev/null | wc -l | tr -d ' ')" 0 "  no plist written"
-rm "$REGATTA_CONFIG/legacy"
+rm "$REGATTA_CONFIG/regatta/overlay"
 python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks" > "$REGATTA_CONFIG/aurora/skip-hosts"
 out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule on a host aurora/skip-hosts lists: refused"
 echo "$out" | grep -q "this host is in .*aurora/skip-hosts"; check $? 0 "  and says why"

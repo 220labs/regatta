@@ -2844,17 +2844,10 @@ mark = state / "teleported.json"
 mark.write_text(json.dumps(marker))
 out = {"marker": str(mark)}
 try:
-    # checkpoint.py is wharf's: in the peer's regatta clone (its config dir's `home`), else the
-    # overlay's hooks/ where it still holds one (regatta-modules B7): the overlay is the peer's
-    # `legacy` key
+    # checkpoint.py is wharf's: in the peer's regatta clone (its config dir's `home`; the overlay's
+    # hooks/ was the fallback until B14b, 2026-10-23, which deleted its shims)
     import os
     cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
-    try:
-        old = os.environ.get("REGATTA_LEGACY") or (cfg / "legacy").read_text().split("\n")[0].strip()
-    except OSError:
-        old = ""
-    if old:
-        sys.path.insert(0, str(Path(old).expanduser() / "hooks"))
     try:
         home = os.environ.get("REGATTA_HOME") or (cfg / "home").read_text().split("\n")[0].strip()
     except OSError:

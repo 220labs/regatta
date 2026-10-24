@@ -146,6 +146,25 @@ else
   mplan dnd; state dnd 5e55-run
   PLANS_DIR="$T/mplans" sw run "$T/sw-mdnd.out" ready --title t --body-file /dev/null
   has "$T/sw-mdnd.out" "touches a gate (held: a physical repo" "  a dnd launch: its held slice is read (here the contract has no physical: none)"
+  # follow-ups item 4: with no mode now, the re-check reads the mode landing() judged the start by, never a bare by: yolo
+  mkdir -p "$T/noplans"
+  state yolo 5e55-run
+  PLANS_DIR="$T/noplans" sw run "$T/sw-bare.out" ready --title t --body-file /dev/null
+  has "$T/sw-bare.out" "touches a gate (held: mode default" "a mode-less by: yolo run with no eff_mode (landing() gave it no standing yes): held"
+  printf '{"by": "yolo", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"
+  PLANS_DIR="$T/noplans" sw run "$T/sw-e12.out" ready --title t --body-file /dev/null
+  has "$T/sw-e12.out" "READIED" "  …with eff_mode yolo (E12's standing yes, judged at the start): readied"
+  printf '{"by": "yolo", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"; mplan default
+  PLANS_DIR="$T/mplans" sw run "$T/sw-e12low.out" ready --title t --body-file /dev/null
+  has "$T/sw-e12low.out" "touches a gate (held: mode default" "  …but a mode set since is the mode now: held"
+  # a ship launch (the keel's yes): a mode-less ship reads `default` from branch_mode, so the re-check takes
+  # landing()'s eff_mode, not the plain fallback (the follow-ups landing review)
+  printf '{"by": "ship", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"; mplan default
+  PLANS_DIR="$T/mplans" sw run "$T/sw-ship.out" ready --title t --body-file /dev/null
+  has "$T/sw-ship.out" "READIED" "a ship launch on a ship with no landing mode, judged yolo at the start: readied"
+  printf '{"by": "ship", "session": "5e55-run", "ended": null, "eff_mode": "yolo"}\n' > "$ST"; mplan ask
+  PLANS_DIR="$T/mplans" sw run "$T/sw-shipask.out" ready --title t --body-file /dev/null
+  has "$T/sw-shipask.out" "touches a gate (held: mode ask" "  …but a ship set to ask since: held"
   state sweep 5e55-run
   mkdir -p "$R/hooks"; echo x > "$R/hooks/x.py"; g add -A; g commit -qm "Fix: a hook, in step 1"; g branch -f claude/t/topic-raw HEAD
   sw run "$T/sw-ready.out" ready --title t --body-file /dev/null
