@@ -13,9 +13,19 @@
   drain.
 - Skippers run Opus 5.5 `high`, not Sonnet 5.5: their work is judgement on unspec'd questions, and
   the rotation keeps their runs short.
+- The second landing review of skipper-modes-followups-2 (2026-10-24): `yield_branch_entry` replaces
+  `drop_branch_entry`; a key-less entry is never popped by an unattended write, and on a branch with no
+  sent task it is no mode; `helm mode --branch` resolves a relative `--repo` to its checkout and refuses a
+  branch the checkout lacks; `bin/ask relay` keeps no mode in asks.json or the plan event when the read was
+  torn.
 - `skipper-run` drops every `DISPATCH_*` variable by pattern: its fixed list had missed
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
   `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.
+- The follow-ups' landing review, its smaller findings (2026-10-23): `helm mode --branch` keys every entry
+  by its repo (`--repo`, else the cwd's checkout; outside one, refused); a key-less entry from before is
+  read as a lowering only (`helmlib.LEGACY`); `drop_branch_entry` for a newer `dispatch --mode`;
+  `branch_mode` ends in `under_ship` as `fire_mode` does; `task_mode` parses repos.json once and names a
+  torn read (`TORN_WHERE`, `torn_read`) so no writer keeps it.
 
 skipper-resilience S11, the yard's tick pings the dead-man's switch and holds under the studio brake.
 - `helm tick` ends with `deadman ping <host>` (lighthouse's `bin/deadman`, through `helmlib.peer`) on a host

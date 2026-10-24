@@ -285,10 +285,30 @@ def mode_branch(a):
     if a.id and a.id not in helmlib.MODES:
         sys.exit("helm mode --branch: the mode is one of %s" % ", ".join(helmlib.MODES))
     mode = a.mode or a.id
+    # every entry names its repo (item 7 of the follow-ups' landing review): branch names repeat across
+    # repos by design, so a key-less entry matched a sibling repo's branch. --repo, else the cwd's checkout
+    # a relative --repo (`.`) is the checkout it names, as the cwd's is; a git checkout must hold the
+    # branch, so an entry typed in the wrong repo is refused, not keyed where no reader looks (the second
+    # landing review). A path that is no checkout is taken as given (a repo another Mac holds)
+    def git(path, *args):
+        r = subprocess.run(["git", "-C", path] + list(args), capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    repo = a.repo or helmlib.current_repo()
+    gdir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir") if repo and os.path.isdir(repo) else None
+    if a.repo and gdir:   # its main checkout, as the cwd's is (current_repo's rule)
+        repo = str(Path(gdir).parent if Path(gdir).name == ".git" else Path(gdir))
+    elif a.repo and not a.repo.startswith(("/", "~")):
+        repo = os.path.abspath(a.repo)
+    key = helmlib.branch_key(a.branch, repo)
+    if not key:
+        sys.exit("helm mode --branch: name the branch's repo (--repo), or run it inside the repo")
+    # setting a mode only: a read or --clear of a deleted branch's entry still works (the re-review)
+    if mode is not None and gdir and not any(git(repo, "rev-parse", "-q", "--verify", ref) for ref in
+                        ("refs/heads/" + a.branch, "refs/remotes/origin/" + a.branch)):
+        sys.exit("helm mode --branch: no branch %s in %s — name its repo with --repo" % (a.branch, repo))
     if mode is None and not a.clear:
-        print("%s: %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, a.repo)))
+        print("%s: %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, repo)))
         return
-    key = "%s|%s" % (helmlib._common().repo_key(a.repo) if a.repo else "", a.branch)
     f = helmlib.branch_modes_file()
 
     def write(d):
@@ -300,18 +320,23 @@ def mode_branch(a):
     # branch (follow-ups item 5)
     with helmlib.branch_modes_locked():
         before = helmlib.load_branch_modes()
-        old = helmlib.branch_mode(a.branch, a.repo)[0]
+        old = helmlib.branch_mode(a.branch, repo)[0]
         bm = dict(before)
+        # a key-less entry from before may be another repo's lowering: the keyed one is read first here,
+        # so a set leaves it; a person's --clear takes it too (else this branch still reads it), an
+        # unattended write never (the second landing review)
         if a.clear:
             bm.pop(key, None)
+            if not os.environ.get("CLAUDE_UNATTENDED"):
+                bm.pop("|%s" % a.branch, None)
         else:
             bm[key] = {"mode": mode, "ts": int(time.time())}
         write(bm)
-        why = helmlib.raise_refusal(old, helmlib.branch_mode(a.branch, a.repo)[0])
+        why = helmlib.raise_refusal(old, helmlib.branch_mode(a.branch, repo)[0])
         if why:
             write(before)
             sys.exit("helm mode: " + why)
-    print("%s: mode %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, a.repo)))
+    print("%s: mode %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, repo)))
 
 
 @plan_locked

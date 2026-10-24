@@ -260,6 +260,13 @@ out=$(env "$E_SHIP"=p1 DISPATCH_TASK=build "$E_SKIP"=mgr-1 DISPATCH_MODE=dnd CLA
 has "$out" "Recommended: A — mode: dnd — doc:" "the ASK line names the run's mode"
 out=$(env "$E_SHIP"=p1 DISPATCH_TASK=build "$E_SKIP"=mgr-1 DISPATCH_MODE=ask CLAUDE_UNATTENDED=dispatch "$B/ask" relay docs/demo-2026-10-10.md D1 --dry-run)
 has "$out" "mode: ask (nobody answers but the owner: card it)" "  …in mode ask, that nobody but the owner answers it"
+# the second landing review: a shipless run's mode read while repos.json is torn is `ask` on the line, but
+# the doc's row keeps no mode, so `answer` never reads that ask back as the hint once the registry heals
+printf '{"repos": {"x": ' > "$T/torn-repos.json"
+out=$(env -u DISPATCH_MODE -u "$E_SHIP" CLAUDE_REPOS_JSON="$T/torn-repos.json" DISPATCH_REPO="$R" "$E_SKIP"=mgr-1 CLAUDE_UNATTENDED=dispatch "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "mode: ask (nobody answers but the owner: card it)" "a torn registry: the relay line says ask for now"
+check "$(python3 -c "import json, sys; print([a.get('mode') for a in json.load(open(sys.argv[1]))['asks'] if a['item'] == 'D1'])" "$(git -C "$R" rev-parse --absolute-git-dir)/claude/ask.json")" "[None]" \
+  "  …and its asks row keeps no mode (the torn ask is kept nowhere)"
 "$HM" mode p1 ask --task build > /dev/null
 out=$(CLAUDE_CODE_SESSION_ID=p1 "$B/ask" answer docs/demo-2026-10-10.md D1 "A — yes item" --from coding-7 --source "yes item" --no-send 2>&1); rc=$?
 check "$rc" "1" "mode ask (the ship's task in plan.json): the skipper's answer is refused, a yes item too"

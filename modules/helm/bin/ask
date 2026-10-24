@@ -252,7 +252,12 @@ def cmd_relay(a):
     space = own_space(top, rel)
     # skipper-modes S1: the run's mode, read now (plan.json first); the skipper's prompt reads it from
     # the message, `answer` reads plan.json again and this as the hint
-    mode = helmlib.run_mode()[0]
+    read = helmlib.run_mode()
+    mode = read[0]
+    # a mode read while repos.json is torn (helmlib.torn_read) is `ask` for now only: the line says so,
+    # but the row and the event keep no mode, else `answer` reads that ask back as the hint after the
+    # registry heals and refuses the skipper for good (the second landing review)
+    kept = None if getattr(helmlib, "torn_read", lambda pair: False)(read) else mode
     order = surfaces.row("ask.relay")
     # Whether this run will hear an answer over Talk (finding 2): its own doc page is the address,
     # and its listener is a background shell, which CLAUDE_CODE_DISABLE_BACKGROUND_TASKS forbids
@@ -288,7 +293,7 @@ def cmd_relay(a):
     rec_row = {"doc": str(doc), "rel": rel, "repo": repo, "branch": branch, "item": a.item, "title": it["title"],
                "reversible": rev, "recommended": rec, "backend": name, "verdict": verdict, "t": int(time.time()),
                "manager": ctx.get("manager"), "session": ctx.get("session"), "space": space, "task": task,
-               "listen": "talk" if listens else None, "answered": None, "mode": mode}
+               "listen": "talk" if listens else None, "answered": None, "mode": kept}
     data = read_asks(top)
     data["asks"] = [x for x in data.get("asks", []) if not (x.get("rel") == rel and x.get("item") == a.item)] + [rec_row]
     data["session"] = ctx.get("session")
@@ -300,7 +305,7 @@ def cmd_relay(a):
     # skipper itself (the fifth finish review of S5); it reaches the owner by its WAITING line
     if ctx.get("plan") and not os.environ.get("SKIPPER_SCOPE") and helmlib.load_plan(ctx["plan"]):
         helmlib.append_event(ctx["plan"], {"task": task, "status": status, "ask": "%s#%s" % (rel, a.item),
-                                           "summary": title, "reversible": rev, "recommended": rec, "backend": name, "mode": mode,
+                                           "summary": title, "reversible": rev, "recommended": rec, "backend": name, "mode": kept,
                                            "session": ctx.get("session"), "host": helmlib.host(), "harness": helmlib.harness(),
                                            "repo": str(main_checkout(top)),  # K6: state() guards by it
                                            # S5: the doc where it is (the run's worktree, not the main checkout)

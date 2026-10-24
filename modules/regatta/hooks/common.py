@@ -250,19 +250,27 @@ def scope_registry(path=None):
         return {}, {}
 
 
+def read_registry(path=None):
+    """(registry, unreadable) from one parse — `path`, else repos_json(): the registry as a dict, or
+    None; unreadable is registry_unreadable's verdict. A caller that judges the tear and then reads a
+    scope passes the dict on (scope_of_repo's `reg`), so the two never read two different files
+    (helm's task_mode, the follow-ups' landing review). Never raises."""
+    p = Path(path) if path else repos_json()
+    try:
+        if not p or not (p.exists() or p.is_symlink()):
+            return None, False   # a dangling link reads below and fails: unreadable (its target moved)
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, True
+    ok = isinstance(d, dict) and isinstance(d.get("repos") or {}, dict) and isinstance(d.get("scopes") or {}, dict)
+    return (d, False) if ok else (None, True)
+
+
 def registry_unreadable(path=None):
     """True when a registry file is there but its repos or scopes cannot be read — a torn write,
     conflict markers, a non-object. scope_registry() reads that as no scopes at all, which is open;
     a fence asks this first and fails closed on it. False with no registry file. Never raises."""
-    p = Path(path) if path else repos_json()
-    try:
-        if not p or not (p.exists() or p.is_symlink()):
-            return False   # a dangling link reads below and fails: unreadable (its target moved)
-        d = json.loads(p.read_text(encoding="utf-8"))
-        return not (isinstance(d, dict) and isinstance(d.get("repos") or {}, dict)
-                    and isinstance(d.get("scopes") or {}, dict))
-    except (OSError, ValueError):
-        return True
+    return read_registry(path)[1]
 
 
 def is_glob(m):
@@ -460,16 +468,19 @@ def repo_key(repo):
     return s
 
 
-def scope_of_repo(repo, path=None):
+def scope_of_repo(repo, path=None, reg=None):
     """(name, scope) of the registry's first scope whose `repos` list REPO — a key, or a path under
     PROJECTS — each entry a key or a glob, as `scopes` reads them; (None, {}) when none does or the
     registry does not read. What a scope carries beyond its repos (`mode`, `berths`: skipper-modes
-    S1, S6) is data, read here once for every module."""
+    S1, S6) is data, read here once for every module. REG: a registry read_registry() parsed already."""
     import fnmatch
     key = repo_key(repo)
     p = path or repos_json()
     try:
-        scopes = json.loads(Path(p).read_text(encoding="utf-8")).get("scopes") if p and key else None
+        if reg is not None:
+            scopes = reg.get("scopes") if key else None
+        else:
+            scopes = json.loads(Path(p).read_text(encoding="utf-8")).get("scopes") if p and key else None
     except (OSError, ValueError, AttributeError):
         return None, {}
     for name, sc in (scopes or {}).items() if isinstance(scopes, dict) else ():

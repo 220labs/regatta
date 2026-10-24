@@ -102,6 +102,23 @@ check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" hl 'helmlib.task_mode(None, None
 check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" CLAUDE_UNATTENDED=x hl 'bool(helmlib.raise_refusal(helmlib.task_mode(None, None, "rx")[0], "default"))')" "True" \
   "  so an unattended caller's default over it is a raise: refused"
 check "$(CLAUDE_REPOS_JSON="$T/modes-repos.json" hl 'helmlib.task_mode(None, None, "q")[0]')" "default" "  a scope's word that is no mode: the default"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" hl 'helmlib.torn_read(helmlib.task_mode(None, None, "rx"))')" "True" \
+  "  torn_read names that ask, which no writer keeps (the follow-ups' landing review, item 6)"
+check "$(CLAUDE_REPOS_JSON="$T/modes-repos.json" hl 'helmlib.torn_read(helmlib.task_mode(None, None, "rx"))')" "False" "  …and no other ask"
+reads() { python3 - "$B" "$1" <<'PYREADS'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+n, real = [0], pathlib.Path.read_text
+def counted(self, *a, **k):
+    n[0] += self.name == sys.argv[2]
+    return real(self, *a, **k)
+pathlib.Path.read_text = counted
+print(helmlib.task_mode(None, None, "rx")[0], n[0])
+PYREADS
+}
+check "$(CLAUDE_REPOS_JSON="$T/modes-repos.json" reads modes-repos.json)" "ask 1" "task_mode reads repos.json once for the tear and the scope (item 9)"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" reads torn-repos.json)" "ask 1" "  once on a torn one too"
 "$HM" mode mgr-1 --task build --clear > /dev/null; "$HM" mode mgr-1 --clear > /dev/null
 check "$("$HM" mode mgr-1 --task build)" "mgr-1 task build: default (the default)" "--clear drops both"
 echo "mode raises (skipper-modes S3b): landing follows the mode, so only the owner raises one"
@@ -123,20 +140,55 @@ check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "dnd" "branch_mode: a later 
 check "$(hl 'helmlib.branch_mode("claude/rm", "/y/rm")[0]')" "None" "  a same-named branch of another repo: not this one's mode (landing review 14)"
 check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm/.claude/worktrees/t")[0]')" "dnd" "  its own repo, named by a worktree path: its mode"
 echo "helm mode --branch (landing review 4b): the lowering verb for a run with no ship"
-CLAUDE_UNATTENDED=dispatch "$HM" mode --branch claude/rm default > /dev/null 2>&1; check "$?" "0" "a run lowers a shipless branch dnd → default"
-check "$(hl 'helmlib.branch_mode("claude/rm")')" "('default', 'helm mode --branch claude/rm')" "  branch_mode reads it first"
-CLAUDE_UNATTENDED=dispatch "$HM" mode --branch claude/rm yolo > /dev/null 2>&1; check "$?" "1" "  a run raising it: refused"
-CLAUDE_UNATTENDED=dispatch "$HM" mode --branch claude/rm --clear > /dev/null 2>&1; check "$?" "1" "  a run clearing it (the record's dnd decides) is a raise: refused"
-check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "default" "    …the lowered mode stands"
-"$HM" mode --branch claude/rm --clear > /dev/null; check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "dnd" "  the owner's --clear: the run record decides again"
-env -u DISPATCH_SHIP -u DISPATCH_PLAN "$HM" mode --branch claude/rm default > /dev/null 2>&1
-env -u DISPATCH_SHIP -u DISPATCH_PLAN "$HM" mode --branch claude/rm --clear > "$T/bclear.out" 2>&1
+# every entry names its repo (the follow-ups' landing review, item 7): --repo here, the cwd's checkout by default
+HB() { env -u DISPATCH_REPO "$HM" mode --branch "$@"; }
+CLAUDE_UNATTENDED=dispatch HB claude/rm --repo /x/rm default > /dev/null 2>&1; check "$?" "0" "a run lowers a shipless branch dnd → default"
+check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")')" "('default', 'helm mode --branch claude/rm')" "  branch_mode reads it first"
+check "$(hl 'helmlib.branch_mode("claude/rm", "/y/rm")[0]')" "None" "  keyed by its repo: a same-named branch of another repo keeps its own (item 7)"
+CLAUDE_UNATTENDED=dispatch HB claude/rm --repo /x/rm yolo > /dev/null 2>&1; check "$?" "1" "  a run raising it: refused"
+CLAUDE_UNATTENDED=dispatch HB claude/rm --repo /x/rm --clear > /dev/null 2>&1; check "$?" "1" "  a run clearing it (the record's dnd decides) is a raise: refused"
+check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")[0]')" "default" "    …the lowered mode stands"
+HB claude/rm --repo /x/rm --clear > /dev/null; check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")[0]')" "dnd" "  the owner's --clear: the run record decides again"
+env -u DISPATCH_SHIP -u DISPATCH_PLAN env -u DISPATCH_REPO "$HM" mode --branch claude/rm --repo /x/rm default > /dev/null 2>&1
+env -u DISPATCH_SHIP -u DISPATCH_PLAN env -u DISPATCH_REPO "$HM" mode --branch claude/rm --repo /x/rm --clear > "$T/bclear.out" 2>&1
 check "$?" "0" "--branch --clear outside a session: no ship asked for (follow-ups item 5)"
-check "$(hl 'helmlib.branch_mode("claude/rm")[0]')" "dnd" "  …and cleared"
-for i in 1 2 3 4 5 6 7 8; do "$HM" mode --branch "claude/par-$i" ask > /dev/null 2>&1 & done; wait
-check "$(python3 -c 'import json, sys; print(sum(k.startswith("|claude/par-") for k in json.load(open(sys.argv[1]))))' "$PLANS_DIR/branch-modes.json")" "8" \
+check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")[0]')" "dnd" "  …and cleared"
+(cd "$T" && HB claude/rm dnd > "$T/bnorepo.out" 2>&1); check "$?" "1" "outside any repo with no --repo: refused, no key-less entry (item 7)"
+has "$(cat "$T/bnorepo.out")" "name the branch's repo (--repo)" "  saying what to name"
+git init -q "$T/rr" && git -C "$T/rr" commit -q --allow-empty -m x && git -C "$T/rr" branch claude/rm
+RR=$(cd "$T/rr" && pwd -P)
+(cd "$T/rr" && HB claude/rm ask > /dev/null 2>&1)
+check "$(python3 -c 'import json, sys; print([k for k in json.load(open(sys.argv[1])) if k.endswith("|claude/rm")])' "$PLANS_DIR/branch-modes.json" | grep -c '|claude/rm')" "1" \
+  "  inside a repo with no --repo: keyed by the cwd's checkout"
+(cd "$T/rr" && HB claude/rm --clear > /dev/null 2>&1)
+# the second landing review: an entry typed in the wrong checkout is refused, a relative --repo is the checkout it names
+(cd "$T/rr" && HB claude/not-here ask > "$T/bwrong.out" 2>&1); check "$?" "1" "a branch the cwd's checkout lacks: refused, not keyed where no reader looks"
+has "$(cat "$T/bwrong.out")" "no branch claude/not-here in" "  naming the repo it looked in"
+(cd "$T/rr" && HB claude/rm --repo . ask > /dev/null 2>&1)
+check "$(hl 'helmlib.branch_mode("claude/rm", "'"$RR"'")[0]')" "ask" "  --repo . keys by the checkout's path, so its readers find it"
+(cd "$T/rr" && HB claude/rm --repo . --clear > /dev/null 2>&1)
+# an entry from before entries named their repo: read, but it can only lower (it may be another repo's)
+python3 -c 'import json, sys; json.dump({"|claude/rm": {"mode": "yolo", "ts": 1}}, open(sys.argv[1], "w"))' "$PLANS_DIR/branch-modes.json"
+check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")[0]')" "dnd" "a key-less yolo entry from before: no raise over the record's dnd (item 7)"
+python3 -c 'import json, sys; json.dump({"|claude/rm": {"mode": "ask", "ts": 1}}, open(sys.argv[1], "w"))' "$PLANS_DIR/branch-modes.json"
+check "$(hl 'helmlib.branch_mode("claude/rm", "/x/rm")[0]')" "ask" "  a key-less ask entry: it still lowers"
+check "$(hl 'helmlib.branch_mode("claude/nosent", "/x/rm")')" "(None, 'no sent task on claude/nosent')" "  (no entry, no sent task: no mode)"
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["|claude/nosent"] = {"mode": "yolo", "ts": 1}; json.dump(d, open(sys.argv[1], "w"))' "$PLANS_DIR/branch-modes.json"
+check "$(hl 'helmlib.branch_mode("claude/nosent", "/x/rm")[0]')" "None" \
+  "a key-less yolo entry on a branch with no sent task: no mode, never a raise (second landing review)"
+CLAUDE_UNATTENDED=dispatch HB claude/rm --repo /x/rm ask > /dev/null 2>&1
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("|claude/rm"))' "$PLANS_DIR/branch-modes.json")" "{'mode': 'ask', 'ts': 1}" \
+  "  an unattended keyed write leaves a key-less entry, which may be another repo's (second landing review)"
+check "$(hl 'helmlib.yield_branch_entry("claude/rm", "/x/rm", "ask")["mode"]')" "ask" "yield_branch_entry (a newer dispatch --mode, once scheduled): the entry it replaces is returned"
+check "$(hl 'helmlib.branch_override("claude/rm", "/x/rm")')" "('ask', 'helm mode --branch claude/rm')" "  …and the branch reads the new word, keyed by its repo, never the older record's dnd"
+check "$(hl 'helmlib.yield_branch_entry("claude/none", "/x/rm", "dnd")')" "None" "  a branch with no entry: None, nothing written"
+check "$(hl 'helmlib.branch_override("claude/none", "/x/rm")')" "None" "    (still none)"
+HB claude/rm --repo /x/rm --clear > /dev/null 2>&1
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("|claude/rm"))' "$PLANS_DIR/branch-modes.json")" "None" "  the owner's --clear takes the key-less entry too"
+for i in 1 2 3 4 5 6 7 8; do HB "claude/par-$i" --repo /x/rm ask > /dev/null 2>&1 & done; wait
+check "$(python3 -c 'import json, sys; print(sum("|claude/par-" in k for k in json.load(open(sys.argv[1]))))' "$PLANS_DIR/branch-modes.json")" "8" \
   "  eight writers at once keep every branch: branch-modes.json is written under its lock"
-for i in 1 2 3 4 5 6 7 8; do "$HM" mode --branch "claude/par-$i" --clear > /dev/null 2>&1; done
+for i in 1 2 3 4 5 6 7 8; do HB "claude/par-$i" --repo /x/rm --clear > /dev/null 2>&1; done
 echo "a ship's mode is a ceiling (landing review 6)"
 "$HM" mode mgr-1 yolo --task build > /dev/null
 out=$("$HM" mode mgr-1 default)
@@ -144,11 +196,11 @@ has "$out" "task build: mode yolo cleared — now default" "helm mode <ship> def
 check "$(hl 'helmlib.branch_mode("claude/x")[0]')" "default" "  the branch now reads default"
 # a --branch entry stays under the ship's mode: a ship lowered to ask stays ask whatever an older
 # `--branch … yolo` says, at landing (branch_mode) and at dispatch's fire time (fire_mode)
-"$HM" mode --branch claude/x yolo > /dev/null; "$HM" mode mgr-1 ask > /dev/null
-check "$(hl 'helmlib.branch_mode("claude/x")[0]')" "ask" "a branch entry above the ship's ask: the ship's ceiling wins (the follow-ups' landing review)"
-check "$(hl 'helmlib.fire_mode("mgr-1", "build", None, None, "claude/x")[0]')" "ask" "  and at fire time"
-check "$(hl 'helmlib.fire_mode(None, None, None, None, "claude/x")[0]')" "yolo" "  a run with no ship: the entry, the verb it was made for"
-"$HM" mode --branch claude/x --clear > /dev/null
+HB claude/x --repo /x/tools yolo > /dev/null; "$HM" mode mgr-1 ask > /dev/null
+check "$(hl 'helmlib.branch_mode("claude/x", "/x/tools")[0]')" "ask" "a branch entry above the ship's ask: the ship's ceiling wins (the follow-ups' landing review)"
+check "$(hl 'helmlib.fire_mode("mgr-1", "build", "/x/tools", None, "claude/x")[0]')" "ask" "  and at fire time"
+check "$(hl 'helmlib.fire_mode(None, None, "/x/tools", None, "claude/x")[0]')" "yolo" "  a run with no ship: the entry, the verb it was made for"
+HB claude/x --repo /x/tools --clear > /dev/null
 "$HM" mode mgr-1 --clear > /dev/null
 rm -f "$HOME/Library/Logs/claude-weekly/run-seed-runs/build.json" "$HOME/Library/Logs/claude-weekly/run-seed-runs/finish.json"
 
