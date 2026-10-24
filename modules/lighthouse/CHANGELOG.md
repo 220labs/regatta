@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- hookwatch after its landing review (autofinish-exclude, 2026-10-24): a fault counts only for a hook the
+  move changed (its file, its imports, its traceback's files); the overlay's own hooks are no longer read
+  (the `legacy` prefix is gone; a shim shows through its traceback); a `judge` fault needs an error or a
+  deny, not printed words. A pass reads each transcript from its remembered offset; the clean sha is one
+  hookwatch saw stand, never HEAD@{1}, and never a sha without hookwatch. The revert PR fetches first and
+  opens as a draft when the range touches the base's `autofinish_leaks`, `in_place` or the list. The pin
+  ends by itself once origin/main carries a fix; a person's checkout starts probation; a pin posts once
+  per change of origin/main; `--dry-run` only prints. `replay` judges the last days' moves read-only
+  (the always-on Mac, 2026-10-24: 0 of 59). The plist carries PATH, REGATTA_CONFIG and the HOOKWATCH_* seams.
+- `health` names hookwatch's pin and posts it once, whichever check it runs.
+
 - `account doctor` reports the tenants file's own state (2026-10-23): a link that reads nothing with
   no copy (tenancy off), the last good copy in force and its age, a file that does not parse, a tenant
   whose `repos` match nothing or that has no enabled login, a label in two tenants' `logins`, and one no
@@ -14,6 +25,14 @@
   may be refused the vault's folder on Drive, and the owner can place the secret there once. The file is
   read only at mode 600 or stricter; a looser one is refused in one line that names the path and mode,
   never the value, and the vault is tried next.
+
+- `hookwatch` (autofinish-exclude S3, S4; D3-B, 2026-10-23): reads the hook records of the last 30 min of
+  transcripts and, within 30 min of the primary checkout's HEAD moving, pins it at the last clean sha
+  (`git checkout --detach`) on a crash through `modules/`, a deny that cannot judge, one hook timing out
+  in 3 sessions, or one denying over 80 % of 20 calls; then opens the revert PR, the clean tree on the
+  pinned head (tree equality checked), ready for automerge, only while origin/main is that head.
+  `scan`, `status`, `unpin`, `install` (the LaunchAgent, every 10 min; refused unattended). Stdlib, no
+  core. `regatta check` reports a pin. Not installed on any Mac yet.
 - deadman joins as lighthouse's switch for the unattended Macs (private until its scrub; chart:
   `deadman/README.md`): one Cloudflare Worker, cron every 5 minutes, one KV namespace; a Mac that
   pinged and went quiet past the period and grace is one GitHub issue that mentions the owner,

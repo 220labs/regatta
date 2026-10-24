@@ -207,6 +207,18 @@ check "$(log | grep -c '^orca: off')" 1 "HEALTH_ORCA=off switches it off"
 grep -qF 'ORCA="${HEALTH_ORCA:-on}"' "$HB"; check $? 0 "  it is on by default"
 rm -f "$REGATTA_CONFIG/wharf-runs/serve-label" "$LA/serve.example.plist"
 
+echo "hookwatch's pin (autofinish-exclude landing review, finding 14): printed and posted, whichever check runs"
+printf '{"pinned": {"root": "/x/regatta", "to": "0123456789abcdef", "from": "f", "why": "crash: h.py (x)", "pr": "https://github.invalid/p/1"}}\n' > "$REGATTA_CONFIG/lighthouse/hookwatch.json"
+rm -f "$T/logs/health.last.pin"
+HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^hookwatch: regatta pinned at 0123456789ab by hookwatch (crash: h.py (x)); revert PR https://github.invalid/p/1')" 1 "a pin in hookwatch's state: health names it"
+check "$(log | grep -c "^- posted: --post hookwatch.s pin fails")" 1 "  and posts it to the bulletin"
+HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c "hookwatch's pin: failing, already posted")" 1 "  once: the next pass posts nothing"
+rm -f "$REGATTA_CONFIG/lighthouse/hookwatch.json"
+HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^hookwatch:'):$([ -e "$T/logs/health.last.pin" ] && echo kept || echo gone)" "0:gone" "  no pin: no line, and the posted mark goes"
+
 echo "no core: one line, exit 2"
 cp "$HB" "$T/lonely-health"
 out=$(HEALTH_LOG_DIR="$T/logs2" "$T/lonely-health"; echo "rc=$?"); check "$out" "rc=2" "a copy with no lib/ and no core beside it exits 2"

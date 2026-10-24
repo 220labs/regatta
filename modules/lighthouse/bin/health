@@ -240,6 +240,20 @@ else
   else echo "orca: $ofail${pid:+ (pid $pid)}"; post_once "$state.orca" "Orca's serve agent" "$ofail"; fi
 fi
 
+# hookwatch's pin (autofinish-exclude S4), read from its state as text, whichever check runs below:
+# bootstrap.sh --check never reads it, and a pin on a Mac nobody watches must reach the bulletin
+# (the landing review, finding 14). Posted once per pin by post_once's own rule.
+pin=$(python3 -I -c 'import json, os, sys
+p = os.path.join(os.environ.get("REGATTA_CONFIG") or os.path.join(os.path.expanduser("~"), ".config", "regatta"), "lighthouse", "hookwatch.json")
+try:
+    s = json.load(open(p)).get("pinned")
+except Exception:
+    sys.exit(0)
+if isinstance(s, dict) and s.get("to"):
+    print("%s pinned at %s by hookwatch (%s)%s" % (os.path.basename(str(s.get("root") or "the primary")), str(s["to"])[:12],
+          s.get("why") or "a hook fault", "; revert PR %s" % s["pr"] if s.get("pr") else ""))' 2>/dev/null)
+if [ -n "$pin" ]; then echo "hookwatch: $pin"; post_once "$state.pin" "hookwatch's pin" "$pin"; else rm -f "$state.pin"; fi
+
 if [ -n "${HEALTH_CHECK_CMD:-}" ]; then what="$HEALTH_CHECK_CMD"; out=$($HEALTH_CHECK_CMD 2>&1); rc=$?
 elif [ -n "$C" ] && [ -x "$C/bootstrap.sh" ]; then what="bootstrap.sh --check"; out=$("$C/bootstrap.sh" --check 2>&1); rc=$?
 else what="regatta check"; out=$(core 'import runpy; sys.argv = ["regatta", "check"]; r = common.regatta_root(); runpy.run_path(str(r / "modules/regatta/bin/regatta") if r else common.tool("regatta"), run_name="__main__")' 2>&1); rc=$?; fi
