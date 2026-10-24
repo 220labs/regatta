@@ -250,6 +250,8 @@ LAND_BY = ("yolo", "dnd")   # the mode launches (skipper-modes S3b): `--by` name
 PERSON_BY = ("override", "typed")   # a person's own launch: mode ask does not hold it (landing())
 MERGE_BY = PERSON_BY + ("ship",)   # whose yes --merge may carry: a person's, or the keel's for a ship (the header)
 SHIP_HOLD = "the keel holds it (--hold)"   # the state's `hold` for a --hold launch (S6)
+BRIEFS = "autofinish-briefs"   # bin/autofinish's BRIEFS: <common git dir>/claude/<it>/<branch, quoted>.json (S7)
+CHAIN_KEEPS = LAND_BY + ("brief", "ship")   # the launches a chain relaunch stays (landing review, finding 5)
 REFUSED = common.REFUSED   # the gate of a start dispatch refused before any session; was "not-launched"
 REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
 DIED = "died"
@@ -767,18 +769,26 @@ def landing(t, by, rule):
       - a ship launch (`--by ship`, the keel's yes): held_slice as a mode launch, under `yolo` when the
         ship has no landing mode — the yes was given to a blueprint before any diff, so the launcher's
         gates and the repo's `autofinish_exclude`/`in_place` still hold it (S6's finish review);
+      - a brief launch (`--by brief`, rule C from the yes at the brief; autofinish-exclude S7): the yes
+        predates the diff, so bin/autofinish's brief_held judges it — class 2, `in_place` and the list
+        hold it, class 1 and 3 land — and mode ask holds it as any launch that is not a person's;
       - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host).
     `eff` is the mode a mode or ship launch was judged by (None for any other), for autofinish.json's
     `eff_mode`: bin/pr judges the launch again by it where the branch has no mode by then."""
     af = _lander()
     if af is None:
         return ("the lander's judge did not load (bin/autofinish)"
-                if by in LAND_BY or rule == "M" or by == "ship" else None), None, None
+                if by in LAND_BY or rule == "M" or by in ("ship", "brief") else None), None, None
     mode = af.landing_mode(t.branch, t.primary or None)[0]  # with the repo, as the sweep's verdict reads it
     # `ship` is the keel's yes to merge, not a person at the keyboard: mode ask holds it too
     person = by in PERSON_BY and not os.environ.get("CLAUDE_UNATTENDED")
     if mode == "ask" and not person:
         return "mode ask — nothing lands by itself", mode, None
+    if by == "brief":
+        try:
+            return af.brief_held(t.primary, t.path, main_of(t)), mode, None
+        except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
+            return "the brief's held paths could not be read (%s)" % type(e).__name__, mode, None
     if by not in LAND_BY and rule != "M" and by != "ship":
         return None, mode, None
     if by == "ship":
@@ -1147,6 +1157,14 @@ def record(t, st, log_from, rc, why, notes):
             os.unlink(os.path.join(t.state_dir, common.AUTOFINISH_OVERRIDE))
         except OSError:
             pass
+        # the yes at the brief (S7) is used up the same way: left behind it would lift `autofinish: off`
+        # and the gates for every later tip of this branch, or a recreated one (landing review, finding 7);
+        # a chain relaunch keeps `--by brief` in its own record and needs no brief
+        if st.get("by") == "brief" and t.common:
+            try:
+                os.unlink(os.path.join(t.common, "claude", BRIEFS, urllib.parse.quote(t.branch, safe="") + ".json"))
+            except OSError:
+                pass
     first = lines[0] if lines else ""
     # `<iso> <outcome> <branch> <detail>`: the shape hooks/common.py's autofinished() parses, and
     # its phrase reads an empty launched detail as `#?` — never a `#None`
@@ -1425,7 +1443,7 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
     ap.add_argument("worktree")
     ap.add_argument("--rule", choices="ABCDELM", default="C")
-    ap.add_argument("--by", choices=("sweep", "override", "typed", "yolo", "dnd", "chain", "ship"), default="override")
+    ap.add_argument("--by", choices=("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship"), default="override")
     ap.add_argument("--merge", action="store_true",
                     help="carry the owner's /finish --merge into the run (--by override|typed, or ship with --digest)")
     ap.add_argument("--hold", action="store_true", help="stop at a ready PR whatever the mode: the keel's no (S6)")
@@ -1536,9 +1554,15 @@ def start(t, args):
     # would merge the answers yolo took where the yolo run stops at a held PR. Recorded as `yolo`,
     # so start_cmd, runner_by and the next chain relaunch all read it as one; CHAIN and the log's
     # `via=chain` say the tick started it.
-    by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in LAND_BY else args.by
+    # The same for a brief or a ship launch (the autofinish-exclude landing review, finding 5): recorded
+    # as `chain` it would pass landing() with no hold and bin/pr's re-judge would skip it, so a class-2
+    # diff held at the brief, or a ship the keel held, would land on the tick's relaunch. Its hold, too,
+    # is carried: a relaunch never holds less than the run it continues.
+    by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in CHAIN_KEEPS else args.by
     via = " via=chain" if args.by == "chain" else ""
     hold, mode, eff = landing(t, by, args.rule)
+    if args.by == "chain" and not hold and (prev or {}).get("hold"):
+        hold = prev["hold"]
     # the keel's no (S6): a mode that would merge is not asked, and a later launch of this worktree —
     # the sweep's retry of a held run that died starts `--by sweep`, no --hold — keeps it. Its own key,
     # not the text of `hold`: a launch that another rule held first (mode ask) records that rule's

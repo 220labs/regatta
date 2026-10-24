@@ -17,6 +17,12 @@
   `clock-scripts` defaults to the modules' own script jobs (`dev.regatta.autofinish`, `.helm.ask-poll`,
   `.plumb.crew-report`), so a Mac with no overlay no longer fails check on its own upkeep; a peer's
   `launchctl` honours `CLOCK_LAUNCHCTL`, and the suite's fixture is `buildbox`.
+- The yes at the brief after its landing review (autofinish-exclude, 2026-10-24): `brief_held` holds a
+  binary, an unreadable or empty diff and `.github/workflows/`; the brief is used up when its run ends; a
+  full name off the `claude/<host>/<date>-<topic>` shape, or whose topic a worktree carries, is refused,
+  and in a session the typed `/autofinish` must name it; `runner_by` starts `override` only while the
+  worktree's marker reads, else `brief`. A chain relaunch stays a brief or ship launch and keeps its hold.
+
 - An unattended `/finish` is allowed one rule per tool the finish skill names in the regatta main
   checkout (`FINISH_TOOLS`), and dispatch denies `regatta pr ready` and `regatta pr merge` beside
   `bin/pr` and `libexec/pr` (B14b, 2026-10-23). rc-hosts finds `claude-host.c` in the overlay's
@@ -60,6 +66,12 @@
   a landed predecessor from sync's `refs/archive/…`, stops at the first stranger and reports before it
   saves; the fetch keeps a caller's ssh command; and a new block branch starts from the origin/<main> the
   pass fetched when local main is behind it, tracking nothing.
+- The yes at the brief (autofinish-exclude S7, D2-C, 2026-10-23): `autofinish override <claude/* branch>`
+  for a branch no worktree carries yet writes `<common git dir>/claude/autofinish-briefs/<branch>.json`
+  (refused unattended and outside a typed `/autofinish`, as the override; `now` refused). A worktree on
+  that branch is judged by rule C and started `--by brief`; `autofinish-run`'s `landing()` holds it at a
+  ready PR on `brief_held`: the launcher's gates, `in_place`, `.claude/workflow.json` and the base's
+  `autofinish_leaks` (class 2; absent, every listed path). `override off` removes it.
 - The yard's relays and landing call (skipper-resilience S6, 2026-10-22). A `skipper: scope` ship's
   Orca question is hailed to the scope's skipper while it holds the ship's lease (`hail <session> --kind
   ask --when idle --no-file`, its Talk page as `HAIL_SPACE`), in place of S5's Talk relay: a pointer naming
