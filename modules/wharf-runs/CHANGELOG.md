@@ -12,6 +12,11 @@
   test_dispatch checks. The same evening the build Mac got a second CI runner instance for this
   repo, installed by hand with ci-provider's recipe (a verb for a second instance is owed): the one
   runner was the queue every landing waited in.
+- `clock`, `yard-node`, `node/` and their suites are scrubbed, ready to list when they are (the
+  shareable run, 2026-10-23). `clock`'s
+  `clock-scripts` defaults to the modules' own script jobs (`dev.regatta.autofinish`, `.helm.ask-poll`,
+  `.plumb.crew-report`), so a Mac with no overlay no longer fails check on its own upkeep; a peer's
+  `launchctl` honours `CLOCK_LAUNCHCTL`, and the suite's fixture is `buildbox`.
 - An unattended `/finish` is allowed one rule per tool the finish skill names in the regatta main
   checkout (`FINISH_TOOLS`), and dispatch denies `regatta pr ready` and `regatta pr merge` beside
   `bin/pr` and `libexec/pr` (B14b, 2026-10-23). rc-hosts finds `claude-host.c` in the overlay's

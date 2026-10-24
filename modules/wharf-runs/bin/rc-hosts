@@ -1328,7 +1328,8 @@ def automations(on):
     copy is OUTSIDE, counted once ready as a plist's is. A line naming no path is a `--` note: the
     run's PATH picks the script. Returns the count; Orca unread is a note, never a failure. Notes are
     tagged `note`, never `--`: the overlay's bootstrap.sh --check counts each `  --  ` line as a
-    LaunchAgent pending. No clock beside this file (the public twin, until its scrub): nothing to say."""
+    LaunchAgent pending. No clock beside this file (the public twin: clock is not yet public):
+    nothing to say."""
     if not (BIN / "clock").is_file():
         return 0
     try:

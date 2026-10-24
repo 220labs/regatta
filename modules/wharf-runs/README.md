@@ -25,8 +25,6 @@ through `common.tool()`: wharf (a hard edge: `branches`, `checkpoint`, `session_
 plumb's `tier_check`, lighthouse's `account` and the project-management tools `ask`, `helm` and
 `helmlib` (absent: a run's prompt drops the ask lines, `wharf check` refuses). Which Mac is which,
 who the owner is and where an overlay lives are config, below; the code names none of them.
-`yard-node`, its `node/` templates and their suite (the yard node's S2), and `clock` with its suite
-(knowledge-layers S7) are private until a scrub of their own (off `.helloworld/allowlist.txt`).
 
 ## Install
 

@@ -3,7 +3,7 @@
 # usage-report's (with every plumb file's no-peer cases) and interruptions', then the benches' own
 # tests (G37). Every suite writes its own config dir and names no overlay (the plumb scrub,
 # 2026-10-22), so the Macs, CI and the public twin run the same cases. A case whose peer is a module
-# this copy lacks (wharf and keel are private until their scrubs) is skipped in one line. A core
+# this copy lacks (an install of plumb alone) is skipped in one line. A core
 # that refuses to load fails.
 #   bash modules/plumb/tests/check.sh
 set -u

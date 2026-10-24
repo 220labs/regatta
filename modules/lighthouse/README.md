@@ -119,12 +119,11 @@ as a GitHub issue, and with the `telegram` sink each form send, chat hand-off or
 site's address opens a topic in the people's Telegram group (a chat hand-off files the issue only
 when the visitor left an address), where their reply goes back to the visitor in the chat or by
 mail. A visitor who asks the bot for a person is handed over the same way. `bin/beacon` builds, deploys and reads it; it needs `helloworld`,
-whose word list scans what it builds. beacon is private until its scrub: its chart is
-`beacon/README.md`, and none of its files is in the public twin yet.
+whose word list scans what it builds. Its chart is `beacon/README.md`.
 
 ## deadman — the switch for the Macs nobody watches
 
 A Mac that runs unattended work cannot report its own death. deadman is one Cloudflare Worker on
 the free plan that each such Mac pings every few minutes; one that goes quiet past a grace becomes
 a GitHub issue that mentions its owner, closed again by its next ping, with a mail as the fallback
-when GitHub refuses the token. Private until its scrub, as beacon: its chart is `deadman/README.md`.
+when GitHub refuses the token. Its chart is `deadman/README.md`.
