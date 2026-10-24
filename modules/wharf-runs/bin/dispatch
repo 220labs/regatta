@@ -579,37 +579,49 @@ case "${DISPATCH_DEPTH:-}" in ''|*[!0-9]*) d0=0;; *) d0=$DISPATCH_DEPTH;; esac
 if [ -n "${DISPATCH_LABEL:-}" ]; then depth=$(( d0 > 0 ? d0 : 1 )); else depth=$((d0 + 1)); fi
 maxdepth=${DISPATCH_MAX_DEPTH:-5}
 # skipper-modes S1: the run's mode at fire time (header, --mode): a `helm mode --branch` on this branch
-# first (helmlib.branch_override, with the repo: the lowering verb for a run with no ship, which the
-# landing already read and fire time did not — follow-ups item 5), then plan.json's task, then its ship
-# (both on this Mac only), the plist's DISPATCH_MODE a hint, the repo's scope, `default` —
-# helmlib.task_mode, the one reader. Not branch_mode whole: its newest run record may be an earlier
-# step's (a --next drops yolo per step). Without helm here, the hint or `default`. Into the session's
-# environment and the record.
-resolve_mode() {
-  local out
-  out=$(python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" "$branch" <<'PY' 2>/dev/null
+# (helmlib.branch_override, with the repo: the lowering verb for a run with no ship — follow-ups item 5)
+# under plan.json's task, then its ship (both on this Mac only; a ship's mode is a ceiling), the plist's
+# DISPATCH_MODE a hint, the repo's scope, `default` — helmlib.fire_mode, the ladder's one reader, which
+# mode_now asks again at the launch (the follow-ups' landing review, item 8). Not branch_mode whole: its
+# newest run record may be an earlier step's (a --next drops yolo per step). Without helm here, the hint
+# or `default`. Into the session's environment and the record — bar a mode read while repos.json is torn
+# (helmlib.torn_read): that `ask` is this run's alone, so no DISPATCH_MODE goes on, and the record says
+# `mode_unread` (a sent task, no mode), and the mode heals with the registry (item 6). A torn read
+# happens only with no hint: task_mode reads a hint before the scope (the second landing review).
+read_mode() {   # HINT — "<torn 0|1> <mode>" (torn first: an empty mode must not shift the fields)
+  python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$1" "$branch" <<'PY' 2>/dev/null || echo "0 $1"
 import sys
 sys.path.insert(0, sys.argv[1])
 import common
 p = common.tool("helmlib.py")
 if not p:
-    print(sys.argv[5] or "default"); sys.exit()
+    print(0, sys.argv[5]); sys.exit()
 sys.path.insert(0, str(p.parent))
 import helmlib
-# fire_mode: the branch entry under the ship's mode, a ceiling (the follow-ups' landing review); a helmlib
-# from before it reads the entry first, as item 5 did
+# a helmlib out of step with this file (a peer's, an older checkout's) reads as it can: fire_mode, else
+# the entry before task_mode as item 5 did; torn_read, else no tear — never the bare hint of a crash
+# (the second landing review)
 if hasattr(helmlib, "fire_mode"):
-    print(helmlib.fire_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None, sys.argv[6])[0])
+    m = helmlib.fire_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None, sys.argv[6])
 else:
     over = getattr(helmlib, "branch_override", lambda b, r: None)(sys.argv[6], sys.argv[4])
-    print((over or helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None))[0])
+    m = over or helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None)
+print(int(getattr(helmlib, "torn_read", lambda pair: False)(m)), m[0])
 PY
-) || out=""
+}
+mode_torn=0
+resolve_mode() {
+  local out
+  read -r mode_torn out < <(read_mode "$mode")
   mode="${out:-${mode:-default}}"
   # plan.json wins both ways: a yolo hint changed to dnd is no yolo run, a mode changed to yolo is one
   if [ "$mode" = yolo ]; then yolo=1; else yolo=0; fi
-  chain+=(DISPATCH_MODE="$mode")
-  echo "== mode $mode"
+  if [ "$mode_torn" = 1 ]; then
+    echo "== mode $mode (repos.json is unreadable: ask for this run only, kept nowhere)"
+  else
+    chain+=(DISPATCH_MODE="$mode")
+    echo "== mode $mode"
+  fi
 }
 # Refusals say what to do instead. `pickup next` is the hand-over only in a repo dispatch refuses
 # (D1, 2026-10-05); here the step ends naming what it waits on (the overlay's working rules).
@@ -854,6 +866,30 @@ PY
   [ "$?" = 3 ] && return 3
   return 0
 }
+# A `--mode`/`--yolo` given here is a newer word on this branch than a `helm mode --branch` entry set
+# before it: once the job is scheduled, the entry is replaced by this mode (helmlib.yield_branch_entry),
+# so the last writer wins without a reader comparing the entry's ts with a plist's (the follow-ups'
+# landing review, item 7). Replaced, not dropped, and only after every refusal: a drop let the branch's
+# older run record read through until the run fired, and stayed dropped when a later check refused (the
+# second landing review). It passed the raise check above against that entry, so an unattended caller
+# writes only a mode it may lower to. A later `helm mode --branch` is newer again. Never fails the schedule.
+branch_entry_yield() {
+  { [ "$mode_given" = 1 ] || [ "$yolo" = 1 ]; } && [ "$dry" = 0 ] && [ "$probe" = 0 ] && [ -n "$mode" ] || return 0
+  python3 - "$core" "$branch" "$repo" "$mode" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+p = common.tool("helmlib.py")
+if p:
+    sys.path.insert(0, str(p.parent))
+    import helmlib
+    was = helmlib.yield_branch_entry(sys.argv[2], sys.argv[3], sys.argv[4]) if hasattr(helmlib, "yield_branch_entry") else None
+    if was:
+        print("dispatch: the helm mode --branch entry on %s (%s) gives way to --mode %s, the newer word"
+              % (sys.argv[2], was.get("mode"), sys.argv[4]))
+PY
+  return 0
+}
 if [ -n "$at" ]; then
   [ "$probe" = 1 ] || manager_env
   [ "$probe" = 1 ] || ship_mode >&2 || exit 2
@@ -951,6 +987,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
       ${DISPATCH_SSH:-ssh} "$peer" "$guard$cmd"; rc=$?
       # --next: scheduled is not started — the run's header in the peer's log, as here
       [ "$rc" = 0 ] && [ "$dry$probe" = 00 ] && mark_dispatched "$on"
+      [ "$rc" = 0 ] && branch_entry_yield >&2   # the peer replaces its own; this Mac's sweep reads this one
       [ "$rc" = 0 ] && [ "$next" = 1 ] && { confirm || rc=1; }
       # scheduled there: the session that asked is done here, and dispatch-rc tidy closes its Terminal
       # window once it goes idle (hooks/common.py HANDOFFS; the owner, 2026-10-08). A dry run hands nothing off,
@@ -1033,6 +1070,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   # bootout returns before the old job is gone (rc-hosts met "5: Input/output error" here): retry once
   "$LC" bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "gui/$(id -u)" "$plist"; } || { rm -f "$plist"; echo "dispatch: launchctl bootstrap failed (plist removed)" >&2; exit 1; }
   echo "scheduled $label for $at (host-local); log $log"
+  branch_entry_yield >&2
   [ "$probe" = 1 ] || mark_dispatched "$self_host"
   [ "$next" = 1 ] || exit 0
   confirm; exit $?
@@ -1191,7 +1229,11 @@ sess_args() {
 chain_record() {
   local a
   crec=(depth="$depth" model="$model" effort="$effort" yolo="$yolo")
-  [ -n "$mode" ] && [ "$start" = 0 ] && crec+=(task_mode="$mode")
+  if [ "$mode_torn" = 1 ]; then   # resolve_mode: a torn read marks a sent task with no mode
+    [ "$start" = 0 ] && crec+=(mode_unread=1)
+  else
+    [ -n "$mode" ] && [ "$start" = 0 ] && crec+=(task_mode="$mode")
+  fi
   [ -n "${brief:-}" ] && crec+=(brief="${brief#"$wt"/}")
   [ -n "${note:-}" ] && crec+=(note="$note")
   for a in ${chain[@]+"${chain[@]}"}; do
@@ -1429,24 +1471,11 @@ PY
 #     launch carries the mode read now. Whether it merges is autofinish-run's: it reads plan.json itself
 #     and holds the slice at a ready PR, never trusting this `--by`.
 AFRUN="${DISPATCH_AUTOFINISH_RUN:-$here/bin/autofinish-run}"   # the tests stand one in
-mode_now() {   # the run's mode at this moment, helmlib.task_mode as resolve_mode reads it; the start's without helm
-  python3 - "$core" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}" "$topic" "$repo" "$mode" "$branch" <<'PY' 2>/dev/null || echo "$mode"
-import sys
-sys.path.insert(0, sys.argv[1])
-import common
-p = common.tool("helmlib.py")
-if not p:
-    print(sys.argv[5]); sys.exit()
-sys.path.insert(0, str(p.parent))
-import helmlib
-# fire_mode: the branch entry under the ship's mode, a ceiling (the follow-ups' landing review); a helmlib
-# from before it reads the entry first, as item 5 did
-if hasattr(helmlib, "fire_mode"):
-    print(helmlib.fire_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None, sys.argv[6])[0])
-else:
-    over = getattr(helmlib, "branch_override", lambda b, r: None)(sys.argv[6], sys.argv[4])
-    print((over or helmlib.task_mode(sys.argv[2] or None, sys.argv[3], sys.argv[4], sys.argv[5] or None))[0])
-PY
+mode_now() {   # the run's mode at this moment: read_mode, as resolve_mode read it at the start (a torn read is ask)
+  local torn m
+  # torn at the start: there was no hint (resolve_mode), and its `ask` is no hint either
+  read -r torn m < <(read_mode "$([ "$mode_torn" = 1 ] || echo "$mode")")
+  echo "$m"
 }
 yolo_launch() {   # RC — the build run's exit
   { [ "$yolo" = 1 ] || [ "$mode" = dnd ]; } || return 0
@@ -1537,14 +1566,46 @@ if o:
     print("%s %s" % (sys.argv[1], ",".join(o)))' "$f"
   done)
   if [ -n "$open" ]; then echo "== $m: no launch — open for $who: ${open//$'\n'/; }"; return 0; fi
-  echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $m"
+  # The sweep's rule M takes a deployed branch only with a `taken` doc (bin/autofinish verdict(): rule
+  # L's /finish would read its taken answers as open, and its held slice never applied); without one,
+  # rule L launches it at once, `--by sweep`: live ahead of main is drift, and dnd's slice would hold a
+  # physical repo's deploy at a ready PR (the follow-ups' landing review, item 1 — picked over saying dnd
+  # trades L for the slice: the sweep already chose L, and one rule for both starts is one rule to read).
+  # A taken doc is the sweep's own reading: autofinish's mode_asks over the asks lines the branch adds
+  # (keel memo's `taken` verdict), never a second test of its own (the second landing review). An asks
+  # line it cannot settle keeps rule M, the held one.
+  local rule=M by="$m" live
+  live=$(AUTOFINISH_MEMO="${p_keel:-${AUTOFINISH_MEMO:-}}" python3 - "$here" "$wt" "origin/$base" "$core" <<'PY' 2>/dev/null
+import os, sys
+sys.path.insert(0, sys.argv[4])
+from importlib.machinery import SourceFileLoader
+af = SourceFileLoader("autofinish", os.path.join(sys.argv[1], "bin", "autofinish")).load_module()
+wt = sys.argv[2]
+base = af.git(wt, "merge-base", sys.argv[3], "HEAD")
+live = (af.deployed_on(wt, base, "HEAD")[0] or "") if base else ""
+if live:
+    status, _, _, added, unparsed = af.diff_facts(wt, base, "HEAD")
+    # the run's own seed under docs/handoff/ is no ask here: this launch's /finish takes it (the sweep
+    # never meets one, it skips a branch that still adds a seed)
+    asks = [h for p in sorted(status) if not p.startswith(af.HANDOFF) for h in af.asks_in(p, added.get(p, []), status[p])]
+    skip, taken = af.mode_asks(wt, asks, status, False) if asks else (None, [])
+    if skip or taken or unparsed:
+        live = ""   # rule M: a taken doc, or asks it cannot settle
+print(live)
+PY
+)
+  if [ -n "$live" ]; then
+    rule=L by=sweep
+    echo "== $m: deployed ($live) with no taken doc — rule L's start, as the sweep's: at once, --by sweep"
+  fi
+  echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $by"
   # autofinish-run returns at once: its child is double-forked and setsid, out of this job's
   # process group, which launchd ends with the job: probed 2026-10-08 on the build Mac, a setsid grandchild
   # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
   # without the build's login (pick_account exported it): autofinish-run picks its own, fresh, as
   # the sweep's start_runner does — a build on a second login must not run on it past its ceiling (review, 2026-10-08)
   env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
-    "$AFRUN" "$wt" --rule M --by "$m" 2>&1
+    "$AFRUN" "$wt" --rule "$rule" --by "$by" 2>&1
   echo "== $m: autofinish-run exit $?"
 }
 

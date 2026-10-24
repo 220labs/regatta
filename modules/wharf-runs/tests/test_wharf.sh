@@ -490,6 +490,35 @@ PY
 mkdir -p "$T/wplans/mr"; echo '{"id": "mr", "tasks": {}, "mode_refused": {"mode": "dnd", "why": "x", "ts": 1}}' > "$T/wplans/mr/plan.json"
 check "$(env -u CLAUDE_UNATTENDED PLANS_DIR="$T/wplans" bash -c "$(declare -f wm9); B='$B' wm9")" "True None" \
   "  the helm tick's --once apply (launchd, no CLAUDE_UNATTENDED) is no person: refused; a ship that refused once never records it (landing review 9)"
+# a refusal judged while repos.json is torn (the ship reads ask) is kept nowhere: the next apply judges again
+wmt() { python3 - "$B/wharf" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_modt", sys.argv[1]).load_module()
+bp = {"meta": {"mode": "default", "repo": "/x/nowhere"}}
+print(bool(w.bp_mode_refusal("nosuchplan", bp)), w.bp_mode_torn("nosuchplan", bp))
+PY
+}
+printf '{"repos": {"x": ' > "$T/torn-repos.json"; printf '{"repos": {}, "scopes": {}}\n' > "$T/whole-repos.json"
+check "$(CLAUDE_UNATTENDED=dispatch CLAUDE_REPOS_JSON="$T/torn-repos.json" bash -c "$(declare -f wmt); B='$B' wmt")" "True True" \
+  "a torn registry: the ship reads ask, default over it is refused, and bp_mode_torn says not to keep it (the follow-ups' landing review)"
+check "$(CLAUDE_UNATTENDED=dispatch CLAUDE_REPOS_JSON="$T/whole-repos.json" bash -c "$(declare -f wmt); B='$B' wmt")" "False False" \
+  "  the registry whole again: no refusal, nothing torn"
+# the second landing review: the apply judges both from one read — a registry that heals between two
+# reads must not keep a refusal judged against the torn ask
+wmj() { python3 - "$B/wharf" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_modj", sys.argv[1]).load_module()
+bp = {"meta": {"mode": "default", "repo": "/x/nowhere"}}
+reads = iter([("ask", w.helmlib.TORN_WHERE), ("default", "the default")])
+w.helmlib.task_mode = lambda *a, **k: next(reads)
+why, torn = w.bp_mode_judge("nosuchplan", bp)
+print(bool(why), torn)
+PY
+}
+check "$(CLAUDE_UNATTENDED=dispatch bash -c "$(declare -f wmj); B='$B' wmj")" "True True" \
+  "  bp_mode_judge reads the ship's mode once: torn then healed, the refusal is still judged torn"
 # the refusal an apply writes reaches plan.json: Ship.save reloads the plan and copies back only what it
 # names, and dropped mode_refused, so the next tick recorded the run's mode (the follow-ups' landing review)
 mkdir -p "$T/wplans/ms"; echo '{"id": "ms", "tasks": {}}' > "$T/wplans/ms/plan.json"

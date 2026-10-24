@@ -499,6 +499,40 @@ def landing_mode(branch, repo=None):
         return None, f"the mode is unreadable ({type(e).__name__})"
 
 
+def mode_unreadable(why):
+    """True when landing_mode's `why` says the mode could not be read (helm absent, a reader that
+    raised) — a hold, never "no sent task" (held_slice's rule: what it cannot read is a hold)."""
+    return str(why).startswith("the mode is unreadable") or why == "helm is not installed here"
+
+
+def effective_mode(by, mode, standing_yes=False, recorded=False, unreadable=False):
+    """The mode a mode or ship launch is judged by (held_slice's `mode`) — one rule for autofinish-run's
+    landing() at the start and bin/pr's re-check at ready and merge (follow-ups' landing review, item 8).
+    MODE is the branch's mode now (landing_mode), None for none.
+      - unreadable: None, a hold;
+      - a ship launch (the keel's yes): a dnd, yolo or ask mode is the mode; a ship with no landing mode —
+        branch_mode reads its task `default`, never None — is judged `yolo` at the start, the yes having
+        been given to a blueprint (S6's finish review), and at the re-check by what the start recorded;
+      - any other: a dnd or yolo mode is the mode; none at all is E12's standing yes (`yolo`) at the start
+        when STANDING_YES (a `--by yolo` from a person in a `"merge": "auto"` repo; landing review 3, 4c),
+        and at the re-check what the start recorded; any other mode is itself, which holds.
+    RECORDED: False at the start; at the re-check the start's `eff_mode` (None for a record from before
+    the key, which holds) — never a bare `by: yolo`, which any caller may type (follow-ups item 4)."""
+    if unreadable:
+        return None
+    if by == "ship":
+        if mode in LAND_MODES or mode == "ask":
+            return mode
+        return "yolo" if recorded is False else recorded
+    if mode in LAND_MODES:
+        return mode
+    if mode is None:
+        if recorded is not False:
+            return recorded
+        return "yolo" if by == "yolo" and standing_yes else None
+    return mode
+
+
 def physical_line(repo, main):
     """The contract's `physical:` value on origin/<main> (AGENTS.md, else CLAUDE.md), or None."""
     for name in ("AGENTS.md", "CLAUDE.md"):

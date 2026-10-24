@@ -462,13 +462,35 @@ def bp_mode(pid, bp):
     return None if bp_mode_refusal(pid, bp) else bp["meta"].get("mode")
 
 
-def bp_mode_refusal(pid, bp, once=False):
+def bp_ship_mode(pid, bp):
+    """The ship's mode now, task_mode's (mode, where) pair — read once per judgement."""
+    return helmlib.task_mode(pid, None, str(repo_dir(bp)))
+
+
+def bp_mode_refusal(pid, bp, once=False, read=None):
     """The refusal's words when recording the blueprint's `mode:` would raise the ship's mode for this
     caller, else None. `once` (the helm tick's `wharf apply --once --all`, from launchd with no
-    CLAUDE_UNATTENDED) counts as unattended: no person runs it (landing review 9)."""
+    CLAUDE_UNATTENDED) counts as unattended: no person runs it (landing review 9). `read`: the ship's
+    mode as bp_ship_mode read it, else read here."""
     m = bp["meta"].get("mode")
     env = dict(os.environ, CLAUDE_UNATTENDED=os.environ.get("CLAUDE_UNATTENDED") or "wharf apply --once") if once else None
-    return m and helmlib.raise_refusal(helmlib.task_mode(pid, None, str(repo_dir(bp)))[0], m, env)
+    return m and helmlib.raise_refusal((read or bp_ship_mode(pid, bp))[0], m, env)
+
+
+def bp_mode_torn(pid, bp, read=None):
+    """True when the ship's mode reads `ask` only because repos.json is torn (helmlib.torn_read): a
+    refusal judged against that ask is this apply's alone, never kept in `mode_refused`, so the next
+    apply judges the blueprint's mode again once the registry reads (the follow-ups' landing review)."""
+    torn_read = getattr(helmlib, "torn_read", None)
+    return bool(torn_read and torn_read(read or bp_ship_mode(pid, bp)))
+
+
+def bp_mode_judge(pid, bp, once=False):
+    """(refusal or None, torn) from one read of the ship's mode: two reads let a registry that healed
+    between them keep, in `mode_refused`, a refusal judged against the torn `ask` (the second landing
+    review)."""
+    read = bp_ship_mode(pid, bp)
+    return bp_mode_refusal(pid, bp, once, read), bp_mode_torn(pid, bp, read)
 
 
 def change_text(rec, d, sd):
@@ -2436,8 +2458,11 @@ def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, lau
             # An unattended or --once apply never records a raise (S3b), and its refusal is kept in
             # plan.json: the next tick's apply, from launchd with no CLAUDE_UNATTENDED, would otherwise
             # record the run-written mode (landing review 9)
-            why = bp_mode_refusal(pid, bp, once)
-            if why:
+            why, torn = bp_mode_judge(pid, bp, once)
+            if why and torn:
+                ship.did.append("mode %s not recorded now: repos.json is unreadable, so the ship reads ask, and a "
+                                "refusal against that is kept nowhere — the next apply judges it again" % bp["meta"]["mode"])
+            elif why:
                 ship.p["mode_refused"] = ship.refused_now = {"mode": bp["meta"]["mode"], "why": why, "ts": helmlib.now()}
                 ship.save()
                 ship.did.append("mode %s not recorded, and never by a later apply (`helm mode %s %s` records it): %s"
