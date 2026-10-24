@@ -167,8 +167,9 @@ writes it into the record's banner at launch, where bin/docs-index carries it in
 `review_status`.
 
 Renamed from memo-form on 2026-09-29 (docs/feedback-2026-09-29.md, D1; `/feedback` turned out to be Claude Code's own command, so `memo`). Stdlib only,
-Python 3.9. The page is self-contained: no fonts, no CDN; one library, Mermaid, vendored and pinned
-(vendor/mermaid/), inlined only into a page whose doc draws a diagram (entry S13, 2026-10-15).
+Python 3.9. The page is self-contained: no fonts, no CDN; one library, Mermaid, pinned by version and
+sha256, fetched once into the cache (vendor/mermaid/README.md) and inlined only into a page whose doc
+draws a diagram (entry S13, 2026-10-15; fetched, not vendored, since 2026-10-23).
 """
 import argparse
 import datetime as dt
@@ -1844,12 +1845,37 @@ def render_md(lines, base=None, shift=0, ctx=None, pick=False):
 
 # ----------------------------------------------------------------------------- the page
 
-# Mermaid (shape D2-B, entry S13, 2026-10-15): one pinned mermaid.min.js vendored in the repo,
-# inlined only into a page whose doc has a ```mermaid fence — the form and the spacesheep page then
-# draw the diagram offline, and every other page stays as small as before. A file that does not
-# match its pin is never inlined: the page shows the diagram's source (vendor/mermaid/README.md).
-MERMAID_JS = Path(__file__).resolve().parent.parent / "vendor" / "mermaid" / "mermaid.min.js"
+# Mermaid (shape D2-B, entry S13, 2026-10-15): one pinned mermaid.min.js, inlined only into a page
+# whose doc has a ```mermaid fence. Fetched, never vendored (the shareable scrub, 2026-10-23): the
+# publish gate's word list matches inside the minified code, and every module file targets going
+# public (root AGENTS.md, Rules), so the repo carries the version and the hash, and the file comes
+# from the npm CDNs once, into the cache
+# (KEEL_CACHE_DIR, else ~/Library/Caches/keel on a Mac, $XDG_CACHE_HOME/keel or ~/.cache/keel
+# elsewhere). Both CDNs served the pinned bytes (read back 2026-10-23). A file that does not match the
+# hash is never inlined or kept: the page shows the diagram's source (vendor/mermaid/README.md).
+# KEEL_MERMAID_URL names one source instead (the suite's file:// stand-in); KEEL_MERMAID_FETCH=0 never
+# fetches. The fetch runs inside callers with short deadlines (the checkpoint kills `sheep --hook` at
+# 30 s, `keel line` waits 8 s for serve), hence the short timeout and, after a failed fetch, a marker
+# beside the cache that holds every process off for MERMAID_RETRY (the landing review, 2026-10-23).
+MERMAID_VERSION = "11.17.2"
 MERMAID_SHA256 = "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"  # 11.17.2
+MERMAID_URLS = tuple(u % MERMAID_VERSION for u in ("https://cdn.jsdelivr.net/npm/mermaid@%s/dist/mermaid.min.js",
+                                                   "https://unpkg.com/mermaid@%s/dist/mermaid.min.js"))
+MERMAID_MAX = 8 * 1024 * 1024
+MERMAID_TIMEOUT = 8
+MERMAID_RETRY = 600
+
+
+def _keel_cache():
+    if os.environ.get("KEEL_CACHE_DIR"):
+        return Path(os.environ["KEEL_CACHE_DIR"])
+    home = Path(os.environ.get("HOME") or Path.home())
+    if sys.platform == "darwin":
+        return home / "Library/Caches/keel"
+    return Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache") / "keel"
+
+
+MERMAID_JS = _keel_cache() / ("mermaid-%s.min.js" % MERMAID_VERSION)
 MERMAID_FENCE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*mermaid\b", re.I)
 MERMAID_RUN = ('(function(){try{var dark=window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches'
                '&&document.documentElement.getAttribute("data-theme")!=="light";'
@@ -1859,25 +1885,116 @@ MERMAID_RUN = ('(function(){try{var dark=window.matchMedia&&matchMedia("(prefers
 _MERMAID = []
 
 
-def mermaid_source():
-    """The vendored script, once per process, or None (with why on stderr) when it is missing or not
-    the pinned build."""
-    if not _MERMAID:
-        import hashlib
+def mermaid_fetch():
+    """Fetch the pinned build: (bytes, None) or (None, why). The bytes are written to MERMAID_JS only
+    when they match MERMAID_SHA256, by a rename, so a reader never sees half a file; a cache that cannot
+    be written still returns them (the page draws, the next build fetches again). All sources together
+    get MERMAID_TIMEOUT seconds, read in chunks against that deadline: urlopen's timeout bounds each
+    socket call, not the download, and a trickle under it would outlast the caller (the B-gate review,
+    2026-10-24)."""
+    import hashlib
+    import http.client
+    import time
+    import urllib.request
+    whys = []
+    deadline = time.monotonic() + MERMAID_TIMEOUT
+    for url in ([os.environ["KEEL_MERMAID_URL"]] if os.environ.get("KEEL_MERMAID_URL") else MERMAID_URLS):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            whys.append("%s: no time left of %d s" % (url, MERMAID_TIMEOUT))
+            continue
         try:
-            raw = MERMAID_JS.read_bytes()
-        except OSError as e:
-            print("keel: no %s (%s) — diagrams show as source" % (MERMAID_JS, e.strerror), file=sys.stderr)
-            _MERMAID.append(None)
-            return None
+            with urllib.request.urlopen(url, timeout=left) as r:
+                chunks, size = [], 0
+                while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("not done in %d s" % MERMAID_TIMEOUT)
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MERMAID_MAX:
+                        break
+                raw = b"".join(chunks)
+        except (OSError, ValueError, http.client.HTTPException) as e:  # IncompleteRead is no OSError
+            whys.append("%s: %s" % (url, getattr(e, "reason", None) or str(e) or type(e).__name__))
+            continue
         got = hashlib.sha256(raw).hexdigest()
         if got != MERMAID_SHA256:
-            print("keel: %s is not the pinned build (sha256 %s…, pin %s…) — diagrams show as source"
-                  % (MERMAID_JS, got[:12], MERMAID_SHA256[:12]), file=sys.stderr)
-            _MERMAID.append(None)
-        else:
-            # `</script` inside the inlined text would end the tag early; the pinned build has none
-            _MERMAID.append(raw.decode("utf-8").replace("</script", "<\\/script"))
+            whys.append("%s: sha256 %s…, pin %s…" % (url, got[:12], MERMAID_SHA256[:12]))
+            continue
+        tmp = MERMAID_JS.with_name(MERMAID_JS.name + ".%d.tmp" % os.getpid())
+        try:
+            MERMAID_JS.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(raw)
+            os.replace(tmp, MERMAID_JS)
+        except OSError as e:
+            print("keel: %s not cached (%s) — inlined this once" % (MERMAID_JS, e.strerror), file=sys.stderr)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return raw, None
+    return None, "; ".join(whys)
+
+
+def mermaid_source():
+    """The pinned script, or None (with why on stderr): read from the cache, fetched there first when
+    it is missing or not the pinned build, unless a fetch failed in the last MERMAID_RETRY seconds. A
+    found script is kept for the process; a None only for MERMAID_RETRY, so the long-lived `keel serve`
+    draws diagrams once the network is back (the B-gate review, 2026-10-24)."""
+    import time
+    if _MERMAID and (_MERMAID[0] is not None or time.time() - _MERMAID[1] < MERMAID_RETRY):
+        return _MERMAID[0]
+    del _MERMAID[:]
+    import hashlib
+    try:
+        raw = MERMAID_JS.read_bytes()
+    except OSError:
+        raw = None
+    stale = raw is not None and hashlib.sha256(raw).hexdigest() != MERMAID_SHA256
+    if stale:
+        raw = None
+    if raw is None:
+        failed = MERMAID_JS.with_name(MERMAID_JS.name + ".failed")
+        try:
+            recent = time.time() - failed.stat().st_mtime < MERMAID_RETRY
+        except OSError:
+            recent = False
+        why = None
+        if os.environ.get("KEEL_MERMAID_FETCH") == "0":
+            why = "KEEL_MERMAID_FETCH=0"
+        elif recent:
+            why = "a fetch failed under %d min ago, %s" % (MERMAID_RETRY // 60, failed)
+        if why is None:
+            # the marker goes down before the fetch and comes off after a good one: a caller killed
+            # mid-fetch (the checkpoint's 30 s) still holds the next processes off
+            try:
+                failed.parent.mkdir(parents=True, exist_ok=True)
+                failed.write_text("fetching, pid %d\n" % os.getpid())
+            except OSError:
+                pass
+            raw, said = mermaid_fetch()
+            if raw is None:
+                why = "Mermaid %s not fetched (%s)" % (MERMAID_VERSION, said)
+                try:
+                    failed.write_text(said + "\n")
+                except OSError:
+                    pass
+            else:
+                try:
+                    failed.unlink()
+                except OSError:
+                    pass
+        if raw is None:
+            print("keel: %s%s — diagrams show as source"
+                  % ("%s is not the pinned build; " % MERMAID_JS if stale else "no %s; " % MERMAID_JS, why),
+                  file=sys.stderr)
+            _MERMAID[:] = [None, time.time()]
+            return None
+    # `</script` inside the inlined text would end the tag early; the pinned build has none
+    _MERMAID[:] = [raw.decode("utf-8").replace("</script", "<\\/script"), 0]
     return _MERMAID[0]
 
 

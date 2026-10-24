@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Mermaid is fetched, not vendored: the repo keeps the version and sha256, and the first page with a
+  diagram fetches `mermaid.min.js` from jsDelivr (else unpkg) into `~/Library/Caches/keel` (`~/.cache/keel`
+  off a Mac), kept only when it matches the pin (`KEEL_CACHE_DIR`, `KEEL_MERMAID_URL`, `KEEL_MERMAID_FETCH=0`).
+  A fetch gets 8 s for all sources together; one under way or failed holds every process off for 10 minutes; an HTTP error mid-body shows
+  the source instead of a traceback; an unwritable cache still draws the page.
 - `sheep` names its main checkout's copy in messages and reaches the account registry's login dirs
   (an Orca profile) besides the default ones (B14b, 2026-10-23); keel, paste-paths and doc_answers name
   module paths, never the overlay's shims.
