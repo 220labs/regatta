@@ -403,9 +403,9 @@ def run_cap(s):
         busy = int(r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
-    # dispatch's own numbers (its max_runs; test_dispatch.sh checks the copy): 10 on a build box (a
+    # dispatch's own numbers (its max_runs; test_dispatch.sh checks the copy): 8 on a build box (a
     # host the laptop reaches over ssh, `wharf-runs/ssh`), 3 elsewhere, DISPATCH_MAX_RUNS over either
-    cap = int(os.environ.get("DISPATCH_MAX_RUNS") or (10 if helmlib.host() in helmlib.ssh_peers() else 3))
+    cap = int(os.environ.get("DISPATCH_MAX_RUNS") or (8 if helmlib.host() in helmlib.ssh_peers() else 3))
     return busy, cap
 
 

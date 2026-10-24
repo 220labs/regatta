@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
+  2026-10-23; wharf-runs' CHANGELOG says why).
 - `skipper-run` drops every `DISPATCH_*` variable by pattern: its fixed list had missed
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
   `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.

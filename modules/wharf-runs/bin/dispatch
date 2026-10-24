@@ -139,8 +139,8 @@
 #     DISPATCH_DEPTH travels in the plist and the session's environment;
 #   - `--next` from an unattended run is refused while the branch's newest brief is the very one
 #     that run started from (DISPATCH_BRIEF, the brief's blob): it would run the same step again;
-#   - a run is refused (not queued) when $max_runs other runs are busy — 10 on the dispatch
-#     host, 3 elsewhere (the owner, 2026-10-08, 2026-10-19, 2026-10-20), DISPATCH_MAX_RUNS over either; a
+#   - a run is refused (not queued) when $max_runs other runs are busy — 8 on the dispatch
+#     host, 3 elsewhere (the owner, 2026-10-08, 2026-10-19, 2026-10-20, 2026-10-23), DISPATCH_MAX_RUNS over either; a
 #     warm, idle run does not count (D1 of docs/dispatch-warm-hour-2026-10-08.md), nor one waiting at a prompt or a question
 #     (dispatch-rc parked(); the owner, 2026-10-08: "don't clog the pipeline"): a queue would need a waiter that
 #     outlives the scheduler, and a refusal shows at once in --next's confirm. A host whose memory is past
@@ -170,7 +170,7 @@
 #            scheduled on this Mac instead, at least 90 s out, through this Mac's own checks
 #            (`physical:`), and says so. Once the probe passed, the real call is made and its
 #            answer stands: a dropped connection after the peer scheduled can never put the branch
-#            on both hosts. A run the peer accepts and refuses at fire time (its cap of 10) is in
+#            on both hosts. A run the peer accepts and refuses at fire time (its cap of 8) is in
 #            the peer's log. --cancel with --on cancels there only; with no host, here and on the dispatch host.
 #            `--account bound` over ssh always carries that version guard (exit 3 without
 #            --fallback): the peer's checkout pulls main only at a session start (review 2026-10-10).
@@ -242,7 +242,7 @@
 # Mac's plan cache: it is the reset of the account signed in here, so state which account the
 # job will run under. Log: the path printed when scheduled (~/Library/Logs/claude-weekly/).
 # DISPATCH_NEXT_DELAY, _WAIT and _SETTLE time --next (seconds: start, give up, still running);
-# DISPATCH_HOST names the machine (the laptop gets the window; the dispatch host's run cap is 10); the tests replace commands with
+# DISPATCH_HOST names the machine (the laptop gets the window; the dispatch host's run cap is 8); the tests replace commands with
 # DISPATCH_SCREEN, _OPEN, _YABAI (and dispatch-rc's _POLL, _IDLE, _START_WAIT seconds),
 # DISPATCH_RCHOSTS bin/rc-hosts (asked whether claude-host may start the job and the claude: --launcher),
 # DISPATCH_CLAUDE the `claude` command and DISPATCH_LAUNCHCTL `launchctl`.
@@ -351,15 +351,17 @@ if [ -z "$dispatch_host" ] && [ -n "$peers" ]; then
   dh_note="dispatch: no wharf-runs/dispatch-host in the regatta config — taking $dispatch_host, the first host wharf-runs/ssh names"
 fi
 # Runs live at once before another is refused. The build Mac (10 cores, 16 GB, never sleeps, often
-# idle) takes 10; the laptop keeps 3, its own sessions share it (the owner, 2026-10-08: "increase
+# idle) takes 8; the laptop keeps 3, its own sessions share it (the owner, 2026-10-08: "increase
 # [the build Mac's] capacity to 5"; 2026-10-19, the regatta build at 5 runs left the build Mac at
 # load 6 on 10 cores while the laptop sat at 150: "bump [its] concurrent run to 8, see if it can
-# sustain that load"; 2026-10-20, "push [it] to 10 actually, it's going too slow"). So: 10 on the
+# sustain that load"; 2026-10-20, "push [it] to 10 actually, it's going too slow"; 2026-10-23, back
+# to 8: at 10 the build Mac sat at load 110-130 for hours (uptime that evening) with its CI runner
+# beside the runs, and every check there took twice its quiet time). So: 8 on the
 # dispatch host, 3 on any other Mac. DISPATCH_MAX_RUNS overrides either; DISPATCH_HOST is
 # machine()'s, for the tests.
 self_host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
 if [ -n "$dispatch_host" ] && [ "$(lc "$self_host")" = "$(lc "$dispatch_host")" ]; then
-  max_runs="${DISPATCH_MAX_RUNS:-10}"
+  max_runs="${DISPATCH_MAX_RUNS:-8}"
 else
   max_runs="${DISPATCH_MAX_RUNS:-3}"
 fi
