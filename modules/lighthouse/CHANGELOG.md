@@ -12,7 +12,18 @@
   per change of origin/main; `--dry-run` only prints. `replay` judges the last days' moves read-only
   (the always-on Mac, 2026-10-24: 0 of 59). The plist carries PATH, REGATTA_CONFIG and the HOOKWATCH_* seams.
 - `health` names hookwatch's pin and posts it once, whichever check it runs.
-
+- beacon is public (2026-10-24), after a publish-readiness review whose fixes land with it: the
+  Telegram webhook answers 200 to another chat once its secret matches (Telegram retries every
+  other reply); a `+token` mail reply counts against its sender's send limits; `build` refuses a
+  sitemap page whose host, as listed or after redirects, is not one of `origins`' (a site whose
+  apex redirects to `www.`, or back, lists both hosts), and with no word list anywhere warns and
+  scans for local paths only (an empty or broken list, a broken link at either default or an
+  unmounted config folder, is still refused); `deploy` refuses a `secrets_file` git tracks and a
+  public `sink.repo`; a `+token` reply from anyone but the visitor also counts against the
+  address's daily limit; the config refuses a `rest_at` outside 0 to 1, a `cap_usd` that is not a
+  positive finite number, an unknown `limits` key or a limit that is not
+  a positive whole number, and a `max_tokens` outside 1 to 4096; `status` warns, first, when
+  `sink.repo` is public. The README gains "Before the first deploy" and says what a hand-off keeps on the server.
 - `account doctor` reports the tenants file's own state (2026-10-23): a link that reads nothing with
   no copy (tenancy off), the last good copy in force and its age, a file that does not parse, a tenant
   whose `repos` match nothing or that has no enabled login, a label in two tenants' `logins`, and one no
