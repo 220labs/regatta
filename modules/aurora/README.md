@@ -29,9 +29,16 @@ prints for the skills:
 | `logs` | the night's logs | `$WEEKLY_LOG_DIR`, else `Library/Logs/claude-weekly` in the home folder |
 | `projects` | the projects folder | the core's `regatta/projects`, else `projects` in the home folder |
 
-Config of its own (listed in `config-keys`, so `regatta check` reports it): `aurora/skip-hosts`, the host names (the core's `host_name()`) the loop never
-runs on, one per line — two Macs each writing the week's dream in place conflict on push. Where
-an overlay is installed (the config dir's `regatta/overlay` marker) and the key is absent, the run refuses.
+Config of its own (listed in `config-keys`, so `regatta check` reports it): `aurora/host`, the one
+host (its name as the core's `host_name()` prints it, case-blind) the whole-night jobs run on —
+`weekly-run aurora`, `weekly-run sextant`, and sextant's own runner. Every other host skips with a
+line, and `install.sh --schedule` refuses there; a host that gets the overlay later never runs
+them by default (two hosts each writing the week's dream in place conflict on push). A scope's pass,
+`weekly-run aurora --scope <scope>`, runs on that scope's yard (the registry's `yard`), else on
+`aurora/host`; a registry that does not read refuses it. Where an overlay is installed (the config
+dir's `regatta/overlay` marker) and the key is absent, the run refuses. `aurora/skip-hosts`, the old
+deny-list (the hosts never to run on, one per line), is deprecated: read only while `aurora/host` is
+absent, with a line saying so.
 
 ## Peers
 

@@ -57,9 +57,21 @@ case "${1:-}" in
     fi
     vault=$(where vault)
     [ -n "$vault" ] && [ "$vault" != MISSING ] || { echo "aurora: no vault configured (atlas's atlas/vault key) — nothing to schedule" >&2; exit 1; }
-    # A host aurora/skip-hosts lists gets no job: weekly-run would only log its skip each night.
-    if "$here/bin/weekly-run" aurora "$vault" --dry-run 2>/dev/null | grep -q '^[0-9:]* skipped:'; then
-      echo "aurora: this host is in $cfg/aurora/skip-hosts — not loading the job (--remove unloads one loaded before)" >&2
+    # Only the host aurora/host names gets the job (weekly-run's host rule, which says why): elsewhere
+    # weekly-run would only log its skip each night, or its refusal (the key empty or unreadable).
+    # The rule's own line says which, so the dry run's first skip or refusal is quoted as it is. A dry
+    # run that says neither and plans no night (it crashed, or printed nothing) could not tell: that
+    # refuses too, with its exit code and last stderr line — a probe that could not tell never passes.
+    err=$(mktemp); rc=0
+    out=$("$here/bin/weekly-run" aurora "$vault" --dry-run 2>"$err") || rc=$?
+    why=$(tail -n 1 "$err"); rm -f "$err"
+    ln=$(printf '%s\n' "$out" | grep -E -m1 '^[0-9:]* (skipped|refused):' || true)
+    if [ -n "$ln" ]; then
+      echo "aurora: not loading the job on this host — ${ln#* } (--remove unloads one loaded before)" >&2
+      exit 1
+    fi
+    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q "the night's order"; then
+      echo "aurora: not loading the job — its dry run could not tell whether this host runs it (exit $rc${why:+: $why})" >&2
       exit 1
     fi
     logs=$(where logs)

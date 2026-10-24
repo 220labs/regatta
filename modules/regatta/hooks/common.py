@@ -787,8 +787,41 @@ AUTOMERGE_WAIT = 180  # s: a `check` takes about a minute; three is a slow runne
 AUTOMERGE_GRACE = 60  # s: PR readied → automerge.yml's run has armed it (it starts in seconds)
 
 
-def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAIT, poll=10, sleep=None):
+def required_contexts(slug, base, tok=None):
+    """The status contexts the base's protection requires (["check"] on a workflow repo); [] when none
+    or unreadable (no protection, or a token the rule is hidden from)."""
+    st, body = api("GET", f"/repos/{slug}/branches/{base}/protection/required_status_checks", tok=tok)
+    if st != 200 or not isinstance(body, dict):
+        return []
+    return [c for c in body.get("contexts") or [] if isinstance(c, str)]
+
+
+def check_state(slug, sha, contexts, tok=None):
+    """("success" | "failure" | "pending", why) for the newest non-skipped check run of each required
+    context on sha. A skipped run is a draft's (check.yml skips drafts, and GitHub counts it as passed:
+    automerge.yml's comment); it answers nothing. No run yet is pending: it starts seconds after a push."""
+    for ctx in contexts:
+        st, body = api("GET", f"/repos/{slug}/commits/{sha}/check-runs?check_name={ctx}&per_page=20", tok=tok)
+        runs = (body.get("check_runs") if st == 200 and isinstance(body, dict) else None) or []
+        run = next((r for r in runs if isinstance(r, dict) and r.get("conclusion") != "skipped"), None)
+        if run is None or run.get("status") != "completed":
+            return "pending", f"the required check `{ctx}` is still running on {sha[:8]}"
+        if run.get("conclusion") not in ("success", "neutral"):
+            return "failure", f"the required check `{ctx}` ended {run.get('conclusion')} on {sha[:8]}"
+    return "success", ""
+
+
+def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAIT, poll=10, sleep=None,
+                     head=None, contexts=None):
     """merge_pr, with a refusal read back before it counts — bin/pr merge's and sparks'.
+
+    With `head` (the PR's head sha) and `contexts` (required_contexts of the base), nothing is merged
+    until every required check has passed on that head: an admin's token (the laptop's) is not refused
+    by the protection, so without this the merge landed before CI ran (two PRs on 2026-10-23; the
+    check-scope landing review). A failed check refuses at once; a pending one is polled every `poll`
+    s up to `wait` s, a merge automerge made meanwhile counted, and then refused with "still running":
+    the caller reports that automerge lands it when the check passes (the check takes 40–90 min on a
+    loaded runner, past what a session's one call may wait).
 
     A repo with automerge.yml and a required `check`: a token that is no admin (a machine account's) is
     refused while the check runs, and automerge launches the PR when it passes, about a minute
@@ -803,6 +836,23 @@ def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAI
     read, retry and grace skipped; a `hold` that disarms an armed PR ends it too. Returns
     (ok, message), the message on a failure being the first refusal's."""
     sleep = sleep or time.sleep
+    waited = 0
+    if head and contexts:
+        while True:
+            state, why = check_state(slug, head, contexts, tok)
+            if state == "success":
+                break
+            if state == "failure":
+                return False, why
+            st, cur = api("GET", f"/repos/{slug}/pulls/{number}", tok=tok)
+            cur = cur if st == 200 and isinstance(cur, dict) else {}
+            if cur.get("merged_at"):
+                return True, "merged by automerge once its check passed"
+            if waited >= wait:
+                armed = "armed" if cur.get("auto_merge") else "not armed"
+                return False, f"{why} after {waited} s; automerge ({armed}) lands it when the check passes"
+            sleep(poll)
+            waited += poll
     ok, msg = merge_pr(slug, number, tok)
     if ok:
         return ok, msg

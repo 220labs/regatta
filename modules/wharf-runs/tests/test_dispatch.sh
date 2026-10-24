@@ -119,10 +119,12 @@ if command -v plutil >/dev/null; then plutil -lint "$P" >/dev/null 2>&1 && echo 
 
 echo "epoch time"
 EP=$(date -j -f '%Y-%m-%d %H:%M' "$E2 07:09" +%s)
-# a stand-in for bin/account: STUB_ACCT says what pick answers, STUB_LIMITS what limits LABEL says
+# a stand-in for bin/account: STUB_ACCT says what pick answers, STUB_LIMITS what limits LABEL says;
+# STUB_NOISE is a line printed to stderr first, ahead of any JSON (a future warning)
 cat > "$T/acct" <<EOF
 #!/bin/sh
 echo "account \$*" >> "$T/acct.calls"
+[ -n "\${STUB_NOISE:-}" ] && echo "\$STUB_NOISE" >&2
 case "\$1" in
   which) [ -n "\${STUB_WHICH:-}" ] && echo "\$STUB_WHICH"; exit 0;;
   pick) case "\${STUB_ACCT:-none}" in
@@ -130,10 +132,12 @@ case "\$1" in
           acct-a) echo '{"account": "acct-a", "primary": true, "env": {}, "reason": "week 20% < 95%", "skipped": [["acct-c", "repo is on its deny list"]]}';;
           short) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"], ["acct-a", "week 99% ≥ 95%"]]}'; exit 3;;
           none) echo "account: no registry" >&2; exit 4;;
+          junk) echo "account: probe timed out" >&2; echo "not json"; exit 1;;
         esac;;
   limits) case "\${STUB_LIMITS:-ok}" in
           ok) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is on its deny list\", \"denied\": \"repo\"}]";;
+          fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
 EOF
@@ -1230,6 +1234,26 @@ has "$HOME/acct6.log" "FAILED: --account acct-c: repo is on its deny list — ru
 check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
 STUB_LIMITS=denied DISPATCH_LOG="$HOME/acct7.log" AR --account acct-c --force
 has "$HOME/acct7.log" "FAILED: --account acct-c: repo is on its deny list" "  --force never crosses a deny list (the guard would block every prompt)"
+# a line on the account's stderr is never parsed: before 2026-10-22 it failed json.loads at char 0,
+# and auto and bound fell to the caller's login, --account to FAILED (tenants review, regatta#82)
+: > "$T/env.calls"
+STUB_NOISE="account: a warning" STUB_ACCT=f DISPATCH_LOG="$HOME/acctn1.log" AR
+has "$HOME/acctn1.log" "== account acct-c ($HOME/.acct-c): week 10% < 90%" "stderr before the JSON: auto still picks the row"
+grep -q "^CLAUDE_CONFIG_DIR=$HOME/.acct-c$" "$T/env.calls"; check "$?" "0" "  and its config dir"
+: > "$T/env.calls"
+STUB_NOISE="account: a warning" STUB_ACCT=acct-a CLAUDE_CONFIG_DIR="$HOME/.claude-pro" DISPATCH_LOG="$HOME/acctn2.log" AR --account bound
+has "$HOME/acctn2.log" "== account acct-a: week 20% < 95%" "  bound still picks the row"
+grep -q "^CLAUDE_CONFIG_DIR=" "$T/env.calls"; check "$?" "1" "  on the default dir, not the caller's"
+: > "$T/env.calls"
+STUB_NOISE="account: a warning" DISPATCH_LOG="$HOME/acctn3.log" AR --account acct-c
+has "$HOME/acctn3.log" "== account acct-c ($HOME/.acct-c): as asked" "  --account LABEL still runs there"
+grep -q "^CLAUDE_CONFIG_DIR=$HOME/.acct-c$" "$T/env.calls"; check "$?" "0" "  with its config dir"
+STUB_ACCT=junk DISPATCH_LOG="$HOME/acctn4.log" AR
+has "$HOME/acctn4.log" "== account: account pick failed (account: probe timed out; not json) — the login this run was started with" "a failed pick quotes its stderr, then its stdout"
+: > "$T/claude.calls"
+STUB_LIMITS=fail DISPATCH_LOG="$HOME/acctn5.log" AR --account claude-x
+has "$HOME/acctn5.log" "FAILED: --account claude-x: account: no such label claude-x; not running" "a failed --account quotes its stderr"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --force >/dev/null 2>&1; check "$?" "2" "--force without --account LABEL is refused"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --account acct-c >/dev/null
 has "$(pl)" "<string>--account</string><string>acct-c</string>" "--account travels in the plist"
@@ -1264,6 +1288,8 @@ check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --account bound --force >/dev/null 2>&1; check "$?" "2" "--force with bound is refused"
 STUB_ACCT=acct-a DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --account bound >/dev/null
 has "$(pl)" "<string>--account</string><string>bound</string>" "bound travels in the plist"
+STUB_NOISE="account: a warning" STUB_ACCT=short DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --account bound > "$T/out" 2>&1; check "$?" "1" "bound scheduled with no room: refused now"
+has "$T/out" "the primary has no room now (account: a warning {\"account\": null" "  quoting the account's stderr, then its answer"
 
 echo "--fallback here: the peer first, this Mac when it cannot take it (2026-10-10)"
 export DISPATCH_ACCOUNT="$T/acct"   # never the real bin/account: bound picks --cached when scheduling

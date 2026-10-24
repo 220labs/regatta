@@ -315,6 +315,9 @@ CORE
 # DISPATCH_ASK, DISPATCH_HELM: the tests' stand-ins; set but empty is "not installed" (G22's case)
 [ -n "${DISPATCH_ASK+x}" ] && p_ask="$DISPATCH_ASK"
 [ -n "${DISPATCH_HELM+x}" ] && p_helm="$DISPATCH_HELM"
+# the check runner the run prompt names: this module's own, in the checkout dispatch runs from (since
+# B14b every helper names the module path; no allow rule names it, the classifier judges the call)
+p_check="$here/bin/check"
 [ -n "$core" ] || { echo "dispatch: the regatta core is missing — install the \`regatta\` plugin, or name a clone in the regatta config dir's \`home\` file" >&2; exit 2; }
 # The default repo: the overlay's checkout where one is installed (the config dir's `regatta/overlay`),
 # else the main checkout of the clone this file sits in — never a worktree, whose branch is not the run's.
@@ -900,8 +903,10 @@ if [ -n "$at" ]; then
   # bound: the pick is made at fire time, but a primary already out of room this week is said now,
   # not in a log after the caller reported the run as started (review 2026-10-10); --at reset waits for it
   if [ "$account" = bound ]; then case "$at" in reset*) ;; *)
-    bout=$("$ACCT" pick --bound --repo "$repo" --json --cached 2>&1)
-    [ $? != 3 ] || { echo "dispatch: --account bound: the primary has no room now ($(printf '%s' "$bout" | tr '\n' ' ' | cut -c1-200)); $([ "$next" = 1 ] && echo "end with the WAITING line naming its weekly reset" || echo "--at reset waits for its weekly reset")" >&2; exit 1; };;
+    # stdout alone is the answer; a warning on stderr is quoted, never parsed (pick_account's note)
+    berr=$(mktemp); bout=$("$ACCT" pick --bound --repo "$repo" --json --cached 2>"$berr"); brc=$?
+    bout="$(tr '\n' ' ' < "$berr")$bout"; rm -f "$berr"
+    [ $brc != 3 ] || { echo "dispatch: --account bound: the primary has no room now ($(printf '%s' "$bout" | tr '\n' ' ' | cut -c1-200)); $([ "$next" = 1 ] && echo "end with the WAITING line naming its weekly reset" || echo "--at reset waits for its weekly reset")" >&2; exit 1; };;
   esac; fi
   case "$at" in
     reset|reset+*)
@@ -1380,25 +1385,34 @@ ensure_trusted() {
 # the log, or FAILED and returns 1. A seeded run defaults to auto; --start and --probe keep the
 # caller's login unless --account was given.
 pick_account() {
-  local want="$account" out rc line
+  local want="$account" out rc line err
   [ -n "$want" ] || { [ "$start$probe" = 00 ] && want=auto; } || return 0
   [ -n "$want" ] || return 0
   local cached=(); [ "$dry" = 1 ] && cached=(--cached)
+  # stdout alone is parsed: a warning on stderr ahead of the JSON failed json.loads at char 0, and
+  # auto and bound fell to the caller's login past the walk (tenants review, regatta#82, 2026-10-22).
+  # stderr goes to a file and is quoted in the failure text, as pickup and autofinish-run do.
+  err=$(mktemp)
   if [ "$want" = auto ]; then
-    out=$("$ACCT" pick --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+    out=$("$ACCT" pick --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>"$err"); rc=$?
   elif [ "$want" = bound ]; then
-    out=$("$ACCT" pick --bound --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+    out=$("$ACCT" pick --bound --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>"$err"); rc=$?
   else
-    out=$("$ACCT" limits "$want" --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>&1); rc=$?
+    out=$("$ACCT" limits "$want" --repo "$repo" --json ${cached[@]+"${cached[@]}"} 2>"$err"); rc=$?
   fi
   line=$(printf '%s' "$out" | python3 -c '
 import json, sys
 want, rc, force = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
-text = sys.stdin.read()
 try:
-    d = json.loads(text)
+    err = " ".join(open(sys.argv[4], errors="replace").read().split())
+except OSError:
+    err = ""
+out = sys.stdin.read()
+try:
+    d = json.loads(out)
 except ValueError:
     d = None
+text = "; ".join(x for x in (err, out.strip()) if x)   # what a failure quotes: stderr first, then stdout
 if want in ("auto", "bound"):
     if rc == 4:
         print("-\x1f\x1fno account registry here — the login this run was started with"); sys.exit()
@@ -1420,7 +1434,7 @@ if a.get("denied"):  # the guard would block every prompt there: --force never c
 if not a.get("eligible") and not force:
     print("FAILED\x1f\x1f--account %s: %s — --force runs it there anyway" % (want, a.get("why"))); sys.exit()
 print("%s\x1f%s\x1f%s" % (want, (a.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), "as asked" + ("" if a.get("eligible") else ", forced past: " + str(a.get("why")))))
-' "$want" "$rc" "$force")
+' "$want" "$rc" "$force" "$err"); rm -f "$err"
   local label dir why
   IFS=$'\x1f' read -r label dir why <<<"$line"   # not a tab: a whitespace IFS collapses an empty dir
   if [ "$label" = FAILED ]; then echo "FAILED: $why; not running"; return 1; fi
@@ -1706,7 +1720,7 @@ fi
   # backgrounded the check, replied "I'll pick up when it finishes", and -p exited with exit 0.
   # A brief asked for the foreground on 2026-10-04 (idea-redaction) and the run backgrounded anyway:
   # prose alone does not hold, so run_env enforces it unless --background allow (rule: engineering).
-  prompt="You are an unattended session started by dispatch on $(hostname -s) at $(date '+%F %H:%M %Z'); nobody is watching, so decide from the brief and do not ask. Your worktree is $wt on branch $branch. Read the brief at $brief and do what it says. Run the project's check from AGENTS.md before calling anything done, in the foreground: never run_in_background, Monitor or a background agent you would wait for — this run ends with your reply, and whatever is still running dies unread. One Bash call stops at 30 minutes; a longer check runs its && parts one call each. Commit; do not push, except through \`dispatch --next --repo $repo\`; never merge into main or launch (the checkpoint hook pushes, /finish launches). End with what changed, what you verified, and what you left for $who. ${note}"
+  prompt="You are an unattended session started by dispatch on $(hostname -s) at $(date '+%F %H:%M %Z'); nobody is watching, so decide from the brief and do not ask. Your worktree is $wt on branch $branch. Read the brief at $brief and do what it says. Run the project's check from AGENTS.md before calling anything done, through \`$p_check $wt --out <dir>\` (<dir> under your scratchpad; it runs the line scoped to what this branch changed, one script at a time under a slot, and says SKIP or PASSED for what it need not run — both are the check passing), in the foreground: never run_in_background, Monitor or a background agent you would wait for — this run ends with your reply, and whatever is still running dies unread. One Bash call stops at 30 minutes: start it as \`nohup $p_check $wt --out <dir> > <dir>.out 2>&1 &\` in one call, then poll <dir>/summary in later calls until its last line starts DONE, INTERRUPTED or REFUSED; an UNRUN line names a command only this branch's check line has — run it by its own Bash call; a REFUSED line (a prose check line, none at all) means the check is run by hand as AGENTS.md says. Commit; do not push, except through \`dispatch --next --repo $repo\`; never merge into main or launch (the checkpoint hook pushes, /finish launches). End with what changed, what you verified, and what you left for $who. ${note}"
   # session-asks (R2–R4, B5): the three steps instead of an ask, and the plan reports — helm's tools
   # (G22): without its ask and helm those lines leave the prompt, and a decision the run cannot make
   # ends it on the WAITING line

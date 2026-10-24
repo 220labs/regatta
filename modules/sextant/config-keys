@@ -1,0 +1,3 @@
+# sextant's private values (aurora's README, "Config of its own"): its own runner reads aurora/host,
+# the one host the weekly jobs run on (libexec/sextant-run's host_rule), with aurora absent too.
+aurora/host

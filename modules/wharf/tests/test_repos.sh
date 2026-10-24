@@ -285,14 +285,16 @@ check("unreadable (HTTP 403)" in out and not writes(acc),
 
 print("merge_pr_waiting")
 class PR:
-    """merge answers in order; then the PR's state per poll."""
-    def __init__(self, merges, polls):
-        self.merges, self.polls, self.slept, self.n = list(merges), list(polls), [], 0
+    """merge answers in order; then the PR's state per poll; `runs`: the check-runs answer per read."""
+    def __init__(self, merges, polls, runs=()):
+        self.merges, self.polls, self.runs, self.slept, self.n = list(merges), list(polls), list(runs), [], 0
     def api(self, method, path, body=None, tok=None, timeout=15):
         if method == "PUT":
             self.n += 1
             ok = self.merges.pop(0) if self.merges else False
             return (200, {"message": "merged"}) if ok else (405, {"message": "required check is expected"})
+        if "/check-runs" in path:
+            return 200, {"check_runs": self.runs.pop(0) if len(self.runs) > 1 else (self.runs[0] if self.runs else [])}
         return 200, (self.polls.pop(0) if len(self.polls) > 1 else self.polls[0])
 def wait(p, **kw):
     common.api = p.api
@@ -330,6 +332,42 @@ for label, state in (("a conflict (mergeable False)", {"mergeable": False}),
     p = PR([False], [dict(BARE, **state)])
     ok, _ = wait(p, automerge=True)
     check(not ok and p.slept == [] and p.n == 1, f"not armed and {label}: ends at once, no retry, no grace [{p.slept}]")
+
+print("merge_pr_waiting: the required check first (an admin token is not refused)")
+OK_RUN, PENDING, FAILED = [{"status": "completed", "conclusion": "success"}], [{"status": "in_progress", "conclusion": None}], \
+    [{"status": "completed", "conclusion": "failure"}]
+SKIPPED = [{"status": "completed", "conclusion": "skipped"}]
+p = PR([True], [BARE], [OK_RUN])
+check(wait(p, head="abc12345", contexts=["check"]) == (True, "merged") and not p.slept and p.n == 1, "the check passed: merged at once")
+p = PR([True], [BARE], [PENDING, PENDING, OK_RUN])
+ok, _ = wait(p, head="abc12345", contexts=["check"])
+check(ok and p.slept == [10, 10] and p.n == 1, f"the check running: polled until it passes, then merged [{p.slept}]")
+p = PR([True], [BARE], [FAILED])
+ok, msg = wait(p, head="abc12345", contexts=["check"])
+check(not ok and "ended failure on abc12345" in msg and p.n == 0, f"the check failed: refused, nothing PUT [{msg}]")
+p = PR([True], [ARMED], [PENDING])
+ok, msg = wait(p, head="abc12345", contexts=["check"])
+check(not ok and "still running" in msg and "(armed)" in msg and p.n == 0 and sum(p.slept) == common.AUTOMERGE_WAIT,
+      f"still running at the wait: refused, says automerge lands it [{msg}]")
+p = PR([True], [ARMED, MERGED], [PENDING])
+ok, msg = wait(p, head="abc12345", contexts=["check"])
+check(ok and "by automerge" in msg and p.n == 0, f"automerge merged it while the check was polled [{msg}]")
+p = PR([True], [BARE], [SKIPPED + OK_RUN])
+check(wait(p, head="abc12345", contexts=["check"])[0] and p.n == 1, "a draft's skipped run answers nothing; the run behind it does")
+p = PR([True], [BARE], [SKIPPED])
+ok, msg = wait(p, head="abc12345", contexts=["check"])
+check(not ok and "still running" in msg and p.n == 0, "only a skipped run: pending, never a pass")
+p = PR([True], [BARE], [FAILED])
+check(wait(p, head="abc12345", contexts=[]) == (True, "merged") and p.n == 1, "no required context: merged as before")
+check(common.check_state("o/r", "abc12345", ["check"]) == ("failure", "the required check `check` ended failure on abc12345"),
+      "check_state reads the newest non-skipped run")
+class Prot:
+    def __init__(self, st, body): self.st, self.body = st, body
+    def api(self, method, path, body=None, tok=None, timeout=15): return self.st, self.body
+common.api = Prot(200, {"contexts": ["check", 3]}).api
+check(common.required_contexts("o/r", "main") == ["check"], "required_contexts: the protection's string contexts")
+common.api = Prot(404, {"message": "Branch not protected"}).api
+check(common.required_contexts("o/r", "main") == [], "…none when the branch is not protected")
 
 print("open_pr / ready_pr")
 class Pulls:

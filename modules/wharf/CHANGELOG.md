@@ -23,6 +23,13 @@
   there as a write, and ignores a commit message quoting a redirect. `pr merge` refuses a held launch's
   own session (`hold` or `keel_hold` in autofinish.json), and the re-check judges by wharf-runs'
   `effective_mode`, naming the start's `land_mode` beside the mode now.
+- `pr merge` waits for the base's required checks on the head before merging (2026-10-23). The
+  protection refuses a non-admin token while `check` runs, and never an admin's: two PRs merged on
+  the laptop before their run finished, which the scoped local check (wharf-runs' `check`) made a hole.
+  `common.required_contexts` reads the protection, `check_state` the newest non-skipped run per
+  context; a failure refuses at once, a run still going after the wait ends `NOT merged — … still
+  running`, and /finish's step 11.4 leaves such a PR to automerge.
+
 - `pr ready` and `pr merge` judge a `--by ship` run's gates and held slice again, as a sweep or mode
   run's (skipper-resilience S6's finish review, 2026-10-23): the keel's yes predates the run's own edits.
 - The skipper-modes follow-ups (2026-10-23): the checkpoint hook's shed guard reads the shell's setters

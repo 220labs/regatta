@@ -45,7 +45,8 @@ pull = {"number": 7, "title": "WIP: x", "body": "", "draft": True, "html_url": "
 pr.common.find_pr = lambda slug, name, tok=None: dict(pull)
 pr.common.edit_pr = lambda slug, n, tok=None, **f: (print("EDITED") or dict(pull))
 pr.common.ready_pr = lambda p, tok=None: print("READIED") or True
-pr.common.merge_pr_waiting = lambda slug, n, tok=None, automerge=False: (print("MERGE CALLED") or (True, "ok"))
+pr.common.merge_pr_waiting = lambda slug, n, tok=None, automerge=False, **kw: (print("MERGE CALLED") or (True, "ok"))
+pr.common.required_contexts = lambda slug, base, tok=None: []
 CARRY = sys.argv[2] == "carried"  # `pr carried`: say which PR number the flag gave; every other verb carries nothing
 pr.carried = lambda *a, **k: ["CARRIED %s" % k.get("launched_via")] if CARRY else []
 pr.common.api = lambda m, path, *a, **k: (print("API", m, path) or (200, {}))

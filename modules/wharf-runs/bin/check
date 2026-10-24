@@ -1,7 +1,42 @@
 #!/usr/bin/env bash
 # check — a checkout's AGENTS.md `check:` line, one script at a time, under one of N slots per Mac login.
 #
-#   bin/check [<checkout>] [--only <script>…] [--out <dir>]
+#   bin/check [<checkout>] [--only <script>…] [--full] [--fresh] [--out <dir>]
+#
+# Scoped by default (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
+# the checkout changed something under modules/<m>/ since it forked from origin/main (main without a
+# remote), or under a module <m> uses — one its plugin.json `dependencies` names, or one its files name
+# by path (`modules/<x>`) in any file of its own but Markdown — declared ones followed through (helm
+# uses wharf-runs uses wharf: a wharf change runs all three), a mention one hop (followed through, a
+# loose one would reach everything). A change under a module's tests/ or to its Markdown bar skills/
+# and agents/ (behaviour another suite may read) runs that module's suite alone; a file moved out of
+# a module changed it; a module removed is a change its users follow. Uncommitted changes count. Every other command runs every time (`claude plugin
+# validate`, a gate that reads the whole tree); a module every other module declares (the core) runs
+# on any change under modules/, since its suite checks them all. The whole line runs when a changed file
+# sits outside modules/ and is not Markdown, under docs/ or under .github/ (an unknown file is judged
+# by everything), when nothing changed at all (on main, or a clean fork: nothing to scope by), when the
+# fork point cannot be read, when the checkout has no modules/ or no git, or with --full. A root
+# Markdown file (AGENTS.md, README) runs the suites of the modules that depend on nothing — the core's,
+# which checks it. A `.<m>/` folder is module m's (.helloworld/). Each suite left out is a `SKIP
+# <command> — <why>` line, in the summary and on stdout, not counted in DONE; the scope is said once
+# (`check: scope — …`) after the logs line. What the scope cannot see is a suite reading another
+# module's files at test time with no path in its own files: CI runs the whole line on the pull
+# request, and `pr merge` waits for it.
+# Why: a full check took 58–80 min on the laptop and 40 on the quiet build Mac, and every landing ran it
+# three or four times (the build run, /finish, the PR's CI, main's CI) while the Macs sat at load 98
+# (docs/check-load-2026-10-23.md). CI still runs the whole line on the pull request, and `pr merge`
+# refuses until it passed (an admin token is not refused by the protection): the scope is for the
+# session's own loop, the proof stays whole.
+# A pass is remembered per tree: after a run, each script that passed is recorded under
+# $CHECK_LOGS/passed/<tree> (the checkout's exact content, `git write-tree` over a scratch index,
+# uncommitted files included), and a later run of the same tree reports it `PASSED <when> <command>`
+# — counted as passed, not run, and said before any slot is taken (a run remembered whole never
+# waits) — so /finish does not repeat the build run's green. A record holds the mode (attended or
+# unattended, which must match: a suite may pass in one only) and HEAD, which must match for a command
+# naming HEAD (the publish gate reads the commit). A record lives $CHECK_PASS_TTL seconds (default
+# 86400; 0 turns the memory off, the suites' setting), pruned past that; --fresh ignores the records and
+# runs everything in scope. The record is the tree's, never the environment's: a changed overlay, peer
+# repo or login is not seen, which the day's TTL bounds.
 #
 # Start it with the Bash tool's run_in_background: a whole check of the overlay's size runs ~36 min, past one
 # Bash call's cap (10 min, the tool's maximum; AGENTS.md). Where background tasks are off (an unattended /finish), `nohup bin/check … --out
@@ -11,8 +46,9 @@
 # attended); in it, one log per script (`01-test_checkpoint.sh.log`…) and `summary`, one line per
 # script as it ends —
 #   HH:MM rc=<exit code> <seconds>s <command>
-# then, unattended only, `ABSENT <command> …` and `UNRUN <command>` lines (below), then
-# `DONE <passed>/<total>`. Exit 0 only when every script passed; 1 when one failed; 3 when all passed
+# or `PASSED <when> <command>` for one the memory above answered; `SKIP <command> — <why>` lines first
+# for the suites out of scope; then, unattended only, `ABSENT <command> …` and `UNRUN <command>` lines
+# (below), then `DONE <passed>/<total>`. Exit 0 only when every script passed; 1 when one failed; 3 when all passed
 # but a command was UNRUN; 2 for a usage error (no check line, an --only that names no script),
 # printed and, with --out, written to the summary as `REFUSED <why>`. A signal to check itself stops the
 # script it runs and ends the summary `INTERRUPTED <passed>/<total> by SIG<x>`, so a run cut short
@@ -23,7 +59,9 @@
 #                regatta clone (wharf-runs), not in the repo it checks, so its own path names no
 #                checkout to check (B7; it was the overlay's own). /finish passes the worktree it launches.
 #   --only       a subset, in the check line's order: each name matches a script by path, basename
-#                or basename without .sh (`--only bin/test_check.sh test_hooks`). Same slot rules.
+#                or basename without .sh (`--only bin/test_check.sh test_hooks`). Same slot rules;
+#                no scope (what is named runs), the pass memory still answers.
+#   --full       the whole line, whatever changed; --fresh: run what is in scope, remembered or not.
 #   --out        the log folder; default $CHECK_LOGS (~/Library/Caches/check-runs)/<checkout>-<stamp>-<pid>
 #
 # Why the slots (2026-10-19): with five checks running on the laptop, Claude Code killed rename S3's
@@ -44,7 +82,7 @@
 # Not parallel inside one check: the scripts' timing tests assume they run alone (brief, 2026-10-19).
 set -u
 
-wt=""; out=""; only=(); mode=""; asked_only=""
+wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""
 # a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
 refuse() {
   echo "check: $1" >&2
@@ -55,7 +93,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --only) mode=only; asked_only=1; shift; continue ;;
     --out) [ $# -ge 2 ] || refuse "--out needs a folder"; out="$2"; mode=""; shift 2; continue ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --full) full=1; mode=""; shift; continue ;;
+    --fresh) fresh=1; mode=""; shift; continue ;;
+    -h|--help) sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) refuse "unknown option $1" ;;
   esac
   if [ "$mode" = only ]; then only+=("$1")
@@ -149,12 +189,180 @@ if [ ${#only[@]} -gt 0 ]; then
   done
 fi
 [ ${#run[@]} -gt 0 ] || refuse "nothing to run"
+
+# --- the scope (the header) ----------------------------------------------------------------------
+# skipped=( "<command> — <why>" ); scope_line is said after the logs line
+skipped=(); scope_line=""; base=""
+in_git() { git -C "$wt" rev-parse -q --verify HEAD > /dev/null 2>&1; }
+if [ -z "$full" ] && [ ${#only[@]} -eq 0 ] && [ -d "$wt/modules" ] && in_git; then
+  base=origin/main; git -C "$wt" rev-parse -q --verify "$base" > /dev/null 2>&1 || base=main
+  if git -C "$wt" rev-parse -q --verify "$base" > /dev/null 2>&1; then
+    mb=$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null) || mb=""
+    # --no-renames and both sides of a porcelain `R old -> new`: a file moved out of a module changed it
+    changed=$( { git -C "$wt" diff --no-renames --name-only "$mb" 2>/dev/null
+                 git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | cut -c4- | sed 's/ -> /\
+/'; } | sort -u)
+    [ -n "$mb" ] || changed=""
+    # one verdict per command, in order — RUN<tab><why> or SKIP<tab><why> — after a SCOPE<tab><said> line
+    verdicts=$(CHECK_CMDS="$(printf '%s\n' "${run[@]}")" python3 - "$wt" "$base" "$changed" <<'PY'
+import json, os, re, sys
+wt, base, changed = sys.argv[1], sys.argv[2], [p for p in sys.argv[3].split("\n") if p]
+cmds = [l for l in os.environ.get("CHECK_CMDS", "").split("\n") if l.strip()]   # the heredoc is stdin
+mods = sorted(d for d in os.listdir(os.path.join(wt, "modules")) if os.path.isdir(os.path.join(wt, "modules", d)))
+def declared(m):
+    """m's plugin.json dependencies, every name (a module since removed still counts)"""
+    try:
+        return list(json.load(open(os.path.join(wt, "modules", m, ".claude-plugin/plugin.json"))).get("dependencies") or [])
+    except Exception:
+        return []
+def suite_of(c):
+    for w in c.split():
+        m = re.match(r"modules/([^/]+)/tests/", w)
+        if m and m.group(1) in mods: return m.group(1)
+    return None
+def say(line, verdicts):
+    print("SCOPE\t" + line)
+    for v in verdicts: print(v)
+if not changed:
+    say("the whole line: nothing changed since %s" % base, ["RUN\tnothing changed since %s" % base] * len(cmds)); sys.exit(0)
+# own: modules whose own suite runs; deep: changes other modules' suites follow (code, not a suite or prose)
+own, deep, roots, why_all = set(), set(), False, None
+for p in changed:
+    m = re.match(r"modules/([^/]+)/(.*)", p)
+    if m:
+        name, rest = m.group(1), m.group(2)
+        own.add(name)
+        # a suite or prose is the module's own; a skill or an agent is behaviour another suite may read
+        if name not in mods or not (rest.startswith("tests/") or (rest.endswith(".md") and not rest.startswith(("skills/", "agents/")))): deep.add(name)
+        continue
+    m = re.match(r"\.([^/]+)/", p)
+    if m and m.group(1) in mods: own.add(m.group(1))
+    elif p.startswith(("docs/", ".github/")): pass
+    elif "/" not in p and p.endswith(".md"): roots = True
+    else: why_all = why_all or p
+if why_all:
+    say("the whole line: %s changed, outside modules/" % why_all, ["RUN\t%s changed, outside modules/" % why_all] * len(cmds)); sys.exit(0)
+names = sorted(set(mods) | own)
+def mentions(m):
+    """the modules m's files (not Markdown) name by path"""
+    out = set()
+    pat = re.compile(r"modules/(%s)(?![\w-])" % "|".join(re.escape(x) for x in names if x != m))
+    for root, dirs, files in os.walk(os.path.join(wt, "modules", m)):
+        dirs[:] = [d for d in dirs if not d.startswith(".") or d == ".claude-plugin"]
+        for f in files:
+            if f.endswith(".md"): continue
+            p = os.path.join(root, f)
+            try:
+                if os.path.getsize(p) > 2_000_000: continue
+                with open(p, "rb") as fh: out |= set(pat.findall(fh.read().decode("utf-8", "replace")))
+            except OSError:
+                pass
+    out.discard(m); return out
+def reach(m):
+    """what m's suite may see change: its declared dependencies, followed through, and what its own
+    files name by path (one hop: a loose mention followed through would reach everything)"""
+    seen, todo = set(), [m]
+    while todo:
+        x = todo.pop()
+        for d in declared(x) if x in mods else []:
+            if d not in seen and d != m: seen.add(d); todo.append(d)
+    seen |= mentions(m); seen.discard(m); return seen
+universal = [m for m in mods if all(m in declared(x) for x in mods if x != m)]   # the core: every other module declares it
+run_why = {}
+for m in mods:
+    if m in own: run_why[m] = "modules/%s changed" % m; continue
+    hit = sorted(reach(m) & deep)
+    if hit: run_why[m] = "uses modules/%s, changed" % hit[0]
+    elif m in universal and (own or deep): run_why[m] = "modules/%s checks every module" % m
+    elif roots and not declared(m): run_why[m] = "a root Markdown file changed, which modules/%s checks" % m
+out = []
+for c in cmds:
+    s = suite_of(c)
+    if s is None: out.append("RUN\tnot a module's suite: runs every time")
+    elif s in run_why: out.append("RUN\t" + run_why[s])
+    else: out.append("SKIP\tno change under modules/%s or what it uses since %s" % (s, base))
+n = sum(1 for v in out if v.startswith("RUN"))
+say("%d of %d script(s): %s changed since %s" % (n, len(cmds), ", ".join(["modules/" + m for m in sorted(own)] + (["a root Markdown file"] if roots else [])), base), out)
+PY
+    ) || verdicts=""
+    if [ -n "$verdicts" ]; then
+      scope_line="${verdicts%%
+*}"; scope_line="${scope_line#SCOPE	}"
+      kept=(); i=0
+      while IFS= read -r v; do
+        case "$v" in SCOPE*) continue ;; esac
+        c="${run[$i]}"; i=$((i + 1))
+        case "$v" in RUN*) kept+=("$c") ;; *) skipped+=("$c — ${v#SKIP	}") ;; esac
+      done <<< "$verdicts"
+      run=("${kept[@]+"${kept[@]}"}")
+    else
+      scope_line="the whole line: the scope could not be read"
+    fi
+    [ -n "$mb" ] || { run=("${cmds[@]}"); skipped=(); scope_line="the whole line: the fork point from $base could not be read"; }
+  else
+    scope_line="the whole line: no $base in $wt"
+  fi
+elif [ -n "$full" ]; then scope_line="the whole line (--full)"
+fi
 total=${#run[@]}
 
 [ -n "$out" ] || out="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/$(basename "$wt")-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$out" || refuse "cannot make $out"
 out="$(cd "$out" && pwd -P)"; : > "$out/summary"
 echo "logs: $out"
+[ -z "$scope_line" ] || echo "check: scope — $scope_line"
+for sk in "${skipped[@]+"${skipped[@]}"}"; do echo "SKIP $sk" >> "$out/summary"; echo "SKIP $sk"; done
+passed=0
+if [ "$total" -eq 0 ]; then   # every suite out of scope: nothing to run, nothing failed
+  for u in "${unrun[@]+"${unrun[@]}"}"; do echo "UNRUN $u" >> "$out/summary"; echo "UNRUN $u"; done
+  echo "DONE 0/0" >> "$out/summary"; echo "DONE 0/0"
+  [ ${#unrun[@]} -eq 0 ] || exit 3
+  exit 0
+fi
+
+# --- the pass memory (the header): this tree's passed scripts, by command -------------------------
+# A record: <epoch> <mode> <HEAD> <command>, tab-separated, in $passed_dir/<tree>. The mode (attended or
+# unattended: a suite may pass only in one, AGENTS.md's trap) must match; HEAD must match for a command
+# that names HEAD (the publish gate reads the commit, not the tree it is remembered under).
+ttl="${CHECK_PASS_TTL:-86400}"; tree=""; head=""; passed_dir="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/passed"
+case "$ttl" in ''|*[!0-9]*) refuse "CHECK_PASS_TTL must be a number of seconds (got $ttl)" ;; esac
+mode="attended"; [ -z "$unatt" ] || mode="unattended"
+if [ "$ttl" -gt 0 ] && in_git; then
+  ix="$(mktemp "${TMPDIR:-/tmp}/check-index.XXXXXX")"
+  # seeded from the real index: its stat cache spares a re-hash of every tracked file
+  cp "$(git -C "$wt" rev-parse --path-format=absolute --git-path index)" "$ix" 2>/dev/null || : > "$ix"
+  tree=$( cd "$wt" && GIT_INDEX_FILE="$ix" git add -A . 2>/dev/null && GIT_INDEX_FILE="$ix" git write-tree 2>/dev/null ) || tree=""
+  rm -f "$ix"
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
+  find "$passed_dir" -type f -mmin "+$(( ttl / 60 + 1 ))" -delete 2>/dev/null   # records past their life
+fi
+# remembered_at <command>: the youngest usable record's time (epoch), nothing when none
+remembered_at() {
+  [ -n "$tree" ] && [ -z "$fresh" ] && [ -f "$passed_dir/$tree" ] || return 0
+  local h=""; case " $1 " in *" HEAD "*|*HEAD*) h="$head" ;; esac
+  awk -F'\t' -v c="$1" -v m="$mode" -v h="$h" -v now="$(date +%s)" -v ttl="$ttl" \
+    '$4 == c && $2 == m && (h == "" || $3 == h) && now - $1 <= ttl { t = $1 } END { if (t) print t }' "$passed_dir/$tree"
+}
+remember() {   # <command>: this tree passed it now
+  [ -n "$tree" ] || return 0
+  mkdir -p "$passed_dir" 2>/dev/null && printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$mode" "$head" "$1" >> "$passed_dir/$tree"
+}
+# what is remembered is said now, and never waits for a slot; what is left runs under one
+todo=()
+for c in "${run[@]}"; do
+  at="$(remembered_at "$c")"
+  if [ -n "$at" ]; then
+    l="PASSED $(date -r "$at" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$at" '+%Y-%m-%d %H:%M') $c"
+    echo "$l" >> "$out/summary"; echo "$l"; passed=$((passed + 1))
+  else todo+=("$c"); fi
+done
+if [ ${#todo[@]} -eq 0 ]; then
+  for u in "${unrun[@]+"${unrun[@]}"}"; do echo "UNRUN $u" >> "$out/summary"; echo "UNRUN $u"; done
+  echo "DONE $passed/$total" >> "$out/summary"; echo "DONE $passed/$total"
+  [ ${#unrun[@]} -eq 0 ] || exit 3
+  exit 0
+fi
+run=("${todo[@]}")
 
 # --- the slot --------------------------------------------------------------------------------------
 slots_here() {   # this host's line of wharf-runs/check-slots, else `*`'s, else 2
@@ -199,7 +407,7 @@ release() {
   held=""
   [ -n "$ticket" ] && rm -f "$ticket"; ticket=""
 }
-child=""; passed=0
+child=""
 on_signal() {
   [ -n "$child" ] && kill -TERM -- "-$child" 2>/dev/null
   echo "INTERRUPTED $passed/$total by SIG$1" >> "$out/summary"; echo "INTERRUPTED $passed/$total by SIG$1"
@@ -248,7 +456,7 @@ while :; do
   sleep "$poll"
 done
 rm -f "$ticket"; ticket=""
-echo "check: $(basename "$held") of $n, $total script(s) in $wt"
+echo "check: $(basename "$held") of $n, ${#run[@]} script(s) in $wt"
 
 # --- the scripts, one at a time --------------------------------------------------------------------
 k=0
@@ -265,7 +473,7 @@ for c in "${run[@]}"; do
   # its own process group (set -m), so a signal to check stops the script and everything it started
   set -m; (cd "$wt" && exec bash -c "$c") > "$log" 2>&1 < /dev/null &
   child=$!; set +m; wait "$child"; rc=$?; child=""
-  [ "$rc" -eq 0 ] && passed=$((passed + 1))
+  [ "$rc" -eq 0 ] && { passed=$((passed + 1)); remember "$c"; }
   l="$(date +%H:%M) rc=$rc $(( $(date +%s) - t0 ))s $c"
   echo "$l" >> "$out/summary"; echo "$l"
 done

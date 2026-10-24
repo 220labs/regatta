@@ -1,3 +1,4 @@
 # aurora's private values (README, "Config of its own"): `regatta check` reports each one missing
-# where an overlay is installed, or unreadable.
-aurora/skip-hosts
+# where an overlay is installed, or unreadable. aurora/skip-hosts, the deprecated deny-list, is not
+# listed: weekly-run still reads it where aurora/host is absent, and requires it of no one.
+aurora/host

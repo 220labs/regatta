@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
+  that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),
+  since the fork from origin/main; every other command runs each time, and the whole line runs on a
+  change outside modules/ that is not Markdown, docs/ or .github/, on no change at all, or with
+  `--full`. Each suite left out is a `SKIP <command> — <why>` summary line, not counted in DONE. A
+  script that passed is remembered per tree (`$CHECK_LOGS/passed/<tree>`, a day; `--fresh` runs it
+  again, CHECK_PASS_TTL=0 turns the memory off) and a later run of the same tree reports it `PASSED
+  <when> <command>`, counted as passed. Why: a full check took 58–80 min on the laptop and every
+  landing ran it three or four times (docs/check-load-2026-10-23.md); CI still runs the whole line on
+  the pull request, and the merge waits for it (the run on a push to main is skipped where the
+  repository variable `CI_SKIP_MAIN_PUSH` says so; a nightly run on main remains). The dispatch run
+  prompt names `check` for the project's check, as /finish does. After the landing review: a record
+  carries the mode and HEAD, a rename counts on both sides, a change to a module's tests or prose
+  runs its own suite alone, the core's suite runs on any module change, and what is remembered is
+  said before any slot is taken; a skill or an agent file counts as behaviour, a module's other
+  Markdown as its own.
 - A host session rc-hosts closes (`--reap`, a broken host's restart, `--end`, `--restart`) is no
   longer logged as a bare fault: rc-hosts writes a note into the host's log first, and the new
   SessionEnd hook `close_reason.py` makes the session's own last line the reason, which the host

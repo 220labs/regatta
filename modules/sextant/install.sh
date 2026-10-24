@@ -26,7 +26,7 @@
 # (the tests). An overlay that had the job under its own label passes that label and log, so the job
 # is replaced in place, never doubled; an overlay's own installer takes --plist, and --schedule
 # refuses where one is installed (the config dir's `regatta/overlay` marker, as aurora's does) unless
-# SEXTANT_SCHEDULE_BESIDE_OVERLAY is set. A host `aurora/skip-hosts` lists gets no job either. Like the launcher, the plist names the main checkout's files
+# SEXTANT_SCHEDULE_BESIDE_OVERLAY is set. Only the host `aurora/host` names gets the job (sextant-run's host_rule). Like the launcher, the plist names the main checkout's files
 # when run from a linked worktree.
 #
 # Knobs (environment, all optional): SPARKS_LAUNCHER (the binary, ~/.local/bin/sparks-launcher),
@@ -182,9 +182,18 @@ case "${1:-}" in
       echo "install.sh --schedule: an overlay is installed here ($cfgdir/regatta/overlay): it schedules /sextant itself; not loading a second job" >&2
       exit 1
     fi
-    # A host aurora/skip-hosts lists gets no job: the run would only log its skip each week
-    sk=$(python3 "$self/libexec/sextant-run" run "${SEXTANT_CWD:-/}" --dry-run 2>/dev/null | grep '^skipped:' || true)
+    # Only the host aurora/host names gets the job (sextant-run's host_rule): elsewhere the run
+    # would only log its skip each week, or its refusal (the key empty, unreadable, or missing). A dry
+    # run that says neither and prints no plan (it crashed, or printed nothing) could not tell: that
+    # refuses too, with its exit code and last stderr line — a probe that could not tell never passes
+    err=$(mktemp); rc=0
+    out=$(python3 "$self/libexec/sextant-run" run "${SEXTANT_CWD:-/}" --dry-run 2>"$err") || rc=$?
+    why=$(tail -n 1 "$err"); rm -f "$err"
+    sk=$(printf '%s\n' "$out" | grep -E -m1 '^(skipped|refused):' || true)
     [ -z "$sk" ] || { echo "install.sh --schedule: $sk — not loading the job (--unschedule removes one loaded before)" >&2; exit 1; }
+    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q '^sextant-run: /sextant in '; then
+      echo "install.sh --schedule: the runner's dry run could not tell whether this host runs /sextant (exit $rc${why:+: $why}) — not loading the job" >&2; exit 1
+    fi
     # A bootout kills a running job, and a /sextant killed mid-run leaves its worktrees half-written
     if "$wlc" print "gui/$(id -u)/$wlabel" 2>/dev/null | grep -q 'pid = '; then
       echo "install.sh --schedule: $wlabel is running right now — rerun when it is done" >&2; exit 1
