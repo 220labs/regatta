@@ -134,6 +134,8 @@ split_line() {
 # dropped: a script main's line names that this branch lacks is ABSENT (forked before main added it, or
 # renamed here; the attended run would not have it either), and a command only the branch's line has is
 # UNRUN, exit 3 — /finish runs it by its own Bash call, where auto mode sees it (review, 2026-10-19).
+# A `~/`, HOME-variable or `/` path this Mac lacks is no rebase's to bring and fails an attended run too:
+# rc=127, counted and failed, never ABSENT (B14b's prerequisites' landing review, 2026-10-24).
 unatt=""; braw=""
 if [ -n "${CLAUDE_UNATTENDED:-}" ]; then
   unatt=1
@@ -161,11 +163,23 @@ if [ -n "$braw" ] && [ ${#only[@]} -eq 0 ] && [ -n "$(code_of "$braw")" ]; then
   done
 fi
 split_line "$line"
-# the script a command runs: its first word with a / or a .sh/.py ending, else its first word
+# the script a command runs: its first word with a / or a .sh/.py ending, else its first word;
+# a leading `NAME=value` is an assignment, never the script. A `~/` word, or one led by the HOME variable,
+# is expanded, as bash will when it runs the command: such a path, or one from `/`,
+# is outside the branch (a module in another checkout, `python3 ~/…/regatta check`), so the
+# ABSENT test below asks the Mac for it, not the worktree (B14b's prerequisites, 2026-10-24).
 script_of() {
   local w
   for w in $1; do
-    case "$w" in */*|*.sh|*.py) printf '%s' "$w"; return ;; esac
+    case "$w" in
+      [A-Za-z_]*=*) case "${w%%=*}" in *[!A-Za-z0-9_]*) ;; *) continue ;; esac ;;
+    esac
+    case "$w" in
+      "~/"*) printf '%s' "$HOME${w#\~}"; return ;;
+      '$'HOME/*) printf '%s' "$HOME${w#\$HOME}"; return ;;
+      '$'{HOME}/*) printf '%s' "$HOME${w#\$\{HOME\}}"; return ;;
+      */*|*.sh|*.py) printf '%s' "$w"; return ;;
+    esac
   done
   printf '%s' "${1%% *}"
 }
@@ -175,7 +189,7 @@ for c in "${cmds[@]}"; do
   if [ ${#only[@]} -eq 0 ]; then run+=("$c"); continue; fi
   s="$(script_of "$c")"; b="$(basename "$s")"
   for o in "${only[@]}"; do
-    case "$o" in "$s"|"$b"|"${b%.sh}"|"$c") run+=("$c"); break ;; esac
+    case "$o" in "$s"|"~${s#"$HOME"}"|"$b"|"${b%.sh}"|"$c") run+=("$c"); break ;; esac
   done
 done
 if [ ${#only[@]} -gt 0 ]; then
@@ -183,7 +197,7 @@ if [ ${#only[@]} -gt 0 ]; then
     hit=""
     for c in "${run[@]+"${run[@]}"}"; do
       s="$(script_of "$c")"; b="$(basename "$s")"
-      case "$o" in "$s"|"$b"|"${b%.sh}"|"$c") hit=1; break ;; esac
+      case "$o" in "$s"|"~${s#"$HOME"}"|"$b"|"${b%.sh}"|"$c") hit=1; break ;; esac
     done
     [ -n "$hit" ] || refuse "--only $o: not in the check line of $src"
   done
@@ -462,7 +476,11 @@ echo "check: $(basename "$held") of $n, ${#run[@]} script(s) in $wt"
 k=0
 for c in "${run[@]}"; do
   s="$(script_of "$c")"
-  if [ -n "$unatt" ] && case "$s" in */*|*.sh|*.py) true ;; *) false ;; esac && [ ! -e "$wt/$s" ]; then
+  if [ -n "$unatt" ] && case "$s" in /*) true ;; *) false ;; esac && [ ! -e "$s" ]; then
+    l="$(date +%H:%M) rc=127 0s $c — this Mac has no $s"
+    echo "$l" >> "$out/summary"; echo "$l"; continue
+  fi
+  if [ -n "$unatt" ] && case "$s" in /*) false ;; */*|*.sh|*.py) true ;; *) false ;; esac && [ ! -e "$wt/$s" ]; then
     l="ABSENT $c — main's line names it, this branch has no $s"
     echo "$l" >> "$out/summary"; echo "$l"; total=$((total - 1)); continue
   fi

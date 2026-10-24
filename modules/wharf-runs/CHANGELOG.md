@@ -18,6 +18,15 @@
   runs its own suite alone, the core's suite runs on any module change, and what is remembered is
   said before any slot is taken; a skill or an agent file counts as behaviour, a module's other
   Markdown as its own.
+- `bin/check`'s `script_of()` expands a `~/` path, or one led by the HOME variable, and skips a leading
+  `NAME=value`; such a path, like a `/` one, is outside the branch: unattended, the command
+  (`python3 ~/…/regatta check`) is run and counted when the file exists on the Mac, and fails with
+  `rc=127 … this Mac has no …` when not, as the attended run would — before, it was looked up inside
+  the worktree, always ABSENT, and the run still ended `DONE n/n` (B14b's prerequisites, 2026-10-24).
+  `--only` matches its `~/` spelling too. Effect beyond regatta: the vault's check line
+  (`~/…/bootstrap.sh --check`) now really runs on an unattended landing, where it was skipped.
+  test_check's four cases.
+
 - A host session rc-hosts closes (`--reap`, a broken host's restart, `--end`, `--restart`) is no
   longer logged as a bare fault: rc-hosts writes a note into the host's log first, and the new
   SessionEnd hook `close_reason.py` makes the session's own last line the reason, which the host

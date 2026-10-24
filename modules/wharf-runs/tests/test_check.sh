@@ -185,6 +185,29 @@ printf 'echo new\n' > "$P/new.sh"; printf -- '- check: `bash ok.sh && bash new.s
 CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtx" --out "$T/u5" > /dev/null 2>&1; rc=$?
 check "$rc:$(tail -1 "$T/u5/summary")" "3:DONE 1/1" "a script main added since the fork: not run, not counted"
 check "$(grep -c '^ABSENT bash new.sh' "$T/u5/summary")" "1" "…named ABSENT"
+# a `~/` path in main's line is outside the branch: expanded, run when it exists, ABSENT when not
+# TL is spelled in two halves so the publish gate's home-path pattern reads no real home here
+H="$T/home"; TL="~"/tools/out.sh; mkdir -p "$H/tools"; printf 'echo outside >> "%s"\n' "$T/outside.ran" > "$H/tools/out.sh"
+printf -- '- check: `bash ok.sh && bash %s`\n' "$TL" > "$P/AGENTS.md"
+( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm home ) > /dev/null 2>&1
+cp "$P/AGENTS.md" "$T/wtx/AGENTS.md"
+HOME="$H" CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtx" --out "$T/u6" > /dev/null 2>&1; rc=$?
+check "$rc:$(tail -1 "$T/u6/summary")" "0:DONE 2/2" "a ~/ path main's line names: run and counted, not ABSENT"
+check "$(cat "$T/outside.ran" 2>/dev/null)" "outside" "…the script under \$HOME ran"
+rm "$H/tools/out.sh"
+HOME="$H" CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtx" --out "$T/u7" > /dev/null 2>&1; rc=$?
+check "$rc:$(tail -1 "$T/u7/summary")" "1:DONE 1/2" "the ~/ script missing on this Mac: counted and failed, as an attended run fails"
+want="rc=127 0s bash $TL — this Mac has no $H/tools/out.sh"
+check "$(grep -cF "$want" "$T/u7/summary")" "1" "…rc=127, the expanded path in the line"
+check "$(grep -c '^ABSENT' "$T/u7/summary")" "0" "…never ABSENT"
+# the \$HOME spelling and a leading assignment resolve the same way
+printf 'echo outside >> "%s"\n' "$T/outside2.ran" > "$H/tools/out.sh"
+printf -- '- check: `bash ok.sh && V=a/b bash %s`\n' '$''HOME'/tools/out.sh > "$P/AGENTS.md"
+( cd "$P" && git add -A && git -c user.name=t -c user.email=t@t commit -qm home2 ) > /dev/null 2>&1
+cp "$P/AGENTS.md" "$T/wtx/AGENTS.md"
+HOME="$H" CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtx" --out "$T/u8" > /dev/null 2>&1; rc=$?
+check "$rc:$(tail -1 "$T/u8/summary")" "0:DONE 2/2" "a HOME-variable path behind an assignment: run and counted"
+check "$(cat "$T/outside2.ran" 2>/dev/null)" "outside" "…the script under \$HOME ran"
 
 echo "the scope: a module's suite runs when its module, or one it uses, changed since main"
 R="$T/scoped"
