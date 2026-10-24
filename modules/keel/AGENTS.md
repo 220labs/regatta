@@ -2,10 +2,10 @@
 
 Read `README.md` first: it is the chart. For an agent:
 
-- Public since its scrub (2026-10-22): every file is on `.helloworld/allowlist.txt` but
-  `vendor/mermaid/mermaid.min.js` (helloworld's word list matches inside the minified code; its
-  README says what a public install sees). A name, host, repo or overlay path is a config key
-  (README, "Private values"), never a literal; a suite's fixture is synthetic (`tests/config.sh`).
+- Public since its scrub (2026-10-22): every file is on `.helloworld/allowlist.txt`. Mermaid is
+  fetched into the cache, never committed (`vendor/mermaid/README.md`: the gate's word list matches
+  inside the minified code). A name, host, repo or overlay path is a config key (README, "Private
+  values"), never a literal; a suite's fixture is synthetic (`tests/config.sh`).
   The vaults whose secrets folder `sheep_gate.py` and `owed` keep closed come from the
   `lighthouse/vaults` key only; `tests/owed.sh` uses `vault-a` and `vault-b` (the owner's hand edit,
   2026-10-23: the secrets guard refuses an agent's edit of a line naming a real vault's secrets path).

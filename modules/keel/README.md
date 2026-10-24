@@ -17,7 +17,7 @@ to the session as commits. Was `memo` until 2026-10-14; moved in from the overla
 | `hooks/doc_answers.py` | UserPromptSubmit: a prompt that says a doc is answered fetches the branch first |
 | `hooks/sheep_gate.py` | the gate in front of every sessionpipe hook entry: the private repos and every confidential scope stay on the Mac |
 | `skills/keel` (`/keel`) | hand a doc's D-list over and take the answers back |
-| `vendor/mermaid/` | the pinned Mermaid the form and page inline (MIT) |
+| `vendor/mermaid/` | the Mermaid pin (version, sha256, MIT license): fetched once into the cache, then inlined |
 | `tests/check.sh` | the five suites; no network |
 
 Peers, each optional and found through the core's `tool()` (the design's G9–G11, G24, G33):

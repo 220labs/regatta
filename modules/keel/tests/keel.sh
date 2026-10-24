@@ -12,6 +12,9 @@ B="$(cd "$(dirname "$0")/../bin" && pwd)"
 peer() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common; print(common.tool(sys.argv[2]) or "")' "$B/../lib" "$1"; }
 DI=$(peer docs-index); WH=$(dirname "$(peer branches.py)")
 export MEMO_STATE_DIR="$T/state"   # a form Save logs a touch (memo status); never into ~/.local/state
+# Mermaid is fetched on a diagram page's first build (bin/keel, MERMAID_URLS): never here. The cache
+# is the suite's own, and the cases that fetch name a file:// stand-in (KEEL_MERMAID_URL).
+export KEEL_CACHE_DIR="$T/keel-cache" KEEL_MERMAID_FETCH=0
 # `keel line` starts `memo serve` detached; each registers in $MEMO_STATE_DIR/serve — stop them all
 reap() { for f in "$T"/state/serve/*.json; do [ -f "$f" ] && kill "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$f")" 2>/dev/null; done; }
 # Nothing reaches the real spacesheep: `keel line` mirrors every doc it hands over, and with the
@@ -3157,7 +3160,7 @@ check "$(kk undated.md 'X — y')" "rc=0 : no findings" "kind: an undated doc (a
 printf '# X — y\n\nShort.\n' > "$K/digest-2026-10-17.md"; "$B/keel" lint "$K/digest-2026-10-17.md" > "$T/kkind.out" 2>&1
 check "$(sed "s|$K/||" "$T/kkind.out")" "digest-2026-10-17.md: no findings" "kind: a doc no architect wrote (a digest) is never judged"
 
-echo "Mermaid in the form and the page: vendored, pinned, inlined only where a diagram is (entry S13)"
+echo "Mermaid in the form and the page: pinned, fetched once, inlined only where a diagram is (entry S13)"
 cat > "$K/dia.md" <<'EOF'
 # Diagram (design, 2026-10-15)
 
@@ -3184,45 +3187,91 @@ EOF
 "$B/keel" build "$K/dia.md" -o "$T/dia.html" > /dev/null 2> "$T/dia.err"
 has "$T/dia.html" '<pre class="mermaid" data-at="' "mermaid: the fence is a diagram block, still noteable"
 has "$T/dia.html" 'A[architect] --&gt;|writes| C[doc&lt;br/&gt;in git]' "…its source escaped, never raw HTML"
-# The bundle is private-only (vendor/mermaid/README.md: helloworld's word list matches inside the
-# minified code); where it is absent, the page shows the source and the build says so once.
-MJS="$B/../vendor/mermaid/mermaid.min.js"
-if [ -f "$MJS" ]; then
-has "$T/dia.html" '__esbuild_esm_mermaid_nm' "…the vendored script inlined"
-has "$T/dia.html" 'mermaid.run({querySelector:"pre.mermaid"})' "…and run on the diagram blocks"
-else
-  echo "  --   skipped: inlining, no vendored mermaid.min.js here (the public tree leaves it out)"
-  has "$T/dia.err" "diagrams show as source" "…without the bundle, the build says the diagrams show as source"
-fi
+# Not vendored (the shareable scrub, 2026-10-23): with no cached copy and no fetch, the page shows
+# the source and the build says so once.
+lacks "$T/dia.html" 'mermaid.run({querySelector:"pre.mermaid"})' "…no cached build, no fetch: no script"
+has "$T/dia.err" "diagrams show as source" "…and the build says the diagrams show as source"
 has "$T/dia.html" '<pre data-at="' "mermaid: another fence stays code"
-check "$(grep -o '</script' "$T/dia.html" | wc -l | tr -d ' ')" "$(grep -o '<script' "$T/dia.html" | wc -l | tr -d ' ')" "mermaid: every script tag closes once — the inlined text holds no </script"
-[ -f "$MJS" ] && check "$(wc -c < "$T/dia.err" | tr -d ' ')" "0" "mermaid: the pinned file passes its check quietly"
 "$B/keel" build "$K/one.md" -o "$T/nodia.html" > /dev/null
-lacks "$T/nodia.html" '__esbuild_esm_mermaid_nm' "mermaid: a page with no diagram carries no script"
+lacks "$T/nodia.html" 'mermaid.run(' "mermaid: a page with no diagram carries no script"
 check "$([ "$(wc -c < "$T/nodia.html")" -lt 200000 ] && echo small)" "small" "…and stays small"
-[ -f "$MJS" ] && check "$(shasum -a 256 "$MJS" | cut -d' ' -f1)" "$(sed -n 's/^MERMAID_SHA256 = "\([0-9a-f]*\)".*/\1/p' "$B/keel")" "mermaid: the vendored file is the pinned build"
+check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("m", sys.argv[1]).load_module(); print(" ".join(u.split("/")[2] for u in m.MERMAID_URLS if u.endswith("/mermaid@%s/dist/mermaid.min.js" % m.MERMAID_VERSION)))' "$B/keel")" "cdn.jsdelivr.net unpkg.com" "mermaid: both sources are the pinned version's dist file"
 has "$B/../vendor/mermaid/README.md" "$(sed -n 's/^MERMAID_SHA256 = "\([0-9a-f]*\)".*/\1/p' "$B/keel")" "…and its README names the same hash"
-printf 'var mermaid = {};\n' > "$T/fake-mermaid.js"   # any file that is not the pinned build
-python3 - "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" > "$T/diab.out" 2> "$T/diab.err" <<'PY'
-import sys
+has "$B/../vendor/mermaid/README.md" "$(sed -n 's/^MERMAID_VERSION = "\([0-9.]*\)".*/\1/p' "$B/keel")" "…and the same version"
+check "$(git -C "$B/.." ls-files vendor/mermaid | grep -c 'mermaid.min.js')" "0" "mermaid: no bundle is tracked"
+# The fetch, against a stand-in whose hash the case pins: a match is cached and inlined; a mismatch
+# is neither; a cached file that is not the pin is fetched again.
+printf 'var mermaid = {run: function () {}};\n' > "$T/fake-mermaid.js"
+cat > "$T/mfetch.py" <<'PY'
+import hashlib, os, sys
 from pathlib import Path
 from importlib.machinery import SourceFileLoader as L
 m = L("m", sys.argv[1]).load_module()
-m.MERMAID_JS = Path(sys.argv[2])
+fake = Path(sys.argv[2]).read_bytes()
+if sys.argv[4] == "pin-fake":
+    m.MERMAID_SHA256 = hashlib.sha256(fake).hexdigest()
+m.MERMAID_JS = Path(sys.argv[5])
 page = m.build(Path(sys.argv[3]).read_text(), "dia.md")
-print("inlined" if "__esbuild_esm_mermaid_nm" in page else "not inlined", '<pre class="mermaid"' in page)
+cached = m.MERMAID_JS.read_bytes() if m.MERMAID_JS.exists() else b""
+print("inlined" if b"var mermaid = {run" in page.encode() else "not inlined", '<pre class="mermaid"' in page,
+      "cached" if cached == fake else "not cached")
+Path(sys.argv[6]).write_text(page)
 PY
-check "$(cat "$T/diab.out")" "not inlined True" "mermaid: a file that is not the pinned build is never inlined; the source still shows"
+MC="$T/mcache/mermaid.min.js"
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/fake-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$MC" "$T/diaf.html" > "$T/diaf.out" 2> "$T/diaf.err"
+check "$(cat "$T/diaf.out")" "inlined True cached" "mermaid: a fetch that matches the pin is cached and inlined"
+check "$(wc -c < "$T/diaf.err" | tr -d ' ')" "0" "…quietly"
+has "$T/diaf.html" 'mermaid.run({querySelector:"pre.mermaid"})' "…and run on the diagram blocks"
+check "$(grep -o '</script' "$T/diaf.html" | wc -l | tr -d ' ')" "$(grep -o '<script' "$T/diaf.html" | wc -l | tr -d ' ')" "mermaid: every script tag closes once — the inlined text holds no </script"
+KEEL_MERMAID_FETCH=0 python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$MC" "$T/diaf.html" > "$T/diaf.out" 2> "$T/diaf.err"
+check "$(cat "$T/diaf.out")" "inlined True cached" "mermaid: once cached, no fetch is needed"
+# With the pinned build cached, a page with no diagram still carries none (the case above, with no
+# cache, could not fail; the landing review, 2026-10-23).
+KEEL_MERMAID_FETCH=0 python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/one.md" pin-fake "$MC" "$T/nodiac.html" > "$T/nodiac.out" 2>&1
+check "$(cat "$T/nodiac.out")" "not inlined False cached" "mermaid: a cached build is never inlined into a page with no diagram"
+check "$([ "$(wc -c < "$T/nodiac.html")" -lt 200000 ] && echo small)" "small" "…and that page stays small"
+rm -rf "$T/mcache"
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/fake-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" real-pin "$MC" "$T/diaf.html" > "$T/diab.out" 2> "$T/diab.err"
+check "$(cat "$T/diab.out")" "not inlined True not cached" "mermaid: a fetched file that is not the pinned build is neither inlined nor kept; the source still shows"
+has "$T/diab.err" "not fetched" "…and the build says why"
+mkdir -p "$T/mcache"; cp "$T/fake-mermaid.js" "$MC"
+KEEL_MERMAID_FETCH=0 python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" real-pin "$MC" "$T/diaf.html" > "$T/diab.out" 2> "$T/diab.err"
+check "$(cat "$T/diab.out")" "not inlined True cached" "mermaid: a cached file that is not the pin is never inlined"
 has "$T/diab.err" "is not the pinned build" "…and the build says why"
-python3 - "$B/keel" "$K/dia.md" > "$T/dias.out" <<'PY'
-import sys
+lacks "$T/diab.err" "not fetched" "…and tries no fetch under KEEL_MERMAID_FETCH=0"
+# other bytes in the cache and no marker, so the case can only pass by fetching (the B-gate review, 2026-10-24)
+printf 'stale\n' > "$MC"; rm -f "$MC.failed"
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/fake-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$MC" "$T/diaf.html" > "$T/diar.out" 2> /dev/null
+check "$(cat "$T/diar.out")" "inlined True cached" "mermaid: a cached file that is not the pin is fetched again and replaced"
+check "$(cmp -s "$MC" "$T/fake-mermaid.js" && echo same)" "same" "…the cache now holds the pin"
+check "$([ -e "$MC.failed" ] && echo marker || echo none)" "none" "…and a good fetch leaves no hold-off marker"
+rm -rf "$T/mcache"
+# A failed fetch holds every process off for MERMAID_RETRY: the hooks that build pages have short
+# deadlines, and a hung network must not cost each of them the timeout.
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/no-such-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$MC" "$T/diaf.html" > /dev/null 2>&1
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/fake-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$MC" "$T/diaf.html" > "$T/diah.out" 2> "$T/diah.err"
+check "$(cat "$T/diah.out")" "not inlined True not cached" "mermaid: after a failed fetch, the next process does not fetch"
+has "$T/diah.err" "a fetch failed under 10 min ago" "…and says so"
+rm -rf "$T/mcache"
+# A cache that cannot be written still draws the page from the verified bytes.
+: > "$T/mblock"
+KEEL_MERMAID_FETCH= KEEL_MERMAID_URL="file://$T/fake-mermaid.js" python3 "$T/mfetch.py" "$B/keel" "$T/fake-mermaid.js" "$K/dia.md" pin-fake "$T/mblock/mermaid.min.js" "$T/diaf.html" > "$T/diaw.out" 2> "$T/diaw.err"
+check "$(cat "$T/diaw.out")" "inlined True not cached" "mermaid: an unwritable cache still inlines the fetched pin"
+has "$T/diaw.err" "not cached" "…and says the cache was not written"
+rm -f "$T/mblock"
+mkdir -p "$T/mcache"; cp "$T/fake-mermaid.js" "$MC"
+KEEL_MERMAID_FETCH=0 python3 - "$B/keel" "$K/dia.md" "$T/fake-mermaid.js" "$MC" > "$T/dias.out" <<'PY'
+import hashlib, sys
 from pathlib import Path
 from importlib.machinery import SourceFileLoader as L
 m = L("m", sys.argv[1]).load_module()
+m.MERMAID_SHA256 = hashlib.sha256(Path(sys.argv[3]).read_bytes()).hexdigest()
+m.MERMAID_JS = Path(sys.argv[4])
 page, _ = m.sheep_page(Path(sys.argv[2]).read_text(), "dia.md", {"rel": "docs/dia.md", "sha": "abcdef0", "branch": "claude/x"})
-print("__esbuild_esm_mermaid_nm" in page, '<pre class="mermaid"' in page)
+print('<pre class="mermaid"' in page, "var mermaid = {run" in page)
 PY
-check "$(cat "$T/dias.out")" "$([ -f "$MJS" ] && echo True || echo False) True" "mermaid: the spacesheep page draws it too (the source alone without the bundle)"
+check "$(cat "$T/dias.out")" "True True" "mermaid: the spacesheep page keeps the diagram block and inlines the cached build"
+rm -rf "$T/mcache"
 
 echo "the form's footer: ↑ and ↓ between decisions, k/n answered (entry S14)"
 has "$T/dia.html" 'id="prev" title="Previous decision or note">↑<span class="sr"> Previous decision or note</span>' "footer: a ↑ button"
