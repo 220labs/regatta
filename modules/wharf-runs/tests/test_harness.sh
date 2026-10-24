@@ -386,13 +386,17 @@ has "$T/err" "must say \`physical: none\`" "  saying why (dispatch's rule, which
 mkrepo "$T/projects/site" "- physical: none"
 mkrepo "$T/projects/oss/lib" "- physical: none"
 mkrepo "$T/projects/overlay" "- physical: none"
+# the overlay is named by a config dir's marker (B14b): the suite's, plus the marker and the core's keys
+rm -rf "$T/config-ovl"; cp -R "$T/config" "$T/config-ovl"; echo "$T/projects/overlay" > "$T/config-ovl/regatta/overlay"
+for k in guarded orca-deny log-dir; do [ -e "$T/config-ovl/regatta/$k" ] || echo "$T/$k" > "$T/config-ovl/regatta/$k"; done
+[ -e "$T/config-ovl/regatta/projects" ] || echo "$T/projects" > "$T/config-ovl/regatta/projects"
 echo site > "$T/config/wharf-runs/public-repos"   # the repos Codex stays out of: a key, never a name in code
 : > "$STUB_CODEX_CALLS"; : > "$STUB_ORCA_CALLS"
 H run --harness codex --prompt x --cwd "$T/projects/site-wt" > /dev/null 2>"$T/err"; check "$?" 2 "Codex in site (a worktree of it): refused"
 has "$T/err" "a public repo" "  naming the rule"
 H run --harness codex --prompt x --cwd "$T/projects/oss/lib-wt" > /dev/null 2>&1; check "$?" 2 "Codex in a repo under oss/: refused"
-REGATTA_LEGACY="$T/projects/overlay" H run --harness orca --agent codex --name t --prompt x --repo "$T/projects/overlay" > /dev/null 2>&1; check "$?" 2 "an Orca codex worker in the overlay's checkout: refused"
-REGATTA_LEGACY="$T/projects/overlay" H run --harness codex --runner orca --name t --prompt x --repo "$T/projects/overlay" > /dev/null 2>&1; check "$?" 2 "codex through Orca (--runner orca) in the overlay's checkout: refused"
+REGATTA_CONFIG="$T/config-ovl" H run --harness orca --agent codex --name t --prompt x --repo "$T/projects/overlay" > /dev/null 2>&1; check "$?" 2 "an Orca codex worker in the overlay's checkout: refused"
+REGATTA_CONFIG="$T/config-ovl" H run --harness codex --runner orca --name t --prompt x --repo "$T/projects/overlay" > /dev/null 2>&1; check "$?" 2 "codex through Orca (--runner orca) in the overlay's checkout: refused"
 check "$(wc -c < "$STUB_CODEX_CALLS" | tr -d ' ')/$(grep -c worktree "$STUB_ORCA_CALLS")" "0/0" "  codex never ran, Orca made no worktree"
 mv "$T/config/wharf-runs/public-repos" "$T/config/public-repos.keep"
 H run --harness codex --prompt x --cwd "$T/projects/oss/lib-wt" > /dev/null 2>"$T/err"; check "$?" 2 "no public-repos key: oss/ still refused"

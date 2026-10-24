@@ -29,7 +29,7 @@
 # Why the slots (2026-10-19): with five checks running on the laptop, Claude Code killed rename S3's
 # test_hooks and test_pickup for low memory (load averages 40–90 the day before), and the killed
 # suite read as a failed one — a built slice reported "failed". Before its first script, check takes
-# one of $CHECK_SLOTS (default 2, about what the laptop holds beside its sessions) slots per Mac login (under $HOME, so a second login has its own):
+# one of $CHECK_SLOTS (default 2, about what the laptop held beside its sessions; per host below) slots per Mac login (under $HOME, so a second login has its own):
 # a directory $CHECK_SLOT_DIR (~/Library/Caches/check-slots)/slot-<i> made with mkdir (atomic), with
 # the holder's `pid`, `start` (its ps lstart, so a reused pid is not mistaken for the holder),
 # `checkout` and `since` inside; `pid` is written last, by rename, so a holder with a pid is whole.
@@ -38,6 +38,9 @@
 # trap sees); a SIGKILLed holder's slot is reclaimed by the next waiter. Waiters queue in order of
 # arrival (a ticket in queue/, dead tickets dropped), print once that they wait and for whom, and
 # poll every $CHECK_SLOT_POLL seconds (default 5).
+# $CHECK_SLOTS unset, the count is this host's line in the config dir's wharf-runs/check-slots (the
+# overlay writes it): `<host>:<n>`, `*:<n>` for a host without a line, host names lower-case; no
+# file or no line is 2 (the owner, 2026-10-23: "let's expand the laptop capacity to 3").
 # Not parallel inside one check: the scripts' timing tests assume they run alone (brief, 2026-10-19).
 set -u
 
@@ -154,7 +157,15 @@ out="$(cd "$out" && pwd -P)"; : > "$out/summary"
 echo "logs: $out"
 
 # --- the slot --------------------------------------------------------------------------------------
-sd="${CHECK_SLOT_DIR:-$HOME/Library/Caches/check-slots}"; n="${CHECK_SLOTS:-2}"; poll="${CHECK_SLOT_POLL:-5}"
+slots_here() {   # this host's line of wharf-runs/check-slots, else `*`'s, else 2
+  local f h v
+  f="${REGATTA_CONFIG:-$HOME/.config/regatta}/wharf-runs/check-slots"
+  h="${CHECK_HOST:-$( { scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr '[:upper:]' '[:lower:]')}"
+  v="$(sed -n "s/^[[:space:]]*$h:[[:space:]]*//p" "$f" 2>/dev/null | head -1)"
+  [ -n "$v" ] || v="$(sed -n 's/^[[:space:]]*\*:[[:space:]]*//p' "$f" 2>/dev/null | head -1)"
+  echo "${v:-2}" | tr -d '[:space:]'
+}
+sd="${CHECK_SLOT_DIR:-$HOME/Library/Caches/check-slots}"; n="${CHECK_SLOTS:-$(slots_here)}"; poll="${CHECK_SLOT_POLL:-5}"
 case "$n" in ''|*[!0-9]*|0) refuse "CHECK_SLOTS must be a number from 1 (got $n)" ;; esac
 mkdir -p "$sd/queue" || refuse "cannot make $sd"
 pstart() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | xargs; }

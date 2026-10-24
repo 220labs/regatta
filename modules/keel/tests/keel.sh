@@ -3506,9 +3506,9 @@ PYX
 has "$T/mu.out" "['plain']" "only plain counts: linked, old, empty, a scratchpad and a non-project folder do not"
 
 echo "regatta-modules G10, G33: atlas's docs-index and helm's asklib absent"
-# REGATTA_LEGACY at no checkout, and a monorepo of the core and keel alone: the core's tool()
-# finds neither (atlas sits beside keel since B10, so the real checkout would find docs-index).
-NP="REGATTA_LEGACY=$T/no-legacy"
+# A monorepo of the core and keel alone: the core's tool() finds neither (atlas sits beside keel
+# since B10, so the real checkout would find docs-index). NP: no variable, kept for the env calls.
+NP="KEEL_NO_PEERS=1"
 mkdir -p "$T/no-atlas/.claude-plugin" "$T/no-atlas/modules"
 cp "$B/../../../.claude-plugin/marketplace.json" "$T/no-atlas/.claude-plugin/"
 cp -R "$(cd "$B/../../regatta" && pwd)" "$(cd "$B/.." && pwd)" "$T/no-atlas/modules/"

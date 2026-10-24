@@ -50,7 +50,7 @@ def _common():
 def peer(name):
     """A peer module's file through the core's tool() (the design's C2): keel's keel, sheep and
     sheep_gate.py, wharf-runs' dispatch, dispatch-rc, autofinish, harness, wharf and blueprintlib.py,
-    plumb's usage-report — wherever each lives, a module here or the overlay's legacy checkout.
+    plumb's usage-report — wherever each lives: a module here, or a plugin install's.
     None when it is not installed (or there is no core): each caller names what it skips."""
     try:
         return _common().tool(name)
@@ -408,7 +408,8 @@ MODES = ("default", "ask", "dnd", "yolo")
 
 
 def task_mode(pid=None, task=None, repo=None, hint=None):
-    """(mode, where it was read) for a sent task: the plan's task, the plan, the hint, the scope."""
+    """(mode, where it was read) for a sent task: the plan's task, the plan, the hint, the scope — `ask`
+    where the scope cannot be read because the registry is torn."""
     plan = load_plan(pid) if pid else None
     if plan:
         t = (plan.get("tasks") or {}).get(task) if task else None
@@ -419,6 +420,15 @@ def task_mode(pid=None, task=None, repo=None, hint=None):
     if hint in MODES:
         return hint, "the run's DISPATCH_MODE"
     repo = repo or (plan or {}).get("repo")
+    try:
+        # a torn or conflicted repos.json reads as no scopes (the core's registry_unreadable trap), so a
+        # scope's `ask` would read `default` and every refusal keyed on it would fail open: read as ask,
+        # the bottom of the ladder, until it reads again (follow-ups item 6)
+        torn = bool(repo) and _common().registry_unreadable()
+    except Exception:  # a core without registry_unreadable: the reading below, as before
+        torn = False
+    if torn:
+        return "ask", "the registry is unreadable (repos.json): read as ask"
     try:
         name, sc = _common().scope_of_repo(repo) if repo else (None, {})
     except Exception:  # a core without scope_of_repo, a registry that will not read: the default
@@ -465,6 +475,52 @@ def branch_modes_file():
     return plans_root() / "branch-modes.json"
 
 
+@contextlib.contextmanager
+def branch_modes_locked():
+    """branch-modes.json's write lock (flock on branch-modes.lock beside it): `helm mode --branch`'s
+    read-modify-write holds it, as plan.json's writers hold locked() (follow-ups item 5)."""
+    f = branch_modes_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(f.with_suffix(".lock")), "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
+def under_ship(over, tm):
+    """A `helm mode --branch` entry (OVER) beside a sent task's mode (TM, task_mode's pair): for a task
+    of a ship, the lower of the two — a ship's mode is a ceiling no branch entry outlasts, so a ship
+    lowered to `ask` stays ask whatever an older `--branch B yolo` says (the follow-ups' landing
+    review); for a run with no ship, the entry, the lowering verb it was made for. None: TM."""
+    if not over:
+        return tm
+    if tm and str(tm[1]).startswith("ship ") and MODE_RANK.get(tm[0], 1) < MODE_RANK.get(over[0], 1):
+        return tm
+    return over
+
+
+def fire_mode(pid, task, repo, hint, branch):
+    """(mode, where) dispatch's fire-time and launch reads use: the branch entry under the ship's
+    mode (under_ship), one reader for both call sites."""
+    return under_ship(branch_override(branch, repo), task_mode(pid, task, repo, hint))
+
+
+def branch_override(branch, repo=None):
+    """(mode, where) a `helm mode --branch` set on BRANCH (this repo's key first, then a key-less
+    one), else None. dispatch's fire-time and launch reads ask it before task_mode (item 5)."""
+    if not branch:
+        return None
+    bm = load_branch_modes()
+    try:
+        key = _common().repo_key(repo) if repo else None
+    except Exception:
+        key = None
+    for k in ([("%s|%s" % (key, branch))] if key else []) + ["|%s" % branch]:
+        e = bm.get(k)
+        if isinstance(e, dict) and e.get("mode") in MODES:
+            return e["mode"], "helm mode --branch %s" % branch
+    return None
+
+
 def load_branch_modes():
     """{"<repo key>|<branch>" or "|<branch>": {"mode", "ts"}} — `helm mode --branch`'s writes."""
     try:
@@ -500,21 +556,15 @@ def branch_mode(branch, repo=None):
     another repo's same-named branch is not this one's."""
     if not branch:
         return None, "no branch"
-    bm = load_branch_modes()
-    try:
-        key = _common().repo_key(repo) if repo else None
-    except Exception:
-        key = None
-    for k in ([("%s|%s" % (key, branch))] if key else []) + ["|%s" % branch]:
-        e = bm.get(k)
-        if isinstance(e, dict) and e.get("mode") in MODES:
-            return e["mode"], "helm mode --branch %s" % branch
+    over = branch_override(branch, repo)
     for pid in list_plans():
         plan = load_plan(pid) or {}
         for tid, t in (plan.get("tasks") or {}).items():
             if isinstance(t, dict) and branch in (t.get("branch"), t.get("seeded_branch")) \
                     and _same_repo(repo, t.get("repo") or plan.get("repo")):
-                return task_mode(pid, tid, repo or t.get("repo"))
+                return under_ship(over, task_mode(pid, tid, repo or t.get("repo")))
+    if over:
+        return over
     best = None
     try:
         for f in runs_dir().glob("*.json"):

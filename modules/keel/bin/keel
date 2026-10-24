@@ -208,15 +208,13 @@ WHOSE = WHO + "'s"
 
 
 def tool_cmd(name):
-    """How a message names a peer tool: the overlay's copy under `~` while the overlay has one (the
-    account dirs' allow rules name that path, AGENTS.md's trap), else the module's, else the bare name."""
-    old = os.environ.get("REGATTA_LEGACY") or (_config_lines("legacy") or [""])[0]
-    p = Path(old).expanduser() / "bin" / name if old else None
-    if p is None or not p.is_file():
-        try:
-            p = _common().tool(name)
-        except ImportError:
-            p = None
+    """How a message names a peer tool: the module's file under `~` (tool()), else the bare name.
+    Since B14b (2026-10-23) the overlay keeps no copy, and the account dirs' allow rules name the
+    module paths (the overlay's bootstrap.sh --hooks)."""
+    try:
+        p = _common().tool(name)
+    except ImportError:
+        p = None
     return tilde(p) if p else name
 
 
@@ -7484,27 +7482,25 @@ def resolve_session(key, top, branch, ref, runs):
 
 
 # The tools whose module path the account dirs' allow rules name since B14a (the overlay's
-# bootstrap.sh --hooks): overlay_cmd spells these by tool(), the rest by the shim until B14b.
+# bootstrap.sh --hooks). Since B14b every tool is spelled so: the overlay's shims are gone.
 MODULE_RULED = ("ask", "helm")
 
 
 def overlay_cmd(name):
-    """`name` spelled as the overlay's shim where one is installed: the account dirs' allow rules
-    name it, and an unattended session is denied the bare name (AGENTS.md, Traps; as paste-paths'
-    _ask_cmd). A MODULE_RULED tool by its module path, which the rules name since B14a."""
+    """`name` spelled by its module path (tool()), which the account dirs' allow rules name: an
+    unattended session is denied the bare name (AGENTS.md, Traps; as paste-paths' _ask_cmd). The
+    overlay's shim came first until B14b (2026-10-23), which deleted it; the name stays for callers."""
     try:
-        if name in MODULE_RULED and _common().tool(name):
-            return str(_common().tool(name))
-        old = _common().legacy_root()
-        if old and (old / "bin" / name).is_file():
-            return str(old / "bin" / name)
+        p = _common().tool(name)
+        if p:
+            return str(p)
     except Exception:   # no core here: the bare name
         pass
     return name
 
 
 def hail_text(kind):
-    """HAIL_TEXT with `keel` spelled as the overlay's shim (overlay_cmd), `~/`-relative as the brief
+    """HAIL_TEXT with `keel` spelled by its module path (overlay_cmd), `~/`-relative as the brief
     is (home_rel): the hailed session may be on the peer, whose home differs (S11c item 11)."""
     return HAIL_TEXT[kind].replace("keel ", home_rel(overlay_cmd("keel")) + " ")
 

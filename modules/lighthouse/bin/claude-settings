@@ -158,11 +158,9 @@ def tilde(p):
 
 
 def _tool():
-    """This tool by the path sessions know: the overlay's old path while it is a shim there, else
-    this file."""
-    old = common.legacy_root()
-    return tilde(old / "bin" / "claude-settings") if old and (old / "bin" / "claude-settings").is_file() \
-        else tilde(Path(__file__).resolve())
+    """This tool by the path sessions know: this file (the overlay's shim came first until B14b,
+    2026-10-23, which deleted it)."""
+    return tilde(Path(__file__).resolve())
 
 
 TOOL = _tool()

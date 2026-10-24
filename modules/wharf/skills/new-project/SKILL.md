@@ -12,10 +12,9 @@ makes it *this* project is written by hand afterwards, starting with its `check`
 the thing that lets a session prove its work (DESIGN F8).
 
 **Where the tools are.** A bare tool name in a command below (`github-repo`, `repos`,
-`knowledge-commit`, `autofinish`) is a path: where the regatta config dir holds a `legacy`
-file (an overlay is installed), `<its first line>/bin/<name>` — the shims the overlay's allow
-rules name — else the module's file, which `regatta which <name>` prints (`regatta` is the
-core's `bin/regatta`, on PATH in a plugin install).
+`knowledge-commit`, `autofinish`) is a path: the module's file, which `regatta which <name>`
+prints (`regatta` is the core's `bin/regatta`: `<home>/modules/regatta/bin/regatta`, where
+`<home>` is the first line of the regatta config dir's `home` file; on PATH in a plugin install).
 
 ## 0. Where this runs, and on what
 

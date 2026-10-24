@@ -207,10 +207,10 @@ GUARD_REL = Path("templates") / "code" / "git-hooks" / "pre-push"
 
 
 def guard_path():
-    """The pre-push guard the public clone runs: the wharf module's template, else the old
-    checkout's (`REGATTA_LEGACY`, the legacy file), else None — then --pr refuses (the design's
-    G30). Through the core, never a path beside this file: the guard is wharf's."""
-    for base in (common.module_path("wharf"), common.legacy_root()):
+    """The pre-push guard the public clone runs: the wharf module's template, else None — then --pr
+    refuses (the design's G30). Through the core, never a path beside this file: the guard is
+    wharf's (the overlay's copy was the second choice until B14b, 2026-10-23)."""
+    for base in (common.module_path("wharf"),):
         if base and (base / GUARD_REL).is_file():
             return base / GUARD_REL
     return None

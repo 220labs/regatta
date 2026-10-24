@@ -5,11 +5,11 @@
 # person Alex (`helm/people`), the laptop `laptop` and one peer `buildbox` it reads over ssh
 # (`wharf-runs/ssh`), and `transcripts` the guarded repo — the one name keel's gate keeps beside the
 # config's list, so the cases hold before and after keel's scrub. `home` is this checkout, the code
-# under test. No `legacy` (nor REGATTA_LEGACY): a peer is found in modules/*/ alone, as in CI.
+# under test. No overlay marker: a peer is found in modules/*/ alone, as in CI.
 # SUITE_OVERLAY is the caller's overlay checkout, read before the switch, for a case whose input is
 # the overlay's own shim; "" where the caller has none (CI), and such a case says it is skipped.
 fixture_config() {
-  SUITE_OVERLAY="${REGATTA_LEGACY:-$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/legacy" 2>/dev/null)}"
+  SUITE_OVERLAY="$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/regatta/overlay" 2>/dev/null)"
   case "$SUITE_OVERLAY" in "~"*) SUITE_OVERLAY="$HOME${SUITE_OVERLAY#\~}";; esac
   [ -d "$SUITE_OVERLAY" ] || SUITE_OVERLAY=""
   export SUITE_OVERLAY REGATTA_CONFIG="$1"
@@ -20,5 +20,8 @@ fixture_config() {
   echo transcripts > "$1/regatta/guarded"
   printf 'Sam\nAlex\n' > "$1/helm/people"
   echo buildbox:buildbox-ssh > "$1/wharf-runs/ssh"
-  unset REGATTA_LAPTOP REGATTA_LEGACY CLAUDE_REPOS_JSON
+  unset REGATTA_LAPTOP CLAUDE_REPOS_JSON
+  # a dispatched run's own DISPATCH_* (its manager, ship, task) would reach a case that asserts none is
+  # handed down (test_helm's skipper start): the suite is run from such runs, so they go here
+  for v in $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 }

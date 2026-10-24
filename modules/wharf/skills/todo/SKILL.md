@@ -67,11 +67,11 @@ A handoff started from a session that keeps a ship (`bin/helm ship`) is a task i
 `bin/helm task <ship> <topic> --branch <branch> --owns <path>…` before `dispatch`, so the run's
 reports (`bin/helm report`) go to that task and its asks relay to this session.
 
-**Where the tools are.** A bare tool name in a command below is a path: where the regatta
-config dir holds a `legacy` file (an overlay is installed), `<its first line>/bin/<name>` —
-the shims the overlay's allow rules name, so an unattended run is never denied its own step
-— else the module's file, which `regatta which <name>` prints (`regatta` is the core's
-`bin/regatta`, on PATH in a plugin install).
+**Where the tools are.** A bare tool name in a command below is a path: the module's file,
+which `regatta which <name>` prints (`regatta` is the core's `bin/regatta`:
+`<home>/modules/regatta/bin/regatta`, where `<home>` is the first line of the regatta config
+dir's `home` file; on PATH in a plugin install) — the paths the allow rules name, so an
+unattended run is never denied its own step.
 
 Then `pickup seed <topic> --file <brief> --no-start` (`--repo
 ~/projects/<repo>` for another repo). It commits the brief to a new `claude/*` branch from local

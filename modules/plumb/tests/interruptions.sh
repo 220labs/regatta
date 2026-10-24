@@ -269,7 +269,7 @@ mkdir -p "$PL/.claude-plugin" "$PM/bin" "$PM/hooks" "$PM/lib" "$T/no-plugins"
 echo '{"name":"peerless","owner":{"name":"t"},"plugins":[]}' > "$PL/.claude-plugin/marketplace.json"
 cp -R "$core" "$PL/modules/regatta"; cp "$fc" "$PM/lib/"; cp "$PR/bin/interruptions" "$PM/bin/"
 cp "$PR/hooks/attention.py" "$PM/hooks/"; cp -R "$PR/bench" "$PM/bench"
-out=$(env REGATTA_HOME="$PL" REGATTA_LEGACY="$T/no-legacy" CLAUDE_CONFIG_DIR="$T/no-plugins" INTERRUPTIONS_LOGINS="" python3 -c "
+out=$(env REGATTA_HOME="$PL" CLAUDE_CONFIG_DIR="$T/no-plugins" INTERRUPTIONS_LOGINS="" python3 -c "
 from importlib.machinery import SourceFileLoader as L
 i = L('interruptions', '$PM/bin/interruptions').load_module(); print(i.trust_waiting(), i.PP.REPEAT_WHOLE, i.KEEL.ask_parts is i._ask_parts)" 2> "$T/pl.err")
 check "$out" "{} resend it:  True" "G13, G14: no trust-projects (lighthouse): no trust row; no keel: paste-paths' phrases as literals, ask_parts from the copy"

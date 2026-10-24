@@ -5,8 +5,10 @@
 # converged, each drifted field alone, extra repos and groups only noted, nestWorkspaces named), the
 # runtime client against a fake socket (the answer matched by id past a keepalive, a refusal raised
 # with its method), the pairing link's checks (not a link, a phone link, a link to the wrong Mac),
-# and the pairs and ssh aliases read from the config dir. Host and repo names are made up.
-# Scratch paths only; no Orca, no network.
+# and the pairs and ssh aliases read from the config dir; then the Linux peer side from a copy
+# loaded as Linux (orca-ide only, ~/.config/orca, the guest's installer or the release .deb by apt,
+# the systemd unit restarted, no clipboard, no Homebrew PATH on the peer). Host and repo names are
+# made up. Scratch paths only; no Orca, no network.
 #   bash modules/wharf-runs/tests/orca-host.sh
 set -u
 M="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,6 +29,7 @@ def load(name, path):
     return mod
 
 oh = load("orca_host", M / "bin" / "orca-host")
+oh.LINUX = False   # the cases up to the Linux block are the Mac's, wherever the suite runs (CI is ubuntu)
 
 class sc:
     """The two functions orca-host takes from the wharf module's `scopes`, to their contract: a
@@ -273,7 +276,7 @@ rc, out = run(["setup"])
 oh.common.tool = real_tool
 check(rc == 1 and "orca-sync skipped" in out and "orca-host check:" in out,
       "setup without the account tool, scopes failing: the sync skipped, and check still runs")
-(cfg / "legacy").write_text("/nowhere\n")
+(cfg / "regatta").mkdir(exist_ok=True); (cfg / "regatta" / "overlay").write_text("/nowhere\n")
 (cfg / "wharf-runs" / "ssh").unlink()
 try:
     oh.ssh_alias("studio")
@@ -286,6 +289,135 @@ rc, out = run(["check"])
 check(rc == 1 and "✗ pairs:" in out and "orca-pairs missing" in out and "orca-host check:" in out,
       "  and check names the missing pairs as a fault, the rest of its report kept")
 check("environment rm" not in out, "  and, PAIRS unknown, no working pairing is called unwanted")
+
+# ---- the Linux peer side, from a copy loaded as Linux
+os.environ["ORCA_HOST_PLATFORM"] = "linux"
+lx = load("orca_host_linux", M / "bin" / "orca-host")
+del os.environ["ORCA_HOST_PLATFORM"]
+check(lx.LINUX is True, "ORCA_HOST_PLATFORM=linux: the copy takes the Linux branch")
+os.environ.pop("XDG_CONFIG_HOME", None)
+check(lx.default_data(True) == Path(os.environ["HOME"]) / ".config" / "orca"
+      and lx.default_data(False) == Path(os.environ["HOME"]) / "Library/Application Support/orca",
+      "the data dir: ~/.config/orca on Linux, Application Support on a Mac")
+os.environ["XDG_CONFIG_HOME"] = str(T / "xdg")
+check(lx.default_data(True) == T / "xdg" / "orca", "  and $XDG_CONFIG_HOME/orca when it is set")
+del os.environ["XDG_CONFIG_HOME"]
+lbin = T / "lbin"; lbin.mkdir()
+for n in ("orca", "orca-ide"):
+    (lbin / n).write_text("#!/bin/sh\n"); (lbin / n).chmod(0o755)
+saved_path = os.environ["PATH"]
+os.environ["PATH"] = f"{lbin}:{saved_path}"
+check(lx.orca_bin() == str(lbin / "orca-ide"), "Linux: orca-ide, never the bare orca beside it (the screen reader, serve's shim)")
+(lbin / "orca-ide").unlink()
+check(lx.orca_bin() is None, "  and no orca-ide: no CLI, though an orca is on PATH")
+os.environ["PATH"] = saved_path
+check(not lx.orca_env()["PATH"].startswith("/opt/homebrew/bin:"), "Linux: no Homebrew put first on the CLI's PATH")
+check(lx.clipboard() is None, "Linux: no clipboard to read")
+
+units = Path(os.environ["HOME"]) / ".config" / "systemd" / "user"; units.mkdir(parents=True)
+(units / "a-other.service").write_text("[Service]\nExecStart=/usr/bin/sleep 1\n")
+check(lx.serve_agent() is None, "no unit runs Orca's server: none found")
+(units / "orca-serve.service").write_text("[Service]\nExecStart=/usr/local/bin/orca-serve-node\nRestart=on-failure\n")
+check(lx.serve_agent() == "orca-serve.service", "the guest's unit (ExecStart its orca-serve-node wrapper) is the server unit")
+
+class Plat:
+    def __init__(self, m): self.m = m
+    def machine(self): return self.m
+real_platform = lx.platform
+lx.platform = Plat("x86_64")
+check(lx.deb_arch_ok("orca-ide_1.4.237_amd64.deb") and not lx.deb_arch_ok("orca-ide_1.4.237_arm64.deb")
+      and not lx.deb_arch_ok("Orca-1.4.237.AppImage"), "x86_64: the amd64 .deb, not the arm64 one, not an AppImage")
+lx.platform = Plat("aarch64")
+check(lx.deb_arch_ok("orca-ide_1.4.237_arm64.deb") and not lx.deb_arch_ok("orca-ide_1.4.237_amd64.deb"),
+      "aarch64: the arm64 .deb")
+lx.platform = real_platform
+
+def lrun(argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = lx.main(argv)
+    return rc, out.getvalue()
+installer = T / "orca-ide-install"; installer.write_text("#!/bin/sh\n")
+lx.DEB_INSTALLER = installer
+lx.runtime_up = lambda: False
+rc, out = lrun(["setup", "--dry-run"])
+check(rc == 0 and f"sudo -n {installer}" in out and "systemctl --user restart orca-serve.service" in out,
+      "setup --dry-run on Linux: the guest's installer, then a restart of its unit")
+check("brew" not in out and "launchctl" not in out and "ln -sf" not in out and "/opt/homebrew" not in out,
+      "  and no Homebrew, no launchctl, no CLI symlink")
+lx.DEB_INSTALLER = T / "no-installer"
+(cfg / "wharf-runs" / "node").mkdir(parents=True)
+(cfg / "wharf-runs" / "node" / "orca-release").write_text("v9.9.9\n")
+rc, out = lrun(["setup", "--dry-run"])
+check("the v9.9.9 .deb" in out and "apt-get install" in out, "  no installer: the node's pinned release's .deb, by apt")
+(cfg / "wharf-runs" / "node" / "orca-release").unlink()
+rc, out = lrun(["setup", "--dry-run"])
+check(f"the {lx.ORCA_RELEASE} .deb" in out, "  and no pin: yard-node's pinned default, not the latest")
+(cfg / "wharf-runs" / "node" / "orca-release").write_text("v1;rm\n")
+rc, out = lrun(["setup", "--dry-run"])
+check(rc != 0 and "a release tag" in out, "  a release that is no tag: refused before any URL")
+(cfg / "wharf-runs" / "node" / "orca-release").unlink()
+(units / "orca-serve.service").unlink()
+saved_disp = {k: os.environ.pop(k, None) for k in ("DISPLAY", "WAYLAND_DISPLAY")}
+os.environ["ORCA_HOST_CLI"] = str(lbin / "orca")   # installed: this case is the server's, no install runs
+rc, out = lrun(["setup"])
+del os.environ["ORCA_HOST_CLI"]
+check(rc == 1 and "orca-serve-agent here" in out and "orca open" not in out,
+      "no server unit, no display: setup names orca-serve-agent, never `orca open`")
+for k, v in saved_disp.items():
+    if v is not None:
+        os.environ[k] = v
+(units / "orca-serve.service").write_text("[Service]\nExecStart=/usr/local/bin/orca-serve-node\n")
+
+argvs, ups = [], iter([False, True])
+class Ok:
+    returncode, stdout, stderr = 0, "", ""
+def lfake(argv, **kw):
+    argvs.append(list(argv))
+    return Ok()
+real_lrun = lx.subprocess.run
+lx.subprocess.run = lfake
+lx.DEB_INSTALLER = installer
+lx.runtime_up = lambda: next(ups, True)
+lx.scope_steps = lambda rt: ([], [], [], [])
+lx.cli = lambda *a, **k: {"environments": []}
+real_tool = lx.common.tool; lx.common.tool = lambda n: None if n == "account" else real_tool(n)
+rc, out = lrun(["setup"])
+lx.common.tool = real_tool
+check(argvs[:2] == [["sudo", "-n", str(installer)], ["systemctl", "--user", "restart", "orca-serve.service"]],
+      f"setup on Linux runs the installer, then restarts the unit (got {argvs[:2]})")
+argvs.clear()
+lx.DEB_INSTALLER = T / "no-installer"
+lx.deb_url = lambda release: "https://example.invalid/orca-ide_1_amd64.deb"
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = lx.install_deb(False)
+check(rc == 0 and argvs[0][:2] == ["curl", "-fsSL"] and argvs[1][:2] == ["sudo", "-n"]
+      and argvs[1][-3:-1] == ["install", "-y"] and "/" in argvs[1][-1],
+      "no installer: the .deb downloaded, then apt-get install by a path apt reads as a file")
+lx.subprocess.run = real_lrun
+
+lx.runtime_up = lambda: False
+rc, out = lrun(["check"])
+check(rc == 1 and "orca-ide is not installed" in out and "Orca.app" not in out and "brew" not in out,
+      "check on Linux: orca-ide missing is one fault, naming no app bundle or cask")
+pasted = []
+lx.subprocess.run = lambda argv, **kw: pasted.append(argv[0]) or Ok()
+lx.paired = lambda peer: None
+lx.tailscale_addresses = lambda peer: set()
+rc, out = lrun(["pair", "buildbox"])
+check(rc == 1 and "--link -" in out and pasted == [], "pair on Linux without --link -: said, no pbpaste run")
+
+(cfg / "wharf-runs" / "ssh").write_text("buildbox:buildbox-ssh\n")
+sent_ssh = []
+lx.subprocess.run = lambda argv, **kw: sent_ssh.append(argv) or Ok()
+os.environ.pop("ORCA_HOST_SSH", None)
+lx.run_on("buildbox", ["check"])
+remote = sent_ssh[-1][-1]
+check("[ ! -d /opt/homebrew/bin ]" in remote and not remote.startswith("PATH=/opt/homebrew/bin"),
+      "--on: Homebrew's PATH only where the peer has it (a Linux peer has none)")
+# the real run: lx.subprocess is the shared module, so its patched run would answer for sh too
+lx.subprocess.run = real_lrun
+check(real_lrun(["sh", "-n", "-c", remote]).returncode == 0, "  and the remote line parses as sh")
 sys.exit(1 if fails else 0)
 EOF
 rc=$?

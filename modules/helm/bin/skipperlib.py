@@ -166,15 +166,8 @@ def module_dir():
 
 
 def tool_cmd(name):
-    """The path a session is handed for `ask` or `helm`: the overlay's shim while it exists, since the
-    account dirs' allow rules name it (AGENTS.md trap: a path a prompt hands a session comes from the
-    overlay), else this module's own file."""
-    try:
-        legacy = helmlib._common().legacy_root()
-    except ImportError:
-        legacy = None
-    if legacy and (legacy / "bin" / name).is_file():
-        return str(legacy / "bin" / name)
+    """The path a session is handed for `ask` or `helm`: this module's own file, which the account
+    dirs' allow rules name (the overlay's shim came first until B14b, 2026-10-23, which deleted it)."""
     return str(HERE.parent / ("libexec" if name == "helm" else "bin") / name)
 
 

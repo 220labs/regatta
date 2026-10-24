@@ -120,7 +120,7 @@ Bash call's, may be ended the moment the caller returns — dispatch's header, 2
     docs/dispatch-warm-hour-2026-10-08.md); opus (dispatch's default — no model flag here: a model is
     chosen in bin/gate or a script bin/test_gate.sh names); `--permission-mode auto` with dispatch's allowlist
     plus what /finish runs (Agent, EnterWorktree, git, the contract's `check:` as written on the
-    primary's main, the overlay's bin/* (legacy_root), carried.py), and dispatch's denied list minus
+    primary's main, the modules' bin/* and libexec/* in the regatta main checkout, carried.py), and dispatch's denied list minus
     `git push` and bin/pr's launch verbs: checkpoint.py and the repo's pre-push judge those by
     ref. No `--background`: dispatch's default holds — background tasks off
     (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1), so a Bash call past BASH_DEFAULT_TIMEOUT_MS (30 min)
@@ -242,7 +242,10 @@ START_LOCK = STATE + ".lock"
 WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
-OPTIONAL_KEYS = ("merge", "hold", "keel_hold")   # written only when set: a launch without --merge or a hold keeps the file it always had
+OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode")   # written only when set: a launch without --merge or a hold keeps the file it always had
+# eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
+# (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
+# has no mode now, never a bare `by: yolo` (follow-ups item 4)
 LAND_BY = ("yolo", "dnd")   # the mode launches (skipper-modes S3b): `--by` names the mode, plan.json decides
 PERSON_BY = ("override", "typed")   # a person's own launch: mode ask does not hold it (landing())
 MERGE_BY = PERSON_BY + ("ship",)   # whose yes --merge may carry: a person's, or the keel's for a ship (the header)
@@ -750,7 +753,7 @@ def main_of(t):
 
 
 def landing(t, by, rule):
-    """(hold, mode) for this launch — the landing ladder (skipper-modes S3b), read here from plan.json
+    """(hold, mode, eff) for this launch — the landing ladder (skipper-modes S3b), read here from plan.json
     (bin/autofinish's landing_mode), never from the caller: `--by` is a label any caller may type, and
     every dispatched run's allow rules pass bin/* unseen (AGENTS.md's unattended-caller trap). `hold` is
     why the run stops at a ready PR, or None when it may merge:
@@ -764,34 +767,58 @@ def landing(t, by, rule):
       - a ship launch (`--by ship`, the keel's yes): held_slice as a mode launch, under `yolo` when the
         ship has no landing mode — the yes was given to a blueprint before any diff, so the launcher's
         gates and the repo's `autofinish_exclude`/`in_place` still hold it (S6's finish review);
-      - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host)."""
+      - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host).
+    `eff` is the mode a mode or ship launch was judged by (None for any other), for autofinish.json's
+    `eff_mode`: bin/pr judges the launch again by it where the branch has no mode by then."""
     af = _lander()
     if af is None:
         return ("the lander's judge did not load (bin/autofinish)"
-                if by in LAND_BY or rule == "M" or by == "ship" else None), None
+                if by in LAND_BY or rule == "M" or by == "ship" else None), None, None
     mode = af.landing_mode(t.branch, t.primary or None)[0]  # with the repo, as the sweep's verdict reads it
     # `ship` is the keel's yes to merge, not a person at the keyboard: mode ask holds it too
     person = by in PERSON_BY and not os.environ.get("CLAUDE_UNATTENDED")
     if mode == "ask" and not person:
-        return "mode ask — nothing lands by itself", mode
+        return "mode ask — nothing lands by itself", mode, None
     if by not in LAND_BY and rule != "M" and by != "ship":
-        return None, mode
+        return None, mode, None
     if by == "ship":
         eff = mode if mode in af.LAND_MODES else "yolo"
     else:
         eff = mode if mode in af.LAND_MODES else ("yolo" if by == "yolo" and mode is None and merge_auto(t)
                                                   and not os.environ.get("CLAUDE_UNATTENDED") else mode)
     try:
-        return af.held_slice(t.primary, t.path, main_of(t), eff), mode
+        return af.held_slice(t.primary, t.path, main_of(t), eff), mode, eff
     except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
-        return "the held slice could not be read (%s)" % type(e).__name__, mode
+        return "the held slice could not be read (%s)" % type(e).__name__, mode, eff
+
+
+# the module tools /finish names ("Where the tools are"), each with the verb where only one is meant
+FINISH_TOOLS = ("wharf-runs/bin/pickup", "wharf-runs/bin/check", "wharf-runs/bin/autofinish-run",
+                "wharf-runs/bin/rc-hosts", "keel/bin/keel", "keel/bin/paste-paths", "keel/bin/owed",
+                "atlas/bin/knowledge-commit", "wharf/libexec/pr", "wharf/bin/review-gate",
+                "wharf/hooks/carried.py", "regatta/bin/regatta which", "helloworld/bin/helloworld check")
+
+
+def regatta_main():
+    """The regatta main checkout this core belongs to (never a worktree, which /finish removes), as
+    an absolute path, or None (a plugin install: no checkout)."""
+    root = common.regatta_root()
+    if not root:
+        return None
+    gd = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                        capture_output=True, text=True).stdout.strip()
+    top = os.path.dirname(gd) if gd.endswith("/.git") else str(root)
+    # the root as the caller spells it when it is the main checkout: git resolves links (/var is
+    # /private/var on macOS), and a rule must read as the session types the path
+    return os.path.abspath(str(root)) if os.path.realpath(top) == os.path.realpath(str(root)) else top
 
 
 def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None):
-    """dispatch --start, with E1's lists. The bin and carried.py rules are the overlay's
-    (common.legacy_root(): /finish runs its tools there), in the two spellings a session types them
-    in: under `~/` and the absolute path. No overlay installed: no such rule, and the classifier
-    judges those calls like any other."""
+    """dispatch --start, with E1's lists. The FINISH_TOOLS rules are the modules' in
+    the regatta main checkout (/finish runs its tools there since B14b, 2026-10-23, which deleted the
+    overlay's shims; B14a's D1-A), in the two spellings a session types them in: under `~/` and the
+    absolute path. The deny list wins over them: a held launch keeps `pr merge` denied. No regatta
+    checkout (a plugin install): no such rule, and the classifier judges those calls like any other."""
     # No allow rule for the contract's check command: since D1-A (2026-10-13) a branch may launch
     # an AGENTS.md change unwatched, and an allow rule approves before the classifier looks, so
     # the check line would become pre-approved code (code review, 2026-10-13). The classifier
@@ -799,28 +826,32 @@ def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None):
     # No allow rule for SendMessage either (`notify`, the header): a bare one would let text in the
     # bundle steer any live session unseen; the classifier judges each send (review, 2026-10-18)
     allow = ["Agent", "EnterWorktree", "Bash(git:*)"]
-    old = common.legacy_root()
+    top = regatta_main()
     roots = []
-    if old:
-        old = os.path.abspath(os.path.expanduser(str(old)))
-        rel = os.path.relpath(old, HOME)
-        roots = (["~/" + rel] if not rel.startswith("..") else []) + [old]
+    if top:
+        rel = os.path.relpath(top, HOME)
+        roots = (["~/" + rel] if not rel.startswith("..") else []) + [top]
     for root in roots:
-        allow += ["Bash(%s/bin/*)" % root, "Bash(python3 %s/bin/*)" % root,
-                  "Bash(python3 %s/hooks/carried.py:*)" % root]
+        # one rule per tool the finish skill names, never modules/*/bin/* wholesale: that pre-approved
+        # every module tool, live-state writers (clock, knowledge-home, scope-pass) and the core's
+        # `regatta pr merge` among them, which no deny pattern matched (the B14b landing review)
+        for tool in FINISH_TOOLS:
+            allow += ["Bash(%s/modules/%s*)" % (root, tool), "Bash(python3 %s/modules/%s*)" % (root, tool)]
     prompt = finish_prompt(t.branch, by, merge, hold)
     cmd = [DISPATCH, "--start", prompt, t.path, t.window,
            "--session-id", sid]   # opus: dispatch's default (header)
     for a in allow:
         cmd += ["--allow", a]
     lift = ["Bash(git push:*)", "Bash(*bin/pr ready*)", "Bash(*bin/pr merge*)",
-            "Bash(*libexec/pr ready*)", "Bash(*libexec/pr merge*)"]
+            "Bash(*libexec/pr ready*)", "Bash(*libexec/pr merge*)",
+            "Bash(*regatta pr ready*)", "Bash(*regatta pr merge*)"]
     if hold:
         # a held launch (landing(): mode ask, the dnd slice, a mode lowered since, E12's yolo outside a
         # `"merge": "auto"` repo) stops at a ready PR. The skill says so; this makes it so — prose alone
         # did not hold once (bin/dispatch, idea-redaction, 2026-10-04)
         lift.remove("Bash(*bin/pr merge*)")
         lift.remove("Bash(*libexec/pr merge*)")
+        lift.remove("Bash(*regatta pr merge*)")
     for d in lift:
         cmd += ["--undeny", d]
     return cmd + (["--dry-run"] if dry else [])
@@ -1507,7 +1538,7 @@ def start(t, args):
     # `via=chain` say the tick started it.
     by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in LAND_BY else args.by
     via = " via=chain" if args.by == "chain" else ""
-    hold, mode = landing(t, by, args.rule)
+    hold, mode, eff = landing(t, by, args.rule)
     # the keel's no (S6): a mode that would merge is not asked, and a later launch of this worktree —
     # the sweep's retry of a held run that died starts `--by sweep`, no --hold — keeps it. Its own key,
     # not the text of `hold`: a launch that another rule held first (mode ask) records that rule's
@@ -1519,7 +1550,7 @@ def start(t, args):
         args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
-          "merge": args.merge, "hold": hold, "keel_hold": keel_hold}
+          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff}
     cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")

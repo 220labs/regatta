@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""owed — is a thing a session listed as "owed by the owner" already done? Read-only, stdlib, 3.9.
+
+    owed MARKER [MARKER…] [--since ISO] [--repo PATH] [--window 24h] [--session ID]
+
+A marker is something the done work would contain or change: a path, a settings key
+(`KEY@/abs/file.json`), a branch, a command name. Two markers when unsure; never a common word.
+
+What it prints, one line per hit, `no hits` otherwise; exit 0 always:
+1. since — when this session first wrote a marker in its own reply (its transcript, found by
+   $CLAUDE_CODE_SESSION_ID), else --since, else now minus --window. Nothing before that moment
+   can be a response to the ask (the owner, 2026-10-02), so nothing before it is read. Earlier is the
+   safe direction: a wider window adds noise, never misses. An item carried in from TODO.md, a doc
+   or an earlier session was asked before this session: pass --since <when it was recorded>, e.g.
+   `git log --reverse --format=%cI -S'<marker>' -- TODO.md | head -1`.
+2. branches — commits on origin/claude/* after `since` whose diff adds or removes a marker
+   (`git log -S`). Never fetches; prints how old the last fetch is.
+3. transcripts — other sessions' entries after `since` that contain a marker (files under
+   ~/.claude/projects/*/ touched since then; a line is parsed only if it holds a marker).
+   This Mac only: the build Mac's sessions show up through their pushed branches.
+4. state — a marker holding a / is tested as a path for existence; KEY@FILE.json for the key.
+   Never opens anything under Drive's _secrets (a hook guards it; so does this).
+
+Why (docs/record/owed-check-2026-10-02.md): on 2026-10-02 one recap listed four items as owed by the owner;
+all four were done — one in another running session, on another branch, in another shape. The owner
+routes work that way without saying so, so the check is by outcome, scoped to after the ask.
+
+Transcript facts (probed 2026-10-02): every user/assistant record is one JSON line with
+`timestamp` (ISO, Z), `sessionId`, `gitBranch`, `cwd`; `timestamp` sits after `message`, so a
+line is json-parsed, not regexed. A session's file is ~/.claude/projects/<slug>/<id>.jsonl and
+the slug moves with EnterWorktree, hence the glob.
+"""
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import subprocess
+import sys
+
+PROJECTS = os.environ.get("OWED_PROJECTS", os.path.expanduser("~/.claude/projects"))
+# The vaults by name, from lighthouse's `lighthouse/vaults` in the regatta config dir. Without the
+# key, a `_secrets` folder anywhere: the wider net.
+
+
+def _vaults():
+    cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+    try:
+        with open(os.path.join(cfg, "lighthouse", "vaults"), encoding="utf-8-sig") as fh:
+            return [l.strip() for l in fh if l.strip()]
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+SECRETS = tuple("%s/_secrets" % v.lower() for v in _vaults()) or ("/_secrets",)
+
+
+def ts(s):
+    try:
+        t = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)).astimezone(dt.timezone.utc)
+
+
+def texts(entry):
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return [content]
+    return [c.get("text", "") for c in content or [] if isinstance(c, dict) and c.get("type") == "text"]
+
+
+def first_ask(session, markers):
+    """The earliest assistant text holding a marker, across every file of this session (a
+    session that entered a worktree has one per slug)."""
+    hits = []
+    for path in glob.glob(os.path.join(PROJECTS, "*", session + ".jsonl")):
+        try:
+            for line in open(path, encoding="utf-8", errors="replace"):
+                if not any(m in line for m in markers):
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("type") == "assistant" and any(m in t for t in texts(e) for m in markers):
+                    t = ts(e.get("timestamp"))
+                    if t:
+                        hits.append(t)
+                    break
+        except OSError:
+            continue
+    return min(hits) if hits else None
+
+
+def git(repo, *args):
+    r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def split_key(m):
+    """KEY@/path/file.json -> (KEY, path); anything else -> ("", m). The key never holds a /,
+    so a cloud-drive folder whose name holds an @ (an account's address) is a path, not a key."""
+    key, at, f = m.partition("@")
+    return (key, f) if at and key and "/" not in key and f.endswith(".json") else ("", m)
+
+
+def terms(markers):
+    """What to search for: the bare KEY of a KEY@file marker, else the marker itself."""
+    return [split_key(m)[0] or m for m in markers]
+
+
+def branches(repo, markers, since):
+    dirs = git(repo, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir").split()
+    try:  # FETCH_HEAD is per worktree; the remote refs it updates are shared
+        newest = max(os.path.getmtime(os.path.join(d, "FETCH_HEAD")) for d in dirs
+                     if os.path.exists(os.path.join(d, "FETCH_HEAD")))
+        age = (dt.datetime.now().timestamp() - newest) / 60
+        print("fetch: origin is %d min old%s" % (age, " — fetch first, the ask is newer" if
+              dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=age) < since else ""))
+    except (OSError, ValueError):
+        print("fetch: never fetched here")
+    own = "origin/" + git(repo, "branch", "--show-current").strip()  # this session's own commits
+    seen = set()
+    for m in markers:
+        out = git(repo, "log", "--since=" + since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "--remotes=origin/claude", "-S" + m, "--format=%h %cI %S %s")
+        for line in out.splitlines():
+            h = line.split(" ", 1)[0]
+            if line.split(" ")[2:3] == [own]:
+                continue
+            if h not in seen:
+                seen.add(h)
+                print("branch: " + line[:160])
+    if not seen:
+        print("branch: no hits")
+
+
+def transcripts(markers, since, session):
+    hits = 0
+    for path in sorted(glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))):
+        if os.path.basename(path).startswith(session or "\0") or "-scratchpad" in path:
+            continue  # this session, and headless runs a bench started in a scratchpad
+        try:
+            if os.path.getmtime(path) < since.timestamp():
+                continue
+            n, first, refs = 0, None, set()
+            for line in open(path, encoding="utf-8", errors="replace"):
+                if not any(m in line for m in markers):
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                t = ts(e.get("timestamp"))
+                if not t or t <= since or e.get("isSidechain"):
+                    continue
+                n += 1
+                first = first or t
+                refs.add(e.get("gitBranch") or "?")
+        except OSError:
+            continue
+        if n:
+            hits += 1
+            slug = os.path.basename(os.path.dirname(path)).split("-projects-")[-1]
+            print("transcript: %s %s — %d entries, first %s, branches %s" % (
+                os.path.basename(path)[:8], slug, n, first.strftime("%H:%M:%SZ"), ", ".join(sorted(refs))))
+    if not hits:
+        print("transcript: no hits (this Mac only)")
+
+
+def state(markers, repo):
+    for m in markers:
+        if git(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/" + m).strip():
+            merged = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor",
+                                     "origin/" + m, "origin/main"]).returncode == 0
+            print("state: branch origin/%s exists, %s" % (m, "merged into main" if merged else "not on main"))
+            continue
+        if m.startswith("claude/"):  # GitHub deletes a branch when its PR merges
+            print("state: branch origin/%s gone — merged and deleted, or never pushed; search main "
+                  "for its work" % m)
+            continue
+        key, f = split_key(m)
+        if not (key or "/" in f):  # a bare name like settings.json is a search term, not a path
+            continue
+        p = os.path.expanduser(f) if f.startswith(("/", "~")) else os.path.join(repo, f)
+        if any(s in os.path.realpath(p).lower() for s in SECRETS):
+            print("state: %s - under _secrets, not read" % m)
+        elif not os.path.exists(p):
+            print("state: %s - no such path%s" % (p, "" if f.startswith(("/", "~")) else
+                  " in this worktree (another session may have it elsewhere)"))
+        elif key:
+            try:
+                d = json.load(open(p))
+                has = isinstance(d, dict) and (key in d or key in (d.get("env") or {}))
+                print("state: %s %s in %s" % (key, "present" if has else "absent", p))
+            except (OSError, ValueError) as e:
+                print("state: %s unreadable: %s" % (p, e))
+        else:
+            print("state: %s exists" % p)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="owed", description=__doc__.split("\n")[0])
+    ap.add_argument("markers", nargs="+")
+    ap.add_argument("--since", help="ISO time; default: this session's first mention of a marker")
+    ap.add_argument("--repo", default=os.getcwd(), help="repo whose origin/claude/* to search (default: cwd)")
+    ap.add_argument("--window", default="24h", help="fallback when no first mention is found")
+    ap.add_argument("--session", default=os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
+    a = ap.parse_args(argv)
+    since, why = None, ""
+    if a.since:
+        since, why = ts(a.since), "given"
+    elif a.session:
+        since = first_ask(a.session, terms(a.markers))
+        why = "this session's first mention"
+    if not since:
+        w = a.window.strip().lower()
+        try:
+            hours = int(w[:-1]) * 24 if w.endswith("d") else int(w.rstrip("h") or 24)
+        except ValueError:
+            hours = 24
+        since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+        why = "no first mention found — last %dh" % hours
+    print("since: %s (%s)" % (since.strftime("%Y-%m-%dT%H:%M:%SZ"), why))
+    if why.startswith("this session") and dt.datetime.now(dt.timezone.utc) - since < dt.timedelta(minutes=10):
+        print("warning: first mention is under 10 min old - an item carried from TODO.md, a doc or an "
+              "earlier session needs --since <when it was first recorded>")
+    branches(a.repo, terms(a.markers), since)
+    transcripts(terms(a.markers), since, a.session)
+    state(a.markers, a.repo)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as err:  # a probe never fails the caller
+        print("owed: %s" % err, file=sys.stderr)
+        sys.exit(0)

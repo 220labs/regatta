@@ -33,12 +33,13 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
 - **A peer**, by `common.tool(name)` (and `regatta which` / `regatta has` in a shell): the
   checkout above the loaded core, `modules/*/{bin,libexec,hooks}/<name>`; else, from a plugin
   cache, the `installPath` of each `<plugin>@regatta` row in `installed_plugins.json` (user
-  scope, and project scope when the cwd is inside it); else the checkout named by
-  `REGATTA_LEGACY` or the `legacy` file; else None — and the caller takes the fallback its
-  README names, never a stack trace.
-- **An overlay**: `common.overlay_installed()` — the config dir's `regatta/overlay` marker, or its
-  `legacy` file, which the marker outlives. Where it is true, a key the overlay owes and did not
-  write is refused, never read as absent.
+  scope, and project scope when the cwd is inside it); else None — and the caller takes the
+  fallback its README names, never a stack trace. (An overlay's checkout was a third place until
+  the shims there went, 2026-10-23.)
+- **An overlay**: `common.overlay_installed()` — the config dir's `regatta/overlay` marker, whose
+  line `common.overlay_root()` reads: the overlay's checkout, for its own files and the few
+  scripts a launcher of its starts, never a module's tool. Where it is true, a key the overlay
+  owes and did not write is refused, never read as absent.
 - **Private config**: every file keeps its environment override (for a test suite or one shell,
   never exported), and its default is `${REGATTA_CONFIG}/<module>/<file>`. For the core:
   `regatta/models.json` (the gate's table; the defaults beside the gate otherwise),
@@ -49,7 +50,7 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
 - **Private values**: one plain file each, one item per line (blank lines and a UTF-8 BOM
   ignored), read once when the core loads; `common.config_read` is the one reader. Whoever
   installs the modules writes them (on the owner's Macs, the overlay's `bootstrap.sh --config`).
-  With an overlay installed (a `legacy` file in the config dir), a key it left out is an
+  With an overlay installed (its `regatta/overlay` marker in the config dir), a key it left out is an
   ImportError naming each — the core fails closed rather than send a guarded source unrefused —
   and an empty file is a deliberate empty value. Without one, an absent file is the neutral
   default below. With or without an overlay, a key that exists but cannot be read (any error but

@@ -545,19 +545,33 @@ YARD_RULES_PAST = (
 
 
 def _check_tool():
-    """The whole-check tool a builder is told to run: the overlay's `bin/check` where an overlay is
-    installed, else this module's own (the allow rules name the overlay's path first, the root
-    AGENTS.md trap), written with `~` for the home as the rules always read, so a Task made under
-    the earlier text is no drift on a Mac whose overlay is where it was."""
+    """The whole-check tool a builder is told to run: this module's own through the core's tool()
+    (the overlay's `bin/check` came first until B14b, 2026-10-23, which deleted it), written with
+    `~` for the home as the rules always read."""
     home = str(Path.home())
     try:
         import common
-        old = common.legacy_root()
-        p = (old / "bin" / "check") if old and (old / "bin" / "check").is_file() else common.tool("check")
+        p = common.tool("check")
     except Exception:  # noqa: BLE001 — no core on the path: the module's own copy
         p = None
     p = str(p if p else Path(__file__).resolve().parent / "check")
     return "~" + p[len(home):] if p.startswith(home + "/") else p
+
+
+def _past_rules():
+    """YARD_RULES_PAST, plus the rules as a Task made before B14b holds them: filled in with the
+    overlay's `bin/check`, which _check_tool() named first until then. Without it every pending Task
+    reads as spec drift and `wharf apply` re-specs whole plans (the B14b landing review)."""
+    past = YARD_RULES_PAST
+    try:
+        import common
+        ov = common.overlay_root()
+    except Exception:  # noqa: BLE001 — no core on the path: no overlay to have named
+        ov = None
+    if ov:
+        home, p = str(Path.home()), str(Path(ov).expanduser() / "bin" / "check")
+        past += (YARD_RULES.replace("{check}", "~" + p[len(home):] if p.startswith(home + "/") else p),)
+    return past
 
 
 def yard_rules():
@@ -780,7 +794,7 @@ def diff(blueprint, here, plan_tasks, orca, answered=None, ended=None, cancelled
             drift = []
             # a Task created before the Yard rules rode in the spec is not re-specced for them
             if (t.get("spec") or "") not in (spec_of(blueprint, st), spec_of(blueprint, st, rules=False)) + tuple(
-                    st["section"] + "\n\n" + r for r in YARD_RULES_PAST):
+                    st["section"] + "\n\n" + r for r in _past_rules()):
                 drift.append("spec")
             if sorted(_deps_of(t)) != want_deps:
                 drift.append("deps")

@@ -264,11 +264,25 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         gate = af.touches_gate(primary, base, exclude, paths)
         if not gate and not problem and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
                                          or st.get("by") == "ship"):
-            mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)[0]
-            # autofinish-run's landing(): a yolo launch with no mode is E12's standing yes, judged at its
-            # start; a ship launch with no landing mode is judged as yolo (S6's finish review)
-            eff = mode if mode in af.LAND_MODES else ("yolo" if (mode is None and st.get("by") == "yolo")
-                                                      or st.get("by") == "ship" else mode)
+            mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
+            # a mode that cannot be read now (helm absent, a reader that raised) is no "no sent task":
+            # it holds, never falls back to the start's eff_mode (held_slice's rule: what it cannot
+            # read is a hold; the follow-ups' landing review)
+            unreadable = mode is None and (str(why_mode).startswith("the mode is unreadable")
+                                           or why_mode == "helm is not installed here")
+            # the mode now; with none, the mode autofinish-run's landing() judged the start by (its
+            # `eff_mode`: E12's standing yes is `yolo` there only in a "merge": "auto" repo from a
+            # person's caller, a ship launch with no mode `yolo`) — never a bare `by: yolo`, which any caller may type (follow-ups item 4).
+            # A record from before the key reads None, and None holds
+            if unreadable:
+                eff = None
+            elif st.get("by") == "ship":
+                # the keel's yes, judged at the start: landing() records eff_mode yolo for a ship with no
+                # landing mode, and branch_mode reads such a ship's task as `default`, never None, so the
+                # plain fallback below would hold every one; a dnd, yolo or ask mode set since is the mode now
+                eff = mode if mode in af.LAND_MODES or mode == "ask" else st.get("eff_mode")
+            else:
+                eff = mode if mode is not None else st.get("eff_mode")
             try:
                 held = af.held_slice(primary, git("rev-parse", "--show-toplevel"), base, eff)
             except Exception as e:  # noqa: BLE001 — what it cannot read is a hold

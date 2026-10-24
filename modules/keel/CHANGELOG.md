@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `sheep` names its main checkout's copy in messages and reaches the account registry's login dirs
+  (an Orca profile) besides the default ones (B14b, 2026-10-23); keel, paste-paths and doc_answers name
+  module paths, never the overlay's shims.
+- `bin/owed`, `hooks/sheep_gate.py` and `tests/owed.sh` are public (keel-held, 2026-10-23): the
+  vaults whose `_secrets` stay closed come from the `lighthouse/vaults` key only, and `owed.sh` writes
+  its own config dir, with a case for the key and one for the wider net without it.
 - The rest of the lookout's fixes before arming (crosstalk S11c, 2026-10-22; items 9–16 and 23–30 of
   `docs/lookout-s5-2026-10-22.md`): a brief whose run did not start is briefed again with its
   `Steps:` hold turned into a `Released:` line, so `keel landing` holds nothing for it; a run takes

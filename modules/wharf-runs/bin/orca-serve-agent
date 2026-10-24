@@ -16,6 +16,17 @@
 # it. A paired client keeps its device key across restarts; to pair a new client, stop the agent and
 # run `orca serve --pairing-address <tailscale ip>` once in a screen.
 #
+# On Linux (a yard-node guest, a cloud VM; `uname -s` on the side it installs on) the server is the
+# systemd user unit orca-serve.service, the one the agent guest's cloud-init writes
+# (node/agent.user-data.yaml), so a run there takes that unit over rather than refusing it as
+# another agent: the same [Unit]/[Service]/[Install], ExecStart the guest's orca-serve-node wrapper
+# where it exists, else `orca-ide serve --pairing-address <tailscale ip>` (the Linux CLI is orca-ide:
+# GNOME's screen reader owns /usr/bin/orca). Linger keeps the user manager up from boot with nobody
+# logged in; output goes to null for the reason above (the journal would keep the link). The serve-label
+# keys are launchd's and are not read there. To pair a new client: `systemctl --user stop
+# orca-serve`, run `orca-ide serve --pairing-address <tailscale ip>` once in a screen, then start the
+# unit again.
+#
 # An always-on service is the owner's to install (an auto-mode classifier refuses it to a session as
 # persistence), so this runs from the owner's own terminal. --dry-run prints the label, the plist and
 # the commands and changes nothing.
@@ -65,6 +76,116 @@ check_label() {
     ""|*[!A-Za-z0-9._-]*) echo "orca-serve-agent: $1 is not a launchd label: '$2'" >&2; exit 2 ;;
   esac
 }
+# ORCA_SERVE_UNAME stands in for uname in tests (`here` only: ssh carries no other variable)
+if [ "${ORCA_SERVE_UNAME:-$(uname -s)}" = Linux ]; then
+  unit=orca-serve.service
+  units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+  file=$units/$unit
+  wrapper=${ORCA_SERVE_WRAPPER:-/usr/local/bin/orca-serve-node}
+  me=$(id -un)
+  # systemctl --user over ssh needs the user manager's runtime dir
+  if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then export XDG_RUNTIME_DIR=/run/user/$(id -u); fi
+  run() {
+    if [ "$DRYRUN" = 1 ]; then echo "+ $*"; else "$@" || true; fi
+  }
+  echo "unit: $unit"
+  # Another unit that runs Orca's server under another name: the same refusal as the plists below,
+  # read as orca-host's serve_unit() reads them (an ExecStart line naming orca and serve).
+  for f in "$units"/*.service; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" != "$unit" ] || continue
+    if grep -Eiq '^ExecStart=.*orca.*serve' "$f"; then
+      echo "orca-serve-agent: $f already runs orca serve; remove it first (systemctl --user disable --now $(basename "$f"))" >&2
+      exit 2
+    fi
+  done
+  if [ "$REMOVE" = 1 ]; then
+    run systemctl --user disable --now "$unit"
+    run rm -f "$file"
+    run systemctl --user daemon-reload
+    if [ "$DRYRUN" = 1 ]; then echo "dry run: nothing changed"; else echo "removed $unit"; fi
+    exit 0
+  fi
+  orca=$(command -v orca-ide || true)
+  if [ -z "$orca" ]; then
+    if [ "$DRYRUN" = 1 ]; then orca=orca-ide; else echo "no orca-ide here: orca-host setup installs the release .deb" >&2; exit 1; fi
+  fi
+  if [ -x "$wrapper" ]; then
+    exec_start=$wrapper
+    echo "serves through: $wrapper (the guest's own, its address read at each start)"
+  else
+    ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
+    if [ -z "$ip" ]; then
+      if [ "$DRYRUN" = 1 ]; then ip='<tailscale ip>'; else echo "no Tailscale address here: tailscale up first" >&2; exit 1; fi
+    fi
+    exec_start="$orca serve --pairing-address $ip"
+  fi
+  unit_text() {
+    cat <<EOF
+[Unit]
+Description=Orca headless server (orca-ide serve)
+After=network-online.target
+
+[Service]
+ExecStart=$exec_start
+Restart=on-failure
+RestartSec=30
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
+EOF
+  }
+  linger=$(loginctl show-user "$me" --property=Linger --value 2>/dev/null || true)
+  if [ "$DRYRUN" = 1 ]; then
+    echo "unit file: $file"
+    unit_text
+    if [ "$linger" != yes ]; then echo "+ loginctl enable-linger $me"; fi
+    echo "+ screen -S orca-serve -X quit"
+    echo "+ pkill -f 'orca-ide serve'"
+    echo "+ (wait up to 30 s for it to go)"
+    echo "+ systemctl --user daemon-reload"
+    echo "+ systemctl --user enable $unit"
+    echo "+ systemctl --user restart $unit"
+    echo "+ (wait up to 60 s for: $orca status --json to say ready)"
+    echo "dry run: nothing changed"
+    exit 0
+  fi
+  if [ "$linger" != yes ]; then
+    loginctl enable-linger "$me" 2>/dev/null || sudo -n loginctl enable-linger "$me" || {
+      echo "linger is off and could not be turned on: sudo loginctl enable-linger $me" >&2; exit 1; }
+  fi
+  # The user manager's bus must answer before anything is stopped: turning linger on starts it,
+  # and /run/user/<uid> appears with it, so a shell with no session finds it only now.
+  if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    for i in $(seq 1 10); do [ -d "/run/user/$(id -u)" ] && break; sleep 1; done
+    [ -d "/run/user/$(id -u)" ] && export XDG_RUNTIME_DIR=/run/user/$(id -u)
+  fi
+  systemctl --user show-environment >/dev/null 2>&1 || {
+    echo "the user's systemd does not answer (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}); nothing stopped" >&2; exit 1; }
+  mkdir -p "$units"
+  unit_text > "$file.new"
+  mv "$file.new" "$file"
+  echo "stopping the Orca running now (up to 30 s)..."
+  screen -S orca-serve -X quit >/dev/null 2>&1 || true
+  pkill -f 'orca-ide serve' 2>/dev/null || true
+  for i in $(seq 1 15); do pgrep -f 'orca-ide serve' >/dev/null || break; sleep 2; done
+  echo "starting ${unit}..."
+  systemctl --user daemon-reload
+  systemctl --user enable "$unit"
+  systemctl --user restart "$unit"
+  echo "waiting for orca serve to be ready (up to 60 s)..."
+  for i in $(seq 1 30); do
+    # captured, never piped to grep -q: under pipefail a status write after grep quits fails the test
+    st=$(env -u ELECTRON_RUN_AS_NODE "$orca" status --json 2>/dev/null || true)
+    if printf '%s' "$st" | grep -Eq '"state": ?"ready"'; then
+      echo "orca serve: ready under $unit"; exit 0
+    fi
+    sleep 2
+  done
+  echo "orca serve did not reach ready in 60 s: systemctl --user status $unit" >&2; exit 1
+fi
 label=$(config_line serve-label)
 [ -n "$label" ] || label=org.regatta.orca-serve
 check_label serve-label "$label"

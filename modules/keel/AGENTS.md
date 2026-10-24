@@ -6,12 +6,9 @@ Read `README.md` first: it is the chart. For an agent:
   `vendor/mermaid/mermaid.min.js` (helloworld's word list matches inside the minified code; its
   README says what a public install sees). A name, host, repo or overlay path is a config key
   (README, "Private values"), never a literal; a suite's fixture is synthetic (`tests/config.sh`).
-  Three files are held off the list, as commented lines there and in the exemptions, until the
-  owner's hand edit: `hooks/sheep_gate.py` (the SECRETS_SEGMENTS literal and the docstring sentence
-  naming the two vaults), `bin/owed` (its SECRETS literal) and `tests/owed.sh` (its vault cases).
-  Each line names a vault's `_secrets`, and the secrets guard refuses an agent's edit of it, even a
-  deletion; the overlay's private-names case would fail on them once listed. The key-read value below
-  each literal already wins.
+  The vaults whose secrets folder `sheep_gate.py` and `owed` keep closed come from the
+  `lighthouse/vaults` key only; `tests/owed.sh` uses `vault-a` and `vault-b` (the owner's hand edit,
+  2026-10-23: the secrets guard refuses an agent's edit of a line naming a real vault's secrets path).
 - The core is found by `lib/find_core.py`; a peer in another module through `common.tool(name)`,
   never a path beside this file, and each such call takes the fallback the README names on None.
   Same-module loads (`sheep`, `hooks/sheep_gate.py`, `vendor/mermaid`) stay beside the file.

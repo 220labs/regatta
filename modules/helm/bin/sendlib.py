@@ -149,8 +149,8 @@ def alias_of(yard):
 
 
 # The yard's side of every call, read by `sh -s -- <tool> <args>` there: the yard's own tool, found by
-# the yard's own config — the overlay's bin/<tool> where an overlay is installed (the yard's own copy,
-# as REMOTE_WHARF finds it), else the core's module (wharf's REMOTE_WHARF, for two tools). ssh
+# the yard's own config — the core's module in the checkout the yard's `home` file names (as wharf's
+# REMOTE_WHARF finds it; the overlay's shims went with B14b). ssh
 # carries no environment, so nothing here is the caller's but the arguments.
 REMOTE = r'''set -u
 t=$1; shift
@@ -161,15 +161,10 @@ case $t in
 esac
 c=${REGATTA_CONFIG:-$HOME/.config/regatta}
 w=
-l=$(head -n 1 "$c/legacy" 2>/dev/null)
-case $l in "~"*) l=$HOME${l#"~"};; esac
-if [ -n "$l" ] && [ -x "$l/bin/$t" ]; then w=$l/bin/$t; fi
-if [ -z "$w" ]; then
-  h=$(head -n 1 "$c/home" 2>/dev/null)
-  case $h in "~"*) h=$HOME${h#"~"};; esac
-  if [ -n "$h" ] && [ -x "$h/$m" ]; then w=$h/$m; fi
-fi
-[ -n "$w" ] || { echo "no $t on $(hostname -s): neither an overlay's bin/$t nor the core's module ($c)" >&2; exit 2; }
+h=$(head -n 1 "$c/home" 2>/dev/null)
+case $h in "~"*) h=$HOME${h#"~"};; esac
+if [ -n "$h" ] && [ -x "$h/$m" ]; then w=$h/$m; fi
+[ -n "$w" ] || { echo "no $t on $(hostname -s): no core's module ($c)" >&2; exit 2; }
 PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH
 export PATH
 exec "$w" "$@" </dev/null

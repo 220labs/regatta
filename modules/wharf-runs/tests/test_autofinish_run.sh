@@ -145,17 +145,36 @@ has "$T/claude.calls" "--permission-mode auto" "  auto mode"
 for a in "EnterWorktree" "Bash(git:*)" "Agent Bash(./bootstrap.sh --check)"; do
   has "$T/claude.calls" "$a" "  allowed: $a"
 done
-hasnt "$T/claude.calls" "/hooks/carried.py" "  no overlay installed: no rule for its bin/ or carried.py"
-# with an overlay (the core's legacy_root, a stand-in here): its bin/ and carried.py, under ~/ and absolute
-check "$(REGATTA_LEGACY="$HOME/projects/ovl" python3 - "$B/autofinish-run" <<'PY'
+# B14b (B14a's D1-A): the module tools /finish names and wharf's carried.py in the regatta main
+# checkout, one rule per tool (never modules/*/bin/* wholesale: the landing review); a stand-in main
+# checkout under ~ (never ~/projects: a later case links that to $T)
+mkdir -p "$HOME/rg"; git init -q "$HOME/rg"
+python3 - "$B/autofinish-run" "$HOME/rg" > "$T/rules" <<'PY'
 import importlib.machinery, os, sys, types
 af = importlib.machinery.SourceFileLoader("afr", sys.argv[1]).load_module()
+af.common.regatta_root = lambda: af.pathlib.Path(sys.argv[2])
 t = types.SimpleNamespace(branch="b", path="/w", window="finish · w", primary="/p")
-cmd = af.start_cmd(t, "sid")
-print(" ".join(cmd[i + 1] for i, a in enumerate(cmd) if a == "--allow" and "ovl" in cmd[i + 1]))
+for hold in (None, "ask"):
+    cmd = af.start_cmd(t, "sid", hold=hold)
+    for i, a in enumerate(cmd):
+        if a in ("--allow", "--undeny"):
+            print("%s %s %s" % (hold or "-", a, cmd[i + 1]))
 PY
-)" "Bash(~/projects/ovl/bin/*) Bash(python3 ~/projects/ovl/bin/*) Bash(python3 ~/projects/ovl/hooks/carried.py:*) Bash($HOME/projects/ovl/bin/*) Bash(python3 $HOME/projects/ovl/bin/*) Bash(python3 $HOME/projects/ovl/hooks/carried.py:*)" \
-  "  with an overlay installed: its bin/ and carried.py, in both spellings"
+for r in "~/rg/modules/wharf/libexec/pr*" "python3 ~/rg/modules/keel/bin/keel*" "$HOME/rg/modules/wharf-runs/bin/check*" \
+         "python3 $HOME/rg/modules/wharf/hooks/carried.py*" "~/rg/modules/regatta/bin/regatta which*"; do
+  has "$T/rules" "- --allow Bash($r)" "  allowed in the regatta main checkout: $r"
+done
+check "$(grep -c -- '--allow Bash(.*modules/\*' "$T/rules")" "0" "  no wholesale modules/*/bin/* rule (it pre-approved clock, scope-pass, regatta pr merge)"
+check "$(grep -c -F -- '- --undeny Bash(*regatta pr merge*)' "$T/rules") $(grep -c -F -- 'ask --undeny Bash(*regatta pr merge*)' "$T/rules")" "1 0" \
+  "  a held launch keeps the core's regatta pr merge denied; any other lifts it"
+check "$(python3 - "$B/autofinish-run" <<'PY'
+import importlib.machinery, sys, types
+af = importlib.machinery.SourceFileLoader("afr", sys.argv[1]).load_module()
+af.common.regatta_root = lambda: None
+cmd = af.start_cmd(types.SimpleNamespace(branch="b", path="/w", window="finish · w", primary="/p"), "sid")
+print(sum(1 for i, a in enumerate(cmd) if a == "--allow" and "modules/" in cmd[i + 1]))
+PY
+)" "0" "  no regatta checkout (a plugin install): no such rule"
 hasnt "$T/claude.calls" "Bash(true" "  no allow rule for the contract's check: a branch may change it unwatched since D1-A (2026-10-13)"
 sed 's/.*--disallowedTools//' "$T/claude.calls" > "$T/denied"
 has "$T/denied" "Bash(gh:*) Bash(ssh:*) Bash(python3 scripts/deploy.py:*)" "  denied: dispatch's list…"
@@ -735,6 +754,7 @@ CLAUDE_UNATTENDED=dispatch af --dry --by yolo > "$T/out" 2>&1
 has "$T/out" "mode yolo: may merge" "  an unattended caller gets what plan.json says: the mode, not its label, is the yes"
 modefix dnd
 af --dry --by dnd > "$T/out" 2>&1; check "$?" "0" "mode dnd, --by dnd --dry"
+has "$T/out" '"eff_mode": "dnd"' "  autofinish.json records the mode landing() judged it by (follow-ups item 4)"
 has "$T/out" "mode dnd: may merge" "  plain work in a physical: none repo lands under dnd"
 has "$T/out" "/finish\ $BR\ --unattended\ --dnd --session-id" "  /finish is told --dnd"
 af --dry --by yolo > "$T/out" 2>&1
@@ -760,16 +780,18 @@ has "$CD/claude/autofinished" "stopped $BR held held (mode ask — nothing lands
   "  the autofinished line names the class (the board's held card reads it)"
 rm -f "$MRUNS/zz-mode.json"
 echo "  E12's merge:auto standing yes: only for a yolo launch with no mode, from a caller who is no run (landing review 3, 4c)"
-mauto() { python3 - "$B/autofinish-run" "$W" "$R" "$BR" <<'PYMA'
+mauto() { python3 - "$B/autofinish-run" "$W" "$R" "$BR" "$@" <<'PYMA'
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish_run_ma", sys.argv[1]).load_module()
 m.merge_auto = lambda t: True
 t = type("T", (), {"path": sys.argv[2], "primary": sys.argv[3], "branch": sys.argv[4]})()
-print(m.landing(t, "yolo", "C")[0])
+print(m.landing(t, "yolo", "C")[int(sys.argv[5]) if len(sys.argv) > 5 else 0])
 PYMA
 }
 check "$(mauto)" "None" "a yolo launch with no mode in a merge:auto repo, attended: may merge (E12)"
+check "$(mauto 2)" "yolo" "  its eff_mode is yolo, for bin/pr's re-check (follow-ups item 4)"
+check "$(CLAUDE_UNATTENDED=dispatch mauto 2)" "None" "  from an unattended caller: no eff_mode, so bin/pr holds it too"
 check "$(CLAUDE_UNATTENDED=dispatch mauto)" "mode default — a taken answer never lands there (yolo-veto D1)" \
   "  the same from an unattended caller (any run may type --by yolo): held"
 modefix default

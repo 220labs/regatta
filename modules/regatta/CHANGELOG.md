@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The overlay marker `regatta/overlay` is the only one (B14b, 2026-10-23): `overlay_root()` reads it
+  (`legacy_root` is its old name), the `legacy` file and `REGATTA_LEGACY` are read by nothing, and
+  `tool()` no longer falls back to the overlay's checkout. `regatta check` fails on a `legacy` file
+  with no marker, whose keys would otherwise fail open.
 - `gather_fence(scope)` and `scope_match(scope)` (knowledge-layers S4, 2026-10-22): what a Gather
   reader may do with an item, by the paths it came from — `quote`, `fenced` (a confidential scope's:
   count it, never quote it) or `outside` (not the scope asked for); a scope's folders matched by

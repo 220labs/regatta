@@ -9,16 +9,11 @@ set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); T=$(cd "$T" && pwd -P); trap 'rm -rf "$T"' EXIT
 # The core is this checkout's; the config dir, Claude Code's plugin registry and the old checkout
-# are scratch, so no real word list, installed module or guard is read. The old checkout holds a
-# stand-in for wharf's pre-push guard (G30): it lets claude/* through and refuses anything else.
+# are scratch, so no real word list, installed module or guard is read; the pre-push guard is
+# wharf's own template (G30), found beside this module.
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(HELLOWORLD[A-Za-z0-9_]*\)=.*/\1/p; s/^\(OPENSOURCE[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-export REGATTA_CONFIG="$T/config" CLAUDE_CONFIG_DIR="$T/cc" REGATTA_LEGACY="$T/legacy"
-mkdir -p "$T/config" "$T/cc" "$T/legacy/templates/code/git-hooks"
-cat > "$T/legacy/templates/code/git-hooks/pre-push" <<'EOF'
-#!/bin/sh
-while read -r _l _s ref _r; do case "$ref" in refs/heads/claude/*) ;; *) echo "pre-push: $ref refused" >&2; exit 1;; esac; done
-EOF
-chmod +x "$T/legacy/templates/code/git-hooks/pre-push"
+export REGATTA_CONFIG="$T/config" CLAUDE_CONFIG_DIR="$T/cc"
+mkdir -p "$T/config" "$T/cc"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; sed 's/^/         | /' "$T/out" | head -20; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
@@ -749,11 +744,11 @@ check "$([ -e "$T/gh.args" ] && echo opened || echo none)" none "  and no PR was
 check "$(gaterefs)" 0 "  and the private repo holds no ref of the gate's own"
 
 refs0=$(pubrefs)
-# Hides both guards: the legacy one by REGATTA_LEGACY, and wharf's own — in this repo since B5 —
-# by running a copy of the tree without the wharf module (guard_path() tries modules/wharf first).
+# Hides wharf's guard — in this repo since B5 — by running a copy of the tree without the wharf
+# module (guard_path() tries modules/wharf alone since B14b).
 NW="$T/nowharf"; mkdir -p "$NW/.claude-plugin" "$NW/modules"; : > "$NW/.claude-plugin/marketplace.json"
 cp -R "$B/../../regatta" "$NW/modules/regatta"; cp -R "$B/.." "$NW/modules/helloworld"
-check "$(B="$NW/modules/helloworld/bin" REGATTA_LEGACY="$T/none" prun --note 'One new line in the README.')" 2 "no wharf pre-push guard installed (G30): --pr refused"
+check "$(B="$NW/modules/helloworld/bin" prun --note 'One new line in the README.')" 2 "no wharf pre-push guard installed (G30): --pr refused"
 has "$T/out" "no pre-push guard: the wharf module's templates/code/git-hooks/pre-push is not installed" "  in one line"
 check "$(pubrefs)" "$refs0" "  nothing pushed unguarded"
 rm -f "$T/gh.search"

@@ -8,7 +8,7 @@
 #                starts an idle branch's /finish by the start rules in its header.
 #   --remove     unload that agent and delete its plist
 # Nothing here runs by itself: the job exists only after someone runs --schedule. Where an overlay is
-# installed (the config dir's `legacy` file) it schedules the sweep itself — through its old path, an
+# installed (the config dir's `regatta/overlay` marker) it schedules the sweep itself — through its old path, an
 # exec shim into this module — so --schedule refuses there: two sweeps would start one branch twice.
 #
 # Environment (the tests use it, so they never touch the real launchd):
@@ -71,8 +71,8 @@ PY
     exit $rc
     ;;
   --schedule)
-    if { [ -e "$cfg/legacy" ] || [ -e "$cfg/regatta/overlay" ]; } && [ -z "${WHARF_RUNS_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
-      echo "wharf-runs: an overlay is installed here ($cfg/legacy or $cfg/regatta/overlay): it schedules the sweep itself; not loading a second job" >&2
+    if [ -e "$cfg/regatta/overlay" ] && [ -z "${WHARF_RUNS_SCHEDULE_BESIDE_OVERLAY:-}" ]; then
+      echo "wharf-runs: an overlay is installed here ($cfg/regatta/overlay): it schedules the sweep itself; not loading a second job" >&2
       exit 1
     fi
     [ -f "$here/bin/autofinish" ] || { echo "wharf-runs: no bin/autofinish in $here — nothing to schedule" >&2; exit 1; }

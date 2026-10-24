@@ -15,8 +15,9 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 for v in $(env | sed -n 's/^\(CLAUDE[A-Z_]*\)=.*/\1/p'); do
   case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_REPOS_JSON) ;; *) unset "$v";; esac
 done
-unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_DEPTH DISPATCH_SKIPPER DISPATCH_MANAGER \
-  DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK \
-  ASK_ACCOUNT ASK_SESSION DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO SKIPPER_GEN
+# every DISPATCH_* by pattern, never a list: a list missed DISPATCH_MODE and DISPATCH_BRIEF once
+# dispatch added them, and a skipper started from a run inherited both (2026-10-23)
+for v in $(env | sed -n 's/^\(DISPATCH_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+unset ASK_ACCOUNT ASK_SESSION SKIPPER_GEN
 # /usr/bin/python3, as the poll's job runs: a Homebrew python moves under an upgrade
 exec "${HELM_PYTHON:-/usr/bin/python3}" "$here/bin/skipperlib.py" run "$1" "$2"

@@ -87,9 +87,9 @@ def knowledge_repo(key):
 LAYER_NAME, LAYER = knowledge_repo("atlas/layer")
 VAULT_NAME, VAULT = knowledge_repo("atlas/vault")
 # the checkout whose docs/ holds the entry: KNOWLEDGE_NUMBERS_ROOT; else, from regatta's plumb
-# module, the overlay the core names as legacy (until B14); else this checkout
+# module, the overlay's checkout (the core's overlay_root); else this checkout
 ROOT = Path(os.environ.get("KNOWLEDGE_NUMBERS_ROOT") or (
-    common.legacy_root() if (Path(__file__).resolve().parent.parent / "lib" / "find_core.py").is_file() else None)
+    common.overlay_root() if (Path(__file__).resolve().parent.parent / "lib" / "find_core.py").is_file() else None)
     or Path(__file__).resolve().parent.parent)
 KNOWLEDGE = {n for n in (LAYER_NAME, VAULT_NAME) if n}
 WEEK = 7 * 24 * 3600

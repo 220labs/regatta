@@ -103,7 +103,7 @@ def account():
     """(label, primary label) for this session's config dir, or None when the registry can't say."""
     here = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude").expanduser().absolute()
     path = Path(os.environ.get("ACCOUNTS_FILE") or CONFIG / "lighthouse" / "accounts.json")
-    if not os.environ.get("ACCOUNTS_FILE") and ((CONFIG / "regatta" / "overlay").exists() or (CONFIG / "legacy").exists()) and not path.exists():
+    if not os.environ.get("ACCOUNTS_FILE") and (CONFIG / "regatta" / "overlay").exists() and not path.exists():
         # the overlay is installed but this key is not written: a deny hook refuses, as for a
         # missing core, rather than read "no registry" as "nothing to route" (B9 review)
         raise CoreMissing("lighthouse/accounts.json missing — write it with the overlay's bootstrap.sh --config")

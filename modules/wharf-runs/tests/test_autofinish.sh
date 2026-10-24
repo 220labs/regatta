@@ -654,8 +654,9 @@ check "$(line "$T/out-e5" e-wf)" "skip: touches a gate (.claude/workflow.json) $
 check "$(line "$T/out-e5" e-boot)" "skip: touches a gate (bootstrap.sh) $GL" "  nor bootstrap.sh, which wires every account's hooks"
 check "$(line "$T/out-e5" e-hooks-small)" "skip: touches a gate (hooks/tool.py) $GL" "  nor B, under 100 lines (the gates never launch unwatched)"
 echo "D1-A (2026-10-13): outside the launcher only a repo's autofinish_exclude and in_place gate; C launches a gate"
-mkdir -p "$T/overlay/launcher-repo"
-check "$(env -u AUTOFINISH_LAUNCHER -u AUTOFINISH_LANDER REGATTA_LEGACY="$T/overlay/launcher-repo" python3 - "$B/autofinish" <<'EOF' 2>&1
+mkdir -p "$T/overlay/launcher-repo"; rm -rf "$T/cfg-launch"; cp -R "$REGATTA_CONFIG" "$T/cfg-launch"; echo "$T/overlay/launcher-repo" > "$T/cfg-launch/regatta/overlay"
+for k in guarded orca-deny log-dir projects; do [ -e "$T/cfg-launch/regatta/$k" ] || echo "$T/$k" > "$T/cfg-launch/regatta/$k"; done
+check "$(env -u AUTOFINISH_LAUNCHER -u AUTOFINISH_LANDER REGATTA_CONFIG="$T/cfg-launch" python3 - "$B/autofinish" <<'EOF' 2>&1
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish", sys.argv[1]).load_module()
@@ -663,7 +664,7 @@ print(m.LAUNCHER, bool(m.touches_gate("/x/launcher-repo", "main", [], ["hooks/a.
 EOF
 )" "launcher-repo True False" "the launcher is the repo named for the overlay checkout by default: hooks/ gated there, not elsewhere"
 # rename S4 (M10): AUTOFINISH_LANDER is the old name of AUTOFINISH_LAUNCHER, read until S8; the new one wins
-lname() { env -u AUTOFINISH_LAUNCHER -u AUTOFINISH_LANDER -u REGATTA_LEGACY "$@" python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; print(L("autofinish", sys.argv[1]).load_module().LAUNCHER)' "$B/autofinish" 2>&1; }
+lname() { env -u AUTOFINISH_LAUNCHER -u AUTOFINISH_LANDER "$@" python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; print(L("autofinish", sys.argv[1]).load_module().LAUNCHER)' "$B/autofinish" 2>&1; }
 check "$(lname)" "None" "  no overlay installed: no repo is the launcher's"
 check "$(lname AUTOFINISH_LANDER=shop)" "shop" "  the old env alone still names the launcher's repo (alias until S8)"
 check "$(lname AUTOFINISH_LANDER=shop AUTOFINISH_LAUNCHER=household)" "household" "  beside the new one, the new one wins"
@@ -1168,8 +1169,8 @@ $AF disarm > /dev/null
 
 echo "the launchd job (the overlay's bootstrap.sh --schedule)"
 # The overlay schedules the sweep where one is installed (install.sh --schedule refuses there): its
-# bootstrap.sh, found through the core's legacy root; none here, the case is skipped, said so.
-OVL=$(REGATTA_LEGACY="$SUITE_OVERLAY" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; o = common.legacy_root(); print(o if o and (o / "bootstrap.sh").is_file() else "")' "$CORE")
+# bootstrap.sh, in the caller's overlay checkout (SUITE_OVERLAY, config_fixture.sh); none here, the case is skipped, said so.
+OVL=$([ -n "$SUITE_OVERLAY" ] && [ -f "$SUITE_OVERLAY/bootstrap.sh" ] && echo "$SUITE_OVERLAY")
 # through() too: the job goes behind claude-host once this Mac's sitting is done (none here: a scratch HOME)
 [ -n "$OVL" ] && plist=$(C="$HOME/projects/$(basename "$OVL")"; SELF="$OVL"; eval "$(sed -n '/^through()/,/^}/p;/^autofinish_plist()/,/^}/p' "$OVL/bootstrap.sh")"; autofinish_plist)
 [ -n "$OVL" ] && echo "$plist" > "$T/af.plist"
@@ -1204,6 +1205,7 @@ mk $M m-bin docs/blob.bin "x"; printf 'a\0b' > "$(wtp $M m-bin)/docs/blob.bin"; 
 git -C "$(wtp $M m-bin)" commit -qam "binary" -m "Deployed: no" && git -C "$(wtp $M m-bin)" push -q
 mk $M m-start-rec bin/s.py "print(1)"; moderec m-start-rec dnd
 mk $M m-live docs/taken-l.md "$DLIST" "Deployed: the pack to Drive"; moderec m-live dnd
+mk $M m-live-code bin/l.py "print(1)" "Deployed: the pack to Drive"; moderec m-live-code dnd
 printf '{"branch": "%s", "started": 9, "repo": "%s"}\n' "$(br m-start-rec)" "$T/projects/$M" > "$RUNS/m-start-rec-finish.json"
 mk $M hs-money docs/cost.md 'it costs $40 a month; a model run is $10 ($0.19 effective); `$5` in code; | $0 |'
 mk $M hs-cost docs/cheap.md 'a model run is $10 ($0.19 effective), a table cell | $0 |, and `echo $1`'
@@ -1226,9 +1228,11 @@ check "$(line "$T/out-m" m-stray)" "skip: asks (TODO.md: - [ ])" "  an asks line
 check "$(line "$T/out-m" m-bin)" "skip: binary (docs/blob.bin)" "never a binary, whatever the mode"
 check "$(line "$T/out-m" m-start-rec)" "start (M)" "a later --start record (autofinish's own launch) does not hide the build run's mode"
 check "$(line "$T/out-m" m-live)" "start (M)" "a deployed dnd branch with a taken doc: rule M, never L's --by sweep (landing review 18)"
+check "$(line "$T/out-m" m-live-code)" "start (L)" "  a deployed dnd branch with no taken doc: rule L, at once, never held at a ready PR (follow-ups item 1)"
 CLAUDE_TIER_CLAUDE_JSON="$T/tier-tight.json" python3 "$B/autofinish" --dry-run "$T/projects/$M" > "$T/out-mt" 2>&1
 case "$(line "$T/out-mt" m-code)" in "skip: week tight (85% used"*) echo "  ok   the week's pause holds rule M too";; *) echo "  FAIL M paused: $(line "$T/out-mt" m-code)"; fails=$((fails+1));; esac
 check "$(line "$T/out-mt" m-live)" "start (M)" "  …but not a deployed one: live ahead of main is drift, as rule L"
+check "$(line "$T/out-mt" m-live-code)" "start (L)" "  …and a deployed one without a taken doc is L's, unpaused"
 python3 - "$B/autofinish" "$T/projects/$M" "$T/projects/demo" "$(wtp $M m-code)" "$(wtp $D a-ok)" "$T/projects/$M/.claude/worktrees" <<'PYHELD' > "$T/held" 2>&1
 import os, sys
 from importlib.machinery import SourceFileLoader
@@ -1266,8 +1270,8 @@ rm -f "$RUNS"/m-*.json
 echo "the launchd job (install.sh --schedule, the module's own)"
 LC="$T/lc"; printf '#!/bin/sh\necho "$*" >> "%s"\n[ "$1" = print ] && exit 113\nexit 0\n' "$T/lc.calls" > "$LC"; chmod +x "$LC"
 IN() { WHARF_RUNS_LAUNCH_DIR="$T/la" WHARF_RUNS_LAUNCHCTL="$LC" WHARF_RUNS_LOG_DIR="$T/rlogs" sh "$B/../install.sh" "$@"; }
-mkdir -p "$T/cfg-ovl" "$T/cfg-bare"; : > "$T/cfg-ovl/legacy"
-REGATTA_CONFIG="$T/cfg-ovl" IN --schedule > "$T/in.out" 2>&1; check "$?" "1" "beside an overlay (a legacy file): refused, no second sweep"
+mkdir -p "$T/cfg-ovl/regatta" "$T/cfg-bare"; : > "$T/cfg-ovl/regatta/overlay"
+REGATTA_CONFIG="$T/cfg-ovl" IN --schedule > "$T/in.out" 2>&1; check "$?" "1" "beside an overlay (its marker): refused, no second sweep"
 check "$(ls "$T/la" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and no plist written"
 REGATTA_CONFIG="$T/cfg-bare" IN --schedule > "$T/in.out" 2>&1; check "$?" "0" "no overlay: scheduled"
 IP="$T/la/dev.regatta.autofinish.plist"

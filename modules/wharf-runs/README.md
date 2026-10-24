@@ -5,8 +5,8 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 
 | Piece | What it does |
 | --- | --- |
-| `bin/orca-host` | Orca on this Mac kept to the registry: the app and its CLI, one project group per scope (anchor first, coloured, worktrees from local `main` in `.claude/worktrees/`), and the pairing to the Macs whose Orca it drives (`check`, `setup`, `scopes`, `pair PEER`, `--on PEER <verb>`) |
-| `bin/orca-serve-agent` | a Mac's Orca run as a headless server under a LaunchAgent in the login session, so it survives a reboot and reaches the keychain (`HOST\|here [--remove] [--dry-run]`); the agent's label is a config key |
+| `bin/orca-host` | Orca on this Mac kept to the registry: the app and its CLI, one project group per scope (anchor first, coloured, worktrees from local `main` in `.claude/worktrees/`), and the pairing to the Macs whose Orca it drives (`check`, `setup`, `scopes`, `pair PEER`, `--on PEER <verb>`); on a Linux peer the same verbs over `orca-ide`, its release `.deb` and the server's systemd user unit |
+| `bin/orca-serve-agent` | a Mac's Orca run as a headless server under a LaunchAgent in the login session, so it survives a reboot and reaches the keychain (`HOST\|here [--remove] [--dry-run]`); the agent's label is a config key. On Linux the systemd user unit `orca-serve.service` with linger, the one the agent guest's cloud-init writes |
 | `bin/dispatch`, `run-seed` | a seeded `claude/*` branch started with nobody at the keyboard: now, at a time, on another Mac (`--on`), or as the next step of a chain (`--next`); the run's records, its watcher and its window (`dispatch-rc`) |
 | `bin/autofinish`, `autofinish-run` | the lander: a sweep that judges each idle `claude/*` worktree by the start rules in its header and, once armed on a Mac, starts a fresh unattended `/finish` on it; `install.sh --schedule` adds the sweep |
 | `bin/pickup` | a session's branch picked up, seeded, reviewed or moved between Macs (`/pickup`, `/move`, `/later`) |
@@ -50,8 +50,8 @@ the tools here will find.
   | --- | --- | --- |
   | `wharf-runs/orca-pairs` | `<host>:<peer>` — PEER's Orca is an environment of HOST's; `check` expects exactly these | no Mac pairs |
   | `wharf-runs/ssh` | `<peer>:<ssh alias>` — how `orca-host --on PEER` reaches it, and `wharf apply --yard` a yard | `--on` knows no peer; `--yard` falls back to `bin/harness`'s peers |
-  | `wharf-runs/node/*` | the yard node's values, one per line: `ssh`, `name`, `user`, `ssh-keys`, `tailscale` (`<role>:<address>`), `logins`, `size`, `pool`, `orca-release` (`yard-node`'s header) | `yard-node` names the missing key, exit 2 |
-  | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on | `org.regatta.orca-serve` |
+  | `wharf-runs/node/*` | the yard node's values, one per line: `ssh`, `name`, `user`, `ssh-keys`, `tailscale` (`<role>:<address>`), `logins`, `size`, `pool`, `orca-release` (`yard-node`'s header; `orca-host setup` on a Linux box without the guest's installer installs that release too) | `yard-node` names the missing key, exit 2; `orca-host setup`, the latest release |
+  | `wharf-runs/serve-label` | the LaunchAgent label `orca-serve-agent` installs, first non-blank line; read on the Mac the agent is installed on (not on Linux: the unit is `orca-serve.service`) | `org.regatta.orca-serve` |
   | `wharf-runs/serve-label-previous` | an older label `orca-serve-agent` boots out and removes first, so one agent serves | none |
   | `wharf-runs/dispatch-host` | the Mac a run goes to when `dispatch` names none (`--on`), and the one whose run cap is 10 (3 elsewhere; `DISPATCH_MAX_RUNS` over either) | the first peer of `wharf-runs/ssh`, with one line on stderr; none, this Mac |
   | `wharf-runs/label-prefix` | the reverse-DNS prefix of the launchd jobs `dispatch`, `dispatch-rc`, `rc-hosts` and the sweep write and find (`<prefix>.dispatch.<repo>.<topic>…`, `<prefix>.autofinish`) | `org.regatta.claude` |
@@ -63,8 +63,8 @@ the tools here will find.
 
   The core's own keys are read too: `regatta/laptop` (the Mac with a screen: a run's window opens
   there only), `regatta/owner` (the name the closing lines and refusals address, and the `by` of a
-  marker the owner writes), `legacy` (the overlay checkout whose `bin/` a run's prompt names first).
-  With an overlay installed (a `legacy` file in the config dir) `regatta check` names a missing key
+  marker the owner writes), `regatta/overlay` (the overlay checkout: a run's default repo, and the
+  `bin/dispatch` its jobs name). With an overlay installed (that marker) `regatta check` names a missing key
   (bar the two `serve-label` keys, `brake-label` and `headroom`, optional); the tools themselves never refuse over one they did
   not refuse over before: they take the default and say so on stderr. Host names are compared lower-case.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
@@ -86,7 +86,7 @@ are skipped, said in the record.
 
 `sh modules/wharf-runs/install.sh --schedule` writes and loads one launchd agent, `bin/autofinish
 --sweep` every 10 minutes (it starts nothing until `autofinish arm` on that Mac); `--remove` takes it
-away. Where an overlay is installed (a `legacy` file in the config dir) it refuses: the overlay
+away. Where an overlay is installed (its `regatta/overlay` marker in the config dir) it refuses: the overlay
 schedules the sweep itself.
 
 ## Check

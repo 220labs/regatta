@@ -89,8 +89,8 @@ I --unschedule >/dev/null 2>&1; check $? 1 "--unschedule while the job runs: ref
 rm "$T/running"; I --unschedule >/dev/null; check $? 0 "--unschedule exits 0"
 [ ! -e "$T/la/dev.regatta.sextant.plist" ]; check $? 0 "  the plist removed"
 I --schedule --bogus >/dev/null 2>&1; check $? 2 "--schedule with anything but --dry-run: a usage error"
-touch "$REGATTA_CONFIG/legacy"; out=$(I --schedule 2>&1); check $? 1 "an overlay installed (legacy): --schedule refused"
-has "$out" "schedules /sextant itself" "  said so"; rm "$REGATTA_CONFIG/legacy"
+mkdir -p "$REGATTA_CONFIG/regatta"; touch "$REGATTA_CONFIG/regatta/overlay"; out=$(I --schedule 2>&1); check $? 1 "an overlay installed (its marker): --schedule refused"
+has "$out" "schedules /sextant itself" "  said so"; rm "$REGATTA_CONFIG/regatta/overlay"
 unset SEXTANT_LAUNCHCTL SEXTANT_LAUNCH_DIR
 
 echo "sextant-run run — the own runner, with a stand-in claude"

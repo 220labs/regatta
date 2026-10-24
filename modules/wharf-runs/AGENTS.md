@@ -17,7 +17,8 @@ Read `README.md` first: it is the chart. For an agent:
   asked for the change.
 - `orca-serve-agent` runs on the Mac it installs the agent on (over ssh for a peer), so it reads
   that Mac's `${REGATTA_CONFIG}/wharf-runs/serve-label` itself and imports nothing: no core, no
-  module. Its text is ASCII only (bash under a C locale over ssh read a multibyte character after a
+  module. On Linux it writes the unit `node/agent.user-data.yaml` writes, and its suite diffs the
+  two line for line: a change to one is made in the other. Its text is ASCII only (bash under a C locale over ssh read a multibyte character after a
   variable as part of its name, 2026-10-19). In a session, `--dry-run` only: it installs an
   always-on service, which is the owner's to do.
 - The tools beside `orca-host` find the core by `lib/core_path.py` (wharf's, byte for byte: the
@@ -50,4 +51,12 @@ Read `README.md` first: it is the chart. For an agent:
   `tests/test_clock.sh`, runs against stand-ins for orca, launchctl, ssh and scutil only. Its scrub also owes
   the defaults without an overlay (`clock-scripts` empty reads the modules' own script jobs as
   agent-run), the fixture's `buildbox` names and a stand-in for the peer's `launchctl list` (S7 landing review).
+- Claude Code deletes a claude version that a Remote Control host still runs, and the host then
+  fails every new session `spawn error: ENOENT`. Its cleanup (every claude start) keeps the
+  cleaner's own version, the symlink's, each locked one and the 2 newest others, and the version
+  lock has a single holder: once the first process on a version exits, no other process protects
+  it (2.1.309's bundle, read 2026-10-23). `rc-hosts --check` (exit 1) and `--broken` (exit 3) fail on
+  such a host, and `--reap` restarts it once every session has been idle 10 minutes. The probes and D1
+  (answered A: the cleanup is not held off; revisit if `--broken` posts monthly): the private repo's
+  `docs/rc-hosts-versions-2026-10-23.md`.
 - check: `bash modules/wharf-runs/tests/check.sh`.

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- An unattended `/finish` is allowed one rule per tool the finish skill names in the regatta main
+  checkout (`FINISH_TOOLS`), and dispatch denies `regatta pr ready` and `regatta pr merge` beside
+  `bin/pr` and `libexec/pr` (B14b, 2026-10-23). rc-hosts finds `claude-host.c` in the overlay's
+  `bin/`; blueprint specs made under the overlay's `bin/check` are no drift.
+- A finished run is ended though it reads `shell` or sits in another login's registry (S13 of the crosstalk
+  design, from S8's joint test: trial B's run finished at 04:23 and stayed `running (rc)` for 5 h). Its
+  record said `last_status: no record`: the run was on an Orca login, whose `sessions/` is Orca's own dir,
+  not a link to the default config dir's, and `dispatch-rc` read only that one. Now `dispatch` records the
+  run's `config_dir` and `dispatch-rc` reads a record from it first, then the default dir's, then every login's
+  (the core's `login_dirs`), each by pid with the session id checked; the nudge posts through that registry,
+  and `sessions_live` reads them all. And a `shell` session whose only open background tasks are listeners
+  (`sessionpipe wait`, `spacesheep talk listen`; read from its transcript: a `run_in_background` tool use,
+  or a call moved to the background at its timeout, with no `<task-notification>` for it) reads `idle`;
+  another shell, a background agent, `ask listen` (a relayed run waits on its answer), a chained command, a
+  task that ended after the status was set, or no open task found keeps it busy. Cases in `test_dispatch.sh`.
+- The on-main reads (skipper-resilience S9, 2026-10-23): wharf never rebuilds work already on main. Before a
+  worker block starts, and before a retry of one, after one `git fetch origin <main>` a pass, `Ship.on_main`
+  reads cheapest first: (1) done_when's `file` or `marker` on `origin/<main>` (`git cat-file -e`, then the
+  blob; `check` and `memo_answered` need a worktree and are skipped); (2) a merged PR whose head is the
+  block's branch (`common.api` on the closed pulls of that head, `merged_at` set; `PLAN_NO_GH` skips it);
+  (3) every file the block's branch changed identical on main (`branches.prove`, the proof `bin/pr` carries
+  a branch by; not for a branch never written to, nor while its worktree holds uncommitted work). A hit
+  ends the block `launched via <sha>` or `launched via #N` and releases its builder. (4), before the first
+  start only: an owned path (`owns:`, else the files its predecessors' branches changed) moved on main
+  since the plan was made by a commit of no block of this ship (a session trailer naming one of its
+  sessions, or the patch of one of its own branches' commits, makes it the ship's) raises `a sibling may
+  have built this (<sha>)` to the skipper: a `waiting` report, held until the block's next report
+  (`helm report --status planned` clears it, `--status launched` closes it). A fetch or API failure is no
+  hit, with one line on stderr. A repo with no `origin` reads nothing. Read (1) is no evidence when the
+  file or marker already held on main when the plan was made; read (3) counts a branch as written to only
+  by a `commit` entry in its local reflog (a reset, rebase or rename onto main is none) and, for a
+  file or marker done_when, only where it holds at one of the branch's tips. A `launch: finish` block whose
+  predecessors the reads ended is launched too (its one branch proved on main also ends it), not raised
+  as the skipper's. Cases in `test_wharf.sh`.
+  From the landing review: a branch whose commits net to nothing, or whose commit a reset took away, is
+  not proved (nothing was built); a marker counts only against its doc as main held it when the plan was
+  made (first parents); a merged PR counts only when its head is the branch's newest tip; the launch
+  block reads the task's `on_main` flag (while that report is still the latest), never the progress text a launch's own landing shares; a hit
+  before any start releases no lock; the uncommitted veto is `branches.uncommitted`; read (4) leaves
+  `AGENTS.md`, `CLAUDE.md`, `TODO.md`, `CHANGELOG.md` and `.helloworld/` out of its default paths, reads
+  a landed predecessor from sync's `refs/archive/…`, stops at the first stranger and reports before it
+  saves; the fetch keeps a caller's ssh command; and a new block branch starts from the origin/<main> the
+  pass fetched when local main is behind it, tracking nothing.
 - The yard's relays and landing call (skipper-resilience S6, 2026-10-22). A `skipper: scope` ship's
   Orca question is hailed to the scope's skipper while it holds the ship's lease (`hail <session> --kind
   ask --when idle --no-file`, its Talk page as `HAIL_SPACE`), in place of S5's Talk relay: a pointer naming
@@ -24,6 +67,21 @@
   and the keel's hold is its own state key (`keel_hold`), so a launch another rule held first keeps it.
   A hail that becomes a `--when idle` subscription is carded on the board as well. Cases in `test_wharf.sh`,
   `test_autofinish_run.sh` and `test_hail.sh`.
+- The skipper-modes follow-ups (2026-10-23): autofinish's rule M takes a deployed dnd or yolo branch only
+  when it holds a `taken` doc, else rule L launches it at once; `autofinish-run` writes `eff_mode`, the
+  mode `landing()` judged a mode launch by, into autofinish.json; dispatch's fire-time and launch reads of
+  the mode ask a `helm mode --branch` first; an attended `wharf apply` (and its dry run) says a standing
+  `mode_refused` again with the `helm mode` line that lifts it; a pinned ship's doc taken under dnd reads
+  `physical:` from the ship's main even where the doc's folder is not there yet.
+- `orca-host` and `orca-serve-agent` run on Linux (the yard node's guest, or a cloud VM booted from
+  `yard-node render agent`). `orca-host` there calls `orca-ide` only (GNOME's screen reader owns
+  `/usr/bin/orca`), reads `~/.config/orca`, installs the release `.deb` through the guest's own
+  installer or apt, restarts the server's systemd user unit, takes a pairing link only on stdin, and
+  `--on` puts Homebrew on a peer's PATH only where the peer has it. `orca-serve-agent` there writes
+  `orca-serve.service` with linger, the guest's `orca-serve-node` wrapper where it exists; both it and
+  the guest's cloud-init now send the unit's output to null, as the LaunchAgent does, so the journal
+  keeps no pairing link. Cases in `tests/orca-host.sh` and `tests/orca-serve-agent.sh`, run on macOS
+  against stand-ins.
 - `dispatch-rc watch` nudges a run whose last turn ended on an API error (2026-10-22: an unattended
   `/finish` ended on `API Error: Connection dropped (ECONNRESET)`, sat idle, and was ended 11 minutes
   later with its work committed and its check still running). A session idle a minute on a `server_error`

@@ -31,7 +31,7 @@ prints for the skills:
 
 Config of its own (listed in `config-keys`, so `regatta check` reports it): `aurora/skip-hosts`, the host names (the core's `host_name()`) the loop never
 runs on, one per line — two Macs each writing the week's dream in place conflict on push. Where
-an overlay is installed (the config dir's `legacy` file) and the key is absent, the run refuses.
+an overlay is installed (the config dir's `regatta/overlay` marker) and the key is absent, the run refuses.
 
 ## Peers
 
@@ -53,7 +53,7 @@ same checkout, an installed plugin, else an overlay's old path.
 `claude plugin install aurora@regatta` for the skills. For the night: `sh install.sh
 --schedule` writes and loads `dev.regatta.aurora` (`AURORA_LABEL` overrides), nightly at 21:00,
 running `bin/weekly-run aurora <vault>`; a night with nothing due ends before `claude` starts.
-An install with an overlay of its own (the config dir's `legacy` file) schedules the night
+An install with an overlay of its own (the config dir's `regatta/overlay` marker) schedules the night
 itself, so `--schedule` refuses there. On other harnesses the skills' text and `bin/` work; the
 schedule is launchd's (macOS).
 

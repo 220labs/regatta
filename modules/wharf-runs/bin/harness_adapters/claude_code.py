@@ -99,9 +99,8 @@ _RUNS = {}
 
 def _launcher(ctx):
     """The checkout bin/dispatch-rc and bin/dispatch live in: bin/harness's ctx; else
-    HARNESS_LAUNCHER; else this file's own, two folders up; else the overlay the config dir's
-    `legacy` names, else this module in the checkout its `home` names (source sent over stdin has
-    no path)."""
+    HARNESS_LAUNCHER; else this file's own, two folders up; else this module in the checkout the
+    config dir's `home` names (source sent over stdin has no path; the overlay came first until B14b)."""
     if ctx is not None:
         return ctx.coding
     if os.environ.get("HARNESS_LAUNCHER"):
@@ -119,9 +118,7 @@ def _launcher(ctx):
         except OSError:
             return ""
 
-    old, core = os.environ.get("REGATTA_LEGACY") or first("legacy"), first("home")
-    if old and os.path.isdir(old):
-        return old
+    core = first("home")
     return os.path.join(core, "modules", "wharf-runs") if core else os.path.join(_home(), "projects", "regatta", "modules", "wharf-runs")
 
 

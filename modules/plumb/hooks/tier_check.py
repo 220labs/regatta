@@ -190,10 +190,9 @@ def account_rows(rows, here, out):
 
 
 def cost_tool(common):
-    """The cost formatter the line names, home as `~`: the overlay's bin/cost where it exists (the
-    path the login dirs' allow rules name, AGENTS.md's Traps), else the core's through tool()."""
-    legacy = common.legacy_root()
-    p = legacy / "bin" / "cost" if legacy and (legacy / "bin" / "cost").is_file() else common.tool("cost")
+    """The cost formatter the line names, home as `~`: the core's through tool() (the overlay's
+    bin/cost came first until B14b, 2026-10-23, which deleted it)."""
+    p = common.tool("cost")
     if not p:
         return "regatta's bin/cost"
     p = str(p)

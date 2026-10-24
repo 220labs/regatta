@@ -36,7 +36,7 @@ Each is one file in the regatta config dir (`$REGATTA_CONFIG`, else `.config/reg
 folder): `atlas/layer` and `atlas/vault`, the name callers pass to `knowledge-commit` on the first
 line, the primary checkout on the second. `knowledge-commit` also takes the role words `layer`
 and `vault`. `ATLAS_LAYER` and `ATLAS_VAULT` override the paths for a test suite or one shell, and so does the variable a key names on an optional third line (an installer whose scripts already use one).
-Where an overlay is installed (a `legacy` file in the config dir), a missing key is refused,
+Where an overlay is installed (its `regatta/overlay` marker in the config dir), a missing key is refused,
 never guessed; without one, the vault defaults to `atlas` in the XDG data folder.
 
 ## A scope's knowledge repo

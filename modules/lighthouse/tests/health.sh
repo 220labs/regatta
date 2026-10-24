@@ -15,7 +15,7 @@ cp "$ROOT/.claude-plugin/marketplace.json" "$T/rg/.claude-plugin/"
 cp -R "$ROOT/modules/regatta" "$ROOT/modules/lighthouse" "$T/rg/modules/"
 HB="$T/rg/modules/lighthouse/bin/health"
 unset REGATTA_HOME REGATTA_LEGACY CLAUDE_CONFIG_DIR
-export HOME="$T/home" REGATTA_CONFIG="$T/config" HEALTH_LOG_DIR="$T/logs" HEALTH_TCC=off
+export HOME="$T/home" REGATTA_CONFIG="$T/config" HEALTH_LOG_DIR="$T/logs" HEALTH_TCC=off HEALTH_RCB=off
 mkdir -p "$HOME" "$REGATTA_CONFIG/lighthouse" "$T/logs"
 export GIT_CONFIG_GLOBAL="$T/gitconfig"
 git config --global user.name t; git config --global user.email t@example.invalid; git config --global init.defaultBranch main
@@ -42,6 +42,8 @@ check "$(log | grep -c "tend: wharf's bin/tend not installed — skipped")" 1 "t
 check "$(log | tail -2 | tr '\n' ' ')" "ok rc=0 " "a passing check: ok, exit 0"
 HEALTH_TCC=on HEALTH_CHECK_CMD=true run
 check "$(log | grep -c "privacy: wharf-runs' rc-hosts not installed — skipped")" 1 "rc-hosts absent: the survey skipped"
+HEALTH_RCB=on HEALTH_CHECK_CMD=true run
+check "$(log | grep -c "rc hosts: wharf-runs' rc-hosts not installed — skipped")" 1 "rc-hosts absent: the hosts' line skipped"
 
 echo "a failing check, with no bulletin to post to (G17)"
 HEALTH_CHECK_CMD=false run
@@ -67,7 +69,8 @@ dateoff() { date -v"$1" "$2" 2>/dev/null || date -d "${1%d} day" "$2"; }   # dat
 echo "the overlay's case (ported from its test_hooks.sh at B9): two checkouts, its check, a bulletin"
 # bin/health on scratch repos: a clean main fast-forwards, a dirty one is left; a failing check
 # posts one bulletin line and commits it, the same failure again posts nothing, green clears it.
-# The overlay is REGATTA_LEGACY (its bootstrap.sh is the check), the checkouts lighthouse/ff, the
+# The overlay is a config dir's regatta/overlay marker (its bootstrap.sh is the check; the core then
+# wants its five keys, neutral here), the checkouts lighthouse/ff, the
 # bulletin a stub that writes CLAUDE_BULLETIN as bulletin.py would.
 HT="$T/health"; mkdir -p "$HT"
 git init -q --bare "$HT/origin.git"
@@ -80,8 +83,11 @@ cp -R "$HT/c" "$HT/p"; echo dirty > "$HT/p/dirt"
 printf '%s\n%s\n' "$HT/c" "$HT/p" > "$REGATTA_CONFIG/lighthouse/ff"; echo vault > "$REGATTA_CONFIG/lighthouse/vault"
 export CLAUDE_BULLETIN="$HT/bulletin.md"
 printf 'import os, sys\nline = "- " + " · ".join(sys.argv[2:])\nopen(os.environ["CLAUDE_BULLETIN"], "a").write(line + "\\n")\nprint(line)\n' > "$HT/bulletin.py"
-hrun() { HEALTH_TCC="${HRUN_TCC:-off}" HEALTH_TEND="${HRUN_TEND:-off}" REGATTA_LEGACY="$HT/c" HEALTH_BULLETIN_CMD="$HT/bulletin.py" HEALTH_LOG_DIR="$HT/log" HEALTH_COMMIT="$HT/commit" "$HB"; }
+HTC="$T/hconfig"; cp -R "$REGATTA_CONFIG" "$HTC"; mkdir -p "$HTC/regatta"; echo "$HT/c" > "$HTC/regatta/overlay"
+echo Owner > "$HTC/regatta/owner"; : > "$HTC/regatta/guarded"; : > "$HTC/regatta/orca-deny"; echo "$T/usage" > "$HTC/regatta/log-dir"; echo "$HOME/projects" > "$HTC/regatta/projects"
+hrun() { HEALTH_RCB="${HRUN_RCB:-off}" HEALTH_TCC="${HRUN_TCC:-off}" HEALTH_TEND="${HRUN_TEND:-off}" REGATTA_CONFIG="$HTC" HEALTH_BULLETIN_CMD="$HT/bulletin.py" HEALTH_LOG_DIR="$HT/log" HEALTH_COMMIT="$HT/commit" "$HB"; }
 printf '#!/bin/sh\necho "$*" >> "%s/commits"\n' "$HT" > "$HT/commit"; chmod +x "$HT/commit"
+lastrun() { awk '/^== /{b=""} {b=b $0 "\n"} END{printf "%s", b}' "$HT/log/health.log"; }   # the last pass's lines, however many steps it logs
 nb=$(grep -c '^- ' "$CLAUDE_BULLETIN" 2>/dev/null || echo 0)
 hrun; check $? 0 "a green check exits 0"
 check "$(git -C "$HT/c" log -1 --format=%s)" two "  a clean main is fast-forwarded to origin"
@@ -101,9 +107,9 @@ rm "$HT/c/fail"; hrun; check $? 0 "  the check runs unattended (it skips what la
 printf '#!/bin/sh\necho "app: main +1 from origin"\n' > "$HT/tend"; chmod +x "$HT/tend"
 # hrun passes HEALTH_TEND=off whatever the shell exports (HRUN_TEND=on to test it): the suite never runs the real bin/tend, which would tend the real repos.
 grep -qF 'TEND="${HEALTH_TEND:-on}"' "$HB"; check $? 0 "the tend is on by default (E2, R5 clean on the always-on Mac, 2026-10-05)"
-HEALTH_TEND_CMD="$HT/tend" hrun; tail -5 "$HT/log/health.log" | grep -q "^tend: off"; check $? 0 "  HEALTH_TEND=off switches it off"
+HEALTH_TEND_CMD="$HT/tend" hrun; lastrun | grep -q "^tend: off"; check $? 0 "  HEALTH_TEND=off switches it off"
 grep -q "app: main" "$HT/log/health.log"; check $? 1 "  and bin/tend is not run"
-HRUN_TEND=on HEALTH_TEND_CMD="$HT/tend" hrun; tail -5 "$HT/log/health.log" | grep -q "^  app: main +1 from origin$"; check $? 0 "  on: it runs after the fast-forward, its lines in the log"
+HRUN_TEND=on HEALTH_TEND_CMD="$HT/tend" hrun; lastrun | grep -q "^  app: main +1 from origin$"; check $? 0 "  on: it runs after the fast-forward, its lines in the log"
 printf '#!/bin/sh\necho "FAILED app: exit 1: boom"\necho "FAILED tend: app"\nexit 1\n' > "$HT/tend-bad"; chmod +x "$HT/tend-bad"
 nb=$(grep -c 'bin/tend fails' "$CLAUDE_BULLETIN" 2>/dev/null); nb=${nb:-0}; : > "$HT/commits"  # grep -c prints 0 and exits 1: never `|| echo 0`
 HRUN_TEND=on HEALTH_TEND_CMD="$HT/tend-bad" hrun
@@ -125,6 +131,26 @@ grep -q 'refused to a versioned claude: FileProviderDomain, SystemPolicyAllFiles
 HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-bad" hrun
 check "$(grep -c 'a claude without claude-host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "  the same services the next day post nothing"
 HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-ok" hrun; [ -f "$HT/log/health.last.tcc" ]; check $? 1 "  a clean survey clears it"
+# the Remote Control hosts (2026-10-23): HEALTH_RCB_CMD stands in for `rc-hosts --broken` (the real one reads this Mac's hosts)
+grep -qF 'RCB="${HEALTH_RCB:-on}"' "$HB"; check $? 0 "the Remote Control hosts' line is on by default"
+printf '#!/bin/sh\necho "  FAIL     film · buildbox: broken: its claude 2.1.304 was removed; new sessions fail — the hourly --reap restarts it once no session is busy; now: rc-hosts --reap --only film"\nexit 3\n' > "$HT/rcb-bad"; chmod +x "$HT/rcb-bad"
+printf '#!/bin/sh\necho "  FAIL     film · buildbox: broken: its claude (version unknown) was removed; new sessions fail"\nexit 3\n' > "$HT/rcb-unknown"; chmod +x "$HT/rcb-unknown"
+printf '#!/bin/sh\necho "Traceback (most recent call last):" >&2\nexit 1\n' > "$HT/rcb-crash"; chmod +x "$HT/rcb-crash"
+printf '#!/bin/sh\necho "  ok       every host'"'"'s claude is still installed"\n' > "$HT/rcb-ok"; chmod +x "$HT/rcb-ok"
+nb=$(grep -c 'a Remote Control host fails' "$CLAUDE_BULLETIN" 2>/dev/null); nb=${nb:-0}; : > "$HT/commits"
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-bad" hrun
+check "$(grep -c 'a Remote Control host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "a host whose claude was deleted under it is posted"
+grep -q 'new sessions fail: film - buildbox (2.1.304)' "$CLAUDE_BULLETIN"; check $? 0 "  naming the host and its version, its · made safe"
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-bad" hrun
+check "$(grep -c 'a Remote Control host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "  the same host the next day posts nothing"
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-ok" hrun; [ -f "$HT/log/health.last.rc" ]; check $? 1 "  every host healthy clears it"
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-unknown" hrun
+grep -q 'new sessions fail: film - buildbox (version unknown) ' "$CLAUDE_BULLETIN"; check $? 0 "  an unknown version reads (version unknown), parentheses balanced"
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-ok" hrun
+nd=$(grep -c 'deleted under it' "$CLAUDE_BULLETIN")
+HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-crash" hrun
+grep -q 'rc-hosts --broken could not tell (exit 1)' "$CLAUDE_BULLETIN"; check $? 0 "a crash (exit 1) is posted as could not tell"
+check "$(grep -c 'deleted under it' "$CLAUDE_BULLETIN")" "$nd" "  never as a deleted claude"
 
 echo "the serve agent's line (skipper-resilience, the watch, 2026-10-22)"
 HEALTH_CHECK_CMD=true run

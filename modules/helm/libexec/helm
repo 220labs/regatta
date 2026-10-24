@@ -225,15 +225,21 @@ def cmd_eta(a):
     print("%s: ETA %s%s" % (a.task, helmlib.iso(t["eta"]), (", estimate " + money(t["cost_est"])) if a.cost is not None else ""))
 
 
-@plan_locked
 def cmd_mode(a):
+    """`helm mode`: a branch's (mode_branch, under branch-modes.json's own lock) or a ship's (mode_ship,
+    under the plan's) — a `--branch B --clear` names no ship, so it never asks for one (follow-ups item 5)."""
+    if a.branch:
+        return mode_branch(a)
+    return mode_ship(a)
+
+
+@plan_locked
+def mode_ship(a):
     """skipper-modes S1: the ship's mode, or one task's, rewritten in plan.json — every reader reads it
     at the moment of its decision, so a change mid-flight is this one write. No mode: print it.
     A ship's mode is a ceiling: setting it clears each task mode above it, so `helm mode <ship> default`
-    lowers every task (landing review 6). `--branch B`: the mode of one branch with no ship (a `dispatch
+    lowers every task (landing review 6); it drops a refused blueprint mode (`mode_refused`, item 3). `--branch B`: the mode of one branch with no ship (a `dispatch
     --mode`/`--yolo` run), in branch-modes.json, which helmlib.branch_mode reads first (landing review 4b)."""
-    if a.branch:
-        return mode_branch(a)
     if not a.id:
         sys.exit("helm mode: a ship, or --branch BRANCH")
     p = need(a.id)
@@ -254,6 +260,10 @@ def cmd_mode(a):
         where.pop("mode", None)
     else:
         where["mode"] = a.mode
+    # the ship's mode, set or cleared by a person, is the owner's word on it: a blueprint mode an
+    # unattended apply refused (wharf's `mode_refused`) stops standing — after a clear the next apply
+    # judges it again, and the tick's refuses it again (item 3). An unattended lower leaves it
+    refused = None if a.task or os.environ.get("CLAUDE_UNATTENDED") else p.pop("mode_refused", None)
     lowered = []
     if not a.task and not a.clear:   # the ship's mode now: no task keeps a mode above it
         top = helmlib.MODE_RANK[a.mode]
@@ -265,6 +275,8 @@ def cmd_mode(a):
     print("%s%s: mode %s (%s)" % (a.id, " task " + a.task if a.task else "", m, src))
     for tid, was in lowered:
         print("  task %s: mode %s cleared — now %s (%s)" % ((tid, was) + helmlib.task_mode(a.id, tid)))
+    if refused:
+        print("  the blueprint's mode %s, refused %s, no longer stands refused" % (refused.get("mode"), helmlib.iso(refused.get("ts")) or "earlier"))
 
 
 def mode_branch(a):
@@ -278,24 +290,27 @@ def mode_branch(a):
         return
     key = "%s|%s" % (helmlib._common().repo_key(a.repo) if a.repo else "", a.branch)
     f = helmlib.branch_modes_file()
-    before = helmlib.load_branch_modes()
-    old = helmlib.branch_mode(a.branch, a.repo)[0]
-    bm = dict(before)
-    if a.clear:
-        bm.pop(key, None)
-    else:
-        bm[key] = {"mode": mode, "ts": int(time.time())}
 
     def write(d):
         f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
+        tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
         tmp.write_text(json.dumps(d, indent=1, sort_keys=True) + "\n")
         os.replace(tmp, f)
-    write(bm)
-    why = helmlib.raise_refusal(old, helmlib.branch_mode(a.branch, a.repo)[0])
-    if why:
-        write(before)
-        sys.exit("helm mode: " + why)
+    # read, write, judge and maybe put back as one: two writers would otherwise lose each other's
+    # branch (follow-ups item 5)
+    with helmlib.branch_modes_locked():
+        before = helmlib.load_branch_modes()
+        old = helmlib.branch_mode(a.branch, a.repo)[0]
+        bm = dict(before)
+        if a.clear:
+            bm.pop(key, None)
+        else:
+            bm[key] = {"mode": mode, "ts": int(time.time())}
+        write(bm)
+        why = helmlib.raise_refusal(old, helmlib.branch_mode(a.branch, a.repo)[0])
+        if why:
+            write(before)
+            sys.exit("helm mode: " + why)
     print("%s: mode %s (%s)" % ((a.branch,) + helmlib.branch_mode(a.branch, a.repo)))
 
 

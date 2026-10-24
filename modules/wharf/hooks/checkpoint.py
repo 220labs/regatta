@@ -1264,12 +1264,90 @@ CONSENT_FLAG_RE = re.compile(r"--(?:live|estate)-ok\b")
 # --mode check) and every merge gate read CLAUDE_UNATTENDED and DISPATCH_LABEL from the environment,
 # so `env -u`, `unset`, an emptied value, `env -i` or a typed DISPATCH_LABEL would be the run writing
 # itself the yes (skipper-modes landing review 20). Read from the raw text with quoted strings cut —
-# simple_commands drops `env` and assignments, and a mention in a commit message is no act.
-_ASSIGN_AT = r"(?:^|[;&|(\n]|\benv\b[^\n|;&]*?\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*"   # where an assignment sets a variable
+# simple_commands drops `env` and assignments, and a mention in a commit message is no act. The shell's
+# own setters count as assignments (`export`, `declare -x`, `typeset`, `local`, `readonly`), and an
+# un-export (`export -n`, `declare +x`) sheds as `unset` does (follow-ups item 2). A shed inside a quoted
+# string (`bash -c 'unset …'`, `sh -c "env -u …"`) passes: writing a second shell to hide the act is
+# intent, not accident, and this hook guards accidents (its header).
+_SETTER = r"\b(?:export|declare|typeset|local|readonly)\b(?:\s+-\w+)*\s+(?:[A-Za-z_]\w*\s+)*"
+_ASSIGN_AT = (r"(?:(?:^|[;&|(\n]|\benv\b[^\n|;&]*?\s)\s*|" + _SETTER + r")"
+              r"(?:[A-Za-z_]\w*=\S*\s+)*")   # where an assignment sets a variable
+_UNEXPORT = r"\b(?:export\s+(?:-\w+\s+)*-\w*n|(?:declare|typeset)\s+(?:[-+]\w+\s+)*\+\w*x)\w*\b[^\n|;&]*\b"
 UNATTENDED_SHED_RE = re.compile(
     r"\benv\b[^\n|;&]*?\s(?:-u\s*|--unset[= ])" + UNATTENDED_ENV + r"\b|\benv\s+(?:-\w*i\b|--ignore-environment\b)"
-    r"|\bunset\b[^\n|;&]*\b" + UNATTENDED_ENV + r"\b|" + _ASSIGN_AT + r"(?:" + UNATTENDED_ENV + r"=(?=\s|$)|DISPATCH_LABEL=)")
+    r"|\bunset\b[^\n|;&]*\b" + UNATTENDED_ENV + r"\b|" + _UNEXPORT + UNATTENDED_ENV + r"\b"
+    r"|" + _ASSIGN_AT + r"(?:" + UNATTENDED_ENV + r"=(?=[\s;&|)]|$)|DISPATCH_LABEL=)")
 QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+# The skipper's records (follow-ups item 7, the landing review's finding 20): helm's plans root —
+# plan.json, branch-modes.json, events.jsonl — and dispatch's run records. A mode, a raise refusal and a
+# run's task_mode are read there, so an unattended run editing one by hand writes itself the yes. Only
+# the tools that own them (bin/helm, bin/plan, bin/dispatch) write them, as processes this hook never
+# sees; a hand edit is denied — the Write/Edit tools, and a Bash command that names one and is no
+# reader (a redirect into it, inline code, any program but READERS, `sed -i`, a `find` that runs).
+RECORD_DIRS = ("Library/Logs/claude-weekly/plans", "Library/Logs/claude-weekly/run-seed-runs")
+# the lander's launch record in a repo's git dir: its `by` and `eff_mode` are the yes bin/pr's
+# re-check trusts, so a run writing it writes itself the yes (the follow-ups' landing review)
+AF_STATE = "/claude/autofinish.json"
+
+
+def record_roots():
+    """The record folders as typed paths: under $HOME, and helm's PLANS_DIR where it is set."""
+    home = os.environ.get("HOME") or str(Path.home())
+    return [os.path.join(home, d) for d in RECORD_DIRS] + [r for r in (os.environ.get("PLANS_DIR"),) if r]
+
+
+def in_records(path):
+    """True when `path` (a Write/Edit target) is under a record folder, links resolved."""
+    if not path:
+        return False
+    p = os.path.realpath(os.path.expanduser(path))
+    if p.endswith(AF_STATE):
+        return True
+    return any(p == r or p.startswith(r.rstrip("/") + "/") for r in map(os.path.realpath, record_roots()))
+
+
+def records_re():
+    """A record folder as a command may spell it: absolute, or under `~`, `$HOME` or `${HOME}`."""
+    home = os.environ.get("HOME") or str(Path.home())
+    alts = [h + "/" + re.escape(d) for d in RECORD_DIRS for h in (re.escape(home), "~", r"\$HOME", r"\$\{HOME\}")]
+    alts += [re.escape(r) for r in record_roots()[len(RECORD_DIRS):]]
+    alts.append(r"[^\s\"'<>|;&]*" + re.escape(AF_STATE))   # a plain path to it; a $( … ) spelling is intent
+    return re.compile("(?:" + "|".join(alts) + r")(?![\w.-])")
+
+
+def record_write(command):
+    """The part of `command` that writes a skipper's record by hand, or None (item 7)."""
+    rx = records_re()
+    if not rx.search(command):
+        return None
+    m = re.search(r"(?:&?>>?|>\|)\s*[\"']?(?:" + rx.pattern + ")", command)
+    if m:
+        return m.group(0)
+    try:
+        inline = runs_inline_program(command)
+    except Exception:
+        inline = "inline code"
+    if inline:
+        return rx.search(command).group(0)
+    for words, _, _ in simple_commands(command):
+        text = " ".join(words)
+        if not words or not rx.search(text):
+            continue
+        prog = os.path.basename(words[0])
+        if prog in READERS and not (prog == "find" and (FIND_RUNS | {"-delete"}) & set(words)) \
+                and not (prog == "sed" and any(w.startswith(("-i", "--in-place")) for w in words[1:])):
+            continue
+        return text[:80]
+    return None
+
+
+def record_reason(what):
+    return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): `{what}` writes a skipper's "
+            f"record by hand (helm's plans — plan.json, branch-modes.json — or a dispatch run record). A mode, "
+            f"a raise refusal and a run's task_mode are read there, so only their tools (bin/helm, bin/plan, "
+            f"bin/dispatch) write them. Reading them (cat, jq, grep) is fine; leave the change for the owner.")
+
+
 READERS = {"git", "grep", "rg", "egrep", "ag", "cat", "head", "tail", "less", "sed", "awk", "ls",
            "wc", "diff", "echo", "printf", "find", "jq", "stat", "file", "test", "[", "true", "nl"}
 FIND_RUNS = {"-exec", "-execdir", "-ok", "-okdir"}  # a find that runs something is no reader
@@ -1285,6 +1363,9 @@ def unattended_live(command, cwd):
         return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): `{shed.group(0).strip()}` "
                 f"sheds what marks this run unattended — the mode's raise refusal and the merge gates read it, "
                 f"so only the owner may run that. Leave it as an open item for the owner in your report.")
+    record = record_write(command)
+    if record:
+        return record_reason(record)
     here, repos, regexes = Path(cwd), {}, {}
 
     def repo(d):
@@ -2069,15 +2150,13 @@ def outside_fences(rel):
 # capped, so a hung CLI never holds a turn long after the push — a failure is a note, never a
 # retry. The Stop entry has no `timeout` in settings.json, so the harness default applies.
 def shown_tool(name):
-    """How a message to a session names a peer tool: the overlay's shim while the overlay has one
-    (the account dirs' and unattended runs' allow rules name that path), else the module's through
-    common.tool(), else the bare name; under `~` where it can be (the review of the scrubs'
-    integration: a module path left an unattended run denied its own step)."""
+    """How a message to a session names a peer tool: the module's through common.tool(), else the
+    bare name; under `~` where it can be. The overlay's shim came first until B14b (2026-10-23),
+    which deleted it; the account dirs' and unattended runs' allow rules name the module paths since."""
     p = None
     if common:
         try:
-            old = common.legacy_root()
-            p = Path(old) / "bin" / name if old and (Path(old) / "bin" / name).is_file() else common.tool(name)
+            p = common.tool(name)
         except Exception:
             p = None
     if not p:
@@ -2657,6 +2736,10 @@ def main():
                 print(json.dumps(out, ensure_ascii=False))
             return
         if data.get("tool_name") in WRITE_TOOLS:
+            ti = data.get("tool_input") or {}
+            if os.environ.get(UNATTENDED_ENV) and in_records(ti.get("file_path") or ti.get("notebook_path")):
+                print(json.dumps(deny(record_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
+                return
             try:
                 out = handle_file_write(data.get("tool_input") or {}, ROOT, session)
             except Exception:

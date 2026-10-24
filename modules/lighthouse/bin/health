@@ -37,6 +37,12 @@
 # only once the Mac's sitting is done (before it, the list is what the sitting fixes). Read-only:
 # `log show`.
 #
+# Then the Remote Control hosts (2026-10-23): `rc-hosts --broken` FAILS on a host whose claude
+# version Claude Code deleted under it — every new session from the phone fails while the host
+# logs Connected (a film repo's host on the build Mac, three days). The hourly reaper restarts such a
+# host once no session is busy; this says it where a busy one holds it, or where the reaper is not
+# scheduled. Posted like a failing check, under its own state file. Read-only: lsof per host.
+#
 # Then the serve agent (skipper-resilience, the watch, 2026-10-22): on a Mac whose Orca runs as a
 # headless server under wharf-runs' LaunchAgent (`orca-serve-agent`; its label the config dir's
 # `wharf-runs/serve-label`, else org.regatta.orca-serve), one line a day says whether it serves:
@@ -54,12 +60,12 @@
 # design's G16, G17). The checkouts to fast-forward are the config dir's `lighthouse/ff` (one path
 # per line; none without it); the bulletin is committed in the vault repo `lighthouse/vault` names
 # (a knowledge-commit repo name; without it the line is posted, not committed); the check is the
-# overlay's `bootstrap.sh --check` (the core's `legacy` checkout), else `regatta check`.
+# overlay's `bootstrap.sh --check` (the core's `overlay_root()`), else `regatta check`.
 #
 # HEALTH_COMMIT replaces knowledge-commit for the suite (it would push the real vault).
 # HEALTH_TEND (on|off) overrides TEND for the suite; HEALTH_TEND_CMD replaces bin/tend there.
 # HEALTH_TCC (on|off) and HEALTH_TCC_CMD do the same for the privacy survey (`log show` is slow and
-# reads the real Mac). HEALTH_ORCA (on|off), HEALTH_LAUNCHCTL_CMD and HEALTH_ORCA_CMD do the same
+# reads the real Mac), HEALTH_RCB (on|off) and HEALTH_RCB_CMD for the Remote Control hosts' line. HEALTH_ORCA (on|off), HEALTH_LAUNCHCTL_CMD and HEALTH_ORCA_CMD do the same
 # for the serve agent. HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -78,7 +84,7 @@ LOGDIR="${HEALTH_LOG_DIR:-$HOME/Library/Logs/claude-weekly}"
 mkdir -p "$LOGDIR"
 exec >>"$LOGDIR/health.log" 2>&1
 echo "== $(date '+%Y-%m-%d %H:%M')"
-C=$(core 'print(common.legacy_root() or "")') || { echo "the regatta core would not load (missing, or its config incomplete: the core's bin/regatta check names the keys) — nothing checked"; exit 2; }
+C=$(core 'print(common.overlay_root() or "")') || { echo "the regatta core would not load (missing, or its config incomplete: the core's bin/regatta check names the keys) — nothing checked"; exit 2; }
 # the ff checkouts, plus the core's own: the moved tools run from it, so it drifts as they did (B9 review)
 FF=$(core 'import os; ff = common.config_lines("lighthouse/ff") or []; r = common.regatta_root()
 seen = {os.path.realpath(os.path.expanduser(x)) for x in ff}
@@ -90,6 +96,7 @@ SYNC=$(peer sync.py)
 TEND="${HEALTH_TEND:-on}"  # on since R5 printed clean on the always-on Mac, 2026-10-05 (header)
 TCC="${HEALTH_TCC:-on}"    # the privacy survey (header)
 ORCA="${HEALTH_ORCA:-on}"  # the serve agent's line (header)
+RCB="${HEALTH_RCB:-on}"    # the Remote Control hosts' line (header)
 state="$LOGDIR/health.last"   # the failure last posted; a repeat posts nothing
 
 # ff <repo>: fast-forward main to origin/main when it is checked out and clean; say why not.
@@ -181,6 +188,26 @@ elif [ "$TCC" = on ]; then
   fi
 else
   echo "privacy: off (TCC in bin/health)"
+fi
+
+if [ "$RCB" = on ] && [ -z "${HEALTH_RCB_CMD:-}" ] && [ -z "$RCH" ]; then
+  echo "rc hosts: wharf-runs' rc-hosts not installed — skipped"
+elif [ "$RCB" = on ]; then
+  echo "rc hosts:"
+  if [ -n "${HEALTH_RCB_CMD:-}" ]; then rb=$("$HEALTH_RCB_CMD" 2>&1); else rb=$(python3 "$RCH" --broken 2>&1); fi
+  rbrc=$?
+  printf '%s\n' "$rb" | sed 's/^/  /'
+  if [ "$rbrc" = 0 ]; then rm -f "$state.rc"
+  elif [ "$rbrc" = 3 ]; then
+    # host and version only: the same broken host tomorrow is the same line, posted once a week.
+    # 3 is the broken verdict; 1 is any crash (the core's AGENTS.md, Traps), so only 3 names one.
+    hosts=$(printf '%s\n' "$rb" | sed -n 's/^ *FAIL *\(.*\): broken: its claude \(.*\) was removed.*/\1 (\2)/p' | sed 's/·/-/g; s/((\(.*\)))/(\1)/' | paste -sd ',' - | sed 's/,/, /g')
+    post_once "$state.rc" "a Remote Control host" "its claude was deleted under it, new sessions fail: ${hosts:-see rc-hosts --broken} — rc-hosts --broken; the hourly --reap restarts it once no session is busy"
+  else
+    post_once "$state.rc" "a Remote Control host" "rc-hosts --broken could not tell (exit $rbrc) — run it by hand to see why"
+  fi
+else
+  echo "rc hosts: off (RCB in bin/health)"
 fi
 
 # orca_answers <cli>: run-list answers with ok JSON within 60 s. Python for the timeout (macOS has

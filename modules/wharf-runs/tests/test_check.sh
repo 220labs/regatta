@@ -126,6 +126,24 @@ wait $pa $pb
 check "$(cat "$T/A2.out" "$T/B2.out" | grep -c waiting)" "0" "two slots: two checks run together"
 check "$(head -2 "$ORDER" | grep -c start)" "2" "…both started before either ended"
 
+echo "the count per host, from wharf-runs/check-slots (2026-10-23)"
+mkdir -p "$T/cfg/wharf-runs"; printf 'other:5\nlaptopx: 3\n*:1\n' > "$T/cfg/wharf-runs/check-slots"
+: > "$ORDER"
+for w in A B C; do env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=laptopx WHO=$w HOLD=3 "$B/check" "$Q" > "$T/${w}3.out" 2>&1 & eval "p$w=\$!"; done
+wait $pA $pB $pC
+check "$(cat "$T/A3.out" "$T/B3.out" "$T/C3.out" | grep -c waiting)" "0" "this host's line, 3: three checks run together"
+: > "$ORDER"
+env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=nobody WHO=A HOLD=2 "$B/check" "$Q" > "$T/A4.out" 2>&1 & pa=$!
+until_ "[ -s '$T/slots/slot-1/pid' ]"
+env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=nobody WHO=B HOLD=0 "$B/check" "$Q" > "$T/B4.out" 2>&1 & pb=$!
+wait $pa $pb
+check "$(grep -c 'all 1 taken' "$T/B4.out")" "1" "a host without a line takes *'s, 1"
+env -u CHECK_SLOTS REGATTA_CONFIG="$T/none" CHECK_HOST=laptopx WHO=A HOLD=0 "$B/check" "$Q" > "$T/A5.out" 2>&1
+check "$?" "0" "no file: the default, and the check runs"
+printf 'laptopx:many\n' > "$T/cfg/wharf-runs/check-slots"
+env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=laptopx WHO=A HOLD=0 "$B/check" "$Q" > "$T/A6.out" 2>&1
+check "$?" "2" "a line that is no number: refused, never a guess"
+
 echo "killed"
 : > "$ORDER"
 WHO=K HOLD=30 "$B/check" "$Q" --out "$T/rk" > "$T/K.out" 2>&1 & pk=$!

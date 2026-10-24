@@ -18,17 +18,17 @@ unset CLAUDE_CONFIG_DIR
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # the fixture before the lookup below: what the cases expect is read from the same config dir the
-# tools read, so a Mac's own overlay (its `legacy`) is never the expectation (suites-host, 2026-10-20)
+# tools read, so a Mac's own overlay (its marker) is never the expectation (suites-host, 2026-10-20)
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
 # peers, found as dispatch finds them (the core's tool()): keel (M4), helm's stalls_tick.py (the
-# overlay's until B12), wharf's /finish (module_path); the overlay's checkout (legacy_root), else ""
+# overlay's until B12), wharf's /finish (module_path); the overlay's checkout (overlay_root), else ""
 eval "$(python3 - "$B/../lib" <<'CORE'
 import shlex, sys
 sys.path.insert(0, sys.argv[1])
 import core_path
 core_path.require()
 import common
-w, old = common.module_path("wharf"), common.legacy_root()
+w, old = common.module_path("wharf"), common.overlay_root()
 for k, v in (("KEEL", common.tool("keel")), ("STALLS_TICK", common.tool("stalls_tick.py")), ("HELMLIB", common.tool("helmlib.py")),
              ("FINISH_SKILL", w / "skills" / "finish" / "SKILL.md" if w else None),
              ("LEGACY", old if old and (old / "bin").is_dir() else None)):
@@ -293,6 +293,7 @@ has "$T/claude.calls" "$T/repo/.claude/worktrees/demo" "ran inside the branch's 
 has "$T/claude.calls" "--permission-mode auto" "auto mode: a would-prompt call is denied headless (docs/record/run-seed-permissions-2026-10-04.md)"
 has "$T/claude.calls" "Bash(*bin/pr merge*)" "bin/pr deny by its launch verb, in the matcher's wildcard form"
 has "$T/claude.calls" "Bash(*libexec/pr merge*)" "  and wharf's libexec/pr, the path /finish names with no overlay"
+has "$T/claude.calls" "Bash(*regatta pr merge*)" "  and the core's regatta pr, its C1 way into libexec/pr (B14b landing review)"
 grep -q 'Bash(python3:\*)\|Bash(bash:\*)' "$T/claude.calls"; check "$?" "1" "no interpreter wildcard on the allowlist"
 grep -q 'bin/pr:\*' "$T/claude.calls"; check "$?" "1" "no dead prefix-with-star pattern"
 check "$(git -C "$T/repo/.claude/worktrees/demo" rev-parse --abbrev-ref HEAD)" "$BR" "worktree on the branch"
@@ -357,13 +358,20 @@ has "$T/claude.calls" "AskUserQuestion" "AskUserQuestion is on the denied list (
 check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its manager, plan and page"
 # no stand-ins for the paths: with an overlay installed the prompt still names helm's module paths,
 # which tool() finds and the overlay's allow rules name since B14a — never the overlay's shims, as it
-# did until then. The overlay is a stand-in named by REGATTA_LEGACY, so the case runs on every Mac and
-# in CI alike, never against whichever overlay the login has (suites-host, 2026-10-20)
+# did until then. The overlay is a stand-in a config dir of the case's own marks, so the case runs on
+# every Mac and in CI alike, never against whichever overlay the login has (suites-host, 2026-10-20)
 OVL="$(cd "$T" && pwd -P)/overlay"; mkdir -p "$OVL/bin"   # resolved, as dispatch resolves a checkout that is no git repo
+# a config dir that marks the stand-in overlay: the suite's own, plus the marker and the five keys
+# the core then wants (B2b's OVERLAY_KEYS), so the core loads as beside a real overlay (B14b: the
+# marker is the only way to name an overlay; REGATTA_LEGACY is read by nothing)
+ovl_cfg() { rm -rf "$T/config-ovl"; cp -R "$T/config" "$T/config-ovl"; echo "$OVL" > "$T/config-ovl/regatta/overlay"
+  for k in guarded orca-deny; do [ -e "$T/config-ovl/regatta/$k" ] || : > "$T/config-ovl/regatta/$k"; done
+  [ -e "$T/config-ovl/regatta/log-dir" ] || echo "$HOME/.local/state/regatta" > "$T/config-ovl/regatta/log-dir"
+  [ -e "$T/config-ovl/regatta/projects" ] || echo "$HOME/projects" > "$T/config-ovl/regatta/projects"; }
 for t in ask plan; do printf '#!/bin/sh\n' > "$OVL/bin/$t"; chmod +x "$OVL/bin/$t"; done
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; PL2=$(basename "$(pl)" .plist); : > "$T/claude.calls"
 # the same environment as the run above: later cases read the newest run record
-env -u DISPATCH_ASK -u DISPATCH_HELM REGATTA_LEGACY="$OVL" DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_PLAN_SPACE=sp-1 DISPATCH_MANAGER_HOST=laptop DISPATCH_MANAGER_ACCOUNT=/x/.acct-c DISPATCH_LOG="$HOME/mgr2.log" DISPATCH_LABEL=$PL2 "$B/dispatch" $BR --repo "$T/repo" --headless
+ovl_cfg; env -u DISPATCH_ASK -u DISPATCH_HELM REGATTA_CONFIG="$T/config-ovl" DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_PLAN_SPACE=sp-1 DISPATCH_MANAGER_HOST=laptop DISPATCH_MANAGER_ACCOUNT=/x/.acct-c DISPATCH_LOG="$HOME/mgr2.log" DISPATCH_LABEL=$PL2 "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$T/claude.calls" "modules/helm/bin/ask apply" "  the real lookup: helm's bin/ask, which the allow rules name since B14a"
 has "$T/claude.calls" "modules/helm/libexec/helm report --task demo" "  and helm's console for the reports"
 grep -q "$OVL/bin/" "$T/claude.calls"; check "$?" "1" "  never the overlay's shims (B14a)"
@@ -440,6 +448,19 @@ case "\${STUB_RUN:-work}" in
   # busy with no prompt in the transcript: stuck in its UserPromptSubmit hooks (the build Mac, 2026-10-15)
   hooked) printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
           ( exec -a "$T/stuck-hook" sleep 30 ) &;;
+  # done, but holding background shells, so Claude Code says "shell" (S13): the Session-tab waiter
+  # alone (listen), or the waiter and a shell still at work (shelled)
+  listen|shelled)
+    printf '{"sessionId":"%s","status":"shell","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
+    t="\$HOME/.claude/projects/x/\$sid.jsonl"
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_w","name":"Bash","input":{"command":"sessionpipe wait --session claude-code:'"\$sid"'","run_in_background":true}}]}}' > "\$t"
+    echo '{"type":"user","toolUseResult":{"backgroundTaskId":"bw"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_w"}]}}' >> "\$t"
+    [ "\$STUB_RUN" = shelled ] && echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_s","name":"Bash","input":{"command":"sleep 600","run_in_background":true}}]}}' >> "\$t"
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}' >> "\$t";;
+  # a login whose sessions/ is its own dir, not a link to ~/.claude's (an Orca profile; S13)
+  profile) rec="\$CLAUDE_CONFIG_DIR/sessions/\$\$.json"; mkdir -p "\$CLAUDE_CONFIG_DIR/sessions"
+           printf '{"sessionId":"%s","status":"idle","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
+           echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}' > "\$HOME/.claude/projects/x/\$sid.jsonl";;
 esac
 while :; do sleep 0.2; done
 EOF
@@ -668,10 +689,73 @@ pkill -f "$T/stuck-hook" 2>/dev/null
 STUB_RUN=busy DISPATCH_MAX_H=0.001 DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/maxh.log" "$B/dispatch" $BR --repo "$T/repo"
 has "$HOME/maxh.log" "still not idle after 0.0 h (DISPATCH_MAX_H)" "a session never idle is ended at DISPATCH_MAX_H"
 check "$(field end_reason)" "max lifetime 0.0 h" "  recorded"
+
 : > "$T/claude.calls"
 STUB_HANG=1 DISPATCH_MAX_H=0.0005 DISPATCH_LOG="$HOME/maxh2.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$HOME/maxh2.log" "still running after 0.0005 h (DISPATCH_MAX_H)" "  a headless one too"
 has "$T/claude.calls" "TERM -p" "  its claude -p got SIGTERM"
+
+echo "a finished run that reads shell or sits in another login's registry is ended (S13)"
+STUB_RUN=listen DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/listen.log" "$B/dispatch" $BR --repo "$T/repo" &
+RS=$!; wait_run "$RS" "" 30
+check "$(field end_reason)" "idle 11 min" "a shell whose only open task is sessionpipe wait is ended after the idle window"
+STUB_RUN=shelled DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/shelled.log" "$B/dispatch" $BR --repo "$T/repo" &
+RS=$!
+CP=$(await_stub shell); check "$?" "0" "  the shelled run's claude started"
+sleep 3   # the subject: past DISPATCH_START_WAIT and its polls, with the record idle-old, it must stay
+kill -0 "$CP" 2>/dev/null; check "$?" "0" "  a shell with another background shell open is not ended"
+check "$(field ended)" "" "  nor recorded ended"
+[ -n "$CP" ] && kill -TERM "$CP" 2>/dev/null
+wait_run "$RS" "$CP"
+mkdir -p "$HOME/.claude-orca/sessions"
+STUB_RUN=profile CLAUDE_CONFIG_DIR="$HOME/.claude-orca" DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/profile.log" "$B/dispatch" $BR --repo "$T/repo" &
+RS=$!; wait_run "$RS" "" 30
+check "$(field config_dir)" "$HOME/.claude-orca" "  the rc record names the run's config dir"
+check "$(field end_reason)" "idle 11 min" "a run whose login keeps its own sessions/ is found there and ended idle"
+rm -rf "$HOME/.claude-orca"   # later cases glob ~/.claude*
+python3 - "$B/dispatch-rc" "$HOME" <<'PY' > "$T/out"
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("drc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("drc", loader)); loader.exec_module(m)
+home = sys.argv[2]
+def run(sid, lines):
+    with open(os.path.join(home, ".claude", "projects", "x", sid + ".jsonl"), "w") as f:
+        for l in lines:
+            f.write(json.dumps(l, separators=(",", ":")) + "\n")
+    return m.listening_only(sid, since)
+since = 1792700000000   # the record's statusUpdatedAt, ms
+at = lambda d, ms: dict(d, timestamp=__import__("datetime").datetime.fromtimestamp(ms / 1000, __import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z"))
+use = lambda i, cmd, name="Bash": {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": i, "name": name, "input": {"command": cmd, "run_in_background": True}}]}}
+note = lambda i: {"type": "queue-operation", "operation": "enqueue", "content": "<task-notification>\n<task-id>b</task-id>\n<tool-use-id>%s</tool-use-id>\n<status>completed</status>" % i}
+print("ended", run("u1", [use("t1", "sleep 9"), at(note("t1"), since - 60000), use("t2", "sessionpipe wait --session c:x")]))
+print("fresh", run("u1b", [use("t1", "sleep 9"), at(note("t1"), since + 60000), use("t2", "sessionpipe wait --session c:x")]))
+print("ask", run("u6", [use("t1", "/x/helm/bin/ask listen")]))
+moved = {"type": "user", "toolUseResult": {"backgroundTaskId": "bm", "timedOutAfterMs": 120000}, "message": {"content": [{"type": "tool_result", "tool_use_id": "t2"}]}}
+fg = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "bash tests/check.sh"}}]}}
+print("moved", run("u7", [use("t1", "sessionpipe wait --session c:x"), fg, moved]))
+print("odd", run("u8", [use("t1", "sessionpipe wait --session c:x"), {"type": "system", "message": "x", "data": {"run_in_background": True}}, {"type": "assistant", "message": {"content": ["run_in_background", 1]}, "x": {"run_in_background": True}}]))
+rec = {"pid": 1, "session": None}
+os.makedirs(os.path.join(home, ".claude", "sessions"), exist_ok=True)
+with open(os.path.join(home, ".claude", "sessions", "1.json"), "w") as f:
+    json.dump({"pid": 1, "status": "shell"}, f)
+print("noid", m.session_record(rec) is not None)
+print("agent", run("u2", [use("t1", "sessionpipe wait --session c:x"), use("t2", None, "Agent")]))
+print("chain", run("u3", [use("t1", "sessionpipe wait --session c:x; make")]))
+print("talk", run("u4", [use("t1", "spacesheep talk listen --session x --once")]))
+print("none", run("u5", [{"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}]))
+print("gone", m.listening_only("no-such-session"))
+PY
+has "$T/out" "ended True" "  a shell whose task-notification came before the status is no longer open"
+has "$T/out" "fresh False" "  a task that ended after the status: work about to start, busy"
+has "$T/out" "ask False" "  ask listen waits on a manager's answer: busy"
+has "$T/out" "moved False" "  a call moved to the background at its timeout: busy"
+has "$T/out" "odd True" "  odd transcript shapes are skipped, not raised"
+has "$T/out" "noid True" "  a record with no session id is returned, not raised"
+has "$T/out" "agent False" "  a background agent beside the waiter: busy"
+has "$T/out" "chain False" "  a listener chained to another command: busy"
+has "$T/out" "talk True" "  spacesheep talk listen is a listener"
+has "$T/out" "none False" "  shell with no open task found: busy (the safe side)"
+has "$T/out" "gone False" "  no transcript: busy"
 
 echo "--probe takes the visible path"
 : > "$T/claude.calls"; : > "$T/screen.calls"
@@ -1413,6 +1497,21 @@ python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "ask", "tasks": 
 DISPATCH_SHIP=mship DISPATCH_MODE=yolo DISPATCH_LOG="$HOME/mode-ship.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-ship.log" "== mode ask" "no task mode: the ship's mode beats the hint"
 grep -q "== yolo" "$HOME/mode-ship.log"; check "$?" "1" "  …a yolo hint overruled by the ship is no yolo run: no launch"
+# follow-ups item 5: a `helm mode --branch` lowering is read at fire time and at launch — under the
+# ship's mode, a ceiling no branch entry raises (the follow-ups' code review): here the ship says ask
+printf '{"|%s": {"mode": "default", "ts": 1}}\n' "$BR" > "$PLANS_DIR/branch-modes.json"
+DISPATCH_SHIP=mship DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-branch.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-branch.log" "== mode ask" "a helm mode --branch above the ship's ask: the ship's ceiling holds at fire time"
+python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "dnd", "tasks": {}}, open(sys.argv[1], "w"))' "$PLANS_DIR/mship/plan.json"
+DISPATCH_SHIP=mship DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-branch-dnd.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-branch-dnd.log" "== mode default" "  a helm mode --branch below the ship's dnd lowers the run at fire time (follow-ups item 5)"
+python3 -c 'import json, sys; json.dump({"id": "mship", "mode": "ask", "tasks": {}}, open(sys.argv[1], "w"))' "$PLANS_DIR/mship/plan.json"
+rm -f "$PLANS_DIR/branch-modes.json"; : > "$T/af.calls"
+YLOWER="printf '{\"|%s\": {\"mode\": \"default\", \"ts\": 1}}' $BR > $PLANS_DIR/branch-modes.json" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd \
+  DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/mode-branch-low.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/mode-branch-low.log" "== dnd: no launch — the mode is now default" "  …and a lowering while the run built stops its launch (mode_now)"
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "    autofinish-run never called"
+rm -f "$PLANS_DIR/branch-modes.json"
 unset PLANS_DIR
 : > "$T/claude.calls"
 DISPATCH_LOG="$HOME/mode-none.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
@@ -1958,7 +2057,7 @@ DISPATCH_RCHOSTS="$T/rch" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >
 has "$P" "<array><string>$T/fakehost</string><string>$PRIM/modules/wharf-runs/bin/dispatch</string>" "the one-shot job starts dispatch through claude-host"
 # …and names the overlay's shim where one is installed, the path its jobs always named (the stand-in)
 : > "$OVL/bin/dispatch"
-REGATTA_LEGACY="$OVL" DISPATCH_RCHOSTS="$T/rch" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl)
+ovl_cfg; REGATTA_CONFIG="$T/config-ovl" DISPATCH_RCHOSTS="$T/rch" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl)
 has "$P" "<array><string>$T/fakehost</string><string>$OVL/bin/dispatch</string>" "  the overlay's shim, where an overlay is installed"
 rm -f "$OVL/bin/dispatch"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl)

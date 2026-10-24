@@ -14,18 +14,18 @@ has() { case "$1" in *"$2"*) echo "  ok   $3";; *) echo "  FAIL $3: [$2] not in 
 
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset CLAUDE_UNATTENDED SURFACES_FILE ACCOUNTS_FILE PLANS_DIR
-S="$T/tree"; mkdir -p "$S/.claude-plugin" "$S/modules" "$T/legacy/bin" "$T/home" "$T/config"
+S="$T/tree"; mkdir -p "$S/.claude-plugin" "$S/modules" "$T/overlay/bin" "$T/home" "$T/config/regatta"
 cp "$ROOT/.claude-plugin/marketplace.json" "$S/.claude-plugin/"
 cp -R "$ROOT/modules/regatta" "$H" "$S/modules/"
-# the config dir names an empty legacy checkout, so tool() finds nothing of the overlay's either
-printf '%s\n' "$T/legacy" > "$T/config/legacy"
+# the config dir names an empty overlay checkout (since B14b tool() never looks there anyway)
+printf '%s\n' "$T/overlay" > "$T/config/regatta/overlay"
 export HOME="$T/home" REGATTA_CONFIG="$T/config" PLANS_DIR="$T/plans" PLAN_CACHE_DIR="$T/cache" PLAN_HOST=testhost \
        ASK_CACHE_DIR="$T/askcache" ATTENTION_LOG_DIR="$T/attention" PLAN_NO_DEPLOY=1 PLAN_NO_MEMO=1 PLAN_NO_GH=1
 SB="$S/modules/helm/bin"
 py() { python3 -c "import sys; sys.path.insert(0, '$SB'); $1" 2>&1; }
 
 echo "no peers: each edge says what it skips"
-# the keys the core needs once `legacy` exists (B2b, common.OVERLAY_KEYS) — without one the core
+# the keys the core needs once the overlay's marker exists (B2b, common.OVERLAY_KEYS) — without one the core
 # refuses to load, and every peer would read as absent for that reason alone — and the laptop
 mkdir -p "$T/config/regatta"; echo Owner > "$T/config/regatta/owner"; echo laptop > "$T/config/regatta/laptop"
 echo transcripts > "$T/config/regatta/guarded"; : > "$T/config/regatta/orca-deny"
@@ -85,7 +85,7 @@ out=$("$S/modules/helm/libexec/helm" send --text "a task" --repo "$T/repo" 2>&1)
 check "$out" "helm send: refused: wharf-runs' blueprintlib.py is not here: a blueprint cannot be read (install wharf-runs)" "    the same line"
 
 echo "the core gone: the libraries raise or step aside, the CLIs say one line"
-N="$T/nocore"; mkdir -p "$N"; cp -R "$H" "$N/"; rm -f "$T/config/legacy"
+N="$T/nocore"; mkdir -p "$N"; cp -R "$H" "$N/"; rm -f "$T/config/regatta/overlay"
 check "$(python3 -c "import sys; sys.path.insert(0, '$N/helm/bin'); import asklib; print(asklib._common(), asklib._peer('sheep'))" 2>/dev/null)" \
       "None None" "asklib without a core: None, never an exit (keel's Stop lint loads it)"
 check "$(python3 -c "import sys; sys.path.insert(0, '$N/helm/bin'); import helmlib; print(helmlib.peer('keel'), helmlib.GUARDED)" 2>/dev/null)" \

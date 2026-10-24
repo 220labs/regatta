@@ -8,12 +8,12 @@ Finish the current `claude/*` branch — rule: git-workflow. $ARGUMENTS
 
 **Where the tools are.** A bare tool name in a command below (`pickup`, `keel`, `check`,
 `autofinish-run`, `rc-hosts`, `paste-paths`, `owed`, `knowledge-commit`, `pr`, `review-gate`,
-`carried.py`) is a path: where the regatta config dir holds a `legacy` file (an overlay is
-installed), `<its first line>/bin/<name>` (`<its first line>/hooks/carried.py` for that one)
-— the shims the overlay's allow and deny rules name, so an unattended run is never denied its
-own step and a yolo run's `pr merge` stays denied — else the peer module's file, which
-`regatta which <name>` prints (`regatta` is the core's `bin/regatta`, on PATH in a plugin
-install). With no overlay, wharf's own are named from this skill's base directory, as one
+`carried.py`) is a path: the peer module's file in the regatta checkout, which `regatta which
+<name>` prints (`regatta` is the core's `bin/regatta`: `<home>/modules/regatta/bin/regatta`,
+where `<home>` is the first line of the regatta config dir's `home` file; on PATH in a plugin
+install) — the paths the allow and deny rules name (an unattended launch's, autofinish-run's),
+so an unattended run is never denied its own step and a yolo run's `pr merge` stays denied.
+Since B14b (2026-10-23) no overlay keeps a copy. With no home file, wharf's own are named from this skill's base directory, as one
 path, never through `cd`: `<this skill's base directory>/../../libexec/pr`,
 `<this skill's base directory>/../../bin/review-gate`, `<this skill's base directory>/../../hooks/carried.py`. The closing lines below are written `<OWNER>, …`: `<OWNER>` is the
 core's `regatta/owner`, upper-cased (`regatta check` shows the key); with none, a line starts

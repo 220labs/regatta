@@ -4,7 +4,7 @@
 # CLI, the gate's table order and its write through a config symlink, jev's key files, and the
 # shim `regatta shim` makes, under every way a caller loads a file (the design's P5).
 # Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is written,
-# and the one read is the autofinish_exclude case's: the caller's config dir's `legacy` file.
+# and the one read is the autofinish_exclude case's: the caller's config dir's `regatta/overlay` marker.
 #   bash modules/regatta/tests/check.sh
 set -u
 M="$(cd "$(dirname "$0")/.." && pwd)"
@@ -136,7 +136,7 @@ check "$(jp 'print(j.GUARDED, j.WHO)')" "() the owner" "  jev guards nothing and
 check "$(jp 'print(j.log_dir())')" "$H/.local/state/regatta" "  the logs go to .local/state/regatta in the home folder"
 check "$(sp 'print(s.PROJECTS)') $(py 'print(common.PROJECTS)')" "$H/projects $H/projects" "  secrets and cloned_repos() read repos under projects in the home folder"
 
-echo "$T/legacy" > "$T/config/legacy"   # the overlay installed: the keys are its to write
+mkdir -p "$T/config/regatta"; echo "$T/legacy" > "$T/config/regatta/overlay"   # the overlay installed: the keys are its to write
 missing="regatta/owner missing; regatta/guarded missing; regatta/orca-deny missing; regatta/log-dir missing; regatta/projects missing"
 check "$(refusal py 'pass')" "ImportError: regatta: config incomplete in $T/config: $missing — run your overlay's bootstrap.sh --config" \
   "the overlay installed, its keys not written: the core refuses to load, naming each"
@@ -154,13 +154,15 @@ check "$(refusal py 'pass' | grep -o 'regatta/owner [^—]*')" "regatta/owner un
 check "$(refusal py 'pass' | grep -o 'regatta/projects [^—]*')" "regatta/projects is not an absolute path: work " "a relative path key is refused, never resolved against the cwd"
 out=$("$RG" check 2>&1)
 check "$(echo "$out" | grep -c -- '^  --  regatta/projects is not an absolute path: work')$(echo "$out" | grep -c '^  ok  regatta/projects$')" "10" "  regatta check says it once, as a problem, and never also ok"
-rm "$T/config/legacy"
-check "$(refusal py 'pass' | grep -o 'regatta/projects [^—]*')" "regatta/projects is not an absolute path: work " "  with or without the overlay"
-# B14a: the overlay's own marker, which outlives `legacy` (B14b), marks the overlay alone
-echo "$T" > "$T/config/regatta/overlay"; mv "$T/config/regatta/owner" "$T/owner.kept"
-check "$(refusal py 'pass' | grep -o 'regatta/owner missing')" "regatta/owner missing" "B14a: regatta/overlay alone marks the overlay — a key it owes is refused, as under legacy"
 rm "$T/config/regatta/overlay"
-check "$(refusal py 'pass' | grep -c 'regatta/owner')" "0" "  neither marker: an absent key is its default again"
+check "$(refusal py 'pass' | grep -o 'regatta/projects [^—]*')" "regatta/projects is not an absolute path: work " "  with or without the overlay"
+# B14b: the `legacy` file (and REGATTA_LEGACY) marks nothing any more; the regatta/overlay marker alone does
+echo "$T" > "$T/config/legacy"; mv "$T/config/regatta/owner" "$T/owner.kept"
+check "$(REGATTA_LEGACY="$T" refusal py 'pass' | grep -c 'regatta/owner')" "0" "B14b: a legacy file or REGATTA_LEGACY alone marks no overlay — an absent key is its default"
+echo "$T" > "$T/config/regatta/overlay"
+check "$(refusal py 'pass' | grep -o 'regatta/owner missing')" "regatta/owner missing" "  the regatta/overlay marker does: a key it owes is refused"
+rm "$T/config/regatta/overlay" "$T/config/legacy"
+check "$(refusal py 'pass' | grep -c 'regatta/owner')" "0" "  no marker: an absent key is its default again"
 mv "$T/owner.kept" "$T/config/regatta/owner"
 
 printf '\xef\xbb\xbf\n  Kapitän\n' > "$T/config/regatta/owner"; printf 'notes\n\nlogbook\n' > "$T/config/regatta/guarded"
@@ -206,8 +208,10 @@ for k in $KEYS; do : > "$T/config/regatta/$k"; done; rm -rf "$T/af" "$H/logs" "$
 
 # a name no module has (`pr` was this case until wharf took it, B5)
 mkdir -p "$T/legacy/bin"; printf '#!/bin/sh\necho legacy "$@"\n' > "$T/legacy/bin/old-tool"; chmod +x "$T/legacy/bin/old-tool"
-echo "$T/legacy" > "$T/config/legacy"
-check "$(py 'print(common.tool("old-tool"))')" "$T/legacy/bin/old-tool" "  the legacy file reaches a file not moved yet"
+echo "$T/legacy" > "$T/config/regatta/overlay"; echo "$T/legacy" > "$T/config/legacy"
+check "$(REGATTA_LEGACY="$T/legacy" py 'print(common.tool("old-tool"))')" "None" "  B14b: the overlay's checkout is no fallback (nor the legacy file, nor REGATTA_LEGACY)"
+check "$(py 'print(common.overlay_root(), common.legacy_root is common.overlay_root)')" "$T/legacy True" "  overlay_root() reads the marker's line; legacy_root is its old name"
+rm "$T/config/legacy"
 CC="$T/claude"; mkdir -p "$CC/plugins" "$T/cache/wharf/1/bin" "$T/proj/sub"; : > "$T/cache/wharf/1/bin/finish-x"
 printf '{"plugins": {"wharf@regatta": [{"scope": "project", "projectPath": "%s", "installPath": "%s"}]}}\n' "$T/proj" "$T/cache/wharf/1" > "$CC/plugins/installed_plugins.json"
 cp -R "$M" "$T/cache-core"   # a core outside any checkout, as in a plugin cache
@@ -232,7 +236,7 @@ echo "the CLI"
 check "$("$RG" root)" "$ROOT" "regatta root"
 check "$("$RG" has regatta)" "$M" "regatta has regatta"
 # helm absent: a core-only copy of the checkout, since this one holds helm since B12 (AGENTS.md's
-# "peer absent" trap); the legacy checkout above holds no helm either
+# "peer absent" trap); the overlay's checkout above holds no helm either, and is no fallback
 CO="$T/core-only"; mkdir -p "$CO/.claude-plugin" "$CO/modules"; cp "$ROOT/.claude-plugin/marketplace.json" "$CO/.claude-plugin/"
 cp -R "$M" "$CO/modules/"
 out=$("$CO/modules/regatta/bin/regatta" has helm); check "$?:$out" "1:helm not installed" "regatta has helm: not installed, exit 1"
@@ -240,9 +244,11 @@ out=$("$CO/modules/regatta/bin/regatta" helm board 2>&1); check "$?:$out" "2:reg
 if [ -d "$ROOT/modules/helm" ]; then
   check "$("$RG" which helm)" "$ROOT/modules/helm/libexec/helm" "regatta which helm: libexec/, off PATH (C1)"
 fi
-check "$("$RG" old-tool ready 7)" "legacy ready 7" "regatta <tool> …: runs the tool where it is, args passed"
+mkdir -p "$CO/modules/zz-stand-in/bin"; cp "$T/legacy/bin/old-tool" "$CO/modules/zz-stand-in/bin/"
+check "$("$CO/modules/regatta/bin/regatta" old-tool ready 7)" "legacy ready 7" "regatta <tool> …: runs the tool where it is, args passed"
+check "$("$RG" old-tool ready 7 2>&1 >/dev/null | grep -c .)" 1 "  a tool only the overlay holds: not found, one line"
 out=$("$RG" which 2>&1); check "$?:$out" "2:regatta which: wrong arguments — \`regatta help\`" "regatta which, no name: a usage error, exit 2"
-rm "$T/config/legacy"
+rm "$T/config/regatta/overlay"
 out=$("$RG" check); check "$?" 1 "regatta check without a home: exit 1"
 echo "$out" | grep -q -- "--  home: none"; check $? 0 "  it says so"
 out=$(REGATTA_HOME="$ROOT" "$RG" check); check "$?" 1 "  REGATTA_HOME set, still no home file: exit 1"
@@ -250,12 +256,16 @@ echo "$ROOT" > "$T/config/home"; ln -s "$T/gone" "$T/config/regatta/broken"
 out=$("$RG" check); check "$?" 1 "  a dangling link: exit 1"
 echo "$out" | grep -q -- "--  regatta/broken → $T/gone (missing)"; check $? 0 "  it names the link and its target"
 rm "$T/config/regatta/broken"; out=$("$RG" check); check "$?" 0 "  all well: exit 0"
+# B14b landing review: a `legacy` file with no marker is an overlay from before B14a, read as absent
+echo "$T" > "$T/config/legacy"; out=$("$RG" check); check "$?" 1 "  a legacy file without regatta/overlay: exit 1"
+echo "$out" | grep -q -- "--  legacy without regatta/overlay"; check $? 0 "  it says the overlay reads as absent"
+rm "$T/config/legacy"
 # a module's own keys (modules/<m>/config-keys): said by the check, never by the core's import
 mkdir -p "$T/config/wharf-runs/ssh"; out=$("$RG" check); check "$?" 1 "  a module's key that cannot be read: exit 1"
 echo "$out" | grep -q -- "--  wharf-runs/ssh unreadable"; check $? 0 "  it names the key"
 rmdir "$T/config/wharf-runs/ssh"
 for k in owner guarded orca-deny; do echo x > "$T/config/regatta/$k"; done
-echo "$T/logs" > "$T/config/regatta/log-dir"; echo "$T/repos" > "$T/config/regatta/projects"; echo "$T" > "$T/config/legacy"
+echo "$T/logs" > "$T/config/regatta/log-dir"; echo "$T/repos" > "$T/config/regatta/projects"; echo "$T" > "$T/config/regatta/overlay"
 out=$("$RG" check); check "$?" 1 "  an overlay without a module's keys: exit 1"
 check "$(echo "$out" | grep -c -- '^  --  wharf-runs/\(orca-pairs\|ssh\) missing')" 2 "  each missing key named"
 check "$(py 'print(common.CONFIG_PROBLEMS)')" "[]" "  and the core still loads: a module's key is not the core's"
@@ -265,7 +275,7 @@ for k in $(cat "$ROOT"/modules/*/config-keys 2>/dev/null | grep -v '^#'); do
   [ -e "$T/config/$k" ] || { mkdir -p "$(dirname "$T/config/$k")"; echo x > "$T/config/$k"; }
 done
 out=$("$RG" check); check "$?" 0 "  with them written: exit 0"
-rm -r "$T/config/wharf-runs" "$T/config/legacy"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
+rm -r "$T/config/wharf-runs" "$T/config/regatta/overlay"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
 # the yard rows (skipper-resilience S2): one per scope, its yard or none, a host lighthouse/hosts does not list a finding
 mkdir -p "$T/config/lighthouse"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"
 printf '{"repos": {"a": {}, "b": {}, "c": {}},\n "scopes": {"one": {"file": "o", "repos": ["a"], "yard": "studio"}, "two": {"file": "t", "repos": ["b"], "yard": null}, "three": {"file": "h", "repos": ["c"]}}}\n' > "$T/yd.json"
@@ -340,7 +350,7 @@ else:
     spec = importlib.util.spec_from_loader("common", SourceFileLoader("common", shim))
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.config_line = lambda name: "patched"   # a caller's monkeypatch (test_repos.sh patches common.api so)
-print(m.__file__, m.legacy_root(), sys.modules.get("common") is m)
+print(m.__file__, m.overlay_root(), sys.modules.get("common") is m)
 PY
 core="$M/hooks/common.py"
 for c in imp lm em; do
@@ -507,7 +517,7 @@ check "$bad" none "every module's Python compiles with warnings as errors"
 # `modules/*/hooks|lib|libexec|shell`; a shim the overlay made with a flag (`--hook`, `--deny`: wired into the hooks);
 # a `bin/<name>` the AGENTS.md autofinish paragraph names. A plain shimmed tool is not live by itself (the
 # paragraph's rule: those that gate or write live state are named in it), so it is counted, not failed.
-# The overlay is the `legacy` file of the caller's config dir (the suite's HOME and REGATTA_CONFIG are scratch ones);
+# The overlay is the `regatta/overlay` marker of the caller's config dir (the suite's HOME and REGATTA_CONFIG are scratch ones);
 # absent (CI, whose job sets its own REGATTA_CONFIG, and the public twin): the shim half is skipped.
 echo "autofinish_exclude covers every live path"
 out=$(python3 -I - "$ROOT" "$REAL_RC" "$REAL_HOME" <<'PY'
@@ -538,7 +548,7 @@ if os.path.isfile(agents):
                 live.setdefault(f, "a tool AGENTS.md names")
 config, home = sys.argv[2] or os.path.join(sys.argv[3], ".config", "regatta"), sys.argv[3]
 try:
-    with open(os.path.join(config, "legacy"), encoding="utf-8-sig") as fh:
+    with open(os.path.join(config, "regatta", "overlay"), encoding="utf-8-sig") as fh:
         coding = next((l.strip() for l in fh if l.strip()), "")
 except OSError:
     coding = ""

@@ -8,15 +8,15 @@
 # each suite's own *_HOST pin says which one is "here") and one owner, Sam. Every name is synthetic:
 # the module is public, and a suite pinning a real host or person would publish it. `home` is this checkout, the code under test (pickup's
 # peer side finds wharf's checkpoint.py through it), never the main checkout the real file names.
-# No `legacy` (nor REGATTA_LEGACY): a peer is found in modules/*/ alone, as in CI; a case about an
-# installed overlay names a stand-in through REGATTA_LEGACY (test_dispatch's real lookup).
+# No overlay marker: a peer is found in modules/*/ alone, as in CI; a case about an installed overlay
+# writes a stand-in's marker into a config dir of its own (test_dispatch's real lookup).
 # SUITE_OVERLAY is the caller's overlay checkout, read before the switch, for the cases whose input
 # is a file of the overlay's source (claude-host.c, bootstrap.sh): the suite reads it, a tool under
 # test never does; "" where the caller has none (CI), and those cases say they are skipped.
 # GIT_CONFIG_GLOBAL goes too: set, it would outlive the HOME move and every suite would write the
 # caller's file; unset, `git config --global` is the scratch HOME's .gitconfig.
 fixture_config() {
-  SUITE_OVERLAY="${REGATTA_LEGACY:-$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/legacy" 2>/dev/null)}"
+  SUITE_OVERLAY="$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/regatta/overlay" 2>/dev/null)"
   case "$SUITE_OVERLAY" in "~"*) SUITE_OVERLAY="$HOME${SUITE_OVERLAY#\~}";; esac
   [ -d "$SUITE_OVERLAY" ] || SUITE_OVERLAY=""
   export SUITE_OVERLAY REGATTA_CONFIG="$1"

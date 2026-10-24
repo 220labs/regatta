@@ -4,6 +4,12 @@
 
 - `pr ready` and `pr merge` judge a `--by ship` run's gates and held slice again, as a sweep or mode
   run's (skipper-resilience S6's finish review, 2026-10-23): the keel's yes predates the run's own edits.
+- The skipper-modes follow-ups (2026-10-23): the checkpoint hook's shed guard reads the shell's setters
+  (`export`, `declare -x`, `typeset`, `local`, `readonly`) as assignments and an un-export (`export -n`,
+  `declare +x`) as an unset, and an emptied value before `;` or `&`; under CLAUDE_UNATTENDED it denies a hand
+  edit of helm's plans root (plan.json, branch-modes.json) or a dispatch run record — the Write/Edit tools,
+  and a Bash command naming one that is no reader. `bin/pr`'s re-check of a mode launch reads the mode now,
+  else autofinish.json's `eff_mode`, never a bare `by: yolo`.
 - `repos --branches` (knowledge-layers S4, 2026-10-22): a confidential scope's repo is one counted
   line — no name, branch, PR or path — and is never classified or reaped from there; `--scope
   <scope>` lists that scope's repos alone.

@@ -35,16 +35,28 @@ from pathlib import Path
 ACCOUNT = Path(__file__).resolve().parent.parent / "bin" / "account"
 
 
+def fixture_registry(reg, live):
+    """bin/account's: an ACCOUNTS_FILE naming another file than the live key is a suite's fixture.
+    Naming the live key itself (bootstrap.sh's `account check`) is no fixture (review 2026-10-23)."""
+    if not os.environ.get("ACCOUNTS_FILE"):
+        return False
+    try:
+        return reg.resolve() != live.resolve()
+    except (OSError, RuntimeError):   # 3.9: a link loop
+        return True
+
+
 def tenant_entries():
     """The tenant repo entries: the tenants file's when written, else the registry's ([] when none, or
     unreadable — as before tenancy). A plain read, no subprocess: the hook runs on every prompt of every
     default-dir session."""
     config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
-    reg = Path(os.environ.get("ACCOUNTS_FILE") or config / "lighthouse" / "accounts.json")
+    live = config / "lighthouse" / "accounts.json"
+    reg = Path(os.environ.get("ACCOUNTS_FILE") or live)
     # bin/account's TENANTS, its fixture rule included, and its last good copy, which holds while the
     # link reads nothing or is gone (the drive away; reviews 2026-10-22)
     tenants = Path(os.environ.get("TENANTS_FILE")
-                   or (reg.with_name(reg.name + ".tenants") if os.environ.get("ACCOUNTS_FILE")
+                   or (reg.with_name(reg.name + ".tenants") if fixture_registry(reg, live)
                        else config / "lighthouse" / "tenants.json"))
     last = tenants.with_name("." + tenants.name + ".last")
     if tenants.is_symlink() or tenants.exists() or last.is_file():   # written, the whole of tenancy (bin/account's header)
@@ -121,7 +133,8 @@ def main():
         t = subprocess.run([sys.executable, str(ACCOUNT), "allowed", here], capture_output=True, text=True, timeout=20)
         if t.returncode == 1 and " is off " in t.stdout and " holds " not in t.stdout:
             why = t.stdout.strip()
-            print(json.dumps({"decision": "block", "reason": why if "(accounts.json tenants)" in why else
+            # a tenant's line (off_line) names its own login's way in, from either source (review 2026-10-23)
+            print(json.dumps({"decision": "block", "reason": why if "'s, which runs on " in why else
                               f"{why}: open it in the default VS Code profile, or a Terminal claude on the default login (no CLAUDE_CONFIG_DIR)"}))
             return
     if default_dir and not maybe_tenants(cwd, entries):

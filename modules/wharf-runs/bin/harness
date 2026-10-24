@@ -170,8 +170,9 @@ def machine():
 def coding_root():
     """The checkout an adapter reads scripts from: this file's own on the machine it lives on
     (rules/engineering.md: a script anchors on its own path); on a peer, stdin has no path, so
-    HARNESS_LAUNCHER, else that Mac's overlay (the config dir's `legacy`), else this module in the
-    checkout its `home` file names."""
+    HARNESS_LAUNCHER, else this module in the checkout that Mac's `home` file names (its overlay
+    came first until B14b, 2026-10-23: the module's files are the same code, and no shim but the
+    launcher's few is left there)."""
     if embedded() is None:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if os.environ.get("HARNESS_LAUNCHER"):
@@ -185,9 +186,7 @@ def coding_root():
         except OSError:
             return ""
 
-    old, home = os.environ.get("REGATTA_LEGACY") or first("legacy"), first("home")
-    if old and os.path.isdir(old):
-        return old
+    home = first("home")
     return os.path.join(home, "modules", "wharf-runs") if home else os.path.expanduser("~/projects/regatta/modules/wharf-runs")
 
 
@@ -520,7 +519,7 @@ def public_repo(root):
     if not PUBLIC and not _PUBLIC_WARNED:
         _PUBLIC_WARNED.append(1)
         warn("wharf-runs/public-repos is not set: only the overlay's checkout and projects/oss/ count as public for Codex")
-    old = common.legacy_root() if common else None
+    old = common.overlay_root() if common else None
     names = PUBLIC + ((os.path.basename(os.path.realpath(str(old))),) if old else ())
     return os.path.basename(real) in names or "/projects/oss/" in real + "/"
 

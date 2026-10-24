@@ -137,8 +137,9 @@ D3-C), checked in this order, first veto wins:
             or `yolo`, and no override: asks lines only in D-list docs the branch adds, each
             `answered`, `stood` or `taken` (mode_asks: keel yolo's picks no veto here); then any
             shape, size and host, no launch door, never a binary, an `open item` tip, a deploy
-            (rule L comes first), the week's pause, a busy session, a reply that asks, the idle
-            clock or the GitHub gates. Gates are not skipped: autofinish-run's landing() reads the
+            with no `taken` doc (rule L's, which launches it at once), the week's pause (a deploy
+            with one: M at once, as L), a busy session, a reply that asks, the idle clock or the
+            GitHub gates. Gates are not skipped: autofinish-run's landing() reads the
             mode again and holds at a ready PR what held_slice names — under dnd money in the
             prose added, a physical repo, `autofinish_exclude` and `in_place`, a path the public
             twin's allowlist publishes, a deleted data file, a yolo-taken answer; under both the
@@ -293,8 +294,8 @@ GATES = ("hooks/", "bin/autofinish", "skills/finish/", "skills/autofinish/", "bi
          "bin/pr", "bin/keel", "bin/memo", "bin/account", "repos.json", ".claude/workflow.json", "bootstrap.sh",
          "templates/code/git-hooks/")
 # the repo GATES apply to, by folder name; AUTOFINISH_LANDER, the old name of AUTOFINISH_LAUNCHER, is read until S8
-# Default: the overlay checkout's folder name (legacy_root), none where no overlay is installed, so no repo is the launcher's.
-LAUNCHER = os.environ.get("AUTOFINISH_LAUNCHER") or os.environ.get("AUTOFINISH_LANDER") or (common.legacy_root().name if common.legacy_root() else None)
+# Default: the overlay checkout's folder name (overlay_root), none where no overlay is installed, so no repo is the launcher's.
+LAUNCHER = os.environ.get("AUTOFINISH_LAUNCHER") or os.environ.get("AUTOFINISH_LANDER") or (common.overlay_root().name if common.overlay_root() else None)
 OWNER = common.OWNER_NAME or "the owner"   # who the verdicts and refusals say is waited on
 OWNER_S = OWNER + "'s"
 LAPTOP = common.LAPTOP  # rule B runs on the laptop only (D3, D6)
@@ -459,7 +460,7 @@ def gate_skip(repo, main, exclude, paths):
 # launch holds at a ready PR: autofinish-run adds --hold), `default` by the rules above, `dnd` every
 # branch of the ship bar the held slice (held_slice), `yolo` whatever passes the check and the review
 # gate bar the launcher's gates and the repo's `autofinish_exclude` and `in_place` (the landing review). Rule M is the sweep's start for a dnd or yolo branch: any shape, any host, `taken` docs
-# included; never a binary, an open item, the week's pause, a busy session or the GitHub gates. Whether
+# included, a deploy only with one (without, rule L launches it at once); never a binary, an open item, the week's pause, a busy session or the GitHub gates. Whether
 # that start merges or holds is autofinish-run's, which reads the mode again itself (never the sweep's
 # word, nor a caller's --by): a mode only the owner raises (helmlib.raise_refusal) is the yes to merge.
 LAND_MODES = ("dnd", "yolo")
@@ -557,19 +558,23 @@ def held_slice(repo, wt, main, mode, cfg=None):
 
 
 def mode_asks(wt, asks, status, fetch):
-    """Rule M's asks gate, or None: every asks line in a D-list doc the branch adds, and every such
-    doc settled — `answered`, `stood`, or `taken` (keel yolo's picks, which this mode lands)."""
+    """(skip, taken) — rule M's asks gate: skip is None when every asks line is in a D-list doc the
+    branch adds and every such doc is settled — `answered`, `stood`, or `taken` (keel yolo's picks,
+    which this mode lands); taken lists the `taken` docs, which only rule M may start."""
     docs = sorted({p for p, _, dl in asks if dl and status.get(p) == "A" and p.endswith(".md")})
     stray = next((h for h in asks if not h[2] or h[0] not in docs), None)
     if stray:
-        return f"skip: asks ({stray[0]}: {stray[1]})"
+        return f"skip: asks ({stray[0]}: {stray[1]})", []
+    taken = []
     for doc in docs:
         s = memo_status(wt, doc, fetch)
         if s is None:
-            return f"skip: memo status unavailable ({doc})"
+            return f"skip: memo status unavailable ({doc})", []
         if s.get("verdict") not in ("answered", "stood", "taken"):
-            return f"skip: asks ({doc}: memo {s.get('verdict')} — lands once nothing is open)"
-    return None
+            return f"skip: asks ({doc}: memo {s.get('verdict')} — lands once nothing is open)", []
+        if s.get("verdict") == "taken":
+            taken.append(doc)
+    return None, taken
 
 
 DATED_LOG = re.compile(r"^autofinish-(\d{4}-\d{2}-\d{2})\.log$")  # not autofinish-launchd.log
@@ -1338,8 +1343,9 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
     _due.pop(str(wt), None)
     # the landing ladder (S3b): a dnd or yolo branch is judged by rule M, its taken docs no veto
     lmode = None if ov else landing_mode(branch, repo)[0]
+    taken = []
     if lmode in LAND_MODES:
-        skip = mode_asks(wt, asks, status, fetch) if asks else None
+        skip, taken = mode_asks(wt, asks, status, fetch) if asks else (None, [])
         if skip:
             return skip
         asks = []
@@ -1405,12 +1411,14 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
             return "skip: open item in the tip's message"
         if ov:
             rule = "C"
-        elif lmode in LAND_MODES:
+        elif lmode in LAND_MODES and (taken or not live):
             # rule M (S3b): the mode is the owner's word for this ship — any shape, size and host, no launch
             # door; gates are held at a ready PR by the runner (held_slice), never skipped here. A deployed
-            # one too: rule L's start would be `--by sweep`, its taken docs read as open by /finish and
-            # its held slice never applied (landing review 18); it keeps L's at-once clock and the week
-            # does not pause it, as rule L's
+            # one only when it holds taken docs: rule L's start would be `--by sweep`, its taken docs read
+            # as open by /finish and its held slice never applied (landing review 18); it keeps L's at-once
+            # clock and the week does not pause it, as rule L's. A deployed one without taken docs is rule
+            # L's, below: M would hold a physical repo's deploy at a ready PR where L launches it at once,
+            # and live ahead of main is drift (skipper-modes follow-ups, item 1)
             if binary:
                 return f"skip: binary ({binary[0]})"
             rule = "M"

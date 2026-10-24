@@ -3,8 +3,8 @@
 # `claude` that answers the get_usage control request and `auth status` from per-dir fixtures and
 # logs every probe. No network, no real login touched.
 # Every name is made up: labels, hosts, repos. The config dir is a scratch one that plays an
-# overlay (a `legacy` checkout holding wharf's worktree_allow.py and a bootstrap.sh stub), with the
-# private values the core asks for there; the peers-absent cases point REGATTA_LEGACY at nothing.
+# overlay (its regatta/overlay marker names a checkout holding a worktree_allow.py and a bootstrap.sh
+# stub), with the private values the core asks for there; since B14b the core never looks for a tool there.
 #   bash modules/lighthouse/tests/account.sh
 set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
@@ -19,7 +19,7 @@ unset REGATTA_HOME REGATTA_LEGACY
 unset SSH_CONNECTION SSH_CLIENT SSH_TTY
 export HOME="$T/home" TZ=America/Los_Angeles REGATTA_CONFIG="$T/config"
 OV="$T/overlay"; mkdir -p "$REGATTA_CONFIG/regatta" "$REGATTA_CONFIG/lighthouse" "$REGATTA_CONFIG/wharf-runs" "$OV/hooks"
-echo "$OV" > "$REGATTA_CONFIG/legacy"; : > "$OV/hooks/worktree_allow.py"; printf '#!/bin/sh
+echo "$OV" > "$REGATTA_CONFIG/regatta/overlay"; : > "$OV/hooks/worktree_allow.py"; printf '#!/bin/sh
 exit 0
 ' > "$OV/bootstrap.sh"; chmod +x "$OV/bootstrap.sh"
 echo Owner > "$REGATTA_CONFIG/regatta/owner"; printf 'cv
@@ -991,20 +991,20 @@ check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.o" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=$
 rm -f "$P1/account-orca-limits.json" "$T/orca-r-calls"; reset
 
 echo "peers absent: wharf's window and worktree hook, plumb's usage column (G16, G18)"
-peer() { REGATTA_LEGACY="$1" python3 -c 'import sys, importlib.machinery as m, importlib.util as u
+peer() { python3 -c 'import sys, importlib.machinery as m, importlib.util as u
 sp = u.spec_from_loader("acct", m.SourceFileLoader("acct", sys.argv[1])); a = u.module_from_spec(sp); sp.loader.exec_module(a)
 print(a.worktree_allow_present(), a.attribution("main"))
-a.open_in_terminal(["claude", "auth", "login"], {"CLAUDE_CONFIG_DIR": "/x"})' "${2:-$B/account}" 2>&1; }
+a.open_in_terminal(["claude", "auth", "login"], {"CLAUDE_CONFIG_DIR": "/x"})' "$1" 2>&1; }
 # wharf is in this repo since B5, so the absent case runs from a copy of the core and lighthouse
-# without it: hiding the legacy checkout alone finds wharf's real worktree_allow.py.
+# without it (AGENTS.md's "peer absent" trap).
 NW="$T/nowharf"; mkdir -p "$NW/modules" "$T/nothing"
 cp -R "$B/../../regatta" "$NW/modules/regatta"; cp -R "$B/.." "$NW/modules/lighthouse"
-check "$(peer "$T/nothing" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "False None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
+check "$(peer "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "False None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
   "no wharf, no plumb: the worktree check skipped, no usage column, the window's command printed"
-# From the same wharf-less copy: from this repo the core finds wharf's own worktree_allow.py
-# before the overlay's, and wharf's open_in_terminal ran osascript on a Mac and exited on Linux.
-check "$(peer "$OV" "$NW/modules/lighthouse/bin/account" | tr '\n' '|')" "True None|  (wharf's fork_claude_session.py not installed: no window opened — run it yourself:) CLAUDE_CONFIG_DIR=/x claude auth login|" \
-  "  the overlay's worktree_allow.py found through the core"
+# The overlay's checkout holds a worktree_allow.py, and the marker names it: since B14b the core
+# never finds a tool there, so the wharf-less copy still has none.
+check "$(peer "$NW/modules/lighthouse/bin/account" | head -1)" "False None" \
+  "  B14b: the overlay's worktree_allow.py is no fallback"
 
 echo "tenants: a tenant's repos run on its own login, routed, not banned (2026-10-20)"
 export ACCOUNT_VSCODE_USER="$T/vsc-t"; mkdir -p "$T/vsc-t/globalStorage" "$T/vsc-t/profiles/pl"
@@ -1123,6 +1123,12 @@ check "$(CLAUDE_CONFIG_DIR="$L" TENANTS_FILE="$T/tenants-str.json" ACCOUNTS_FILE
 check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-str.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/acme-one")" 1 "a row the registry marks acme's but the file leaves out is refused it"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/app"; test -e "$ACCOUNTS_FILE.tg.tenants" || echo none)" "0
 none" "a fixture registry reads its own tenants file, never the live key"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$REGATTA_CONFIG/lighthouse/tenants.json"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tg" A allowed "$PR/acme-one")" 0 "…the live key written: a fixture still ignores it (review 2026-10-23: the old case passed with no live file)"
+cp "$ACCOUNTS_FILE.tg" "$REGATTA_CONFIG/lighthouse/accounts.json"
+check "$(ACCOUNTS_FILE="$REGATTA_CONFIG/lighthouse/accounts.json" A allowed "$PR/acme-one")" 1 "ACCOUNTS_FILE naming the live key (bootstrap.sh's account check) is no fixture: the live tenancy holds"
+has "$T/out" "(tenants.json)" "…read from the live tenants file"
+rm -f "$REGATTA_CONFIG/lighthouse/tenants.json" "$REGATTA_CONFIG/lighthouse/.tenants.json.last" "$REGATTA_CONFIG/lighthouse/accounts.json"
 python3 - "$T/vsc-t" "$PR" <<'PY'
 import json, sys
 from pathlib import Path
@@ -1160,6 +1166,91 @@ TIES_FILE="$ACCOUNTS_FILE.t11" ties > "$T/ties"
 has "$T/ties" "info PR/acme-two is beta's, and no VS Code profile runs its panel on far's dir" "doctor: a tenant whose login has no dir on this Mac is info, not a fix (review 2026-10-21)"
 rm -f "$PR/acme.code-workspace" "$PR/plain.code-workspace"
 unset ACCOUNT_VSCODE_USER
+
+echo "an Orca login with no login in its dir: on the other Mac, ssh -t from the laptop, not Orca's screen (2026-10-22)"
+OG="$T/orca-p/acc g/home"; mkdir -p "$OG"
+# ol <home> <peer alias or ""> <this host>: the line login_line gives an Orca row (the laptop is "lap")
+ol() { REGATTA_LAPTOP=lap ACCOUNT_HOST="$3" ACCOUNT_CLAUDE="$T/claude" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_o", sys.argv[1]).load_module()
+row = {"label": "work2", "provider": "claude", "via": "orca", "home": a.Path(sys.argv[2])}
+print(a.login_line(row, sys.argv[3] or None))' "$B/account" "$1" "$2" > "$T/out" 2>&1; }
+ol "$OG" server-claude lap
+has "$T/out" "\`ssh -t server-claude 'CLAUDE_CONFIG_DIR='\"'\"'$OG'\"'\"' $T/claude auth login'\` from the laptop" "the peer's form: ssh -t, the dir quoted, the binary spelled out"
+has "$T/out" "then ssh server-claude '$B/account orca-sync'" "…its orca-sync wrapped for the peer, typed on the laptop too"
+hasnt "$T/out" "Accounts screen, or" "…and not Orca's screen as the fix"
+ol "$OG" "" box
+has "$T/out" "\`CLAUDE_CONFIG_DIR='$OG' $T/claude auth login\` in an \`ssh -t\` session from the laptop" "on the other Mac itself (orca-sync, doctor --local): the local command, under ssh -t"
+has "$T/out" "then $B/account orca-sync" "…its orca-sync local"
+ol "$OG" "" lap
+has "$T/out" "in again in Orca's Accounts screen, or \`orca account add" "on the laptop: Orca's screen, as before"
+ol "$T/orca-p/unsynced/home" server-claude lap
+has "$T/out" "in again in Orca's Accounts screen" "a dir Orca has not made (unsynced): Orca's screen, even for the peer"
+
+echo "doctor: the tenants file's own state, and the two silent logins mistakes (2026-10-22)"
+TN="$T/tn"; mkdir -p "$TN"
+tstate() { TENANTS_FILE="$1" ACCOUNTS_FILE="${2:-$ACCOUNTS_FILE.tg}" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_s", sys.argv[1]).load_module()
+for t in a.tenancy_state(a.load_registry()):
+    print(t[1], t[0], t[2].replace(sys.argv[2], "TN"), "|", t[3] if len(t) > 3 and t[3] else "")' "$B/account" "$TN" 2>>"$T/ts.err"; }
+: > "$T/ts.err"
+ln -s "$TN/away.json" "$TN/dead.json"
+tstate "$TN/dead.json" > "$T/ts"
+has "$T/ts" "fix - TN/dead.json reads nothing" "a link that reads nothing with no copy: a fix…"
+has "$T/ts" "no last good copy — tenancy is off" "…saying tenancy is off"
+has "$T/ts" "--config   (relinks it" "…the fix relinks it"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$TN/away2.json"; ln -s "$TN/away2.json" "$TN/held.json"
+tstate "$TN/held.json" > "$T/ts"
+check "$(cat "$T/ts")" "" "the link reads: nothing to say"
+# python, not BSD date/stat: this suite runs on the public twin's ubuntu CI too (review 2026-10-23)
+mtime() { python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
+rm "$TN/away2.json"; python3 -c 'import os,sys,time; t=time.time()-3*3600; os.utime(sys.argv[1],(t,t))' "$TN/.held.json.last"
+before=$(mtime "$TN/.held.json.last")
+tstate "$TN/held.json" > "$T/ts"
+has "$T/ts" "info - tenancy runs on the last good copy (.held.json.last, last read good 3 h old)" "the drive away, the copy holding: info naming its age"
+check "$(mtime "$TN/.held.json.last")" "$before" "…and a failed read leaves the copy's mtime alone"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]},}' > "$TN/bad.json"
+tstate "$TN/bad.json" > "$T/ts"
+has "$T/ts" "fix - TN/bad.json does not parse" "a file that reads but does not parse: a fix…"
+has "$T/ts" "| correct the JSON in " "…to correct the JSON, not to relink"
+echo '{"acme": {"repos": "acme-*", "logins": ["lab"]}}' > "$TN/str.json"
+tstate "$TN/str.json" > "$T/ts"
+has "$T/ts" "fix - acme in str.json: its \"repos\" name nothing tenancy can match" "repos as a string: a fix, since every login may run its repos"
+echo '{}' > "$TN/off.json"
+tstate "$TN/off.json" > "$T/ts"
+has "$T/ts" "info - tenancy is off: off.json is {}" "a file written {}: tenancy off, said as info"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}, "beta": {"repos": ["app"], "logins": ["lab", "work"]}}' > "$TN/two.json"
+tstate "$TN/two.json" > "$T/ts"
+has "$T/ts" 'fix lab lab is in the "logins" of acme, beta in two.json: it is beta'"'"'s login only, and is refused acme'"'"'s repos' "a label in two tenants' logins: a fix naming the later as its owner"
+has "$T/ts" "fix - acme's repos run nowhere: no enabled claude login is acme's" "…and the tenant it left with no login"
+cat > "$ACCOUNTS_FILE.th" <<'J'
+{"accounts": [
+  {"label": "lab", "provider": "claude", "home": "~/.claude-lab"},
+  {"label": "old", "provider": "claude", "home": "~/.claude-old", "enabled": false},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}
+J
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lba"]}, "beta": {"repos": ["app"], "logins": ["old", "lab"]}, "gamma": {"repos": ["g"], "logins": "old"}}' > "$TN/miss.json"
+tstate "$TN/miss.json" "$ACCOUNTS_FILE.th" > "$T/ts"
+has "$T/ts" 'info lba lba, in the "logins" of acme in miss.json, is no enabled login: no row in accounts.json has it |' "a logins label no row has: named…"
+has "$T/ts" "| correct the label in " "…the fix corrects the label"
+has "$T/ts" "fix - acme's repos run nowhere: no enabled claude login is acme's" "…and its tenant, left with none, a fix"
+has "$T/ts" "info old old, in the \"logins\" of beta, gamma in miss.json, is no enabled login: its row is parked |" "a parked label: named"
+has "$T/ts" "fix - gamma's repos run nowhere" "…a fix for the tenant it was the only login of"
+check "$(grep -c "beta's repos run nowhere" "$T/ts")" 0 "…none for beta, which has lab"
+TENANTS_FILE="$TN/miss.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.th" A allowed "$PR/acme-one" >/dev/null
+has "$T/out" "acme's \"logins\" in miss.json (lba) give it no enabled login" "the refusal names the listed label, never asks to add it again"
+has "$T/out" "(account doctor names why)" "…and sends the reader to doctor"
+echo '{"beta": {"repos": ["app"], "logins": ["old", "lab"]}}' > "$TN/park.json"
+tstate "$TN/park.json" "$ACCOUNTS_FILE.th" > "$T/ts"
+has "$T/ts" "info old old, in the \"logins\" of beta in park.json, is no enabled login: its row is parked |" "…info while the tenant has an enabled one (a parked row is info elsewhere too)"
+check "$(TENANTS_FILE="$TN/dead.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUNT_LOGINS="$T/logins.json.d" ACCOUNT_HOST=laptop ACCOUNT_NOW=$WED A doctor --local)" 1 "doctor --local: the dead link, no copy → a problem, VS Code or not"
+has "$T/out" "⚠   -: $TN/dead.json reads nothing" "…on the doctor's own lines"
+check "$(TENANTS_FILE="$TN/dead.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUNT_LOGINS="$T/no-logins.json" ACCOUNT_HOST=laptop A doctor --local)" 1 "doctor with no logins file (the drive away)…"
+has "$T/out" "$TN/dead.json reads nothing" "…still names the tenants link's state (review 2026-10-23)"
+check "$(grep -c Traceback "$T/ts.err")" 0 "tenancy_state never raised in these cases"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
