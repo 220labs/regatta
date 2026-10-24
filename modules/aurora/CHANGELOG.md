@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The one host (2026-10-24): `aurora/host`, a new key, names the one host the whole-night jobs
+  (`weekly-run aurora`, `weekly-run sextant`) run on; every other host skips with a line, and
+  `install.sh --schedule` refuses there, quoting weekly-run's skip or refusal. An allow-list where
+  `aurora/skip-hosts` was a deny-list: a host that gets the overlay later never runs the night by
+  default. `weekly-run aurora --scope <s>` runs on the scope's yard (the registry's `yard`), else
+  where `aurora/host` says; elsewhere it skips with a line and posts nothing, and a registry that
+  does not read refuses it in the log (fails closed). Without `aurora/host`, an `aurora/skip-hosts`
+  keeps the old rule with a line saying it is deprecated; neither, beside an overlay, refuses, as
+  before; an empty, unreadable or many-line `aurora/host` refuses, as does a crashed rule (its last
+  stderr line in the refusal). A skip's hint names the job's own installer verb (sextant's
+  `--unschedule`). `install.sh --schedule` also refuses when its dry run could not tell (crashed, or
+  printed no plan). `config-keys` lists `aurora/host`, not `aurora/skip-hosts`.
 - `weekly-run sextant` (B13): `/sextant` moved into sextant's module — its `where` (`libexec/sextant-run
   where`) allowed from the module's skill dir and the config dir's link, pinned as aurora's are, and
   the two reads it types through the core (`usage-report numbers`, `which`). The overlay's case

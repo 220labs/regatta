@@ -4,7 +4,7 @@ Read `README.md` first: it is the chart. For an agent:
 
 - Nothing here names a path, host or person of the owner's: the core, the peers and the two
   knowledge repos are found at run time (`bin/weekly-run`'s "Where things are"); a private
-  value is a config key (`aurora/skip-hosts`, atlas's `atlas/layer` and `atlas/vault`).
+  value is a config key (`aurora/host`, atlas's `atlas/layer` and `atlas/vault`).
 - A peer (atlas, wharf, plumb, wharf-runs) only through `regatta which` / `<regatta> <tool>`,
   never a relative path: the module must work whichever lands first. A missing peer fails its
   own step with one line, and the night goes on.

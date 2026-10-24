@@ -25,7 +25,8 @@ check() {
 }
 P="$T/u/projects"; V="$T/vault"; day=$(date +%F)
 mkdir -p "$REGATTA_CONFIG/atlas" "$REGATTA_CONFIG/aurora" "$P/sec/docs" "$P/open" "$T/u/.claude/projects"
-: > "$REGATTA_CONFIG/aurora/skip-hosts"
+# the weekly jobs run on this host (weekly-run's host rule: aurora/host; no scope here names a yard)
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$D/../regatta/hooks" > "$REGATTA_CONFIG/aurora/host"
 printf 'vlt\n%s\n' "$V" > "$REGATTA_CONFIG/atlas/vault"
 newrepo() {  # newrepo <dir> <in_place json or ""> — a git repo on main, its workflow committed
   mkdir -p "$1"; git -C "$1" init -q -b main

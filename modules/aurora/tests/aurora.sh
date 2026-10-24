@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aurora's suite: weekly-run under a scratch HOME and config dir, every name made up. `where` from
-# atlas's keys and their overrides; the refusals (no core, no vault, no skip-hosts beside an
-# overlay); the skip on a listed host; tonight's plan; a night whose wharf is missing (the tend and
+# atlas's keys and their overrides; the refusals (no core, no vault, no aurora/host beside an
+# overlay); the host rule (aurora/host, a scope's yard, the deprecated skip-hosts); tonight's plan; a night whose wharf is missing (the tend and
 # the classify fail their own steps, the dream still runs and lands); the unattended skills'
 # commands held to the allowlist; a plain launchd environment; install.sh against a scratch launchd.
 # No network, no `claude` (WEEKLY_CLAUDE stands in), no real repo touched.
@@ -26,7 +26,9 @@ for r in "$L" "$V"; do
 done
 printf 'lay\n%s\n' "$L" > "$REGATTA_CONFIG/atlas/layer"
 printf 'vlt\n%s\nSUITE_VAULT\n' "$V" > "$REGATTA_CONFIG/atlas/vault"
-: > "$REGATTA_CONFIG/aurora/skip-hosts"
+# The host the weekly jobs run on: this one, as the core names it (aurora/host; the host rule below).
+host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks")
+echo "$host" > "$REGATTA_CONFIG/aurora/host"
 wh() { "$W" where | sed -n "s/^$1 //p"; }
 
 echo "where: atlas's keys, their overrides, the core beside the module"
@@ -56,28 +58,111 @@ mv "$REGATTA_CONFIG/atlas.off" "$REGATTA_CONFIG/atlas"
 
 echo "the core present but not loading (a core key missing beside an overlay)"
 mv "$REGATTA_CONFIG/regatta/owner" "$T/owner.off"
-echo listed-host > "$REGATTA_CONFIG/aurora/skip-hosts"  # a listed file: the host must be known
 out=$("$W" aurora "$T" --dry-run); check $? 1 "refused, never a night without its peers (B10 review)"
 echo "$out" | grep -q "refused: the regatta core does not load — .*regatta/owner missing"; check $? 0 "  naming the missing key"
-mv "$T/owner.off" "$REGATTA_CONFIG/regatta/owner"; : > "$REGATTA_CONFIG/aurora/skip-hosts"
+mv "$T/owner.off" "$REGATTA_CONFIG/regatta/owner"
 
-echo "skip-hosts"
-rm "$REGATTA_CONFIG/aurora/skip-hosts"
-out=$("$W" aurora "$T" --dry-run); check $? 1 "no aurora/skip-hosts beside an overlay: refused"
-echo "$out" | grep -q "refused: no .*aurora/skip-hosts"; check $? 0 "  naming the key"
+echo "the host rule: aurora/host, the one host the weekly jobs run on"
+# The overlay is installed here (its marker and five keys, above). Each case writes the keys it reads.
+AH="$REGATTA_CONFIG/aurora/host"; SKH="$REGATTA_CONFIG/aurora/skip-hosts"
+posts() { local n; n=$(grep -c -- "$1" "$V/bulletin.md" 2>/dev/null); echo "${n:-0}"; }  # bulletin lines matching $1
+"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "aurora/host names this host: the night plans"
+check "$("$W" aurora "$T" --dry-run | grep -c 'deprecated')" 0 "  and no deprecation line"
+printf '\xEF\xBB\xBF%s \r\n' "$(printf %s "$host" | tr a-z A-Z)" > "$AH"
+"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "  in capitals, with a BOM, a trailing space and CRLF: still this host"
+echo host-a > "$AH"
+out=$("$W" aurora "$T" --dry-run); check $? 0 "aurora/host names another host: exit 0"
+check "$(echo "$out" | grep -c "^..:.. skipped: aurora does not run on $host (aurora/host names host-a;")" 1 "  skipped, said once, naming the host it runs on"
+check "$(echo "$out" | grep -c "the night's order")" 0 "  and nothing planned"
+"$W" aurora "$T" --due >/dev/null; check $? 3 "  --due on a skipped host: exit 3, the clock's precheck starts no session"
+"$W" sextant "$T" --dry-run | grep -q "skipped: sextant does not run on $host"; check $? 0 "  weekly-run sextant skips there too"
+check "$("$W" sextant "$T" --dry-run | grep -c -- 'sextant install.sh --schedule refuses here, --unschedule removes')" 1 "    its hint names sextant's --unschedule, never --remove (which takes the ideas intake with it)"
+check "$(echo "$out" | grep -c -- 'aurora install.sh --schedule refuses here, --remove unloads')" 1 "  aurora's hint names aurora's --remove"
+"$W" aurora "$T"; check "$(grep -c "skipped: aurora does not run on $host" "$T/logs/$(date +%F)-aurora.log")" 1 "  a real run logs it and starts nothing"
+check "$(posts 'refused to run')" 0 "  and posts nothing (a skip is no failure)"
+: > "$AH"
+out=$("$W" aurora "$T" --dry-run); check $? 1 "aurora/host empty: refused"
+echo "$out" | grep -q "refused: aurora/host is empty"; check $? 0 "  naming the key"
+printf '%s\nhost-a\n' "$host" > "$AH"
+out=$("$W" aurora "$T" --dry-run); check $? 1 "aurora/host with two lines, this host first: refused (one host, never a list)"
+echo "$out" | grep -q "refused: aurora/host names one host, and it has 2 lines"; check $? 0 "  saying so"
+echo host-a > "$SKH"; rm "$AH"
+out=$("$W" aurora "$T" --dry-run); check $? 0 "no aurora/host, an aurora/skip-hosts not listing this host: exit 0"
+echo "$out" | grep -q "the night's order"; check $? 0 "  the old rule: the night plans"
+check "$(echo "$out" | grep -c '^..:.. note: aurora/skip-hosts is deprecated: write aurora/host')" 1 "  with one line saying the key is deprecated"
+printf 'elsewhere\n%s\n' "$(printf %s "$host" | tr a-z A-Z)" > "$SKH"
+out=$("$W" aurora "$T" --dry-run); check $? 0 "  this host listed (in capitals): exit 0"
+check "$(echo "$out" | grep -c "skipped: aurora does not run on $host (aurora/skip-hosts;")" 1 "  skipped, said once"
+check "$(echo "$out" | grep -c 'deprecated')" 1 "  the deprecation said there too"
+"$W" aurora "$T" --due >/dev/null; check $? 3 "  --due: exit 3"
+printf '\xEF\xBB\xBF%s \r\n' "$host" > "$SKH"
+"$W" aurora "$T" --dry-run | grep -q "skipped: aurora does not run on $host"; check $? 0 "  a BOM, a trailing space and CRLF still match"
+echo "$host" > "$AH"
+"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "aurora/host beside a skip-hosts listing this host: aurora/host decides"
+check "$("$W" aurora "$T" --dry-run | grep -c 'deprecated')" 0 "  and skip-hosts is not read"
+rm "$AH" "$SKH"; mkdir "$SKH"
+out=$("$W" aurora "$T" --dry-run); check $? 1 "no aurora/host, aurora/skip-hosts unreadable (a folder): refused"
+echo "$out" | grep -q "refused: aurora/skip-hosts cannot be read"; check $? 0 "  saying so"
+rmdir "$SKH"
+out=$("$W" aurora "$T" --dry-run); check $? 1 "neither key beside an overlay: refused"
+echo "$out" | grep -q "refused: no .*aurora/host"; check $? 0 "  naming the key"
 "$W" aurora "$T" --due >/dev/null; check $? 0 "  --due on a refusal: exit 0, so the run Orca starts logs and posts it (a failed precheck is a silent skip)"
+"$W" aurora "$T"; check "$? $(posts 'the unattended aurora refused to run')" "1 1" "  a real run: exit 1, one bulletin line"
 check "$(WEEKLY_ANY_HOST=1 "$W" aurora "$T" --dry-run | head -1 | cut -c1-6)" "aurora" "  WEEKLY_ANY_HOST runs anyway"
 rm "$REGATTA_CONFIG/regatta/overlay"
-"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "no key and no overlay: no host is skipped"
-host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks")
-printf 'elsewhere\n%s\n' "$(printf %s "$host" | tr a-z A-Z)" > "$REGATTA_CONFIG/aurora/skip-hosts"
-out=$("$W" aurora "$T" --dry-run); check $? 0 "this host listed (in capitals): exit 0"
-check "$(echo "$out" | grep -c "skipped: aurora does not run on $host")" 1 "  skipped, said once"
-"$W" aurora "$T" --due >/dev/null; check $? 3 "  --due on a skipped host: exit 3, the clock's precheck starts no session"
-"$W" aurora "$T"; check "$(grep -c "skipped: aurora does not run on $host" "$T/logs/$(date +%F)-aurora.log")" 1 "  a real run logs it and starts nothing"
-printf '\xEF\xBB\xBF%s \r\n' "$host" > "$REGATTA_CONFIG/aurora/skip-hosts"
-"$W" aurora "$T" --dry-run | grep -q "skipped: aurora does not run on $host"; check $? 0 "  a BOM, a trailing space and CRLF still match"
-: > "$REGATTA_CONFIG/aurora/skip-hosts"
+"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "neither key and no overlay: no host is skipped (an install on one machine)"
+mkdir -p "$T/badkey"; mv "$T/badkey" "$AH"
+out=$("$W" aurora "$T" --dry-run); check $? 1 "aurora/host unreadable (a folder): refused"
+echo "$out" | grep -q "refused: aurora/host cannot be read"; check $? 0 "  saying so"
+rmdir "$AH"
+
+echo "the host rule for a scope's pass: the scope's yard, else aurora/host"
+# A registry of its own; the pass stops at scope-pass where (no anchor cloned here), which is after the rule.
+export CLAUDE_REPOS_JSON="$T/hr-repos.json"
+printf '{"repos": {"y-knowledge": {}, "n-knowledge": {}},\n "scopes": {"yd": {"file": "y", "repos": ["y-knowledge"], "yard": "%s"},\n  "far": {"file": "f", "repos": ["y-knowledge"], "yard": "host-b"},\n  "ny": {"file": "n", "repos": ["n-knowledge"]}}}\n' "$(printf %s "$host" | tr a-z A-Z)" > "$CLAUDE_REPOS_JSON"
+echo host-a > "$AH"
+out=$("$W" aurora --scope yd --dry-run); check "$(echo "$out" | grep -c 'skipped:')" 0 "a scope whose yard is this host: not skipped, though aurora/host names another"
+echo "$out" | grep -q "scope yd is not ready"; check $? 0 "  it reaches the pass (here: not ready, no anchor cloned)"
+out=$("$W" aurora --scope far --dry-run); check $? 0 "a scope whose yard is another host: exit 0"
+check "$(echo "$out" | grep -c "^..:.. skipped: scope far runs on its yard host-b, not on $host")" 1 "  skipped in one line, naming its yard"
+lg="$T/logs/$(date +%F)-aurora-far.log"; rm -f "$lg"
+"$W" aurora --scope far; check "$? $(grep -c 'skipped: scope far' "$lg")" "0 1" "  a real run: logged, exit 0"
+check "$(posts 'did not run')" 0 "  no failure post"
+out=$("$W" aurora --scope ny --dry-run); check $? 0 "a scope with no yard, aurora/host another host: exit 0"
+check "$(echo "$out" | grep -c "skipped: aurora does not run on $host (aurora/host names host-a")" 1 "  aurora/host decides: skipped"
+echo "$host" > "$AH"
+out=$("$W" aurora --scope ny --dry-run); check "$(echo "$out" | grep -c 'skipped:')" 0 "  aurora/host this host: not skipped"
+echo "$out" | grep -q "scope ny is not ready"; check $? 0 "    it reaches the pass"
+rm "$AH"; touch "$REGATTA_CONFIG/regatta/overlay"
+out=$("$W" aurora --scope ny --dry-run); check $? 1 "  no yard, neither key beside an overlay: refused"
+echo "$out" | grep -q "refused: no .*aurora/host"; check $? 0 "    naming the key"
+"$W" aurora --scope ny; check "$? $(posts "Aurora's scope pass did not run")" "1 1" "    a real run: exit 1, one bulletin line"
+out=$("$W" aurora --scope yd --dry-run); check "$(echo "$out" | grep -c 'refused: no ')" 0 "  a yard naming this host wins over that refusal: aurora/host is never read"
+echo "$out" | grep -q "scope yd is not ready"; check $? 0 "    it reaches the pass"
+echo "$host" > "$AH"; rm "$REGATTA_CONFIG/regatta/overlay"
+printf '{"repos": {"y-knowledge": {}},\n<<<<<<< ours\n' > "$CLAUDE_REPOS_JSON"
+out=$("$W" aurora --scope yd --dry-run); check $? 1 "a torn registry: the scope's pass refused (fails closed)"
+echo "$out" | grep -q "refused: the registry .* cannot be read, so scope yd has no known yard"; check $? 0 "  saying the yard is unknown"
+lg="$T/logs/$(date +%F)-aurora-yd.log"; rm -f "$lg"
+"$W" aurora --scope yd; check "$? $(grep -c 'cannot be read' "$lg")" "1 1" "  a real run: logged, exit 1"
+check "$(posts 'did not run')" 1 "  in the log alone, as scope-pass where's own refusal (no second line)"
+"$W" aurora "$T" --dry-run | grep -q "the night's order"; check $? 0 "  the whole night reads no registry: it still plans"
+unset CLAUDE_REPOS_JSON
+
+echo "the host rule crashed: no verdict is a refusal, with the rule's last stderr line"
+# A copy whose rule raises where it would ask the host name: the one way to reach the empty verdict
+mkdir -p "$T/crash/bin"
+python3 - "$W" "$T/crash/bin/weekly-run" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+a = "host = common.host_name()\n"
+assert s.count(a) == 1
+open(sys.argv[2], "w").write(s.replace(a, "raise RuntimeError(\"boom: the rule crashed\")\n"))
+PY
+chmod +x "$T/crash/bin/weekly-run"
+out=$(REGATTA_HOME="$R" "$T/crash/bin/weekly-run" aurora "$T" --dry-run); check $? 1 "refused, exit 1"
+echo "$out" | grep -q "refused: the host rule could not be read (the core gave no verdict: RuntimeError: boom: the rule crashed)"; check $? 0 "  naming the crash"
+check "$(echo "$out" | grep -c "the night's order")" 0 "  and nothing planned"
 
 echo "the core missing"
 mkdir -p "$T/lone/bin"; cp "$W" "$T/lone/bin/weekly-run"
@@ -252,10 +337,24 @@ out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule beside an over
 echo "$out" | grep -q "schedules the night itself"; check $? 0 "  and says why"
 check "$(ls "$T/agents" 2>/dev/null | wc -l | tr -d ' ')" 0 "  no plist written"
 rm "$REGATTA_CONFIG/regatta/overlay"
-python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks" > "$REGATTA_CONFIG/aurora/skip-hosts"
-out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule on a host aurora/skip-hosts lists: refused"
-echo "$out" | grep -q "this host is in .*aurora/skip-hosts"; check $? 0 "  and says why"
-: > "$REGATTA_CONFIG/aurora/skip-hosts"
+echo host-a > "$REGATTA_CONFIG/aurora/host"
+out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule on a host aurora/host does not name: refused"
+echo "$out" | grep -q "not loading the job on this host — skipped: aurora does not run on $host (aurora/host names host-a"; check $? 0 "  and says why"
+check "$(ls "$T/agents" 2>/dev/null | wc -l | tr -d ' ')" 0 "  no plist written"
+: > "$REGATTA_CONFIG/aurora/host"
+out=$(sh "$D/install.sh" --schedule 2>&1); check $? 1 "--schedule with aurora/host empty: refused"
+echo "$out" | grep -q "refused: aurora/host is empty"; check $? 0 "  quoting the refusal"
+# A dry run that crashed or printed nothing could not tell: a stub weekly-run beside a copy of the installer
+mkdir -p "$T/stubmod/bin"; cp "$D/install.sh" "$T/stubmod/"
+printf '#!/bin/sh\n[ "$1" = where ] && { echo "vault %s"; echo "logs %s"; exit 0; }\necho "boom: the dry run died" >&2\nexit 1\n' "$V" "$T/logs" > "$T/stubmod/bin/weekly-run"
+chmod +x "$T/stubmod/bin/weekly-run"
+out=$(sh "$T/stubmod/install.sh" --schedule 2>&1); check $? 1 "--schedule whose dry run crashed: refused (a probe that could not tell never passes)"
+echo "$out" | grep -q "could not tell whether this host runs it (exit 1: boom: the dry run died)"; check $? 0 "  with its exit code and last stderr line"
+printf '#!/bin/sh\n[ "$1" = where ] && { echo "vault %s"; exit 0; }\nexit 0\n' "$V" > "$T/stubmod/bin/weekly-run"
+out=$(sh "$T/stubmod/install.sh" --schedule 2>&1); check $? 1 "  a dry run that printed nothing, exit 0: refused too"
+echo "$out" | grep -q "could not tell whether this host runs it (exit 0)"; check $? 0 "    saying so"
+check "$(ls "$T/agents" 2>/dev/null | wc -l | tr -d ' ')" 0 "  no plist written"
+echo "$host" > "$REGATTA_CONFIG/aurora/host"
 sh "$D/install.sh" --schedule >/dev/null; check $? 0 "--schedule without an overlay"
 check "$(python3 -c "import plistlib,sys; p=plistlib.load(open(sys.argv[1],'rb')); print(p['ProgramArguments'][1:], p['StartCalendarInterval'])" "$T/agents/test.aurora.plist")" \
   "['aurora', '$V'] {'Hour': 21, 'Minute': 0}" "  aurora in the vault, nightly 21:00"

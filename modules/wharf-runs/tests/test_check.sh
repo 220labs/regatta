@@ -8,7 +8,7 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # this suite runs inside unattended /finish runs too; its cases set CLAUDE_UNATTENDED themselves
 unset CLAUDE_UNATTENDED
-export CHECK_SLOT_DIR="$T/slots" CHECK_LOGS="$T/logs" CHECK_SLOT_POLL=0.2 CHECK_SLOTS=1
+export CHECK_SLOT_DIR="$T/slots" CHECK_LOGS="$T/logs" CHECK_SLOT_POLL=0.2 CHECK_SLOTS=1 CHECK_PASS_TTL=0   # the memory off; its own cases turn it on
 # wait up to 10 s for a condition
 until_() { local i; for i in $(seq 1 50); do eval "$1" && return 0; sleep 0.2; done; return 1; }
 
@@ -185,6 +185,143 @@ printf 'echo new\n' > "$P/new.sh"; printf -- '- check: `bash ok.sh && bash new.s
 CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtx" --out "$T/u5" > /dev/null 2>&1; rc=$?
 check "$rc:$(tail -1 "$T/u5/summary")" "3:DONE 1/1" "a script main added since the fork: not run, not counted"
 check "$(grep -c '^ABSENT bash new.sh' "$T/u5/summary")" "1" "…named ABSENT"
+
+echo "the scope: a module's suite runs when its module, or one it uses, changed since main"
+R="$T/scoped"
+for m in a b c d; do mkdir -p "$R/modules/$m/tests" "$R/modules/$m/.claude-plugin"; printf 'echo %s\n' "$m" > "$R/modules/$m/tests/check.sh"; done
+echo '{"name":"a"}' > "$R/modules/a/.claude-plugin/plugin.json"
+echo '{"name":"b","dependencies":["a"]}' > "$R/modules/b/.claude-plugin/plugin.json"   # b uses a, declared
+echo '{"name":"c"}' > "$R/modules/c/.claude-plugin/plugin.json"
+echo '{"name":"d"}' > "$R/modules/d/.claude-plugin/plugin.json"
+mkdir -p "$R/modules/d/bin" "$R/docs"; printf 'x=modules/c/bin/tool\n' > "$R/modules/d/bin/tool"   # d uses c, by path
+printf 'modules/a is a fixture\n' > "$R/modules/c/tests/NOTES.md"   # a mention in prose is not use
+printf 'echo always\n' > "$R/always.sh"; printf 'a doc\n' > "$R/docs/one.md"; printf 'lib\n' > "$R/modules/a/lib.txt"
+printf -- '- check: `bash always.sh && bash modules/a/tests/check.sh && bash modules/b/tests/check.sh && bash modules/c/tests/check.sh && bash modules/d/tests/check.sh`\n' > "$R/AGENTS.md"
+( cd "$R" && git init -q && git checkout -q -b main && git add -A && git -c user.name=t -c user.email=t@t commit -qm init \
+  && git worktree add -q -b claude/s "$T/wts" main ) > /dev/null 2>&1
+S="$T/wts"
+ran() { cut -d' ' -f4- "$1/summary" | grep -v '^$' | sed -n '/^bash/p' | tr '\n' '|'; }   # the commands run, in order
+"$B/check" "$S" --out "$T/s0" > "$T/s0.out"; rc=$?
+check "$rc:$(tail -1 "$T/s0/summary")" "0:DONE 5/5" "nothing changed since main: the whole line"
+check "$(grep '^check: scope' "$T/s0.out")" "check: scope — the whole line: nothing changed since main" "…said after the logs line"
+echo x > "$S/modules/a/new"   # uncommitted counts
+"$B/check" "$S" --out "$T/s1" > "$T/s1.out"; rc=$?
+check "$rc:$(tail -1 "$T/s1/summary")" "0:DONE 3/3" "a changed: its suite, b's (uses a) and the plain command; DONE counts what ran"
+check "$(ran "$T/s1")" "bash always.sh|bash modules/a/tests/check.sh|bash modules/b/tests/check.sh|" "…in the line's order"
+check "$(grep '^SKIP' "$T/s1/summary" | tr '\n' '|')" "SKIP bash modules/c/tests/check.sh — no change under modules/c or what it uses since main|SKIP bash modules/d/tests/check.sh — no change under modules/d or what it uses since main|" "the suites left out: SKIP lines first, with why"
+check "$(grep '^check: scope' "$T/s1.out")" "check: scope — 3 of 5 script(s): modules/a changed since main" "the scope line names what changed"
+check "$(grep -c '^SKIP' "$T/s1.out")" "2" "SKIP lines on stdout too"
+check "$(ls "$T/s1" | grep -c '\.log$')" "3" "one log per script that ran"
+( cd "$S" && git add -A && git -c user.name=t -c user.email=t@t commit -qm a ) > /dev/null 2>&1
+echo y > "$S/modules/c/new"
+"$B/check" "$S" --out "$T/s2" > /dev/null
+check "$(tail -1 "$T/s2/summary")" "DONE 5/5" "a's change committed, c's not: the branch's whole diff since main counts, not the last change's"
+back() { ( cd "$S" && git reset -q --hard main && git clean -fdq ) > /dev/null 2>&1; }   # the fixture branch as main again
+back; echo y > "$S/modules/c/new"
+"$B/check" "$S" --out "$T/s2b" > /dev/null
+check "$(ran "$T/s2b")" "bash always.sh|bash modules/c/tests/check.sh|bash modules/d/tests/check.sh|" "c changed: c's suite and d's (names modules/c in its code), not a's or b's"
+check "$(grep -c '^SKIP' "$T/s2b/summary")" "2" "…the other two skipped"
+back; printf 'more\n' >> "$S/docs/one.md"
+"$B/check" "$S" --out "$T/s3" > /dev/null
+check "$(ran "$T/s3")" "bash always.sh|" "a docs/ change: only the plain command"
+check "$(tail -1 "$T/s3/summary")" "DONE 1/1" "…DONE 1/1"
+back; printf 'a line\n' >> "$S/AGENTS.md"
+"$B/check" "$S" --out "$T/s4" > "$T/s4.out"
+check "$(ran "$T/s4")" "bash always.sh|bash modules/a/tests/check.sh|bash modules/c/tests/check.sh|bash modules/d/tests/check.sh|" "a root Markdown file: the suites of the modules that depend on nothing (the core's), not b's"
+check "$(grep '^check: scope' "$T/s4.out")" "check: scope — 4 of 5 script(s): a root Markdown file changed since main" "…said so"
+back; printf 'x\n' > "$S/stray.txt"
+"$B/check" "$S" --out "$T/s5" > "$T/s5.out"
+check "$(tail -1 "$T/s5/summary")" "DONE 5/5" "a file outside modules/ that is not Markdown, docs/ or .github/: the whole line"
+check "$(grep '^check: scope' "$T/s5.out")" "check: scope — the whole line: stray.txt changed, outside modules/" "…naming it"
+back; mkdir -p "$S/.github"; printf 'x\n' > "$S/.github/w.yml"
+"$B/check" "$S" --out "$T/s5b" > /dev/null
+check "$(tail -1 "$T/s5b/summary")" "DONE 1/1" "a .github/ change: only the plain command"
+back; mkdir -p "$S/.c"; printf 'x\n' > "$S/.c/list"
+"$B/check" "$S" --out "$T/s5c" > /dev/null
+check "$(ran "$T/s5c")" "bash always.sh|bash modules/c/tests/check.sh|" "a .<module>/ folder is that module's: its own suite, not its users'"
+back; echo z > "$S/modules/a/new"
+"$B/check" "$S" --full --out "$T/s6" > "$T/s6.out"
+check "$(tail -1 "$T/s6/summary"):$(grep '^check: scope' "$T/s6.out")" "DONE 5/5:check: scope — the whole line (--full)" "--full: the whole line, whatever changed"
+"$B/check" "$S" --only modules/c/tests/check.sh --out "$T/s7" > "$T/s7.out"
+check "$(ran "$T/s7"):$(grep -c '^check: scope' "$T/s7.out")" "bash modules/c/tests/check.sh|:0" "--only: what is named runs, no scope"
+"$B/check" "$G" --out "$T/s8" > "$T/s8.out"
+check "$(tail -1 "$T/s8/summary"):$(grep -c '^check: scope' "$T/s8.out")" "DONE 2/2:0" "no modules/ or no git: the whole line, as before"
+back; ( cd "$S" && git mv -q modules/a/lib.txt modules/c/moved.txt ) > /dev/null 2>&1
+"$B/check" "$S" --out "$T/s9" > /dev/null
+check "$(tail -1 "$T/s9/summary")" "DONE 5/5" "a file moved out of a module (uncommitted): the module it left changed too, and what uses it"
+( cd "$S" && git -c user.name=t -c user.email=t@t commit -qm mv ) > /dev/null 2>&1
+"$B/check" "$S" --out "$T/s9b" > /dev/null
+check "$(tail -1 "$T/s9b/summary")" "DONE 5/5" "…committed as a rename: the same"
+back; printf 'x\n' > "$S/modules/a/tests/helper.txt"
+"$B/check" "$S" --out "$T/s10" > /dev/null
+check "$(ran "$T/s10")" "bash always.sh|bash modules/a/tests/check.sh|" "a change under a module's tests/: its own suite, not its users'"
+back; printf 'x\n' >> "$S/modules/a/README.md"
+"$B/check" "$S" --out "$T/s10b" > /dev/null
+check "$(ran "$T/s10b")" "bash always.sh|bash modules/a/tests/check.sh|" "a module's Markdown: the same"
+back; mkdir -p "$S/modules/a/skills/x"; printf 'a skill\n' > "$S/modules/a/skills/x/SKILL.md"
+"$B/check" "$S" --out "$T/s10c" > /dev/null
+check "$(ran "$T/s10c")" "bash always.sh|bash modules/a/tests/check.sh|bash modules/b/tests/check.sh|" "…but a skill or an agent file is behaviour: its users' suites run"
+back; rm -rf "$S/modules/c"
+"$B/check" "$S" --out "$T/s11" > /dev/null
+check "$(grep -c '^SKIP' "$T/s11/summary"):$(grep -c 'modules/d/tests/check.sh' "$T/s11/summary")" "2:1" "a module removed: its users' suites run (d names modules/c), the rest skip"
+back
+U="$T/core"
+for m in core p q; do mkdir -p "$U/modules/$m/tests" "$U/modules/$m/.claude-plugin"; printf 'echo %s\n' "$m" > "$U/modules/$m/tests/check.sh"; done
+echo '{"name":"core"}' > "$U/modules/core/.claude-plugin/plugin.json"
+echo '{"name":"p","dependencies":["core"]}' > "$U/modules/p/.claude-plugin/plugin.json"
+echo '{"name":"q","dependencies":["core"]}' > "$U/modules/q/.claude-plugin/plugin.json"
+printf 'echo gate %s\n' '"$@"' > "$U/gate.sh"
+printf -- '- check: `bash modules/core/tests/check.sh && bash modules/p/tests/check.sh && bash modules/q/tests/check.sh && bash gate.sh --ref HEAD`\n' > "$U/AGENTS.md"
+( cd "$U" && git init -q && git checkout -q -b main && git add -A && git -c user.name=t -c user.email=t@t commit -qm init \
+  && git worktree add -q -b claude/u "$T/wtu" main ) > /dev/null 2>&1
+echo x > "$T/wtu/modules/p/new"
+"$B/check" "$T/wtu" --out "$T/s12" > "$T/s12.out"
+check "$(ran "$T/s12")" "bash modules/core/tests/check.sh|bash modules/p/tests/check.sh|bash gate.sh --ref HEAD|" "a module every other module declares (the core) runs on any change under modules/: its suite checks them all"
+check "$(grep -c 'modules/core checks every module' "$T/s12.out")" "0" "…said in the summary's reason, not the scope line"
+
+echo "the pass memory: a script that passed on this exact tree is not run again"
+export CHECK_PASS_TTL=3600
+"$B/check" "$T/wtu" --out "$T/u1" > /dev/null; ( cd "$T/wtu" && git add -A && git -c user.name=t -c user.email=t@t commit -qm p ) > /dev/null 2>&1
+"$B/check" "$T/wtu" --out "$T/u2" > /dev/null
+check "$(grep -c '^PASSED' "$T/u2/summary"):$(grep -c 'rc=0 [0-9]*s bash gate.sh --ref HEAD' "$T/u2/summary")" "2:1" "a command naming HEAD is remembered with the commit: after a commit of the same tree it runs again, the others are PASSED"
+"$B/check" "$T/wtu" --out "$T/u3" > /dev/null
+check "$(grep -c '^PASSED' "$T/u3/summary")" "3" "…and is remembered for that commit"
+CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtu" --out "$T/u4" > /dev/null
+check "$(grep -c '^PASSED' "$T/u4/summary")" "0" "an attended pass does not answer an unattended run: the mode is in the record"
+CLAUDE_UNATTENDED=dispatch "$B/check" "$T/wtu" --out "$T/u5" > /dev/null
+check "$(grep -c '^PASSED' "$T/u5/summary")" "3" "…an unattended one does"
+sleep 60 & lp=$!; mkdir -p "$T/slots/slot-1"; echo $lp > "$T/slots/slot-1/pid"; echo "$(TZ=UTC LC_ALL=C ps -o lstart= -p $lp | xargs)" > "$T/slots/slot-1/start"
+"$B/check" "$T/wtu" --out "$T/u6" > "$T/u6.out"; rc=$?
+check "$rc:$(tail -1 "$T/u6/summary"):$(grep -c waiting "$T/u6.out")" "0:DONE 3/3:0" "a run remembered whole takes no slot: DONE at once while the slot is held"
+kill $lp 2>/dev/null; wait $lp 2>/dev/null; rm -rf "$T/slots/slot-1"
+rm -rf "$T/logs/passed"
+echo m > "$S/modules/a/new"
+"$B/check" "$S" --out "$T/m1" > /dev/null; rc=$?
+check "$rc:$(tail -1 "$T/m1/summary")" "0:DONE 3/3" "a first run: runs and passes"
+check "$(ls "$T/logs/passed" | wc -l | tr -d ' ')" "1" "…remembered under \$CHECK_LOGS/passed/<tree>"
+"$B/check" "$S" --out "$T/m2" > "$T/m2.out"; rc=$?
+check "$rc:$(tail -1 "$T/m2/summary")" "0:DONE 3/3" "the same tree again: passed, nothing run"
+check "$(ls "$T/m2" | grep -c '\.log$')" "0" "…no script log"
+check "$(sed -n 3p "$T/m2/summary" | sed -E 's/^PASSED [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} bash always\.sh$/FORM/')" "FORM" "…a line: PASSED, when, the command"
+check "$(grep -c '^PASSED' "$T/m2.out")" "3" "…on stdout too"
+"$B/check" "$S" --fresh --out "$T/m3" > /dev/null
+check "$(ls "$T/m3" | grep -c '\.log$')" "3" "--fresh: run again"
+echo n > "$S/modules/a/new"
+"$B/check" "$S" --out "$T/m4" > /dev/null
+check "$(ls "$T/m4" | grep -c '\.log$')" "3" "a changed tree (uncommitted): run again"
+"$B/check" "$S" --only modules/a/tests/check.sh --out "$T/m5" > /dev/null
+check "$(grep -c '^PASSED' "$T/m5/summary")" "1" "--only: the memory still answers"
+printf 'exit 4\n' > "$S/modules/a/tests/check.sh"
+"$B/check" "$S" --out "$T/m6" > /dev/null; "$B/check" "$S" --out "$T/m7" > /dev/null; rc=$?
+check "$rc:$(grep -c '^PASSED' "$T/m7/summary"):$(grep -c 'rc=4' "$T/m7/summary")" "1:2:1" "a failed script is not remembered: it runs again, the passed ones are not"
+( cd "$S" && git checkout -q -- . ) > /dev/null 2>&1
+CHECK_PASS_TTL=1 "$B/check" "$S" --out "$T/m8" > /dev/null; sleep 2
+CHECK_PASS_TTL=1 "$B/check" "$S" --out "$T/m9" > /dev/null
+check "$(grep -c '^PASSED' "$T/m9/summary")" "0" "a record older than CHECK_PASS_TTL is not used"
+CHECK_PASS_TTL=0 "$B/check" "$S" --out "$T/m10" > /dev/null
+check "$(grep -c '^PASSED' "$T/m10/summary")" "0" "CHECK_PASS_TTL=0: the memory is off"
+CHECK_PASS_TTL=x "$B/check" "$S" > /dev/null 2>&1; check "$?" "2" "CHECK_PASS_TTL that is not a number: exit 2"
+export CHECK_PASS_TTL=0
 
 echo
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

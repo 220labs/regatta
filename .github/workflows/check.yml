@@ -11,8 +11,19 @@
 # runner gets one below, and the full history is not needed (each suite builds its own repos).
 name: check
 on:
+  # A push to main runs the check unless the repository variable CI_SKIP_MAIN_PUSH is `true` (the job's
+  # condition). Set it where every merge is a rebase of a pull request whose own run checked that tree:
+  # there the run main's push started took 40–77 min of the one runner for each of the day's dozen
+  # landings — about 40 % of its load, and the queue every PR waited in (docs/check-load-2026-10-23.md).
+  # What it gives up: a PR's run tests main as it was when the run started (the protection's `strict` is
+  # off), so a tree landed after a neighbour's merge was not run exactly; /finish rebases right before
+  # its push, and the nightly run on main below catches the rest. A hand start (workflow_dispatch) is
+  # there for a doubt. A twin or a fork without the variable keeps the run on every push.
   push:
     branches: [main]
+  schedule:
+    - cron: '17 9 * * *'   # 09:17 UTC daily, when a landing is seldom in flight
+  workflow_dispatch:
   # ready_for_review: a draft's pushes skip the job below, so leaving draft is what runs it
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -20,14 +31,18 @@ permissions:
   contents: read
 # A newer push to the same ref makes the older run moot; every run bills the account's minutes.
 concurrency:
-  group: check-${{ github.ref }}
+  # per event too: a push run whose job is skipped (CI_SKIP_MAIN_PUSH) would otherwise cancel a nightly
+  # or hand-started run on main that is going
+  group: check-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
   check:
     # Not on a draft: the checkpoint hook pushes one every ~10 min, and those runs were most
     # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
     # check, so a merge waits for a run on this head that is not skipped.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'push' || vars.CI_SKIP_MAIN_PUSH != 'true')
     # The runner comes from the repository variable CI_RUNS_ON (a JSON label list), ubuntu-latest
     # where it is unset: a repo that runs its check on its own machine sets it in its settings,
     # so this file, which the public twin publishes too, names no machine. A self-hosted runner

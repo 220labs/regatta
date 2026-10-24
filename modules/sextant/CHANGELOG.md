@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `sextant-run run` (2026-10-24): runs only on the host `aurora/host` names, weekly-run's host rule
+  (`host_rule`), skipping elsewhere with a line; the deprecated `aurora/skip-hosts` keeps its old
+  meaning while `aurora/host` is absent, with a line saying so; neither beside an overlay, or an
+  empty, unreadable or many-line `aurora/host`, refuses (exit 1). `install.sh --schedule` refuses on
+  a skip or that refusal, quoting it, and when the runner's dry run could not tell. A new
+  `config-keys` lists `aurora/host`, so `regatta check` asks for it with aurora absent too.
 - New skill: `/sextant` (B13), moved in from the overlay and scrubbed as it moved — no owner,
   host or folder: its paths come from `libexec/sextant-run where`, every peer runs as `<regatta>
   <tool> …`. Step 2c's calls (`soundings`, `pickup seed`, `dispatch`) go through the core's CLI.

@@ -103,6 +103,8 @@ allow and deny lists the unattended session runs under, the check that the entry
 retry on an unreachable API. **Without aurora**, this module's own runner, `sextant-run run`:
 narrower on purpose, since it carries none of weekly-run's writer guards — it allows the queue's
 reading verbs, the numbers and `knowledge-commit`, and denies every writer that starts work.
+Either way it runs on one host: the one the config key `aurora/host` names (weekly-run's host rule,
+aurora's README); every other host skips with a line, and `install.sh --schedule` refuses there.
 `install.sh --plist` prints the job for an installer that loads its own agents; its knobs (label,
 log, the weekly-run path, the folder, the slot) are in the script's header.
 

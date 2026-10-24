@@ -28,8 +28,9 @@ of weekly-run's writer guards: claude in auto mode with the queue's reading verb
 `soundings add` or `mark`. It exports SOUNDINGS_BY_HAND, so `soundings next` prints the line the owner
 would type for each candidate instead of commands it could not run (G27). The run is capped
 (SEXTANT_CAP seconds, 10800: three hours, as weekly-run's), its process group ended at the cap, as
-weekly-run's `capped` ends one (the group, not the leader). A host `aurora/skip-hosts` lists is
-skipped, as weekly-run skips it: two Macs writing the same entry conflict on push.
+weekly-run's `capped` ends one (the group, not the leader). It runs only on the host `aurora/host`
+names, as weekly-run's night does (`host_rule` below): two Macs writing the same entry conflict on
+push, and a host added later must not run it by default.
 
 Environment: SEXTANT_CLAUDE stands in for claude (a bash line; it sees SEXTANT_ALLOWED and
 SEXTANT_DENIED, one rule per line — the tests); SEXTANT_LOG_DIR over the core's log dir; SEXTANT_CAP.
@@ -88,11 +89,38 @@ def reports():
         return None
 
 
-def skipped():
-    """This host's name when `aurora/skip-hosts` lists it, else None (weekly-run's rule, case-blind)."""
-    skips = [l.lower() for l in common.config_lines("aurora/skip-hosts") or []]
-    host = common.host_name() if skips else None
-    return host if host and host.lower() in skips else None
+def host_rule():
+    """(verdict, line, notes) — whether /sextant runs on this host: weekly-run's rule for the
+    whole-night jobs, case-blind, keys read as the core reads them (its HOST_RULE, which says why).
+    `run` where `aurora/host` names this host; `skip` where it names another; `refuse` where it is
+    empty, unreadable, or more than one line. Without it, the deprecated `aurora/skip-hosts` keeps its old meaning (the
+    hosts never to run on), and a note says so; with neither, the overlay installed refuses and an
+    install on one machine runs. No scope here: a scope's pass is weekly-run's alone."""
+    host = common.host_name()
+    sched = "sextant install.sh --schedule refuses here, --unschedule removes a job loaded before"
+    lines, why = common.config_read("aurora/host")
+    if why:
+        return "refuse", "refused: aurora/host cannot be read (%s)" % why, []
+    if lines is not None:
+        if not lines:
+            return "refuse", "refused: aurora/host is empty: it names no host to run on", []
+        if len(lines) > 1:  # one host: a second line is refused, never read as a list (skip-hosts was one)
+            return "refuse", "refused: aurora/host names one host, and it has %d lines" % len(lines), []
+        if lines[0].lower() == host:
+            return "run", "", []
+        return "skip", "skipped: /sextant does not run on %s (aurora/host names %s; %s)" % (host, lines[0], sched), []
+    skips, why = common.config_read("aurora/skip-hosts")
+    if skips is None and why is None:
+        if common.overlay_installed():
+            return "refuse", "refused: no %s (your overlay's bootstrap.sh --config writes it)" % (common.CONFIG / "aurora" / "host"), []
+        return "run", "", []
+    notes = ["note: aurora/skip-hosts is deprecated: write aurora/host, the one host the weekly jobs run on "
+             "(your overlay's bootstrap.sh --config)"]
+    if why:
+        return "refuse", "refused: aurora/skip-hosts cannot be read (%s)" % why, notes
+    if host in [l.lower() for l in skips]:
+        return "skip", "skipped: /sextant does not run on %s (aurora/skip-hosts; %s)" % (host, sched), notes
+    return "run", "", notes
 
 
 def where():
@@ -209,12 +237,15 @@ def run(cwd, dry):
         with open(log, "a", encoding="utf-8") as f:
             f.write("%s %s\n" % (time.strftime("%H:%M"), line))
 
-    host = skipped()
-    if host:
+    verdict, line, notes = host_rule()
+    for said in notes + ([line] if line else []):
         if not dry:
-            say("skipped: /sextant does not run on %s (aurora/skip-hosts)" % host)
-        print("skipped: /sextant does not run on %s (aurora/skip-hosts)" % host)
+            say(said)
+        print(said)  # stdout, the dry run included: install.sh --schedule reads the skip or refusal there
+    if verdict == "skip":
         return 0
+    if verdict == "refuse":
+        return 1
     if not Path(cwd).is_dir():
         say("refused: %s is not a folder" % cwd)
         print("sextant-run: %s is not a folder" % cwd, file=sys.stderr)

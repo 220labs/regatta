@@ -245,6 +245,15 @@ session's work sharing the branch — note them; they're reported separately.
    the log folder; the check passed when `summary` ends `DONE <n>/<n>` and it exits 0. A script at
    `rc=137` or `rc=143`, or a summary ending `INTERRUPTED`, was killed, not failed: re-run it with
    `--only`. A `check:` that is not a plain command line (prose, a sweep) is run by hand as before.
+   `check` runs the line **scoped** (its header; since 2026-10-23): a module's suite only when this
+   branch changed that module or one it uses, said as `SKIP <command> — <why>` lines that DONE does
+   not count, and a script that already passed on this exact tree (the build run's check, an earlier
+   try) as `PASSED <when> <command>`, counted as passed. Both are the check passing, not a gap: CI runs
+   the whole line on the pull request and the merge waits for it. `--full --fresh` when the branch
+   changed what neither the scope nor the memory can see (a timer, an environment, a peer tool's
+   behaviour: `--full` alone still lets the memory answer); `--full` when the summary's `check: scope —`
+   line names the wrong modules; `--fresh` after a fix that left the tree unchanged (a file outside
+   the checkout).
    **`--unattended`**: the launcher runs with background tasks off and a cap on each Bash call, so
    `run_in_background` is not there and a foreground check is killed. Start it in one call as
    `mkdir -p <dir> && nohup <check's path> <this worktree> --out <dir> > <dir>.out 2>&1 &`
@@ -555,6 +564,15 @@ session's work sharing the branch — note them; they're reported separately.
        (the owner's D2, docs/record/personal-on-workflow-2026-09-29.md) carry it. Nothing else grants it, and
        no session adds the key to another repo. Copy the
        `rollback:` line `pr merge` prints into the report, on any repo.
+       **`pr merge` refuses with `NOT merged — the required check … is still running`** (since
+       2026-10-23: it waits for the base's required checks on the head before merging, as the
+       protection would make a non-admin token wait, and gives up after its wait): on a repo with
+       automerge.yml the merge is automerge's once the check passes — say `merges by automerge once
+       its check passes` in the report, remove the `finishing` marker, `ExitWorktree` `keep`, and end
+       with the second closing line (the merge is owed to nobody, but the branch is not on `main`
+       yet); without automerge.yml, the same, and the note says `pr merge` again once it passes. A
+       `merge refused — the required check … ended failure` is a failed check: fix on the branch,
+       back to step 5.
        **On any other host (the other Mac)** — ask, then merge only on an explicit yes (the owner,
        2026-09-24: "enable agents to auto-merge PR from /finish with my explicit approval").
        `/finish … --merge` in the message that started this `/finish` is that yes, given up

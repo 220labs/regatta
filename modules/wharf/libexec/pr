@@ -452,8 +452,14 @@ def main():
         # later; the wait and its limits are common.merge_pr_waiting's.
         has_am = subprocess.run(["git", "cat-file", "-e", f"origin/{base}:{common.AUTOMERGE_YML}"],
                                 capture_output=True).returncode == 0
-        ok, msg = common.merge_pr_waiting(slug, pr["number"], tok, automerge=has_am)
+        # The base's required checks must have passed on this head before the PUT: an admin token
+        # is not refused by the protection (common.merge_pr_waiting says why). Nothing required: as before.
+        contexts = common.required_contexts(slug, base, tok)
+        ok, msg = common.merge_pr_waiting(slug, pr["number"], tok, automerge=has_am,
+                                          head=remote or git("rev-parse", "HEAD"), contexts=contexts)
         if not ok:
+            if "still running" in msg:
+                sys.exit(f"pr: NOT merged — {msg}" + ("" if has_am else "; no automerge.yml on the base: run `pr merge` again once it passes"))
             sys.exit(f"pr: merge refused — {msg}")
         print(f"merged #{pr['number']}: {msg}")
         # A rebase merge puts every commit of the PR on the base, so undoing it is a range, not
