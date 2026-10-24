@@ -41,7 +41,7 @@
 # commits and pushes the primary's in_place dirt by the straight form (a main ahead of origin by
 # its own records cannot fast-forward to the merge, gap review item 3), then commits what is
 # dirty in the worktree, rebases on origin/main, runs the check (the layer: only bootstrap.sh
-# --check when every changed path is prose, all three suites otherwise; the vault:
+# --check when every changed path is prose, its hooks suite and bootstrap.sh --check otherwise; the vault:
 # <the vault's variable>=<worktree> bootstrap.sh --check of the live layer, so the vault's budgets are the
 # branch's), pushes the branch, readies and merges its PR with wharf's `pr`, and fast-forwards
 # the primary checkout — live from then on. No token, no origin, CLAUDE_HOOK_NO_GITHUB, or no
@@ -190,7 +190,7 @@ if [ "${1:-}" = "--in" ]; then
   inplace=(); while IFS= read -r e; do inplace+=("$e"); done < <(wf_list "$base" in_place)
   exempt=(${inplace[@]+"${inplace[@]}"}); while IFS= read -r e; do exempt+=("$e"); done < <(wf_list "$base" records)
   # D1: prose launches on bootstrap's check alone; anything that runs (hooks, bin, templates,
-  # bootstrap, repos.json, .claude) waits for both suites as well. And anything but a record
+  # bootstrap, repos.json, .claude) waits for the hooks suite as well. And anything but a record
   # waits for a review (the header).
   # --no-renames: a skill moved into docs/ must list the skill it removes; quotePath off: a
   # non-ASCII record name must still match docs/*.
@@ -267,14 +267,16 @@ PY
     echo "  $0 $which --in $wt --review <report> -m …" >&2
     exit 1
   fi
-  # The checks are the layer's own: its bootstrap.sh and two suites (the owner's overlay layout).
+  # The checks are the layer's own: its bootstrap.sh and its hooks suite (the owner's overlay layout).
+  # The checkpoint hook's suite is wharf's now (its tests/check.sh, which regatta's own `check:` line and CI run):
+  # the layer deletes its copy with its shims (B14b), so naming it here failed every code launch.
   if [ "$role" = vault ]; then  # the live layer's check, graded on the branch's vault files
     layer=$(atlas 'print(atlaslib.repo("layer") or "")')
     [ -n "$layer" ] || { echo "$(basename "$repo"): NOT launched — the vault's check is the layer's, and no layer is configured" >&2; exit 1; }
     venv=$(atlas 'print(atlaslib.env_name("vault"))')   # the variable the layer's check reads the vault from
     checks=("$venv=\"$wt\" \"$layer/bootstrap.sh\" --check")
   elif [ $prose = 1 ]; then checks=("./bootstrap.sh --check"); else
-    checks=("bash hooks/test_checkpoint.sh" "bash hooks/test_hooks.sh" "./bootstrap.sh --check"); fi
+    checks=("bash hooks/test_hooks.sh" "./bootstrap.sh --check"); fi
   log=$(mktemp)
   for c in "${checks[@]}"; do
     if ! (cd "$wt" && eval "$c") >"$log" 2>&1; then

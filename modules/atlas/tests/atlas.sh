@@ -89,7 +89,7 @@ echo "$out" | grep -q "c-part-2026-10-14.md"; check $? 0 "  a component is a rec
 echo "knowledge-commit: the two names"
 KC="$A/bin/knowledge-commit"
 L="$T/layer"; mkdir -p "$L/.claude" "$L/docs" "$L/hooks"; RAN="$T/ran"
-for s in hooks/test_checkpoint.sh hooks/test_hooks.sh bootstrap.sh; do
+for s in hooks/test_hooks.sh bootstrap.sh; do
   printf '#!/usr/bin/env bash\necho %s >> %s\n' "$s" "$RAN" > "$L/$s"; chmod +x "$L/$s"
 done
 printf '.claude/worktrees/\n' > "$L/.gitignore"; echo a > "$L/docs/a.md"
