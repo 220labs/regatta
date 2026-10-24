@@ -15,6 +15,11 @@ plan — the size rule (D7), counted in INSERTED lines (deletions moved C11 to t
   under 100        reviewer at high  + /code-review high
   100 to 1,000     reviewer at high  + /code-review xhigh
   over 1,000       reviewer at xhigh + /code-review xhigh
+  The path rule (docs/autofinish-exclude-2026-10-23.md S5, approved 2026-10-23): a branch that changes
+  a path under the base's `autofinish_exclude` or `review_xhigh` (.claude/workflow.json at <base>, never
+  the branch's copy; classes 1 to 3, and `review_xhigh` keeps class 3 there once S6 takes it off the
+  list) gets the top tier whatever its size: a one-line hook change is the reading that lets a judge or
+  a hook land without a person's tap. The week lowers it as it lowers the top tier.
   The week, from hooks/tier_check.py (the same reading and threshold the session's tier line
   uses): "tight" (10 points over pace, or 80% used) turns the top tier into xhigh + CR high;
   "lowest" (LOWEST% used, a threshold set here, not measured) puts every tier on high + CR high
@@ -147,6 +152,26 @@ def inserted(repo, base):
     return n, (None if p.stdout.strip() else "no difference from %s: is this the branch's worktree?" % base)
 
 
+def gated_path(repo, base):
+    """The first path `base...HEAD` changes under the base's `autofinish_exclude` or `review_xhigh`, or
+    None. A list that will not read is no path: the size rule still holds, and the landing's own gates
+    (bin/autofinish, bin/pr) judge the list; this only prices the review."""
+    show = subprocess.run(["git", "-C", repo, "show", "%s:.claude/workflow.json" % base],
+                          capture_output=True, text=True)
+    try:
+        cfg = json.loads(show.stdout) if show.returncode == 0 else {}
+    except ValueError:
+        cfg = {}
+    prefixes = tuple(p for key in ("autofinish_exclude", "review_xhigh")
+                     for p in (cfg.get(key) if isinstance(cfg, dict) and isinstance(cfg.get(key), list) else [])
+                     if isinstance(p, str) and p)
+    if not prefixes:
+        return None
+    d = subprocess.run(["git", "-C", repo, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames",
+                        "%s...HEAD" % base], capture_output=True, text=True)
+    return next((f for f in sorted(d.stdout.splitlines()) if f.startswith(prefixes)), None) if d.returncode == 0 else None
+
+
 def week():
     """-> (percent, pace, ahead, low, age in hours) or None, through tier_check's own reading."""
     try:
@@ -193,14 +218,17 @@ def plan(repo, base):
             budget = "lowest"
         elif (pace is not None and pct > pace + ahead) or pct >= low:
             budget = "tight"
+    gated = gated_path(repo, base)
     if n < SMALL:
         tier, r, c = "small", "high", "high"
     elif n <= LARGE:
         tier, r, c = "medium", "high", "xhigh"
     else:
         tier, r, c = "large", "xhigh", "xhigh"
-        if budget == "tight":
-            c = "high"
+    if gated:   # the path rule: the top tier at any size
+        r, c = "xhigh", "xhigh"
+    if r == "xhigh" and budget == "tight":
+        c = "high"
     if budget == "lowest":
         r, c = "high", "high"
     rev = {"agent": "reviewer" if r == "xhigh" else "reviewer-high", "effort": r}
@@ -212,7 +240,7 @@ def plan(repo, base):
         if not on:
             x["agent"] = None
     return {
-        "inserted": n, "tier": tier, "budget": budget, "warning": warn,
+        "inserted": n, "tier": tier, "budget": budget, "warning": warn, "gated": gated,
         "week": {"percent": w[0], "pace": w[1], "age_h": round(w[4], 1)} if w else None,
         "reviewer": rev,
         "code_review": cr,
@@ -227,6 +255,8 @@ def print_plan(p):
     if p["warning"]:
         print("⚠ " + p["warning"])
     print("size: %d inserted lines → %s tier · %s" % (p["inserted"], p["tier"], wk))
+    if p.get("gated"):
+        print("path: %s is on the base's autofinish_exclude → the top tier at any size" % p["gated"])
     off = "off in settings/models.json — not spawned"
     r, c = p["reviewer"], p["code_review"]
     print("reviewer:    " + ("subagent_type %s (effort: %s), provider %s, model opus" % (r["agent"], r["effort"], r["provider"])

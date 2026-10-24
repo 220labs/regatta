@@ -133,6 +133,10 @@ else
   state sweep 5e55-run
   sw run "$T/sw-clean.out" ready --title t --body-file /dev/null
   has "$T/sw-clean.out" "READIED" "a sweep run whose curated diff touches no gate: readied"
+  state brief 5e55-run
+  sw run "$T/sw-bclean.out" ready --title t --body-file /dev/null
+  has "$T/sw-bclean.out" "READIED" "a brief run (the yes at the brief, autofinish-exclude S7) with nothing held: readied"
+  state sweep 5e55-run
   echo "  a mode launch is judged again by the held slice under the mode now (landing review 1)"
   mkdir -p "$T/mplans/ms"
   mplan() { printf '{"id": "ms", "tasks": {"t": {"branch": "%s", "mode": "%s"}}}\n' "$(g symbolic-ref --short HEAD)" "$1" > "$T/mplans/ms/plan.json"; }
@@ -174,6 +178,10 @@ else
   has "$T/sw-merge.out" "pr: NOT merged — this /finish was started by the autofinish sweep" "  pr merge refuses it too"
   has "$T/sw-merge.out" "API POST /repos/o/r/issues/7/labels" "  and labels the ready PR hold, so automerge leaves it"
   has "$T/sw-merge.out" "the PR is labelled \`hold\`, so automerge leaves it" "  and says so"
+  state brief 5e55-run
+  sw run "$T/sw-brief.out" ready --title t --body-file /dev/null
+  has "$T/sw-brief.out" "touches a gate (held: the launcher's own gate (hooks/x.py))" "a brief run is judged by brief_held: the launcher's own gate holds it"
+  lacks "$T/sw-brief.out" "READIED" "  and it stays a draft"
   state yolo 5e55-run
   sw run "$T/sw-yolo.out" ready --title t --body-file /dev/null
   has "$T/sw-yolo.out" "pr: NOT readied — this /finish was started by the autofinish sweep" "a sweep-started yolo retry is held to the same gate"

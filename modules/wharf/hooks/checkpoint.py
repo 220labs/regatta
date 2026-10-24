@@ -1048,7 +1048,8 @@ def whitelisted(command, cwd):
     if xdir is None:
         return None
     x = Target(xdir)
-    if x.workflow is not None and not (x.branch.startswith("claude/") or x.branch == x.main):
+    if x.workflow is not None and not (x.branch.startswith("claude/") or x.branch == x.main
+                                       or (not x.branch and detached_primary(x.toplevel))):
         return None  # an opted-in checkout on some other branch (detached, a person's own): the baseline's
     return x, steps
 
@@ -1067,6 +1068,8 @@ def decide(target, verb, session, step="", via=None):
                 or (target.merging and verb in MERGE_RESOLVE_VERBS):
             return "allow", None
         return "deny", worktree_required_reason(target.toplevel, target.main, via)
+    if not target.branch and detached_primary(target.toplevel):
+        return "deny", pinned_reason(target.toplevel, target.main, via)
     went = target.moved
     if went:
         return "deny", common.moved_reason(went, target.branch)
@@ -1288,6 +1291,9 @@ RECORD_DIRS = ("Library/Logs/claude-weekly/plans", "Library/Logs/claude-weekly/r
 # the lander's launch record in a repo's git dir: its `by` and `eff_mode` are the yes bin/pr's
 # re-check trusts, so a run writing it writes itself the yes (the follow-ups' landing review)
 AF_STATE = "/claude/autofinish.json"
+# the owner's yes itself (the autofinish-exclude landing review, finding 11): /autofinish's marker in a
+# worktree's git dir and the yes at the brief in the common one; a run writing either gives itself rule C
+AF_YES = ("/claude/autofinish", "/claude/autofinish-briefs")
 
 
 def record_roots():
@@ -1301,7 +1307,7 @@ def in_records(path):
     if not path:
         return False
     p = os.path.realpath(os.path.expanduser(path))
-    if p.endswith(AF_STATE):
+    if p.endswith(AF_STATE) or p.endswith(AF_YES) or AF_YES[1] + "/" in p:
         return True
     return any(p == r or p.startswith(r.rstrip("/") + "/") for r in map(os.path.realpath, record_roots()))
 
@@ -1312,6 +1318,8 @@ def records_re():
     alts = [h + "/" + re.escape(d) for d in RECORD_DIRS for h in (re.escape(home), "~", r"\$HOME", r"\$\{HOME\}")]
     alts += [re.escape(r) for r in record_roots()[len(RECORD_DIRS):]]
     alts.append(r"[^\s\"'<>|;&]*" + re.escape(AF_STATE))   # a plain path to it; a $( … ) spelling is intent
+    alts.append(r"[^\s\"'<>|;&]*" + re.escape(AF_YES[0]))   # the marker (the lookahead below spares .json)
+    alts.append(r"[^\s\"'<>|;&]*" + re.escape(AF_YES[1]) + r"(?:/[^\s\"'<>|;&]*)?")
     return re.compile("(?:" + "|".join(alts) + r")(?![\w.-])")
 
 
@@ -1343,9 +1351,29 @@ def record_write(command):
 
 def record_reason(what):
     return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): `{what}` writes a skipper's "
-            f"record by hand (helm's plans — plan.json, branch-modes.json — or a dispatch run record). A mode, "
-            f"a raise refusal and a run's task_mode are read there, so only their tools (bin/helm, bin/plan, "
-            f"bin/dispatch) write them. Reading them (cat, jq, grep) is fine; leave the change for the owner.")
+            f"record by hand (helm's plans — plan.json, branch-modes.json — a dispatch run record, or the "
+            f"lander's: its run record, /autofinish's marker, the yes at the brief). A mode, a raise refusal, a "
+            f"run's task_mode and the owner's yes are read there, so only their tools (bin/helm, bin/plan, "
+            f"bin/dispatch, autofinish) write them. Reading them (cat, jq, grep) is fine; leave the change for the owner.")
+
+
+def detached_primary(toplevel):
+    """True when `toplevel` is a repo's primary checkout on a detached HEAD — lighthouse's hookwatch pins
+    it there (autofinish-exclude S4). It is denied writes as main is (the landing review, finding 6):
+    a write there is checkpointed nowhere, and its dirt makes the unpin and sync.py refuse."""
+    r = git("-C", str(toplevel), "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    c = r.stdout.strip() if r.returncode == 0 else ""
+    if not c.endswith("/.git") or Path(c).parent.resolve() != Path(str(toplevel)).resolve():
+        return False
+    return git("-C", str(toplevel), "symbolic-ref", "--quiet", "HEAD", check=False).returncode != 0
+
+
+def pinned_reason(toplevel, main=None, via=None, workflow=None):
+    return (f"⛔ {toplevel} is the primary checkout on a detached HEAD — lighthouse's hookwatch pins it at the "
+            f"last clean sha after a hook fault (or a person detached it), and it takes no writes, as {main or MAIN} "
+            f"takes none: nothing here is checkpointed, and dirt here stops `hookwatch unpin` and sync.py. "
+            f"`hookwatch unpin` puts it back on {main or MAIN} once the fix is in.\n"
+            + worktree_required_reason(toplevel, main, via, workflow))
 
 
 READERS = {"git", "grep", "rg", "egrep", "ag", "cat", "head", "tail", "less", "sed", "awk", "ls",
@@ -1643,6 +1671,9 @@ def handle_file_write(tool_input, cwd, session):
         if in_place(target.workflow, target.toplevel, path):
             return None  # a record written in place (auto-memory, the bulletin): no lock, no checkpoint
         return deny(worktree_required_reason(target.toplevel, target.main, via=cwd, workflow=target.workflow))
+    # a pinned (detached) primary, written from another checkout: denied as main is (finding 6's re-review)
+    if not target.branch and detached_primary(target.toplevel):
+        return deny(pinned_reason(target.toplevel, target.main, via=cwd, workflow=target.workflow))
     went = target.moved
     if went:
         return deny(common.moved_reason(went, target.branch))
@@ -2788,6 +2819,8 @@ def main():
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": worktree_required_reason(toplevel, workflow=workflow)}},
                              ensure_ascii=False))
+        elif not branch and detached_primary(toplevel):
+            print(json.dumps(deny(pinned_reason(toplevel, MAIN, workflow=workflow)), ensure_ascii=False))
         else:
             taking_over = owner and owner.get("session") != session
             branch, note = adopt_spawned(toplevel, branch, MAIN, quiet=True)
