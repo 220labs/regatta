@@ -286,6 +286,17 @@ def check():
         print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
         bad += 1
     bad += yard_rows()
+    # lighthouse's hookwatch (autofinish-exclude S4): a pinned primary runs an older checkout than main
+    # until a person unpins it, so the pin is a finding here, read from its state file as text
+    try:
+        pin = json.loads((common.CONFIG / "lighthouse" / "hookwatch.json").read_text()).get("pinned")
+    except (OSError, ValueError, AttributeError):
+        pin = None
+    if isinstance(pin, dict) and pin.get("to"):
+        print("  --  pinned: %s detached at %s by hookwatch (%s)%s — `hookwatch unpin` after the fix" % (
+            Path(pin["root"]).name if pin.get("root") else "the primary", str(pin["to"])[:12], pin.get("why") or "a hook fault",
+            "; revert PR %s" % pin["pr"] if pin.get("pr") else ""))
+        bad += 1
     for problem in berth_problems():
         print("  --  %s" % problem)
         bad += 1

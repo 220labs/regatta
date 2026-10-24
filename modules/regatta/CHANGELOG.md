@@ -2,10 +2,19 @@
 
 ## Unreleased
 
+- The list's cases moved to `tests/classes.sh`, on `autofinish_exclude` (autofinish-exclude landing review,
+  2026-10-24): class 1's walk follows a shell's `$(tool x)` (weekly-run's tend), and a class-2 walk fails on
+  any import of a leak gate's that is off `autofinish_leaks`.
+
 - The overlay marker `regatta/overlay` is the only one (B14b, 2026-10-23): `overlay_root()` reads it
   (`legacy_root` is its old name), the `legacy` file and `REGATTA_LEGACY` are read by nothing, and
   `tool()` no longer falls back to the overlay's checkout. `regatta check` fails on a `legacy` file
   with no marker, whose keys would otherwise fail open.
+- `regatta check` reports a primary hookwatch pinned (autofinish-exclude S4, 2026-10-23), from
+  `lighthouse/hookwatch.json` in the config dir, as a finding.
+- The core's check derives class 1 (autofinish-exclude S1, 2026-10-23): it walks what the eleven judges
+  import or exec and fails on a file off `autofinish_exclude`, and prints the week's landings the list
+  held (G1). The coverage case no longer counts a `libexec/` file live by itself; the class-1 walk does.
 - `gather_fence(scope)` and `scope_match(scope)` (knowledge-layers S4, 2026-10-22): what a Gather
   reader may do with an item, by the paths it came from — `quote`, `fenced` (a confidential scope's:
   count it, never quote it) or `outside` (not the scope asked for); a scope's folders matched by
