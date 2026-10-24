@@ -17,8 +17,8 @@ runs while the tick is disarmed, and a host with no lease file sees no line of i
                                              run`, which picks the login, checks it is signed in, trusts the
                                              anchor, makes the Talk page, writes the record and execs claude
     helm tick                                ensure(): per scope, the hand-overs (a lapse, a deaf skipper),
-                                             the start's verdict, the re-hail, the belt, the daily hand-over,
-                                             at most one start — acting only when the tick is armed
+                                             the start's verdict, the re-hail, the belt, the rotation, the daily
+                                             hand-over, at most one start — acting only when the tick is armed
 
 Both verbs refuse under CLAUDE_CODE_SESSION_ID: a session may not load a plist (the tick is launchd's
 own child), and the allow rule that names the session verbs one by one never names these.
@@ -74,10 +74,28 @@ RETRY_AFTER = 3600
 # booted out and relaunched with no failure counted (round 2 of the finish review).
 IDLE_STOP = 30 * 60      # the belt: no ship needing the skipper for 30 minutes (G6) → --stop
 CRASH_WITHIN = IDLE_STOP  # a claude that ends this soon after its start, a ship taken or not, is a failed start
-DAILY = 24 * 3600        # the daily hand-over: a record older than this, at the 04:00 pass
+DAILY = 24 * 3600        # the daily hand-over: a record older than this, at the 04:00 pass — the ceiling
 DAILY_HOUR = 4
+# The rotation (the owner, 2026-10-24: "keep their runs fairly short, so they don't carry too much context"):
+# a skipper this old, or whose last turn carried this much context, hands over at its first quiet pass —
+# the same hand-over as the daily one, since what a skipper knows lives in files (answers are commits,
+# open questions are re-hailed). Not two skippers overlapping: every relay finds its skipper by (host,
+# scope), and a skipper runs no builds that would need to drain. Age is the weak proxy (8 idle hours
+# with two asks is a small context), so context is read too: claude-opus-5-5 sessions on the laptop's
+# logins reached 970k (probed 2026-10-24; the yard's logins unprobed), so the cap fires long before
+# auto-compact would. The context rule waits ROTATE_CONTEXT_AFTER from the start, so a scope busy enough
+# to fill the cap fast rotates at most hourly — bounded churn, never a loop each pass.
+ROTATE_AGE = 8 * 3600
+ROTATE_CONTEXT = 200000
+ROTATE_CONTEXT_AFTER = 3600
+# quiet: idle this long by the registry's statusUpdatedAt — a session idle between the owner's Remote
+# Control messages, or a Talk wake whose turn has not begun, is idle for a moment, never 10 minutes
+QUIET_FOR = 10 * 60
+TAIL_BYTES = 2000000     # the transcript's tail read for its last call, as wharf-runs' cold_prompt reads it
 DEAF = 15 * 60           # a relay to the skipper unanswered this long while its session sits idle → deaf
-MODEL, EFFORT = "claude-sonnet-5-5", "high"
+# Opus, not Sonnet (the owner, 2026-10-24): the skipper's work is judgement on questions nobody spec'd,
+# and the rotation keeps its runs short; `high`, as xhigh is the review gate's (D1)
+MODEL, EFFORT = "claude-opus-5-5", "high"
 # what the job's PATH holds: helm's poll plist's (install.sh), the user's own bin for claude
 PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin"
 # the overrides a test or an overlay sets, carried into the job (launchd hands a job no shell's environment)
@@ -1231,6 +1249,69 @@ def deaf(pid, lease, now):
     return None
 
 
+# ---------------------------------------------------------------------------- the rotation
+
+def context_of(session):
+    """The context tokens of the session's last main-thread call (input, cache read and cache write),
+    or None when its transcript is not on this host or holds no call — then age alone rotates it. Claude
+    Code's own `<synthetic>` entries (an API error, "No response requested.") carry zero usage and are
+    no call: skipped, as helmlib.session_cost skips them."""
+    p = helmlib.transcript(session) if session else None
+    if not p:
+        return None
+    try:
+        with p.open("rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - TAIL_BYTES))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for raw in reversed(lines):
+        if '"assistant"' not in raw:
+            continue
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue
+        msg = r.get("message") or {}
+        if r.get("type") != "assistant" or r.get("isSidechain") or msg.get("model") == "<synthetic>":
+            continue
+        u = msg.get("usage") or {}
+        ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
+            + (u.get("cache_creation_input_tokens") or 0)
+        if ctx:
+            return ctx
+    return None
+
+
+def rotate_why(rec, ls, now):
+    """Why the healthy skipper REC hands over now (the rotation), or None. Due when ROTATE_AGE old, or
+    past ROTATE_CONTEXT once ROTATE_CONTEXT_AFTER old; and only when quiet: its session idle for
+    QUIET_FOR (the registry's; one stopped at a dialog is the deaf rule's) with no question of its own
+    open — one that is not another live session's (elsewhere) on a ship it holds, so one it is working on
+    is never cut off. The cheap reads first, the transcript last. A scope that is never quiet meets the
+    daily ceiling instead."""
+    age = now - float(rec.get("started") or now)
+    if age < min(ROTATE_AGE, ROTATE_CONTEXT_AFTER):
+        return None
+    sess = rec.get("session")
+    reg = registry_of(sess)
+    if not reg or reg.get("status") != "idle":
+        return None
+    since = float(reg.get("statusUpdatedAt") or reg.get("updatedAt") or 0) / 1000
+    if helmlib.now() - since < QUIET_FOR:
+        return None
+    for p, lease in ls:
+        if lease.get("session") == sess and any(not elsewhere(a, lease) for _, a in open_asks(p)):
+            return None
+    if age >= ROTATE_AGE:
+        return "rotated: %dh old, quiet" % (age // 3600)
+    ctx = context_of(sess)
+    if ctx is not None and ctx >= ROTATE_CONTEXT:
+        return "rotated: its context %dk tokens, quiet" % (ctx // 1000)
+    return None
+
+
 # ---------------------------------------------------------------------------- the tick's pass
 
 def scopes_here():
@@ -1305,7 +1386,7 @@ def ensure(act, why_not=None):
 def ensure_scope(scope, act, now, belt):
     """The scope's pass, in order, one stop or one start at most: a lapse handed to the yard, a deaf
     holder handed over, the last start's verdict, the re-hail, a sidecar that takes nothing, the belt,
-    the daily hand-over, and a start when a ship needs one and nothing live or pending holds it."""
+    the rotation (rotate_why), the daily hand-over, and a start when a ship needs one and nothing live or pending holds it."""
     out, stopped = [], None
     host = helmlib.host()
     w = "" if act else "would "
@@ -1431,6 +1512,8 @@ def ensure_scope(scope, act, now, belt):
             b.setdefault("idle_since", now)
             if now - float(b["idle_since"]) >= IDLE_STOP:
                 stopped = "no ship has needed it for %dm" % ((now - float(b["idle_since"])) // 60)
+        if not stopped and wanted:
+            stopped = rotate_why(rec, ls, now)
         if not stopped and now - float(rec.get("started") or now) > DAILY and time.localtime(now).tm_hour == DAILY_HOUR:
             stopped = "the daily hand-over (%dh old at the 0%d:00 pass)" % ((now - float(rec["started"])) // 3600, DAILY_HOUR)
     if stopped:
@@ -1439,7 +1522,7 @@ def ensure_scope(scope, act, now, belt):
         # sidecar that takes nothing — is a failed start, so that a skipper that never works its ships
         # is not restarted every pass for ever (the review of the S5 branch); the belt and the daily
         # hand-over end a skipper that did its work, and a failed start is logged above already
-        if rec and now - float(rec.get("started") or 0) < CRASH_WITHIN and not stopped.startswith(("no ship has", "the daily")) \
+        if rec and now - float(rec.get("started") or 0) < CRASH_WITHIN and not stopped.startswith(("no ship has", "rotated", "the daily")) \
                 and not any(x.get("event") == "failed" and x.get("start") == rec.get("start") for x in log_):
             why = "%s, %dm after its start" % (stopped, (now - float(rec.get("started") or 0)) // 60)
             if act:

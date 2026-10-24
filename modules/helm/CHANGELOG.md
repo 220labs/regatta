@@ -4,6 +4,15 @@
 
 - `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
   2026-10-23; wharf-runs' CHANGELOG says why).
+- The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context
+  (its last main-thread call, `<synthetic>` entries skipped) once an hour old, hands over at its first
+  quiet pass — its session idle 10 minutes by the registry's status stamp, no question of its own open
+  — by the daily hand-over's road: ships to the yard, the next start, open questions re-hailed. The
+  24 h hand-over at 04:00 stays as the ceiling for a scope that is never quiet. One skipper per scope
+  still: a relay finds its skipper by (host, scope), and a skipper runs no builds that would need to
+  drain.
+- Skippers run Opus 5.5 `high`, not Sonnet 5.5: their work is judgement on unspec'd questions, and
+  the rotation keeps their runs short.
 - `skipper-run` drops every `DISPATCH_*` variable by pattern: its fixed list had missed
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
   `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.

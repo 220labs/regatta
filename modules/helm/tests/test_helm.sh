@@ -1694,11 +1694,11 @@ skipper-dock
 --permission-mode
 auto
 --model
-claude-sonnet-5-5
+claude-opus-5-5
 --effort
 high
 --disallowedTools
-AskUserQuestion" "  then the session id, Remote Control, the name, auto mode, Sonnet high, no AskUserQuestion"
+AskUserQuestion" "  then the session id, Remote Control, the name, auto mode, Opus high, no AskUserQuestion"
 has "$argv" "skipper --hold --scope dock --once" "  the brief: --hold --once first"
 env5=$(cat "$S5/claude.env")
 has "$env5" "cwd=$(cd "$S5/projects/dockrepo" && pwd -P)" "  cwd the anchor's checkout"
@@ -2036,12 +2036,63 @@ nap; SP=$NAP
 # tomorrow's 04:10 and 02:10, local: the record 27 h old now, so past 24 h at both
 T4=$(python3 -c 'import time; t = time.localtime(time.time() + 86400); print(int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 4, 10, 0, 0, 0, -1))))')
 T2=$(python3 -c 'import time; t = time.localtime(time.time() + 86400); print(int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 2, 10, 0, 0, 0, -1))))')
-mkrec dock sk-4 $SP "$(( $(now) - 97200 ))" 20260106-000000-0001; regi sk-4 $SP
+# busy at every pass: never quiet, so the rotation waits and only the ceiling ends it
+mkrec dock sk-4 $SP "$(( $(now) - 97200 ))" 20260106-000000-0001; regi sk-4 $SP busy
 CLAUDE_CODE_SESSION_ID=sk-4 HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
 out=$(STALLS_NOW=$T2 SK ensure act); hasnt "$out" "stopped" "the daily hand-over: past 24 h at 02:10, kept"
 out=$(STALLS_NOW=$T4 SK ensure act); has "$out" "stopped skipper · dock (the daily hand-over (" "  past 24 h at the 04:00 pass: stopped"
 has "$out" "h old at the 04:00 pass)" "  saying when"
 check "$(lf done1 holder)" "yard" "  its ship back to the yard"
+
+echo "  the rotation: 8 h old or 200k tokens of context, at the first quiet pass"
+rm -rf "$PLANS_DIR" "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"* "$STALLS_STATE_DIR/skippers.json"
+lay ro1 dock
+nap; SP=$NAP
+mkrec dock sk-r $SP "$(( $(now) - 25200 ))" 20260110-000000-0001; regi sk-r $SP idle
+CLAUDE_CODE_SESSION_ID=sk-r HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+out=$(SK ensure act); hasnt "$out" "stopped" "7 h old, idle, nothing open: kept"
+T9=$(( $(now) + 7200 ))
+regi sk-r $SP busy
+out=$(STALLS_NOW=$T9 SK ensure act); hasnt "$out" "stopped" "  9 h old, working a turn: kept (not quiet)"
+regi sk-r $SP waiting
+out=$(STALLS_NOW=$T9 SK ensure act); hasnt "$out" "rotated" "  9 h old, stopped at a dialog: not the rotation's (the deaf rule's)"
+regi sk-r $SP idle
+askev ro1 b1 docs/r.md#D1 sk-r talk 60
+out=$(STALLS_NOW=$T9 SK ensure act); hasnt "$out" "stopped" "  9 h old, idle, a question of its own open: kept, never cut off mid-question"
+python3 - "$B" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import helmlib
+helmlib.append_event("ro1", {"task": "b1", "answered": "docs/r.md#D1", "from": "skipper-dock", "plan": "ro1"})
+PY
+# idle a minute by its status stamp: between two Remote Control messages, never quiet
+printf '{"pid": %d, "sessionId": "sk-r", "name": "skipper-x", "status": "idle", "updatedAt": 2, "statusUpdatedAt": %d}' $SP "$(( $(now) * 1000 - 60000 ))" > "$T/sess/sk-r.json"
+out=$(STALLS_NOW=$T9 SK ensure act); hasnt "$out" "stopped" "  9 h old, idle for a minute only: kept (mid-conversation)"
+regi sk-r $SP idle
+# a question relayed to another live session is that one's: no hold on the rotation
+nap; OR=$NAP; regi other-r $OR busy
+askev ro1 b1 docs/r.md#D2 other-r talk 60
+out=$(STALLS_NOW=$T9 SK ensure act)
+has "$out" "stopped skipper · dock (rotated: 9h old, quiet)" "  answered, idle 10 minutes, another session's question open: rotated, saying why"
+check "$(lf ro1 holder)" "yard" "  its ship back to the yard, for the next start"
+check "$(grep '20260110-000000-0001' "$S5/mgr/testhost-dock.starts.jsonl" | grep -c '"event": "failed"')" "0" "  a rotation is no failed start"
+has "$(SK ensure dry)" "would start skipper · dock (ro1)" "  and the next pass starts a fresh one"
+# the context rule: the last main-thread call's input, cache read and cache write; a synthetic entry after it is no call
+rm -rf "$PLANS_DIR" "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"* "$STALLS_STATE_DIR/skippers.json"
+lay ro2 dock
+nap; SP=$NAP
+mkrec dock sk-c $SP "$(( $(now) - 3600 ))" 20260110-000000-0002; regi sk-c $SP idle
+CLAUDE_CODE_SESSION_ID=sk-c HELM_HOLD_PARENT=$SP "$LX/helm" skipper --hold --scope dock --once > /dev/null
+out=$(SK ensure act); hasnt "$out" "stopped" "1 h old, no transcript on this host: kept (age alone decides)"
+mkdir -p "$T/projects/-x-dockrepo"
+ctxline() { printf '{"type": "assistant", "isSidechain": %s, "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 5, "cache_read_input_tokens": %d, "cache_creation_input_tokens": 995}}}\n' "$1" "$2"; }
+{ ctxline false 149000; ctxline true 300000; } > "$T/projects/-x-dockrepo/sk-c.jsonl"
+out=$(SK ensure act); hasnt "$out" "stopped" "  150k tokens (a 300k sidechain after it): kept"
+ctxline false 209000 >> "$T/projects/-x-dockrepo/sk-c.jsonl"
+printf '{"type": "assistant", "message": {"model": "<synthetic>", "usage": {"input_tokens": 0, "output_tokens": 0}}}\n' >> "$T/projects/-x-dockrepo/sk-c.jsonl"
+out=$(STALLS_NOW=$(( $(now) - 1200 )) SK ensure act); hasnt "$out" "stopped" "  210k tokens 40 minutes after its start: kept (under an hour: a fast-filling scope rotates at most hourly)"
+out=$(SK ensure act)
+has "$out" "stopped skipper · dock (rotated: its context 210k tokens, quiet)" "  210k tokens an hour in, a synthetic entry after it, idle: rotated"
+check "$(lf ro2 holder)" "yard" "  its ship back to the yard"
+check "$(grep '20260110-000000-0002' "$S5/mgr/testhost-dock.starts.jsonl" | grep -c '"event": "failed"')" "0" "  no failed start either"
 
 echo "  deaf: a relay unanswered 15 minutes while the session sits idle"
 rm -rf "$PLANS_DIR" "$S5/mgr/"*; : > "$S5/lc.calls"; rm -f "$S5/la/"* "$STALLS_STATE_DIR/skippers.json" "$S5/q/"*
