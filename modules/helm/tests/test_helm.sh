@@ -1563,7 +1563,7 @@ if [ "\$1 \$2" = "auth status" ]; then
 fi
 echo "session" >> "$S5/claude.calls"
 { printf '%s\n' "\$@"; } > "$S5/claude.argv"
-{ echo "cwd=\$PWD"; env | grep -E '^(SKIPPER_|HELM_HOLD_PARENT|CLAUDE_|DISPATCH_)' | sort; echo "pid=\$\$"; } > "$S5/claude.env"
+{ echo "cwd=\$PWD"; env | grep -E '^(SKIPPER_|HELM_HOLD_PARENT|CLAUDE_|DISPATCH_|RUN_SEED_)' | sort; echo "pid=\$\$"; } > "$S5/claude.env"
 EOF
 # account: picks and deny lists from a fixture (repo key → label; label → the keys it denies)
 cat > "$S5/bin/account" <<EOF
@@ -1729,7 +1729,8 @@ echo "  the runner (libexec/skipper-run, with /usr/bin/python3): login, sign-in,
 lay rs1 dock
 # the runner runs only the start just launched, so each case launches its own first (NOLAUNCH: none)
 run5() { [ -n "${NOLAUNCH:-}" ] || SK launch "${1:-dock}" "${2:-20260103-000000-0001}"
-         env -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT=cli DISPATCH_SHIP=leak DISPATCH_REPO=/leak bash "$LX/skipper-run" "${1:-dock}" "${2:-20260103-000000-0001}" > "$S5/run.out" 2>&1; echo $?; }
+         env -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT=cli DISPATCH_SHIP=leak DISPATCH_REPO=/leak \
+             DISPATCH_MODE=leak DISPATCH_SCREEN=leak DISPATCH_BRIEF=leak DISPATCH_HOST=leak RUN_SEED_LEAK=leak bash "$LX/skipper-run" "${1:-dock}" "${2:-20260103-000000-0001}" > "$S5/run.out" 2>&1; echo $?; }
 rm -f "$S5/cfg/acct-a/.trusted"
 touch "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0001.plist"
 check "$(run5)" "0" "the runner execs claude (the stub exits 0)"
@@ -1774,7 +1775,8 @@ check "$(grep -c '"event": "recorded"' "$S5/mgr/testhost-dock.starts.jsonl")/$(g
 lg=$(cat "$S5/mgr/skipper-dock.log" 2>/dev/null)
 has "$lg" "skipper-run dock, start 20260103-000000-0001, on testhost" "  the runner's lines go to skipper-<scope>.log itself"
 has "$lg" "record $S5/mgr/testhost-dock.json; claude" "  up to the record and the exec"
-hasnt "$env5" "DISPATCH_" "  no run variable either"
+hasnt "$env5" "DISPATCH_" "  no run variable either (the runner was handed SHIP, REPO, MODE, SCREEN, BRIEF and HOST: all gone, by prefix)"
+hasnt "$env5" "RUN_SEED_" "  nor a seeded run's RUN_SEED_*"
 rm -f "$S5/mgr/testhost-dock.json"; : > "$S5/acct.calls"; : > "$S5/trust.calls"; : > "$S5/sheep.calls"
 # the anchor's pick is denied by a sibling: the sibling's pick, which every repo allows
 echo '{"picks": {"dockrepo": "acct-a", "sib": "acct-b"}, "deny": {"acct-a": ["sib"]}}' > "$S5/acct.json"

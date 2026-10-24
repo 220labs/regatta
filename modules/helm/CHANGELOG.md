@@ -18,9 +18,11 @@
   sent task it is no mode; `helm mode --branch` resolves a relative `--repo` to its checkout and refuses a
   branch the checkout lacks; `bin/ask relay` keeps no mode in asks.json or the plan event when the read was
   torn.
-- `skipper-run` drops every `DISPATCH_*` variable by pattern: its fixed list had missed
+- `skipper-run` drops every `DISPATCH_*` and `RUN_SEED_*` variable by prefix: its fixed list had missed
   `DISPATCH_MODE` and `DISPATCH_BRIEF`, so a skipper started from a dispatched run inherited both.
-  `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run.
+  `test_helm.sh`'s "no run variable either" case caught it when the suite ran inside a dispatched run;
+  the case now hands the runner `DISPATCH_MODE`, `_SCREEN`, `_BRIEF`, `_HOST` and a `RUN_SEED_*` and
+  sees each gone. `ASK_ACCOUNT`, `ASK_SESSION` and `SKIPPER_GEN` are still unset by name.
 - The follow-ups' landing review, its smaller findings (2026-10-23): `helm mode --branch` keys every entry
   by its repo (`--repo`, else the cwd's checkout; outside one, refused); a key-less entry from before is
   read as a lowering only (`helmlib.LEGACY`); `drop_branch_entry` for a newer `dispatch --mode`;
