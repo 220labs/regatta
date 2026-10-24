@@ -25,7 +25,7 @@ touch "$HOME/.local/bin/claude"
 # reads the registry and the launcher's source through the overrides below, never the real ones.
 ln -s "$B/rc-hosts" "$T/coding/bin/rc-hosts"
 mkdir -p "$HOME/projects/overlay/bin"; ln -s "$B/rc-hosts" "$HOME/projects/overlay/bin/rc-hosts"   # the primary's, which the walk's job runs
-export CLAUDE_REPOS_JSON="$T/coding/repos.json" RC_HOSTS_SOURCE="$T/coding/bin/claude-host.c"
+export CLAUDE_REPOS_JSON="$T/coding/repos.json" RC_HOSTS_SOURCE="$T/coding/bin/claude-host.c" RC_HOSTS_CLOSING="$T/closing"
 # claude-host.c is the overlay's (it names the overlay's scripts), in the caller's overlay checkout
 # (SUITE_OVERLAY); the launcher cases build it, so without one the suite says so and stops
 CH="${SUITE_OVERLAY:+$SUITE_OVERLAY/bin/claude-host.c}"; [ -f "$CH" ] || CH=""
@@ -183,11 +183,12 @@ has "$T/out" "FAIL     demo · laptop: broken: its claude 2.1.304 was removed; n
 hasnt "$T/out" "in sync" "…never in sync, as it read before"
 check "$(RC --broken)" "3" "--broken, what bin/health asks: 3, never a crash's 1"
 has "$T/out" "FAIL     demo · laptop: broken: its claude 2.1.304 was removed" "…the same line"
-: > "$T/calls"
+: > "$T/calls"; rm -rf "$RC_HOSTS_CLOSING"   # the --restart cases above left theirs
 check "$(RC --reap --dry-run)" "0" "--reap --dry-run, one idle session"
 has "$T/out" "would restart demo · laptop: its claude 2.1.304 was removed, new sessions fail" "…plans its restart"
 has "$T/out" "would end 1 idle session(s): 8071 idle" "…naming the session it would end"
 hasnt "$T/calls" "kill" "…and ends nothing"
+check "$(ls -A "$RC_HOSTS_CLOSING" 2>/dev/null | wc -l | tr -d ' ')" "0" "…nor leaves a close reason for a session it did not close"
 session 8071 busy
 check "$(RC --reap --dry-run)" "0" "--reap --dry-run, the session busy"
 has "$T/out" "broken     demo · laptop: its claude 2.1.304 was removed; session(s) [8071] busy" "…refuses, naming it"
@@ -209,7 +210,44 @@ has "$T/out" "restarting demo · laptop: its claude 2.1.304 was removed" "…res
 has "$T/out" "ending 1 idle session(s): 8071" "…logging the session it ends"
 has "$T/calls" "kill SIGTERM gui/$(id -u)/$L" "…by SIGTERM, as every restart here"
 has "$T/out" "restarted, pid 521" "…and reads the new pid back"
+has "$LOG" "rc-hosts: closing session 5e558071-0000 (pid 8071, 'demo'), idle 0.5 h: the hourly rc-hosts --reap restarts this host, whose claude 2.1.304 was deleted under it" "…first saying so in the host's own log, so its \"Session failed\" line reads as the close"
 check "$(RC --broken)" "0" "the restarted host"
+check "$(python3 - "$T/coding/bin/rc-hosts" "$T/note.log" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)
+rec = {"cwd": str(r.PROJECTS / "film" / "bridge-cse_01RCNV19JH34z6RVab3kzS3o"), "name": "NAS copy failures"}
+r.note_close({"StandardOutPath": sys.argv[2]}, 96160, rec, "idle 12.4 h: the hourly rc-hosts --reap ends a session idle 12 h or more")
+r.note_close({"StandardOutPath": "/nonexistent/dir/x.log"}, 1, {}, "x")   # an unwritable log: no crash
+print(open(sys.argv[2]).read().split("] ", 1)[1].strip())
+PY
+)" "rc-hosts: closing session cse_01RCNV19JH34z6RVab3kzS3o (pid 96160, 'NAS copy failures'), idle 12.4 h: the hourly rc-hosts --reap ends a session idle 12 h or more — the \"Session failed\" line after this is that close, not a fault" "a bridge session is named by its cse_ id and title, as the host's own lines name it"
+
+echo "close_reason: the session's own last stderr line names the close (2026-10-24)"
+check "$(cat "$RC_HOSTS_CLOSING/5e558071-0000" 2>/dev/null)" "closed by rc-hosts — idle 0.5 h: the hourly rc-hosts --reap restarts this host, whose claude 2.1.304 was deleted under it" "the restart above left the reason under the session's id"
+H="$B/../hooks/close_reason.py"
+out=$(echo '{"session_id": "5e558071-0000", "hook_event_name": "SessionEnd"}' | python3 "$H" 2>&1 >/dev/null); rc=$?
+check "$rc:$out" "1:closed by rc-hosts — idle 0.5 h: the hourly rc-hosts --reap restarts this host, whose claude 2.1.304 was deleted under it" "the hook prints it on stderr and exits 1, which Claude Code reports as the session's last line"
+out=$(echo '{"session_id": "5e558071-0000"}' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "…once: the marker is gone, so the same id resumed later ends silently"
+echo "closed by rc-hosts — long ago" > "$RC_HOSTS_CLOSING/old-one"; touch -t 202601010000 "$RC_HOSTS_CLOSING/old-one"
+out=$(echo '{"session_id": "old-one"}' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "a marker over an hour old is stale: silent"
+out=$(echo '{"session_id": "a-session-nobody-closed"}' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "a session rc-hosts did not close: silent, exit 0"
+out=$(echo 'not json' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "unreadable input: silent, exit 0"
+out=$(echo '{"session_id": 5}' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "a session id that is no string: silent, exit 0, never a traceback"
+echo secret > "$T/outside"
+out=$(echo '{"session_id": "../outside"}' | python3 "$H" 2>&1); rc=$?
+check "$rc:$out" "0:" "a session id that is a path reads nothing (../outside is the real file next to the closing folder)"
+check "$(env -u RC_HOSTS_CLOSING python3 - "$T/coding/bin/rc-hosts" "$H" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+def load(name, path):
+    l = m.SourceFileLoader(name, path); s = u.spec_from_loader(name, l); r = u.module_from_spec(s); l.exec_module(r); return r
+print(load("r", sys.argv[1]).CLOSING == load("h", sys.argv[2]).CLOSING)
+PY
+)" "True" "rc-hosts writes where the hook reads: the two defaults are one path"
 check "$(python3 - "$T/coding/bin/rc-hosts" <<'PY'
 import importlib.machinery as m, importlib.util as u, sys
 l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)

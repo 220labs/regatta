@@ -97,7 +97,9 @@ first host sat at 4/4 for two days on sessions idle 9 to 42 hours (2026-09-25). 
 a child process of its host, and Claude Code keeps a record of it in
 ~/.claude/sessions/<pid>.json (`status` idle|busy, `statusUpdatedAt`). --reap sends SIGTERM
 to a child whose record has said idle for N hours, re-reading it just before, and never
-touches a busy one or a session outside a host (VS Code, a terminal). Ending a session is
+touches a busy one or a session outside a host (VS Code, a terminal). Before each SIGTERM it
+writes a line into the host's own log (note_close()): the host then logs the exit as "Session
+failed", quoting the session's last warning, and the line says it was a planned close. Ending a session is
 the owner's to run or schedule — an agent's own attempt is refused as interfering with workloads.
 
 A host holding a session is never restarted unasked: `launchctl bootout` ends every session it
@@ -179,6 +181,13 @@ CLAIMERS = ("dispatch", "dispatch-rc", "weekly-run", "autofinish", "usage-report
 LAUNCHER_VERSION = 2   # claude-host --version: 2 runs scripts and `claude`, re-takes responsibility
 CLAUDE_JSON = HOME / ".claude.json"
 SESSIONS = HOME / ".claude" / "sessions"
+# note_close()'s reasons, read by hooks/close_reason.py (the same default and seam; a suite case
+# compares the two)
+CLOSING = Path(os.environ.get("RC_HOSTS_CLOSING") or HOME / ".local" / "state" / "rc-hosts" / "closing")
+# How long a session ended here may take to exit: its SessionEnd hooks get up to 30 s where the
+# overlay's user settings set CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS (2.1.310's default, about
+# 1.5 s, cut a vault commit off, 2026-10-24), plus the exit itself.
+EXIT_WAIT_S = 40
 REAP_HOURS = 12.0
 ACTIVE_DAYS = float(os.environ.get("RC_ACTIVE_DAYS", "30"))
 REAPER = OURS + "rc-reap"
@@ -556,13 +565,16 @@ def heal(host, only, dry):
         if busy_of(pid, HEAL_IDLE_MIN):   # re-read, as reap() does: a session woken since is left alone
             print(f"             {name}: a session woke since the listing — left alone")
             continue
+        for c, rec in ends:
+            note_close(plist, c, rec, f"idle {idle_hours(rec):.1f} h: the hourly rc-hosts --reap"
+                                      f" restarts this host, whose claude {v} was deleted under it")
         # served() gives wanted()'s plist for a wanted host and the one on disk for the rest
         if read_plist(AGENTS / f"{label}.plist") != plist:
             load(label, plist)   # a changed plist is loaded, as revive() does
         else:
             restart_job(label)
         up = settled(label) and host_pid(label) not in (None, pid)
-        for _ in range(20):   # restart_job's wait was sized for an empty host; sessions take longer
+        for _ in range(EXIT_WAIT_S):   # restart_job's wait was sized for an empty host; sessions take longer
             if not any(alive(c) for c, _ in ends) and (up or host_pid(label) != pid):
                 break
             time.sleep(1)
@@ -686,6 +698,61 @@ def sessions_report(host, only):
                   f"  {rec.get('name', '')}")
 
 
+def note_close(plist, c, rec, why):
+    """A line in the host's own log just before rc-hosts ends one of its sessions. The host logs any
+    session's exit as `Session failed: <its last stderr line>`, and that line is usually a warning
+    the session printed at start — on the owner's Macs "claude.ai MCP server blocked by enterprise
+    policy", which is how Claude Code words a connector the user settings' deniedMcpServers names —
+    so a planned close read as a fault (a film repo's host, 2026-10-23: five of five matched --reap).
+    Appended: launchd opens StandardOutPath for append, as cap_logs() relies on.
+
+    It also writes the reason to CLOSING/<session id>, which the SessionEnd hook close_reason.py
+    prints as a failure line on the session's own stderr, so the host's "Session failed" line names
+    the close itself where that hook is wired last of the SessionEnd hooks (Claude Code prints the
+    failures in the order the hooks are defined, once all have settled; 2.1.310's source). The hook
+    reads a marker once and ignores one over an hour old; older ones are removed here."""
+    m = re.search(r"bridge-(cse_\w+)", rec.get("cwd") or "")
+    sid = m.group(1) if m else rec.get("sessionId") or "?"
+    label = (rec.get("name") or where(rec)).replace("Capacity:", "Capacity")   # capacity() greps the log
+    try:
+        with open(plist["StandardOutPath"], "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] rc-hosts: closing session {sid} (pid {c},"
+                    f" {label!r}), {why} — the \"Session failed\" line after this is that close,"
+                    f" not a fault\n")
+    except (OSError, KeyError):
+        pass
+    key = closing_key(rec)
+    if not key:
+        return
+    try:
+        CLOSING.mkdir(parents=True, exist_ok=True)
+        (CLOSING / key).write_text(f"closed by rc-hosts — {why}\n", encoding="utf-8")
+    except OSError:
+        return
+    for old in CLOSING.iterdir():
+        try:
+            if time.time() - old.stat().st_mtime > 3600:
+                old.unlink()
+        except OSError:
+            pass   # a parallel run removed it, or it is no file: never this close's business
+
+
+def closing_key(rec):
+    """The marker's name: the session id, when it is a plain name (close_reason.py's rule)."""
+    key = rec.get("sessionId")
+    return key if isinstance(key, str) and key and "/" not in key and not key.startswith(".") else None
+
+
+def drop_close(rec):
+    """Take back a marker for a session that was gone before rc-hosts could end it."""
+    key = closing_key(rec)
+    if key:
+        try:
+            (CLOSING / key).unlink()
+        except OSError:
+            pass
+
+
 def reap(host, hours, only, dry):
     for label, name, plist, repo in served(host):
         if only and name.split(" · ")[0] not in only:
@@ -701,10 +768,16 @@ def reap(host, hours, only, dry):
             print(f"  {'would end' if dry else 'ending   '}  {name}: {c}, idle {idle_hours(rec):.1f} h,"
                   f" {where(rec)}  ({time.strftime('%Y-%m-%d %H:%M')})")
             if not dry:
-                os.kill(c, signal.SIGTERM)
+                note_close(plist, c, rec, f"idle {idle_hours(rec):.1f} h: the hourly rc-hosts --reap"
+                                          f" ends a session idle {hours:g} h or more")
+                try:
+                    os.kill(c, signal.SIGTERM)
+                except ProcessLookupError:   # it ended by itself since the re-read
+                    drop_close(rec)
+                    continue
                 ended.append(c)
         if ended:
-            deadline = time.time() + 20
+            deadline = time.time() + EXIT_WAIT_S
             while time.time() < deadline and any(alive(c) for c in ended):
                 time.sleep(1)
             time.sleep(3)   # the host notices the exit and redraws its capacity line
@@ -736,8 +809,14 @@ def end(host, prefix, dry):
     print(f"  {'would end' if dry else 'ending   '}  {name}: {c}, idle {idle_hours(rec):.1f} h, {where(rec)}")
     if dry:
         return 0
-    os.kill(c, signal.SIGTERM)
-    deadline = time.time() + 20
+    note_close(plist, c, rec, f"idle {idle_hours(rec):.1f} h: ended by rc-hosts --end")
+    try:
+        os.kill(c, signal.SIGTERM)
+    except ProcessLookupError:
+        drop_close(rec)
+        print(f"             {name}: {c} ended by itself meanwhile")
+        return 0
+    deadline = time.time() + EXIT_WAIT_S
     while time.time() < deadline and alive(c):
         time.sleep(1)
     time.sleep(3)   # the host notices the exit and redraws its capacity line
@@ -865,6 +944,9 @@ def restart_one(label, name, plist):
     if busy:
         print(f"  busy     {name}: session(s) {busy} busy — restart once idle (rc-hosts --idle)")
         return False
+    for c, rec in sessions_of(pid) if pid else []:
+        note_close(plist, c, rec, f"idle {idle_hours(rec):.1f} h: rc-hosts --restart {name.split(' · ')[0]}"
+                                  f" restarts this host")
     load(label, plist)
     print(f"  restart  {name}: {'running' if settled(label) else 'NOT RUNNING — see the log'}"
           f" ({plist['StandardOutPath']})")
