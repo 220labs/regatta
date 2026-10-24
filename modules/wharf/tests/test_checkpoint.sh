@@ -227,6 +227,25 @@ ev A Stop >/dev/null
 ok "denied write left main clean, still on main" \
   '[ -z "$(git status --porcelain)" ] && [ "$(git branch --show-current)" = main ]'
 
+echo "a detached primary is denied writes as main is (hookwatch's pin; autofinish-exclude landing review, finding 6)"
+git -C "$R" checkout -q --detach
+out=$(ev A UserPromptSubmit "a session opened in the pinned primary"); rc=$?
+ok "a session's prompt in the pinned primary: the hook runs, no crash" '[ "$rc" = 0 ]'
+ok "write on a detached primary: denied" '[ "$(tool A Edit "{\"file_path\":\"$R/a\"}")" = deny ]'
+ok "  the reason names the pin and its unpin" 'toolreason A Edit "{\"file_path\":\"$R/a\"}" | grep -q "hookwatch unpin"'
+ok "  a git commit there: denied" '[ "$(tool A Bash "{\"command\":\"git commit --allow-empty -m x\"}")" = deny ]'
+ok "  a read there: allowed" '[ "$(tool A Bash "{\"command\":\"git log -1\"}")" = allow ]'
+# from a session in another worktree, the usual case (the re-review of finding 6)
+git -C "$R" worktree add -q "$T/pinwt" -b claude/pin-wt main
+ok "  a write into it from a session in a worktree: denied" \
+  '[ "$(tool A Edit "{\"file_path\":\"$R/a\"}" "$T/pinwt")" = deny ]'
+ok "  a git -C <it> commit from a worktree: denied" \
+  '[ "$(tool A Bash "{\"command\":\"git -C $R commit --allow-empty -m x\"}" "$T/pinwt")" = deny ]'
+git -C "$R" worktree remove --force "$T/pinwt"; git -C "$R" branch -q -D claude/pin-wt
+ev A Stop >/dev/null
+git -C "$R" checkout -q main
+ok "  left clean, and back on main" '[ -z "$(git status --porcelain)" ] && [ "$(git branch --show-current)" = main ]'
+
 echo "the one exception: launching a finished branch"
 # A real branch to launch, so the merge shapes carry something — the second review of 2026-09-24
 # found the carry record turning `git merge claude/x` on main from allow into deny, which the
@@ -1300,19 +1319,25 @@ deny = ["echo '{}' > ~/Library/Logs/claude-weekly/plans/s1/plan.json", "printf x
         "tee ~/Library/Logs/claude-weekly/plans/branch-modes.json < /tmp/y", "find ~/Library/Logs/claude-weekly/run-seed-runs -name x -delete",
         "printf x > " + m.os.environ["PLANS_DIR"] + "/s/plan.json",
         "echo '{\"by\": \"yolo\", \"eff_mode\": \"yolo\"}' > .git/claude/autofinish.json",
-        "cp /tmp/a.json /r/.git/worktrees/w/claude/autofinish.json"]
+        "cp /tmp/a.json /r/.git/worktrees/w/claude/autofinish.json",
+        "echo '{\"by\": \"sam\"}' > .git/worktrees/w/claude/autofinish", "touch /r/.git/claude/autofinish",
+        "cp /tmp/b.json /r/.git/claude/autofinish-briefs/claude%2Fx%2F2026-10-24-y.json", "mkdir -p .git/claude/autofinish-briefs"]
 allow = ["cat ~/Library/Logs/claude-weekly/plans/s1/plan.json", "jq .mode ~/Library/Logs/claude-weekly/run-seed-runs/a.json",
          "cat .git/worktrees/w/claude/autofinish.json", "jq .hold /r/.git/claude/autofinish.json",
-         "ls ~/Library/Logs/claude-weekly/run-seed-runs", "bin/plan report --task x --status running", "ls ~/Library/Logs/claude-weekly/plans-old"]
+         "ls ~/Library/Logs/claude-weekly/run-seed-runs", "bin/plan report --task x --status running", "ls ~/Library/Logs/claude-weekly/plans-old",
+         "cat .git/claude/autofinish-briefs/b.json", "cat .git/worktrees/w/claude/autofinish",
+         "cp /tmp/c.json .git/worktrees/w/claude/autofinish-chain.json"]
 print([c for c in deny if "skipper's record" not in (m.unattended_live(c, "/tmp") or "")], [c for c in allow if m.unattended_live(c, "/tmp")])
 PYREC
 )
-ok "unattended: a hand edit of plan.json, branch-modes.json or a run record by Bash is denied; a read is not (follow-ups item 7)" \
+ok "unattended: a hand edit of plan.json, branch-modes.json, a run record, /autofinish's marker or the yes at the brief by Bash is denied; a read is not (follow-ups item 7; autofinish-exclude landing review, finding 11)" \
   '[ "$rec" = "[] []" ]'
 mkdir -p "$T/rh/Library/Logs/claude-weekly/plans/s1"
 RJ=$(jq -nc --arg p "$T/rh/Library/Logs/claude-weekly/plans/s1/plan.json" '{file_path:$p,content:"{}"}')
 ok "  …and by the Write tool, unattended only" \
   '[ "$(HOME="$T/rh" CLAUDE_UNATTENDED=dispatch tool A Write "$RJ" "$UW")" = deny ] && [ "$(HOME="$T/rh" tool A Write "$RJ" "$UW")" = allow ]'
+BJ=$(jq -nc --arg p "$T/rh/r/.git/claude/autofinish-briefs/b.json" '{file_path:$p,content:"{}"}')
+ok "  …the yes at the brief by the Write tool too" '[ "$(HOME="$T/rh" CLAUDE_UNATTENDED=dispatch tool A Write "$BJ" "$UW")" = deny ]'
 ok "unattended outside any opted-in repo: a consent flag is denied too, and nothing else is" \
   '[ "$(CLAUDE_UNATTENDED=dispatch tool A Bash "{\"command\":\"x --live-ok\"}" "$P")" = deny ] \
    && [ "$(CLAUDE_UNATTENDED=dispatch tool A Bash "{\"command\":\"python3 scripts/deploy.py x\"}" "$P")" = allow ]'

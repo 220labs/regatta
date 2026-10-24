@@ -838,6 +838,8 @@ def sync(repo, cwd=None):
             notes.append(f"{name}: main has {ahead} commit{'s' if ahead != 1 else ''} origin lacks — push it")
         elif ahead and behind:
             notes.append(f"{name}: main diverged from origin ({ahead} here, {behind} there) — resolve by hand")
+    elif not head:
+        notes.append(pinned_note(repo, name))
     for_model = list(notes)
     user_note, model_note = report(repo, main, act=True, reaped=reaped)
     if user_note:
@@ -845,6 +847,21 @@ def sync(repo, cwd=None):
     if model_note:
         for_model.append(model_note)
     return notes, for_model
+
+
+def pinned_note(repo, name):
+    """A detached primary is never fast-forwarded: say so, naming lighthouse's hookwatch pin when its
+    state (read as text: no core) names this checkout (autofinish-exclude landing review, finding 14)."""
+    cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    try:
+        pin = json.loads((cfg / "lighthouse" / "hookwatch.json").read_text()).get("pinned")
+    except (OSError, ValueError, AttributeError):
+        pin = None
+    if isinstance(pin, dict) and pin.get("root") and Path(pin["root"]).resolve() == Path(repo).resolve():
+        return (f"⚠ {name}: pinned by hookwatch at {str(pin.get('to'))[:12]} ({pin.get('why') or 'a hook fault'})"
+                f"{'; revert PR ' + str(pin['pr']) if pin.get('pr') else ''} — main is not fast-forwarded until "
+                f"the pin ends (by itself once origin/main carries a fix, or `hookwatch unpin`)")
+    return f"⚠ {name}: the primary is on a detached HEAD — main is not fast-forwarded until it is checked out again"
 
 
 def settings_file(repo):

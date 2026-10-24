@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- checkpoint denies writes in a primary checkout on a detached HEAD (hookwatch's pin) as on main, and
+  guards /autofinish's marker and the yes at the brief as records under an unattended run; sync.py names a
+  detached primary, and hookwatch's pin when its state names it (autofinish-exclude landing review, 2026-10-24).
+
+- `pr ready` and `pr merge` judge a `by=brief` run by autofinish's `brief_held` (autofinish-exclude S7,
+  2026-10-23): the yes at the brief lands class 1 and 3, never class 2, `in_place` or the list.
+- `review-gate plan`'s path rule (autofinish-exclude S5, 2026-10-23): a branch that changes a path under
+  the base's `autofinish_exclude` or `review_xhigh` gets reviewer xhigh + `/code-review` xhigh at any size
+  (a tight week still lowers the second to high); `plan` prints the path, `--json` carries it as `gated`.
 - `pr ready` and `pr merge` judge a `--by ship` run's gates and held slice again, as a sweep or mode
   run's (skipper-resilience S6's finish review, 2026-10-23): the keel's yes predates the run's own edits.
 - The skipper-modes follow-ups (2026-10-23): the checkpoint hook's shed guard reads the shell's setters

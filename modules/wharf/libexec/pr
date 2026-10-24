@@ -248,10 +248,12 @@ def refuse_sweep_gate(up, base, verb, hold=None):
     automerge would launch it — labelled `hold` first.
     A mode launch (by yolo or dnd, or the sweep's rule M; skipper-modes S3b) is judged again here by
     autofinish's held_slice under the branch's mode now: a mode lowered since the start, or a run's
-    own edit into the held slice, stops it as a gate does (landing review 1)."""
+    own edit into the held slice, stops it as a gate does (landing review 1).
+    A brief launch (by=brief: rule C from the yes at the brief, autofinish-exclude S7) is judged by
+    autofinish's brief_held, not the whole list: the yes covers class 1 and 3, never class 2 or the list."""
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
     st = run_record(me)
-    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship") or st.get("ended"):
+    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief") or st.get("ended"):
         return
     from importlib.machinery import SourceFileLoader
     found = common.tool("autofinish")
@@ -261,8 +263,15 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         primary = str(Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent)
         _, _, problem, exclude = af.repo_config(primary, base)
         paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
-        gate = af.touches_gate(primary, base, exclude, paths)
-        if not gate and not problem and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
+        if st.get("by") == "brief":
+            try:
+                held = af.brief_held(primary, git("rev-parse", "--show-toplevel"), base)
+            except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
+                held = f"the brief's held paths could not be read ({type(e).__name__})"
+            gate = f"held: {held}" if held else None
+        else:
+            gate = af.touches_gate(primary, base, exclude, paths)
+        if not gate and not problem and st.get("by") != "brief" and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
                                          or st.get("by") == "ship"):
             mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
             # a mode that cannot be read now (helm absent, a reader that raised) is no "no sent task":

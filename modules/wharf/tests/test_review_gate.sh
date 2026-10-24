@@ -105,6 +105,32 @@ mkrepo "$T/own" 150 >/dev/null; mkdir -p "$T/own/.claude/agents" && : > "$T/own/
 [ -n "$TC" ] && week 50
 check "$(plan "$T/own")" "medium normal reviewer xhigh main...HEAD"         "project's own reviewer, no -high twin: its own"
 
+# the path rule (autofinish-exclude S5): a path on the BASE's list is the top tier at any size
+gated() {  # gated DIR KEY — main lists hooks/ under KEY; the branch adds one line to hooks/h.py and 10 to f.py
+  git init -q -b main "$1"; mkdir -p "$1/.claude" "$1/hooks"
+  printf '{"%s": ["hooks/"]}\n' "$2" > "$1/.claude/workflow.json"; echo 'a = 1' > "$1/hooks/h.py"
+  git -C "$1" add -A && git -C "$1" -c user.email=t@t -c user.name=t commit -q -m init
+  git -C "$1" checkout -q -b claude/x; echo 'b = 2' >> "$1/hooks/h.py"
+  python3 -c "import sys; open(sys.argv[1]+'/f.py','w').write('x = 1\n' * 10)" "$1"
+  git -C "$1" add -A && git -C "$1" -c user.email=t@t -c user.name=t commit -q -m add
+}
+gated "$T/g1" autofinish_exclude; gated "$T/g2" review_xhigh
+[ -n "$TC" ] && week 50
+check "$(plan "$T/g1")" "small normal reviewer xhigh main...HEAD"           "a one-line change to a listed path: xhigh + CR xhigh"
+check "$(plan "$T/g2")" "small normal reviewer xhigh main...HEAD"           "  review_xhigh counts as the list does (class 3 after S6)"
+python3 "$B/review-gate" plan --repo "$T/g1" > "$T/plan5.txt" 2>&1
+has "$T/plan5.txt" "path: hooks/h.py is on the base's autofinish_exclude" "  plan names the path"
+check "$(plan "$T/r50")" "small normal reviewer-high high main...HEAD"      "  no workflow.json on the base: the size rule alone"
+gated "$T/g3" nothing_listed   # main lists nothing; the branch lists the path itself
+printf '{"autofinish_exclude": ["hooks/"]}\n' > "$T/g3/.claude/workflow.json"
+git -C "$T/g3" -c user.email=t@t -c user.name=t commit -qam list
+check "$(plan "$T/g3")" "small normal reviewer-high high main...HEAD"      "  the base's list, never the branch's: listed on the branch alone is the size rule"
+if [ -n "$TC" ]; then
+week 85
+check "$(plan "$T/g2")" "small tight reviewer high main...HEAD"            "  a tight week lowers it as it lowers the top tier"
+week 50
+fi
+
 # ---------- merge ----------
 cat > "$T/fake.py" <<'EOF'
 import json, sys, http.server
