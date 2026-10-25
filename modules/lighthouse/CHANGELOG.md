@@ -4,6 +4,22 @@
 
 - hookwatch's suite builds the revert branch's date with `date -d @<epoch>` where BSD `date -r` fails, so
   the twin's ubuntu CI passes it (220labs/regatta#5, 2026-10-24).
+- deadman's state moves from KV to one SQLite-backed Durable Object, `Yards` (skipper-resilience
+  S10b): a ping is one request and one row, a cron pass one read and at most one write, so about 340
+  yards fit the free plan where KV's 1,000 writes a day held three. Every rule and message stays.
+  The issues come from the switch's own GitHub App, made by `deadman app` through GitHub's manifest
+  flow (issues write, metadata read, no webhook, private; the owner clicks Create and Install), its
+  record and key kept in the config dir at mode 600; a classic token remains the road without it.
+  The mail fallback goes through Resend instead of the `send_email` binding. `deploy` makes the ping
+  secret in the config dir when none is there, never reading the vault for it; `inbox_repo` and
+  `mention` default to the config dir's `helm/inbox-repo` and `helm/mention`; `status` names the road
+  the Worker holds. beacon's App JWT and Resend call move to `beacon/worker/outbound.js`, which both
+  Workers import.
+  After the finish review: `deploy` refuses to make a ping secret on a Mac that knows the switch
+  deployed (a Worker URL set), unless `--new-secret`; a pass no longer closes what it raised for a
+  yard heard from meanwhile, the object owes it to the next ping (`closing`), so a `/fail` that
+  adopted it keeps an open alarm; `app_name` is judged by `deadman app` alone, never a ping; deploy
+  says when a Worker may still hold an old App's secrets; `/apply` refuses a prototype key with 400.
 - hookwatch after its landing review (autofinish-exclude, 2026-10-24): a fault counts only for a hook the
   move changed (its file, its imports, its traceback's files); the overlay's own hooks are no longer read
   (the `legacy` prefix is gone; a shim shows through its traceback); a `judge` fault needs an error or a

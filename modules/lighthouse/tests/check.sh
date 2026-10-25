@@ -24,15 +24,16 @@ if [ -f "$D/worker.test.mjs" ]; then
     node --test --no-warnings=ExperimentalWarning "$D/worker.test.mjs" || rc=1
   fi
 fi
-# deadman's Worker against stubs (a fake KV, a stub GitHub and mail): node --test, Node 20 or later
-# for the global WebCrypto. Off the allowlist until listed, as beacon: absent, skipped; present, Node is required.
+# deadman's Worker against stubs (its Durable Object on node:sqlite, a stub GitHub and Resend):
+# node --test, Node 22.13 or later as beacon's. Off the allowlist until listed, as beacon: absent, skipped;
+# present, Node is required.
 if [ -f "$D/deadman.test.mjs" ]; then
   echo "== deadman worker"
-  if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(Number(process.versions.node.split(".")[0])>=20?0:1)'; then
-    echo "deadman's Worker suite needs Node 20 or later; found $(node --version 2>/dev/null || echo none)"
+  if ! command -v node >/dev/null 2>&1 || ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)'; then
+    echo "deadman's Worker suite needs Node 22.13 or later; found $(node --version 2>/dev/null || echo none)"
     rc=1
   else
-    node --test "$D/deadman.test.mjs" || rc=1
+    node --test --no-warnings=ExperimentalWarning "$D/deadman.test.mjs" || rc=1
   fi
 fi
 exit $rc
