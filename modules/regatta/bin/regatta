@@ -5,7 +5,8 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta root                the regatta checkout the core belongs to (exit 1: none)
     regatta has <module>        the module's path, or "<module> not installed" (exit 1)
     regatta which <tool>        a peer's path through common.tool(), or "<tool> not installed" (exit 1)
-    regatta check               the config directory: home, the overlay, each link with its target, the private values
+    regatta check               the config directory: home, the overlay, each link with its target, the private values,
+                                aurora/host against lighthouse/hosts, each scope's yard
     regatta shim <path>         the shim an old path keeps for <path> (relative to the root): a
                                 source shim for a Python file, an exec shim for any other
     regatta shim --hook <path>  a hook's source shim: run with no core, one line and exit 0 (C4)
@@ -14,6 +15,10 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta shim --deny-prompt <path>
                                 the same, and it also blocks a prompt in a secondary login dir
                                 (CLAUDE_CONFIG_DIR set): for a prompt guard (account_guard)
+    regatta weekly-host <job> [--scope <scope>]
+                                whether this host runs weekly job <job> (common.weekly_host): its notes,
+                                then its line; exit 0 run, 3 skip, 4 refuse, 5 closed (a scope's
+                                registry does not read) — never 1, a crash's code. The installers ask it
     regatta <name> [args…]      run a tool kept off PATH (C1: `pr`, `helm`) from its module
 
 Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
@@ -21,6 +26,7 @@ PATH, so `/usr/bin/pr` or an installed `helm` would win over a module's (the des
 """
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -191,6 +197,26 @@ def module_problems():
     return out
 
 
+def weekly_host_problems():
+    """`aurora/host`, the one host the weekly jobs run on (common.weekly_host): a key that names no
+    host or several is a finding, and so is a host `lighthouse/hosts` does not list, where that key
+    exists — as yard_rows checks yards: no host of the fleet would run the night. Case-blind, as the
+    rule compares. Absent or unreadable is module_problems' (aurora's config-keys lists the key)."""
+    lines, why = common.config_read("aurora/host")
+    if why or lines is None:
+        return []
+    if len(lines) != 1:
+        return ["aurora/host %s: the weekly jobs refuse" % ("names no host" if not lines else "has %d lines, and names one host" % len(lines))]
+    # host_name() prints only [a-z0-9-]: a name outside that never matches, on any host
+    if re.sub(r"[^a-z0-9-]", "-", lines[0].lower()).strip("-") != lines[0].lower():
+        return ["aurora/host names %s, which no host's name can be (host names are letters, digits and -): no host runs the weekly jobs" % lines[0]]
+    hosts = common.config_lines("lighthouse/hosts")
+    if hosts is not None and lines[0].lower() not in [h.lower() for h in hosts]:
+        return ["aurora/host names %s, which lighthouse/hosts does not list (%s): no host here runs the weekly jobs"
+                % (lines[0], ", ".join(hosts) or "it lists none")]
+    return []
+
+
 def yard_rows():
     """One row per scope of the registry: its yard (common.scope_yard), or none. A yard is a host
     `lighthouse/hosts` lists — the fleet's one list of Macs — else it is a finding: `wharf apply
@@ -269,7 +295,7 @@ def check():
         print("  ..  legacy: read by nothing since B14b (the overlay's bootstrap.sh --config removes it)")
     if os.environ.get("REGATTA_LEGACY"):
         print("  ..  REGATTA_LEGACY is set and read by nothing since B14b")
-    problems = list(common.CONFIG_PROBLEMS) + module_problems()
+    problems = list(common.CONFIG_PROBLEMS) + module_problems() + weekly_host_problems()
     refused = {x.split()[0] for x in problems}   # said once, below, never also `ok`
     if common.CONFIG.is_dir():
         for p in sorted(common.CONFIG.glob("*/*")):
@@ -304,6 +330,16 @@ def check():
     return 1 if bad else 0
 
 
+WEEKLY_RC = {"run": 0, "skip": 3, "refuse": 4, "closed": 5}   # refusal is never 1 (AGENTS.md Traps)
+
+
+def weekly_host(job, scope):
+    verdict, line, notes = common.weekly_host(job, scope)
+    for said in notes + ([line] if line else []):
+        print(said)
+    return WEEKLY_RC[verdict]
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
@@ -324,11 +360,13 @@ def main(argv):
         return 0 if p else 1
     if cmd == "check" and not rest:
         return check()
+    if cmd == "weekly-host" and rest and not rest[0].startswith("-") and (len(rest) == 1 or (len(rest) == 3 and rest[1] == "--scope" and rest[2])):
+        return weekly_host(rest[0], rest[2] if len(rest) == 3 else None)
     if cmd == "shim" and len(rest) == 1:
         return shim(rest[0])
     if cmd == "shim" and len(rest) == 2 and rest[0] in ("--hook", "--deny", "--deny-prompt"):
         return shim(rest[1], rest[0])
-    if cmd in ("root", "has", "which", "check", "shim"):
+    if cmd in ("root", "has", "which", "check", "shim", "weekly-host"):
         print("regatta %s: wrong arguments — `regatta help`" % cmd, file=sys.stderr)
         return 2
     p = common.tool(cmd)

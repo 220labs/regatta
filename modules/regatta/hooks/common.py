@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared by the user-wide hooks, bin/pr, bin/paste-paths and bin/session_status.py (pickup, bench/sessions): this machine's short host name, the GitHub
+"""Shared by the user-wide hooks, bin/pr, bin/paste-paths and bin/session_status.py (pickup, bench/sessions): this machine's short host name and the weekly jobs' host rule (`weekly_host`), the GitHub
 token git already holds, the repos cloned here, a thin GitHub REST client (with the CI and automerge settings bin/repos --github and bin/github-repo share), the worktree lock's reader and writer, the /move marker's reader, a repo's opt-in kept in repos.json, the fixed closing lines, the readers of autofinish's files, and the one formatter for money (`cost_text`: list and effective). Stdlib only — `gh` is not needed:
 the token git already holds is enough. Where the core, its peers and the private config are found:
 `tool()`, `repos_json()`, `CONFIG` (README).
@@ -642,6 +642,75 @@ def drive_backed(p):
     except (OSError, TypeError, ValueError):
         return True   # a link that cannot be read is taken as the drive's: its copy, the side that never hangs
     return False
+
+
+# The weekly jobs' host rule (aurora's night, /sextant, a scope's pass): which host runs one. Here,
+# not in a module of its own, because it is made of the readers above (config_read, host_name,
+# read_registry, overlay_installed) and every caller already imports this file; until 2026-10-24 it
+# was two copies, weekly-run's HOST_RULE and sextant-run's host_rule, kept in step by two suites.
+# `aurora/host` names the one host (as host_name() prints it, case-blind). An allow-list, never a
+# deny-list: a host that gets the overlay later (another Mac, a yard node) runs no night by default.
+# Under the old deny-list (`aurora/skip-hosts`, the hosts never to run on) an unlisted host ran it,
+# and two hosts each writing dreams/<date>.md in place conflict on push (gap review item 6,
+# 2026-10-02). One host: a second line is refused, never read as a list (that is what skip-hosts
+# was). A scope's pass runs on that scope's yard (the registry's `yard`), else where aurora/host
+# says. The registry is read once (read_registry: the tear and the yard from one parse), never
+# registry_unreadable() then scope_yard(): a write between the two reads as no yard, and the pass
+# would run where aurora/host says on the same night its yard runs it; a torn registry is `closed`
+# (its yard unknown: reading that as "no yard" would run it on the wrong host). The transition,
+# until every overlay writes aurora/host: no aurora/host but an aurora/skip-hosts keeps the old
+# rule, with a note saying the key is deprecated; neither, where the overlay is installed, refuses —
+# a guess either way is a lost or a doubled dream; neither and no overlay runs (an install on one
+# machine). Each job's skip line names its own installer's verb: sextant's --remove takes the ideas
+# intake and its signed launcher with it, so its weekly job is unloaded with --unschedule.
+WEEKLY_UNSCHEDULE = {"aurora": "aurora install.sh --schedule refuses here, --remove unloads a job loaded before",
+                     "sextant": "sextant install.sh --schedule refuses here, --unschedule removes a job loaded before"}
+
+
+def weekly_host(job, scope=None):
+    """(verdict, line, notes): whether weekly job `job` runs on this host. verdict is `run` (line
+    ""), `skip` (another host runs it), `refuse` (a key is empty, unreadable, many-lined or missing:
+    the runner posts it) or `closed` (a scope's registry does not read: the log only); notes are
+    lines said before it (the deprecation). Never raises on a key's content."""
+    host = host_name()
+    hint = WEEKLY_UNSCHEDULE.get(job)
+    if scope:
+        reg, torn = read_registry()
+        if torn:
+            return "closed", "refused: the registry %s cannot be read, so scope %s has no known yard (fails closed)" % (repos_json(), scope), []
+        s = ((reg or {}).get("scopes") or {}).get(scope)
+        yard = s.get("yard") if isinstance(s, dict) else None
+        if isinstance(yard, str) and yard:
+            if yard.lower() == host:
+                return "run", "", []
+            return "skip", "skipped: scope %s runs on its yard %s, not on %s (the registry names it)" % (scope, yard, host), []
+    lines, why = config_read("aurora/host")
+    if lines is None and not why and (CONFIG / "aurora" / "host").is_symlink():
+        # config_read reads a dangling link as no file, and with no overlay that runs every host:
+        # a link into a synced folder not mounted tonight would double the dream (the landing review)
+        why = "a link whose target is missing"
+    if why:
+        return "refuse", "refused: aurora/host cannot be read (%s)" % why, []
+    if lines is not None:
+        if not lines:
+            return "refuse", "refused: aurora/host is empty: it names no host to run on", []
+        if len(lines) > 1:
+            return "refuse", "refused: aurora/host names one host, and it has %d lines" % len(lines), []
+        if lines[0].lower() == host:
+            return "run", "", []
+        return "skip", "skipped: %s does not run on %s (aurora/host names %s%s)" % (job, host, lines[0], "; " + hint if hint else ""), []
+    skips, why = config_read("aurora/skip-hosts")
+    if skips is None and why is None:
+        if overlay_installed():
+            return "refuse", "refused: no %s (your overlay's bootstrap.sh --config writes it)" % (CONFIG / "aurora" / "host"), []
+        return "run", "", []
+    notes = ["note: aurora/skip-hosts is deprecated: write aurora/host, the one host the weekly jobs run on "
+             "(your overlay's bootstrap.sh --config)"]
+    if why:
+        return "refuse", "refused: aurora/skip-hosts cannot be read (%s)" % why, notes
+    if host in [l.lower() for l in skips]:
+        return "skip", "skipped: %s does not run on %s (aurora/skip-hosts%s)" % (job, host, "; " + hint if hint else ""), notes
+    return "run", "", notes
 
 
 def repo_slug(url):

@@ -8,6 +8,13 @@
   that opens a Drive-backed file outside claude-host (main's readers: 5 of 5; this branch: 0).
   `drive_backed(p)`: whether a config key is a link into a cloud drive (macOS's File Provider folder, or
   `REGATTA_DRIVE_ROOTS`), judged from the link's text; only such a key is read local-first.
+- The weekly jobs' host rule (2026-10-24): `common.weekly_host(job, scope=None)` is the one copy of the
+  rule weekly-run's `HOST_RULE` and sextant-run's `host_rule` held, kept in step by two suites until
+  now; `regatta weekly-host <job> [--scope <scope>]` is the installers' face (exit 0 run, 3 skip, 4
+  refuse, 5 closed). `regatta check` reports an `aurora/host` that names no host or several, or a host
+  `lighthouse/hosts` does not list where that key exists, as it checks yards, or one no host name can
+  be (outside `[a-z0-9-]`). A dangling `aurora/host` link refuses, never reads as no key. The rule's
+  branches are this suite's cases now.
 - `regatta flare` and `/regatta:flare` (2026-10-24): a bug report, an idea or a question filed as an issue on
   the public repo, the evidence attached, a `--client-id` retry returning the first receipt, helloworld's
   file scan before the send, a prefilled link without `gh`; the repo's Bug and Idea issue forms beside it.
