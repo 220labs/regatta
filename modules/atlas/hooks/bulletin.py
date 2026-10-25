@@ -165,13 +165,33 @@ def dream_waiting():
             m = re.match(r"- (\d{4}-\d\d-\d\d) (?:embark|weekly):", line)
             if m and m.group(1) >= d.stem:
                 return None
-    n_p = len(re.findall(r"^P\d+\.", parts[0], re.M))
-    n_q = len(re.findall(r"^Q\d+\.", parts[0], re.M))
+    # Both shapes: `P3.` (the dreams before keel) and `- **D3 — P3.` (keel's, since 2026-10-07), which
+    # the old count read as "0 proposals" for three weeks (the 2026-10-18 dream's D2, answered 10-25)
+    n_p = len(re.findall(r"^(?:P\d+\.|- \*\*D\d+ — P\d+\b)", parts[0], re.M))
+    n_q = len(re.findall(r"^(?:Q\d+\.|- \*\*D\d+ — Q\d+\b)", parts[0], re.M))
     try:
         age = (today() - dt.date.fromisoformat(d.stem)).days
     except ValueError:
         return None
+    memo = embark_memo(d.stem)
+    if memo:
+        return f"📋 Dream {d.stem} awaits /embark — its memo, first on helm's board ({memo[0]} items): {memo[1]}"
     return f"📋 Dream {d.stem} awaits /embark — {n_p} proposals, {n_q} questions, {age} days old."
+
+
+def embark_memo(dream):
+    """(items, keel line) of the embark memo aurora's weekly-run wrote for this dream, or None: its
+    embark-latest.json in the weekly logs (WEEKLY_LOG_DIR, as weekly-run reads it), naming this dream
+    and a memo file that is still there. Only the Mac that ran the step has the file; another Mac
+    prints the counts."""
+    logs = Path(os.environ.get("WEEKLY_LOG_DIR") or Path.home() / "Library/Logs/claude-weekly")
+    try:
+        m = json.loads((logs / "embark-latest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(m, dict) or m.get("dream") != dream or not m.get("line") or not Path(str(m.get("doc"))).is_file():
+        return None
+    return (m.get("items", "?"), m["line"])
 
 
 def open_docs():
