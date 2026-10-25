@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The skipper's `claude` starts through `claude-host` where wharf-runs' `rc-hosts --launcher claude`
+  names one, as dispatch's runs do: skipper-ears S1 (2026-10-24) saw a bare `claude` under launchd hang
+  before its first turn on the yard, its binary denied Full Disk Access, and every case pass through
+  `claude-host`. No grant on the host, or a launcher that is not executable: a bare `claude`, as
+  before. The runner asks once, inside its own deadline, and its sign-in probe goes through the same
+  launcher; its log names which. The record's pid is then `claude-host`'s, with `claude` its child, so
+  `stop()` signals the registry's `claude` when the record's pid is it or its parent, and
+  `--stand-down` adds the session's own registry pid.
 - `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
   2026-10-23; wharf-runs' CHANGELOG says why).
 - The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context

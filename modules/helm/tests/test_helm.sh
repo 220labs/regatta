@@ -1516,6 +1516,18 @@ check "$([ -e "$T/mgrdir/testhost-other.json" ] && echo kept || echo deleted)" "
 for _ in 1 2 3 4 5 6 7 8; do kill -0 $PARENT 2>/dev/null || break; sleep 0.25; done
 check "$(kill -0 $PARENT 2>/dev/null && echo alive || echo ended)" "ended" "  its claude (the pid its lease and record name) ended"
 kill $PARENT 2>/dev/null
+# through claude-host the record's pid is the launcher's (a parent that waits), claude its child: the
+# session's registry record names the child, which stand-down signals (the launcher's review, 2026-10-24)
+printf '#!/bin/bash\n"%s" 300 & c=$!\ntrap '"'"'kill -TERM $c 2>/dev/null'"'"' TERM INT HUP\nwait $c\n' "$T/fakeclaude/claude" > "$T/fakehost"
+chmod +x "$T/fakehost"; "$T/fakehost" & HOSTP=$!; disown $HOSTP
+for _ in 1 2 3 4 5 6 7 8; do KID=$(pgrep -P $HOSTP); [ -n "$KID" ] && break; sleep 0.25; done
+printf '{"session": "mgr-3", "pid": %d, "scope": "dock"}' "$HOSTP" > "$T/mgrdir/testhost-dock.json"
+printf '{"pid": %d, "sessionId": "mgr-3", "name": "skipper-x", "status": "idle", "updatedAt": 2}' "$KID" > "$T/sess/mgr-3.json"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-3 SKIPPER_SCOPE=dock "$LX/helm" skipper --stand-down 2>&1)
+for _ in 1 2 3 4 5 6 7 8; do kill -0 $KID 2>/dev/null || break; sleep 0.25; done
+check "$(kill -0 $KID 2>/dev/null && echo alive || echo ended)" "ended" "  through claude-host: the session's claude (its registry pid, the launcher's child) ended"
+has "$out" "ended pid $KID" "  signalled by its own pid"
+kill $HOSTP $KID 2>/dev/null; rm -f "$T/sess/mgr-3.json"
 check "$(env -u CLAUDE_CODE_SESSION_ID "$LX/helm" skipper --stand-down 2>&1; echo "rc=$?")" \
   "helm skipper --stand-down: a skipper session's own verb — no CLAUDE_CODE_SESSION_ID here
 rc=1" "  a plain shell has no skipper to stand down"
@@ -1530,7 +1542,28 @@ export PLANS_DIR="$S5/plans" ASK_MANAGER_DIR="$S5/mgr" STALLS_STATE_DIR="$S5/st"
        ASK_QUEUE_DIR="$S5/q" ASK_NO_KEY_FILES=1 HELM_LAUNCH_DIR="$S5/la" HELM_LAUNCHCTL="$S5/bin/launchctl" \
        HELM_SCREEN="$S5/bin/screen" HELM_CLAUDE="$S5/bin/claude" HELM_ACCOUNT="$S5/bin/account" \
        HELM_DISPATCH_RC="$S5/bin/dispatch-rc" HELM_TRUST="$S5/bin/trust-projects" MEMO_SHEEP_BIN="$S5/bin/spacesheep" \
-       CLAUDE_REPOS_JSON="$S5/repos.json" PLAN_PROJECTS_ROOT="$S5/projects" HELM_SCREENDIR="$S5/screens"
+       CLAUDE_REPOS_JSON="$S5/repos.json" PLAN_PROJECTS_ROOT="$S5/projects" HELM_SCREENDIR="$S5/screens" \
+       HELM_RC_HOSTS="$S5/bin/rc-hosts"
+# rc-hosts: `--launcher claude` names no claude-host (exit 1, a Mac with no grant) unless rch.on is
+# there; then the stand-in claude-host, which forks the stand-in claude, forwards signals and waits,
+# as claude-host does (a stand-in that exec'd would hide a record pid that is not claude's)
+cat > "$S5/bin/rc-hosts" <<EOF
+#!/usr/bin/env python3
+import os, sys
+open("$S5/rch.calls", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] != ["--launcher", "claude"] or not os.path.exists("$S5/rch.on"):
+    sys.exit(1)
+print("$S5/bin/claude-host")
+EOF
+cat > "$S5/bin/claude-host" <<EOF
+#!/bin/bash
+{ printf '%s\n' "\$@"; } >> "$S5/host.argv"
+shift
+"$S5/bin/claude" "\$@" & c=\$!
+trap 'kill -TERM \$c 2>/dev/null' TERM INT HUP
+wait \$c
+EOF
+chmod +x "$S5/bin/rc-hosts" "$S5/bin/claude-host"
 mkdir -p "$S5/projects/dockrepo" "$S5/projects/sib" "$S5/projects/third" "$S5/projects/fourth"
 cat > "$CLAUDE_REPOS_JSON" <<'EOF'
 {"repos": {"dockrepo": {}, "sib": {}, "third": {}, "fourth": {}},
@@ -1858,6 +1891,52 @@ check "$(HELM_CLAUDE="$S5/bin/no-claude" run5 dock 20260103-000000-0008)" "1" "c
 has "$(cat "$S5/run.out")" "skipper won't start: claude did not start" "  saying so"
 check "$([ -e "$S5/la/dev.regatta.helm.skipper-dock-20260103-000000-0008.plist" ] && echo kept || echo removed)/$([ -e "$S5/mgr/testhost-dock.json" ] && echo record || echo none)" \
   "removed/none" "  no plist, no record left"
+# claude-host (skipper-ears S1: a bare claude under launchd hung on the yard, denied Full Disk Access):
+# where `rc-hosts --launcher claude` names one (the stubs above, with rch.on), the runner asks it once,
+# inside its own deadline, and runs both the sign-in probe and the exec through it, `claude` first;
+# the record's pid is then the launcher's, which forks claude and waits
+touch "$S5/rch.on"; rm -f "$S5/host.argv" "$S5/rch.calls"
+check "$(run5 dock 20260103-000000-000e)" "0" "a granted claude-host: the runner execs it"
+check "$(cat "$S5/rch.calls")" "--launcher claude" "  asked once, as dispatch asks: rc-hosts --launcher claude"
+has "$(cat "$S5/host.argv")" "claude
+auth
+status
+--json" "  the sign-in probe goes through it too (a bare claude is the binary TCC denied)"
+check "$(grep -A1 -x claude "$S5/host.argv" | tail -1 | cut -c1-40)" "You are skipper · dock, the skipper of s" "  the session's argv: claude first, then the brief"
+check "$(sed -n 1p "$S5/claude.argv" | cut -c1-40)" "You are skipper · dock, the skipper of s" "  and claude receives the brief first, as a bare claude does"
+has "$(cat "$S5/run.out")" "claude through $S5/bin/claude-host" "  the runner names the launcher"
+cpid=$(sed -n 's/^pid=//p' "$S5/claude.env")
+check "$([ -n "$cpid" ] && [ "$cpid" != "$(rec dock pid)" ] && echo child || echo same)" "child" "  claude runs as the launcher's child, not as the record's pid"
+check "$(sed -n 's/^HELM_HOLD_PARENT=//p' "$S5/claude.env")" "$(rec dock pid)" "  HELM_HOLD_PARENT is the record's pid (the launcher, which lives as long as claude)"
+rm -f "$S5/rch.on" "$S5/host.argv"
+check "$(run5 dock 20260103-000000-000f)" "0" "no grant (rc-hosts --launcher exits 1): a bare claude, as before"
+check "$(wc -l < "$S5/rch.calls" | tr -d ' ')" "2" "  rc-hosts was asked"
+check "$([ -e "$S5/host.argv" ] && echo launcher || echo bare)" "bare" "  claude-host never run"
+has "$(cat "$S5/run.out")" "claude through no claude-host (bare)" "  and the runner says so"
+# a launcher that is not executable is none: a bare claude, never a start that fails at exec
+touch "$S5/rch.on"; chmod -x "$S5/bin/claude-host"; rm -f "$S5/host.argv"
+check "$(run5 dock 20260103-000000-0010)" "0" "a claude-host that is not executable: a bare claude"
+check "$([ -e "$S5/host.argv" ] && echo launcher || echo bare)" "bare" "  claude-host never run"
+chmod +x "$S5/bin/claude-host"; rm -f "$S5/rch.on"
+# stop() through claude-host: the registry names claude, the launcher's child; the record names the
+# launcher. The child is signalled (it is the registry's pid and the record's pid is its parent)
+cat > "$S5/fakehost" <<'EOF'
+#!/bin/bash
+/bin/sleep 300 & c=$!
+trap 'kill -TERM $c 2>/dev/null' TERM INT HUP
+wait $c
+EOF
+chmod +x "$S5/fakehost"; "$S5/fakehost" & HP=$!; disown $HP
+for _ in 1 2 3 4 5 6 7 8; do CP=$(pgrep -P $HP); [ -n "$CP" ] && break; sleep 0.25; done
+mkrec dock sk-h $HP "$(now)" 20260103-000000-0011; regi sk-h $CP idle
+SK stop dock > /dev/null
+for _ in 1 2 3 4 5 6 7 8; do kill -0 $CP 2>/dev/null || break; sleep 0.25; done
+check "$(kill -0 $CP 2>/dev/null && echo alive || echo ended)" "ended" "--stop through claude-host: the registry's claude (the launcher's child) ended"
+kill $HP $CP 2>/dev/null; rm -f "$T/sess/sk-h.json" "$S5/rch.calls"
+# the starts above took no ship: leave the store as the exec-failure case left it (no record, and
+# no starts-log lines of theirs), or the stall road below counts them as more failed starts
+rm -f "$S5/mgr/testhost-dock.json" "$S5/la/"*20260103-000000-00{0e,0f,10,11}*
+grep -v -E '20260103-000000-00(0e|0f|10|11)' "$S5/mgr/testhost-dock.starts.jsonl" > "$S5/starts.tmp"; mv "$S5/starts.tmp" "$S5/mgr/testhost-dock.starts.jsonl"
 
 echo "  the stall road: three failed starts are the class \`skipper won't start\`"
 ws=$(env -u CLAUDE_CODE_SESSION_ID python3 - "$B" <<'PY'
@@ -2313,7 +2392,7 @@ PY
 check "$(SK open df1)" "0" "  its task in mode ask: not the skipper's (no re-hail, no deaf clock)"
 kill $SLEEPS 2>/dev/null
 unset PLANS_DIR ASK_MANAGER_DIR STALLS_STATE_DIR STALLS_LOG ASK_QUEUE_DIR ASK_NO_KEY_FILES HELM_LAUNCH_DIR HELM_LAUNCHCTL \
-      HELM_SCREEN HELM_CLAUDE HELM_ACCOUNT HELM_DISPATCH_RC HELM_TRUST MEMO_SHEEP_BIN CLAUDE_REPOS_JSON HELM_SCREENDIR
+      HELM_SCREEN HELM_CLAUDE HELM_ACCOUNT HELM_DISPATCH_RC HELM_TRUST MEMO_SHEEP_BIN CLAUDE_REPOS_JSON HELM_SCREENDIR HELM_RC_HOSTS
 export PLANS_DIR="$T/plans" PLAN_PROJECTS_ROOT="$T/projects-root"
 
 echo "helm send (skipper-resilience S7): three ways in, the lay over ssh, the pickup, the listener, --line"

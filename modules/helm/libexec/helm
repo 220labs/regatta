@@ -1157,6 +1157,14 @@ def skipper_stand_down(a, leaselib):
             except OSError as e:
                 print("record of skipper · %s not deleted (%s)" % (scope, e), file=sys.stderr)
     print("stood down: %s back to the yard" % (", ".join(back) if back else "no ship"))
+    # through claude-host (skipperlib.launcher) the record's and the lease's pid is claude-host's, not
+    # claude's: the session's own claude is the one its registry record names, taken when it is the
+    # very process the record was written for (procStart), and signalled itself
+    import asklib
+    import skipperlib
+    reg = asklib.registry(sid)
+    if reg and reg.get("pid") and skipperlib.same_process(reg["pid"], reg):
+        pids.add(int(reg["pid"]))
     pids.discard(os.getpid())
     # a lease taken under an earlier sidecar may name a claude long gone, its pid since reused: only a
     # live process still named claude is signalled (S4 finish review)

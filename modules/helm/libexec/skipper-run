@@ -6,7 +6,8 @@
 # marker turns transcript saving off), and every run variable (DISPATCH_*, RUN_SEED_*) — a
 # skipper is no run of anyone's.
 # Then bin/skipperlib.py's `run` picks the login, checks it is signed in, trusts the anchor, makes
-# the Talk page, writes the record and execs claude, so the pid it records is claude's own.
+# the Talk page, writes the record and execs claude, so the pid it records is claude's own — or
+# claude-host's, with claude its child, where rc-hosts --launcher names one (skipperlib.launcher).
 # Anchored on its own path, never the caller's cwd.
 set -u
 [ $# = 2 ] || { echo "usage: skipper-run SCOPE START_ID (helm skipper --start's job)" >&2; exit 2; }

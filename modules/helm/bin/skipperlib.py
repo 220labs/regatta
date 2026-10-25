@@ -24,7 +24,7 @@ Both verbs refuse under CLAUDE_CODE_SESSION_ID: a session may not load a plist (
 own child), and the allow rule that names the session verbs one by one never names these.
 
 Files, all beside the record leaselib.record_path names (asklib.manager_dir(), `<host>-<scope>.*`):
-    <host>-<scope>.json            the record the runner writes just before it becomes claude: {session,
+    <host>-<scope>.json            the record the runner writes just before it execs claude (or claude-host): {session,
                                    name: "skipper · <scope>", scope, account, host, started, pid, space,
                                    gen: null, start, job, screen, anchor}; asklib.standing_manager(host,
                                    scope) reads it, and `space` is the Talk page relays reach it on
@@ -40,7 +40,7 @@ it): a session stuck at a dialog has a live pid and a record too, so only the ta
 TAKE_WITHIN of the start. A refusal the runner can tell at once (no login every repo allows, a login
 that is not signed in, an untrusted anchor) is a failed start the next pass reads, never a 5-minute
 wait. Stdlib only, Python 3.9. Tests: HELM_LAUNCHCTL, HELM_LAUNCH_DIR, HELM_SCREEN, HELM_SCREENDIR, HELM_CLAUDE,
-HELM_ACCOUNT, HELM_DISPATCH_RC, HELM_TRUST replace the tools; STALLS_NOW pins the clock (as the tick's).
+HELM_ACCOUNT, HELM_DISPATCH_RC, HELM_TRUST, HELM_RC_HOSTS replace the tools; STALLS_NOW pins the clock (as the tick's).
 """
 import json
 import os
@@ -101,7 +101,7 @@ PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin"
 # the overrides a test or an overlay sets, carried into the job (launchd hands a job no shell's environment)
 CARRY = ("REGATTA_CONFIG", "REGATTA_HOME", "SURFACES_FILE", "PLANS_DIR", "ASK_MANAGER_DIR", "ASK_SESSIONS_DIR",
          "PLAN_HOST", "CLAUDE_REPOS_JSON", "ACCOUNTS_FILE", "PLAN_PROJECTS_ROOT", "HELM_CLAUDE", "HELM_ACCOUNT",
-         "HELM_DISPATCH_RC", "HELM_TRUST", "MEMO_SHEEP_BIN")
+         "HELM_DISPATCH_RC", "HELM_TRUST", "MEMO_SHEEP_BIN", "HELM_RC_HOSTS")
 # a block only the owner can move — a person's task, a decision block's memo gate (wharf's "gated on")
 # — is the yard's to hold. An escalation is marked on its ask (`helm skipper --escalate`), never read
 # from the task's progress: that text sticks, and a later question would read as escalated too.
@@ -351,12 +351,34 @@ def claude_cmd():
     return os.environ.get("HELM_CLAUDE") or shutil.which("claude", path=PATH % Path.home()) or "claude"
 
 
-def logged_in(env):
+def launcher():
+    """claude-host's path when this Mac's grant lets it start claude (wharf-runs' `rc-hosts --launcher
+    claude`, the question dispatch and weekly-run ask), else None: a bare claude, as before. Skipper-ears
+    S1 (2026-10-24): under launchd a bare claude is charged to its own versioned binary, which TCC denied
+    Full Disk Access on the yard, and it hung before its first turn; through claude-host every case
+    passed. claude-host forwards TERM, INT and HUP to claude and waits for it, so the pid exec gives the
+    record (claude-host's) lives as long as claude, which is its child (SIGKILL aside); readers that
+    signal the session's claude take it from the registry (stop(), helm's --stand-down). A path that
+    is not an executable file is no launcher: a bare claude then, never a start that fails at exec.
+    HELM_RC_HOSTS stands in for rc-hosts (the suite's stub; HELM_CLAUDE never turns claude-host off,
+    so an overlay that pins claude's path keeps the grant)."""
+    rc = os.environ.get("HELM_RC_HOSTS") or helmlib.peer("rc-hosts")
+    if not rc:
+        return None
+    code, out, _ = _run(_py(rc) + ["--launcher", "claude"], timeout=30)
+    path = (out or "").strip().splitlines()[-1] if code == 0 and (out or "").strip() else ""
+    return path if path and Path(path).is_file() and os.access(path, os.X_OK) else None
+
+
+def logged_in(env, host_bin=None):
     """True or False from `claude auth status --json` on the login (probed 2026-10-22 on 2.1.309: an
     empty config dir prints {"loggedIn": false, …} and exits 1, in under a second), None when it
     cannot be told — then the start goes on and the 5-minute rule judges it. `account pick` probes
     limits, never the credential, so a login that answers "Not logged in" passes it."""
-    rc, out, err = _run([claude_cmd(), "auth", "status", "--json"], env=login_env(env), timeout=30)
+    # through claude-host where the runner found one: under launchd a bare claude is the binary TCC
+    # denied (skipper-ears S1)
+    cmd = [host_bin, "claude"] if host_bin else [claude_cmd()]
+    rc, out, err = _run(cmd + ["auth", "status", "--json"], env=login_env(env), timeout=30)
     try:
         v = json.loads(out or "").get("loggedIn")
     except (ValueError, AttributeError):
@@ -562,7 +584,8 @@ def run(scope, start_id):
 
 def run_body(scope, start_id, say):
     """Every step that can refuse at once, then the record, then claude itself (exec: the record's
-    pid is claude's). Returns an exit code only on a refusal."""
+    pid is claude's, or claude-host's with claude its child when launcher() names one). Returns an
+    exit code only on a refusal."""
     say("skipper-run %s, start %s, on %s" % (scope, start_id, helmlib.host()))
     if os.environ.get("CLAUDE_CODE_SESSION_ID"):
         say("won't start: CLAUDE_CODE_SESSION_ID is set — the runner is launchd's (skipper-run strips it)")
@@ -585,13 +608,16 @@ def run_body(scope, start_id, say):
             if verdict else "%ds old" % (clock() - float(launched.get("t") or 0))))
         return 1
     try:
+        # the launcher first, inside the runner's own deadline: the sign-in probe and the exec both use it
+        host_bin = launcher()
+        say("claude through %s" % (host_bin if host_bin else "no claude-host (bare)"))
         anchor, keys = scope_repos(scope)
         cwd = repo_path(anchor)
         if not cwd.is_dir():
             raise Refused("no checkout of %s's anchor %s here (%s)" % (scope, anchor, cwd))
         label, env = choose_login(scope, anchor, keys)
         say("login %s (every repo of %s allows it: %s)" % (label, scope, ", ".join(keys)))
-        auth = logged_in(env)
+        auth = logged_in(env, host_bin)
         if auth is False:
             raise Refused("%s is not logged in" % label)
         say("signed in" if auth else "sign-in not readable (claude auth status): the 5-minute rule judges this start")
@@ -623,14 +649,16 @@ def run_body(scope, start_id, say):
     say("record %s; claude %s, session %s" % (leaselib.record_path(scope), os.getpid(), sid))
     e = login_env(env)
     e.pop("CLAUDE_CODE_SESSION_ID", None)
-    # HELM_HOLD_PARENT: the sidecar lives by this pid, which exec makes claude's — never by a walk up
+    # HELM_HOLD_PARENT: the sidecar lives by this pid, which exec makes claude's (or claude-host's, which
+    # lives as long as its child claude) — never by a walk up
     # the process tree (S4's fallback, untested on a real session). CLAUDE_UNATTENDED=skipper: nobody
     # types here, so every guard that stands for a person's yes (helmlib.raise_refusal, ask answer's
     # mode-ask rule, tick and lookout arming, autofinish-run --merge, checkpoint.py's live rule) must
     # read it as unattended, as dispatch's runs are (CLAUDE_UNATTENDED=dispatch).
     e.update(SKIPPER_SCOPE=scope, SKIPPER_ACCOUNT=label, HELM_HOLD_PARENT=str(os.getpid()), CLAUDE_UNATTENDED="skipper")
-    # the prompt first: --disallowedTools takes every word after it
-    argv = [claude_cmd(), brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
+    # the prompt first: --disallowedTools takes every word after it; through claude-host where this
+    # Mac's grant allows it (launcher()), which takes the word `claude` and starts the current one
+    argv = ([host_bin, "claude"] if host_bin else [claude_cmd()]) + [brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
             "--permission-mode", "auto", "--model", MODEL, "--effort", EFFORT, "--disallowedTools", "AskUserQuestion"]
     os.chdir(str(cwd))
     sys.stdout.flush()
@@ -878,12 +906,15 @@ def stop(scope, why, by="hand", dry=False):
     for x in labels(scope):
         boot_out(x)
     # only a pid the registry still gives its session: a record outlives its claude (the failed and
-    # the lapsed starts are such), and a reused pid is someone else's process
+    # the lapsed starts are such), and a reused pid is someone else's process. The record's pid is
+    # claude's own, or claude-host's when launcher() named one (claude its child, which the registry
+    # names): the registry's claude is signalled when it is the record's pid or that pid's child
     reg = registry_of(rec.get("session")) if rec else None
-    if rec and rec.get("pid") and pid_alive(rec["pid"]) and reg and str(reg.get("pid")) == str(rec["pid"]) \
-            and same_process(rec["pid"], reg):
+    cpid = reg.get("pid") if reg else None
+    if rec and rec.get("pid") and cpid and pid_alive(cpid) and same_process(cpid, reg) \
+            and str(rec["pid"]) in (str(cpid), str(ppid_of(cpid))):
         try:
-            os.kill(int(rec["pid"]), signal.SIGTERM)
+            os.kill(int(cpid), signal.SIGTERM)
         except OSError:
             pass
     log_start(scope, "stopped", start_id, why=why, by=by)
@@ -894,6 +925,12 @@ def stop(scope, why, by="hand", dry=False):
 def pid_alive(pid):
     import asklib   # the one "is this pid alive" test, standing_manager's
     return asklib.pid_alive(pid)
+
+
+def ppid_of(pid):
+    """The parent pid of PID, or None: under claude-host the registry's claude is the record's child."""
+    rc, out, _ = _run(["/bin/ps", "-o", "ppid=", "-p", str(pid)], timeout=5)
+    return int(out.strip()) if rc == 0 and out.strip().isdigit() else None
 
 
 # ---------------------------------------------------------------------------- what a ship needs
@@ -1437,7 +1474,7 @@ def ensure_scope(scope, act, now, belt):
     # the last start's verdict
     log_ = starts(scope)
     alive = record_alive(rec)
-    # the record is written just before exec, so for a while its claude lives but has no registry
+    # the record is written just before exec (the launcher is asked before it), so for a while its claude lives but has no registry
     # record yet: within TAKE_WITHIN a live pid is a start still coming up, never a failure
     proc = bool(rec) and pid_alive(rec.get("pid"))
     taken = took(scope, rec.get("session")) if rec else False

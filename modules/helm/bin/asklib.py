@@ -200,7 +200,7 @@ def manager_dir():
 def standing_manager(host=None, scope=None):
     """This Mac's standing manager as the ctx fields relay() needs, or None (stray-manager M5, B1).
     With a scope, the scope's skipper instead (skipper-resilience S5): `<manager_dir>/<host>-<scope>.json`,
-    which bin/skipperlib.py's runner writes just before it becomes claude. Without, the record is
+    which bin/skipperlib.py's runner writes just before it execs claude (or claude-host). Without, the record is
     `<manager_dir>/<host>.json`, `{session, name, plan, space, account, host, started, pid}`, which
     bin/manager's runner was to write (stray-manager B2, superseded by the scope skippers: read, never
     written). Either is live when its pid is alive and the registry's record of its session has a live
