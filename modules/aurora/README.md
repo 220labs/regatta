@@ -39,7 +39,8 @@ them by default (two hosts each writing the week's dream in place conflict on pu
 `aurora/host`; a registry that does not read refuses it. Where an overlay is installed (the config
 dir's `regatta/overlay` marker) and the key is absent, the run refuses. `aurora/skip-hosts`, the old
 deny-list (the hosts never to run on, one per line), is deprecated: read only while `aurora/host` is
-absent, with a line saying so.
+absent, with a line saying so. The rule is the core's (`common.weekly_host`; `regatta weekly-host` in a
+shell), so weekly-run, sextant's runner and both installers read it alike.
 
 ## Peers
 
