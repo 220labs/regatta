@@ -24,6 +24,9 @@
   plan without Talk; the SessionStart nudge is silent on one read in the last hour. A running `spacesheep stream` is checked
   against the plan and the server's list (CLI 1.31.0 keeps a refused stream running), else the page
   redeploys. The README's "spacesheep plans" says what each plan gets.
+- The stall road's repo key is `helm/logbook-repo` (was `helm/inbox-repo`, no longer read): `inbox`
+  names strangers' contacts only, and operational issues land in a project's logbook (the owner,
+  2026-10-24).
 - `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
   2026-10-23; wharf-runs' CHANGELOG says why).
 - The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context
@@ -100,7 +103,7 @@ skipper-resilience S8, the stall road and the yard's tick.
   registry does not read (fail closed). A RELAYED run whose manager is on a host with no road from here
   (a yard's to the laptop) is unknown there, never "manager gone"; the laptop's board still judges it.
 - The `github-issue` notify backend (`bin/ask`'s `notice()`; `surfaces.KNOWN["notify.*"]` and the schema
-  know the word): an issue in the config's `helm/inbox-repo`, its body led by `helm/mention`, labelled
+  know the word): an issue in the config's `helm/logbook-repo` (named `helm/inbox-repo` until 2026-10-24), its body led by `helm/mention`, labelled
   `stall`, through the core's `api()` and `token()` (`ASK_GH_API` replaces it with a program called as
   `gh api` is). It carries stalls only; an ask's banner is unchanged. Absent values are road `none`.
 - `stalls_tick.escalate()` after the decisions, on a yard only: a raised stall first seen 10 minutes ago

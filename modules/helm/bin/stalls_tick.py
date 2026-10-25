@@ -882,7 +882,7 @@ CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SIT
 # ---------------------------------------------------------------------------- the stall road (skipper-resilience S8)
 #
 # On a yard nobody watches the board, so what the tick raises reaches the owner as one notify — the host's
-# `notify.<host>` row, `github-issue` on the yard: an issue in the config's helm/inbox-repo, its body led by
+# `notify.<host>` row, `github-issue` on the yard: an issue in the config's helm/logbook-repo, its body led by
 # helm/mention (bin/ask notice()) — and one row in escalations.jsonl, beside stalls.jsonl, O_APPEND:
 #     {t, yard, ekey, plan, block, key, key_kind, kind, src, class, rule, title, guarded, road, issue, state, why}
 #     (ekey: kind and key in one string; plus was, was_class, was_open, was_tries, retried, transient,
