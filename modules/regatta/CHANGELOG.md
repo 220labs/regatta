@@ -6,6 +6,9 @@
   the public repo, the evidence attached, a `--client-id` retry returning the first receipt, helloworld's
   file scan before the send, a prefilled link without `gh`; the repo's Bug and Idea issue forms beside it.
 
+- `extra_usage(xu)`: a usage answer's paid-overage object in one parse, for plumb's usage-report and
+  lighthouse's account (costs S8, 2026-10-24).
+
 - The list's cases moved to `tests/classes.sh`, on `autofinish_exclude` (autofinish-exclude landing review,
   2026-10-24): class 1's walk follows a shell's `$(tool x)` (weekly-run's tend), and a class-2 walk fails on
   any import of a leak gate's that is off `autofinish_leaks`.

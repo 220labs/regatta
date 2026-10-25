@@ -1675,6 +1675,21 @@ def cost_text(list_usd, provider="anthropic"):
     return f"{usd(list_usd)} ({usd(list_usd * ratio)} effective)"
 
 
+def extra_usage(xu):
+    """A usage answer's `extra_usage` object (paid overage past the plan's windows) → the fields a
+    reader keeps: {"enabled", "user_disabled", "spend_limit_reached", "used_credits", "monthly_limit",
+    "utilization"}, each None when absent; None when xu is no dict (a reading without the field). One
+    parse for both shapes that carry it, the /usage cache in .claude.json (`utilization.extra_usage`,
+    plumb's usage-report) and the get_usage control answer (`rate_limits.extra_usage`, lighthouse's
+    account; probed 2026-10-24, the same keys bar `user_disabled` and
+    `spend_limit_reached`, which the control answer lacks: None there) — costs S8, docs/host-power-costs-2026-10-24.md."""
+    if not isinstance(xu, dict):
+        return None
+    return {"enabled": xu.get("is_enabled"), "user_disabled": xu.get("user_disabled"),
+            "spend_limit_reached": xu.get("spend_limit_reached"), "used_credits": xu.get("used_credits"),
+            "monthly_limit": xu.get("monthly_limit"), "utilization": xu.get("utilization")}
+
+
 # A zero amount ($0, $0.00) needs no effective figure: zero times any ratio is zero (the owner, 2026-10-18).
 _DOLLAR_RE = re.compile(r"(?<![\w$])\$(?!0+(?:\.0+)?(?!\d)(?!\.\d))\d")
 _AMT = r"\$\d[\d,]*(?:\.\d+)?\s*[kKmM]?"
