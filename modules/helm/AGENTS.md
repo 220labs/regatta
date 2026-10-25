@@ -44,7 +44,9 @@ Read `README.md` first. For an agent:
 - For S5's runner (the S4 finish review, 2026-10-22): `--hold` exiting 4 means stand down, never
   re-arm — `take()` keeps no memory across processes, so a fresh sidecar would take a handed-back
   ship again. `--stand-down` signals only a live process named `claude` (a test's stand-in parent is
-  a link named `claude` to `sleep`), and hands each ship back through `leaselib.stand_down()`, which
+  a link named `claude` to `sleep`) — the lease's and the record's pid, and the session's registry pid,
+  since a skipper started through `claude-host` records the launcher's pid with `claude` its child —
+  and hands each ship back through `leaselib.stand_down()`, which
   re-checks the holder under the plan's lock. The holder's own session passes the fence before
   `SKIPPER_GEN` is read, as gens are per ship. A relay for a leased ship reaches the lease holder
   since S5 (the bullet below); `wharf apply --watch --launch` sets no `DISPATCH_SHIP`, so its
@@ -52,7 +54,7 @@ Read `README.md` first. For an agent:
 - The scope skipper (`bin/skipperlib.py`, `libexec/skipper-run`, skipper-resilience S5) loads a
   LaunchAgent and starts a real `claude`: its tests stub every tool (`HELM_LAUNCHCTL`,
   `HELM_LAUNCH_DIR`, `HELM_SCREEN`, `HELM_SCREENDIR`, `HELM_CLAUDE`, `HELM_ACCOUNT`, `HELM_DISPATCH_RC`, `HELM_TRUST`,
-  `MEMO_SHEEP_BIN`) and run with no `CLAUDE_CODE_SESSION_ID`, which `--start` and `--stop` refuse.
+  `MEMO_SHEEP_BIN`, `HELM_RC_HOSTS` — rc-hosts, whose `--launcher claude` names claude-host) and run with no `CLAUDE_CODE_SESSION_ID`, which `--start` and `--stop` refuse.
   The tick's pass (`stalls_tick.ensure_skippers`) acts only armed and outside a session, and a host
   with no lease file and no skipper record must print no line of it: a line there is a regression.
   No scope `login` key is read or written (S3: `account pick` pins one hard); the runner chooses a
