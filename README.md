@@ -40,6 +40,12 @@ config dir, then `sh modules/<module>/install.sh --check` says what a module sti
 In Claude Code: `claude plugin marketplace add 220labs/regatta`, then
 `claude plugin install regatta@regatta` and any module, e.g. `claude plugin install helloworld@regatta`.
 
+## Report a bug
+
+In Claude Code, `/regatta:flare <what went wrong>` files it as an issue here, with the versions and
+the failing output attached, after showing it to you. Or open a Bug or an Idea on the repo's
+[Issues](https://github.com/220labs/regatta/issues/new/choose) page.
+
 ## Check
 
 `claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || [ ! -f modules/wharf-runs/bin/dispatch ] || bash modules/helm/tests/check.sh; }`

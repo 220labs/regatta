@@ -11,6 +11,7 @@ dependency by bare name.
 | `bin/cost` | a model cost as list and effective, `$1.33 ($0.02 effective)`; `cost lint <doc>` |
 | `bin/secrets` | each repo's `.env` against its `.env.example`, in a shared folder |
 | `bin/regatta` | `root`, `has <module>`, `which <tool>`, `check`, `shim <path>`, and `regatta <name>` for a tool kept off PATH |
+| `libexec/flare`, `/regatta:flare` | a bug report, an idea or a question, filed as an issue on Regatta's public repo with the evidence attached (below) |
 
 ## Install
 
@@ -77,6 +78,23 @@ a Python file gets a **source shim** (the module's source run in the shim's own 
 script behave as the file itself), any other file an **exec shim**. With the core absent a
 shim fails in one line: `ImportError: regatta: core not found: …`.
 
+## Flare: report a bug
+
+In a session, `/regatta:flare <what went wrong>`: the agent writes the report, attaches the failing
+output, shows you the issue, and sends it on your yes. From a shell:
+
+```bash
+regatta flare --dry-run "keel line prints nothing for a doc without D-items" --client-id keel-line-001 --tag keel --attach out.log
+regatta flare "keel line prints nothing for a doc without D-items" --client-id keel-line-001 --tag keel --attach out.log --json
+```
+
+It files through `gh` as you; signed out, it prints a prefilled new-issue link instead. The same
+`--client-id` again returns the first issue, never a second. The issue is public, so the text meets
+helloworld's file scan first (machine and home paths, addresses, credential shapes, a private word
+list where there is one) and a finding stops it, exit 3; an unattended run only dry-runs. `regatta/flare-repo` in the config dir sends flares to
+another repo, a fork's own. Without Claude Code: the repo's Bug and Idea forms on GitHub.
+
 ## Check
 
-`bash modules/regatta/tests/check.sh` — scratch paths only.
+`bash modules/regatta/tests/check.sh` — scratch paths only; it runs `tests/flare.sh` too (a
+stand-in `gh`, nothing reaches GitHub).
