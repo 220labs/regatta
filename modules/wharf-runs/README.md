@@ -17,7 +17,7 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/clock` | the calendar: every agent-run job as an Orca automation, one launcher line on haiku in a neutral workspace (`schedule`, or `--launchd` for the OS form kept), launchd left the script jobs and `dispatch --at`; `list` both Macs, `check` (G5: an agent-run job on launchd, a confidential pass without its `--account`), `board` one page, `fire` a long job detached through launchd |
 | `bin/yard-node`, `node/` | the yard node: a hypervisor host (Ubuntu 24.04 autoinstall, an Incus preseed) and its agent guest's `#cloud-config`, rendered from the config dir and driven over `ssh <alias> incus …` (`render`, `apply`, `launch`, `snap`, `check`) |
 | `bin/check` | a checkout's `check:` line run one script at a time under a few slots per Mac login |
-| `hooks/cold_prompt.py` | a typed `/finish` in a cold or expensive session handed to a fresh run instead |
+| `hooks/cold_prompt.py` | every typed `/finish` in a `claude/*` worktree handed to a fresh run: cold or Fable at once, warm after the session commits its summary |
 | `hooks/close_reason.py` | a host session rc-hosts closed says why in its own last line (SessionEnd; wire it last, and give SessionEnd hooks 30 s) |
 
 The tools after `orca-serve-agent` find the core as wharf does (`lib/core_path.py`) and every peer

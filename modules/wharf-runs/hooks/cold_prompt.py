@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""cold_prompt: a typed `/finish` in a cold or Fable session runs as a fresh unattended run instead.
+"""cold_prompt: every typed `/finish` in a `claude/*` worktree runs as a fresh unattended run instead.
 
 UserPromptSubmit. The autofinish design's E7 (D14-A, docs/autofinish-design-2026-10-02.md):
 44 of 175 typed `/finish` runs in 14 days started on an expired prompt cache or ran on Fable,
 $124 above as many fresh runs. A cold `/finish` re-writes the whole context at the 1-hour
 write price (2x base) before its first useful token; a fresh session pays only for what it reads.
 
-So, before any model call: a prompt that is a bare `/finish`, or `/finish <this worktree's own
-branch>`, in a `claude/*` worktree, in a session whose transcript's last call is over COLD_S old
-or whose last model was Fable, starts bin/autofinish-run on the worktree (`--by typed`, with this
-session's id as `--session`) and blocks the prompt with the reason. The runner pre-writes the
-worktree lock in its own session's name, so this panel is locked out from then on and
-checkpoint.py says why at its next prompt. A warm Opus session's `/finish` passes untouched; so
-does `/finish` with any other argument (`--here`, `--local`, another branch, a PR): the runner
-always runs `/finish <branch> --unattended`, and must not drop what the owner asked for.
+Since costs S7 (docs/host-power-costs-2026-10-24.md, 2026-10-24) a warm session goes fresh too: its
+`/finish` re-reads the whole build context on each of the skill's dozens of turns, where a fresh
+run reads the branch and the runner's bundle (the old session's prompts and replies). Two roads:
+
+- cold (the transcript's last call over COLD_S old) or Fable: before any model call the hook starts
+  bin/autofinish-run on the worktree (`--by typed`, with this session's id as `--session`) and
+  blocks the prompt with the reason. A summary written here would pay the re-write, or Fable's
+  rates, that the hand-off exists to save.
+- warm, on any other model: the prompt passes with a context line that asks this session for the one
+  thing only it knows — the branch's commit summary, written and committed — and then for the same
+  runner command, run by the session itself; a runner that refuses leaves the `/finish` to run here.
+  The summary goes first because the runner takes the lock, after which this panel writes nothing.
+
+The runner pre-writes the worktree lock in its own session's name, so this panel is locked out from
+then on and checkpoint.py says why at its next prompt. `/finish` with any other argument (`--here`,
+`--local`, another branch, a PR) passes untouched: the runner always runs `/finish <branch>
+--unattended`, and must not drop what the owner asked for.
 
 Passes untouched, too, when: autofinish is disarmed on this Mac (`bin/autofinish arm`; nothing
 starts by itself until the owner's 3-hour dry run was read, 2026-10-05); the session is itself
@@ -30,13 +39,15 @@ stops at its first gate with nothing written: a wasted run, never two writers (r
 2026-10-05; the --session refusal reads the same file and adds no window of its own).
 
 Never exits non-zero (exit 2 on UserPromptSubmit erases the prompt), stdlib, Python 3.9.
-Tests: hooks/test_hooks.sh, "cold_prompt". Seams: COLD_PROMPT_NOW, CLAUDE_AUTOFINISH_RUN,
+Tests: modules/wharf-runs/tests/cold_prompt.sh (moved from the overlay's hooks/test_hooks.sh with
+S7). Seams: COLD_PROMPT_NOW, CLAUDE_AUTOFINISH_RUN,
 COLD_PROMPT_TIMEOUT (seconds, in place of RUN_TIMEOUT_S).
 """
 import datetime
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -103,10 +114,12 @@ def last_call(transcript):
             continue
         msg = r.get("message") or {}
         u = msg.get("usage") or {}
-        if not u:
-            continue
+        if not u or msg.get("model") == "<synthetic>":
+            continue  # Claude Code's own entry (an API error, "No response requested."): no call
         ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
             + (u.get("cache_creation_input_tokens") or 0)
+        if not ctx:
+            continue  # all-zero usage reads as no call too (AGENTS.md's <synthetic> trap)
         try:
             ts = datetime.datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00")).timestamp()
         except (KeyError, ValueError):
@@ -120,12 +133,52 @@ def family(model):
     return next((k for k in WRITE_PER_M if k in m), "opus")
 
 
+def model_name(model):
+    """The family for a model the price table knows, else the model as written: never a guess."""
+    m = model.lower()
+    return next((k.capitalize() for k in WRITE_PER_M if k in m), model or "an unknown model")
+
+
 def age(s):
     return f"{int(s // 3600)} h" if s >= 3600 else f"{int(s // 60)} min"
 
 
+def handover_context(ctx, model, top, sid):
+    """The context line for a warm session's /finish: summary first, then the runner, run here."""
+    session = f" --session {shlex.quote(sid)}" if sid else ""
+    top, runner = shlex.quote(top), shlex.quote(RUNNER)
+    return (f"cold_prompt (costs S7): this typed /finish goes to a fresh run, not this session — here every "
+            f"turn of the finish skill would re-read this {ctx // 1000}k context on {model_name(model)}. "
+            f"Do not follow the finish skill's phases in this turn. Do two things only:\n"
+            f"1. Write the branch's commit summary to commit-summary.md in your scratchpad — `Area: what changed` "
+            f"lines for the whole branch, what is still open and why, and `Deployed: <what> | no` — then commit "
+            f"it: `git -C {top} add -A && git -C {top} commit -q --allow-empty -F <that file>`. The fresh run "
+            f"reads the branch's log; this summary is the one thing only this session knows.\n"
+            f"2. Hand the branch over: `{runner} {top} --rule C --by typed{session}`, and tell the owner the "
+            f"window its output names; its PR carries the report.\n"
+            f"If step 2 is denied or exits non-zero (that tip already tried, a run going, a lock another session's), run "
+            f"/finish here as the skill says. The owner's `/finish --here` always runs it in this tab.")
+
+
+def head(cwd):
+    r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def last_run_tip(cwd):
+    """The tip the branch's last autofinish run started on (its autofinish.json), or None."""
+    r = subprocess.run(["git", "-C", cwd, "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=10)
+    if r.returncode:
+        return None
+    try:
+        with open(os.path.join(cwd, r.stdout.strip(), "claude", "autofinish.json")) as f:
+            return json.load(f).get("tip") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def decide(data):
-    """The block reason, or None to let the prompt through."""
+    """("block", reason), ("context", text) for a warm session, or None to let the prompt through."""
     if os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("CLAUDE_HOOK_NO_AUTOFINISH"):
         return None
     args = finish_args(data.get("prompt"))
@@ -147,10 +200,14 @@ def decide(data):
     ts, model, ctx = call
     idle = now() - ts
     fable = family(model) == "fable"
-    if idle <= COLD_S and not fable:
-        return None
     top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
                          capture_output=True, text=True, timeout=10).stdout.strip() or cwd
+    if idle <= COLD_S and not fable:
+        if last_run_tip(cwd) == head(cwd):
+            # a fresh run already stopped on this tip: step 1's commit would move it, and the runner's
+            # "no retry on the same tip" would never refuse the same stop again (the finish review)
+            return None
+        return "context", handover_context(ctx, model, top, data.get("session_id"))
     # priced before the runner starts: nothing may raise once it has detached
     price = common.cost_text(ctx * WRITE_PER_M[family(model)] / 1e6)
     cmd = [RUNNER, top, "--rule", "C", "--by", "typed"]
@@ -161,7 +218,7 @@ def decide(data):
                              timeout=float(os.environ.get("COLD_PROMPT_TIMEOUT") or RUN_TIMEOUT_S))
     except subprocess.TimeoutExpired:
         # it may have written its lock and detached already: never a second /finish beside it
-        return ("the launcher did not answer in time — it may be starting /finish in its own window "
+        return "block", ("the launcher did not answer in time — it may be starting /finish in its own window "
                 "(`bin/dispatch --status`, the autofinish log); give it a minute, or /finish --here "
                 "runs it in this tab")
     if run.returncode:
@@ -173,7 +230,7 @@ def decide(data):
     a = re.search(r", account ([^;]+);", run.stdout)
     on = f" on {a.group(1)}" if a and a.group(1) != "None" else ""
     why = f"cold {ctx // 1000}k ({age(idle)})" if idle > COLD_S else f"on Fable, {ctx // 1000}k"
-    return (f"{why} — /finish runs by itself in the window \"{window}\"{on} (the phone shows it on its own login); "
+    return "block", (f"{why} — /finish runs by itself in the window \"{window}\"{on} (the phone shows it on its own login); "
             f"its PR carries the report; /finish --here runs it in this tab at the full "
             f"re-write (~{price})")
 
@@ -184,11 +241,16 @@ def main():
     except ValueError:
         return
     try:
-        reason = decide(data)
+        out = decide(data)
     except Exception:  # noqa: BLE001 — a hook never costs the owner the prompt
         return
-    if reason:
-        print(json.dumps({"decision": "block", "reason": reason}))
+    if not out:
+        return
+    kind, text = out
+    if kind == "block":
+        print(json.dumps({"decision": "block", "reason": text}))
+    else:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}))
 
 
 if __name__ == "__main__":

@@ -113,9 +113,12 @@ for the owner's tap` — the launcher records it `held`, with the class, and the
 `default` and `ask` a taken answer never lands: the sweep's rule D skips a `taken` doc, and a mode
 launch whose ship was lowered is held (docs/yolo-veto-2026-10-07.md D1, kept there).
 
-**`--here`** (autofinish E7): runs `/finish` in this session even when it is cold or on Fable.
-Without it, `hooks/cold_prompt.py` hands such a typed `/finish` to the launcher (`--by typed`) and
-blocks the prompt with where it runs; with it, nothing differs from a plain `/finish`.
+**`--here`** (autofinish E7): runs `/finish` in this session. Without it, `hooks/cold_prompt.py`
+hands every typed `/finish` in a `claude/*` worktree to the launcher (`--by typed`; costs S7,
+2026-10-24): a cold or Fable session's at once, blocking the prompt with where it runs; a warm one's
+through a context line that asks this session to commit its commit summary and then run the
+launcher itself — follow that line, not these phases, unless the launcher refuses. With `--here`,
+nothing differs from a plain `/finish`.
 
 **Project override first.** If the project has its own `/finish` —
 `.claude/commands/finish.md` or `.claude/skills/finish/SKILL.md` in the project — that file is

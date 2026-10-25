@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `cold_prompt` hands every typed `/finish` to a fresh run (costs S7, 2026-10-24), not only a cold or
+  Fable one. Cold or Fable, as before: the hook starts the runner and blocks the prompt. Warm, on any
+  other model: the prompt passes with a context line asking the session to write and commit the
+  branch's commit summary, then run the same runner command itself; a refusal leaves the `/finish`
+  to run there, and `/finish --here` always does. Why: a warm `/finish` re-reads the whole build
+  context on every turn of the skill (docs/host-power-costs-2026-10-24.md). Its cases moved here
+  from the overlay's `hooks/test_hooks.sh`, as `tests/cold_prompt.sh`. From the landing review: a
+  `<synthetic>` or all-zero entry is no call; a tip the last fresh run started on stays in the session
+  (the summary commit would dodge the runner's same-tip refusal); a model the price table lacks is
+  named as written. `dispatch --account LABEL --force` past paid overage is refused under
+  CLAUDE_UNATTENDED: that `--force` is a person's yes to money.
+
 - `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
   that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),
   since the fork from origin/main; every other command runs each time, and the whole line runs on a
