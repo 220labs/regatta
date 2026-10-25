@@ -40,7 +40,9 @@
   refused (exit 2) under CLAUDE_UNATTENDED. A reading without the field refuses nothing; extra usage the
   user switched off (`user_disabled`) cannot bill and refuses nothing either. `limits --json` carries an
   `overage` flag, which dispatch's `--force` reads (the landing review).
-
+- `account pick --repo` and `limits --repo` take a registry key as well as a path, and refuse an argument that is
+  neither (exit 3; `pick --json` prints JSON alone): a bare key was read as a path in the cwd, matched no deny
+  list and picked as if none applied (found 2026-10-24).
 - hookwatch after its landing review (autofinish-exclude, 2026-10-24): a fault counts only for a hook the
   move changed (its file, its imports, its traceback's files); the overlay's own hooks are no longer read
   (the `legacy` prefix is gone; a shim shows through its traceback); a `judge` fault needs an error or a

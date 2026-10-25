@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--bound] [--repo PATH] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
-    account limits [LABEL | --all [--parked] [--orca]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
+    account limits [LABEL | --all [--parked] [--orca]] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
     account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
     account refresh [--force]                                   the Drive-backed files' local copies, re-read (the usage tick's, through claude-host; exit 3 outside it)
     account which                                               the label of the dir this process runs under
@@ -934,6 +934,48 @@ def denied(a, path, routes=True):
         if p == root or root in p.parents:
             return d
     return None
+
+
+def known_key(key, reg):
+    """True when `key` names a repo this machine's registries know: a folder under the projects folder,
+    a key of the core's repos.json (or a scope's member), or an entry a deny list or a tenant's route
+    names (a clone this Mac lacks is still its key: the deny list must bind on it)."""
+    if (projects_dir() / key).is_dir():
+        return True
+    try:
+        c = core()
+        repos, scopes = c.scope_registry()
+        if key in repos or any(key in c.scope_members(s, repos) for s in scopes.values()):
+            return True
+    except Exception:
+        pass
+    named = set()  # a tenant's entry is on every other row's `routed`
+    for a in reg["accounts"]:
+        named |= set(((a.get("repos") or {}).get("deny")) or []) | set(a.get("routed") or {})
+    return key in named or any(is_glob(e) and fnmatch.fnmatchcase(key, e) for e in named)
+
+
+def resolve_repo_arg(arg, reg):
+    """→ (path, None) or (None, why): `--repo`'s argument as the path denied() and scope_login_of() read.
+    A path (absolute, ~, ./, ../, or an existing relative one) stays itself — one in no repo is allowed,
+    as the header says. A registry key (`privy`, `studio/pipeline`) is that folder under the
+    projects folder, though its clone is absent here. Anything else is refused: a bare name read as a
+    path in the cwd matched no deny list and picked as if none applied (found 2026-10-24)."""
+    if not arg or not arg.strip():
+        return None, "--repo is empty: name a repo's key or its path"
+    if arg.startswith(("/", "~", "./", "../")) or arg in (".", ".."):
+        try:
+            return str(Path(arg).expanduser().absolute()), None
+        except RuntimeError:  # ~nosuchuser
+            return None, f"--repo {arg}: no such home folder"
+    key = arg.strip("/")
+    if key and ".." not in key.split("/") and known_key(key, reg):
+        if Path(arg).exists() and Path(arg).resolve() != (projects_dir() / key).resolve():
+            return None, f"--repo {arg} is both a repo key and a path here: give ./{arg} or the absolute path"
+        return str(projects_dir() / key), None
+    if Path(arg).exists():
+        return str(Path(arg).absolute()), None
+    return None, f"--repo {arg}: no repo key or path of that name (a key is a folder under {projects_dir()}, as repos.json lists it)"
 
 
 def route_of(a, key):
@@ -2995,6 +3037,14 @@ def main(argv):
         global READ_LINKS
         READ_LINKS = True
     reg = load_registry()
+    if args.cmd in ("pick", "limits") and args.repo is not None and REGISTRY.is_file():  # a key is a repo, a path its repo; neither → refused, never "no rule"
+        args.repo, why = resolve_repo_arg(args.repo, reg)
+        if why:
+            if args.cmd == "pick" and args.json:  # weekly-run reads stdout and stderr as one stream: JSON alone
+                print(json.dumps({"account": None, "skipped": [["repo", why]]}, ensure_ascii=False))
+            else:
+                print(f"account: {why}", file=sys.stderr)
+            return 3  # not 2: dispatch, autofinish-run and pickup read any exit but 0, 3, 4 as "could not tell" and start anyway
     if args.cmd in ("env", "run") and via_orca(row(reg, args.label)) and not row(reg, args.label).get("synced"):
         print(f"account: {args.label}'s login is not in Orca here — {orca_login_line(row(reg, args.label))}", file=sys.stderr)
         return 1
