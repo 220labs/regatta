@@ -57,23 +57,24 @@ case "${1:-}" in
     fi
     vault=$(where vault)
     [ -n "$vault" ] && [ "$vault" != MISSING ] || { echo "aurora: no vault configured (atlas's atlas/vault key) — nothing to schedule" >&2; exit 1; }
-    # Only the host aurora/host names gets the job (weekly-run's host rule, which says why): elsewhere
-    # weekly-run would only log its skip each night, or its refusal (the key empty or unreadable).
-    # The rule's own line says which, so the dry run's first skip or refusal is quoted as it is. A dry
-    # run that says neither and plans no night (it crashed, or printed nothing) could not tell: that
-    # refuses too, with its exit code and last stderr line — a probe that could not tell never passes.
+    # The dry run this probe replaced also refused a vault that is not a folder; the job would
+    # only die at weekly-run's `cd` each night, with no log line (the landing review, 2026-10-25).
+    [ -d "$vault" ] || { echo "aurora: the vault $vault is not a folder — nothing to schedule" >&2; exit 1; }
+    # Only the host aurora/host names gets the job (the core's host rule, common.weekly_host, which
+    # says why): elsewhere weekly-run would only log its skip each night, or its refusal (the key
+    # empty or unreadable). The rule's own line is quoted as it is. Any exit but the rule's own (the
+    # core not loading, a crash) could not tell: that refuses too, with its exit code and last stderr
+    # line — a probe that could not tell never passes.
+    reg=$(where regatta)
+    [ -f "$reg" ] || { echo "aurora: not loading the job — the regatta core is missing (weekly-run where says regatta ${reg:-nothing})" >&2; exit 1; }
     err=$(mktemp); rc=0
-    out=$("$here/bin/weekly-run" aurora "$vault" --dry-run 2>"$err") || rc=$?
+    out=$(python3 "$reg" weekly-host aurora 2>"$err") || rc=$?
     why=$(tail -n 1 "$err"); rm -f "$err"
-    ln=$(printf '%s\n' "$out" | grep -E -m1 '^[0-9:]* (skipped|refused):' || true)
-    if [ -n "$ln" ]; then
-      echo "aurora: not loading the job on this host — ${ln#* } (--remove unloads one loaded before)" >&2
-      exit 1
-    fi
-    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q "the night's order"; then
-      echo "aurora: not loading the job — its dry run could not tell whether this host runs it (exit $rc${why:+: $why})" >&2
-      exit 1
-    fi
+    case $rc in
+      0) ;;
+      3|4|5) echo "aurora: not loading the job on this host — $(printf '%s\n' "$out" | tail -n 1) (--remove unloads one loaded before)" >&2; exit 1 ;;
+      *) echo "aurora: not loading the job — the core's host rule could not tell whether this host runs it (exit $rc${why:+: $why})" >&2; exit 1 ;;
+    esac
     logs=$(where logs)
     mkdir -p "$la" "$logs"
     python3 - "$job" "$label" "$plist" "$vault" "$logs" <<'PY'

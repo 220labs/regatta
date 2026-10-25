@@ -135,9 +135,49 @@ fi
 # every `tool` lookup and the host name come back empty — a night with no peers, on a host it may be
 # told to skip (the B10 review reproduced both). Refuse instead, in the log only: the bulletin is
 # reached through the core too.
+# The same python asks the core's host rule (common.weekly_host, whose comment says why the rule is
+# what it is): one start for both, so the rule reads the keys as the core reads them (a BOM, CR, edge
+# spaces, blank lines dropped). It prints `load` and the import's last line when the core does not
+# load; else any `note` lines, then the verdict — run, skip, refuse (posted), closed (the log only) —
+# after a tab its line. WEEKLY_ANY_HOST skips the rule, never the import. No verdict (the python
+# crashed) is a refusal, with the last line it wrote on stderr: a rule that could not tell never runs
+# the night. The installers ask the same function (`regatta weekly-host`), and --schedule refuses
+# where this skips; this covers a job loaded before. Single-quoted below, so the python holds no
+# apostrophe.
 HOOKS="$(dirname "$REG")/../hooks"
-if ! why=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common" "$HOOKS" 2>&1); then
-  say "$(date '+%H:%M') refused: the regatta core does not load — ${why##*$'\n'} (regatta check)"; refuse
+HOST_RULE='
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import common
+except BaseException as e:
+    said = [l for l in ("%s: %s" % (type(e).__name__, e)).splitlines() if l.strip()]
+    print("load\t" + (said[-1] if said else type(e).__name__))
+    sys.exit(0)
+if sys.argv[4]:
+    print("run\t")
+    sys.exit(0)
+verdict, line, notes = common.weekly_host(sys.argv[2], sys.argv[3] or None)
+for n in notes:
+    print("note\t" + n)
+print(verdict + "\t" + line)
+'
+# embark runs on any Mac: its branch is claude/<host>/<day>-embark, one per host, so two Macs never
+# write the same file, and /embark writes the memo where the owner sits when the night left none.
+# So it skips the rule as WEEKLY_ANY_HOST does, never the import
+any_host=${WEEKLY_ANY_HOST:-}; [ "$job" = embark ] && any_host=1
+rule=$(python3 -c "$HOST_RULE" "$HOOKS" "$job" "$scope" "$any_host" 2>&1)
+verdict=""; rule_err=""; load_err=""; load_seen=""
+while IFS=$'\t' read -r v line; do
+  case "$v" in
+    load) load_seen=1; load_err=$line ;;
+    note) say "$(date '+%H:%M') $line" ;;
+    run|skip|refuse|closed) verdict=$v; vline=$line ;;
+    *) [ -n "$v$line" ] && rule_err="$v${line:+ $line}" ;;   # stderr: the last line kept
+  esac
+done <<<"$rule"
+if [ -n "$load_seen" ]; then
+  say "$(date '+%H:%M') refused: the regatta core does not load — $load_err (regatta check)"; refuse
 fi
 # The peers, each optional to the night as a whole: a missing one fails its own step, said in the
 # log (a `<name>-missing` command where no step checks first), and the next step still runs.
@@ -149,105 +189,22 @@ post() {  # post <why> <text>: one bulletin line through atlas; without atlas, t
   # No vault to cd to: no line — never one from the anchor (S5 landing review).
   [ -n "$BULLETIN" ] && ( { [ -z "$scope" ] || { [ -n "$P" ] && cd "$P"; }; } && python3 "$BULLETIN" --post "$1" "$2" ) >/dev/null 2>&1; true
 }
-# The one host the weekly jobs run on (`aurora/host` in the config dir: one name, as the core's
-# host_name() prints it, case-blind). An allow-list, never a deny-list: a host that gets the overlay
-# later (another Mac, a yard node) runs no night by default. Under the old deny-list
-# (`aurora/skip-hosts`, the hosts never to run on) an unlisted host ran it, and two hosts each
-# writing dreams/<date>.md in place conflict on push (gap review item 6, 2026-10-02). A scope's pass
-# runs on that scope's yard (the registry's `yard`, the core's scope_yard), else where aurora/host
-# says; a registry that does not read refuses the pass in the log alone, as scope-pass where's own
-# exit 2 does: its yard is unknown, and reading that as "no yard" would run it on the wrong host.
-# The registry is read once (read_registry: the tear and the yard from one parse), never
-# registry_unreadable() then scope_yard(): a write between the two reads as no yard, and the pass
-# would run where aurora/host says on the same night its yard runs it. aurora/host names one host:
-# a second line is refused, never read as a list (that is what skip-hosts was).
-# The transition (until every overlay writes aurora/host): no aurora/host but an aurora/skip-hosts
-# keeps the old rule, with a line saying the key is deprecated; neither, where the overlay is
-# installed, refuses — a guess either way is a lost or a doubled dream. Without the overlay and with
-# neither key, every host runs it (an install on one machine). The installer's --schedule refuses
-# where this skips; this covers a job loaded before. sextant-run's host_rule() is the same rule for
-# sextant's own runner (aurora absent there) without the scope half; the two suites pin the branches
-# both copies have, and aurora's alone the scope's and the empty verdict's.
-# One python call, so the rule reads the keys as the core reads them (a BOM, CR, edge spaces, blank
-# lines dropped); its last line is the verdict — run, skip, refuse (posted), closed (the log only) —
-# after a tab its line, and any `note` lines before it are said as they come. No verdict (the python
-# crashed) is a refusal, with the last line it wrote on stderr: a rule that could not tell never
-# runs the night. Single-quoted below, so the python holds no apostrophe.
-HOST_RULE='
-import sys
-sys.path.insert(0, sys.argv[1])
-import common
-job, scope = sys.argv[2], sys.argv[3]
-# The hint names the verb of the installer of the job: sextant --remove takes the ideas intake and
-# its signed launcher with it, so the sextant job is unloaded with --unschedule
-SCHED = {"aurora": "aurora install.sh --schedule refuses here, --remove unloads a job loaded before",
-         "sextant": "sextant install.sh --schedule refuses here, --unschedule removes a job loaded before"}.get(job, "")
-def out(verdict, line=""):
-    print(verdict + "\t" + line)
-    sys.exit(0)
-host = common.host_name()
-if scope:
-    reg, torn = common.read_registry()
-    if torn:
-        out("closed", "refused: the registry %s cannot be read, so scope %s has no known yard (fails closed)" % (common.repos_json(), scope))
-    s = ((reg or {}).get("scopes") or {}).get(scope)
-    yard = s.get("yard") if isinstance(s, dict) else None
-    if isinstance(yard, str) and yard:
-        if yard.lower() == host:
-            out("run")
-        out("skip", "skipped: scope %s runs on its yard %s, not on %s (the registry names it)" % (scope, yard, host))
-lines, why = common.config_read("aurora/host")
-if why:
-    out("refuse", "refused: aurora/host cannot be read (%s)" % why)
-if lines is not None:
-    if not lines:
-        out("refuse", "refused: aurora/host is empty: it names no host to run on")
-    if len(lines) > 1:
-        out("refuse", "refused: aurora/host names one host, and it has %d lines" % len(lines))
-    if lines[0].lower() == host:
-        out("run")
-    out("skip", "skipped: %s does not run on %s (aurora/host names %s; %s)" % (job, host, lines[0], SCHED))
-skips, why = common.config_read("aurora/skip-hosts")
-if skips is None and why is None:
-    if common.overlay_installed():
-        out("refuse", "refused: no %s (bootstrap.sh --config in your overlay writes it)" % (common.CONFIG / "aurora" / "host"))
-    out("run")
-print("note\tnote: aurora/skip-hosts is deprecated: write aurora/host, the one host the weekly jobs run on (bootstrap.sh --config in your overlay)")
-if why:
-    out("refuse", "refused: aurora/skip-hosts cannot be read (%s)" % why)
-if host in [l.lower() for l in skips]:
-    out("skip", "skipped: %s does not run on %s (aurora/skip-hosts; %s)" % (job, host, SCHED))
-out("run")
-'
-# embark runs on any Mac: its branch is claude/<host>/<day>-embark, one per host, so two Macs never
-# write the same file, and /embark writes the memo where the owner sits when the night left none
-if [ -z "${WEEKLY_ANY_HOST:-}" ] && [ "$job" != embark ]; then
-  rule=$(python3 -c "$HOST_RULE" "$HOOKS" "$job" "$scope" 2>&1)
-  verdict=""; rule_err=""
-  while IFS=$'\t' read -r v line; do
-    case "$v" in
-      note) say "$(date '+%H:%M') $line" ;;
-      run|skip|refuse|closed) verdict=$v; vline=$line ;;
-      *) [ -n "$v$line" ] && rule_err="$v${line:+ $line}" ;;   # stderr: the last line kept
-    esac
-  done <<<"$rule"
-  case "$verdict" in
-    run) ;;
-    skip)
-      say "$(date '+%H:%M') $vline"
-      [ -n "${due_gate:-}" ] && exit 3
-      exit 0 ;;
-    closed) say "$(date '+%H:%M') $vline"; refuse ;;
-    *)
-      [ -z "$verdict" ] && vline="refused: the host rule could not be read (the core gave no verdict${rule_err:+: $rule_err})"
-      say "$(date '+%H:%M') $vline"
-      if [ -z "$dry" ]; then
-        if [ -n "$scope" ]; then post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: ${vline#refused: }. Log: $log"
-        else post "the unattended $job refused to run" "weekly-run $job $day: ${vline#refused: }. Log: $log"; fi
-      fi
-      refuse ;;
-  esac
-fi
+case "$verdict" in
+  run) ;;
+  skip)
+    say "$(date '+%H:%M') $vline"
+    [ -n "${due_gate:-}" ] && exit 3
+    exit 0 ;;
+  closed) say "$(date '+%H:%M') $vline"; refuse ;;
+  *)
+    [ -z "$verdict" ] && vline="refused: the host rule could not be read (the core gave no verdict${rule_err:+: $rule_err})"
+    say "$(date '+%H:%M') $vline"
+    if [ -z "$dry" ]; then
+      if [ -n "$scope" ]; then post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: ${vline#refused: }. Log: $log"
+      else post "the unattended $job refused to run" "weekly-run $job $day: ${vline#refused: }. Log: $log"; fi
+    fi
+    refuse ;;
+esac
 # Then the repos (after the skip: a Mac that never runs the loop need not be configured for it).
 # Without the vault the bulletin line may not be written either (atlas's bulletin.py finds the bulletin
 # through the same key): the log line is the one sure record.
