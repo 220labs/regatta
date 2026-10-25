@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The core's check: where the core, a peer and the private config are found (C2, C3), the private
 # values with and without their keys (neutral stand-ins only), the regatta
-# CLI, the gate's table order and its write through a config symlink, jev's key files, and the
-# shim `regatta shim` makes, under every way a caller loads a file (the design's P5), and the
-# transcript reader's last main-chain call.
+# CLI, the weekly jobs' host rule (common.weekly_host) and its check row, the gate's table order and
+# its write through a config symlink, jev's key files, and the shim `regatta shim` makes, under every
+# way a caller loads a file (the design's P5), and the transcript reader's last main-chain call.
 # Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is written,
 # and the one read is the autofinish_exclude case's: the caller's config dir's `regatta/overlay` marker.
 #   bash modules/regatta/tests/check.sh
@@ -280,6 +280,7 @@ for k in $(cat "$ROOT"/modules/*/config-keys 2>/dev/null | grep -v '^#'); do
 done
 out=$("$RG" check); check "$?" 0 "  with them written: exit 0"
 rm -r "$T/config/wharf-runs" "$T/config/regatta/overlay"; for k in owner guarded orca-deny log-dir projects; do rm "$T/config/regatta/$k"; done
+rm -rf "$T/config/aurora"   # the x the loop wrote: aurora/host has its own rows below
 # the yard rows (skipper-resilience S2): one per scope, its yard or none, a host lighthouse/hosts does not list a finding
 mkdir -p "$T/config/lighthouse"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"
 printf '{"repos": {"a": {}, "b": {}, "c": {}},\n "scopes": {"one": {"file": "o", "repos": ["a"], "yard": "studio"}, "two": {"file": "t", "repos": ["b"], "yard": null}, "three": {"file": "h", "repos": ["c"]}}}\n' > "$T/yd.json"
@@ -295,6 +296,77 @@ echo "$out" | grep -qx -- "  --  scope one yard: nowhere is not a host lighthous
 head -c 30 "$T/yd.json" > "$T/yd3.json"
 out=$(CLAUDE_REPOS_JSON="$T/yd3.json" "$RG" check); check "$?:$(echo "$out" | grep -c ' yard: ')" "1:0" "  a torn registry: exit 1, no row read from it"
 rm -r "$T/config/lighthouse"
+# aurora/host against lighthouse/hosts (the weekly host rule's row): case-blind, as the rule compares
+mkdir -p "$T/config/lighthouse" "$T/config/aurora"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"; echo Studio > "$T/config/aurora/host"
+out=$("$RG" check); check "$?:$(echo "$out" | grep -c -- '--  aurora/host')" "0:0" "  aurora/host a host lighthouse/hosts lists (in capitals): exit 0, no finding"
+echo nowhere > "$T/config/aurora/host"
+out=$("$RG" check); check "$?" 1 "  aurora/host naming a host lighthouse/hosts does not list: exit 1"
+echo "$out" | grep -qx -- "  --  aurora/host names nowhere, which lighthouse/hosts does not list (laptop, studio): no host here runs the weekly jobs (your overlay's bootstrap.sh --config)"; check $? 0 "    it names the host and the list"
+check "$(echo "$out" | grep -c '^  ok  aurora/host')" 0 "    and the key is not also ok"
+rm "$T/config/lighthouse/hosts"
+out=$("$RG" check); check "$?" 0 "  no lighthouse/hosts: nothing to check the host against, exit 0"
+echo my_mac > "$T/config/aurora/host"
+out=$("$RG" check); check "$?" 1 "  aurora/host naming what no host name can be (an underscore): exit 1"
+echo "$out" | grep -q -- "--  aurora/host names my_mac, which no host's name can be"; check $? 0 "    saying so"
+printf 'laptop\nstudio\n' > "$T/config/aurora/host"
+out=$("$RG" check); check "$?" 1 "  aurora/host with two lines: exit 1"
+echo "$out" | grep -q -- "--  aurora/host has 2 lines, and names one host: the weekly jobs refuse"; check $? 0 "    saying so"
+rm -r "$T/config/lighthouse" "$T/config/aurora"
+
+echo "the weekly jobs' host rule (common.weekly_host: weekly-run's night, sextant-run, both installers)"
+# A config dir of its own; each case writes the keys it reads. Moved from aurora's and sextant's suites
+# (2026-10-24): each runner's suite keeps the cases for how it treats a verdict.
+WH="$T/wh"; mkdir -p "$WH/aurora"; AH="$WH/aurora/host"; SKH="$WH/aurora/skip-hosts"
+H=$(py 'print(common.host_name())'); HU=$(printf %s "$H" | tr a-z A-Z)
+wh() { REGATTA_CONFIG="$WH" py "v, l, n = common.weekly_host($1); print(v + '|' + l + '|' + ' / '.join(n))"; }
+AHINT="aurora install.sh --schedule refuses here, --remove unloads a job loaded before"
+SHINT="sextant install.sh --schedule refuses here, --unschedule removes a job loaded before"
+NOTE="note: aurora/skip-hosts is deprecated: write aurora/host, the one host the weekly jobs run on (your overlay's bootstrap.sh --config)"
+check "$(wh '"aurora"')" "run||" "neither key and no overlay: run (an install on one machine)"
+echo "$H" > "$AH"; check "$(wh '"aurora"')" "run||" "aurora/host names this host: run, no note"
+printf '\xEF\xBB\xBF%s \r\n' "$HU" > "$AH"; check "$(wh '"aurora"')" "run||" "  in capitals, with a BOM, a trailing space and CRLF: still this host"
+echo host-a > "$AH"
+check "$(wh '"aurora"')" "skip|skipped: aurora does not run on $H (aurora/host names host-a; $AHINT)|" "aurora/host names another host: skip, naming it and aurora's --remove"
+check "$(wh '"sextant"')" "skip|skipped: sextant does not run on $H (aurora/host names host-a; $SHINT)|" "  sextant's hint names --unschedule, never --remove (which takes the ideas intake with it)"
+check "$(wh '"night"')" "skip|skipped: night does not run on $H (aurora/host names host-a)|" "  a job with no installer: no hint"
+: > "$AH"; check "$(wh '"aurora"')" "refuse|refused: aurora/host is empty: it names no host to run on|" "aurora/host empty: refuse"
+printf '%s\nhost-a\n' "$H" > "$AH"; check "$(wh '"aurora"')" "refuse|refused: aurora/host names one host, and it has 2 lines|" "two lines, this host first: refuse (one host, never a list)"
+rm "$AH"; mkdir "$AH"; check "$(wh '"aurora"' | cut -d'(' -f1)" "refuse|refused: aurora/host cannot be read " "aurora/host unreadable (a folder): refuse"
+rmdir "$AH"; ln -s "$T/not-mounted/host" "$AH"
+check "$(wh '"aurora"')" "refuse|refused: aurora/host cannot be read (a link whose target is missing)|" "aurora/host a dangling link: refuse, never read as no key"
+rm "$AH"; echo host-a > "$SKH"
+check "$(wh '"aurora"')" "run||$NOTE" "no aurora/host, a skip-hosts not listing this host: the old rule runs it, with the deprecation note"
+printf 'elsewhere\n%s\n' "$HU" > "$SKH"
+check "$(wh '"aurora"')" "skip|skipped: aurora does not run on $H (aurora/skip-hosts; $AHINT)|$NOTE" "  this host listed (in capitals): skip, the note too"
+printf '\xEF\xBB\xBF%s \r\n' "$H" > "$SKH"; check "$(wh '"aurora"' | cut -d'|' -f1)" "skip" "  a BOM, a trailing space and CRLF still match"
+echo "$H" > "$AH"; check "$(wh '"aurora"')" "run||" "aurora/host beside a skip-hosts listing this host: aurora/host decides, skip-hosts is not read"
+rm "$AH" "$SKH"; mkdir "$SKH"
+check "$(wh '"aurora"' | sed 's/cannot be read (.*)|/cannot be read (..)|/')" "refuse|refused: aurora/skip-hosts cannot be read (..)|$NOTE" "no aurora/host, skip-hosts unreadable: refuse, with the note"
+rmdir "$SKH"
+# Beside an overlay the core loads only with its five keys (common.OVERLAY_KEYS), made up here
+mkdir -p "$WH/regatta"; touch "$WH/regatta/overlay"; for k in owner guarded orca-deny log-dir projects; do echo "$T/$k" > "$WH/regatta/$k"; done
+check "$(wh '"aurora"')" "refuse|refused: no $WH/aurora/host (your overlay's bootstrap.sh --config writes it)|" "neither key beside an overlay: refuse, naming the key"
+echo "a scope's pass: the scope's yard, else aurora/host"
+printf '{"repos": {"y": {}, "n": {}},\n "scopes": {"yd": {"file": "y", "repos": ["y"], "yard": "%s"},\n  "far": {"file": "f", "repos": ["y"], "yard": "host-b"},\n  "ny": {"file": "n", "repos": ["n"]}}}\n' "$HU" > "$T/wh-reg.json"
+export CLAUDE_REPOS_JSON="$T/wh-reg.json"
+check "$(wh '"aurora", "yd"')" "run||" "a yard naming this host (in capitals): run, though no aurora/host beside an overlay (aurora/host is never read)"
+echo host-a > "$AH"
+check "$(wh '"aurora", "far"')" "skip|skipped: scope far runs on its yard host-b, not on $H (the registry names it)|" "a yard on another host: skip, naming it"
+check "$(wh '"aurora", "ny"')" "skip|skipped: aurora does not run on $H (aurora/host names host-a; $AHINT)|" "no yard: aurora/host decides"
+printf '{"repos": {"y": {}},\n<<<<<<< ours\n' > "$CLAUDE_REPOS_JSON"
+check "$(wh '"aurora", "yd"')" "closed|refused: the registry $T/wh-reg.json cannot be read, so scope yd has no known yard (fails closed)|" "a torn registry: closed (the yard unknown)"
+check "$(wh '"aurora"' | cut -d'|' -f1)" "skip" "  the whole night reads no registry: aurora/host decides"
+echo "regatta weekly-host: the installers' face"
+WR() { REGATTA_CONFIG="$WH" "$RG" weekly-host "$@"; }
+echo "$H" > "$AH"; out=$(WR aurora); check "$?:$out" "0:" "run: exit 0, nothing said"
+echo host-a > "$AH"; out=$(WR sextant); check "$?:$out" "3:skipped: sextant does not run on $H (aurora/host names host-a; $SHINT)" "skip: exit 3, its line"
+: > "$AH"; out=$(WR aurora); check "$?:$out" "4:refused: aurora/host is empty: it names no host to run on" "refuse: exit 4 (never 1, a crash's code)"
+out=$(WR aurora --scope yd); check "$?" 5 "closed: exit 5"
+rm "$AH"; rm "$WH/regatta/overlay"; echo host-a > "$SKH"
+out=$(WR aurora); check "$?:$out" "0:$NOTE" "a note is said before the verdict"
+WR >/dev/null 2>&1; check "$?" 2 "no job: a usage error, exit 2"
+WR aurora --scope >/dev/null 2>&1; check "$?" 2 "  --scope without a name: exit 2"
+unset CLAUDE_REPOS_JSON
 
 echo "the gate's table"
 G="$M/bin/gate"
