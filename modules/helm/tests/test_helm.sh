@@ -69,6 +69,13 @@ export CLAUDE_CODE_SESSION_ID=mgr-1
 export REGATTA_SHEEP_PLAN=pro REGATTA_SHEEP_DIR="$T/sheep-state"
 export HELM_DEADMAN="$T/no-deadman"   # an absent peer: no case reaches lighthouse's real deadman (S11's block stubs it)
 mkdir -p "$T/home" "$T/sess"
+# The scratch commits' identity, in a file of the suite's own that every later HOME move keeps (S8's,
+# S11's): with HOME moved the caller's (check.yml's `git config --global`) is gone, and git guesses one
+# from the hostname only where it has a dot — a Mac's *.local, never an ubuntu runner's (71 cases, the
+# twin's CI, 2026-10-25). GIT_AUTHOR_* would not do: the S7 block sets and unsets its own. The file
+# replaces check.yml's, so it carries that one's init.defaultBranch too.
+export GIT_CONFIG_GLOBAL="$T/gitconfig"
+git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch main
 cp "$TD/surfaces.json" "$T/surfaces.json"
 echo '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-01-04"}}}' > "$COST_RATIO"
 
