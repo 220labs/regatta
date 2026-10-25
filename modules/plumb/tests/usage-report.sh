@@ -23,6 +23,8 @@ export ACCOUNTS_FILE="$T/no-registry.json"   # the readers default to the live c
 # the weekly ratio: a scratch file, committed by a stub that records its argv
 export COST_RATIO="$T/cost-ratio.json" USAGE_KNOWLEDGE_COMMIT="$T/kc.sh"
 printf '#!/bin/sh\necho "$@" >> "$(dirname "$0")/kc.txt"\n' > "$T/kc.sh"; chmod +x "$T/kc.sh"
+# the tick's `account refresh` (S4): a stub the tick runs with python, recording its argv, never the real login tooling
+export USAGE_ACCOUNT="$T/acct.py"; printf 'import sys\nprint("refresh: stub", sys.argv[1:])\n' > "$T/acct.py"
 export USAGE_CONFIG="$T/none.json" USAGE_CC="$T/cc" USAGE_ARCHIVE="$T/archive" USAGE_CLAUDE_JSON="$T/claude.json" USAGE_APP="$T/app"
 export USAGE_NOW="2026-09-20T07:10:00-07:00"
 # The report is written under a scratch ~/projects and published by bin/publish to a scratch NAS and Drive
@@ -170,6 +172,7 @@ chmod +x "$T/notify.sh"
 printf '{"hosts": {"testmac": {"render": true, "notify": ["%s"]}}}' "$T/notify.sh" > "$T/cfg.json"
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T06:50:00-07:00" "$B/usage-report" tick > "$T/tick1.out"
 check "$(ls "$RP" 2>/dev/null | wc -l | tr -d ' ')" "0" "before 07:05 the tick only samples"
+has "$T/tick1.out" "refresh: stub ['refresh']" "every tick first refreshes the hooks' local copies of the Drive-backed files (account refresh, S4)"
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T07:10:00-07:00" "$B/usage-report" tick > "$T/tick2.out"
 has "$T/tick2.out" "notify: sent" "after 07:05 it renders and sends"
 has "$T/tick2.out" "published project_data/$SH/2026-09-19.md → drive" "the log says where the report went"
