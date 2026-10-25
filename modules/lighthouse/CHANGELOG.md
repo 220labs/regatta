@@ -6,6 +6,13 @@
   (40px, a 4px rim) and larger and bare in the window's header (38px). `/chat` answers `offer: true` on a
   reply holding the hand-off sentence where the sink relays, and the widget puts a "Talk to a person"
   button under it; the footer's link stays (2026-10-24).
+- Drive-backed reads local (orca-launcher S4, 2026-10-25): outside claude-host `allowed`, `limits` and every
+  load_registry read the tenants file's local copy first, `allowed` the logins file's (`.logins.json.last`,
+  new), and the link only with no copy yet; account_guard and design_route read the copies first. `account
+  refresh` re-reads both links (exit 3 outside claude-host unless `--force`). `doctor` names a missing copy, and one
+  that differs from its file 30 min after the last refresh: the tick is not running it through claude-host.
+  Only a link into a cloud drive is read local-first: a plain tenants file reads as it is, so `{}` still ends
+  tenancy at once on a host without claude-host; `refresh --force` refuses an unattended caller.
 - hookwatch's suite builds the revert branch's date with `date -d @<epoch>` where BSD `date -r` fails, so
   the twin's ubuntu CI passes it (220labs/regatta#5, 2026-10-24).
 - deadman's state moves from KV to one SQLite-backed Durable Object, `Yards` (skipper-resilience

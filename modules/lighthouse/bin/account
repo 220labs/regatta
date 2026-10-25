@@ -8,6 +8,7 @@
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
     account limits [LABEL | --all [--parked] [--orca]] [--repo PATH] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
     account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
+    account refresh [--force]                                   the Drive-backed files' local copies, re-read (the usage tick's, through claude-host; exit 3 outside it)
     account which                                               the label of the dir this process runs under
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
     account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
@@ -116,6 +117,17 @@ ignored. Each good read is copied beside it (`.tenants.json.last`), and a link t
 drive behind it away) holds by that copy, never failing open: that would let every seat, another
 employer's included, into a tenant's repos. Only with no copy either is tenancy off, said on stderr
 (not under --json). To end tenancy, write `{}`: a deleted file or link leaves the copy holding.
+
+Drive-backed reads are local (docs/orca-launcher-2026-10-24.md, S4, 2026-10-24: no unattended run may
+hang on a person). The tenants file and the logins file are
+links into a shared drive, and a process whose responsible process holds no grant for it blocks on a
+privacy prompt nobody sees (Orca's app on the always-on Mac, 34 requests in one run, 2026-10-24). So a
+reader a hook may run — `allowed`, `limits --cached` and everything else through load_registry, and the
+logins file as `allowed` reads it — takes the local copy first (`.tenants.json.last`, `.logins.json.last`)
+and opens the link only under claude-host (the core's `claude_host()`: the kernel's responsible process),
+or, with no copy yet, once to seed it (a missing copy must not fail open). `refresh` re-reads both
+links and rewrites the copies; the usage tick runs it every 15 min through claude-host, so a new tenant
+reaches the hooks within 15 min. doctor and setup read the links themselves: a person runs them.
 
 Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
 on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
@@ -398,22 +410,95 @@ def claude_bin():
 
 def logins_path():
     """The logins file: ACCOUNT_LOGINS, else the config dir's lighthouse/logins.json (an overlay
-    links it into a shared drive), else None when neither exists."""
+    links it into a shared drive), else None when neither exists. The link is asked about first:
+    exists() follows it into the drive (S4)."""
     if os.environ.get("ACCOUNT_LOGINS"):
         return Path(os.environ["ACCOUNT_LOGINS"])
     p = CONFIG / "lighthouse" / "logins.json"
-    return p if p.exists() or p.is_symlink() else None
+    return p if p.is_symlink() or p.exists() else None
 
 
-def load_logins():
-    """→ (path or None, {label: entry}). An absent file is an empty dict; an unreadable one exits."""
+def local_copy(p):
+    """A Drive-backed file's local copy, beside it: `.<name>.last` (header, Drive-backed reads)."""
+    return p.with_name("." + p.name + ".last")
+
+
+def read_copy(p):
+    """The JSON object in a local copy, or None when it does not read as one."""
+    try:
+        got = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def keep_copy(last, got):
+    """Write a good read to its local copy, only when it changed; else touch it (its mtime is the last
+    good read, which doctor reports as the copy's age). A config dir that takes no write loses only the copy."""
+    try:
+        text = json.dumps(got, sort_keys=True)
+        if not last.is_file() or last.read_text() != text:
+            tmp = last.with_name(f"{last.name}.{os.getpid()}")
+            tmp.write_text(text)
+            os.replace(tmp, last)
+        else:
+            os.utime(last)
+    except OSError:
+        pass
+
+
+READ_LINKS = False   # doctor and setup: a person's reads take the links, never the hooks' copies (main sets it)
+
+
+@functools.lru_cache(maxsize=None)
+def on_host():
+    """The core's claude_host(): may this process open a Drive link (header, Drive-backed reads)? No core: no."""
+    try:
+        return core().claude_host()
+    except (ImportError, AttributeError):
+        return False
+
+
+def local_first(p):
+    """Does a hook's reader take p's local copy before p? Only for a link into a cloud drive (the core's
+    drive_backed()) read outside claude-host: a plain file, or a host with no drive, reads the file as
+    before S4, so an edit to it — `{}` ending tenancy included — takes effect at once (the S4 finish
+    review, 2026-10-25). A core without drive_backed: any link, as S4 was built."""
+    return not (READ_LINKS or on_host()) and drive_link(p)
+
+
+def drive_link(p):
+    """The core's drive_backed(): is p a link into a cloud drive? A core without it: any link."""
+    try:
+        return core().drive_backed(p)
+    except (ImportError, AttributeError):
+        return Path(p).is_symlink()
+
+
+def load_logins(local=False, keep=True):
+    """→ (path or None, {label: entry}). An absent file is an empty dict; an unreadable one exits.
+    Every good read of the file refreshes its local copy. local=True is a hook's reader (`allowed`):
+    outside claude-host the copy answers while it reads, and the link is never opened (S4). keep=False is
+    doctor's: it reports the copy's age, so its own read must not refresh it (S4 finish review)."""
     p = logins_path()
-    if not p or not p.is_file():
+    if not p:
+        # bootstrap.sh --config removes a link whose drive is away: a hook's reader still has its copy (S4 finish review)
+        got = read_copy(local_copy(CONFIG / "lighthouse" / "logins.json")) if local and not os.environ.get("ACCOUNT_LOGINS") else None
+        return p, (got or {}).get("logins") or {}
+    if local and local_first(p):
+        got = read_copy(local_copy(p))
+        if got is not None:
+            return p, got.get("logins") or {}
+    if not p.is_file():
         return p, {}
     try:
-        return p, json.loads(p.read_text()).get("logins") or {}
-    except (OSError, ValueError) as e:
+        got = json.loads(p.read_text())
+        logins = got.get("logins") or {}
+    except (OSError, ValueError, AttributeError) as e:
         sys.exit(f"account: {p} is not readable JSON: {e}")
+    if keep:
+        keep_copy(local_copy(p), got)
+    return p, logins
 
 
 def save_logins(p, logins):
@@ -434,6 +519,7 @@ def save_logins(p, logins):
     tmp = real.with_name(real.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     os.replace(tmp, real)
+    keep_copy(local_copy(p), doc)   # `allowed` reads the copy outside claude-host: never an older one (S4 finish review)
 
 
 def this_mac():
@@ -515,29 +601,36 @@ def tenants_file():
     """True when the tenants key is written: a file, or a link, read or not (a dangling one is not "absent"),
     or its last good copy — bootstrap.sh --config removes a link whose target is away, and that must not
     end tenancy either (code review 2026-10-22). Ending it is writing `{}`."""
-    return TENANTS.is_symlink() or TENANTS.exists() or tenants_last().is_file()
+    # the copy and the link are asked about before exists(), which follows the link into the drive (S4)
+    return tenants_last().is_file() or TENANTS.is_symlink() or TENANTS.exists()
 
 
 def tenants_last():
     """The last good read of the tenants file, kept beside it: what holds while its link reads nothing."""
-    return TENANTS.with_name("." + TENANTS.name + ".last")
+    return local_copy(TENANTS)
 
 
-def read_tenants_file():
-    """The tenants file's object, copied to tenants_last() whenever it reads. When it reads nothing (the
-    drive behind a link away) that copy holds: failing open would let every seat, another employer's
-    included, into a tenant's repos (review 2026-10-22). Neither readable: {} — tenancy off — said on
-    stderr, except under --json, which dispatch parses with stderr merged in."""
-    got, source, err = tenants_read()
-    if source == "none" and "--json" not in sys.argv:
+def read_tenants_file(quiet=False):
+    """The tenants file's object, copied to tenants_last() whenever it reads. Outside claude-host that copy
+    answers first and the link is not opened while it reads (header, Drive-backed reads; S4); with no copy
+    the link is read there too, once, to seed it. When the link reads nothing (the drive behind it away)
+    the copy holds: failing open would let every seat, another employer's included, into a tenant's repos
+    (review 2026-10-22). Neither readable: {} — tenancy off — said on stderr, except under --json, which
+    dispatch parses with stderr merged in, and for a quiet second read."""
+    if local_first(TENANTS):
+        got = read_copy(tenants_last())
+        if got is not None:
+            return got
+    got, source, err = tenants_read(write=not READ_LINKS)   # doctor's read leaves the copy it judges as it was
+    if source == "none" and not quiet and "--json" not in sys.argv:
         print(f"account: {TENANTS} unreadable ({err}), and no last good copy — tenancy is off until it reads", file=sys.stderr)
     return got
 
 
 def tenants_read(write=True):
     """→ (object, source, error): source "file", "last" (the copy holds; error says why the file did
-    not read) or "none" ({}). write=False skips the copy's write: doctor's second read, after
-    load_registry's has already refreshed it on a good read (on a failed read nothing writes either)."""
+    not read) or "none" ({}). write=False skips the copy's write: doctor's reads, which report the copy's
+    age and must not refresh the copy they judge (stale_copies; on a failed read nothing writes either)."""
     last = tenants_last()
     try:
         got = json.loads(TENANTS.read_text())
@@ -551,19 +644,52 @@ def tenants_read(write=True):
         if isinstance(got, dict):
             return got, "last", e
         return {}, "none", e
-    if not write:
-        return got, "file", None
-    try:
-        text = json.dumps(got, sort_keys=True)
-        if not last.is_file() or last.read_text() != text:
-            tmp = last.with_name(f"{last.name}.{os.getpid()}")
-            tmp.write_text(text)
-            os.replace(tmp, last)
-        else:   # its mtime is the last good read, which doctor reports as the copy's age
-            os.utime(last)
-    except OSError:
-        pass   # a config dir that takes no write: the file still reads, only the fallback is lost
+    if write:
+        keep_copy(last, got)
     return got, "file", None
+
+
+def cmd_refresh(force=False):
+    """`refresh`: re-read each Drive-backed file a hook's reader takes from its local copy — the tenants
+    file, the logins file — and rewrite the copies (header, Drive-backed reads). The usage tick's, every
+    15 min through claude-host. Outside claude-host, where either file is a link into a drive, it refuses
+    with exit 3 unless --force: a tick on a Mac whose job lacks claude-host would put a privacy prompt on
+    python3 every 15 min, the class S4 closes; a plain file, or a host with no drive, just reads. --force is
+    a person's yes and refuses an unattended caller, which would hang on that prompt (AGENTS.md Traps).
+    Exit 1 when a file did not read (its copy holds as it was)."""
+    lp = logins_path()
+    blocks = any(local_first(f) for f in (TENANTS, lp) if f)
+    if blocks and force and os.environ.get("CLAUDE_UNATTENDED"):
+        print("account refresh: --force is a person's, and this run is unattended — the local copies stay as they are")
+        return 3
+    if blocks and not force:
+        print("account refresh: not under claude-host — the local copies stay as they are "
+              "(--force reads the Drive links anyway)")
+        return 3
+    rc = 0
+    if TENANTS.is_symlink() or TENANTS.exists():
+        _, source, err = tenants_read()
+        if source == "file":
+            print(f"refresh: {TENANTS.name} → {tenants_last().name}")
+        else:
+            rc = 1
+            print(f"refresh: {TENANTS.name} did not read ({err}); "
+                  + (f"{tenants_last().name} holds as it was" if source == "last" else "no copy: tenancy is off"))
+    p = lp
+    if p:
+        try:
+            _, logins = load_logins()
+            if p.is_file():
+                print(f"refresh: {p.name} → {local_copy(p).name}")
+            elif p.is_symlink():   # dangling: the drive away, as the tenants file's line says it (S4 finish review)
+                rc = 1
+                print(f"refresh: {p.name} did not read (its link leads nowhere now); {local_copy(p).name} holds as it was")
+            else:
+                print(f"refresh: {p.name} is not there; its copy stays")
+        except SystemExit as e:
+            rc = 1
+            print(f"refresh: {e}; {local_copy(p).name} holds as it was")
+    return rc
 
 
 def tenants_source():
@@ -575,7 +701,7 @@ def no_login(name):
     """→ (why, fix) for a tenant no enabled login is marked for, in the form tenancy was written in. Labels
     the file already lists are named: asking to add one that is there sends the reader nowhere."""
     if tenants_file():
-        listed = tenant_logins(tenants_read(write=False)[0].get(name))
+        listed = tenant_logins(read_tenants_file(quiet=True).get(name))   # `allowed` prints this: local first (S4)
         if listed:
             # parked, a typo, or a label another tenant lists too (the later one takes it): doctor names which
             return (f"{name}'s \"logins\" in {TENANTS.name} ({', '.join(listed)}) give it no enabled login (account doctor names why)",
@@ -2381,6 +2507,42 @@ def age(s):
     return f"{int(s // 60)} min" if s < 5400 else f"{int(s // 3600)} h" if s < 172800 else f"{int(s // 86400)} days"
 
 
+STALE_AFTER = 1800   # seconds: two missed usage ticks (every 15 min) before a differing copy is a fix
+
+
+def stale_copies(peer=None):
+    """→ [(label, level, text, fix)] for doctor: each Drive-backed file whose local copy — what the hooks read
+    outside claude-host (header, Drive-backed reads) — is missing, or differs from the file and was not
+    refreshed for STALE_AFTER. Either says the usage tick's `account refresh` is not running through
+    claude-host on this Mac: a missing copy has the hooks open the link, a stale one has them judge by an
+    old tenancy. Only a file that reads now is compared; one that does not is tenancy_state's to report."""
+    pairs = []   # only a link into a drive: a plain file is read as it is, and needs no copy (S4 finish review)
+    if drive_link(TENANTS):
+        got, source, _ = tenants_read(write=False)
+        if source == "file":
+            pairs.append((TENANTS, tenants_last(), got))
+    lp = logins_path()
+    if lp and drive_link(lp) and lp.is_file():
+        try:
+            pairs.append((lp, local_copy(lp), json.loads(lp.read_text())))
+        except (OSError, ValueError):
+            pass
+    out = []
+    fix = (wrap_peer(f"{BIN / 'account'} refresh --force", peer)
+           + "   (the usage tick runs it through claude-host every 15 min; its log says why it did not)")
+    for f, last, got in pairs:
+        if not last.is_file():
+            out.append(("-", "fix", f"no local copy of {f.name}: the hooks open the link, which an ungranted app blocks on", fix))
+            continue
+        try:   # the filesystem's clock, never ACCOUNT_NOW (a suite's fake time)
+            old = time.time() - last.stat().st_mtime
+        except OSError:
+            continue
+        if read_copy(last) != got and old >= STALE_AFTER:
+            out.append(("-", "fix", f"the hooks read {last.name}, which differs from {f.name} (last refreshed {age(old)} ago)", fix))
+    return out
+
+
 def tenancy_state(reg, peer=None):
     """→ [(label, level, text, fix)] on the tenants file itself, for doctor: a key that reads nothing with
     no copy (tenancy off, every login runs every tenant's repo), tenancy held by the last good copy, a
@@ -2391,7 +2553,7 @@ def tenancy_state(reg, peer=None):
     derivation from the raw lists (review 2026-10-23)."""
     if not tenants_file():
         return []
-    raw, source, err = tenants_read(write=False)   # no second write; load_registry's read came first
+    raw, source, err = tenants_read(write=False)   # no write: stale_copies judges the copy as the hooks see it
     relink = wrap_peer(f"{bootstrap_cmd()} --config", peer) + "   (relinks it; the drive it points into must be mounted)"
     out = []
     if source in ("none", "last") and TENANTS.exists():
@@ -2659,6 +2821,8 @@ def doctor_local(reg, logins, peer=None, record=True):
             f(*t)
     for t in tenancy_state(reg, peer):   # VS Code or not: the tenants file is the guard's, not the panel's
         f(*t)
+    for t in stale_copies(peer):   # the hooks' copies of the Drive-backed files (S4)
+        f(*t)
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
         f("-", "info", "credential expiry: the keychain is not read here (it would prompt)")
     known = {a["home"] for a in reg["accounts"]}
@@ -2669,7 +2833,7 @@ def doctor_local(reg, logins, peer=None, record=True):
 
 
 def cmd_doctor(reg, local=False, as_json=False, peer=None):
-    path, logins = load_logins()
+    path, logins = load_logins(keep=False)   # stale_copies judges the copy as the hooks see it
     if not logins:
         print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
         # the tenants link points into the same drive, so this is when its state matters most (review 2026-10-23)
@@ -2806,6 +2970,8 @@ def main(argv):
     sub.add_parser("which")
     p = sub.add_parser("allowed")
     p.add_argument("path")
+    p = sub.add_parser("refresh")
+    p.add_argument("--force", action="store_true")
     p = sub.add_parser("add")
     p.add_argument("label")
     p.add_argument("--no-login", action="store_true")
@@ -2823,6 +2989,11 @@ def main(argv):
         record_exhaustion(current_home(), args.window, float(ra) if ra.replace(".", "", 1).isdigit() else ra,
                           args.used, args.session)
         return 0
+    if args.cmd == "refresh":   # before load_registry: the copies are refreshed whatever the registry says
+        return cmd_refresh(args.force)
+    if args.cmd in ("doctor", "setup"):   # a person's: judged by the links, as stale_copies compares them (S4 finish review)
+        global READ_LINKS
+        READ_LINKS = True
     reg = load_registry()
     if args.cmd in ("env", "run") and via_orca(row(reg, args.label)) and not row(reg, args.label).get("synced"):
         print(f"account: {args.label}'s login is not in Orca here — {orca_login_line(row(reg, args.label))}", file=sys.stderr)
@@ -2908,7 +3079,7 @@ def main(argv):
         owner = None
         if email:
             try:
-                _, logins = load_logins()
+                _, logins = load_logins(local=True)   # a hook's question: the local copy outside claude-host (S4)
             except SystemExit:  # an unreadable logins file: the rows' own logins still answer
                 logins = {}
             by_label = {a["label"]: a for a in reg["accounts"]}

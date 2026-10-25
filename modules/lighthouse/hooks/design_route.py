@@ -128,12 +128,30 @@ def materialise():
 
 def share_list():
     """[(email, access)] from the logins file's share.design ([] when it has none), or None when
-    the file cannot be read."""
+    the file cannot be read. For a link into a cloud drive, outside claude-host, its local copy first
+    (`.logins.json.last`, which bin/account keeps and the usage tick refreshes under claude-host), the link
+    only when the copy does not read: a session whose responsible process holds no grant for the drive
+    blocks this hook on a privacy prompt (docs/orca-launcher-2026-10-24.md, S4). A plain file first."""
     p = os.environ.get("ACCOUNT_LOGINS")
     path = Path(p) if p else CONFIG / "lighthouse" / "logins.json"
-    materialise()
+    doc = None
+    try:   # the copy first only for a link into a cloud drive outside claude-host (bin/account's local_first)
+        common = core()
+        copy_first = common.drive_backed(path) and not common.claude_host()
+    except (CoreMissing, AttributeError):
+        copy_first = path.is_symlink()
+    last = path.with_name("." + path.name + ".last")
+    for f in ((last, path) if copy_first else (path, last)):
+        if f is path:
+            materialise()   # only the link can be a dataless Drive file
+        try:
+            doc = json.loads(f.read_text())
+        except Exception:
+            continue
+        if isinstance(doc, dict):
+            break
     try:
-        rows = json.loads(path.read_text()).get("share", {}).get("design") or []
+        rows = doc.get("share", {}).get("design") or []
     except Exception:
         return None
     return [(r["email"], r.get("access") or "view") for r in rows if isinstance(r, dict) and r.get("email")]
