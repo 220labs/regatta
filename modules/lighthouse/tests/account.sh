@@ -14,10 +14,17 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
 hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 
+# a dispatched or unattended run's environment (CLAUDE_UNATTENDED refuses `refresh --force`): hooks.sh's reset
+for v in $(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset REGATTA_HOME REGATTA_LEGACY
 # account reads these (doctor's `blind`, orca-sync's VS Code step): a run over ssh, as dispatch's
 # are, would otherwise fail seven cases (B9 review)
 unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+# Outside claude-host unless a case says otherwise: a dispatched session runs this suite under claude-host,
+# a terminal and the CI runner outside it, and the Drive-backed reads differ by it (S4, the core's claude_host())
+export REGATTA_CLAUDE_HOST=0
+# the stand-in drive: a link under $T is a link into a cloud drive (the core's drive_backed()); a plain file is not
+export REGATTA_DRIVE_ROOTS="$T"
 export HOME="$T/home" TZ=America/Los_Angeles REGATTA_CONFIG="$T/config"
 # the scratch commits' identity: with HOME moved, check.yml's is gone (AGENTS.md, the HOME-move trap)
 export GIT_CONFIG_GLOBAL="$T/gitconfig"
@@ -381,6 +388,16 @@ has "$T/out" "privy is off this Orca login, which no row names yet" "…said as 
 echo '{not json' > "$T/logins-bad.json"
 check "$(ACCOUNT_LOGINS="$T/logins-bad.json" CLAUDE_CONFIG_DIR="$UO/claude-profiles/p4/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA allowed "$PR/privy")" 0 \
   "allowed: an unreadable logins file is no traceback; main's own login still answers"
+echo "allowed: the logins file read from its local copy outside claude-host (S4)"
+mkdir -p "$T/ldrive"; echo '{"logins": {"work": {"email": "Z@example.com"}}}' > "$T/ldrive/logins.json"; ln -s "$T/ldrive/logins.json" "$T/logins-link.json"
+LZ() { ACCOUNT_LOGINS="$T/logins-link.json" CLAUDE_CONFIG_DIR="$UO/claude-profiles/pz/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA allowed "$PR/privy"; }
+check "$(LZ)" 1 "no copy yet: the link is read once, to seed it (work's list)"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["logins"]["work"]["email"])' "$T/.logins-link.json.last" 2>&1)" "Z@example.com" "…and the copy is written beside the link"
+echo '{"logins": {"main": {"email": "Z@example.com"}}}' > "$T/ldrive/logins.json"
+check "$(LZ)" 1 "the drive's file changed: outside claude-host the copy answers, the link unopened (still work's)"
+check "$(REGATTA_CLAUDE_HOST=1 LZ)" 0 "under claude-host the link is read: main's login now, privy open"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["logins"]))' "$T/.logins-link.json.last")" "['main']" "…and that read refreshes the copy"
+check "$(LZ)" 0 "outside claude-host again: the refreshed copy answers"
 mem=$(python3 - "$B/account" "$T/mem" <<'PY'
 import os, sys
 from importlib.machinery import SourceFileLoader
@@ -1155,6 +1172,92 @@ check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FIL
 has "$T/out" "acme-one is off work: it is acme's" "…named as the tenant's"
 rm "$T/tenants-link.json"
 check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A allowed "$PR/acme-one")" 1 "the link removed (bootstrap.sh --config, its target away): the copy still holds (code review 2026-10-22)"
+echo "the tenants file: its local copy first outside claude-host, the link under it, refresh (S4)"
+mkdir -p "$T/tdrive"; cp "$T/tenants.json" "$T/tdrive/tenants.json"; ln -s "$T/tdrive/tenants.json" "$T/tenants-s4.json"
+TS() { CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-s4.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A "$@"; }
+check "$(TS allowed "$PR/acme-one")" 1 "no copy yet: the link is read once to seed it (work refused acme's repo)"
+check "$(test -f "$T/.tenants-s4.json.last" && echo kept)" "kept" "…the copy written"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["work"]}}' > "$T/tdrive/tenants.json"
+check "$(TS allowed "$PR/acme-one")" 1 "the drive's file changed: outside claude-host the copy answers, the link unopened"
+check "$(grep -c '"lab"' "$T/.tenants-s4.json.last")" 1 "…the copy as it was"
+check "$(REGATTA_CLAUDE_HOST=1 TS allowed "$PR/acme-one")" 0 "under claude-host the link is read: acme is work's now"
+check "$(grep -c '"work"' "$T/.tenants-s4.json.last")" 1 "…and the read refreshed the copy"
+check "$(TS allowed "$PR/acme-one")" 0 "outside claude-host again: the refreshed copy answers"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/tdrive/tenants.json"
+check "$(TS refresh)" 3 "refresh outside claude-host refuses, exit 3 (a tick without claude-host would prompt every 15 min)"
+has "$T/out" "not under claude-host — the local copies stay as they are" "…saying so"
+check "$(grep -c '"work"' "$T/.tenants-s4.json.last")" 1 "…the copy untouched"
+check "$(TS refresh --force)" 0 "refresh --force reads the links anyway"
+has "$T/out" "refresh: tenants-s4.json → .tenants-s4.json.last" "…naming the copy it wrote"
+check "$(grep -c '"lab"' "$T/.tenants-s4.json.last")" 1 "…which now holds the drive's file"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["work"]}}' > "$T/tdrive/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 ACCOUNT_LOGINS="$T/logins-link.json" TS refresh)" 0 "refresh under claude-host (the usage tick): exit 0"
+has "$T/out" "refresh: logins-link.json → .logins-link.json.last" "…the logins file's copy too"
+check "$(grep -c '"work"' "$T/.tenants-s4.json.last")" 1 "…and the tenants copy follows the drive"
+rm "$T/tdrive/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 TS refresh)" 1 "refresh with the drive away: exit 1…"
+has "$T/out" "did not read" "…saying so"
+has "$T/out" ".tenants-s4.json.last holds as it was" "…and the copy holds"
+check "$(TS allowed "$PR/acme-one")" 0 "…which still answers (work's)"
+sc() { TENANTS_FILE="$T/tenants-s4.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_LOGINS="$T/no-logins.json" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_sc", sys.argv[1]).load_module()
+for t in a.stale_copies(): print(t[1], t[2])' "$B/account" 2>&1; }
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/tdrive/tenants.json"
+check "$(sc)" "" "doctor: a copy that differs from the file but was refreshed within 30 min: nothing yet (the next tick takes it)"
+python3 -c 'import os,sys,time; t=time.time()-2*3600; os.utime(sys.argv[1],(t,t))' "$T/.tenants-s4.json.last"
+check "$(sc)" "fix the hooks read .tenants-s4.json.last, which differs from tenants-s4.json (last refreshed 2 h ago)" "…differing and 2 h old: a fix (the tick is not refreshing it through claude-host)"
+cp "$T/tdrive/tenants.json" "$T/.tenants-s4.json.last"; python3 -c 'import os,sys,time; t=time.time()-2*3600; os.utime(sys.argv[1],(t,t))' "$T/.tenants-s4.json.last"
+check "$(sc)" "" "…the same content however old: nothing (an unchanged file is never refreshed outside claude-host)"
+rm "$T/.tenants-s4.json.last"
+check "$(sc)" "fix no local copy of tenants-s4.json: the hooks open the link, which an ungranted app blocks on" "…no copy at all: a fix"
+echo "a plain tenants file, or a link outside any drive, reads as it is outside claude-host (S4 finish review)"
+printf '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/tenants-plain.json"
+TP() { CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-plain.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A "$@"; }
+check "$(TP allowed "$PR/acme-one")" 1 "a plain file naming acme for lab: work refused"
+echo '{}' > "$T/tenants-plain.json"
+check "$(TP allowed "$PR/acme-one")" 0 "…the file edited to {} ends tenancy at once, the copy notwithstanding"
+check "$(TP refresh)" 0 "refresh over a plain file needs no claude-host: exit 0, not 3"
+printf '{"acme": {"repos": ["acme-*"], "logins": ["work"]}}' > "$T/.tenants-s4.json.last"
+check "$(TS allowed "$PR/acme-one")" 0 "a link into the drive: the copy answers (work's)"
+check "$(REGATTA_DRIVE_ROOTS="$T/elsewhere" TS allowed "$PR/acme-one")" 1 "a link outside every drive root reads the link itself (lab's now, work refused)"
+check "$(CLAUDE_UNATTENDED=1 TS refresh --force)" 3 "refresh --force refuses an unattended caller (a person's yes; AGENTS.md Traps)"
+has "$T/out" "this run is unattended" "…saying so"
+ACCOUNT_LOGINS="$T/logins-link.json" python3 - "$B/account" "$T" > "$T/s4f.out" 2>&1 <<'PY2'
+import json, os, sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_s4f", sys.argv[1]).load_module()
+T = sys.argv[2]
+last = os.path.join(T, ".logins-link.json.last")
+os.remove(last)
+a.load_logins(keep=False)
+print("keep=False writes no copy:", not os.path.exists(last))
+a.save_logins(a.logins_path(), {"lab": {"email": "q@example.com"}})
+print("save_logins keeps the copy:", sorted(json.load(open(last))["logins"]))
+PY2
+check "$(cat "$T/s4f.out")" "keep=False writes no copy: True
+save_logins keeps the copy: ['lab']" "doctor's read leaves the logins copy for stale_copies to judge; setup's write updates it"
+mkdir -p "$T/cfg6/lighthouse"; printf '{"logins": {"work": {"email": "y@example.com"}}}' > "$T/cfg6/lighthouse/.logins.json.last"
+check "$(env -u ACCOUNT_LOGINS REGATTA_CONFIG="$T/cfg6" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_s6", sys.argv[1]).load_module()
+print(a.load_logins(local=True)[1], a.load_logins()[1])' "$B/account" 2>&1)" "{'work': {'email': 'y@example.com'}} {}" \
+  "the logins link removed (bootstrap.sh --config, the drive away): a hook's reader keeps its copy; a person's read has none"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["work"]}}' > "$T/tdrive/tenants.json"
+printf '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/.tenants-s4.json.last"
+check "$(TENANTS_FILE="$T/tenants-s4.json" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_s8", sys.argv[1]).load_module()
+hook = a.read_tenants_file()["acme"]["logins"]
+a.READ_LINKS = True
+print(hook, a.read_tenants_file()["acme"]["logins"], open(sys.argv[2]).read().count("lab"))' "$B/account" "$T/.tenants-s4.json.last" 2>&1)" "['lab'] ['work'] 1" \
+  "doctor and setup read the link (work's), the hooks the copy (lab's), and doctor's read leaves the copy it judges"
+rm "$T/ldrive/logins.json"
+check "$(REGATTA_CLAUDE_HOST=1 ACCOUNT_LOGINS="$T/logins-link.json" TS refresh)" 1 "a dangling logins link (the drive away): refresh exits 1, as for the tenants file"
+has "$T/out" "logins-link.json did not read" "…saying so"
 cat > "$ACCOUNTS_FILE.tg" <<'J'
 {"accounts": [
   {"label": "work", "provider": "claude", "home": "~/.claude-work", "tenant": "acme"},

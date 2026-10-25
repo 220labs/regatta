@@ -59,9 +59,15 @@ def tenant_entries():
                    or (reg.with_name(reg.name + ".tenants") if fixture_registry(reg, live)
                        else config / "lighthouse" / "tenants.json"))
     last = tenants.with_name("." + tenants.name + ".last")
-    if tenants.is_symlink() or tenants.exists() or last.is_file():   # written, the whole of tenancy (bin/account's header)
+    # A link into a cloud drive: the copy first, and the link only when it does not read
+    # (docs/orca-launcher-2026-10-24.md, S4): a session whose responsible process holds no grant for the
+    # drive (Orca's app, 2026-10-24) blocks this hook on a privacy prompt nobody sees. bin/account refreshes
+    # the copy under claude-host (the usage tick, every 15 min), so a changed file reaches here within 15 min.
+    # A plain file is read first, as before S4: an edit to it takes effect at once (S4 finish review). The
+    # copy and the link are asked about before exists(), which follows the link into the drive.
+    if last.is_file() or tenants.is_symlink() or tenants.exists():   # written, the whole of tenancy (bin/account's header)
         t = None
-        for f in (tenants, last):
+        for f in ((last, tenants) if drive_backed(tenants) else (tenants, last)):
             try:
                 t = json.loads(f.read_text())
             except (OSError, ValueError):
@@ -80,6 +86,28 @@ def tenant_entries():
             return []
     return [e for v in t.values() if isinstance(v, dict) and isinstance(v.get("repos"), list)
             for e in map(tenant_entry, v["repos"]) if e]
+
+
+def drive_backed(p):
+    """The core's drive_backed(), copied: is p a link whose text points under a cloud drive's mount? The
+    hook must not import the core it guards against losing; the core's check runs both over the same cases."""
+    try:
+        p = os.fspath(p)
+        if not os.path.islink(p):
+            return False
+        roots = os.environ.get("REGATTA_DRIVE_ROOTS") or os.path.expanduser("~/Library/CloudStorage")
+        roots = {x for r in filter(None, roots.split(":"))
+                 for x in (os.path.normpath(os.path.abspath(os.path.expanduser(r))), os.path.realpath(os.path.expanduser(r)))}
+        for _ in range(8):   # a link to a link (a worktree's .env → main's → the drive): each hop by its text
+            parent = os.path.realpath(os.path.dirname(os.path.abspath(p)))
+            p = os.path.normpath(os.path.join(parent, os.readlink(p)))
+            if any(p == root or p.startswith(root + os.sep) for root in roots):
+                return True
+            if not os.path.islink(p):   # a hop outside every drive: lstat only, never into a drive
+                return False
+    except (OSError, TypeError, ValueError):
+        return True
+    return False
 
 
 def tenant_entry(r):

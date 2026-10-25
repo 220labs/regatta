@@ -52,6 +52,16 @@ Each good read is copied beside the key (`.tenants.json.last`), and while the li
 is gone (the drive behind it away) that copy holds: tenancy never fails open onto another seat. Only
 a Mac whose link has never read has tenancy off, said on stderr and by `account doctor`, which also names a copy in force, a file that does not parse, and a tenant left with no login. To end tenancy, write `{}`.
 
+Where the key is a link into a cloud drive (the core's `drive_backed()`: macOS's File Provider folder, or
+`REGATTA_DRIVE_ROOTS`), a hook's reader opens it only under claude-host (the core's `claude_host()`): a hook
+runs in whatever app started the session, and one with no grant for the drive waits on a privacy prompt
+nobody sees. So outside claude-host the readers a hook reaches — `account allowed`, `account limits`,
+`account_guard`, `design_route` — take the copies first (`.tenants.json.last`, `.logins.json.last`), and the
+link only once, to seed a missing copy; doctor, setup and `refresh --force` read the links themselves. A
+plain file, or a link elsewhere, is read as it is, so an edit takes effect at once. `account refresh`
+re-reads both links; plumb's usage tick runs it every 15 min through claude-host, so a change reaches the
+hooks within 15 min.
+
 Install: `claude plugin marketplace add <this repo>`, then `claude plugin install lighthouse@regatta`
 (it needs the core, `regatta`, and `helloworld`, which beacon's build scan uses). From a clone: `sh modules/lighthouse/install.sh --check`.
 
@@ -67,7 +77,7 @@ an override is never exported.
 | --- | --- | --- | --- | --- |
 | `lighthouse/accounts.json` | the login registry: labels, config dirs, rules (a link) | `account`, `account_guard`, `design_route` | `ACCOUNTS_FILE` | one login, the default config dir; where the overlay is installed, an error: `account` stops, the two guards block |
 | `lighthouse/tenants.json` | the tenants: `{name: {repos, logins}}` (a link, kept off git) | `account`, `account_guard` | `TENANTS_FILE`; an `ACCOUNTS_FILE` other than the live key reads `<it>.tenants` | its last good copy, else the registry's own `tenants`, else none |
-| `lighthouse/logins.json` | the logins file: per label the e-mail, plan, payer, Macs; `share.design` (a link, kept off git) | `account setup`/`doctor`, `design_route` | `ACCOUNT_LOGINS` | setup and doctor refuse; no share line |
+| `lighthouse/logins.json` | the logins file: per label the e-mail, plan, payer, Macs; `share.design` (a link, kept off git) | `account setup`/`doctor`/`allowed`/`refresh`, `design_route` | `ACCOUNT_LOGINS` | setup and doctor refuse; no share line |
 | `lighthouse/vault` | the owner's private vault, a repo key under the projects folder: a row refused it is an employer's; health commits the bulletin there | `account`, `health` | — | no employer rows, but where the overlay is installed `add` and `orca-sync` stop; the bulletin line posted, not committed |
 | `lighthouse/user.json` | the declared settings (a link to a file in git) | `claude-settings` | `CLAUDE_SETTINGS_DECLARED` | no declaration: every verb a no-op |
 | `lighthouse/env-keys.json` | the install's own declarable `env` names: `{name: [values]}` | `claude-settings` | — | only CLAUDE_CODE_SUBAGENT_MODEL |

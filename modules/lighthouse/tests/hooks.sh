@@ -7,8 +7,12 @@
 set -u
 for v in $(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset REGATTA_HOME REGATTA_LEGACY
+# Outside claude-host unless a case says otherwise: bin/account's Drive-backed reads differ by it (S4), and
+# a dispatched session runs this suite under claude-host
+export REGATTA_CLAUDE_HOST=0
 C="$(cd "$(dirname "$0")/.." && pwd)"; H="$C/hooks"; R="$(cd "$C/../.." && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+export REGATTA_DRIVE_ROOTS="$T"   # the stand-in drive: a link under $T is a link into a cloud drive (S4)
 export HOME="$T/home" REGATTA_CONFIG="$T/config"
 mkdir -p "$HOME" "$REGATTA_CONFIG/regatta" "$REGATTA_CONFIG/lighthouse"
 echo Owner > "$REGATTA_CONFIG/regatta/owner"
@@ -440,6 +444,20 @@ check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c '"block"')" 1 
 rm "$T/guard-drive.json"
 check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "its drive away: the last good copy holds, the secondary still blocked (review 2026-10-22)"
 check "$(agl "" "$GH/projects/acme-one" | grep -c '"block"')" 1 "  …and the default dir too"
+echo "account_guard: the copy before the link (S4: the link points into a drive an ungranted process blocks on)"
+mkdir -p "$T/gdrive"; echo '{}' > "$T/gdrive/tenants.json"; ln -s "$T/gdrive/tenants.json" "$T/guard-tenants-s4.json"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/.guard-tenants-s4.json.last"
+ags() { echo "{\"session_id\":\"g1\",\"cwd\":\"$1\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-s4.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py"; }
+check "$(ags "$GH/projects/acme-one" | grep -c "acme-one is off main: it is acme's")" 1 "the drive's file says {} and the copy names acme: the copy answers, the default dir blocked"
+check "$(REGATTA_CLAUDE_HOST=1 ags "$GH/projects/acme-one")" "" "under claude-host bin/account reads the link ({}, tenancy off): silent"
+check "$(cat "$T/.guard-tenants-s4.json.last")" "{}" "  …and its read refreshed the copy the hook reads"
+check "$(ags "$GH/projects/acme-one")" "" "outside claude-host again: the refreshed copy, silent"
+printf '{}' > "$T/guard-plain.json"; printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/.guard-plain.json.last"
+check "$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-plain.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py")" "" \
+  "a plain tenants file is read before its copy: {} ends tenancy at once (S4 finish review)"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/guard-plain.json"; printf '{}' > "$T/.guard-plain.json.last"
+check "$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-plain.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py" | grep -c '"block"')" 1 \
+  "  …and a plain file naming a tenant blocks the default dir though its copy says {} (never the copy's open door)"
 out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")
 check "$(echo "$out" | grep -c "acme-one is off work: it is acme's, which runs on lab only")" 1 "a secondary whose shell moved into the file's tenant's repo: blocked with the tenant's way in…"
 check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …not the deny list's, which names a login tenancy refuses (review 2026-10-23)"
@@ -499,6 +517,12 @@ check "$(printf '%s' "$OUT" | grep -c 'Share https://claude.ai/artifact/Made42 n
 check "$(DRL="$DR/missing.json" dr PostToolUse "$DPUB" - '"Created a new Artifact at https://claude.ai/artifact/Made42"' | ctx | grep -c 'could not be read')" 1 "an unreadable share list is said, never taken as an empty one"
 printf '{"logins":{}}' > "$DR/logins.json"
 check "$(dr PostToolUse "$DPUB" - '{"url":"https://claude.ai/artifact/NewOne123"}' | ctx | grep -c 'is shared with nobody yet')" 1 "no share.design list: the reply says it is shared with nobody"
+mkdir -p "$DR/drive"; printf '{"logins":{},"share":{"design":[{"email":"link@example.com"}]}}' > "$DR/drive/logins.json"; ln -s "$DR/drive/logins.json" "$DR/logins-link.json"
+printf '{"logins":{},"share":{"design":[{"email":"copy@example.com"}]}}' > "$DR/.logins-link.json.last"
+OUT=$(DRL="$DR/logins-link.json" dr PostToolUse "$DPUB" - '"Created a new Artifact at https://claude.ai/artifact/Made42"' | ctx)
+check "$(printf '%s' "$OUT" | grep -c 'copy@example.com (view)') $(printf '%s' "$OUT" | grep -c 'link@example.com')" "1 0" "the share list from the logins file's local copy, never its drive link while the copy reads (S4)"
+rm "$DR/.logins-link.json.last"
+check "$(DRL="$DR/logins-link.json" dr PostToolUse "$DPUB" - '"Created a new Artifact at https://claude.ai/artifact/Made42"' | ctx | grep -c 'link@example.com (view)')" 1 "  no copy: the link, as before"
 echo "tool_path: a parent's bare PATH gets the host's tool dirs, appended (lessons/claude-code.md, 2026-10-12)"
 TP="$T/tp"; mkdir -p "$TP/brew/bin" "$TP/local/bin"; printf '#!/bin/sh\necho brewtool\n' > "$TP/brew/bin/tptool"; chmod +x "$TP/brew/bin/tptool"
 tp() { echo '{"hook_event_name":"SessionStart"}' | env -i HOME="$T" PATH="$1" CLAUDE_ENV_FILE="$TP/env.sh" TOOL_PATH_DIRS="$TP/brew/bin:$TP/nope/bin:$TP/local/bin" /usr/bin/python3 "$H/tool_path.py"; }
