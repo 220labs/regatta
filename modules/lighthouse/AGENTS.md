@@ -66,15 +66,23 @@ its chart is `deadman/README.md`.
   `CHANGELOG.md` and `tests/check.sh` say of it is written for the twin.
 - Unlike beacon, `bin/deadman` is in the root `autofinish_exclude`: a yard's tick runs it after
   every pass (helm's `stalls_tick.deadman_ping`, skipper-resilience S11), so a broken `ping` silences every yard at once and opens an alarm for each.
-- The Worker loads under plain Node: `cloudflare:email` is imported in `entry.js` only. Its Node
-  suite needs Node 20 or later.
-- Every yard, repo, mention and address comes from `lighthouse/deadman.json` in the config dir; a
-  test uses made-up names (`alpha`, `beta`, `example/inbox`).
-- **No KV key may stand for "an alarm exists" past a failed GitHub call.** Symptom: a yard goes
-  silent and nothing is raised, or an issue opens at every cron. Cause: `open:` kept after a
-  refused close skipped the yard for good, and an `open:` put lost after the POST (the day's writes
-  spent) raised again. GitHub decides: a ping ends the alarm and owes the close (`closing:`), a
-  raise adopts an open issue first, never one owed a close (finish review, 2026-10-22).
-- **Every KV write on a failure path is counted against 1,000 a day.** An error written twice per
-  cron, or rewritten as an outage's pages or calls change, spends the budget; past it every
-  `last:` put fails and every yard reads silent. The Node suite asserts write counts per path.
+- The Worker loads under plain Node, `entry.js` included: no `cloudflare:*` import anywhere, so
+  `Yards` is a fetch-interface Durable Object, as beacon's Meter. Its Node suite runs the real class
+  on node:sqlite and needs Node 22.13 or later.
+- deadman imports `beacon/worker/outbound.js` (the App's JWT, Resend's send), and `bin/deadman build`
+  copies it to the same relative path: a change there is a change to both Workers, so run both suites.
+  It is off the allowlist with beacon until the extensions design decides beacon's home (TODO.md,
+  beacon's item); a beacon that leaves this repo takes the file deadman imports, so that move carries it.
+- Every yard, repo, mention and address comes from `lighthouse/deadman.json` or the config dir's
+  `helm/inbox-repo` and `helm/mention`; a test uses made-up names (`alpha`, `beta`, `example/inbox`).
+  The App's record and key and the ping secret live in the config dir at mode 600, never in the vault.
+- **No stored value may stand for "an alarm exists" past a failed GitHub call.** Symptom: a yard
+  goes silent and nothing is raised, or an issue opens at every cron. Cause: `open` kept after a
+  refused close skipped the yard for good, and an `open` write lost after the POST raised again.
+  GitHub decides: a ping ends the alarm and owes the close (`closing`), a raise adopts an open issue
+  first, never one owed a close (finish review, 2026-10-22). A whole pass's write can be lost now
+  (one `/apply`), leaving no error behind: a ping that ends a long silence looks the alarm up (S10b).
+- **A pass is one read and one write; keep it so.** Every column is written only when it changes
+  (`store().set` compares), and an adoption writes `open` before its comment mentions anyone. The
+  Node suite asserts requests and rows written per path; a change that adds a write per yard per
+  pass spends the account's 100,000 rows a day, which beacon's objects share.

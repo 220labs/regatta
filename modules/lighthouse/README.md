@@ -127,5 +127,6 @@ is decided: it is no Claude Code plugin, and may move to a repo of its own.
 
 A Mac that runs unattended work cannot report its own death. deadman is one Cloudflare Worker on
 the free plan that each such Mac pings every few minutes; one that goes quiet past a grace becomes
-a GitHub issue that mentions its owner, closed again by its next ping, with a mail as the fallback
-when GitHub refuses the token. Its chart is `deadman/README.md`.
+a GitHub issue that mentions its owner, opened by the switch's own GitHub App and closed again by
+its next ping, with a mail through Resend as the fallback when GitHub refuses. Its state is one
+SQLite-backed Durable Object, a row a Mac. Its chart is `deadman/README.md`.
