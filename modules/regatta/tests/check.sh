@@ -560,5 +560,55 @@ check "$(notpublic "$L" | sed -n 's/^COUNT //p')" "2 of 3 module files not yet p
 rm -rf "$L/.helloworld"
 check "$(notpublic "$L" | sed -n 's/^SKIP //p')" "no .helloworld/allowlist.txt in this tree (the public twin has none)" "  no .helloworld/: skipped"
 
+echo "spacesheep plans: the plan read, the deploy log, the budget (spacesheep-tiers, 2026-10-24)"
+SD="$T/sheep"; SB="$T/sheep-bin"; mkdir -p "$SB"
+cat > "$SB/free" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$(dirname "$0")/calls"
+echo '{"ok": true, "pro": false, "enabled": false}'
+EOF
+cat > "$SB/off" <<'EOF'
+#!/bin/sh
+echo '{"ok": true, "pro": true, "enabled": false}'
+EOF
+cat > "$SB/broken" <<'EOF'
+#!/bin/sh
+echo "✗ not signed in" >&2; exit 3
+EOF
+chmod +x "$SB"/*
+# its own name and environment: line 121's sp() loads secrets, and a REGATTA_SHEEP_PLAN left set would
+# stand in for every read below (SHP_PLAN sets it for one case)
+shp() { env -u MEMO_SHEEP_BIN -u REGATTA_SHEEP_PLAN REGATTA_SHEEP_DIR="${SHP_DIR-$SD}" ${SHP_PLAN:+REGATTA_SHEEP_PLAN=$SHP_PLAN} \
+          python3 -I -c "import sys; sys.path.insert(0, '$M/hooks'); import common; $1"; }
+check "$(shp 'p = common.sheep_plan(None); print(p["plan"], p["cap"], common.sheep_talk_refusal(p))')" "none 400 None" "no CLI: the plan is none, budgeted as Free, and Talk says nothing of a plan"
+check "$(shp "p = common.sheep_plan('$SB/free'); print(p['plan'], p['cap'], p['talk'])")" "free 400 False" "Free: pro false is a cap of 400 and no Talk"
+check "$(shp "print(common.sheep_talk_refusal(common.sheep_plan('$SB/free')))")" "Talk needs spacesheep Pro (spacesheep.dev/plans) — the file backend still relays on this Mac" "  the one line a relay says"
+check "$(wc -l < "$SB/calls" | tr -d ' ')" "1" "  the second read came from the cache, not the CLI"
+check "$(shp "print(common.sheep_plan(None, cached_only=True)['plan'])")" "free" "  a hook reads the cache only"
+check "$(shp "print(common.sheep_plan('$SB/off', refresh=True)['plan'], common.sheep_talk_refusal(common.sheep_plan('$SB/off'))[:20])")" "pro Talk is off for this" "Pro with Talk switched off: its own line, not the upgrade's"
+check "$(shp "p = common.sheep_plan('$SB/broken', refresh=True); print(p['plan'], p['cap'], p['error'])")" "pro 2000 ✗ not signed in" "a failed read after a good one: the plan stands (Pro keeps its cap), the CLI's words kept"
+check "$(SHP_DIR="$T/sheep-new" shp "p = common.sheep_plan('$SB/broken'); print(p['plan'], p['cap'], common.sheep_plan_words(p))")" "unknown 400 Free, as far as this Mac knows" "  a failed first read: unknown, budgeted as Free, and worded so"
+check "$(env -u REGATTA_SHEEP_DIR MEMO_SHEEP_BIN=/x python3 -I -c "import sys; sys.path.insert(0, '$M/hooks'); import common; print(common.sheep_dir())")" "None" "a stand-in CLI with no sheep dir of its own: nothing is read or written"
+check "$(SHP_PLAN=free shp 'print(common.sheep_plan(None)["plan"])')" "free" "REGATTA_SHEEP_PLAN stands in for the read"
+shp 'common.sheep_record("keel"); common.sheep_record("helm-board"); common.sheep_record("keel", ok=False, err="rate_limited: publishes per 24h (retry in 600s)")'
+printf '{"ts": %s, "by": "keel", "ok": true}\nnot json\n' "$(( $(date +%s) - 90000 ))" >> "$SD/deploys.jsonl"
+check "$(shp 'print(common.sheep_count())')" "2" "the count: published deploys of the last 24 h (no refusal, no older row, no junk)"
+check "$(shp 'import time; print(590 < common.sheep_refused_until() - time.time() <= 600)')" "True" "  a cap refusal is kept with the retry it named"
+printf '{"ts": %s, "by": "keel", "ok": true}\n' "$(( $(date +%s) - 200000 ))" > "$T/sheep-old.jsonl"; cat "$SD/deploys.jsonl" >> "$T/sheep-old.jsonl"; mv "$T/sheep-old.jsonl" "$SD/deploys.jsonl"
+before=$(wc -l < "$SD/deploys.jsonl" | tr -d ' ')
+shp 'common.sheep_record("keel")'
+check "$before $(wc -l < "$SD/deploys.jsonl" | tr -d ' ') $(shp 'print(common.sheep_count())')" "6 4 3" "  an oldest row past twice the kept 25 h prunes the log to 25 h (the 25-hour row stays, the junk goes)"
+shp 'common.sheep_record("keel")'
+check "$(wc -l < "$SD/deploys.jsonl" | tr -d ' ') $(ls "$SD" | tr '\n' ' ')" "5 deploys.jsonl deploys.lock plan.json " "  the next append only appends; the prune left no temp file"
+check "$(shp "b = common.sheep_budget(common.sheep_plan('$SB/free', refresh=True)); print(b['cap'], b['machines'], b['helm_limit'], b['keel_warn'])")" "400 1 300 360" "Free on one machine (no sheep/machines, no lighthouse/hosts): helm stops at 300, keel warns at 360"
+mkdir -p "$REGATTA_CONFIG/lighthouse"; printf 'mac-a\nmac-b\n' > "$REGATTA_CONFIG/lighthouse/hosts"
+check "$(shp "b = common.sheep_budget(common.sheep_plan('$SB/free')); print(b['machines'], b['helm_limit'], b['keel_warn'])")" "2 150 180" "  two hosts in lighthouse/hosts: two machines, 150 and 180 a Mac"
+mkdir -p "$REGATTA_CONFIG/sheep"; echo 1 > "$REGATTA_CONFIG/sheep/machines"
+check "$(SHP_PLAN=pro shp 'b = common.sheep_budget(common.sheep_plan(None)); print(b["cap"], b["helm_limit"], b["keel_warn"])')" "2000 1500 1800" "Pro with sheep/machines 1 (over the hosts list): 1,500 and 1,800"
+rm -rf "$REGATTA_CONFIG/sheep" "$REGATTA_CONFIG/lighthouse"
+check "$(shp 'print(common.sheep_cap_refusal("deploy refused — rate_limited: 400 publishes per 24h (retry in 3600s)"), common.sheep_cap_refusal("space not found"))')" "True False" "a cap refusal is told from another failure"
+check "$(shp 'print([common.sheep_cap_refusal(t) for t in ("deploy refused — too many files (retry in 2400s)", "file size limit exceeded", "storage quota exceeded", "deploy refused — rate_limited: slow down (retry in 30s)", "daily limit of 24 hours reached", "too many publishes today")])')" \
+  "[False, False, False, False, True, True]" "  a deploy's own limits and a bare rate limit are not the publish cap; publish or 24 h beside the word is"
+
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]

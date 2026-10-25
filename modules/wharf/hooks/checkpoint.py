@@ -2223,7 +2223,7 @@ def sheep_pages(branch, docs):
         out, err = proc.communicate()
         timed_out = True
     r = subprocess.CompletedProcess(proc.args, -9 if timed_out else proc.returncode, out, err)
-    pages, failed = {}, []
+    pages, failed, warned = {}, [], []
     if timed_out:
         failed.append(f"timed out after {SHEEP_TIMEOUT}s — `memo sheep <doc>` by hand")
     for line in r.stdout.splitlines():
@@ -2236,6 +2236,8 @@ def sheep_pages(branch, docs):
             pages[rel] = row["url"]
         elif row.get("error"):
             failed.append(f"{rel}: {row['error'][:120]}")
+        if row.get("note"):   # keel's own word on a page that deployed: the publish budget's warning
+            warned.append(str(row["note"])[:240])
     if r.returncode and not timed_out and not failed:
         failed.append((r.stderr.strip().splitlines() or ["memo sheep failed"])[-1][:160])
     shown = pages
@@ -2248,6 +2250,8 @@ def sheep_pages(branch, docs):
     note = ("🐑 " + ", ".join(f"{d} → {u}" for d, u in shown.items())) if pages else None
     if failed:
         note = (note + " · " if note else "") + "⚠ page mirror: " + "; ".join(failed)
+    if warned:
+        note = (note + " · " if note else "") + "⚠ " + "; ".join(dict.fromkeys(warned))
     return pages, note
 
 

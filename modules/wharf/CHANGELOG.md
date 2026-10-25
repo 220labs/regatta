@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- checkpoint's 🐑 note carries a `keel sheep --hook` row's `note` (keel's publish-budget warning), after
+  the pages and any failure (spacesheep-tiers, 2026-10-24).
+
 - checkpoint denies writes in a primary checkout on a detached HEAD (hookwatch's pin) as on main, and
   guards /autofinish's marker and the yes at the brief as records under an unattended run; sync.py names a
   detached primary, and hookwatch's pin when its state names it (autofinish-exclude landing review, 2026-10-24).

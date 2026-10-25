@@ -5,6 +5,15 @@
 - `regatta flare` and `/regatta:flare` (2026-10-24): a bug report, an idea or a question filed as an issue on
   the public repo, the evidence attached, a `--client-id` retry returning the first receipt, helloworld's
   file scan before the send, a prefilled link without `gh`; the repo's Bug and Idea issue forms beside it.
+- spacesheep plans (spacesheep-tiers, 2026-10-24): `sheep_plan()` reads the account's plan through
+  `spacesheep talk status`, cached an hour in `LOG_DIR/sheep/plan.json` (no CLI is the plan `none`, an
+  unknown plan is budgeted as Free); `sheep_record()` and `sheep_count()` keep this Mac's 24-hour deploy
+  log, shared by keel and helm; `sheep_budget()` gives each its line (helm stops at 75 %, keel warns at
+  90 % of the cap divided by `sheep/machines`, else the hosts `lighthouse/hosts` lists, else 1); `sheep_talk_refusal()` and `sheep_cap_line()`
+  are the words. `REGATTA_SHEEP_DIR` and `REGATTA_SHEEP_PLAN` stand in for a suite; a stand-in CLI
+  (`MEMO_SHEEP_BIN`) with no sheep dir of its own reads and writes nothing. A failed plan read keeps the
+  last good plan; a cap refusal is logged with its retry (`sheep_refused_until()`); the log keeps 25 h, pruned
+  by a rename about once a day; `sheep_plan_words()` says a plan never read as "Free, as far as this Mac knows".
 
 - `extra_usage(xu)`: a usage answer's paid-overage object in one parse, for plumb's usage-report and
   lighthouse's account (costs S8, 2026-10-24).

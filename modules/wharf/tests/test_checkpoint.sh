@@ -959,6 +959,17 @@ out=$(fev "Read them.")
 ok "  tab edits with origin down: the forced push fails once, reported" 'echo "$out" | grep -q "push of claude/fb failed"'
 ok "  ...and the next Stop, the wip commit still HEAD, does not retry it" '! fev "Still offline." | grep -q "push of"'
 mv "$T/fb-origin.off" "$T/fb-origin.git"; git -C "$WD" push -q origin claude/fb  # leaves no unpushed doc for the mirror's deploy count
+echo "  keel's own word on a page that deployed (a row's note: the publish budget's warning) joins the turn's note (spacesheep-tiers)"
+cat > "$T/keel-note" <<'EOF'
+import json, sys
+print(json.dumps({"doc": sys.argv[-1], "url": "https://spacesheep.dev/@sam/n", "sha": "x", "deployed": True,
+                  "note": "keel: 360 spacesheep publishes from this Mac in 24 h, near its part of the account's cap"}))
+EOF
+ok "  the 🐑 note ends with the warning" '[ "$(env -u CLAUDE_HOOK_NO_SHEEP python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import checkpoint as c
+c.ROOT, c.MEMO = sys.argv[2], sys.argv[3]
+def no(): raise ImportError(\"stub\")
+c._memo_module = no
+print(c.sheep_pages(\"claude/fb\", [\"docs/s.md\"])[1])" "$MOD/hooks" "$WD" "$T/keel-note")" = "🐑 docs/s.md → https://spacesheep.dev/@sam/n · ⚠ keel: 360 spacesheep publishes from this Mac in 24 h, near its part of the account'"'"'s cap" ]'
 echo "  the page mirror (orchestration E3): a stub CLI, a pinned page, the line's space part"
 SS="$T/ss"; mkdir -p "$SS/state"
 printf '#!/bin/sh\necho "$*" >> "%s/cli.log"\necho %s\n' "$SS" \

@@ -29,7 +29,9 @@ Unpaired Macs, the text below, unchanged. Prints, in order of the gates, nothing
 - the spacesheep CLI is signed in here and this machine opted in with `spacesheep talk on`
   (its config's `talk: true` and a `key`; $SPACESHEEP_KEY also counts as signed in);
 - no machine listener is paired (spacesheep's machine.json, sessionpipe's control.json with a
-  receiver): that one already reaches every session, and two would answer twice.
+  receiver): that one already reaches every session, and two would answer twice;
+- the account's plan, as helm last read it (the core's sheep_plan cache), does not lack Talk:
+  on Free a listener hears only a refusal (since 2026-10-24).
 
 The text is fixed here, after the CLI's own `nudgeText` (lib/talk.js), never words from the
 server. Its command is `spacesheep talk listen`, the spelling bootstrap.sh's ask_allow already
@@ -40,6 +42,7 @@ import os
 import re
 import socket
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 try:
@@ -157,6 +160,21 @@ def waiter_text(sid):
     ])
 
 
+def no_talk():
+    """True when the plan the relay last read (the core's sheep_plan, cache only: a hook never calls
+    the CLI) has no Talk. No cache, one past the plan's TTL (an upgrade since: a Free cache would
+    silence the nudge forever once nothing reads the plan again), or a core without plans, is not
+    known: the nudge goes as before."""
+    try:
+        import common
+        plan = common.sheep_plan(cached_only=True)
+        if not plan or time.time() - float(plan.get("at") or 0) >= common.SHEEP_PLAN_TTL:
+            return False
+        return common.sheep_talk_refusal(plan) is not None
+    except Exception:
+        return False
+
+
 def nudge(ev):
     if not isinstance(ev, dict) or ev.get("source") == "compact":
         return None
@@ -186,6 +204,8 @@ def nudge(ev):
         return None
     if not (conf.get("key") or os.environ.get("SPACESHEEP_KEY")):
         return None
+    if no_talk():
+        return None  # the plan has no Talk (Free): a listener would only hear the refusal
     return "\n".join([
         f"spacesheep Talk: {WHO} can message this session from the Session tab of its spacesheep page.",
         "Run this once now with Bash run_in_background (not Monitor): "
