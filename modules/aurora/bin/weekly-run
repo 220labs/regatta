@@ -2,6 +2,8 @@
 # weekly-run <aurora|sextant> <cwd> — what launchd runs for the night loop (bootstrap.sh --schedule).
 # weekly-run aurora --scope <scope> [--dry-run] — one scope's pass, unattended (knowledge-layers S5;
 # below, at `scope=`).
+# weekly-run embark [<cwd>] [--dry-run] — the sitting's memo (embark_step below); the sextant job runs it
+# after its own session, and --dry-run prints the memo and writes nothing.
 #
 # aurora runs nightly; `due` below names tonight's sections and a night with none due ends here,
 # before `claude` starts, so a quiet night costs nothing. AURORA_SECTIONS overrides the list
@@ -106,6 +108,8 @@ if [ "${2:-}" = --scope ]; then
   scope="${3:-}"; cwd=""; dry=""; [ "${4:-}" = --dry-run ] && dry=1
   [[ "$scope" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "weekly-run: --scope needs a scope name (letters, digits, . _ -)" >&2; exit 2; }
   [ "$job" = aurora ] || { echo "weekly-run: --scope is aurora's (one scope's dream)" >&2; exit 2; }
+elif [ "$job" = embark ] && [ "${2:-}" = --dry-run ]; then
+  cwd=""; dry=1  # the embark job never uses <cwd>: --dry-run alone is its dry run
 else
   cwd="${2:?cwd}"; dry=""; [ "${3:-}" = --dry-run ] && dry=1
   # --due: the dry run as the clock's precheck (knowledge-layers S7): the same plan, and exit 3 when
@@ -215,7 +219,9 @@ if host in [l.lower() for l in skips]:
     out("skip", "skipped: %s does not run on %s (aurora/skip-hosts; %s)" % (job, host, SCHED))
 out("run")
 '
-if [ -z "${WEEKLY_ANY_HOST:-}" ]; then
+# embark runs on any Mac: its branch is claude/<host>/<day>-embark, one per host, so two Macs never
+# write the same file, and /embark writes the memo where the owner sits when the night left none
+if [ -z "${WEEKLY_ANY_HOST:-}" ] && [ "$job" != embark ]; then
   rule=$(python3 -c "$HOST_RULE" "$HOOKS" "$job" "$scope" 2>&1)
   verdict=""; rule_err=""
   while IFS=$'\t' read -r v line; do
@@ -249,6 +255,80 @@ if [ -z "$P" ] || { [ "$job" = sextant ] && [ -z "$C" ]; }; then
   say "$(date '+%H:%M') refused: atlas's $([ -z "$P" ] && echo vault || echo layer) is not configured ($RCFG/atlas/: your overlay's bootstrap.sh --config)"
   [ -z "$dry" ] && post "the unattended $job refused to run" "weekly-run $job $day: atlas's layer or vault is not configured in $RCFG/atlas/. Log: $log"
   refuse
+fi
+
+# The embark step (the owner, 2026-10-24: "I want embark presented to me on the helm whenever it runs
+# ... as its course doc"; its home is regatta, the 10-24 memo's D2-A of 2026-10-25). bin/embark-memo
+# writes the sitting as a course memo from the dream, its branches file, the sextant entry and the
+# night's FAILED lines — code, no session: the dream's items already carry their evidence. Here it
+# goes to docs/embark/embark-<day>.md in the regatta checkout this module sits in, on
+# claude/<host>/<day>-embark (a worktree from local main, as every session starts one), is committed,
+# pushed (the repo's pre-push allows claude/*) and handed to `keel line`, which deploys its course;
+# the board puts it first in the owner's column. A memo already written today is kept, never
+# rewritten: the owner may be answering it. The line and the dream it covers go to
+# $LOGS/embark-latest.json, which atlas's bulletin names at session start. Each miss is
+# `FAILED embark …` and one bulletin line. The memo is built before the worktree is made, so a run
+# with no dream (a suite's sextant rehearsal) touches no checkout. WEEKLY_EMBARK_REPO replaces the
+# checkout, WEEKLY_KEEL_EMBARK `keel embark --json` (a file) and WEEKLY_KEEL_LINE `keel line` (a
+# command; the real one deploys a page) for the suite.
+embark_memo() {  # $@: embark-memo's own flags (--out FILE, --fetch, --meta FILE); none prints the memo
+  local pj; pj=$(head -1 "$RCFG/regatta/projects" 2>/dev/null); pj=${pj:-$HOME/projects}
+  python3 "$MOD/bin/embark-memo" --vault "$P" ${C:+--layer "$C"} --logs "$LOGS" --date "$day" --regatta "$REG" \
+    --projects "${pj/#\~/$HOME}" ${WEEKLY_KEEL_EMBARK:+--keel-embark "$WEEKLY_KEEL_EMBARK"} "$@"
+}
+embark_failed() {
+  echo "FAILED embark $day: $1"
+  post "the week's embark memo was not written" "weekly-run embark $day: $1. Log: $log"
+}
+embark_step() {
+  local root host br wt rel doc meta tmp ln
+  echo "== embark at $(date)"
+  root=${WEEKLY_EMBARK_REPO:-$(cd "$(dirname "$REG")/../../.." && pwd -P)}
+  host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$HOOKS" 2>/dev/null)
+  [ -n "$host" ] || { embark_failed "the core names no host (common.host_name)"; return; }
+  br="claude/$host/$day-embark"; wt="$root/.claude/worktrees/embark-$day"; rel="docs/embark/embark-$day.md"; doc="$wt/$rel"
+  meta="$(dirname "$log")/embark-$day.json"; tmp="$(dirname "$log")/embark-$day.md.new"
+  written=""
+  if [ -f "$doc" ]; then
+    written=1
+    echo "== $rel is already written today: kept as it is (the owner may be answering it)"
+  else
+    embark_memo --fetch --out "$tmp" --meta "$meta" || { embark_failed "bin/embark-memo exit $? (no dream, or no vault)"; return; }
+    python3 "$REG" keel parse "$tmp" >/dev/null || { embark_failed "the memo does not parse: keel parse $tmp"; return; }
+    if [ ! -d "$wt" ]; then
+      git -C "$root" worktree add -q "$wt" -b "$br" main 2>&1 || git -C "$root" worktree add -q "$wt" "$br" 2>&1 \
+        || { embark_failed "git worktree add $wt failed"; return; }
+    fi
+    mkdir -p "$(dirname "$doc")" && mv -f "$tmp" "$doc" || { embark_failed "the memo could not be moved into $wt"; return; }
+  fi
+  # A memo kept as it is may hold the owner's half-written answers: never committed here, unless the
+  # first run's commit failed and it was never tracked. A push carries commits only, so a branch not
+  # yet on origin (the first run's push failed) is pushed on any re-run (landing review, 2026-10-25).
+  [ -n "$written" ] && ! git -C "$wt" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && written=""
+  if [ -z "$written" ]; then
+    git -C "$wt" add -- "$rel" || { embark_failed "git add $rel failed in $wt"; return; }
+    if ! git -C "$wt" diff --cached --quiet; then
+      git -C "$wt" commit -qm "Embark: $day — the sitting's memo, written by weekly-run" || { embark_failed "the commit in $wt failed"; return; }
+    fi
+  fi
+  if [ -z "$written" ] || ! git -C "$wt" ls-remote --exit-code -q origin "refs/heads/$br" >/dev/null 2>&1; then
+    git -C "$wt" push -q -u origin "$br" 2>&1 || { embark_failed "the push of $br failed; the memo is committed in $wt"; return; }
+  fi
+  if [ -n "${WEEKLY_KEEL_LINE:-}" ]; then ln=$($WEEKLY_KEEL_LINE "$doc" | tail -1)
+  else ln=$(python3 "$REG" keel line "$doc" | tail -1) || { embark_failed "keel line failed for $doc (pushed as $br)"; return; }; fi
+  [ -n "$ln" ] || { embark_failed "keel line printed nothing for $doc (pushed as $br)"; return; }
+  # one line: the suite lifts capped's python by the first multi-line `python3 -c` after it
+  python3 -c 'import json, os, sys; a = sys.argv[1:]; m = json.load(open(a[0])) if os.path.isfile(a[0]) else {}; m.update(doc=a[1], branch=a[2], line=a[3]); json.dump(m, open(a[4], "w"))' \
+    "$meta" "$doc" "$br" "$ln" "$(dirname "$log")/embark-latest.json"
+  echo "EMBARK $ln"
+  post "the week's embark memo is ready" "Embark $day, on helm's board: $ln"
+}
+if [ "$job" = embark ]; then
+  [ -n "$dry" ] && { embark_memo; exit; }
+  { echo "== $(date) embark in $cwd"; embark_step; } >> "$log" 2>&1
+  grep -E '^(EMBARK|FAILED embark) ' "$log" | tail -1
+  tail -1 "$log" | grep -q '^EMBARK ' || exit 1
+  exit 0
 fi
 # A scope's pass runs from its anchor: the fence (lighthouse's secrets_guard) keeps a confidential
 # scope's paths from any other cwd, and the dream is a record on the anchor's main. Not ready — no
@@ -895,4 +975,6 @@ PY
     post "the unattended sextant left adopted changes unlaunched" \
       "weekly-run sextant $day: $ch holds them; they launch reviewed (--in … --review) or with /finish."
   fi
+  # the sitting's memo, after the sextant: it reads the entry just launched (or, failed, the dream alone)
+  if [ "$job" = sextant ]; then embark_step; fi   # an `&&` here would be the block's exit status
 } >> "$log" 2>&1

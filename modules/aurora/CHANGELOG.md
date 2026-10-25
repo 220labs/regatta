@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The embark step (embark-on-helm, 2026-10-25; the owner, 2026-10-24: "I want embark presented to me
+  on the helm whenever it runs"): `bin/embark-memo` writes the sitting as a keel course memo from the
+  dream, its branches file, the sextant entry and the night's FAILED and DRY lines, each item carrying
+  its own context (a section the item quotes is copied under it as a blockquote: a fence would end a
+  keel item). `weekly-run embark <cwd> [--dry-run]`, and the sextant job after its session, commit it in
+  regatta as `docs/embark/embark-<day>.md` on `claude/<host>/<day>-embark`, push, run `keel line` and
+  write `<logs>/embark-latest.json`; a memo already written that day is kept. Runs on any host (one
+  branch per host). `/embark` hands over that memo and waits with `keel sheep wait`; its
+  `AskUserQuestion` batch is gone, and the review's third prompt (the budget left unspent) with it.
+  The dream section's template is keel's D-shape, with the two rules the memo reads (a section an
+  item rests on named in quotes; `Vault only: yes` or a `ventures/` link for a personal item).
+
 - The one host (2026-10-24): `aurora/host`, a new key, names the one host the whole-night jobs
   (`weekly-run aurora`, `weekly-run sextant`) run on; every other host skips with a line, and
   `install.sh --schedule` refuses there, quoting weekly-run's skip or refusal. An allow-list where

@@ -95,10 +95,10 @@ Then read:
 ```markdown
 # Dream — <date> (<N> sessions, <M> prompts)
 
-Numbering: P-items are proposed changes (P1…), Q-items are questions for the owner (Q1…).
-How to answer: each P- and Q-item ends in a `➤ Answer:` line pre-filled with the
-recommendation — leave it to accept, overwrite it to change. Open feedback at the bottom.
-Every file mentioned is a markdown link (with line numbers where useful).
+Numbering: D-items are what the owner answers (keel's shape); each title says whether it is a
+proposed change (P1…) or a question (Q1…). Options are `- A — …` bullets, the recommendation
+follows, the `➤ Answer:` line is empty. Open feedback at the bottom. Every file mentioned is a
+markdown link (with line numbers where useful).
 
 ## Do this now
 <anything the owner must run or paste — usually empty. Never a branch deletion: launched branches are
@@ -117,13 +117,25 @@ a link to the branches section's file (question 5 says which), where each has it
 the classifier archived this week>
 
 ## P — proposed changes
-P1. <one-line title> — <destination file>
-    why: <evidence: quotes + session ids>
+- **D1 — P1. <one-line title>**
+  <destination file, as a link>; why: <evidence: quotes + session ids>; the exact diff is the
+  subsection "D1's diff" below.
+  - A — apply as written
+  - B — apply edited (say how in a note under this item)
+  - C — not now
+  - D — never
+
+  Reversible: yes|no
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+...
+
+### D1's diff
     ```diff
     <exact diff>
     ```
-    ➤ Answer: apply
-...
 
 ## Repeated corrections → mechanisms
 <one block per correction: quotes, sessions, the mechanism, where it would live, effort>
@@ -138,11 +150,27 @@ P1. <one-line title> — <destination file>
 <venture: gate, days at gate, this week>
 
 ## Q — questions
-Q1. <question> — why it matters, the options
-    ➤ Answer: <the recommendation>
+- **D<n> — Q1. <question>** — why it matters
+  - A — <one option>
+  - B — <the other>
+
+  Reversible: yes|no
+
+  ➤ Recommended: <pick>
+
+  ➤ Answer:
 
 ## Feedback from <owner>
 ```
+
+The sitting's memo is built from this file by code (aurora's `bin/embark-memo`, run by
+`weekly-run` after the sextant), so three things are read as written:
+- A section an item rests on is named in the item in quotes ("D1's diff"), or in its title
+  ("Memory clean-up"): the memo copies that section under the item, which then carries its own
+  context. A diff stays in its own `###` section, never in the item: a fence ends a keel item.
+- An item about a venture or the household links its `ventures/` file or says `Vault only: yes`:
+  the memo, in regatta, leaves it out with a one-line pointer, and it is answered here.
+- Numbers cells read `<now> (<last week>)` where they compare: the memo adds the arrow.
 
 Budget check in the Numbers line (`me/` ≤ 100, `rules/` ≤ 250); a proposal that would break
 it must include the cut that pays for it.
