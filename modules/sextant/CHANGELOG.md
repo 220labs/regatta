@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The host rule is the core's (2026-10-24): `sextant-run run` asks `common.weekly_host("sextant")`,
+  so its skip line says `sextant`, as weekly-run's does, where it said `/sextant`; `install.sh
+  --schedule` asks `regatta weekly-host sextant` (the core found through `lib/find_core.py`) instead of
+  the runner's dry run. A real run's refusal (the rule's, no folder, no claude) posts one bulletin line
+  through atlas, as weekly-run's does; atlas absent, the log line alone says it. A core older than
+  the rule, or one that crashes in it, is such a refusal, never a traceback; `--schedule` refuses a
+  folder that does not exist, as the dry run did.
 - `sextant-run run` (2026-10-24): runs only on the host `aurora/host` names, weekly-run's host rule
   (`host_rule`), skipping elsewhere with a line; the deprecated `aurora/skip-hosts` keeps its old
   meaning while `aurora/host` is absent, with a line saying so; neither beside an overlay, or an

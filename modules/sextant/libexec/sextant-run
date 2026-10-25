@@ -29,8 +29,10 @@ of weekly-run's writer guards: claude in auto mode with the queue's reading verb
 would type for each candidate instead of commands it could not run (G27). The run is capped
 (SEXTANT_CAP seconds, 10800: three hours, as weekly-run's), its process group ended at the cap, as
 weekly-run's `capped` ends one (the group, not the leader). It runs only on the host `aurora/host`
-names, as weekly-run's night does (`host_rule` below): two Macs writing the same entry conflict on
-push, and a host added later must not run it by default.
+names, as weekly-run's night does (the core's `weekly_host`, which says why): two Macs writing the
+same entry conflict on push, and a host added later must not run it by default. A real run's refusal
+(that rule's, no folder, no claude) posts one bulletin line through atlas, as weekly-run's does; atlas
+absent, the log line alone says it.
 
 Environment: SEXTANT_CLAUDE stands in for claude (a bash line; it sees SEXTANT_ALLOWED and
 SEXTANT_DENIED, one rule per line — the tests); SEXTANT_LOG_DIR over the core's log dir; SEXTANT_CAP.
@@ -89,38 +91,18 @@ def reports():
         return None
 
 
-def host_rule():
-    """(verdict, line, notes) — whether /sextant runs on this host: weekly-run's rule for the
-    whole-night jobs, case-blind, keys read as the core reads them (its HOST_RULE, which says why).
-    `run` where `aurora/host` names this host; `skip` where it names another; `refuse` where it is
-    empty, unreadable, or more than one line. Without it, the deprecated `aurora/skip-hosts` keeps its old meaning (the
-    hosts never to run on), and a note says so; with neither, the overlay installed refuses and an
-    install on one machine runs. No scope here: a scope's pass is weekly-run's alone."""
-    host = common.host_name()
-    sched = "sextant install.sh --schedule refuses here, --unschedule removes a job loaded before"
-    lines, why = common.config_read("aurora/host")
-    if why:
-        return "refuse", "refused: aurora/host cannot be read (%s)" % why, []
-    if lines is not None:
-        if not lines:
-            return "refuse", "refused: aurora/host is empty: it names no host to run on", []
-        if len(lines) > 1:  # one host: a second line is refused, never read as a list (skip-hosts was one)
-            return "refuse", "refused: aurora/host names one host, and it has %d lines" % len(lines), []
-        if lines[0].lower() == host:
-            return "run", "", []
-        return "skip", "skipped: /sextant does not run on %s (aurora/host names %s; %s)" % (host, lines[0], sched), []
-    skips, why = common.config_read("aurora/skip-hosts")
-    if skips is None and why is None:
-        if common.overlay_installed():
-            return "refuse", "refused: no %s (your overlay's bootstrap.sh --config writes it)" % (common.CONFIG / "aurora" / "host"), []
-        return "run", "", []
-    notes = ["note: aurora/skip-hosts is deprecated: write aurora/host, the one host the weekly jobs run on "
-             "(your overlay's bootstrap.sh --config)"]
-    if why:
-        return "refuse", "refused: aurora/skip-hosts cannot be read (%s)" % why, notes
-    if host in [l.lower() for l in skips]:
-        return "skip", "skipped: /sextant does not run on %s (aurora/skip-hosts; %s)" % (host, sched), notes
-    return "run", "", notes
+def post(why, text, cwd):
+    """One bulletin line through atlas's bulletin.py (the core's tool lookup), as weekly-run's post()
+    does for its refusals; atlas absent, the log line alone says it. Never raises: a post that
+    fails costs only the post."""
+    b = common.tool("bulletin.py")
+    if not b:
+        return
+    try:
+        subprocess.run([sys.executable, str(b), "--post", why, text], cwd=cwd if Path(cwd).is_dir() else None,
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def where():
@@ -237,19 +219,35 @@ def run(cwd, dry):
         with open(log, "a", encoding="utf-8") as f:
             f.write("%s %s\n" % (time.strftime("%H:%M"), line))
 
-    verdict, line, notes = host_rule()
+    def refused(line):
+        """A real run's refusal: one bulletin line beside the log's (weekly-run's `post`); a dry run's
+        is said, never posted."""
+        if not dry:
+            post("the unattended sextant refused to run", "sextant-run run %s: %s. Log: %s" % (
+                datetime.date.today().isoformat(), line[len("refused: "):] if line.startswith("refused: ") else line, log), cwd)
+        return 1
+
+    # The core's host rule (common.weekly_host, which says why), as weekly-run's night asks it. A
+    # core older than the rule, or one that crashes in it, could not tell: a refusal, logged and
+    # posted as weekly-run's "no verdict" is, never a traceback in launchd's log alone (the landing
+    # review, 2026-10-25: plugins are unpinned, so this module can update before the core)
+    try:
+        verdict, line, notes = common.weekly_host("sextant")
+    except Exception as e:
+        verdict, notes = "refuse", []
+        line = "refused: the host rule could not be read (%s: %s)" % (type(e).__name__, e)
     for said in notes + ([line] if line else []):
         if not dry:
             say(said)
-        print(said)  # stdout, the dry run included: install.sh --schedule reads the skip or refusal there
+        print(said)  # stdout, the dry run included: what a person or a log reader sees
     if verdict == "skip":
         return 0
-    if verdict == "refuse":
-        return 1
+    if verdict != "run":
+        return refused(line)
     if not Path(cwd).is_dir():
         say("refused: %s is not a folder" % cwd)
         print("sextant-run: %s is not a folder" % cwd, file=sys.stderr)
-        return 1
+        return refused("refused: %s is not a folder" % cwd)
     if dry:
         print("sextant-run: /sextant in %s, sextant's own runner (aurora's weekly-run not used)" % cwd)
         print("claude: %s" % ("SEXTANT_CLAUDE (a stand-in)" if stand_in else " ".join(cl)))
@@ -259,7 +257,7 @@ def run(cwd, dry):
     if not stand_in and not shutil.which(cl[0]):
         say("refused: claude is not on PATH (%s)" % os.environ.get("PATH", ""))
         print("sextant-run: claude is not on PATH", file=sys.stderr)
-        return 1
+        return refused("refused: claude is not on PATH")
     env = dict(os.environ, WEEKLY_RUN="sextant", SOUNDINGS_BY_HAND=BY_HAND)
     if stand_in:
         env.update(SEXTANT_ALLOWED="\n".join(allowed), SEXTANT_DENIED="\n".join(denied))
