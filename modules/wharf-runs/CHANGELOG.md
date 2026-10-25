@@ -13,6 +13,20 @@
   (the summary commit would dodge the runner's same-tip refusal); a model the price table lacks is
   named as written. `dispatch --account LABEL --force` past paid overage is refused under
   CLAUDE_UNATTENDED: that `--force` is a person's yes to money.
+- The finisher rotation (S2 of docs/bench-continuous-2026-10-24.md; the owner's builders D1: A,
+  2026-10-24). While the private value `wharf-runs/finisher-rotation` says `until YYYY-MM-DD` and the
+  day has not passed, `autofinish-run` draws each finisher by a fair coin: Opus 5.5 or Sonnet 5.5, both
+  at `medium`, by full model id. The one key is the switch and its end. A repo that is confidential in
+  any of its scopes, in no scope, or behind a registry that does not read or walk keeps today's
+  finisher and writes no row. Each run that drew an arm leaves one row in the log dir's
+  `finisher-rotation.jsonl`: host, coin, arm, the models the transcript returned (a session that never
+  answered in its arm's model is `voided: fallback`, one that returned none `voided: no-reply`),
+  outcome, gate, PR and cost. `autofinish-run rotation [--json] [--settle]` reads the rows back, with
+  each host's share, forced coins counted apart; `--settle` reads the commits within 48 h of a launch
+  that touch its files, once origin/main has moved past the 48 h. The key reads in one line or as
+  bootstrap.sh writes it, a word per line; set but off, the start line says `arm=off` and why. The
+  suite's environment reset unsets DISPATCH_*, RUN_SEED_*, SKIPPER_*, HELM_* and AUTOFINISH_* by
+  pattern. 42 cases.
 
 - `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
   that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),

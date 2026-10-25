@@ -58,13 +58,14 @@ the tools here will find.
   | `wharf-runs/brake-label` | the launchd job the studio brake stops (SIGSTOP), first non-blank line; a `wharf` start waits while that job's process is stopped, as it does while the brake's sentinel file (`.studio-brake` in the home folder) exists | only the file brakes |
   | `wharf-runs/headroom` | `<host>:avail=<min % free>,swap=<max GB>,rate=<max MB/s swapping>`, `*:` for any other host — the memory `headroom` lets `dispatch` start a run in; the same names on macOS and Linux | 10 % free, 50 MB/s, no swap rule |
   | `wharf-runs/load-max` | `<load per core> [log]` — a host whose 5-minute load per core is at or over it is passed over for the next one its scope allows; `log` records the pick without acting on it | 1.5; log only while `load-margin` is unset or `log` too |
+  | `wharf-runs/finisher-rotation` | `until YYYY-MM-DD`: the finisher rotation's switch and its last day. `autofinish-run` draws each finisher by coin, Opus 5.5 or Sonnet 5.5 at `medium`, and records the run in the log dir's `finisher-rotation.jsonl`. A confidential scope's repo, or one in no scope, keeps today's finisher (`autofinish-run`'s header; `autofinish-run rotation` reads the rows back) | today's finisher, dispatch's default model |
   | `wharf-runs/load-margin` | `<load per core> [log]` — how much lighter a later host must be than the ones passed over | 0.5; log only while `load-max` is unset or `log` too |
 
   The core's own keys are read too: `regatta/laptop` (the Mac with a screen: a run's window opens
   there only), `regatta/owner` (the name the closing lines and refusals address, and the `by` of a
   marker the owner writes), `regatta/overlay` (the overlay checkout: a run's default repo, and the
   `bin/dispatch` its jobs name). With an overlay installed (that marker) `regatta check` names a missing key
-  (bar the two `serve-label` keys, `brake-label` and `headroom`, optional); the tools themselves never refuse over one they did
+  (bar the two `serve-label` keys, `brake-label`, `headroom` and `finisher-rotation`, optional); the tools themselves never refuse over one they did
   not refuse over before: they take the default and say so on stderr. Host names are compared lower-case.
 - **On a peer** (`--on PEER`): the copied script finds that Mac's own core (its `home` file or
   plugin) and reads that Mac's registry and config, so the peer needs the core installed, and

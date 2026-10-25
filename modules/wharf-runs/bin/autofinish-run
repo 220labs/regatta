@@ -117,8 +117,8 @@ Bash call's, may be ended the moment the caller returns — dispatch's header, 2
     --start run, because this waiter blocks on the watcher and nobody picks a launch up again; a
     seeded branch run is kept the prompt cache's hour instead (2026-10-06), and is ended before
     this start (`dispatch-rc end-warm`; a busy one stops it — D2 of
-    docs/dispatch-warm-hour-2026-10-08.md); opus (dispatch's default — no model flag here: a model is
-    chosen in bin/gate or a script bin/test_gate.sh names); `--permission-mode auto` with dispatch's allowlist
+    docs/dispatch-warm-hour-2026-10-08.md); opus (dispatch's default; a model flag only for the finisher
+    rotation's arm, below); `--permission-mode auto` with dispatch's allowlist
     plus what /finish runs (Agent, EnterWorktree, git, the contract's `check:` as written on the
     primary's main, the modules' bin/* and libexec/* in the regatta main checkout, carried.py), and dispatch's denied list minus
     `git push` and bin/pr's launch verbs: checkpoint.py and the repo's pre-push judge those by
@@ -192,6 +192,33 @@ account and rule. So does a send across logins that SendMessage refuses — unpr
 Only the run's own session gets the lines (CLAUDE_CODE_SESSION_ID; unset is refused), only while
 the run is under way, and once (`told`). Exit 0, also with nothing to send.
 
+The finisher rotation (S2 of docs/bench-continuous-2026-10-24.md; the owner's builders D1: A,
+2026-10-24): while the config key `wharf-runs/finisher-rotation` says `until YYYY-MM-DD` and that day
+has not passed, each start draws its finisher by a fair coin — ARMS, today's finisher (Opus 5.5 at
+`medium`: dispatch's opus and the skill's `effort: medium`) or Sonnet 5.5 at `medium` — and passes the
+arm's full model id and effort to dispatch, both arms alike. The key is the one switch and its end: no
+key, a passed day or a line that does not parse is today's start, unchanged. The fence comes first:
+a repo in any scope that is `confidential: true`, a repo in no scope, or a registry that does not
+read or walk (read_registry) keeps today's finisher and writes no row anywhere.
+The drawn arm goes into autofinish.json as `arm` ({name, model, effort, coin, until, forced}), and at
+the end — record(), or bury() for a death — one JSON row goes to <logs>/finisher-rotation.jsonl,
+outside git, private to this Mac: host, repo, branch, session, the coin and arm, the models the
+transcript returned, the outcome, gate and PR, and the cost of the session and of its agents, priced
+by plumb's usage-report. The fence is asked again there, so a repo that turned confidential meanwhile
+writes nothing. AUTOFINISH_COIN=0|1 forces the coin (the tests), and the row says `forced`; `rotation`
+counts forced rows apart, never in an arm. A row whose session returned no model at all is `voided:
+no-reply`, one that never answered in its arm's model `voided: fallback`. With the key file there but
+the rotation off or fenced, the start line says `arm=off` and why; with no key file it is unchanged.
+
+    autofinish-run rotation [--json] [--settle] [--since YYYY-MM-DD]
+
+reads the rows back: per arm, the launches, stops by gate, deaths and median costs, and each host's
+share of the runs. --settle reads, for each launched row 48 h old with no answer yet, its PR's files
+and merge time from GitHub, and the commits on the repo's origin/main within the next 48 h that touch
+those files (the PR's own subjects left out): `touched_48h`, and `fix_48h` for the ones whose subject
+says fix, revert, regression, broke or bug; then writes them into the row. A row of a repo that is
+confidential now is passed over, and an unreadable registry refuses the verb, exit 3.
+
 The run's own output (dispatch's log and this child's) goes to
 ~/Library/Logs/claude-weekly/<date>-dispatch-finish-<topic>.log. --dry prints what would be
 written and run — the state, the lock, the bundle's head, and dispatch's own dry run, claude's
@@ -208,6 +235,7 @@ DISPATCH_ACCOUNT; the tests mostly run the real one on a fixture registry), AUTO
 import argparse
 import contextlib
 import datetime
+import fcntl
 import glob
 import importlib.machinery
 import importlib.util
@@ -215,6 +243,7 @@ import io
 import json
 import os
 import pathlib
+import random
 import re
 import shlex
 import signal
@@ -242,7 +271,7 @@ START_LOCK = STATE + ".lock"
 WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
-OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode", "land_mode")   # written only when set: a launch without --merge or a hold keeps the file it always had
+OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode", "land_mode", "arm")   # written only when set: a launch without --merge or a hold keeps the file it always had
 # eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
 # (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
 # has no mode now, never a bare `by: yolo` (follow-ups item 4). land_mode: the branch's mode landing() read
@@ -286,6 +315,16 @@ STEP_RE = re.compile(r"\bstep (\d+)", re.I)
 GATE_WORDS = (("open item", "G4"), ("owns the checkout", "G0"), ("lock", "G0"),
               ("another session", "G10"), ("review", "G1r"), ("deploy", "G1"), ("live", "G1"),
               ("check", "G1"), ("github", "G5"), ("merge", "G11"), ("push", "G11"), ("rebase", "G11"))
+
+# The finisher rotation (the header): the arms in coin order, 0 the pin. Full ids: an alias floats
+# (the builders bench's harness rules). Opus `medium` is today's finisher spelled out, so both arms
+# get the same flags and differ only in the model.
+ROTATION_KEY = "wharf-runs/finisher-rotation"
+ARMS = (("opus-medium", "claude-opus-5-5", "medium"), ("sonnet-medium", "claude-sonnet-5-5", "medium"))
+ROTATION_LOG = "finisher-rotation.jsonl"   # in LOGS: private to this Mac, outside git
+ROTATION_RE = re.compile(r"^(?:until\s+)?(\d{4}-\d{2}-\d{2})$")
+SETTLE_S = 48 * 3600   # a launch's fix window
+FIX_RE = re.compile(r"\b(?:fix|fixes|fixed|revert|reverts|regression|broke|broken|bug)\b", re.I)
 
 if os.environ.get("AUTOFINISH_API_STUB"):  # the tests' GitHub: find_pr and the comment go through it
     _spec = importlib.util.spec_from_file_location("api_stub", os.environ["AUTOFINISH_API_STUB"])
@@ -732,6 +771,288 @@ def use_account(cfg):
         os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
 
+# ---- the finisher rotation (the header) ----------------------------------------------------------
+
+def rotation_window(today=None):
+    """(end, why): the last day the rotation runs, or None and why it is off. One key is the switch and
+    its end, so turning it off early is deleting the file, and it ends by itself."""
+    lines, bad = common.config_read(ROTATION_KEY)
+    if bad:
+        return None, "rotation off: %s unreadable (%s)" % (ROTATION_KEY, bad)
+    if not lines:
+        return None, "rotation off: no %s" % ROTATION_KEY
+    # bootstrap.sh's config_values writes each word of a value on its own line, so `until <date>` lands
+    # as two lines; a hand-written file holds one. Joined, both read (S2's finish review)
+    text = " ".join(l.strip() for l in lines if l.strip())
+    m = ROTATION_RE.match(text)
+    try:
+        end = datetime.date.fromisoformat(m.group(1)) if m else None
+    except ValueError:
+        end = None
+    if end is None:
+        return None, "rotation off: %s says %r, not `until YYYY-MM-DD`" % (ROTATION_KEY, text[:60])
+    if (today or datetime.date.today()) > end:
+        return None, "rotation off: it ended %s" % end
+    return end, "rotation on until %s" % end
+
+
+def rotation_fence(primary):
+    """None when a landing of this repo may rotate and be recorded, else why not. Fails closed: a torn
+    registry reads as no scopes to scope_of_repo, so it is asked first (AGENTS.md's fence trap), and a
+    repo in no scope is never known not to be confidential. One parse judges the tear and every scope,
+    and a repo in any confidential scope is fenced, not only in the first that lists it (the core's
+    gather_fence; S2's finish review). A shape scope_of_repo cannot walk fences too."""
+    reg, bad = common.read_registry()
+    if bad:
+        return "the scope registry does not read"
+    try:
+        name, _ = common.scope_of_repo(primary, reg=reg) if reg is not None else (None, {})
+        if not name:
+            return "%s is in no scope" % os.path.basename(primary)
+        for n, sc in (reg.get("scopes") or {}).items():
+            if (isinstance(sc, dict) and sc.get("confidential") is True
+                    and common.scope_of_repo(primary, reg={"scopes": {n: sc}})[0]):
+                return "scope %s is confidential" % n
+    except Exception as e:  # noqa: BLE001 — a registry it cannot walk is never known open
+        return "the scope registry does not walk (%s)" % type(e).__name__
+    return None
+
+
+def draw_arm(t):
+    """(arm, why): the arm this start runs, as the state's `arm`, or None for today's finisher."""
+    end, why = rotation_window()
+    if end is None:
+        return None, why
+    fenced = rotation_fence(t.primary)
+    if fenced:
+        return None, "rotation fenced: %s — today's finisher, no row" % fenced
+    forced = os.environ.get("AUTOFINISH_COIN")
+    coin = int(forced) if forced in ("0", "1") else random.SystemRandom().randrange(2)
+    name, model, effort = ARMS[coin]
+    return ({"name": name, "model": model, "effort": effort, "coin": coin, "until": end.isoformat(),
+             "forced": forced in ("0", "1")}, "%s; coin %d: %s" % (why, coin, name))
+
+
+def transcript_cost(sid):
+    """{models, cost_usd, agents_cost_usd} from the session's transcript and its agents', priced by
+    plumb's usage-report (one price table; helmlib.session_cost's walk, plus the models and the agents).
+    None without the transcript or usage-report."""
+    path = transcript(sid)
+    ur_path = common.tool("usage-report")
+    if not path or not ur_path:
+        return None
+    try:
+        ur = importlib.machinery.SourceFileLoader("usage_report", str(ur_path)).load_module()
+    except BaseException:  # noqa: BLE001 — find_core's sys.exit included: no price, never a lost row
+        return None
+
+    def walk(p):
+        seen = {}
+        try:
+            with open(p, errors="replace") as fh:
+                for line in fh:
+                    if '"usage"' not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    msg = d.get("message") if isinstance(d, dict) and d.get("type") == "assistant" else None
+                    u = (msg or {}).get("usage")
+                    # Claude Code's own <synthetic> entries carry zero usage (AGENTS.md's trap)
+                    if not isinstance(u, dict) or msg.get("model") in (None, "<synthetic>"):
+                        continue
+                    key = d.get("requestId") or d.get("uuid")
+                    out = u.get("output_tokens") or 0
+                    if key in seen and seen[key][1][1] >= out:
+                        continue   # a streamed reply's earlier blocks
+                    cc = u.get("cache_creation") or {}
+                    w5, w1 = cc.get("ephemeral_5m_input_tokens"), cc.get("ephemeral_1h_input_tokens")
+                    if w5 is None and w1 is None:
+                        w5, w1 = u.get("cache_creation_input_tokens") or 0, 0
+                    seen[key] = (msg["model"], (u.get("input_tokens") or 0, out, u.get("cache_read_input_tokens") or 0,
+                                                w5 or 0, w1 or 0))
+        except OSError:
+            pass
+        return list(seen.values())
+
+    calls = walk(path)
+    agents = [c for p in sorted(glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "*.jsonl"))) for c in walk(p)]
+    models = {}
+    for m, v in calls:
+        models[m] = models.get(m, 0) + sum(v)
+    return {"models": models,
+            "cost_usd": round(sum(ur.cost_of(m, *v) for m, v in calls), 4),
+            "agents_cost_usd": round(sum(ur.cost_of(m, *v) for m, v in agents), 4)}
+
+
+@contextlib.contextmanager
+def rotation_lock():
+    """The rows' file, locked: a row appended while --settle rewrites it would be lost."""
+    os.makedirs(LOGS, exist_ok=True)
+    with open(os.path.join(LOGS, ROTATION_LOG + ".lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            yield os.path.join(LOGS, ROTATION_LOG)
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def rotation_row(t, st, outcome, gate, pr):
+    """One row for a run that drew an arm; None written (and why) when the fence closed meanwhile."""
+    arm = st.get("arm")
+    if not isinstance(arm, dict):
+        return None
+    fenced = rotation_fence(t.primary)
+    if fenced:
+        return "no rotation row: %s" % fenced
+    cost = transcript_cost(st["session"]) or {}
+    models = cost.get("models") or {}
+    row = {"ts": now_iso(), "host": os.environ.get("DISPATCH_HOST") or common.host_name(),
+           "repo": t.repo, "primary": t.primary, "slug": slug(t), "main": main_of(t), "branch": t.branch, "tip": t.tip,
+           "session": st["session"], "started": st.get("started"), "by": st.get("by"), "rule": st.get("rule"),
+           "account": st.get("account"), "coin": arm.get("coin"), "forced": bool(arm.get("forced")),
+           "arm": arm.get("name"), "model": arm.get("model"), "effort": arm.get("effort"),
+           "models_returned": sorted(models), "models_unrequested": sorted(m for m in models if m != arm.get("model")),
+           # a session that never answered in the arm's model is no read of it (the safeguard's fallback)
+           "voided": ("no-reply" if not models else "fallback" if arm.get("model") not in models else None),
+           "outcome": outcome, "gate": gate, "pr": pr, "hold": st.get("hold"),
+           "cost_usd": cost.get("cost_usd"), "agents_cost_usd": cost.get("agents_cost_usd"),
+           "touched_48h": None, "fix_48h": None, "settled": None}
+    with rotation_lock() as path:
+        with open(path, "a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return None
+
+
+def read_rows(path):
+    rows = []
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+    except OSError:
+        pass
+    return rows
+
+
+def settle_row(r, now):
+    """Fill touched_48h and fix_48h of a launched row 48 h past its merge. False when it cannot be
+    read yet (no merge time, GitHub silent, the window still open)."""
+    s, pr, primary = r.get("slug"), r.get("pr"), r.get("primary")
+    if not (s and pr and primary and os.path.isdir(primary)):
+        return False
+    code, p = common.api("GET", "/repos/%s/pulls/%s" % (s, pr))
+    merged = (p or {}).get("merged_at") if code == 200 and isinstance(p, dict) else None
+    if not merged:
+        return False
+    at = datetime.datetime.fromisoformat(merged.replace("Z", "+00:00"))
+    if now - at.timestamp() < SETTLE_S:
+        return False
+    code, files = common.api("GET", "/repos/%s/pulls/%s/files?per_page=100" % (s, pr))
+    code2, commits = common.api("GET", "/repos/%s/pulls/%s/commits?per_page=100" % (s, pr))
+    if code != 200 or code2 != 200 or not isinstance(files, list) or not isinstance(commits, list):
+        return False
+    paths = sorted({f["filename"] for f in files if isinstance(f, dict) and f.get("filename")})
+    own = {((c.get("commit") or {}).get("message") or "").split("\n")[0] for c in commits if isinstance(c, dict)}
+    until = at + datetime.timedelta(seconds=SETTLE_S)
+    # a remote-tracking ref older than the window's end may miss its commits, and a settled row is
+    # never read again: wait until a sync.py fast-forward has moved it past (S2's finish review)
+    tip = git(primary, "log", "-1", "--format=%ct", "origin/%s" % (r.get("main") or "main")).strip()
+    if not tip.isdigit() or int(tip) < until.timestamp():
+        return False
+    # the landing's own commits, rebased onto main, keep their subjects and land at the merge: left out
+    out = git(primary, "log", "origin/%s" % (r.get("main") or "main"), "--format=%H%x1f%s",
+              "--since=%s" % at.isoformat(), "--until=%s" % until.isoformat(), "--", *paths) if paths else ""
+    later = [l.split("\x1f", 1)[1] for l in out.splitlines() if "\x1f" in l and l.split("\x1f", 1)[1] not in own]
+    r.update(touched_48h=len(later), fix_48h=sum(1 for s_ in later if FIX_RE.search(s_)),
+             settled=now_iso())
+    return True
+
+
+def rotation(argv):
+    """`autofinish-run rotation`: the rows read back (the header)."""
+    ap = argparse.ArgumentParser(prog="autofinish-run rotation")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--settle", action="store_true")
+    ap.add_argument("--since", metavar="YYYY-MM-DD")
+    args = ap.parse_args(argv)
+    if common.registry_unreadable():
+        print("autofinish-run rotation: the scope registry does not read — refused, no row is shown", file=sys.stderr)
+        return 3
+    _, why = rotation_window()
+    with rotation_lock() as path:
+        rows = read_rows(path)
+    settled = 0
+    if args.settle:
+        # GitHub is read outside the lock, so a run's end never waits on it; the answers are written
+        # into the file as it is then, matched by session, branch and PR
+        now, done = time.time(), {}
+        for r in rows:
+            if (r.get("outcome") in common.LAUNCHED_OUTCOMES and r.get("settled") is None
+                    and not rotation_fence(r.get("primary") or "") and settle_row(r, now)):
+                done[(r.get("session"), r.get("branch"), r.get("pr"))] = r
+        if done:
+            with rotation_lock() as path:
+                rows = read_rows(path)
+                for r in rows:
+                    s_ = done.get((r.get("session"), r.get("branch"), r.get("pr")))
+                    if s_ and r.get("settled") is None:
+                        r.update({k: s_[k] for k in ("touched_48h", "fix_48h", "settled")})
+                        settled += 1
+                tmp = "%s.%d" % (path, os.getpid())
+                with open(tmp, "w") as f:
+                    f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+                os.replace(tmp, path)
+    open_rows = [r for r in rows if not rotation_fence(r.get("primary") or "")]
+    shown = [r for r in open_rows if not args.since or str(r.get("ts") or "") >= args.since]
+    arms, hosts = {}, {}
+    forced = sum(1 for r in shown if r.get("forced"))
+    for r in shown:
+        if r.get("forced"):
+            continue   # AUTOFINISH_COIN chose it, not the coin: no read of an arm
+        a = arms.setdefault(r.get("arm") or "?", {"runs": 0, "launched": 0, "stopped": {}, "other": {},
+                                                    "voided": 0, "fix_48h": 0, "settled": 0, "cost": []})
+        a["runs"] += 1
+        if r.get("voided"):
+            a["voided"] += 1
+        if r.get("outcome") in common.LAUNCHED_OUTCOMES:
+            a["launched"] += 1
+        elif r.get("outcome") == "stopped":
+            a["stopped"][r.get("gate") or "?"] = a["stopped"].get(r.get("gate") or "?", 0) + 1
+        else:
+            a["other"][r.get("outcome") or "?"] = a["other"].get(r.get("outcome") or "?", 0) + 1
+        if r.get("settled"):
+            a["settled"] += 1
+            a["fix_48h"] += bool(r.get("fix_48h"))
+        if isinstance(r.get("cost_usd"), (int, float)):
+            a["cost"].append(r["cost_usd"])
+        hosts[r.get("host") or "?"] = hosts.get(r.get("host") or "?", 0) + 1
+    for a in arms.values():
+        c = sorted(a.pop("cost"))
+        a["median_cost_usd"] = (c[len(c) // 2] if len(c) % 2 else round((c[len(c) // 2 - 1] + c[len(c) // 2]) / 2, 4)) if c else None
+    out = {"window": why, "rows": len(shown), "forced": forced, "fenced_now": len(rows) - len(open_rows),
+           "settled_now": settled, "arms": arms, "hosts": hosts, "file": path}
+    if args.json:
+        print(json.dumps(out, indent=1, ensure_ascii=False))
+        return 0
+    print("%s; %d row(s) in %s%s%s" % (why, len(shown), path, ", %d settled now" % settled if args.settle else "",
+                                       ", %d forced (not counted)" % forced if forced else ""))
+    for name, a in sorted(arms.items()):
+        print("  %s: %d run(s), %d launched, stopped %s, other %s, %d voided, fix in 48 h %d of %d settled, median $%s"
+              % (name, a["runs"], a["launched"], json.dumps(a["stopped"]), json.dumps(a["other"]), a["voided"],
+                 a["fix_48h"], a["settled"], a["median_cost_usd"]))
+    total = sum(hosts.values())
+    if total:
+        print("  hosts: " + ", ".join("%s %d (%d %%)" % (h, n, round(100 * n / total)) for h, n in sorted(hosts.items())))
+    return 0
+
+
 def finish_prompt(branch, by=None, merge=False, hold=None):
     """The prompt the run starts with (the header's)."""
     return "/finish %s --unattended" % branch + (" --%s" % by if by in LAND_BY else "") + (" --hold" if hold else "") \
@@ -828,7 +1149,7 @@ def regatta_main():
     return os.path.abspath(str(root)) if os.path.realpath(top) == os.path.realpath(str(root)) else top
 
 
-def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None):
+def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None):
     """dispatch --start, with E1's lists. The FINISH_TOOLS rules are the modules' in
     the regatta main checkout (/finish runs its tools there since B14b, 2026-10-23, which deleted the
     overlay's shims; B14a's D1-A), in the two spellings a session types them in: under `~/` and the
@@ -855,6 +1176,8 @@ def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None):
     prompt = finish_prompt(t.branch, by, merge, hold)
     cmd = [DISPATCH, "--start", prompt, t.path, t.window,
            "--session-id", sid]   # opus: dispatch's default (header)
+    if arm:   # the rotation's arm, by full id (the header); none: dispatch's default, today's finisher
+        cmd += ["--model", arm["model"], "--effort", arm["effort"]]
     for a in allow:
         cmd += ["--allow", a]
     lift = ["Bash(git push:*)", "Bash(*bin/pr ready*)", "Bash(*bin/pr merge*)",
@@ -1184,7 +1507,11 @@ def record(t, st, log_from, rc, why, notes):
         os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
         with open(os.path.join(t.common, "claude", RECORD), "a") as f:
             f.write(line + "\n")
-    extra = [x for x in (said, "dispatch exit %s" % rc if rc not in (0, None) else "") + tuple(notes) if x]
+    try:
+        fenced = rotation_row(t, st, outcome, gate, pr) if gate not in REFUSED_GATES else None
+    except Exception as e:  # noqa: BLE001 — a lost row is said, never a lost record
+        fenced = "no rotation row: %s" % type(e).__name__
+    extra = [x for x in (said, "dispatch exit %s" % rc if rc not in (0, None) else "", fenced) + tuple(notes) if x]
     log(common.RUN_END % (
         st["ended"], t.repo, t.branch, outcome, " gate=%s" % gate if gate else "",
         " pr=#%s" % pr if pr else "", sid[:8], t.tip[:7], st.get("rule"), st.get("by"), st.get("account") or "-",
@@ -1282,7 +1609,11 @@ def bury(t, why):
         os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
         with open(os.path.join(t.common, "claude", RECORD), "a") as f:
             f.write("%s died %s %s %s\n" % (st["ended"], t.branch, str(st.get("tip"))[:7], lines[0]))
-        extra = [x for x in [said, why] + notes if x]
+        try:
+            fenced = rotation_row(t, st, DIED, None, pr)
+        except Exception as e:  # noqa: BLE001 — a lost row is said, never a lost record
+            fenced = "no rotation row: %s" % type(e).__name__
+        extra = [x for x in [said, why, fenced] + notes if x]
         line = "%s run %s %s died session=%s tip=%s rule=%s by=%s account=%s — %s; %s" % (
             st["ended"], t.repo, t.branch, sid[:8], str(st.get("tip"))[:7], st.get("rule"), st.get("by"),
             st.get("account") or "-", lines[0][:300], "; ".join(extra))
@@ -1445,6 +1776,8 @@ def ship_refusal(t, digest):
 def main(argv):
     if argv[:1] == ["notify"]:
         return notify(argv[1:])
+    if argv[:1] == ["rotation"]:
+        return rotation(argv[1:])
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
     ap.add_argument("worktree")
     ap.add_argument("--rule", choices="ABCDELM", default="C")
@@ -1577,10 +1910,16 @@ def start(t, args):
         hold = SHIP_HOLD
     if hold and args.merge:
         args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
+    try:
+        arm, arm_why = draw_arm(t)
+    except Exception as e:  # noqa: BLE001 — the rotation never costs a start: today's finisher
+        arm, arm_why = None, "rotation off: %s" % type(e).__name__
+    # the key there but no arm drawn says so in the day's log; no key file, the start line is unchanged
+    arm_off = not arm and not arm_why.startswith("rotation off: no %s" % ROTATION_KEY)
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
-          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff, "land_mode": mode}
-    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold)
+          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff, "land_mode": mode, "arm": arm}
+    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")
     except Exception as e:  # who to tell is never worth the launch: notify then sends nothing
@@ -1590,6 +1929,7 @@ def start(t, args):
         print("autofinish-run --dry: %s in %s, tip %s, rule %s, by %s%s" % (t.branch, t.path, t.tip[:7], args.rule, by, via))
         print("mode %s: %s" % (mode or "none", "held at a ready PR — " + hold if hold else "may merge, past the check and the review gate"))
         print("account %s%s: %s" % (label or "unchanged", " (%s)" % cfg if cfg else "", picked))
+        print("finisher %s: %s" % ("%s (%s, %s)" % (arm["name"], arm["model"], arm["effort"]) if arm else "today's", arm_why))
         print("would write %s:" % os.path.join(t.state_dir, STATE))
         print("  " + json.dumps(contract(st), ensure_ascii=False))
         print("would write %s: session %s" % (os.path.join(t.state_dir, common.OWNER_FILE), sid))
@@ -1601,7 +1941,7 @@ def start(t, args):
         print("  " + " ".join(shlex.quote(c) for c in cmd))
         print("dispatch --start --dry-run says the session would be:")
         sys.stdout.flush()
-        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold), env=start_env(t))
+        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold, arm=arm), env=start_env(t))
     try:
         with open(os.path.join(t.state_dir, common.OWNER_FILE)) as f:
             before = f.read()
@@ -1620,7 +1960,7 @@ def start(t, args):
         os.replace(tmp, os.path.join(t.state_dir, CHAIN))
     log("%s run %s %s started session=%s tip=%s rule=%s by=%s%s account=%s window=\"%s\" — %s" % (
         st["started"], t.repo, t.branch, sid[:8], t.tip[:7], args.rule, by, via + (" merge=yes" if args.merge else "")
-        + (" hold=\"%s\"" % hold if hold else ""),
+        + (" hold=\"%s\"" % hold if hold else "") + (" arm=%s" % arm["name"] if arm else " arm=off (%s)" % arm_why if arm_off else ""),
         label or "-", t.window, picked))
     try:
         detach(lambda: wait_for_end(t, st, cmd), t.runlog)
