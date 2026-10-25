@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- hookwatch's suite builds the revert branch's date with `date -d @<epoch>` where BSD `date -r` fails, so
+  the twin's ubuntu CI passes it (220labs/regatta#5, 2026-10-24).
 - hookwatch after its landing review (autofinish-exclude, 2026-10-24): a fault counts only for a hook the
   move changed (its file, its imports, its traceback's files); the overlay's own hooks are no longer read
   (the `legacy` prefix is gone; a shim shows through its traceback); a `judge` fault needs an error or a
