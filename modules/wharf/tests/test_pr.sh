@@ -5,6 +5,7 @@
 # A throwaway repo and origin; GitHub faked; no network.   bash modules/wharf/tests/test_pr.sh
 set -u
 unset CLAUDE_UNATTENDED   # an unattended /finish runs this check too; the cases set it themselves
+unset CLAUDE_CODE_SESSION_ID   # a held launch's /finish too: pr merge refuses its session (the cases that need one set it)
 B="$(cd "$(dirname "$0")/../libexec" && pwd)"   # pr sits outside bin/, reached as `regatta pr` (C1)
 T=$(mktemp -d); T=$(cd "$T" && pwd -P); trap 'rm -rf "$T"' EXIT
 # the caller's config dir when it names one, else an empty scratch one: the core is the one beside this module
