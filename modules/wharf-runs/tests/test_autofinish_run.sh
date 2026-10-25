@@ -11,6 +11,11 @@ unset CLAUDE_UNATTENDED RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LO
       ACCOUNTS_FILE ACCOUNT_NOW ACCOUNT_CLAUDE CLAUDE_CODE_OAUTH_TOKEN
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 unset DISPATCH_SHIP DISPATCH_PLAN   # a ship's block running this suite: --by ship would read it as one (S6)
+# …and by pattern, since a fixed list goes stale (AGENTS.md's attended-behaviour trap): every DISPATCH_*,
+# RUN_SEED_*, SKIPPER_*, HELM_* and AUTOFINISH_* a run carries, its background switch, its session, and the
+# registry a caller points at (the rotation's fence reads it)
+for v in $(env | sed -nE 's/^((DISPATCH|RUN_SEED|SKIPPER|HELM|AUTOFINISH)_[A-Za-z0-9_]*)=.*/\1/p'); do unset "$v"; done
+unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_REPOS_JSON
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 # the regatta core's hooks/ (common.py), found as the tools find it (lib/core_path.py); wharf's peers by its tool()
 CORE="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; print(core_path.hooks() or "")' "$B/../lib")"
@@ -1004,6 +1009,174 @@ CLAUDE_CODE_SESSION_ID=$SID "$B/autofinish-run" notify "$W" > "$T/out" 2>&1
 has "$T/out" "nothing to send: no autofinish run is under way" "an ended run sends nothing"
 kill $PANEL_PID $MUTE_PID $TWIN_PID 2>/dev/null
 rm -f "$HOME/.claude/sessions/$PANEL_PID.json" "$HOME/.claude/sessions/$MUTE_PID.json" "$HOME/.claude/sessions/$TWIN_PID.json"
+
+echo "the finisher rotation: a coin per start, the fence first, one row per run (S2 of docs/bench-continuous-2026-10-24.md)"
+ROT="$T/config/wharf-runs/finisher-rotation"; ROWS="$LOGS/finisher-rotation.jsonl"
+rows() { if [ -f "$ROWS" ]; then wc -l < "$ROWS" | tr -d ' '; else echo 0; fi; }
+reg() { printf '{"repos": {}, "scopes": {"work": {"repos": ["*/repo", "*/repo2"]%s}}}\n' "$1" > "$T/repos.json"; }
+armof() { python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("arm"); print("none" if a is None else "%s %s %s" % (a["name"], a["coin"], a["forced"]))' "$STATE"; }
+export CLAUDE_REPOS_JSON="$T/repos.json"; reg ""
+next_tip "rotation: the dry runs"   # a tip no run ended on: the same-tip refusal would print nothing else
+af --dry > "$T/out" 2>&1
+has "$T/out" "finisher today's: rotation off: no wharf-runs/finisher-rotation" "no key: today's finisher"
+hasnt "$T/out" "--model claude-" "  no model flag: dispatch's default, as before"
+echo "until 2020-01-01" > "$ROT"
+af --dry > "$T/out" 2>&1
+has "$T/out" "finisher today's: rotation off: it ended 2020-01-01" "a window that has passed: today's finisher, by itself"
+echo "soon" > "$ROT"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation off: wharf-runs/finisher-rotation says 'soon', not \`until YYYY-MM-DD\`" "a line that does not parse: off, and says why"
+echo "until 2099-12-31" > "$ROT"
+AUTOFINISH_COIN=1 af --dry > "$T/out" 2>&1
+has "$T/out" "finisher sonnet-medium (claude-sonnet-5-5, medium): rotation on until 2099-12-31; coin 1: sonnet-medium" "in the window, coin 1: Sonnet 5.5 at medium"
+has "$T/out" "--model claude-sonnet-5-5 --effort medium" "  passed to dispatch by full id"
+echo "2099-12-31" > "$ROT"
+AUTOFINISH_COIN=0 af --dry > "$T/out" 2>&1
+has "$T/out" "finisher opus-medium (claude-opus-5-5, medium)" "coin 0: today's finisher spelled out, Opus 5.5 at medium (a bare date reads too)"
+has "$T/out" "--model claude-opus-5-5 --effort medium" "  with the same flags as the other arm"
+printf 'until\n2099-12-31\n' > "$ROT"   # bootstrap.sh's config_values: one word per line
+AUTOFINISH_COIN=1 af --dry > "$T/out" 2>&1
+has "$T/out" "rotation on until 2099-12-31; coin 1: sonnet-medium" "the key as bootstrap.sh writes it, a word per line: on"
+printf '{"repos": {}, "scopes": {"home": {"repos": ["*/repo"]}, "work": {"repos": ["*/repo"], "confidential": true}}}\n' > "$T/repos.json"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation fenced: scope work is confidential" "a repo in an open scope and a confidential one: fenced, not only the first scope judged"
+printf '{"repos": {}, "scopes": {"work": {"repos": 5}}}\n' > "$T/repos.json"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation fenced: the scope registry does not walk (TypeError)" "a scope whose repos is no list: fenced, never a crashed start"
+reg ""
+check "$(python3 - "$B/autofinish-run" "$R" <<'PY'
+import collections, importlib.machinery, sys, types
+af = importlib.machinery.SourceFileLoader("afr", sys.argv[1]).load_module()
+t = types.SimpleNamespace(primary=sys.argv[2])
+n = collections.Counter(af.draw_arm(t)[0]["name"] for _ in range(64))
+print(" ".join(sorted(n)) if min(n.values()) >= 10 else n)
+PY
+)" "opus-medium sonnet-medium" "an unforced coin draws both arms (64 draws, each at least 10)"
+
+next_tip "rotation: sonnet"; : > "$T/claude.calls"; N0=$(rows)
+AUTOFINISH_COIN=1 STUB_REPLY="$T/stop.txt" af --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a start in the window"
+ended; SID=$(field session)
+has "$T/claude.calls" "--model claude-sonnet-5-5 --effort medium" "  claude ran the drawn arm"
+check "$(armof)" "sonnet-medium 1 True" "  the state's arm: name, coin, forced"
+has "$AFLOG" "by=sweep arm=sonnet-medium account=" "  the start's log line names it"
+check "$(rows)" "$((N0 + 1))" "  one row at the end"
+check "$(tail -1 "$ROWS" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+print(r["arm"], r["coin"], r["forced"], r["model"], r["effort"], r["outcome"], r["gate"], r["pr"], r["host"], r["repo"], r["session"] == sys.argv[1], r["voided"], r["fix_48h"])' "$SID")" \
+  "sonnet-medium 1 True claude-sonnet-5-5 medium stopped G4 7 buildbox repo True no-reply None" "  the row: coin, arm, model, outcome, gate, PR, host; the stub returns no model (no-reply); the fix read later"
+
+reg ', "confidential": true'
+next_tip "rotation: confidential"; : > "$T/claude.calls"; N0=$(rows)
+af --dry > "$T/out" 2>&1
+has "$T/out" "finisher today's: rotation fenced: scope work is confidential — today's finisher, no row" "a confidential scope: today's finisher"
+AUTOFINISH_COIN=1 STUB_REPLY="$T/stop.txt" af --rule A --by sweep > /dev/null 2>&1; ended
+hasnt "$T/claude.calls" "--model claude-" "  no arm passed, whatever the coin"
+check "$(armof)" "none" "  no arm in the state"
+has "$AFLOG" "arm=off (rotation fenced: scope work is confidential" "  the key there, no arm: the start line says why"
+check "$(rows)" "$N0" "  and no row"
+next_tip "rotation: fenced dry runs"
+printf '{"repos": {}, "scopes": {"work": {"repos": ["*/other"]}}}\n' > "$T/repos.json"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation fenced: repo is in no scope" "a repo in no scope: fenced, never known not to be confidential"
+printf '{"repos": {}, "scopes": {<<<<<<< HEAD\n' > "$T/repos.json"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation fenced: the scope registry does not read" "a torn registry: fenced, not open"
+"$B/autofinish-run" rotation > "$T/out" 2>&1; check "$?" "3" "  and the rows are not shown (exit 3)"
+
+reg ""
+next_tip "rotation: fenced mid-run"; N0=$(rows)
+AUTOFINISH_COIN=0 STUB_RUN=busy af --rule A --by sweep > /dev/null 2>&1
+for _ in $(seq 1 50); do CP=$(pgrep -f "$T/claude /finish" | head -1); [ -n "$CP" ] && break; sleep 0.2; done
+check "$(armof)" "opus-medium 0 True" "a run that drew its arm in an open scope…"
+reg ', "confidential": true'
+sleep 1; kill -TERM "$CP"; ended
+check "$(rows)" "$N0" "  …writes no row once the scope turned confidential"
+has "$AFLOG" "no rotation row: scope work is confidential" "  and its end line says so"
+
+reg ""
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/cost/s1/subagents"
+cat > "$T/cost.py" <<'PY'
+import importlib.machinery, json, os, sys, types
+af = importlib.machinery.SourceFileLoader("afr", sys.argv[1]).load_module()
+d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "cost")
+def a(model, rid, inp, out):
+    return json.dumps({"type": "assistant", "requestId": rid, "message": {"model": model, "usage": {
+        "input_tokens": inp, "output_tokens": out, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}})
+with open(os.path.join(d, "s1.jsonl"), "w") as f:   # a streamed reply's last block counts; <synthetic> never
+    f.write("\n".join([a("claude-sonnet-5-5", "r1", 1000, 10), a("claude-sonnet-5-5", "r1", 1000, 100),
+                       a("claude-haiku-5-5", "r2", 500, 5), a("<synthetic>", "r3", 0, 0)]) + "\n")
+with open(os.path.join(d, "s1", "subagents", "agent-x.jsonl"), "w") as f:
+    f.write(a("claude-opus-5-5", "r9", 1000000, 0) + "\n")
+print(json.dumps(af.transcript_cost("s1"), sort_keys=True))
+t = types.SimpleNamespace(primary=sys.argv[2], repo="repo", branch="b", tip="0" * 40, path=sys.argv[2])
+for name, model in (("sonnet-medium", "claude-sonnet-5-5"), ("opus-medium", "claude-opus-5-5")):
+    af.rotation_row(t, {"session": "s1", "arm": {"name": name, "model": model, "effort": "medium", "coin": 0}}, "launched", None, 9)
+    with open(os.path.join(af.LOGS, af.ROTATION_LOG)) as f:
+        r = json.loads(f.readlines()[-1])
+    print(name, r["voided"], r["models_unrequested"], r["cost_usd"], r["agents_cost_usd"])
+af.rotation_row(t, {"session": "no-such", "arm": {"name": "sonnet-medium", "model": "claude-sonnet-5-5", "coin": 1}}, "never-started", "never-started", None)
+with open(os.path.join(af.LOGS, af.ROTATION_LOG)) as f:
+    r = json.loads(f.readlines()[-1])
+print("silent", r["voided"])
+PY
+python3 "$T/cost.py" "$B/autofinish-run" "$R" > "$T/out" 2>&1
+has "$T/out" '{"agents_cost_usd": 4.0, "cost_usd": 0.0031, "models": {"claude-haiku-5-5": 505, "claude-sonnet-5-5": 1100}}' "the cost from the transcript, at usage-report's prices, the agents apart"
+has "$T/out" "sonnet-medium None ['claude-haiku-5-5'] 0.0031 4.0" "  a row in the arm's model: scored, the unrequested model named"
+has "$T/out" "opus-medium fallback ['claude-haiku-5-5', 'claude-sonnet-5-5'] 0.0031 4.0" "  a session that never answered in its arm's model: voided, fallback"
+has "$T/out" "silent no-reply" "  a session that returned no model at all: voided, no-reply"
+cat > "$T/drop.py" <<'PY'
+import json, sys   # the cost case's rows are no part of the settle cases below
+with open(sys.argv[1]) as f:
+    keep = [l for l in f if json.loads(l).get("branch") != "b"]
+with open(sys.argv[1], "w") as f:
+    f.writelines(keep)
+PY
+python3 "$T/drop.py" "$ROWS"
+
+R2="$T/repo2"; git init -q -b main "$R2"; git -C "$R2" config user.email t@t; git -C "$R2" config user.name t
+c2() { echo "$1" >> "$R2/$2"; git -C "$R2" add "$2"; GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" git -C "$R2" commit -qm "$4"; }
+c2 a f 2026-09-30T00:00:00Z "init"
+c2 b f 2026-10-01T00:00:00Z "the work"
+c2 c f 2026-10-01T05:00:00Z "Wharf: fix the demo's stop"
+c2 d g 2026-10-01T06:00:00Z "Other: a fix in a file the landing never touched"
+c2 e f 2026-10-02T01:00:00Z "Docs: the demo's line"
+c2 h f 2026-10-04T00:00:00Z "Wharf: fix after the window"
+git -C "$R2" update-ref refs/remotes/origin/main main
+for pr in 42 43; do
+  printf '{"ts": "2026-10-01T00:00:00-07:00", "host": "laptop", "repo": "repo2", "primary": "%s", "slug": "test/repo2", "main": "main", "branch": "b%s", "arm": "opus-medium", "outcome": "launched", "pr": %s, "cost_usd": 1.5, "settled": null}\n' "$R2" $pr $pr >> "$ROWS"
+done
+# 44's window ends 2026-10-05, past origin/main's tip: a stale ref is no read; the forced row is no draw
+printf '{"ts": "2026-10-03T00:00:00-07:00", "host": "other", "repo": "repo2", "primary": "%s", "slug": "test/repo2", "main": "main", "branch": "b44", "arm": "opus-medium", "outcome": "launched", "pr": 44, "settled": null}\n' "$R2" >> "$ROWS"
+printf '{"ts": "2026-10-03T00:00:00-07:00", "host": "other", "repo": "repo2", "primary": "%s", "slug": "test/repo2", "main": "main", "branch": "b45", "arm": "sonnet-medium", "forced": true, "outcome": "stopped", "gate": "G4", "settled": null}\n' "$R2" >> "$ROWS"
+cat > "$T/api_settle.py" <<'PY'
+import datetime
+def api(method, path, body=None, tok=None, timeout=15):
+    if path == "/repos/test/repo2/pulls/42":
+        return 200, {"merged_at": "2026-10-01T00:00:00Z"}
+    if path == "/repos/test/repo2/pulls/43":   # merged an hour ago: its 48 h are still open
+        return 200, {"merged_at": (datetime.datetime.utcnow() - datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if path == "/repos/test/repo2/pulls/44":
+        return 200, {"merged_at": "2026-10-03T00:00:00Z"}
+    if path.startswith("/repos/test/repo2/pulls/4") and "/files" in path:
+        return 200, [{"filename": "f"}]
+    if path.startswith("/repos/test/repo2/pulls/4") and "/commits" in path:
+        return 200, [{"commit": {"message": "the work\n\nPrompt: build it"}}]
+    return 404, None
+PY
+AUTOFINISH_API_STUB="$T/api_settle.py" "$B/autofinish-run" rotation --settle > "$T/out" 2>&1; check "$?" "0" "rotation --settle"
+has "$T/out" "1 settled now" "  settles the launch 48 h past its merge, not the young one"
+check "$(grep '"b42"' "$ROWS" | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["touched_48h"], r["fix_48h"], bool(r["settled"]))')" "2 1 True" \
+  "  the commits within 48 h on the same files, its own left out; one says fix"
+check "$(grep '"b43"' "$ROWS" | python3 -c 'import json, sys; print(json.load(sys.stdin)["settled"])')" "None" "  the young one waits"
+check "$(grep '"b44"' "$ROWS" | python3 -c 'import json, sys; print(json.load(sys.stdin)["settled"])')" "None" "  one whose window ends past origin/main's tip waits for a fresher ref"
+"$B/autofinish-run" rotation --json > "$T/out" 2>&1
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["hosts"].get("laptop"), d["arms"]["opus-medium"]["fix_48h"], d["arms"]["opus-medium"]["settled"], d["fenced_now"], d["forced"] > 0, "sonnet-medium" in d["arms"])' "$T/out")" \
+  "2 1 1 0 True False" "rotation --json: each host's runs (its share of the landings), the arm's fixes of its settled launches; forced rows in no arm"
+reg ', "confidential": true'
+"$B/autofinish-run" rotation --json > "$T/out" 2>&1
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"], d["fenced_now"] > 0)' "$T/out")" "0 True" "  a repo confidential now: its rows are passed over"
+rm -f "$ROT"; unset CLAUDE_REPOS_JSON
 
 echo "dispatch --start's own guards"
 "$B/dispatch" --start p "$W" n --undeny 'Bash(nope)' --dry-run > "$T/out" 2>&1; check "$?" "2" "--undeny of an entry not on the list is refused"
