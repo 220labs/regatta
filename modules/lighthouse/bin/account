@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--bound] [--repo PATH] [--ship KEY] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--bound] [--repo PATH] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
@@ -53,6 +53,13 @@ no transcript is written (R8, checked the same day). Cached 60 s in <home>/usage
 --cached never probes (hooks use it). One retry on a failed probe, then the last reading of any
 age; with none, the row is "unknown" and skipped — except the primary, which pick takes at once
 rather than hand its work to a later row (the Pro fallback has no Fable) or block it. Never a loop.
+
+Paid overage (costs S8, docs/host-power-costs-2026-10-24.md finding 10): the probe's answer carries
+`rate_limits.extra_usage`, read by the core's `extra_usage()` (plumb's usage-report reads the /usage
+cache with it) into the cached reading. judge refuses a row whose extra usage is on, since work there
+may bill past the plan, unless `pick --allow-overage`, a person's yes, which an unattended caller
+(CLAUDE_UNATTENDED) is refused (exit 2). A reading without the field (a cache from before, a Codex
+row) is no refusal.
 
 Exhaustion (D6): <home>/exhaustion.jsonl, one record per locked window. bin/statusline writes it
 when a window's used_percentage reaches 100; a probe writes it when a window reads 100 or carries
@@ -1095,7 +1102,25 @@ def parse_usage(u):
     fw = fable_window(limits_list(u)) or {}
     out["fable_week"] = fw.get("percent")
     out["fable_week_resets"] = epoch(fw.get("resets_at"))
+    out["extra_usage"] = overage_of(rl.get("extra_usage"))
     return out
+
+
+def overage_of(xu):
+    """The core's parse of an `extra_usage` object, or None: no core (or one from before the
+    parse) reads as no field, which judge never refuses — the windows still decide."""
+    try:
+        return core().extra_usage(xu)
+    except (ImportError, AttributeError):
+        return None
+
+
+def overage_on(lim):
+    """Paid extra usage that can bill on this row: on, and not switched off by the user (a field the
+    /usage cache carries; the control answer leaves it None, read as not off). The finish review,
+    2026-10-24."""
+    xu = (lim or {}).get("extra_usage") or {}
+    return bool(xu.get("enabled")) and not xu.get("user_disabled")
 
 
 def cache_path(a):
@@ -1236,8 +1261,9 @@ def ceiling(a, lim, t):
     return rules.get("week_max", 100), "week ceiling"
 
 
-def judge(a, lim, t):
-    """→ (eligible, reason) for one row with known limits."""
+def judge(a, lim, t, allow_overage=False):
+    """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
+    whose paid extra usage is on (header, "Paid overage")."""
     if a.get("same_as"):
         other, email = a["same_as"]
         return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
@@ -1246,6 +1272,8 @@ def judge(a, lim, t):
         return False, f"cooling down until {when(cd)} (a window locked)"
     if lim is None:
         return False, "limits unknown (no probe answered, none cached)"
+    if overage_on(lim) and not allow_overage:
+        return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
     week_max, why = ceiling(a, lim, t)
     m = margin(a, t)
     win_max = a["rules"].get("window_max", 100) - m
@@ -1277,7 +1305,7 @@ def provider_for(reg, kind, provider):
     return "claude"
 
 
-def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
+def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False):
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
     repo: the path the step runs in; a row whose deny list names its repo is skipped unprobed."""
     t = now()
@@ -1309,7 +1337,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None):
             skipped.append((a["label"], judge(a, None, t)[1]))
             continue
         lim, _ = limits(a, cached=cached)
-        ok, why = judge(a, lim, t)
+        ok, why = judge(a, lim, t, allow_overage)
         if ok:
             return a, why, skipped
         if a.get("primary") and (lim is None or why.startswith("limits unknown")):
@@ -2087,7 +2115,7 @@ def load_ships():
             if isinstance(v, dict) and t - float(v.get("at") or 0) < PIN_DAYS * 86400}
 
 
-def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True):
+def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True, allow_overage=False):
     """pick, but a ship stays on its login (module docstring). → (row, reason, skipped); Short as pick."""
     with ships_lock():
         ships = load_ships()
@@ -2104,7 +2132,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             if not gone:
                 t = now()
                 lim = None if cooldown(a, t) else limits(a, cached=cached)[0]
-                ok, why = judge(a, lim, t)
+                ok, why = judge(a, lim, t, allow_overage)
                 if not ok and lim is None and a.get("primary") and not cooldown(a, t):
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
                 elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
@@ -2119,7 +2147,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             moved = f"{pinned['label']} is {gone}"
         elif pinned:
             moved = f"{pinned.get('label')} is no row any more"
-        a, why, skipped = pick(reg, kind, provider, False, cached, repo)
+        a, why, skipped = pick(reg, kind, provider, False, cached, repo, allow_overage)
         if pin:
             ships[key] = {"label": a["label"], "at": int(now())}
             write_json(SHIPS, ships)
@@ -2727,6 +2755,8 @@ def limits_json(a, lim, at, t, repo=None):
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
             "here": a["home"].is_dir(), "home": str(a["home"]), "env": env_of(a), "limits": lim, "sampled": at, "eligible": ok, "why": why,
             "denied": d or None,  # --force never crosses a deny list (review 2026-10-06)
+            # dispatch's --force is a person's yes past overage: refused when unattended (pickup open refuses any)
+            "overage": overage_on(lim),
             "same_as": a["same_as"][0] if a.get("same_as") else None}
 
 
@@ -2741,6 +2771,8 @@ def main(argv):
     p.add_argument("--ship")
     p.add_argument("--no-pin", action="store_true")
     p.add_argument("--cached", action="store_true")
+    p.add_argument("--allow-overage", action="store_true",
+                   help="a row whose paid extra usage is on may run it: a person's yes, refused under CLAUDE_UNATTENDED")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("ships")
     p.add_argument("--release")
@@ -2994,14 +3026,20 @@ def main(argv):
     if not REGISTRY.is_file():  # exit 4: no registry on this machine — callers start as before
         print(f"account: no registry at {REGISTRY}", file=sys.stderr)
         return 4
+    if args.allow_overage and os.environ.get("CLAUDE_UNATTENDED"):
+        # a flag that stands for a person's yes refuses an unattended caller (AGENTS.md's trap)
+        print("account: --allow-overage is a person's yes to paid extra usage; an unattended caller "
+              "(CLAUDE_UNATTENDED) may not pass it", file=sys.stderr)
+        return 2
     try:
         if args.ship and args.bound:
             sys.exit("account: --ship and --bound do not go together (bound work is the primary's, pinned already)")
         if args.ship:
             a, why, skipped = pick_for_ship(reg, args.ship, args.kind, args.provider, args.cached, args.repo,
-                                            pin=not (args.cached or args.no_pin))
+                                            pin=not (args.cached or args.no_pin), allow_overage=args.allow_overage)
         else:
-            a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo)
+            a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo,
+                                   args.allow_overage)
     except Short as s:
         if args.json:
             print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))

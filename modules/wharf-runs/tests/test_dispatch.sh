@@ -137,6 +137,7 @@ case "\$1" in
   limits) case "\${STUB_LIMITS:-ok}" in
           ok) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is on its deny list\", \"denied\": \"repo\"}]";;
+          overage) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"extra usage on\", \"overage\": true}]";;
           fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
@@ -1234,6 +1235,11 @@ has "$HOME/acct6.log" "FAILED: --account acct-c: repo is on its deny list — ru
 check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
 STUB_LIMITS=denied DISPATCH_LOG="$HOME/acct7.log" AR --account acct-c --force
 has "$HOME/acct7.log" "FAILED: --account acct-c: repo is on its deny list" "  --force never crosses a deny list (the guard would block every prompt)"
+STUB_LIMITS=overage CLAUDE_UNATTENDED=dispatch DISPATCH_LOG="$HOME/acct8.log" AR --account acct-c --force
+has "$HOME/acct8.log" "FAILED: --account acct-c: extra usage on — --force past paid overage is a yes only a person gives, refused to an unattended caller; not running" \
+  "  --force past paid overage, unattended: refused (costs S8, the finish review)"
+STUB_LIMITS=overage DISPATCH_LOG="$HOME/acct9.log" AR --account acct-c --force
+has "$HOME/acct9.log" "== account acct-c ($HOME/.acct-c): as asked, forced past: extra usage on" "  …a person's --force runs it"
 # a line on the account's stderr is never parsed: before 2026-10-22 it failed json.loads at char 0,
 # and auto and bound fell to the caller's login, --account to FAILED (tenants review, regatta#82)
 : > "$T/env.calls"

@@ -20,6 +20,14 @@
   yard heard from meanwhile, the object owes it to the next ping (`closing`), so a `/fail` that
   adopted it keeps an open alarm; `app_name` is judged by `deadman app` alone, never a ping; deploy
   says when a Worker may still hold an old App's secrets; `/apply` refuses a prototype key with 400.
+
+- `account` sees paid overage (costs S8, 2026-10-24): the probe's cached reading carries `extra_usage`,
+  parsed by the core's `extra_usage()`, and `judge` refuses a row whose extra usage is on, a later row
+  of the walk and a pinned ship's login included, unless `account pick --allow-overage`, a person's yes,
+  refused (exit 2) under CLAUDE_UNATTENDED. A reading without the field refuses nothing; extra usage the
+  user switched off (`user_disabled`) cannot bill and refuses nothing either. `limits --json` carries an
+  `overage` flag, which dispatch's `--force` reads (the landing review).
+
 - hookwatch after its landing review (autofinish-exclude, 2026-10-24): a fault counts only for a hook the
   move changed (its file, its imports, its traceback's files); the overlay's own hooks are no longer read
   (the `legacy` prefix is gone; a shim shows through its traceback); a `judge` fault needs an error or a

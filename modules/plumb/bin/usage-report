@@ -555,7 +555,6 @@ def sample_cache(c, cj_path, seen, new):
             if scope:
                 name = f"{name}:{scope}"
             lim[name] = {"percent": l.get("percent"), "resets_at": l.get("resets_at"), "severity": l.get("severity")}
-        xu = u.get("extra_usage") or {}
         spend = u.get("spend") or {}
         used = (spend.get("used") or {})
         # Which login the numbers belong to (2026-09-26: Claude Code moved to a Pro backup account
@@ -570,9 +569,9 @@ def sample_cache(c, cj_path, seen, new):
             "account": acct, "plan": plan_name(oa) if same else None,
             # the organisation, so plan_now can tell the app's sample of the same login (id prefix only)
             "org": (oa.get("organizationUuid") or "")[:8] or None if same else None,
-            "extra_usage": {"enabled": xu.get("is_enabled"), "user_disabled": xu.get("user_disabled"),
-                            "spend_limit_reached": xu.get("spend_limit_reached"), "used_credits": xu.get("used_credits"),
-                            "monthly_limit": xu.get("monthly_limit"), "utilization": xu.get("utilization")},
+            # the core's parse, which lighthouse's account reads the probe's answer with too (costs S8)
+            # a core from before the parse reads as no field, as account's overage_of (the landing review)
+            "extra_usage": (getattr(common, "extra_usage", None) or (lambda xu: None))(u.get("extra_usage") or {}),
             "spend_used": (used.get("amount_minor") or 0) / (10 ** (used.get("exponent") or 2)) if used else None,
             "breakdown": {r["key"]: r.get("percent") for r in ((u.get("seven_day_breakdown") or {}).get("rows") or [])},
         })

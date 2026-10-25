@@ -68,6 +68,10 @@ echo '{"type":"system","subtype":"init"}'
 lim=''
 [ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":37,"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]'
 [ -f "$dir/stub-nofable" ] && lim=',"limits":[{"kind":"session","scope":null},{"kind":"weekly_all","scope":null}]'
+# paid overage on, in the get_usage answer's shape (probed 2026-10-24: rate_limits.extra_usage)
+[ -f "$dir/stub-overage" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"monthly_limit":4000,"used_credits":120,"utilization":3,"currency":"USD","user_disabled":false,"spend_limit_reached":false}'
+# on for the org, switched off by the user: it cannot bill (the /usage cache's field; the finish review)
+[ -f "$dir/stub-overage-off" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"user_disabled":true}'
 echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":\"2026-10-07T22:00:00+00:00\",\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":\"2026-10-10T20:00:00+00:00\",\"locked_reason\":null}$lim}}}}"
 EOF
 chmod +x "$T/claude"
@@ -162,6 +166,41 @@ reset; use "$S1" "10 80"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.last" ACCOUNT_NOW=$(python3 -c "print($SAT)") A pick --json) $(field "['account']")" "0 spare" "reserve.last_hours: inside the last 24 h before the reset → 100%"
 reset; use "$S1" "10 80"; use "$P1" "10 10"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.last" ACCOUNT_NOW=$THU A pick --json) $(field "['account']")" "0 main" "…and not before"
+
+echo "paid overage — judge refuses a row whose extra usage is on (costs S8)"
+reset; use "$S1" "10 10"; use "$P1" "10 10"; touch "$S1/stub-overage"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "the first row's extra usage on → skipped, the primary picks it"
+check "$(field "['skipped']")" "[['spare', 'extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)']]" "…and the skip says why"
+check "$(python3 -c "import json;print(json.load(open('$S1/usage-probe.json'))['limits']['extra_usage'])")" \
+  "{'enabled': True, 'user_disabled': False, 'spend_limit_reached': False, 'used_credits': 120, 'monthly_limit': 4000, 'utilization': 3}" \
+  "the probe's cache carries extra_usage, in the core's parse"
+check "$(python3 -c "import json;print(json.load(open('$P1/usage-probe.json'))['limits']['extra_usage'])")" \
+  "None" "…an answer without the field caches None (no reading), never a refusal"
+check "$(ACCOUNT_NOW=$WED env -u CLAUDE_UNATTENDED python3 "$B/account" pick --allow-overage --json > "$T/out" 2>&1; echo $?) $(field "['account']")" "0 spare" \
+  "--allow-overage, attended: the first row runs it after all"
+check "$(ACCOUNT_NOW=$WED CLAUDE_UNATTENDED=dispatch python3 "$B/account" pick --allow-overage --json > "$T/out" 2>&1; echo $?)" "2" \
+  "--allow-overage from an unattended caller: refused, exit 2"
+has "$T/out" "may not pass it" "…said on stderr"
+# a later row: pick returns at the first eligible one, so a refusal there is only seen once the rows
+# before it are refused (AGENTS.md's \`account pick\` trap)
+rm -f "$S1/stub-overage"; touch "$P1/stub-overage"; reset; use "$S1" "10 90"; use "$P1" "10 10"
+check "$(ACCOUNT_NOW=$WED A pick --json)" "3" "the first row full, the later primary's extra usage on → nobody runs it (exit 3)"
+check "$(field "['skipped'][1]")" "['main', 'extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)']" \
+  "…the primary refused for overage, never taken as 'limits unknown'"
+check "$(ACCOUNT_NOW=$WED A limits --all --cached --json; field "[1]['eligible']"; field "[1]['why']")" "0
+False
+extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)" \
+  "limits --all --json: the later row's own verdict says overage"
+check "$(ACCOUNT_NOW=$WED A limits --all --cached --json; field "[1]['overage']"; field "[0]['overage']")" "0
+True
+False" "…and its overage flag, which dispatch's --force reads"
+check "$(ACCOUNT_NOW=$WED A pick --bound --json)" "3" "--bound: the primary with overage on is refused too"
+check "$(ACCOUNT_NOW=$WED env -u CLAUDE_UNATTENDED python3 "$B/account" pick --bound --allow-overage --json > "$T/out" 2>&1; echo $?) $(field "['account']")" "0 main" \
+  "…unless a person passes --allow-overage"
+rm -f "$P1/stub-overage"; reset
+touch "$S1/stub-overage-off"; reset; use "$S1" "10 10"; use "$P1" "10 10"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "extra usage on but switched off by the user: it cannot bill, the row runs it"
+rm -f "$S1/stub-overage-off"; reset
 
 echo "env, limits, check"
 check "$(python3 "$B/account" env spare)" "CLAUDE_CONFIG_DIR=$S1" "env of a secondary"
