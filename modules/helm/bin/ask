@@ -799,6 +799,31 @@ def open_items(m, text, where=""):
     return [i for i in items if not (i.get("answer") or "").strip()]
 
 
+def remote_heads(mirror):
+    """{ref: sha} of origin's branches, one `ls-remote` round trip; RuntimeError when it fails."""
+    r = subprocess.run(["git", "-C", str(mirror), "ls-remote", "--heads", "origin"], capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError("the mirror's ls-remote failed: %s" % (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:120])
+    return {ref: sha for sha, _, ref in (l.partition("\t") for l in r.stdout.splitlines()) if ref}
+
+
+def refresh_mirror(mirror):
+    """Fetch the mirror only when origin's branches moved (costs S10, docs/host-power-costs-2026-10-24.md):
+    the poll runs every 5 minutes over every cloned repo, and most ticks nothing moved, so one
+    `ls-remote` per mirror replaces the fetch's negotiation. The mirror's refspec is heads onto heads
+    with --prune, so an unchanged origin reads the same {ref: sha} as the mirror. A failing ls-remote
+    or fetch raises: the poll says the repo was skipped and carries its last rows (carry_forward), where
+    the fetch's failure used to pass unseen and the scan read a stale mirror as current."""
+    remote = remote_heads(mirror)
+    local = git(mirror, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", check=False)
+    if remote == dict(l.split(" ", 1) for l in local.splitlines() if " " in l):
+        return False
+    r = subprocess.run(["git", "-C", str(mirror), "fetch", "-q", "--prune", "origin"], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        raise RuntimeError("the mirror's fetch failed: %s" % (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:120])
+    return True
+
+
 def scan_repo(repo, m, dry=False):
     """New-or-open asks on the repo's claude/* branches, read from a bare mirror under the cache —
     never the primary checkout live sessions share."""
@@ -823,7 +848,7 @@ def scan_repo(repo, m, dry=False):
         git(mirror, "remote", "set-url", "origin", url, check=False)
         git(mirror, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*", check=False)
     if not dry:
-        subprocess.run(["git", "-C", str(mirror), "fetch", "-q", "--prune", "origin"], capture_output=True, text=True, timeout=120)
+        refresh_mirror(mirror)
     base = "main" if git(mirror, "rev-parse", "-q", "--verify", "refs/heads/main", check=False) else "master"
     out = []
     # An ask is waiting only on a branch someone worked on lately: an idle claude/* branch's open

@@ -562,6 +562,40 @@ out=$("$B/ask" poll --repos "$R")
 has "$out" "ask poll: 2 open, 0 new" "  the next good scan:"
 hasnt "$out" "carried" "  …nothing carried"
 check "$(python3 -c "import json; d=json.load(open('$T/cache/asks.json')); print(d.get('partial'), any(a.get('carried') for a in d['asks']))")" "None False" "  …and the file is whole again"
+# costs S10: an ls-remote gate before each mirror's fetch; a failing ls-remote or fetch is said and carried
+cat > "$T/refresh.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+b, mirror = sys.argv[1], sys.argv[2]
+sys.argv = ['ask']
+m = L('ask', b + '/ask').load_module()
+try:
+    print(m.refresh_mirror(mirror))
+except RuntimeError as e:
+    print('RuntimeError:', e)
+PY
+MIR=$(ls -d "$T"/cache/mirrors/repo-*.git | head -1)
+check "$(python3 "$T/refresh.py" "$B" "$MIR")" "False" "S10: origin unmoved since the last poll → no fetch"
+git -C "$R" commit -q --allow-empty -m "moved"; git -C "$R" push -q origin claude/laptop/2026-10-10-asker 2>/dev/null
+check "$(python3 "$T/refresh.py" "$B" "$MIR")" "True" "  a branch moved on origin → fetched"
+check "$(git -C "$MIR" rev-parse refs/heads/claude/laptop/2026-10-10-asker)" "$(git -C "$R" rev-parse HEAD)" "  …the mirror holds the new tip"
+check "$(python3 "$T/refresh.py" "$B" "$MIR")" "False" "  …and the next poll fetches nothing"
+git -C "$R" commit -q --allow-empty -m "moved again"; git -C "$R" push -q origin claude/laptop/2026-10-10-asker 2>/dev/null
+# a mirror it cannot write: the ls-remote answers, the fetch fails
+chmod -R a-w "$MIR/objects"
+has "$(python3 "$T/refresh.py" "$B" "$MIR")" "RuntimeError: the mirror's fetch failed" "  a fetch that fails raises, never passes unseen"
+chmod -R u+w "$MIR/objects"
+git -C "$MIR" remote set-url origin "$T/no-such-origin.git"
+has "$(python3 "$T/refresh.py" "$B" "$MIR")" "RuntimeError: the mirror's ls-remote failed" "  an origin that does not answer: the ls-remote's failure raises"
+out=$(python3 -c "
+import sys, argparse; sys.argv = ['ask']
+from importlib.machinery import SourceFileLoader as L
+m = L('ask', '$B/ask').load_module(); m.poll_tick = lambda d=None: None
+sys.exit(m.cmd_poll(argparse.Namespace(dry_run=False, repos=['$R'])))" 2>&1)
+has "$out" "ask poll: repo skipped (RuntimeError: the mirror's ls-remote failed" "  …the poll says so"
+has "$out" "2 carried from the last poll" "  …and carries the repo's rows, as any failed scan"
+git -C "$MIR" remote set-url origin "$O"
+has "$("$B/ask" poll --repos "$R")" "ask poll: 2 open, 0 new" "  origin back: the next poll scans again"
 # S11b finish review: a malformed doc skips that doc, never the repo; a carry is by the repo's path, so a
 # twin of the same name that scanned fine is not carried; a bad ASK_POLL_BUDGET costs the budget only
 out=$(python3 -c "

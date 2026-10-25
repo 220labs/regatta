@@ -10,6 +10,12 @@
   launcher; its log names which. The record's pid is then `claude-host`'s, with `claude` its child, so
   `stop()` signals the registry's `claude` when the record's pid is it or its parent, and
   `--stand-down` adds the session's own registry pid.
+
+- The ask poll fetches a mirror only when origin's branches moved (costs S10, 2026-10-24): one
+  `ls-remote --heads` per mirror, compared with its own heads, before the fetch it replaces most
+  ticks. A failing ls-remote or fetch now raises, so the poll says the repo was skipped and carries
+  its last rows; the fetch's failure used to pass unseen.
+
 - `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
   2026-10-23; wharf-runs' CHANGELOG says why).
 - The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context
