@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- beacon: `round_icon` — a config whose icon is a round badge of its own gets it filling the round pill
+  (40px, a 4px rim) and larger and bare in the window's header (38px). `/chat` answers `offer: true` on a
+  reply holding the hand-off sentence where the sink relays, and the widget puts a "Talk to a person"
+  button under it; the footer's link stays (2026-10-24).
 - hookwatch's suite builds the revert branch's date with `date -d @<epoch>` where BSD `date -r` fails, so
   the twin's ubuntu CI passes it (220labs/regatta#5, 2026-10-24).
 - deadman's state moves from KV to one SQLite-backed Durable Object, `Yards` (skipper-resilience
