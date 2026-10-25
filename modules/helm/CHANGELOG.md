@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The embark memo leads the owner's column (embark-on-helm, 2026-10-25): `helm_render.embark_first`
+  puts the newest open `docs/embark/embark-<date>.md` first, titled and labelled Embark, whether it
+  came from this Mac's `keel list` or a lookout card (this Mac's or a peer's).
+
 - The skipper's `claude` starts through `claude-host` where wharf-runs' `rc-hosts --launcher claude`
   names one, as dispatch's runs do: skipper-ears S1 (2026-10-24) saw a bare `claude` under launchd hang
   before its first turn on the yard, its binary denied Full Disk Access, and every case pass through

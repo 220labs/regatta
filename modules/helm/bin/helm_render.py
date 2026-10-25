@@ -495,6 +495,53 @@ def memo_cards(skip_docs):
     return out
 
 
+# The week's /embark sitting (the owner, 2026-10-24: "presented on helm dashboard as its course doc"):
+# aurora's weekly-run writes docs/embark/embark-<date>.md in regatta after the sextant, and the newest
+# open one leads the owner's column, labelled Embark — a memo card (this Mac's `keel list`) or a
+# lookout card (`repo@branch:docs/embark/…`), this Mac's or a peer's: the Mac that runs the sextant
+# writes it on its own branch, and the other Mac's board shows it once a lookout card exists for it
+# (an answer event); until then only the writing Mac's board does.
+EMBARK_RE = re.compile(r"(?:^|[/:])docs/embark/embark-(\d{4}-\d\d-\d\d)\.md$")
+
+
+def embark_first(cards):
+    """`cards` with the newest embark memo's card first, titled and labelled Embark; unchanged when
+    the owner's column holds none. Equal dates keep the first found: a memo card, read before the
+    lookout's."""
+    owner, best = helmlib.columns()[0], None
+    for c in cards:
+        m = EMBARK_RE.search(str(c.get("doc") or "")) if c.get("column") == owner and c.get("kind") in ("memo", "lookout") else None
+        if m and (best is None or m.group(1) > best[0]):
+            best = (m.group(1), c)
+    if best is None:
+        return cards
+    c = best[1]
+    c["label"] = "Embark"
+    if not (c.get("course") or c.get("github")):
+        doc = str(c.get("doc") or "")
+        repo = branch = rel = None
+        if "@" in doc and ":" in doc:   # a lookout card's repo@branch:path
+            head, rel = doc.split(":", 1)
+            repo, branch = head.split("@", 1)
+        else:                           # a memo card's absolute path: the branch is its checkout's
+            try:
+                m = EMBARK_RE.search(doc)
+                rel = "docs/embark/" + doc.rsplit("/", 1)[-1] if m else None
+                branch = subprocess.run(["git", "-C", str(Path(doc).parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                                        capture_output=True, text=True, timeout=10).stdout.strip() or None
+                repo = c.get("repo")
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        course, github = ask_links(repo, branch, rel)
+        if course:
+            c["course"] = course
+        if github:
+            c["github"] = github
+    if not str(c.get("title") or "").startswith("Embark"):
+        c["title"] = "Embark %s — %s" % (best[0], c.get("title") or "")
+    return [c] + [x for x in cards if x is not c]
+
+
 # Run on a peer over ssh (`python3 -`): find its core as lib/find_core.py does (its source is sent,
 # as stalls sends its probe), then print that host's `keel lookout --status --json`. Exit 2 without
 # a core, 3 without keel; either is no cards from it.
@@ -924,6 +971,7 @@ def overview_state():
     # a held PR's card names its class; the plain PR card for the same link would only repeat it
     held_urls = {c["url"] for c in held if c.get("url")}
     cards += [c for c in pr_cards({c["repo"] for c in cards if c.get("repo")}) if c.get("url") not in held_urls]
+    cards = embark_first(cards)
     for c in cards:  # K6: another person reads the board; a guarded card keeps its column and nothing else
         if c.get("guarded"):
             for k in ("title", "recommended", "blockers", "by", "owner", "doc", "ref", "url", "evidence", "rule", "session", "run",
@@ -1066,8 +1114,8 @@ function card(c,i){var m=[];if(c.plan)m.push(esc(c.plan));if(c.repo)m.push(esc(c
  var link=(c.course?' <a href="'+esc(c.course)+'">course</a>':'')+(c.github?' <a href="'+esc(c.github)+'">github</a>':'')+(c.url?' <a href="'+esc(c.url)+'">open</a>':'');
  return '<div class="card c'+i+'"><div class="t">'+esc(c.kind==='ask'?'? ':c.kind==='human'?'◯ ':c.kind==='pr'?'⇡ ':c.kind==='permission'?'! ':c.kind==='stall'?'⚠ ':c.kind==='waiting'?'… ':c.kind==='held'?'⏸ ':'')+esc(c.title)+link+'</div><div class="m">'+m.join(' · ')+'</div>'+(x.length?'<div class="m">'+x.join(' · ')+'</div>':'')+'</div>'}
 function board(cols){var h='<div class="board">';cols.forEach(function(col,i){if(i===1&&!col.cards.length)return;
- h+='<section class="col"><h2>'+esc(col.name)+' · '+col.cards.length+'</h2>';var groups={};col.cards.forEach(function(c){var k=(lane==='by'?by(c):c[lane])||'—';(groups[k]=groups[k]||[]).push(c)});
- Object.keys(groups).sort().forEach(function(k){h+='<div class="lane">'+esc(k)+'</div>'+groups[k].map(function(c){return card(c,i)}).join('')});h+='</section>'});return h+'</div>'}
+ h+='<section class="col"><h2>'+esc(col.name)+' · '+col.cards.length+'</h2>';var groups={};col.cards.forEach(function(c){var k=c.label||(lane==='by'?by(c):c[lane])||'—';(groups[k]=groups[k]||[]).push(c)});
+ Object.keys(groups).sort(function(a,b){var la=groups[a][0].label?0:1,lb=groups[b][0].label?0:1;return la-lb||(a<b?-1:a>b?1:0)}).forEach(function(k){h+='<div class="lane">'+esc(k)+'</div>'+groups[k].map(function(c){return card(c,i)}).join('')});h+='</section>'});return h+'</div>'}
 var FILL={running:'var(--run)',relayed:'var(--park)',parked:'var(--park)',waiting:'var(--owner)',blocked:'var(--block)',failed:'var(--block)',done:'var(--done)',landed:'var(--done)',launched:'var(--done)',planned:'var(--mute)'};
 function timeline(rows){if(!rows||!rows.length)return '<p class="mute">No ships with tasks.</p>';
  var now=Date.now()/1000,lo=now,hi=now;rows.forEach(function(r){r.bars.forEach(function(b){lo=Math.min(lo,b.start||now);hi=Math.max(hi,b.end||now)});(r.milestones||[]).forEach(function(m){hi=Math.max(hi,m.on)})});
