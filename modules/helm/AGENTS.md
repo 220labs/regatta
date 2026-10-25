@@ -88,7 +88,7 @@ Read `README.md` first. For an agent:
   listener's tests set `HELM_LISTEN_PARENT`, as the sidecar's set `HELM_HOLD_PARENT`.
 - The stall road (`stalls_tick.escalate`, skipper-resilience S8) acts only on a yard and opens real
   GitHub issues there: its cases stub the API with `ASK_GH_API` (a program called as `gh api` is) and
-  write synthetic `helm/inbox-repo` and `helm/mention` values into the suite's own config dir. The
+  write synthetic `helm/logbook-repo` and `helm/mention` values into the suite's own config dir. The
   repo and the mention are config values only: no module file names either. An issue leaves the
   machine, so a guarded repo's escalation carries its class and host alone — no ship, task, key,
   holder, run or what cleared it (K6) — and the road sends nothing while `helmlib.guard_unread()`

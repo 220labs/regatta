@@ -897,7 +897,7 @@ def scan_repo(repo, m, dry=False):
 # would double every one. `telegram` is a word the row may hold (surfaces.KNOWN) with no sender here: skipped.
 CARRIES = {"banner": ("ask", "stall"), "github-issue": ("stall",)}
 # The stall road's two config-dir values (the overlay writes them; module code never names a repo or a person)
-INBOX_KEY, MENTION_KEY = "helm/inbox-repo", "helm/mention"
+LOGBOOK_KEY, MENTION_KEY = "helm/logbook-repo", "helm/mention"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -914,7 +914,7 @@ def notify_row(kind, host=None):
 
 def stall_road(host=None):
     """(True, None) when a stall's notify has somewhere to go on HOST — a banner, or github-issue with a
-    readable inbox-repo value — else (False, why). Reads the config only: nothing is called, so the stall
+    readable logbook-repo value — else (False, why). Reads the config only: nothing is called, so the stall
     road re-checks a key it could not route on every pass at no cost (stalls_tick: `unrouted`)."""
     h, row = notify_row("stall", host)
     if not row:
@@ -923,7 +923,7 @@ def stall_road(host=None):
         return True, None
     if "github-issue" not in row:
         return False, "no stall road on %s: banner without osascript" % h
-    repo, why = inbox()
+    repo, why = logbook()
     return (True, None) if repo else (False, "github-issue: %s" % why)
 
 
@@ -1000,20 +1000,20 @@ def gh_api(method, path, body=None):
     return st, data, None if 200 <= st < 300 else ("no token, or no answer" if st == 0 else "HTTP %d" % st)
 
 
-def inbox():
-    """(repo, why): the stall road's repo from the config dir (helm/inbox-repo, `owner/name`), or (None, why)."""
-    repo = config_value(INBOX_KEY)
+def logbook():
+    """(repo, why): the stall road's repo from the config dir (helm/logbook-repo, `owner/name`), or (None, why)."""
+    repo = config_value(LOGBOOK_KEY)
     if not repo:
-        return None, "no %s value in the config dir" % INBOX_KEY
+        return None, "no %s value in the config dir" % LOGBOOK_KEY
     if not REPO_RE.match(repo):
-        return None, "%s is %r, not owner/name" % (INBOX_KEY, repo[:60])
+        return None, "%s is %r, not owner/name" % (LOGBOOK_KEY, repo[:60])
     return repo, None
 
 
 def issue_open(title, body, labels=("stall",)):
-    """(number, None) or (None, why): an issue in the inbox repo, its body led by the config's mention
+    """(number, None) or (None, why): an issue in the logbook repo, its body led by the config's mention
     (helm/mention) so the owner's phone hears it."""
-    repo, why = inbox()
+    repo, why = logbook()
     if not repo:
         return None, why
     mention = config_value(MENTION_KEY)
@@ -1026,9 +1026,9 @@ def issue_open(title, body, labels=("stall",)):
 
 
 def issue_state(number, state, comment):
-    """(True, None) or (False, why): COMMENT on issue NUMBER of the inbox repo, then its state set to
+    """(True, None) or (False, why): COMMENT on issue NUMBER of the logbook repo, then its state set to
     STATE (closed | open) — the comment first, so a closed issue always says what cleared it."""
-    repo, why = inbox()
+    repo, why = logbook()
     if not repo:
         return False, why
     st, _, why = gh_api("POST", "/repos/%s/issues/%d/comments" % (repo, number), {"body": comment})

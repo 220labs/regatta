@@ -2789,13 +2789,13 @@ export PLANS_DIR="$T/plans"
 echo "the stall road (skipper-resilience S8): the yard's tick, escalations.jsonl, the github-issue road"
 # A stub GitHub API (ASK_GH_API, called as \`gh api\` is) records each call and numbers the issues from
 # 100; the yard is this host (testhost) by the registry's one scope; the config dir is two copies of
-# the suite's own, one with synthetic helm/inbox-repo and helm/mention values. A fresh store, HOME
+# the suite's own, one with synthetic helm/logbook-repo and helm/mention values. A fresh store, HOME
 # (no run records) and logs. No network, no real issue, no skipper or wharf pass.
 S8="$T/s8"; mkdir -p "$S8/home" "$S8/st"
 cp -R "$REGATTA_CONFIG" "$S8/cfg"; cp -R "$REGATTA_CONFIG" "$S8/cfg0"; mkdir -p "$S8/cfg/helm"
 # the fixture's one peer, as the suite began: S7's block above adds its yard's alias to the suite's copy
 for c in cfg cfg0; do echo buildbox:buildbox-ssh > "$S8/$c/wharf-runs/ssh"; done
-echo "owner-x/inbox-x" > "$S8/cfg/helm/inbox-repo"; echo "@someone-x" > "$S8/cfg/helm/mention"
+echo "owner-x/logbook-x" > "$S8/cfg/helm/logbook-repo"; echo "@someone-x" > "$S8/cfg/helm/mention"
 cat > "$S8/gh" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
@@ -2870,7 +2870,7 @@ out=$(TK $((N0 + 660)) --dry-run); has "$out" "would escalate stall on testhost:
 check "$(nrows)/$(ncalls)" "0/0" "  …and writes and calls nothing"
 out=$(TK $((N0 + 660)))
 has "$out" "escalated stall on testhost: b · S7 ready, nobody started it: github-issue #100" "  11 minutes: one issue"
-check "$(call8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/inbox-x/issues" "  POSTed to the config's inbox repo"
+check "$(call8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/logbook-x/issues" "  POSTed to the config's logbook repo"
 check "$(call8 0 'b["body"].split(chr(10))[0]')" "@someone-x" "  the body starts with the config's mention"
 has "$(call8 0 'b["body"]')" '- key: `["testhost", "r1", "b"]`' "  and names the stall's key"
 has "$(call8 0 'b["body"]')" "- class: S7 — rule: ready, nobody started it" "  its class and rule"
@@ -2887,7 +2887,7 @@ check "$(nrows)/$(ncalls)" "1/1" "  …closes no stall's issue, however long it 
 out=$(TK $((N0 + 1860)))
 has "$out" "escalation closed (#100): stall on testhost: b · S7 ready, nobody started it — no longer judged a stall here" "gone 10 minutes, every store read: closed"
 check "$(call8 1 'c["method"] + " " + c["path"]')/$(call8 2 'c["method"] + " " + c["path"] + " " + b["state"]')" \
-  "POST /repos/owner-x/inbox-x/issues/100/comments/PATCH /repos/owner-x/inbox-x/issues/100 closed" "  a comment, then the issue closed"
+  "POST /repos/owner-x/logbook-x/issues/100/comments/PATCH /repos/owner-x/logbook-x/issues/100 closed" "  a comment, then the issue closed"
 has "$(call8 1 'b["body"]')" "Cleared on testhost: no longer judged a stall here." "  the comment names what cleared it"
 check "$(erow 1 '(r["state"], r["issue"], r["why"])')" "('closed', 100, 'no longer judged a stall here')" "  a closed row"
 out=$(TK $((N0 + 2160))); check "$(nrows)/$(ncalls)" "2/3" "  and nothing more"
@@ -2932,7 +2932,7 @@ cn; out=$(TK $((N0 + 2160))); Q2=$((100 + C))
 has "$out" "escalated r3/q1 on testhost: docs/q.md#D2 for the owner: github-issue #$Q2" "  the next tick: the second issue"
 has "$(call8 $C 'b["body"]')" "The class moved from unanswered to owner's (escalated): this follows #$Q1." "  noting the first"
 check "$(call8 $((C + 1)) 'c["path"]')/$(call8 $((C + 2)) 'c["path"] + " " + b["state"]')" \
-  "/repos/owner-x/inbox-x/issues/$Q1/comments//repos/owner-x/inbox-x/issues/$Q1 closed" "  and only then the first closed"
+  "/repos/owner-x/logbook-x/issues/$Q1/comments//repos/owner-x/logbook-x/issues/$Q1 closed" "  and only then the first closed"
 has "$(call8 $((C + 1)) 'b["body"]')" "followed in #$Q2" "  pointing at the second"
 check "$(erow -1 '(r["state"], r["issue"], r["was"], r["class"])')" "('class-changed', $Q2, $Q1, \"owner's (escalated)\")" "  one class-changed row"
 PLAN_NO_RENDER=1 "$HM" report r3 --task q1 --answered docs/q.md#D2 > /dev/null
@@ -2943,10 +2943,10 @@ check "$(erow -1 '(r["state"], r.get("close_tries"))')" "('class-changed', 1)" "
 out=$(TK $((N0 + 3060))); has "$out" "escalation closed (#$Q2)" "  the next pass closes it"
 has "$out" "— answered" "  answered, it says"
 
-echo "  no inbox-repo value: unrouted, no call; opened once the value is there"
+echo "  no logbook-repo value: unrouted, no call; opened once the value is there"
 s7ship r4; N0=$(now); cn
 out=$(CFG8="$S8/cfg0" TK "$N0"); out=$(CFG8="$S8/cfg0" TK $((N0 + 700)))
-has "$out" "b · S7 ready, nobody started it: none — github-issue: no helm/inbox-repo value in the config dir" "no key: road none, said"
+has "$out" "b · S7 ready, nobody started it: none — github-issue: no helm/logbook-repo value in the config dir" "no key: road none, said"
 check "$(ncalls)/$(erow -1 '(r["state"], r["road"], r["issue"])')" "$C/('unrouted', 'none', None)" "  nothing called, an unrouted row"
 n4=$(nrows); out=$(CFG8="$S8/cfg0" TK $((N0 + 1000))); check "$(nrows)/$(ncalls)" "$n4/$C" "  re-checked each pass without a row or a call"
 out=$(TK $((N0 + 1300)))
@@ -3037,7 +3037,7 @@ def issue_state(num, state, comment):
     calls.append((state, num, comment))
     return (False, "down") if state in fail or num in failnums else (True, None)
 road = [True]
-st._ASK = types.SimpleNamespace(notice=notice, issue_state=issue_state, stall_road=lambda h=None: (road[0], None if road[0] else "github-issue: no helm/inbox-repo value in the config dir"))
+st._ASK = types.SimpleNamespace(notice=notice, issue_state=issue_state, stall_road=lambda h=None: (road[0], None if road[0] else "github-issue: no helm/logbook-repo value in the config dir"))
 me = helmlib.host()
 def stall(cls, key="k1", **kw):
     return dict({"class": cls, "host": me, "key": [me, key], "key_kind": "step", "run": "r", "title": "%s %s" % (key, cls),

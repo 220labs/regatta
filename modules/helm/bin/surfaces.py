@@ -46,7 +46,7 @@ KNOWN = {
     "helm.render": {"local", "sheep", "artifact"},
     "helm.live": {"stream", "redeploy", "records", "local-sse"},
     "helm.live_fallback": {"redeploy", "none"},
-    # github-issue (skipper-resilience S8): the stall road's — an issue in the config key helm/inbox-repo
+    # github-issue (skipper-resilience S8): the stall road's — an issue in the config key helm/logbook-repo
     # mentioning helm/mention, opened and closed by the tick's escalate(); it carries stalls only (bin/ask's notice())
     "notify.*": {"banner", "github-issue", "telegram"},
 }

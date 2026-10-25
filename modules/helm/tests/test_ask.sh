@@ -858,10 +858,12 @@ hasnt "$(SL)" "stalled" "  without stalled"
 
 echo "the stall road's notify (skipper-resilience S8): github-issue in notify.*, notice(), the stub API"
 # ASK_GH_API stands in for GitHub, called as `gh api` is: each call recorded, issues numbered from 100.
-# Copies of the suite's config dir, one with synthetic helm/inbox-repo and helm/mention values and
+# Copies of the suite's config dir, one with synthetic helm/logbook-repo and helm/mention values and
 # one without. No network, no real issue.
 C8="$T/cfg8"; cp -R "$REGATTA_CONFIG" "$C8"; cp -R "$REGATTA_CONFIG" "$T/cfg8-none"; mkdir -p "$C8/helm"
-echo "owner-x/inbox-x" > "$C8/helm/inbox-repo"; echo "@someone-x" > "$C8/helm/mention"
+echo "owner-x/logbook-x" > "$C8/helm/logbook-repo"; echo "@someone-x" > "$C8/helm/mention"
+# the retired key, left behind in the copy without values: never read (the issue road)
+mkdir -p "$T/cfg8-none/helm"; echo "owner-x/old-x" > "$T/cfg8-none/helm/inbox-repo"
 cat > "$T/gh" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
@@ -899,7 +901,7 @@ out=$(cp "$T/surfaces.json" "$T/surf-set.json"; SURFACES_FILE="$T/surf-set.json"
 has "$out" "set notify.buildbox → ['github-issue']" "  ask backends --set writes the row (the overlay's row for its build Mac)"
 check "$(SURFACES_HOST=yardhost-x N8 "print(m.notice('stall on yardhost-x: x · S3', 'A stall.', kind='stall'))")" \
   "{'road': 'github-issue', 'issue': 100, 'said': 'issue #100'}" "notice(kind=stall) on a github-issue row: one issue, its number back"
-check "$(c8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/inbox-x/issues" "  POSTed to helm/inbox-repo"
+check "$(c8 0 'c["method"] + " " + c["path"]')" "POST /repos/owner-x/logbook-x/issues" "  POSTed to helm/logbook-repo"
 check "$(c8 0 'b["body"]')" "@someone-x
 
 A stall." "  the body led by helm/mention"
@@ -911,18 +913,18 @@ check "$(SURFACES_HOST=both-x N8 "print(m.notice('t', 'b', kind='stall')['road']
 check "$(SURFACES_HOST=elsewhere-x N8 "print(m.notice('t', 'b', kind='stall'))")" \
   "{'road': 'none', 'issue': None, 'said': 'no stall road on elsewhere-x (notify.elsewhere-x)'}" "  a host with no row: road none"
 check "$(CFG8="$T/cfg8-none" SURFACES_HOST=yardhost-x N8 "print(m.notice('t', 'b', kind='stall'))")/$(wc -l < "$T/gh8.calls" | tr -d ' ')" \
-  "{'road': 'none', 'issue': None, 'said': 'github-issue: no helm/inbox-repo value in the config dir'}/1" "no inbox-repo value: road none, nothing called"
+  "{'road': 'none', 'issue': None, 'said': 'github-issue: no helm/logbook-repo value in the config dir'}/1" "no logbook-repo value (the old inbox-repo present): road none, nothing called"
 check "$(GH_FAIL=1 SURFACES_HOST=yardhost-x N8 "print(m.notice('t', 'b', kind='stall'))")" \
   "{'road': 'none', 'issue': None, 'said': 'github-issue: gh: HTTP 401: Bad credentials'}" "a refused token: road none, the reason said"
 check "$(N8 "print(m.issue_state(100, 'closed', 'Cleared: it ran.'))")" "(True, None)" "issue_state: closed"
 check "$(c8 -2 'c["method"] + " " + c["path"] + " " + b["body"]')/$(c8 -1 'c["method"] + " " + c["path"] + " " + b["state"]')" \
-  "POST /repos/owner-x/inbox-x/issues/100/comments Cleared: it ran./PATCH /repos/owner-x/inbox-x/issues/100 closed" "  the comment first, then the state"
+  "POST /repos/owner-x/logbook-x/issues/100/comments Cleared: it ran./PATCH /repos/owner-x/logbook-x/issues/100 closed" "  the comment first, then the state"
 n0=$(wc -l < "$T/gh8.calls" | tr -d ' ')
 check "$(SURFACES_HOST=elsewhere-x N8 "print(m.stall_road('yardhost-x'), m.stall_road('both-x'), m.stall_road('elsewhere-x'), m.notice('t', 'b', kind='stall', host='yardhost-x')['road'])")" \
   "(True, None) (True, None) (False, 'no stall road on elsewhere-x (notify.elsewhere-x)') github-issue" \
   "stall_road(host) reads the named host's row, and notice(host=) sends by it, whatever surfaces.host() says"
 check "$(CFG8="$T/cfg8-none" N8 "print(m.stall_road('yardhost-x'))")/$(( $(wc -l < "$T/gh8.calls" | tr -d ' ') - n0 ))" \
-  "(False, 'github-issue: no helm/inbox-repo value in the config dir')/1" "  no inbox value: no road, said, and stall_road calls nothing (the one call is the notice above)"
+  "(False, 'github-issue: no helm/logbook-repo value in the config dir')/1" "  no logbook value: no road, said, and stall_road calls nothing (the one call is the notice above)"
 
 echo
 [ "$fails" = 0 ] && echo "test_ask ($HELM_NAMES names): all passed" || { echo "test_ask ($HELM_NAMES names): $fails failed"; exit 1; }
