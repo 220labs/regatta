@@ -3,7 +3,8 @@
 # atlas's keys and their overrides; the refusals (no core, no vault, no aurora/host beside an
 # overlay); the host rule (aurora/host, a scope's yard, the deprecated skip-hosts); tonight's plan; a night whose wharf is missing (the tend and
 # the classify fail their own steps, the dream still runs and lands); the unattended skills'
-# commands held to the allowlist; a plain launchd environment; install.sh against a scratch launchd.
+# commands held to the allowlist; the embark step's memo (it parses, carries its context, lands on
+# a branch of its own); a plain launchd environment; install.sh against a scratch launchd.
 # No network, no `claude` (WEEKLY_CLAUDE stands in), no real repo touched.
 #   bash modules/aurora/tests/aurora.sh
 set -u
@@ -13,6 +14,9 @@ W="$D/bin/weekly-run"
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" REGATTA_CONFIG="$T/config" WEEKLY_LOG_DIR="$T/logs"
+# The embark step ends every sextant job: a scratch checkout, `keel embark` and `keel line` stood in,
+# so no rehearsal adds a worktree to this repo or deploys a page (the embark block sets its own)
+export WEEKLY_EMBARK_REPO="$T/no-embark-repo" WEEKLY_KEEL_EMBARK="$T/no-keel-embark.json" WEEKLY_KEEL_LINE=echo
 unset REGATTA_HOME REGATTA_LEGACY ATLAS_LAYER ATLAS_VAULT CLAUDE_CONFIG_DIR WEEKLY_ANY_HOST AURORA_SECTIONS \
       WEEKLY_TEND WEEKLY_CLASSIFY WEEKLY_COMMIT WEEKLY_PR WEEKLY_CLAUDE AURORA_TODAY AURORA_HOUR
 fails=0
@@ -365,6 +369,127 @@ sh "$D/install.sh" --check > "$T/check.out"; check $? 0 "--check: exit 0"
 grep -q "^schedule: *plist written but not loaded" "$T/check.out"; check $? 0 "  names the plist (the scratch launchctl loads nothing)"
 grep -q "^vault $V" "$T/check.out"; check $? 0 "  and where things are"
 sh "$D/install.sh" --remove >/dev/null; check "$(ls "$T/agents" | wc -l | tr -d ' ')" 0 "--remove deletes the plist"
+
+echo; echo "embark: the sitting's memo, written by code after the sextant"
+# A made-up week: a D-shaped dream (an item quoting a section, a venture item, a question), a branches
+# file, a sextant entry naming a PROPOSE item, the night's FAILED line; a scratch checkout with an origin.
+EV="$T/ev"; EL="$T/el"; EG="$T/eg"; ED="$T/elogs"
+mkdir -p "$EV/dreams" "$EV/ventures" "$EL/sextant" "$ED"
+cat > "$EV/dreams/2026-10-18.md" <<'MD'
+# Dream — 2026-10-18 (3 sessions)
+
+## Do this now
+
+Nothing.
+
+## Numbers
+
+| | Value (last week) |
+| --- | --- |
+| commits on main | 128 (208) |
+| open branches | 151 (110) |
+
+## P — proposed changes
+
+- **D1 — P1. One rules diff** — see [the rules](../rules/x.md).
+  The exact text is the subsection "D1's diff" below.
+  - A — apply as written
+  - B — not now
+
+  Reversible: no
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+- **D2 — P2. The venture file catches up** — [ventures/x.md](../ventures/x.md).
+  - A — apply
+  - B — not now
+
+  Reversible: yes
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+### D1's diff
+
+```diff
+-- old line
++- D9 — a new line that would read as an item
+```
+
+## Q — questions
+
+- **D3 — Q1. Where does the lab live?**
+  - A — a file
+  - B — no file
+
+  Reversible: yes
+
+  ➤ Recommended: B
+
+  ➤ Answer:
+
+## Feedback from the owner
+MD
+cat > "$EV/dreams/2026-10-18-branches.md" <<'MD'
+# Branches — 2026-10-18
+
+P1. demo · `claude/h/2026-10-01-a` — C3 carried: carried by b; 99 % on main.
+    ➤ Answer: drop
+
+P2. demo · `claude/h/2026-10-02-c` — C6 abandoned; 0 % on main, idle 20 d; 2026-10-11 P3.
+    ➤ Answer: resume (/pickup c)
+
+## B would have archived
+
+- demo · `claude/h/2026-10-01-a` · probably landed (P1)
+MD
+printf '# Sextant — 2026-10-19\n\nA finding → **PROPOSE D5** (the guard).\n' > "$EL/sextant/2026-10-19.md"
+printf '## 13. Decisions\n\n- **D5 The guards fail\n  closed** (sextant F1): a hook that cannot start blocks.\n  ➤ Recommended: yes\n  ➤ Answer:\n' > "$EL/DESIGN.md"
+printf '== tend\nFAILED tend 2026-10-18: bin/tend exit 1 — not tended: demo\nDRY https://github.com/o/layer/pull/7\n' > "$ED/2026-10-18-aurora.log"
+echo '[{"reason": "Reversible: no", "doc": "/d/a.md", "age_h": 100}]' > "$T/ke.json"
+mkdir -p "$EG"; git -C "$EG" init -q -b main; git -C "$EG" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
+git init -q --bare "$T/eg-origin.git"; git -C "$EG" remote add origin "$T/eg-origin.git"
+em() { WEEKLY_ANY_HOST=1 ATLAS_VAULT="$EV" ATLAS_LAYER="$EL" WEEKLY_LOG_DIR="$ED" WEEKLY_KEEL_EMBARK="$T/ke.json" WEEKLY_EMBARK_REPO="$EG" "$W" embark "$EV" "$@"; }
+em --dry-run > "$T/memo.md"; check $? 0 "--dry-run: exit 0"
+KP="$R/modules/keel/bin/keel"
+check "$(python3 "$KP" parse "$T/memo.md" | python3 -c 'import json,sys; print(" ".join(i["id"] for i in json.load(sys.stdin)["items"]))')" \
+  "D1 D3 D4 D5 D6 D7" "  the memo parses: the dream's D1 and D3 (its numbers kept), the branches item, the PROPOSE item, the charts PR, the FAILED line"
+check "$(python3 "$KP" lint "$T/memo.md" 2>&1 | grep -c 'warning\|error')" 0 "  keel lint: no findings"
+check "$(python3 "$KP" parse "$T/memo.md" | python3 -c 'import json,sys; print([len(i["options"]) for i in json.load(sys.stdin)["items"]])')" \
+  "[2, 2, 3, 3, 3, 2]" "  every item keeps its options: a copied section (a fence, a D9 line) ends none early"
+grep -q '^  \*\*From the dream.s section "D1.s diff", as written:\*\*$' "$T/memo.md"; check $? 0 "  the section D1 quotes is copied under it"
+grep -q '^  > +- D9 — a new line' "$T/memo.md"; check $? 0 "    as a blockquote, which keel reads as prose"
+grep -q "^- The dream's D2 (P2): The venture file catches up — answered in the vault: \[dreams/2026-10-18.md#L" "$T/memo.md"; check $? 0 "  the venture item: one pointer line, no D-item"
+grep -qF "]($EV/rules/x.md)" "$T/memo.md"; check $? 0 "  a relative link made absolute"
+check "$(grep -c '^| commits on main | 128 (208) | ↓ |$' "$T/memo.md")" 1 "  the numbers carry an arrow against last week"
+check "$(grep -cE '^  \*\*C3 carried — 1\*\*$|^  \*\*C6 abandoned — 1\*\*$' "$T/memo.md")" 2 "  the branches item: a table per class"
+grep -qE '^  \| P1 \| demo \| `claude/h/2026-10-01-a` \| drop \| .* \| B \|$' "$T/memo.md"; check $? 0 "    every branch with its verdict, B where the B list names it"
+grep -q '^- \*\*D5 — The guards fail closed\*\* (sextant D5' "$T/memo.md"; check $? 0 "  the PROPOSE item, its wrapped title read whole"
+grep -q '^  > FAILED tend 2026-10-18: bin/tend exit 1' "$T/memo.md"; check $? 0 "  the FAILED line, quoted"
+grep -qF -- '- **D6 — The charts dry run: [layer#7](https://github.com/o/layer/pull/7)**' "$T/memo.md"; check $? 0 "  the charts dry run's PR, from the log's DRY line"
+grep -q '^1 Reversible: no\|1 item in 1 doc' "$T/memo.md"; check $? 0 "  keel embark's count"
+grep -q '^## Open feedback$' "$T/memo.md"; check $? 0 "  Open feedback last"
+check "$(git -C "$EG" worktree list | wc -l | tr -d ' ')" 1 "  a dry run makes no worktree"
+host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks")
+day=$(date +%F); br="claude/$host/$day-embark"; edoc="$EG/.claude/worktrees/embark-$day/docs/embark/embark-$day.md"
+out=$(em); check "$? $out" "0 EMBARK $edoc" "a real run: the memo committed and handed to keel line (echo here)"
+check "$(git -C "$T/eg-origin.git" log -1 --format=%s "$br" 2>&1)" "Embark: $day — the sitting's memo, written by weekly-run" "  pushed on $br"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["dream"], d["branch"], d["line"])' "$ED/embark-latest.json")" \
+  "2026-10-18 $br $edoc" "  embark-latest.json names the dream, the branch and the line (atlas's bulletin reads it)"
+echo "an answer" >> "$edoc"
+out=$(em); check "$? $(tail -1 "$edoc")" "0 an answer" "  a second run that day keeps the memo as it is"
+ewt="$EG/.claude/worktrees/embark-$day"
+git -C "$T/eg-origin.git" branch -q -D "$br"
+out=$(em); check "$? $(git -C "$T/eg-origin.git" log -1 --format=%s "$br" 2>&1)" "0 Embark: $day — the sitting's memo, written by weekly-run" "  a re-run pushes a branch the first run's push never reached"
+check "$(git -C "$ewt" status --porcelain -- "docs/embark/embark-$day.md")" " M docs/embark/embark-$day.md" "  …and still commits none of the owner's answers"
+git -C "$ewt" rm -q --cached -- "docs/embark/embark-$day.md" && git -C "$ewt" -c user.name=t -c user.email=t@example.invalid commit -q -m untrack
+out=$(em); check "$? $(git -C "$ewt" ls-files -- "docs/embark/embark-$day.md")" "0 docs/embark/embark-$day.md" "  a memo the first run never committed is committed on a re-run"
+rm -rf "$EV/dreams" "$edoc"; mkdir "$EV/dreams"
+out=$(em); check "$?" 1 "no dream: exit 1"
+check "$(echo "$out" | grep -c '^FAILED embark ')" 1 "  one FAILED embark line"
 
 echo; echo "capped: the session's group, its cap and a passed signal"
 # The wrapper's python, lifted from weekly-run: the night itself needs claude. The early-TERM race

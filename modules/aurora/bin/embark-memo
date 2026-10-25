@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""embark-memo — the week's /embark sitting as one course memo, written by code.
+
+  embark-memo --vault DIR --layer DIR --logs DIR [--date D] [--dream D] [--regatta CLI]
+              [--projects DIR] [--keel-embark FILE] [--fetch] [--out FILE] [--meta FILE]
+
+The owner, 2026-10-24: "from now on, I want embark presented to me on the helm whenever it runs
+... presented on helm dashboard as its course doc." Nobody typed /embark for three weeks, and the
+dream lives in the vault, which keel never mirrors, so it had no course. This prints the sitting as
+a decision memo in keel's shape: weekly-run's `embark` step (after the sextant) commits it as
+`docs/embark/embark-<date>.md` in regatta, pushes it and runs `keel line`, and the board puts it
+first in the owner's column. No model: the dream's items are already D-shaped and carry their
+evidence, so this copies them; what a model would add, the dream's own section already wrote.
+
+What the memo holds, in order (the hand-built memo of 2026-10-24 is the shape):
+- Numbers: the dream's table, with an arrow where a cell reads `<now> (<last week>)`.
+- Do this now: the dream's and the sextant entry's, when either says more than "Nothing".
+- What the sweep cannot take: `keel embark`'s group counts (each doc keeps its own course).
+- Decisions: one D-item per dream D-item (its P or Q number in the title, the dream's own D number
+  kept so its cross-references still hold), every relative link made absolute, and any section of
+  the dream the item quotes by name ("D1's diff") or names in its title ("Memory clean-up") copied
+  under it — an item never points into the vault (the owner, 2026-10-25: "where is the context? I
+  can't answer questions here without context"). Then the branches file as one item, a table per
+  class with every branch; the sextant's PROPOSE items, each with its DESIGN.md text; the charts
+  dry run's PR, when the night's log has a `DRY <url>` line; and one item per FAILED line.
+- The review prompts and Open feedback.
+
+Left out, with a one-line pointer each: a dream item about a venture or the household — one that
+links into the vault's `ventures/`, or says `Vault only: yes` — because regatta holds nothing
+personal; it is answered in the vault.
+
+The vault and the layer are read from `origin/main` (after `git fetch` with --fetch), else `main`,
+else the working tree: on the host that runs the sextant the vault's checkout may lag the Mac that
+dreamed. --keel-embark reads `keel embark --json` from a file (the suite); without it the core's
+`keel embark` runs over --projects. Stdlib only; read-only but for --out, --meta and --fetch (which updates refs).
+"""
+import argparse
+import collections
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+DATE_MD = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+DREAM_ITEM = re.compile(r"^- \*\*D(\d+) — ([PQ]\d+)\b\.?\s*(.*)$")
+SEXTANT_ITEM = re.compile(r"^- \*\*D(\d+)\b\s*(.*)$")
+HEADING = re.compile(r"^(#{2,6})\s+(.*?)\s*$")
+LINK = re.compile(r"\]\(([^)\s]+)\)")
+FAILED = re.compile(r"^FAILED (\S+)(?: (\d{4}-\d\d-\d\d))?:? (.*)$")
+FAILED_QUOTED = re.compile(r"`(FAILED [^`]+)`")
+# keel's option pattern (bin/keel OPTION_RE): where a copied section goes in, before the options
+KEEL_OPTION = re.compile(r"^\s*(?:[-*]\s+)?\*{0,2}[A-Z]\*{0,2}\s*[—–-]\s+\S")
+# the dream's skeleton: never copied under an item
+SKELETON = ("Do this now", "Numbers", "Branches", "P — ", "Q — ", "Feedback from", "Ventures", "What ")
+# the module that owns each step of the night (weekly-run's header): where a FAILED line's TODO goes
+STEP_MODULE = {"tend": "wharf", "classify": "wharf", "branches": "aurora", "charts": "aurora",
+               "dream": "aurora", "scope": "aurora", "proof": "wharf", "sextant": "sextant"}
+REVIEW = ("What did you spend attention on this week, against what you planned?",
+          "Which recurring manual thing could a session or a routine do?")
+
+
+def git(repo, *args):
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+class Source:
+    """A repo read as origin/main, else main, else its working tree (the module docstring says why)."""
+
+    def __init__(self, root, fetch=False):
+        self.root = Path(root)
+        self.refs = []
+        if git(self.root, "rev-parse", "--git-dir") is not None:
+            if fetch:
+                git(self.root, "fetch", "-q", "origin", "main")
+            self.refs = [r for r in ("origin/main", "main") if git(self.root, "rev-parse", "-q", "--verify", r + "^{commit}")]
+
+    def names(self, rel):
+        out = set()
+        for r in self.refs:
+            out |= {Path(n).name for n in (git(self.root, "ls-tree", "--name-only", "%s:%s" % (r, rel)) or "").split("\n") if n}
+        d = self.root / rel
+        if d.is_dir():
+            out |= {p.name for p in d.iterdir()}
+        return sorted(out)
+
+    def read(self, rel):
+        for r in self.refs:
+            t = git(self.root, "show", "%s:%s" % (r, rel))
+            if t is not None:
+                return t
+        try:
+            return (self.root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+
+def absolute_links(text, base):
+    """Every relative markdown link in `text`, made absolute against the directory `base`."""
+    def fix(m):
+        u = m.group(1)
+        if re.match(r"^(?:[a-z][a-z0-9+.-]*:|#|/|~)", u, re.I):
+            return m.group(0)
+        path, _, frag = u.partition("#")
+        return "](%s%s)" % (os.path.normpath(os.path.join(str(base), path)), "#" + frag if frag else "")
+    return LINK.sub(fix, text)
+
+
+def sections(lines):
+    """{title: (start, end)} for each `##`–`######` heading at column 0 outside a fence: the body runs
+    to the next heading of the same or a higher level."""
+    heads, fence = [], False
+    for i, l in enumerate(lines):
+        if l.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else HEADING.match(l)
+        if m:
+            heads.append((i, len(m.group(1)), m.group(2)))
+    out = {}
+    for k, (i, lvl, title) in enumerate(heads):
+        end = next((j for j, l2, _ in heads[k + 1:] if l2 <= lvl), len(lines))
+        out.setdefault(title, (i + 1, end))
+    return out
+
+
+def blocks(lines, pattern):
+    """[(match, start, end)] for each item `pattern` matches at column 0: an item runs to the next item,
+    the next heading, a `---` rule or the next unindented line that is not blank."""
+    out, i = [], 0
+    while i < len(lines):
+        m = pattern.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines):
+            l = lines[j]
+            if pattern.match(l) or HEADING.match(l) or l.strip() == "---" or (l and not l[0].isspace() and l.strip()):
+                break
+            j += 1
+        while j > i + 1 and not lines[j - 1].strip():
+            j -= 1
+        out.append((m, i, j))
+        i = j
+    return out
+
+
+def indent(text, n=2):
+    return "\n".join((" " * n + l) if l.strip() else "" for l in text.split("\n"))
+
+
+def quoted(text):
+    """`text` as a blockquote, which keel reads as prose: it ends an item at a fence, and a copied line
+    that opens with `D3 —`, `- A —`, `#` or `---` would read as an item, an option or the item's end;
+    behind `> ` none does. A `➤` becomes `→`, so no copied line is an answer box."""
+    return "\n".join(("> " + l).rstrip() for l in text.replace("➤", "→").split("\n"))
+
+
+def copied_section(title, body):
+    """A dream section copied under an item, as a blockquote (quoted() says why)."""
+    body = "\n".join(re.sub(r"^#{2,6}\s+(.*)$", r"**\1**", l) for l in body.strip("\n").split("\n"))
+    return indent('**From the dream\'s section "%s", as written:**\n\n%s' % (title, quoted(body)))
+
+
+def number(s):
+    m = re.search(r"-?\d[\d,]*(?:\.\d+)?", s.replace("**", ""))
+    return float(m.group(0).replace(",", "")) if m else None
+
+
+def arrow(cell):
+    """↑/↓/→ against last week, where the cell reads `<now> (<last>)` with a bare number inside the
+    parentheses; '' otherwise (a cell that compares something else is left alone)."""
+    plain = cell.replace("**", "")
+    last = next((g for g in re.findall(r"\(([^()]*)\)", plain) if re.fullmatch(r"\s*\$?-?\d[\d,]*(?:\.\d+)?\s*%?\s*", g)), None)
+    now = number(plain.split("(")[0])
+    if last is None or now is None:
+        return ""
+    was = number(last)
+    return "→" if now == was else ("↑" if now > was else "↓")
+
+
+def numbers_table(dream_lines, secs, base):
+    span = next((v for k, v in secs.items() if k == "Numbers"), None)
+    if not span:
+        return ["The dream has no Numbers section."]
+    rows = [l for l in dream_lines[span[0]:span[1]] if l.startswith("|")]
+    out = ["| | Value (last week) | |", "| --- | --- | --- |"]
+    for l in rows[2:]:
+        cells = [c.strip() for c in l.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        out.append("| %s | %s | %s |" % (cells[0], " | ".join(cells[1:]), arrow(cells[1])))
+    return [absolute_links(l, base) for l in out]
+
+
+def do_this_now(text, bold=False):
+    """The body of a "Do this now" — a heading (the dream) or a bold line (the sextant's "For <owner>" section)."""
+    lines = text.split("\n")
+    if bold:
+        try:
+            i = next(k for k, l in enumerate(lines) if l.strip() == "**Do this now**")
+        except StopIteration:
+            return ""
+        j = next((k for k in range(i + 1, len(lines)) if lines[k].startswith("**") or HEADING.match(lines[k])), len(lines))
+        return "\n".join(lines[i + 1:j]).strip()
+    span = sections(lines).get("Do this now")
+    return "\n".join(lines[span[0]:span[1]]).strip() if span else ""
+
+
+def vault_only(block, vault):
+    return bool(re.search(r"^\s*Vault only:\s*yes\b", block, re.M | re.I)) or ("](%s/" % os.path.join(str(vault), "ventures")) in block
+
+
+def dream_items(dream, dream_lines, vault, base):
+    """([item text], [pointer line]) — the dream's D-items, made to stand alone, and the left-out ones."""
+    secs = sections(dream_lines)
+    copyable = {t: s for t, s in secs.items() if not t.startswith(SKELETON)}
+    items, left = [], []
+    for m, i, j in blocks(dream_lines, DREAM_ITEM):
+        text = absolute_links("\n".join(dream_lines[i:j]), base)
+        n, kind, title = m.group(1), m.group(2), m.group(3)
+        if vault_only(text, vault):
+            left.append("- The dream's D%s (%s): %s — answered in the vault: [dreams/%s#L%d](%s#L%d)" % (
+                n, kind, title.split("**")[0].strip(), dream.name, i + 1, dream, i + 1))
+            continue
+        body = text.split("\n")
+        extra = []
+        head = re.sub(r"\*", "", body[0])
+        for t, (s, e) in copyable.items():
+            if s >= i and s < j:
+                continue
+            quoted = re.search(r"[\"“]%s[\"”]" % re.escape(t), text)
+            if quoted or t in head:
+                extra.append(copied_section(t, absolute_links("\n".join(dream_lines[s:e]), base)))
+        if extra:
+            # before the options; with none, before the Reversible/Recommended/Answer tail (never after
+            # `➤ Answer:`, where keel reads the copied section as the owner's answer)
+            k = next((x for x, l in enumerate(body) if x and KEEL_OPTION.match(l)), None)
+            if k is None:
+                k = next((x for x, l in enumerate(body) if re.match(r"\s*(Reversible:|➤)", l)), len(body))
+            body = body[:k] + [""] + ["\n\n".join(extra), ""] + body[k:]
+        items.append("\n".join(body))
+    return items, left
+
+
+def branches_item(text, n, path):
+    """The branches file as one D-item: a table per class, every branch in it."""
+    lines = text.split("\n")
+    rows = []
+    for k, l in enumerate(lines):
+        # `— C3 carried: why` (new this week), or `— C6 abandoned; facts` (a verdict carried from last week)
+        m = re.match(r"^P(\d+)\. (\S+) · `([^`]+)` — (C\d) ([^:;]+?)[:;] (.*)$", l)
+        if not m:
+            continue
+        v = re.match(r"^\s+➤ Answer:\s*(.*)$", lines[k + 1]) if k + 1 < len(lines) else None
+        rows.append({"p": m.group(1), "repo": m.group(2), "branch": m.group(3), "cls": m.group(4),
+                     "label": m.group(5), "why": m.group(6).replace("|", "\\|"), "verdict": (v.group(1).strip() if v else "") or "—"})
+    if not rows:
+        return None
+    bset = set(re.findall(r"^- \S+ · `([^`]+)` · .*\(P\d+\)\s*$", text, re.M))
+    tally = collections.Counter(r["verdict"].split()[0] for r in rows)  # "resume (/pickup x)" counts as resume
+    out = ["- **D%d — The branches file's verdicts: %d branches, %s**" % (
+        n, len(rows), ", ".join("%d %s" % (c, v) for v, c in tally.most_common())),
+        "  Every branch the night's branches section judged, by class, with its verdict and why. What a",
+        "  verdict does once accepted: **drop** hands the owner the `pickup archive` line to type (the",
+        "  archive is the owner's, never an agent's); **resume** becomes a `/todo handoff` in its repo, which",
+        "  `/pickup` starts fresh; **wait** does nothing this week. A **B** in the last column: the branch is",
+        "  on the file's \"B would have archived\" list (probably landed; the night archives only what is",
+        "  proved superseded). Source: [%s](%s)." % (Path(path).name, path), ""]
+    by = collections.OrderedDict()
+    for r in sorted(rows, key=lambda r: (r["cls"], r["repo"], r["branch"])):
+        by.setdefault((r["cls"], r["label"]), []).append(r)
+    for (cls, label), rs in by.items():
+        out += ["  **%s %s — %d**" % (cls, label, len(rs)), "",
+                "  | P | Repo | Branch | Verdict | Why | B |", "  | --- | --- | --- | --- | --- | --- |"]
+        out += ["  | P%s | %s | `%s` | %s | %s | %s |" % (r["p"], r["repo"], r["branch"], r["verdict"], r["why"],
+                                                      "B" if r["branch"] in bset else "") for r in rs]
+        out.append("")
+    out += ["  - A — accept every verdict as listed",
+            "  - B — accept, except the branches named in a note (their P number and the verdict you want)",
+            "  - C — not now (the file's verdicts come back next week)", "",
+            "  Reversible: no", "", "  ➤ Recommended: A", "", "  ➤ Answer:"]
+    return "\n".join(out)
+
+
+def sextant_items(entry, design, start, design_path):
+    """The sextant entry's PROPOSE items (the D-numbers it names), each with its DESIGN.md text."""
+    wanted = []
+    for d in re.findall(r"PROPOSE D(\d+)|\*\*D(\d+)\*\*", entry):
+        x = d[0] or d[1]
+        if x not in wanted:
+            wanted.append(x)
+    if not wanted or not design:
+        return [], wanted if not design else []
+    lines = design.split("\n")
+    found = {m.group(1): (m, i, j) for m, i, j in blocks(lines, SEXTANT_ITEM)}
+    out, missing, n = [], [], start
+    for d in wanted:
+        if d not in found:
+            missing.append(d)
+            continue
+        m, i, j = found[d]
+        text = absolute_links("\n".join(lines[i:j]), Path(design_path).parent)
+        rec = re.search(r"➤ Recommended:\s*(.*?)(?=\n\s*➤ Answer:|\Z)", text, re.S)
+        rec = " ".join(rec.group(1).split()) if rec else ""
+        body = re.split(r"\n\s*➤ Recommended:", text)[0]
+        first = re.match(r"^- \*\*D\d+\s*(.*?)\*\*(.*)$", body, re.S)  # a title may wrap
+        title = " ".join(first.group(1).split()) if first else ("sextant D" + d)
+        rest = first.group(2) if first else "\n".join(body.split("\n")[1:])
+        out.append("\n".join([
+            "- **D%d — %s** (sextant D%s, [DESIGN.md](%s#L%d))" % (n, title, d, design_path, i + 1),
+            indent(" ".join(rest.split())),
+            "  - A — as the sextant recommends: %s" % (rec or "the text above"),
+            "  - B — apply edited (say how in a note)",
+            "  - C — not now", "", "  Reversible: no", "", "  ➤ Recommended: A", "", "  ➤ Answer:"]))
+        n += 1
+    return out, missing
+
+
+def failed_lines(logs, days, texts):
+    """[(step, day, why, source)] — FAILED lines of the night's logs, else the ones the dream quotes."""
+    seen, out = set(), []
+    for name in sorted(set(days)):
+        p = Path(logs) / name
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").split("\n")
+        except OSError:
+            continue
+        for k, l in enumerate(lines):
+            m = FAILED.match(l.strip())
+            if m and (m.group(1), m.group(3)) not in seen:
+                seen.add((m.group(1), m.group(3)))
+                out.append((m.group(1), m.group(2), m.group(3), "%s, line %d" % (p, k + 1), lines[max(0, k - 8):k]))
+    for src, t in texts:
+        for q in FAILED_QUOTED.findall(t or ""):
+            m = FAILED.match(q)
+            if m and not any(m.group(1) == s and m.group(2) == d for s, d, _, _, _ in out):
+                seen.add((m.group(1), m.group(3)))
+                out.append((m.group(1), m.group(2), m.group(3), "quoted in " + src, []))
+    return out
+
+
+def charts_item(n, url, log):
+    """The charts dry run's PR (the aurora log's `DRY <url>` line) as one D-item: its merge is the
+    owner's review of every chart claim in it."""
+    m = re.search(r"/([^/]+)/pull/(\d+)", url)
+    return "\n".join([
+        "- **D%d — The charts dry run: [%s](%s)**" % (n, "#".join(m.groups()) if m else url, url),
+        "  Aurora's charts section proposes the docs map's changes as a pull request while the map says",
+        "  `mode: dry` (the night's log, %s). Its body lists each chart claim and the file it links;" % log,
+        "  the diff is the review. Merging moves the charts; after the third clean merge /embark asks once",
+        "  whether to flip the map to `mode: live`.",
+        "  - A — merge it as it is",
+        "  - B — merge after my edits on GitHub (say so in a note)",
+        "  - C — close it (say why in a note: the next run reads it first)", "",
+        "  Reversible: no", "", "  ➤ Recommended: A", "", "  ➤ Answer:"])
+
+
+def failed_item(n, step, day, why, source, before):
+    mod = STEP_MODULE.get(step, "aurora")
+    out = ["- **D%d — The night's FAILED %s%s**" % (n, step, " (%s)" % day if day else ""),
+           "  The line, as written (%s):" % source, "",
+           indent(quoted("FAILED %s%s: %s" % (step, " " + day if day else "", why))), ""]
+    if before:
+        out += ["  The lines before it in that log:", "", indent(quoted("\n".join(before))), ""]
+    out += ["  The step is %s's (weekly-run's header names the night's steps); a step that fails logs this" % mod,
+            "  line and the rest of the night still runs, so nothing else waits on it.",
+            "  - A — a TODO in regatta for %s: why the step missed, and the fix that keeps it from missing again" % mod,
+            "  - B — not now: the next night tries again", "",
+            "  Reversible: yes", "", "  ➤ Recommended: A", "", "  ➤ Answer:"]
+    return "\n".join(out)
+
+
+def embark_counts(rows):
+    if rows is None:
+        return ["`keel embark` could not be read this run, so the list is not counted here; `keel embark` prints it."]
+    if not rows:
+        return ["`keel embark` finds nothing: every open item older than 72 h is one the stand sweep can take."]
+    docs = {r.get("doc") for r in rows}
+    by = collections.Counter(r.get("reason") or "?" for r in rows)
+    oldest = max((r.get("age_h") or 0) for r in rows) / 24
+    return ["`keel embark` finds %d item%s in %d doc%s handed over more than 72 h ago that the stand sweep cannot take: %s. The oldest is %d days old." % (
+        len(rows), "" if len(rows) == 1 else "s", len(docs), "" if len(docs) == 1 else "s",
+        ", ".join("%d %s" % (c, w) for w, c in by.most_common()), oldest), "",
+        "Each doc is answered on its own course (`keel line <doc>`); this memo does not repeat them. "
+        "The `Reversible: no` ones are the ones worth the sitting's minutes."]
+
+
+def keel_embark(args):
+    if args.keel_embark:
+        try:
+            return json.loads(Path(args.keel_embark).read_text())
+        except (OSError, ValueError):
+            return None
+    if not args.regatta:
+        return None
+    try:
+        r = subprocess.run([sys.executable, args.regatta, "keel", "embark", "--json", "--root", args.projects],
+                           capture_output=True, text=True, timeout=600)
+        return json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="embark-memo", description=__doc__.split("\n\n")[0])
+    ap.add_argument("--vault", required=True)
+    ap.add_argument("--layer", default="")
+    ap.add_argument("--logs", default="")
+    ap.add_argument("--date", default=dt.date.today().isoformat())
+    ap.add_argument("--dream", help="the dream's date (default: the newest)")
+    ap.add_argument("--regatta", help="the core's CLI, for `keel embark`")
+    ap.add_argument("--projects", default=str(Path.home() / "projects"))
+    ap.add_argument("--keel-embark", help="`keel embark --json` output, read from a file")
+    ap.add_argument("--fetch", action="store_true", help="git fetch the vault and the layer first")
+    ap.add_argument("--out")
+    ap.add_argument("--meta", help="also write {dream, items} as JSON here (weekly-run's embark-latest.json)")
+    a = ap.parse_args(argv)
+
+    vault = Source(a.vault, a.fetch)
+    dreams = [n for n in vault.names("dreams") if DATE_MD.match(n)]
+    if a.dream:
+        dreams = [n for n in dreams if n == a.dream + ".md"]
+    if not dreams:
+        print("embark-memo: no dream in %s/dreams%s" % (a.vault, " for " + a.dream if a.dream else ""), file=sys.stderr)
+        return 1
+    dname = dreams[-1]
+    dday = dname[:-3]
+    dpath = Path(a.vault) / "dreams" / dname
+    dtext = vault.read("dreams/" + dname) or ""
+    dlines = dtext.split("\n")
+    btext = vault.read("dreams/%s-branches.md" % dday)
+    bpath = Path(a.vault) / "dreams" / ("%s-branches.md" % dday)
+
+    layer = Source(a.layer, a.fetch) if a.layer else None
+    entry = epath = design = None
+    if layer:
+        later = [n for n in layer.names("sextant") if DATE_MD.match(n) and n[:-3] >= dday]
+        if later:
+            epath = Path(a.layer) / "sextant" / later[-1]
+            entry = layer.read("sextant/" + later[-1])
+        design = layer.read("DESIGN.md")
+        if entry and design:
+            # PROPOSE's lines land through the sextant's reviewed -changes worktree, maybe not yet on main
+            ch = Path(a.layer) / ".claude" / "worktrees" / ("sextant-%s-changes" % epath.stem) / "DESIGN.md"
+            if ch.is_file():
+                t = ch.read_text(encoding="utf-8")
+                if len(t) > len(design):
+                    design = t
+
+    secs = sections(dlines)
+    items, left = dream_items(dpath, dlines, Path(a.vault), dpath.parent)
+    nums = [int(m.group(1)) for m, _, _ in blocks(dlines, DREAM_ITEM)]
+    n = max(nums, default=0) + 1
+    legend = []
+    if items:
+        legend.append("the dream's D-items keep its numbers (%s), so its cross-references hold" % ", ".join(
+            re.match(r"- \*\*(D\d+ — [PQ]\d+)", t).group(1).replace(" — ", "/") for t in items))
+    bitem = branches_item(btext, n, bpath) if btext else None
+    if bitem:
+        legend.append("D%d the branches file" % n)
+        n += 1
+    sitems, smissing = sextant_items(entry or "", design, n, Path(a.layer) / "DESIGN.md") if entry else ([], [])
+    if sitems:
+        legend.append("D%d–D%d the sextant entry's PROPOSE items" % (n, n + len(sitems) - 1) if len(sitems) > 1 else "D%d the sextant's PROPOSE item" % n)
+        n += len(sitems)
+    logs = [dday + "-aurora.log"] + ([epath.stem + "-sextant.log"] if epath else [])
+    dry = None
+    try:
+        dry = re.findall(r"^DRY (https?://\S+)", (Path(a.logs) / logs[0]).read_text(errors="replace"), re.M) if a.logs else None
+    except OSError:
+        pass
+    citem = charts_item(n, dry[-1], Path(a.logs) / logs[0]) if dry else None
+    if citem:
+        legend.append("D%d the charts dry run" % n)
+        n += 1
+    fails = failed_lines(a.logs, logs, [("dreams/" + dname, dtext), ("dreams/%s-branches.md" % dday, btext)]) if a.logs else []
+    fitems = []
+    for step, day, why, src, before in fails:
+        fitems.append(failed_item(n, step, day, why, src, before))
+        n += 1
+    if fitems:
+        legend.append("D%d–D%d the night's FAILED lines" % (n - len(fitems), n - 1) if len(fitems) > 1 else "D%d the night's FAILED line" % (n - 1))
+
+    out = ["# Embark %s — decision memo: the week's sitting" % a.date, "",
+           "The sitting, written by weekly-run's `embark` step: everything the %s dream, its branches file "
+           "and the sextant entry ask, one decision per item, each with its own context. Answer here; the "
+           "vault's files stay the record. Sources: [the dream](%s), %s, %s." % (
+               dday, dpath, "[the branches file](%s)" % bpath if btext else "no branches file this week",
+               "[the sextant entry](%s)" % epath if entry else "no sextant entry after the dream"), ""]
+    if left:
+        out += ["Left out on purpose: about a venture or the household, so answered in the vault, not here.", ""] + left + [""]
+    if entry and smissing:
+        out += ["The sextant entry names %s, which DESIGN.md on main does not hold yet (its reviewed `-changes` "
+                "worktree has not landed): %s." % ("a PROPOSE item" if len(smissing) == 1 else "PROPOSE items",
+                                                   ", ".join("D" + w for w in smissing)), ""]
+    out += ["## Numbers (the dream's, last week in brackets)", ""] + numbers_table(dlines, secs, dpath.parent) + [""]
+    def keep_public(t):  # regatta holds nothing personal: a line naming a venture or the vault stays there
+        keep = [l for l in (t or "").splitlines() if not re.search(r"ventures/|Vault only", l)]
+        return "\n".join(keep).strip()
+    dn = keep_public(do_this_now(dtext))
+    sn = keep_public(do_this_now(entry or "", bold=True))
+    if (dn and not dn.lower().startswith("nothing")) or sn:
+        out += ["## Do this now", ""]
+        if dn and not dn.lower().startswith("nothing"):
+            out += ["From the dream:", "", absolute_links(dn, dpath.parent), ""]
+        if sn:
+            out += ["From the sextant entry:", "", absolute_links(sn, epath.parent), ""]
+    out += ["## What the sweep cannot take", ""] + embark_counts(keel_embark(a)) + [""]
+    out += ["## Decisions", ""]
+    if legend:
+        out += ["Legend: " + "; ".join(legend) + ".", ""]
+    every = items + ([bitem] if bitem else []) + sitems + ([citem] if citem else []) + fitems
+    if not every:
+        out += ["Nothing to decide this week: the dream holds no D-items, and nothing else asks.", ""]
+    for t in every:
+        out += [t, ""]
+    out += ["---", "", "## Review (free text under each)", ""] + ["- " + q for q in REVIEW] + ["", "## Open feedback", ""]
+    text = "\n".join(out)
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    if a.meta:
+        Path(a.meta).write_text(json.dumps({"dream": dday, "items": len(every)}) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
