@@ -990,11 +990,25 @@ def secrets_notes(repo):
     .env.example names and Drive's file lacks becomes an empty `KEY=` there, and the lines worth
     a look come back — `!!` failures, `--` waiting. Quiet when all is well; a missing tool or a
     slow Drive never blocks the start. The tool through common.tool(), never beside a knowledge
-    repo (the B5 review: that path breaks once the overlay's shims go, B14)."""
+    repo (the B5 review: that path breaks once the overlay's shims go, B14).
+    Where `.env` or the secrets folder is a link into a cloud drive, only under claude-host (the core's
+    drive_backed() and claude_host(); docs/orca-launcher-2026-10-24.md, S4): the check opens it, and a
+    session whose responsible process holds no grant for the drive (Orca's app, 2026-10-24) would block its
+    start on a privacy prompt nobody sees. There it is skipped in silence outside claude-host; `secrets
+    check` by hand still runs it. Not every session claude-host launches is charged to it (an autofinish
+    run's claude is its own responsible process, the S4 finish review). A plain `.env` is checked as before.
+    A core older than claude_host() checks as before too: a version skew must not fail the whole start."""
     if not repo or not (repo / ".env.example").exists():
         return []
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import common  # noqa: E402
+    try:
+        skip = (not common.claude_host()
+                and any(common.drive_backed(f) for f in (repo / ".env", common.CONFIG / "regatta" / "secrets")))
+    except AttributeError:
+        skip = False
+    if skip:
+        return []
     tool = common.tool("secrets")
     if not tool:
         return []

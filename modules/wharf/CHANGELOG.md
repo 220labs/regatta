@@ -5,6 +5,8 @@
 - checkpoint's 🐑 note carries a `keel sheep --hook` row's `note` (keel's publish-budget warning), after
   the pages and any failure (spacesheep-tiers, 2026-10-24).
 
+- sync.py runs `secrets check --fix` only under claude-host (orca-launcher S4, 2026-10-25): `.env` is a link
+  into Drive's _secrets, which an ungranted responsible process (Orca's app) blocks on.
 - checkpoint denies writes in a primary checkout on a detached HEAD (hookwatch's pin) as on main, and
   guards /autofinish's marker and the yes at the brief as records under an unattended run; sync.py names a
   detached primary, and hookwatch's pin when its state names it (autofinish-exclude landing review, 2026-10-24).
