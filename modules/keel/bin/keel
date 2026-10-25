@@ -3161,8 +3161,11 @@ def title_of(text, fallback):
 
 REPO_DEPTH = 4  # films/productions/<group>/<slug> is four levels under ~/projects
 REPO_SKIP = ("node_modules", "transcripts")  # dot-dirs (.git, .claude, …) are skipped as well
-REPO_PATS = ("docs/*.md", "docs/record/*.md", "*.md",
-             ".claude/worktrees/*/docs/*.md", ".claude/worktrees/*/docs/record/*.md", ".claude/worktrees/*/*.md")
+# docs/embark/: the week's sitting memo, written by aurora's weekly-run on its own branch; helm's
+# board cards it only through this list (embark-on-helm landing review, 2026-10-25)
+REPO_PATS = ("docs/*.md", "docs/record/*.md", "docs/embark/*.md", "*.md",
+             ".claude/worktrees/*/docs/*.md", ".claude/worktrees/*/docs/record/*.md",
+             ".claude/worktrees/*/docs/embark/*.md", ".claude/worktrees/*/*.md")
 
 
 def repo_roots(root, depth=REPO_DEPTH):
@@ -3249,7 +3252,7 @@ def repo_label(root, p):
         return "/".join(rel[:k]) + "@" + rel[k + 2]
     if rel[-2] == "docs":
         return "/".join(rel[:-2])
-    if rel[-2:-1] == ("record",) and rel[-3:-2] == ("docs",):
+    if rel[-2:-1] in (("record",), ("embark",)) and rel[-3:-2] == ("docs",):
         return "/".join(rel[:-3])
     if root.joinpath(*rel[:-1], ".git").exists():
         return "/".join(rel[:-1])  # a repo's top level; any other folder's *.md is not a memo
@@ -6329,7 +6332,10 @@ def git_busy(wt):
 
 
 def sweep_docs(wt, branch):
-    """The .md files the branch changed against main that hold D-items (handoff briefs are not docs)."""
+    """[(path, why)] for the .md files the branch changed against main that hold D-items (handoff
+    briefs are not docs): `why` is None, or the parse's refusal for a doc that does not parse — one
+    such doc aborted the whole sweep until the 2026-10-18 dream's D2 (answered 2026-10-25); now the
+    sweep names it and goes on."""
     base = main_ref(wt)
     if not base:
         return []
@@ -6341,8 +6347,13 @@ def sweep_docs(wt, branch):
             text = q.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        if maybe_memo(text) and parse(text)[1]:
-            out.append(q)
+        if not maybe_memo(text):
+            continue
+        try:
+            if parse(text)[1]:
+                out.append((q, None))
+        except Stop as e:
+            out.append((q, str(e)))
     return out
 
 
@@ -6373,8 +6384,11 @@ def stand_sweep(root, force=False, dry=False):
             if not why:
                 ask = branch_in_ask_mode(branch, str(Path(common).parent))
                 why = ask and "mode ask (%s): nobody answers it but %s" % (ask, WHO)
-            for q in docs:
+            for q, bad in docs:
                 row = {"repo": Path(common).parent.name, "branch": branch, "doc": str(q.relative_to(wt)), "path": str(q)}
+                if bad:
+                    rows.append(dict(row, verdict="unparseable", what=bad))
+                    continue
                 if why:
                     rows.append(dict(row, verdict="skipped", what=why))
                     continue

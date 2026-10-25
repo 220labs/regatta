@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `list` finds memos in `docs/embark/`, on a branch's worktree or landed: aurora's weekly-run writes the
+  week's sitting there, and helm's board cards a memo only through this list.
+- `stand --sweep` names a doc that does not parse (`unparseable — <why>`) and goes on; one such doc
+  ended the whole sweep before (the 2026-10-18 dream's D2, fix c).
 - spacesheep plans (spacesheep-tiers, 2026-10-24): every page publish goes in the core's deploy log,
   shared with helm's redeploys; keel never skips one, warns once per crossing at 90 % of this Mac's part of
   the 24-hour cap (by hand on stderr, in the checkpoint's hook as the row's `note`, the plan read from its cache

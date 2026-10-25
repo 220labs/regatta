@@ -230,6 +230,12 @@ has "$T/list.out" "repo-a@x" "a memo only in a worktree (not landed yet) is list
 check "$(grep -c 'worktrees/x/docs/one.md' "$T/list.out")" "0" "…but not one whose checkout has it"
 has "$T/list.out" "films/repo-b" "two-level repos found"
 has "$T/list.out" "(6 decisions, 1 unanswered)" "counts per memo"
+mkdir -p "$T/eroot/repo-e/.git" "$T/eroot/repo-e/.claude/worktrees/embark-d/docs/embark" "$T/eroot/repo-e/docs/embark"
+printf '# Embark sitting\n\n**D1 — Sit.** ➤ Answer: yes.\n' > "$T/eroot/repo-e/.claude/worktrees/embark-d/docs/embark/embark-d.md"
+printf '# Landed sitting\n\n**D1 — Sat.** ➤ Answer: yes.\n' > "$T/eroot/repo-e/docs/embark/embark-c.md"
+"$B/keel" list --root "$T/eroot" > "$T/elist.out" 2>&1
+has "$T/elist.out" "repo-e@embark-d" "a docs/embark/ memo only on its branch's worktree is listed (helm cards the sitting through it)"
+has "$T/elist.out" "Landed sitting" "…and one landed in docs/embark/"
 check "$("$B/keel" list --root "$T/root" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["title"])')" "Poem plan" "json form, newest first"
 
 echo "open"
@@ -2389,6 +2395,12 @@ check "$(mrun status --json "$ST/sw/a/.claude/worktrees/w2/docs/e.md" 2>&1 | pyt
   "…and its status says ask-mode, never due: autofinish's rule D cannot stand it either (landing review 8)"
 rm -rf "$PLANS_DIR/m1"
 check "$(git -C "$ST/sw/a/.claude/worktrees/x" log -1 --format=%s)" "Design: d" "…the dry run writes nothing"
+printf '# Bad\n\n- **D1 — one.**\n  ➤ Answer:\n\n- **D1 — two.**\n  ➤ Answer:\n' > "$ST/sw/a/.claude/worktrees/w2/docs/bad.md"
+sg "$ST/sw/a/.claude/worktrees/w2" add docs; scommit "$ST/sw/a/.claude/worktrees/w2" 2026-10-01T09:00:00Z -m "Design: bad"
+mrun stand --sweep --root "$ST/sw" --dry-run > "$T/swbad.out" 2>&1
+has "$T/swbad.out" "a claude/w2 docs/bad.md: unparseable — D1 appears twice" "…a doc that does not parse is named, never the sweep's end (the 2026-10-18 dream's D2)"
+has "$T/swbad.out" "a claude/x docs/d.md: would stand — D1, D2" "…and the sweep goes on"
+sg "$ST/sw/a/.claude/worktrees/w2" rm -q docs/bad.md; scommit "$ST/sw/a/.claude/worktrees/w2" 2026-10-01T09:00:00Z -m "Design: drop bad"
 mrun stand --sweep --if-armed --root "$ST/sw" > "$T/sw1.out" 2>&1
 check "$(cat "$T/sw1.out")" "" "--if-armed and not armed: nothing at all"
 mrun stand --arm > /dev/null; test -f "$MEMO_STATE_DIR/sweep-armed"; check "$?" "0" "--arm writes the switch"
