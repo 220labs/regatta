@@ -609,6 +609,82 @@ rm -rf "$REGATTA_CONFIG/sheep" "$REGATTA_CONFIG/lighthouse"
 check "$(shp 'print(common.sheep_cap_refusal("deploy refused — rate_limited: 400 publishes per 24h (retry in 3600s)"), common.sheep_cap_refusal("space not found"))')" "True False" "a cap refusal is told from another failure"
 check "$(shp 'print([common.sheep_cap_refusal(t) for t in ("deploy refused — too many files (retry in 2400s)", "file size limit exceeded", "storage quota exceeded", "deploy refused — rate_limited: slow down (retry in 30s)", "daily limit of 24 hours reached", "too many publishes today")])')" \
   "[False, False, False, False, True, True]" "  a deploy's own limits and a bare rate limit are not the publish cap; publish or 24 h beside the word is"
+echo "claude_host(): the kernel's responsible process, pinned for the suites (orca-launcher S4)"
+check "$(REGATTA_CLAUDE_HOST=0 py 'print(common.claude_host())') $(REGATTA_CLAUDE_HOST=1 py 'print(common.claude_host())')" "False True" "  REGATTA_CLAUDE_HOST=0|1 pins it"
+check "$(py 'print(common.claude_host() in (True, False))')" "True" "  unpinned it answers, never raises (False off macOS)"
+DB="$T/db"; mkdir -p "$DB/drive" "$DB/cfg"; : > "$DB/drive/f.json"; : > "$DB/cfg/plain.json"
+ln -s "$DB/drive/f.json" "$DB/cfg/in.json"; ln -s "$DB/cfg/plain.json" "$DB/cfg/out.json"; ln -s ../drive/f.json "$DB/cfg/rel.json"
+ln -s "$DB/cfg/in.json" "$DB/cfg/chain.json"
+check "$(REGATTA_DRIVE_ROOTS="$DB/drive" py "print([common.drive_backed('$DB/cfg/' + n) for n in ('in.json', 'rel.json', 'chain.json', 'out.json', 'plain.json', 'none.json')])")" \
+  "[True, True, True, False, False, False]" "drive_backed(): a link into the drive (absolute, relative, through a link) is; a plain file, a link elsewhere, nothing are not"
+AGD="$ROOT/modules/lighthouse/hooks/account_guard.py"
+if [ -f "$AGD" ]; then
+  check "$(REGATTA_DRIVE_ROOTS="$DB/drive" python3 -c 'import sys
+from importlib.machinery import SourceFileLoader as L
+g = L("ag", sys.argv[1]).load_module()
+print([g.drive_backed(sys.argv[2] + n) for n in ("in.json", "rel.json", "chain.json", "out.json", "plain.json", "none.json")])' "$AGD" "$DB/cfg/")" \
+    "[True, True, True, False, False, False]" "  account_guard's copy answers the same"
+fi
+rm "$DB/drive/f.json"
+check "$(REGATTA_DRIVE_ROOTS="$DB/drive" py "print(common.drive_backed('$DB/cfg/in.json'))")" "True" "  a dangling link into the drive still is: judged from its text, no stat"
+
+# G4 (docs/orca-launcher-2026-10-24.md): a hook, or a verb a hook runs, that opens a Drive link outside
+# claude-host fails, naming the line. Each reader a hook reaches runs against a fixture config whose
+# Drive-backed keys (the tenants file, the logins file, the secrets folder) are links into a stand-in
+# drive, with their local copies beside them, under tests/drive_audit's audit hook; a module that is
+# not here is skipped. The controls under REGATTA_CLAUDE_HOST=1 prove the audit sees an open at all.
+echo "G4: Drive-backed files a hook opens outside claude-host"
+G4="$T/g4"; GD="$G4/drive"; GHM="$G4/home"; GC="$G4/config"; GL="$G4/opens.log"
+mkdir -p "$GD/_secrets" "$GC/regatta" "$GC/lighthouse" "$GHM/.claude" "$GHM/.claude-work" "$GHM/.claude-lab" \
+  "$GHM/orca/pz"
+echo Owner > "$GC/regatta/owner"
+for r in acme-one app privy; do git init -q "$GHM/projects/$r"; done
+printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}\n' > "$GC/lighthouse/accounts.json"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}\n' > "$GD/tenants.json"
+printf '{"logins":{"work":{"email":"z@example.com"}},"share":{"design":[{"email":"pat@example.com"}]}}\n' > "$GD/logins.json"
+for f in tenants logins; do ln -s "$GD/$f.json" "$GC/lighthouse/$f.json"; cp "$GD/$f.json" "$GC/lighthouse/.$f.json.last"; done
+printf '{"oauthAccount":{"accountUuid":"u-z","emailAddress":"z@example.com"}}\n' > "$GHM/orca/pz/.claude.json"
+ln -s "$GD/_secrets" "$GC/regatta/secrets"; echo 'A=1' > "$GD/_secrets/app.env"; echo 'A=' > "$GHM/projects/app/.env.example"
+ln -s "$GD/_secrets/app.env" "$GHM/projects/app/.env"
+# g4 HOST CMD…: CMD in the fixture, the audit on; prints CMD's output, the opens go to $GL
+g4() { local host=$1; shift; : > "$GL"
+  env -u ACCOUNTS_FILE -u TENANTS_FILE -u ACCOUNT_LOGINS -u SECRETS_DIR -u SECRETS_PROJECTS \
+    HOME="$GHM" REGATTA_CONFIG="$GC" REGATTA_CLAUDE_HOST="$host" REGATTA_DRIVE_ROOTS="$GD" ACCOUNT_ORCA_DATA="$GHM/orca" ACCOUNT_ORCA_FILE="$G4/no-orca.json" \
+    PYTHONPATH="$M/tests/drive_audit" DRIVE_AUDIT_ROOT="$GD" DRIVE_AUDIT_LOG="$GL" "$@" 2>&1; }
+GDR=$(cd "$GD" && pwd -P); RTR=$(cd "$ROOT" && pwd -P)   # the audit logs real paths: mktemp's resolve through /private
+opened() { sed "s#$GDR/##; s#$RTR/##; s#$ROOT/##" "$GL" | sort -u | tr '\n' ';'; }
+g4n=0; g4c=0   # readers run, Drive-backed opens seen
+LH="$ROOT/modules/lighthouse"; WH="$ROOT/modules/wharf/hooks/sync.py"; PT="$ROOT/modules/plumb/hooks/tier_check.py"
+if [ -f "$LH/hooks/account_guard.py" ]; then
+  out=$(echo "{\"cwd\":\"$GHM/projects/acme-one\"}" | g4 0 python3 "$LH/hooks/account_guard.py")
+  check "$(echo "$out" | grep -c "acme-one is off main: it is acme's") $(opened)" "1 " "  account_guard, the default dir in a tenant's repo: blocked from the copies, no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+  out=$(echo "{\"cwd\":\"$GHM/projects/privy\"}" | CLAUDE_CONFIG_DIR="$GHM/orca/pz" g4 0 python3 "$LH/hooks/account_guard.py")
+  check "$(echo "$out" | grep -c "privy is off work, whose login this Orca dir is") $(opened)" "1 " "  account_guard on an Orca dir (allowed reads the logins file): work's list from the copy, no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+  out=$(echo "{\"cwd\":\"$GHM/projects/acme-one\"}" | g4 1 python3 "$LH/hooks/account_guard.py")
+  check "$(opened)" "tenants.json at modules/lighthouse/bin/account:$(grep -n 'got = json.loads(TENANTS.read_text())' "$LH/bin/account" | cut -d: -f1);" \
+    "  control: under claude-host bin/account opens the link, and the audit names its line"
+else echo "  --   lighthouse is not here: its readers skipped"; fi
+if [ -f "$LH/hooks/design_route.py" ]; then
+  out=$(g4 0 python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; print(L("dr", sys.argv[1]).load_module().share_list())' "$LH/hooks/design_route.py")
+  check "$out $(opened)" "[('pat@example.com', 'view')] " "  design_route's share list: from the logins file's copy, no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+fi
+if [ -f "$PT" ]; then
+  out=$(g4 0 python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; L("tc", sys.argv[1]).load_module().account_lines(); print("ran")' "$PT")
+  check "$out $(opened)" "ran " "  tier_check's account lines (account limits --cached): no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+fi
+if [ -f "$WH" ]; then
+  sn() { g4 "$1" python3 -c 'import sys; from pathlib import Path; from importlib.machinery import SourceFileLoader as L; print(L("sy", sys.argv[1]).load_module().secrets_notes(Path(sys.argv[2])))' "$WH" "$GHM/projects/app"; }
+  out=$(sn 0)
+  check "$out $(opened)" "[] " "  sync.py's secrets check, outside claude-host: skipped, no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+  out=$(sn 1)
+  check "$(opened | grep -c '_secrets/app.env at modules/regatta/bin/secrets:')" 1 "  control: under claude-host it runs, and the audit names bin/secrets' line"
+fi
+check "$g4c" 0 "  G4: of $g4n hook readers, the number that opened a Drive-backed file (target 0)"
 
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]
