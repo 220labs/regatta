@@ -74,7 +74,7 @@ its chart is `deadman/README.md`.
   It is off the allowlist with beacon until the extensions design decides beacon's home (TODO.md,
   beacon's item); a beacon that leaves this repo takes the file deadman imports, so that move carries it.
 - Every yard, repo, mention and address comes from `lighthouse/deadman.json` or the config dir's
-  `helm/inbox-repo` and `helm/mention`; a test uses made-up names (`alpha`, `beta`, `example/inbox`).
+  `helm/logbook-repo` and `helm/mention`; a test uses made-up names (`alpha`, `beta`, `example/inbox`).
   The App's record and key and the ping secret live in the config dir at mode 600, never in the vault.
 - **No stored value may stand for "an alarm exists" past a failed GitHub call.** Symptom: a yard
   goes silent and nothing is raised, or an issue opens at every cron. Cause: `open` kept after a
