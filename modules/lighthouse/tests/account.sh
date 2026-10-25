@@ -335,6 +335,21 @@ check "$(DA pick --repo "$PR/privy/.claude/worktrees/x" --json) $(field "['accou
 check "$(DA pick --repo "$PR/cv" --json) $(field "['account']")" "0 main" "cv, a folder in no git repo → main (by path)"
 check "$(DA pick --repo "$PR" --json) $(field "['account']")" "0 work" "~/projects itself is no repo → allowed (fails open, by design)"
 check "$(DA pick --json) $(field "['account']")" "0 work" "no --repo → the walk as before"
+# --repo takes a registry key as well as a path (found 2026-10-24: a key read as a path in the cwd matched no deny list)
+check "$(DA pick --repo privy --json) $(field "['account']")" "0 main" "pick --repo <key>: the key's deny list binds, as the path's does"
+has "$T/out" "privy is on its deny list" "…naming why work was skipped"
+check "$(cd "$T" && DA pick --repo privy --json) $(field "['account']")" "0 main" "…from any cwd (the key is no path in it)"
+check "$(DA pick --repo cv --json) $(field "['account']")" "0 main" "…a key that is a folder in no git repo"
+check "$(DA pick --repo studio/pipeline --json) $(field "['account']")" "0 work" "…a nested key, not on the list → work"
+check "$(DA pick --repo privy/ --json) $(field "['account']")" "0 main" "…a trailing slash"
+check "$(DA pick --repo nosuchrepo --json) $(field "['account']")" "3 None" "an unknown key → refused (exit 3, the callers' stop), never picked as if no rule applied"
+has "$T/out" "no repo key or path of that name" "…saying so, in the JSON alone (weekly-run reads stderr merged in)"
+check "$(DA pick --repo "" --json)" 3 "an empty --repo → refused"
+printf '{"repos": {"ghost": {}}}\n' > "$T/ghost.json"
+check "$(CLAUDE_REPOS_JSON="$T/ghost.json" DA pick --repo ghost --json) $(field "['account']")" "0 work" "a key repos.json lists whose clone is absent here → known (allowed, no rule names it)"
+check "$(DA limits --all --cached --repo privy --json; field "[0]['eligible']")" "0
+False" "limits --repo <key>: work not eligible"
+check "$(DA limits --all --cached --repo nosuchrepo --json)" 3 "limits --repo, an unknown key → refused"
 # a scope's login (repos.json, knowledge-layers D3): its repos' runs start on that row alone
 printf '{"repos": {"app": {}, "app2": {}, "privy": {}},\n "scopes": {"node": {"file": "n.code-workspace", "repos": ["app2"], "confidential": true, "login": "main"},\n  "lab": {"file": "l.code-workspace", "repos": ["app", "privy"]}}}\n' > "$T/scoped.json"
 SDA() { CLAUDE_REPOS_JSON="$T/scoped.json" DA "$@"; }
@@ -1091,6 +1106,9 @@ check "$(TA pick --repo "$PR/acme-one" --json)" 3 "the tenant's login out of roo
 use "$L" "10 10"; rm -f "$L/usage-probe.json" "$L/exhaustion.jsonl"
 check "$(TA limits --all --repo "$PR/acme-one" --json; python3 -c "import json;print([(r['label'], r['eligible']) for r in json.load(open('$T/out'))])")" "0
 [('work', False), ('lab', True), ('main', False)]" "limits --repo: only the tenant's login is eligible"
+check "$(TA pick --repo acme-one --json) $(field "['account']")" "0 lab" "pick --repo <key> of a tenant's repo (a glob match, no clone here) → its login"
+check "$(TA limits --all --repo acme-one --json; python3 -c "import json;print([(r['label'], r['eligible']) for r in json.load(open('$T/out'))])")" "0
+[('work', False), ('lab', True), ('main', False)]" "limits --repo <key>: the default dir's row judged as the path's is"
 check "$(TA allowed "$PR/acme-one")" 1 "allowed: the default dir in a tenant's repo → exit 1"
 has "$T/out" "acme-one is off main: it is acme's, which runs on lab only (accounts.json tenants) — open it in VS Code profile lab, or \`$B/account run lab\` in a Terminal" "…the guard's line, with the way in"
 check "$(TA allowed "$PR/privy")" 0 "…the default dir still denies nothing else"

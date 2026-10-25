@@ -19,6 +19,16 @@ agent:
   the overlay is installed (the config dir's `regatta/overlay`), never "nothing to deny": `bin/account`'s
   `overlay_key_missing()`. An absent key read as empty is how a deny hook fails open (B9 review).
   A suite also unsets `SSH_CONNECTION` and the like when the tool reads them: dispatched runs come in over ssh.
+- **`account pick --repo` and `limits --repo` take a key or a path, and refuse anything else.** Symptom:
+  `pick --repo privy` returned a login whose deny list names `privy`, `skipped: []`, while
+  the absolute path of its checkout skipped it (found 2026-10-24). Cause: `denied()` and `scope_login_of()` read a path;
+  a bare key resolved against the cwd, matched no repo and no deny entry, and the walk ran as if no
+  rule applied. Rule: `resolve_repo_arg` turns a key into its folder under the projects folder (a
+  clone absent here still binds), keeps a path as it is and refuses the rest with exit 3, the one callers stop on
+  (any other non-zero reads "could not tell" and starts the run; 4 is "no registry: start as before"); `pick --json`
+  prints the refusal as JSON alone, as weekly-run reads stderr merged in (`limits` prints it on stderr). A name that is
+  both a key and an existing relative path is refused. A path in no repo stays allowed (header); `allowed` takes a path only. A new verb taking a repo
+  goes through it.
 - A suite moves HOME and pins `REGATTA_CONFIG` to a scratch dir first; one that needs macOS
   (zsh, Apple clang) skips itself elsewhere with one line.
 - check: `bash modules/lighthouse/tests/check.sh`.
