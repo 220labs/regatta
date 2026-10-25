@@ -12,6 +12,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
+hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 
 unset REGATTA_HOME REGATTA_LEGACY
 # account reads these (doctor's `blind`, orca-sync's VS Code step): a run over ssh, as dispatch's
