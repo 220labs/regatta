@@ -5,6 +5,8 @@
 - usage-report's `extra_usage` sample is the core's `extra_usage()` parse, the one lighthouse's
   `account` reads its probe with (costs S8, 2026-10-24); the sample is unchanged.
 
+- The usage tick runs lighthouse's `account refresh` first (orca-launcher S4, 2026-10-25): launchd starts it
+  through claude-host every 15 min, so the hooks' local copies of the tenants and logins files stay fresh.
 - The plumb scrub (2026-10-22): the files B8 moved in are public. Their private values come through
   the config dir (README, "Private values"): `plumb/usage.json`, `plumb/dispatch-host` (G3's Mac, no
   longer the first line of `wharf-runs/ssh`), `plumb/tier-rules`, and the core's, atlas's and

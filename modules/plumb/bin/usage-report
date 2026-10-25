@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where the Claude plan goes — a daily report, deterministic, zero tokens.
 
-    usage-report tick                 # launchd, every 15 min: sample limits; once a day, the report
+    usage-report tick                 # launchd, every 15 min: the hooks' local copies (account refresh), sample limits; once a day, the report
     usage-report sample               # record the plan's own percentages (5-hour, weekly, Fable, extra usage)
     usage-report collect [--days N]   # per-call usage → this host's daily CSVs (default: the last 3 days)
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
@@ -1417,7 +1417,25 @@ def notify_watch(c, ok):
                        capture_output=True, text=True, timeout=30)
 
 
+def refresh_copies():
+    """lighthouse's `account refresh` (G13: without it, nothing): the Drive-backed files the hooks read
+    from local copies — the tenants file, the logins file — re-read and copied. The tick is its runner
+    because launchd starts it through claude-host every 15 min, the one process that may open the links
+    (docs/orca-launcher-2026-10-24.md, S4). USAGE_ACCOUNT names another tool (the tests)."""
+    acct = os.environ.get("USAGE_ACCOUNT") or common.tool("account")
+    if not acct:
+        return
+    try:
+        r = subprocess.run([sys.executable, str(acct), "refresh"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"refresh: FAILED {e}")
+        return
+    for line in (r.stdout + r.stderr).strip().splitlines()[-4:]:   # its own lines; exit 3 says it is not under claude-host
+        print(line)
+
+
 def cmd_tick(c):
+    refresh_copies()
     n = cmd_sample(c)
     now = c["tz_now"]
     marker = c["data"] / c["host"] / f".collected-{now.date().isoformat()}"
