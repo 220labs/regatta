@@ -58,7 +58,8 @@
   longer logged as a bare fault: rc-hosts writes a note into the host's log first, and the new
   SessionEnd hook `close_reason.py` makes the session's own last line the reason, which the host
   quotes as "Session failed: …" (2026-10-24).
-- The dispatch host's run cap is 8, from 10 (the owner, 2026-10-23): at 10 the build Mac sat at load
+- The dispatch host's run cap is 6, from 10: 8 first (the owner, 2026-10-23), then 6 (2026-10-25: "it's
+  too slow" at 8; runs already going finish, the cap only refuses new ones). At 10 the build Mac sat at load
   110–130 for hours (uptime that evening) beside its CI runner, and every check there took twice its
   quiet time. The copies in `bin/wharf` and helm's `stalls_tick.py` follow, as
   test_dispatch checks. The same evening the build Mac got a second CI runner instance for this
