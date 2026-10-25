@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- deadman: `inbox_repo` defaults to the config dir's `helm/logbook-repo`, helm's renamed stall-road key;
+  the old `helm/inbox-repo` is not read (2026-10-25).
 - beacon: `round_icon` — a config whose icon is a round badge of its own gets it filling the round pill
   (40px, a 4px rim) and larger and bare in the window's header (38px). `/chat` answers `offer: true` on a
   reply holding the hand-off sentence where the sink relays, and the widget puts a "Talk to a person"
