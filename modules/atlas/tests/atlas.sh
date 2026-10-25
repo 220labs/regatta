@@ -12,7 +12,7 @@ M="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$M/../.." && pwd)"
 T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT   # physical: the core reports resolved paths
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(MEMO[A-Za-z0-9_]*\)=.*/\1/p; s/^\(ATLAS[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-unset XDG_DATA_HOME KNOWLEDGE_NO_PUSH
+unset XDG_DATA_HOME KNOWLEDGE_NO_PUSH WEEKLY_LOG_DIR
 RHOME=$HOME   # PyYAML may be a user-site install, found only under the real home folder
 export HOME="$T/u" REGATTA_CONFIG="$T/cfg"; mkdir -p "$HOME" "$REGATTA_CONFIG"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -63,6 +63,20 @@ check "$(grep -c 'atlas/vault' "$T/s2.err")" 1 "  one line on stderr naming the 
 $BU --post "why" "lost" >/dev/null 2>"$T/p.err"; check $? 1 "  a post is refused, never written to a guessed folder"
 grep -q "atlas/vault" "$T/p.err"; check $? 0 "  and says which key"
 mv "$T/vault-key" "$REGATTA_CONFIG/atlas/vault"
+
+echo "the dream awaiting /embark: both item shapes counted, the embark memo's line named"
+mkdir -p "$T/vault/dreams"; DD="$T/vault/dreams/2026-10-18.md"
+printf '# Dream\n\n## P\n\n- **D1 — P1. a change**\n- **D2 — P2. another**\n\nP3. the old shape\n\n## Q\n\n- **D4 — Q1. a question**\n\n## Feedback from the owner\n' > "$DD"
+export WEEKLY_LOG_DIR="$T/wlogs"; mkdir -p "$WEEKLY_LOG_DIR"
+check "$(echo '{"session_id":"e1"}' | $BU | grep '^📋' | sed 's/, [0-9]* days old\.$//')" \
+  "📋 Dream 2026-10-18 awaits /embark — 3 proposals, 1 questions" "keel's D-shaped items and the old P-lines both count"
+echo memo > "$T/embark-memo.md"
+printf '{"dream": "2026-10-18", "items": 13, "doc": "%s", "line": "[course](u) — [embark-2026-10-25.md](p)"}\n' "$T/embark-memo.md" > "$WEEKLY_LOG_DIR/embark-latest.json"
+check "$(echo '{"session_id":"e2"}' | $BU | grep '^📋')" \
+  "📋 Dream 2026-10-18 awaits /embark — its memo, first on helm's board (13 items): [course](u) — [embark-2026-10-25.md](p)" "  with the step's memo for this dream: its keel line instead"
+rm "$T/embark-memo.md"
+check "$(echo '{"session_id":"e3"}' | $BU | grep -c 'its memo')" 0 "  a memo file that is gone: the counts again"
+rm -rf "$T/vault/dreams" "$WEEKLY_LOG_DIR"; unset WEEKLY_LOG_DIR
 
 echo "G19: the bulletin's Open line through the core's lookup"
 OD="$T/od"; mkdir -p "$OD/r/docs"; printf '# Design\n\nStatus: open\n' > "$OD/r/docs/design.md"
