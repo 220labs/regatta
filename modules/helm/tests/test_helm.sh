@@ -685,10 +685,13 @@ PY
   check "$(PLAN_KEEL="$T/keelold" "$HM" $BOARD --json | lc)" "[]" "a keel without --json (exit 2, no output): no cards, the board renders"
   # S6 landing review 19: the peer's lookout cards, read over the stall cards' ssh road (STALLS_PEERS,
   # STALLS_SSH), their why led by the host; once the peer answered, this Mac's card that only says the
-  # peer's own lookout acts is dropped
+  # peer's own lookout acts is dropped. The stub prints its JSON with printf %s and spells the
+  # apostrophe as JSON's \u0027: an `echo '…\x27…'` is valid JSON only where /bin/sh is bash, whose
+  # POSIX-mode echo expands \x27; dash's (ubuntu's sh) keeps it, the peer's answer stops parsing and
+  # its cards vanish (twin-ci-2, 2026-10-25)
   printf '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"cards": [{"doc": "demo@claude/buildbox/2026-10-21-z:docs/z.md", "items": ["D2"], "card": "another host\x27s branch: its own lookout starts the run"}, {"doc": "demo@claude/laptop/2026-10-21-w:docs/w.md", "items": [], "card": "here"}]}))\n' > "$T/keelhere"
-  printf '#!/bin/sh\nfor a; do last=$a; done\n[ "$last" = "python3 -" ] || exit 9\ngrep -q %s - || exit 8\necho %s\n' "'common.tool(\"keel\")'" \
-    "'{\"armed\": true, \"cards\": [{\"doc\": \"demo@claude/buildbox/2026-10-21-z:docs/z.md\", \"items\": [\"D2\"], \"card\": \"no live session — the run would start here\"}, {\"doc\": \"demo@claude/laptop/2026-10-21-w:docs/w.md\", \"items\": [], \"card\": \"on another host\x27s branch, pushed within 24h — its lookout acts\"}]}'" > "$T/ssh-lookout"
+  printf '#!/bin/sh\nfor a; do last=$a; done\n[ "$last" = "python3 -" ] || exit 9\ngrep -q %s - || exit 8\nprintf "%%s\\n" %s\n' "'common.tool(\"keel\")'" \
+    "'{\"armed\": true, \"cards\": [{\"doc\": \"demo@claude/buildbox/2026-10-21-z:docs/z.md\", \"items\": [\"D2\"], \"card\": \"no live session — the run would start here\"}, {\"doc\": \"demo@claude/laptop/2026-10-21-w:docs/w.md\", \"items\": [], \"card\": \"on another host\\u0027s branch, pushed within 24h — its lookout acts\"}]}'" > "$T/ssh-lookout"
   printf '#!/bin/sh\necho %s\n' "'{\"armed\": false, \"cards\": [], \"last_pass\": null}'" > "$T/ssh-lookout-off"
   printf '#!/bin/sh\nexit 255\n' > "$T/ssh-lookout-down"
   printf '#!/bin/sh\nfor a; do last=$a; done\nexec sh -c "$last"\n' > "$T/ssh-lookout-run"
@@ -1586,9 +1589,18 @@ if kill -0 $HOLD 2>/dev/null; then kill $HOLD; check "alive" "ended" "the sideca
 else wait $HOLD; check "$?" "0" "the sidecar ends within a period of its parent's death, exit 0"; fi
 has "$(cat "$T/hold.out")" "has ended — the sidecar ends with it" "  saying so"
 # a renewal refused in the loop (the yard took the ship back) ends the sidecar, exit 4: it never takes it back
-# the stand-in parent is named claude (a link to sleep): stand-down signals only a live claude
+# the stand-in parent is named claude (a link to sleep): stand-down signals only a live claude.
+# Its argv[0] is per OS (twin-ci-2, 2026-10-25): macOS's `ps -o comm=` reports argv[0], so there it is
+# the link's path; Linux's comm is the basename of the path exec'd (the link's name) whatever argv[0] says, and a
+# multicall coreutils (uutils, ubuntu's since 25.10) picks its tool by argv[0] (inferred from the CI
+# symptoms, not seen in a runner log) — run as `claude` it exits at
+# once, and every case below passed or failed on a dead parent. There argv[0] is `sleep`.
 mkdir -p "$T/fakeclaude"; ln -sf /bin/sleep "$T/fakeclaude/claude"
-"$T/fakeclaude/claude" 300 & PARENT=$!; disown $PARENT   # stand-down ends it below: no job notice from this shell
+if [ "$(uname)" = Darwin ]; then FAKE_ARGV0="$T/fakeclaude/claude"; else FAKE_ARGV0=sleep; fi
+(exec -a "$FAKE_ARGV0" "$T/fakeclaude/claude" 300) & PARENT=$!; disown $PARENT   # stand-down ends it below: no job notice from this shell
+# polled, not a fixed sleep: until the subshell execs, ps names bash (code-review, twin-ci-2's finish)
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do PCOMM=$(/bin/ps -o comm= -p $PARENT 2>/dev/null); [ "${PCOMM##*/}" = claude ] && break; sleep 0.25; done
+check "${PCOMM:+${PCOMM##*/}}" "claude" "the stand-in claude lives, and ps names it claude"
 HELM_HOLD_EVERY=1 HELM_HOLD_PARENT=$PARENT "$LX/helm" skipper --hold --scope dock > "$T/hold.out" 2>&1 & HOLD=$!
 sleep 1.5; ll yard ls1 dock > /dev/null; ll yard ls5 dock > /dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 $HOLD 2>/dev/null || break; sleep 0.25; done
@@ -1614,9 +1626,10 @@ check "$(kill -0 $PARENT 2>/dev/null && echo alive || echo ended)" "ended" "  it
 kill $PARENT 2>/dev/null
 # through claude-host the record's pid is the launcher's (a parent that waits), claude its child: the
 # session's registry record names the child, which stand-down signals (the launcher's review, 2026-10-24)
-printf '#!/bin/bash\n"%s" 300 & c=$!\ntrap '"'"'kill -TERM $c 2>/dev/null'"'"' TERM INT HUP\nwait $c\n' "$T/fakeclaude/claude" > "$T/fakehost"
+printf '#!/bin/bash\n(exec -a "%s" "%s" 300) & c=$!\ntrap '"'"'kill -TERM $c 2>/dev/null'"'"' TERM INT HUP\nwait $c\n' "$FAKE_ARGV0" "$T/fakeclaude/claude" > "$T/fakehost"
 chmod +x "$T/fakehost"; "$T/fakehost" & HOSTP=$!; disown $HOSTP
 for _ in 1 2 3 4 5 6 7 8; do KID=$(pgrep -P $HOSTP); [ -n "$KID" ] && break; sleep 0.25; done
+check "$([ -n "$KID" ] && echo found || echo none)" "found" "  the launcher's claude child lives (no child: every case below is vacuous)"
 printf '{"session": "mgr-3", "pid": %d, "scope": "dock"}' "$HOSTP" > "$T/mgrdir/testhost-dock.json"
 printf '{"pid": %d, "sessionId": "mgr-3", "name": "skipper-x", "status": "idle", "updatedAt": 2}' "$KID" > "$T/sess/mgr-3.json"
 out=$(CLAUDE_CODE_SESSION_ID=mgr-3 SKIPPER_SCOPE=dock "$LX/helm" skipper --stand-down 2>&1)
