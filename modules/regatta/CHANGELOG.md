@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `claude_host()` (orca-launcher S4, 2026-10-25): whether this process's responsible process, the one tccd
+  charges, is claude-host — read from the kernel, 0.4 ms; `REGATTA_CLAUDE_HOST=0|1` pins it. The core's check
+  gains G4: each hook reader runs under an `open` audit against a stand-in drive and fails naming the line
+  that opens a Drive-backed file outside claude-host (main's readers: 5 of 5; this branch: 0).
+  `drive_backed(p)`: whether a config key is a link into a cloud drive (macOS's File Provider folder, or
+  `REGATTA_DRIVE_ROOTS`), judged from the link's text; only such a key is read local-first.
 - `regatta flare` and `/regatta:flare` (2026-10-24): a bug report, an idea or a question filed as an issue on
   the public repo, the evidence attached, a `--client-id` retry returning the first receipt, helloworld's
   file scan before the send, a prefilled link without `gh`; the repo's Bug and Idea issue forms beside it.

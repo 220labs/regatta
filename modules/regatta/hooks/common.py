@@ -591,6 +591,59 @@ def host_name():
     return _host
 
 
+def claude_host():
+    """True when this process's responsible process — the one tccd charges a privacy request to — is
+    claude-host, the launcher that holds the Drive grant (docs/orca-launcher-2026-10-24.md, S4). A reader
+    a hook may run opens a Drive-backed file only then, and reads its local copy otherwise: an ungranted
+    responsible process (Orca's app on the always-on Mac, 2026-10-24) blocks on a prompt nobody sees.
+    Asked of the kernel through the same SPI claude-host uses (0.4 ms, probed 2026-10-25), never the
+    process tree: a double fork keeps its responsible process and loses its ancestry. Off macOS, or on
+    any error, False — the local copy, the safe side. REGATTA_CLAUDE_HOST=0|1 pins it for the suites,
+    which may themselves run under claude-host in a dispatched session."""
+    pinned = os.environ.get("REGATTA_CLAUDE_HOST")
+    if pinned in ("0", "1"):
+        return pinned == "1"
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        who = lib.responsibility_get_pid_responsible_for_pid
+        who.argtypes, who.restype = [ctypes.c_int], ctypes.c_int
+        pid = who(os.getpid())
+        buf = ctypes.create_string_buffer(4096)
+        if pid <= 0 or lib.proc_pidpath(pid, buf, 4096) <= 0:
+            return False
+        return os.path.basename(buf.value.decode("utf-8", "replace")) == "claude-host"
+    except Exception:   # Linux (no libSystem), a sandbox refusing the SPI
+        return False
+
+
+def drive_backed(p):
+    """True when the config key p is a link whose own text points under a cloud drive's mount: the one
+    kind of file an ungranted process blocks on opening (S4). Only such a key is read from its local copy
+    outside claude-host; a plain file, or a link elsewhere, reads as it always did — nothing blocks on it,
+    and a copy there would freeze tenancy on every host without claude-host (Linux, a public install;
+    the S4 finish review, 2026-10-25). Judged from readlink's text, never a stat into the drive. The
+    mounts: REGATTA_DRIVE_ROOTS (':'-separated; the suites' stand-in drives), else macOS's own folder for
+    File Provider drives, below."""
+    try:
+        p = os.fspath(p)
+        if not os.path.islink(p):
+            return False
+        roots = os.environ.get("REGATTA_DRIVE_ROOTS") or os.path.expanduser("~/Library/CloudStorage")
+        roots = {x for r in filter(None, roots.split(":"))
+                 for x in (os.path.normpath(os.path.abspath(os.path.expanduser(r))), os.path.realpath(os.path.expanduser(r)))}
+        for _ in range(8):   # a link to a link (a worktree's .env → main's → the drive): each hop by its text
+            parent = os.path.realpath(os.path.dirname(os.path.abspath(p)))
+            p = os.path.normpath(os.path.join(parent, os.readlink(p)))
+            if any(p == root or p.startswith(root + os.sep) for root in roots):
+                return True
+            if not os.path.islink(p):   # a hop outside every drive: lstat only, never into a drive
+                return False
+    except (OSError, TypeError, ValueError):
+        return True   # a link that cannot be read is taken as the drive's: its copy, the side that never hangs
+    return False
+
+
 def repo_slug(url):
     """`owner/name` from an origin URL, ssh or https, or None for a non-GitHub remote."""
     m = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", url or "")
