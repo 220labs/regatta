@@ -10,12 +10,20 @@
   launcher; its log names which. The record's pid is then `claude-host`'s, with `claude` its child, so
   `stop()` signals the registry's `claude` when the record's pid is it or its parent, and
   `--stand-down` adds the session's own registry pid.
-
 - The ask poll fetches a mirror only when origin's branches moved (costs S10, 2026-10-24): one
   `ls-remote --heads` per mirror, compared with its own heads, before the fetch it replaces most
   ticks. A failing ls-remote or fetch now raises, so the poll says the repo was skipped and carries
   its last rows; the fetch's failure used to pass unseen.
-
+- spacesheep plans (spacesheep-tiers, 2026-10-24): the Talk backend answers one line where the plan has
+  no Talk ("Talk needs spacesheep Pro", or "Talk is off for this account") and the next backend takes the
+  ask; a `plan_required` refusal says the same; no CLI and no key is "no spacesheep on this Mac". The
+  board and the ship pages log each publish and stop redeploying above helm's share of the account's
+  24-hour cap, or on a cap refusal the server sent, until its retry; the board's crossing deploy carries the note
+  in its header (a ship page holds without the marker), a resume redeploys though no card moved, and a hand-run
+  `helm board --deploy` says the pause; the board's header names a
+  plan without Talk; the SessionStart nudge is silent on one read in the last hour. A running `spacesheep stream` is checked
+  against the plan and the server's list (CLI 1.31.0 keeps a refused stream running), else the page
+  redeploys. The README's "spacesheep plans" says what each plan gets.
 - `stalls_tick.py`'s copy of the dispatch host's run cap is 8, following `bin/dispatch` (the owner,
   2026-10-23; wharf-runs' CHANGELOG says why).
 - The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context

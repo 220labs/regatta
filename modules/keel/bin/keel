@@ -4378,7 +4378,7 @@ def sheep_where(memo):
     return p, top, branch, rel, (m.group(1) if m else None), "%s@%s:%s" % (repo, branch, rel), repo
 
 
-def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None):
+def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, notes=None):
     """Deploy the memo's page; returns (url, sha, deployed?). The page is the committed memo: a
     keel with uncommitted changes is refused, so a version name always names what git holds; a
     keel whose commit the page already shows is not redeployed. `plain` (from `line`): a doc
@@ -4386,7 +4386,9 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None):
     checkpoint's `--hook` still mirrors only docs that ask. `deadline`: the hook's budget ends then
     (epoch seconds); a retry after a refused pinned space needs a whole deploy timeout left.
     `src` (sheep_blob): the doc as a branch holds it, for a page whose branch no checkout here has
-    out — the lookout's redeploy (crosstalk S3); `memo` is then unused."""
+    out — the lookout's redeploy (crosstalk S3); `memo` is then unused. `notes` (the hook's list):
+    the publish budget's warning goes there, for the hook's row, instead of to stderr; and a
+    `deadline` reads the plan from its cache only, as no CLI call fits the hook's budget."""
     if src:
         p, top, branch, rel, slug, key, repo = None, src["top"], src["branch"], src["rel"], src["slug"], src["key"], src["repo"]
     else:
@@ -4473,7 +4475,8 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None):
         # line is a lone `]` — which is all this used to report (2026-10-13). Prefer the ✗ line.
         lines = [l.strip() for l in r.stderr.strip().splitlines() if l.strip()] or ["exit %d" % r.returncode]
         err = res.get("message") or res.get("error") or next((l for l in lines if l.startswith("✗")), lines[-1])
-        raise Stop("spacesheep deploy failed: %s%s" % (str(err)[:200], " (not signed in? SPACESHEEP_KEY in .env)" if r.returncode == 3 else ""))
+        cap = sheep_cap_words(cli, str(err), cached=deadline is not None)
+        raise Stop("spacesheep deploy %s: %s%s" % (cap or "failed", str(err)[:200], " (not signed in? SPACESHEEP_KEY in .env)" if r.returncode == 3 else ""))
 
     def change(pin):
         # every id this page ever had: a comment made on an older version still finds its block
@@ -4484,7 +4487,61 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None):
                     "ss": dict(pin.get("ss") or {}, **ctx["ss"])})
         return pin
     update_pin(key, change)
+    warn = sheep_book(cli, rel, cached=deadline is not None)
+    if warn and notes is not None:
+        notes.append(warn)
+    elif warn:
+        print(warn, file=sys.stderr)
     return res["url"], sha, True
+
+
+# The publish budget (the core's sheep_budget(), shared with helm's redeploys: one 24-hour cap per
+# account, 400 on Free, counted per Mac). keel never skips an answer page, the owner's road back; it
+# warns once this Mac nears its part of the cap, so the pause helm takes first is seen to be why. Once
+# per crossing (KEEL_WARNED in the core's sheep dir, cleared back under the line), not on every deploy.
+KEEL_WARNED = "keel-warned"
+
+
+def sheep_book(cli, rel, cached=False):
+    """Log this publish; the warning's text when this one crossed the line, else None. `cached`
+    (the checkpoint's hook: its 30 s kill leaves no room for the CLI's 20 s plan read) reads the
+    plan from the cache only, and with none budgets as Free, the line that is wrong only safely."""
+    try:
+        c = _common()
+        c.sheep_record("keel", what=rel)
+        d = c.sheep_dir()
+        b = c.sheep_budget()
+        if b["count"] >= b["keel_warn"]:   # over Free's line: the plan says where the line is
+            b = c.sheep_budget(c.sheep_plan(cli, None if cached else sheep_env(cli), cached_only=cached))
+        mark = d / KEEL_WARNED if d else None
+        if b["count"] < b["keel_warn"]:
+            if mark:
+                try:
+                    mark.unlink()
+                except OSError:
+                    pass
+            return None
+        if not mark or mark.exists():
+            return None
+        mark.write_text("%d\n" % b["count"])
+        return ("keel: %d spacesheep publishes from this Mac in 24 h, near its part of the account's cap "
+                "(spacesheep %s: %d a day, shared by %d machine%s; %s) — helm's board has stopped redeploying, keel's pages go on"
+                % (b["count"], c.sheep_plan_words(b["plan"]), b["cap"], b["machines"], "" if b["machines"] == 1 else "s", c.SHEEP_PLAN_URL))
+    except Exception:  # bookkeeping never fails a deploy that happened
+        return None
+
+
+def sheep_cap_words(cli, err, cached=False):
+    """'refused for the account's 24-hour publish cap (…)' when the deploy's error reads as one, else
+    ''; the refusal goes in the log with its retry, which pauses helm's redeploys too."""
+    try:
+        c = _common()
+        if c.sheep_cap_refusal(err):
+            c.sheep_record("keel", ok=False, err=err)
+            return c.sheep_cap_line(c.sheep_budget(c.sheep_plan(cli, None if cached else sheep_env(cli), cached_only=cached)))
+    except Exception:
+        pass
+    return ""
 
 
 PRUNE_DAYS = 14
@@ -5644,8 +5701,11 @@ def sheep_main(args):
                 row["error"] = "the hook's time ran out first — memo sheep %s" % doc
                 print(json.dumps(row), flush=True)
                 continue
+            notes = []   # the budget's warning: checkpoint's 🐑 note shows a row's `note`; nobody reads stderr here
             try:
-                row["url"], row["sha"], row["deployed"] = sheep(doc, timeout=min(DEPLOY_TIMEOUT, int(left)), deadline=end)
+                row["url"], row["sha"], row["deployed"] = sheep(doc, timeout=min(DEPLOY_TIMEOUT, int(left)), deadline=end, notes=notes)
+                if notes:
+                    row["note"] = "; ".join(notes)
             except Stop as e:
                 if "never mirrored" in str(e) or "no decisions" in str(e):
                     continue

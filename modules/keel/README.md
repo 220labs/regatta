@@ -29,6 +29,18 @@ records the event as if none were live), `pickup`, `dispatch` and `autofinish` (
 card; `LOOKOUT_HAIL`, `LOOKOUT_HARNESS`, `LOOKOUT_PICKUP`, `LOOKOUT_DISPATCH` and
 `LOOKOUT_AUTOFINISH` stand in for them).
 
+## spacesheep plans
+
+keel's road back is the doc on GitHub; spacesheep adds the page (facts from spacesheep.dev/plans,
+read 2026-10-24):
+
+| Plan | What keel does |
+| --- | --- |
+| none (no CLI) | the hand-over line's GitHub link, and `keel serve`'s form on 127.0.0.1 for answering in a browser tab; `sheep` has nothing to gate |
+| Free | the spacesheep page: the form, comments, versions, and its Save (`live_events`, not listed as paid: assumed on Free, unverified). Each publish goes in the core's `sheep/deploys.jsonl`, shared with helm; keel never skips a page, warns at 90 % of this Mac's part of the 400-a-day cap (360 on one machine, 180 on two), once per crossing, and names a refusal for the cap as one. In the checkpoint's hook the warning is the row's `note`, which the turn's 🐑 note shows, and the plan is read from its cache only. helm's redeploys pause first, at 75 % |
+| Pro | the same with a 2,000-a-day cap; sessionpipe's session reporting (Pro's session hooks), which `sheep gate` keeps the private repos out of |
+| Max | nothing more for keel |
+
 ## Private values
 
 Nothing here names a host, a login, an account or a person. What is private reaches the module as

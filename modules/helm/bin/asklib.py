@@ -126,6 +126,30 @@ def sheep_key():
         return None
 
 
+def sheep_env(cli):
+    """The CLI's environment: the key as sheep_key() finds it, the CLI's folder first on PATH (node)."""
+    env = dict(os.environ)
+    k = sheep_key()
+    if k:
+        env["SPACESHEEP_KEY"] = k
+    env["PATH"] = os.pathsep.join([str(Path(cli).parent), env.get("PATH", ""), "/opt/homebrew/bin"])
+    return env
+
+
+def sheep_plan(refresh=False, cached_only=False):
+    """The account's plan through the core's sheep_plan() (cached an hour): no CLI here is "none",
+    never an error; no core is None, and every caller then behaves as before plans were read."""
+    c = _common()
+    if not c or not hasattr(c, "sheep_plan"):
+        return None
+    cli = sheep_cli()
+    try:   # a cached read runs no CLI, so it needs no key (sheep_env reads .env through bin/secrets)
+        env = sheep_env(cli) if cli and not cached_only else None
+        return c.sheep_plan(cli, env, refresh=refresh, cached_only=cached_only)
+    except Exception:  # a hook's or a relay's read of the plan never costs it the relay
+        return None
+
+
 def space_id(space):
     """A page link or a uuid → the uuid (the last path part of /s/<uuid>), else the text as given."""
     s = (space or "").strip().rstrip("/")
@@ -404,9 +428,17 @@ class Talk:
         if not ctx.get("space") or not ctx.get("manager"):
             return False, "no plan space or manager id to address"
         if not sheep_key():
+            if not sheep_cli():
+                return False, "no SPACESHEEP_KEY and no spacesheep CLI: no spacesheep on this Mac — the file backend still relays here"
             return False, "no SPACESHEEP_KEY (environment, the overlay's .env or the CLI's login)"
         if not talk_url():
             return False, "no Talk service named (SPACESHEEP_URL, or the config dir's helm/talk-url)"
+        # the plan (spacesheep talk status, cached an hour in the core's sheep dir): Free has no Talk,
+        # and a send would only come back refused; unknown (no CLI, the read failed) tries as before
+        c = _common()
+        why = c.sheep_talk_refusal(sheep_plan()) if c and hasattr(c, "sheep_talk_refusal") else None
+        if why:
+            return False, why
         return True, "key and address"
 
     def request(self, ctx, text):
@@ -427,6 +459,11 @@ class Talk:
             except ValueError:
                 err = {}
             code = err.get("code") or e.code
+            # an account without Talk (Free): the plan's line, and the cached plan read again next time
+            c = _common()
+            if (code == "plan_required" or e.code == 402) and c and hasattr(c, "sheep_talk_refusal"):
+                sheep_plan(refresh=True)
+                return "unreachable", c.sheep_talk_refusal({"talk": False})
             # K10: Talk switched off says so; the next backend takes the message
             return "unreachable", "talk: %s %s" % (code, err.get("error") or "")
         except (urllib.error.URLError, OSError, ValueError) as e:

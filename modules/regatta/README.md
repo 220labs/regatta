@@ -63,8 +63,9 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   | `regatta/owner` | the owner's name: the closing lines address it (upper-cased, then `, `), the gate and Jev ask for its say-so, `/autofinish`'s marker carries it lower-cased as `by` | the lines open on their first word; "the owner's say-so"; `by` is `owner` |
   | `regatta/guarded` | the repos whose data goes to a model vendor only on the owner's quote (`jev.GUARDED`, the gate reads it) | none guarded |
   | `regatta/orca-deny` | the repos an Orca login no registry row names may never open (`common.ORCA_ROW`) | none denied |
-  | `regatta/log-dir` | where `jev.jsonl` and `gate.jsonl` go; a leading `~` is the home folder of the moment | `.local/state/regatta` in the home folder |
+  | `regatta/log-dir` | where `jev.jsonl` and `gate.jsonl` go, and `sheep/`: the account's spacesheep plan as last read (`plan.json`, an hour) and this Mac's 24-hour deploy log keel and helm share (`deploys.jsonl`); a leading `~` is the home folder of the moment | `.local/state/regatta` in the home folder |
   | `regatta/projects` | the projects folder `secrets` reads repo names under, `~` as above | `projects` in the home folder |
+  | `sheep/machines` | how many machines publish from the spacesheep account: each Mac's part of the 24-hour publish cap is the cap divided by it (`common.sheep_budget`; read when used, never an ImportError) | the hosts `lighthouse/hosts` lists, else 1 |
 - **A module's own private values** are listed in its `config-keys` file (one key per line, `#`
   comments); `regatta check` reports each one that is unreadable, or missing where an overlay is
   installed. The core's import never refuses on them: the module refuses when it uses one.

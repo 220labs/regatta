@@ -64,6 +64,9 @@ unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPA
       HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST \
       DEADMAN_CONFIG DEADMAN_URL DEADMAN_PING_SECRET DEADMAN_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first); deadman's (S11)
 export CLAUDE_CODE_SESSION_ID=mgr-1
+# the account's plan and this Mac's deploy log (the core's sheep_*): Pro, an empty log of the suite's own —
+# never the Mac's cache, nor a probe of its CLI (spacesheep-tiers)
+export REGATTA_SHEEP_PLAN=pro REGATTA_SHEEP_DIR="$T/sheep-state"
 export HELM_DEADMAN="$T/no-deadman"   # an absent peer: no case reaches lighthouse's real deadman (S11's block stubs it)
 mkdir -p "$T/home" "$T/sess"
 cp "$TD/surfaces.json" "$T/surfaces.json"
@@ -221,7 +224,7 @@ import sys, time
 sys.path.insert(0, sys.argv[1])
 import helm_render as h
 calls, cards = [], ["a"]
-h.deploy_dir = lambda d, files, space=None, title=None, message=None: (calls.append(space), ("u1", "https://x"))[1]
+h.deploy_dir = lambda d, files, space=None, title=None, message=None, by=None: (calls.append(space), ("u1", "https://x"))[1]
 age = ["3 min"]
 h.overview_state = lambda: {"kind": "overview", "as_of": time.time(),
                             "header": {"needs_owner": 0, "owner": "Sam", "week": "Week: 53%%, sampled %s ago" % age[0]},
@@ -235,6 +238,92 @@ print(len(calls), out[-1])
 PY
 )" "2 sheep: unchanged since the last deploy (u1)" \
   "a second pass where only as_of, the week line's sample age, the timeline and a card's age moved: not deployed; a new card: deployed"
+echo "the publish budget: the board and ship pages pause above helm's share (spacesheep-tiers)"
+cat > "$T/budget.py" <<'PY'
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import helm_render as h
+log = os.path.join(os.environ["REGATTA_SHEEP_DIR"], "deploys.jsonl")
+def fill(n):
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(log, "w") as f:
+        for _ in range(n):
+            f.write(json.dumps({"ts": time.time(), "by": "keel", "ok": True}) + "\n")
+calls, cards = [], ["a"]
+def dd(d, files, space=None, title=None, message=None, by=None):
+    calls.append(json.load(open(os.path.join(d, "state.json")))["header"].get("sheep"))
+    return "u1", "https://x"
+h.deploy_dir = dd
+h.overview_state = lambda: {"kind": "overview", "as_of": time.time(), "header": {"needs_owner": 0, "owner": "Sam", "sheep": h.paused_note()},
+                            "timeline": {}, "columns": [{"name": "Needs Sam", "cards": [{"title": c} for c in cards]}]}
+h.page = lambda st, title: "x"
+sheep = lambda out: [l[:40] for l in out if l.startswith("sheep")]
+st = {"space": "sp-1"}; d = h.cache_root() / "p9"; d.mkdir(parents=True, exist_ok=True)
+if sys.argv[2] == "board-first":
+    fill(149); h.overview(deploy=True); print("under:", len(calls), calls[-1])
+    fill(150); cards.append("b"); out = h.overview(deploy=True)
+    print("crossing:", len(calls), (calls[-1] or "")[:40], [l for l in out if "paused" in l][0][-20:])
+    cards.append("c"); os.environ["HELM_BOARD_POLL"] = "1"; out = h.overview(deploy=True)
+    print("paused, the poll:", len(calls), sheep(out), (h.overview_state()["header"]["sheep"] or "")[:16])
+    del os.environ["HELM_BOARD_POLL"]; out = h.overview(deploy=True)
+    print("paused, by hand:", len(calls), sheep(out))
+    print("ship:", h.sheep_line("p9", st, d, None, {"live": "redeploy"})[:33])
+    fill(0); out = h.overview(deploy=True)
+    print("resumed, no card moved:", len(calls), calls[-1], (h.cache_root() / h.PAUSED).exists())
+    out = h.overview(deploy=True); print("then unchanged:", len(calls), sheep(out)[0][:22])
+elif sys.argv[2] == "ship-first":
+    h.overview(deploy=True)
+    fill(150); print("ship:", h.sheep_line("p9", st, d, None, {"live": "redeploy"})[:33], (h.cache_root() / h.PAUSED).exists())
+    cards.append("b"); h.overview(deploy=True)
+    print("board:", len(calls), (calls[-1] or "")[:24], (h.cache_root() / h.PAUSED).exists())
+else:   # a refusal the server sent: kept with its retry, then helm holds though the count is low
+    h.overview(deploy=True)
+    import asklib
+    asklib._common().sheep_record("helm-board", ok=False, err="deploy refused — rate_limited: 400 publishes per 24h (retry in 900s)")
+    cards.append("b"); out = h.overview(deploy=True)
+    print("refused:", len(calls), sheep(out)[0][:38], (h.cache_root() / h.PAUSED).exists())
+    print("ship:", h.sheep_line("p9", st, d, None, {"live": "redeploy"})[:38])
+PY
+mkdir -p "$T/budget-cfg/sheep"; echo 2 > "$T/budget-cfg/sheep/machines"
+bud() { env -u PLAN_NO_DEPLOY -u HELM_BOARD_POLL REGATTA_SHEEP_PLAN=free REGATTA_CONFIG="$T/budget-cfg" PLAN_CACHE_DIR="$T/budget-cache-$1" \
+          REGATTA_SHEEP_DIR="$T/budget-sheep-$1" python3 "$T/budget.py" "$B" "$1" 2>&1 | tr '\n' '|'; }
+check "$(bud board-first)" \
+  "under: 1 None|crossing: 2 redeploys paused: 150 of this Mac's 150   (after this deploy)|paused, the poll: 2 [] redeploys paused|paused, by hand: 2 ['sheep: redeploys paused: 150 of this Mac']|ship: sheep: redeploys paused: 150 of t|resumed, no card moved: 3 None False|then unchanged: 3 sheep: unchanged since|" \
+  "Free on two machines: the 150th deploy carries the note and says so once; the poll then silent, a hand-run says why; the ship page too; back under, the board redeploys though no card moved"
+check "$(bud ship-first)" "ship: sheep: redeploys paused: 150 of t False|board: 2 redeploys paused: 150 of True|" \
+  "a ship page crossing first holds without writing the marker, so the board's own crossing still deploys the note and writes it"
+check "$(bud refused | sed 's/at [0-9:]*/at HH:MM/')" "refused: 1 sheep: redeploys paused: spacesheep re True|ship: sheep: redeploys paused: spacesheep re|" \
+  "a cap refusal from the server pauses the board and the ship pages though the count is low"
+cat > "$T/stream.py" <<'PY'
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import helm_render as h
+print(h.stream_taken(sys.argv[2]))
+PY
+SSB="$T/stream-bin"; mkdir -p "$SSB"
+cat > "$SSB/spacesheep" <<'EOF'
+#!/bin/sh
+case "$2" in
+  plans/fresh) printf '[{"path": "plans/fresh", "last_at": %s000}]\n' "$(date +%s)" ;;
+  plans/stale) printf '[{"path": "plans/stale", "last_at": %s000}]\n' "$(( $(date +%s) - 600 ))" ;;
+  plans/refused) printf '\n  ✗ plan_required\n\n' >&2; exit 1 ;;
+  plans/forbidden) printf '\n  ✗ HTTP 403\n\n' >&2; exit 3 ;;
+  plans/http500) printf '\n  ✗ HTTP 500\n\n' >&2; exit 1 ;;
+  plans/offline) printf '\n  ✗ fetch failed\n\n' >&2; exit 1 ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$SSB/spacesheep"
+st() { env MEMO_SHEEP_BIN="$SSB/spacesheep" PLAN_CACHE_DIR="$T/stream-cache" "$@" python3 "$T/stream.py" "$B" "$PID_"; }
+PID_=fresh; check "$(st)" "True" "a stream process whose values the server shows fresh: live"
+PID_=stale; check "$(st)" "False" "  silent for 10 min: not live, the page redeploys"
+PID_=refused; check "$(st)" "False" "  refused plan_required (the process keeps running: CLI 1.31.0): not live"
+PID_=gone; check "$(st)" "False" "  absent from the server's list: not live"
+PID_=forbidden; check "$(st)" "False" "  the key refused (exit 3): not live"
+PID_=http500; check "$(st)" "False" "  any other refusal the CLI throws (HTTP 500), no plan_required in it: not live"
+PID_=offline; check "$(st)" "True" "  only a fetch that never reached the server (fetch failed) trusts the process"
+PID_=fresh2; check "$(st REGATTA_SHEEP_PLAN=free)" "False" "  no Pro, so no Max: not live, the CLI not asked"
+
 echo "K7: two reporters at once"
 PLAN_NO_RENDER=1
 export PLAN_NO_RENDER

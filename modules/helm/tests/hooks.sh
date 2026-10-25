@@ -92,6 +92,7 @@ echo "talk_nudge.py: a Talk host's session is told to start its Session-tab list
 TN() { (export SPACESHEEP_CONFIG_DIR="$T/tn/ss" SESSIONPIPE_CONFIG="$T/tn/sp/config.json" XDG_CONFIG_HOME="$T/tn/xdg" \
           SESSIONPIPE_SOCKET="${TN_SOCK-$T/tn/sp/control.sock}"; unset SPACESHEEP_KEY CLAUDE_UNATTENDED SESSIONPIPE_CONTROL_JOB CLAUDE_CODE_SESSION_ATTENDED
         unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS  # a dispatched run sets it, and the nudge then stays silent
+        unset REGATTA_SHEEP_PLAN MEMO_SHEEP_BIN; export REGATTA_SHEEP_DIR="${TN_SHEEP-$T/tn/sheep}"  # the plan's cache: the suite's own
         if [ -n "${TN_PROJ+x}" ]; then export CLAUDE_PROJECT_DIR="$TN_PROJ"; else unset CLAUDE_PROJECT_DIR; fi
         if [ -n "${TN_UNATT-}" ]; then export CLAUDE_UNATTENDED=1; fi
         if [ -n "${TN_JOB-}" ]; then export SESSIONPIPE_CONTROL_JOB=1; fi
@@ -104,6 +105,11 @@ ev='{"session_id":"abc-123","source":"startup"}'
 out=$(CLAUDE_TALK_HOSTS="$here" TN "$ev")
 check "$(echo "$out" | grep -c 'spacesheep talk listen --session abc-123 --once')" "1" "  on a Talk host, signed in, talk on: the listen line, in the spelling ask_allow allows"
 check "$(CLAUDE_TALK_HOSTS="nosuchhost" TN "$ev")" "" "  another Mac: silent"
+mkdir -p "$T/tn/sheep-free" "$T/tn/sheep-stale"
+echo "{\"cli\": true, \"pro\": false, \"talk\": false, \"plan\": \"free\", \"cap\": 400, \"at\": $(( $(date +%s) - 60 ))}" > "$T/tn/sheep-free/plan.json"
+check "$(TN_SHEEP="$T/tn/sheep-free" CLAUDE_TALK_HOSTS="$here" TN "$ev")" "" "  the plan helm read a minute ago has no Talk (Free): silent"
+echo "{\"cli\": true, \"pro\": false, \"talk\": false, \"plan\": \"free\", \"cap\": 400, \"at\": $(( $(date +%s) - 3700 ))}" > "$T/tn/sheep-stale/plan.json"
+check "$(TN_SHEEP="$T/tn/sheep-stale" CLAUDE_TALK_HOSTS="$here" TN "$ev" | grep -c 'spacesheep talk listen')" "1" "  a Free cache past its hour reads as no cache (an upgrade since): the nudge as before"
 check "$(CLAUDE_TALK_HOSTS="$here" TN '{"session_id":"abc-123","source":"compact"}')" "" "  after a compaction: silent (the listener still runs)"
 check "$(CLAUDE_TALK_HOSTS="$here" TN '{"session_id":"a b"}')" "" "  a session id that is not one: silent"
 echo '{"key":"ss_x"}' > "$T/tn/ss/config.json"

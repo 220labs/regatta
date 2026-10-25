@@ -1787,3 +1787,249 @@ def run_group(cmd, timeout, env=None):
         p.communicate()
         raise
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
+# ---- spacesheep plans: what the account has, and its 24-hour publish budget ---------------------
+# Regatta runs with no spacesheep, on its free plan, or on a paid one (the owner, 2026-10-24: adapt
+# to Free or none; use Pro and Max to the full when paid). Facts, spacesheep.dev/plans and the CLI
+# 1.31.0's source, read 2026-10-24: Free deploys pages with comments and versions, 400 publishes per
+# 24 h; Pro adds session hooks, Talk and 2,000 publishes; Max adds Streams. `spacesheep talk status`
+# (the MCP's talk_settings) is the one cheap read that says anything about the plan: `pro` and
+# `enabled`; `whoami --json` carries no plan, and nothing tells Pro from Max, so Max reads as Pro.
+#
+# The count is per Mac, the cap per account: keel's pages and helm's board and ship pages append to
+# this Mac's log, and nothing here sees another Mac's deploys, or one made from a browser or another
+# tool. So the shares below divide the cap by the machines that publish from the account
+# (`sheep/machines` in the config dir, else the hosts `lighthouse/hosts` lists, else 1: one fleet
+# list, not a second count to keep in step): helm stops redeploying at SHEEP_HELM_SHARE of a
+# Mac's part, keeping a quarter of the account's cap for keel's answer pages across every Mac, and
+# keel (which never skips: an answer page is the owner's) warns at SHEEP_KEEL_WARN of it.
+SHEEP_CAPS = {"free": 400, "pro": 2000}
+SHEEP_PLAN_TTL = 3600     # s: the poll reads the plan once an hour, not every tick
+SHEEP_HELM_SHARE = 0.75
+SHEEP_KEEL_WARN = 0.9
+SHEEP_PLAN_URL = "spacesheep.dev/plans"
+SHEEP_KEEP = 25 * 3600    # s: the deploy log keeps the 24-hour window and an hour's margin
+SHEEP_REFUSED_HOLD = 3600  # s: a cap refusal that named no retry holds helm this long
+# A refusal for the publish cap: the server's code is unverified (the CLI prints `deploy refused —
+# <error>: <message> (retry in Ns)` for any publish guard), so a limit word counts only with
+# "publish" or the 24 hours beside it: a deploy's own limits ("too many files", "file size limit
+# exceeded", "storage quota exceeded") and a bare rate_limited are other refusals (landing review).
+_SHEEP_LIMIT_RE = re.compile(r"rate.?limit\w*|limit\w*|\bcap\b|quota|too many|daily", re.I)
+_SHEEP_CAP_NEAR_RE = re.compile(r"publish|\b24\s*-?\s*h(?:ou)?r?s?\b|\bper 24\b", re.I)
+_SHEEP_RETRY_RE = re.compile(r"retry in (\d+)\s*s", re.I)
+
+
+def sheep_dir():
+    """This Mac's spacesheep state: $REGATTA_SHEEP_DIR, else `sheep` in the core's LOG_DIR. None
+    when MEMO_SHEEP_BIN names a stand-in CLI and no REGATTA_SHEEP_DIR goes with it: a suite's stub
+    deploy must never count against the account, nor its stub plan stand for the real one."""
+    d = os.environ.get("REGATTA_SHEEP_DIR")
+    if d:
+        return Path(d)
+    if "MEMO_SHEEP_BIN" in os.environ:
+        return None
+    return LOG_DIR / "sheep"
+
+
+def _sheep_plan_from(status):
+    """talk status's JSON as {"pro", "talk"}: either None when the answer did not say."""
+    pro = status.get("pro") if isinstance(status.get("pro"), bool) else None
+    on = status.get("enabled") if isinstance(status.get("enabled"), bool) else None
+    return {"pro": pro, "talk": None if pro is None else pro and on is not False}
+
+
+def sheep_plan(cli=None, env=None, refresh=False, cached_only=False):
+    """What this account's plan allows, as far as this Mac can tell:
+        {"cli": bool, "pro": True|False|None, "talk": True|False|None, "talk_off": bool,
+         "plan": "none"|"free"|"pro"|"unknown", "cap": int, "at": epoch s, "error": str|None}
+    `cli` is the caller's spacesheep CLI (None: no spacesheep here, which is a plan, not an error);
+    `env` its environment (the key). Cached in sheep_dir()/plan.json for SHEEP_PLAN_TTL; a failed
+    read is cached too, so a Mac offline does not call the CLI every tick, and it keeps the plan the
+    last good read found (only `at` and `error` change): one failed read must not drop Pro to Free's
+    cap for an hour. `cached_only` (a hook, a page draw) never runs the CLI: no cache is None, and a
+    cache of any age is returned (a caller that needs a fresh one judges `at`). $REGATTA_SHEEP_PLAN
+    (none, free, pro, pro-off) stands in for the read in tests. A plan never read is budgeted as
+    Free: the cap that is wrong only safely."""
+    fake = os.environ.get("REGATTA_SHEEP_PLAN")
+    if fake:
+        pro = {"free": False, "pro": True, "pro-off": True}.get(fake)
+        return _sheep_plan_row(fake != "none", pro, None if pro is None else fake == "pro", None, time.time())
+    if not cli and not cached_only:
+        return _sheep_plan_row(False, None, None, None, time.time())
+    d = sheep_dir()
+    path = d / "plan.json" if d else None
+    old = None
+    if path:
+        try:
+            old = json.loads(path.read_text())
+            old = old if isinstance(old, dict) else None
+        except (OSError, ValueError):
+            old = None
+        try:
+            if old and not refresh and (cached_only or time.time() - float(old.get("at") or 0) < SHEEP_PLAN_TTL):
+                return old
+        except (ValueError, TypeError):
+            pass
+    if cached_only:
+        return None
+    try:
+        r = subprocess.run([cli, "talk", "status"], capture_output=True, text=True, env=env, timeout=20)
+        i = r.stdout.find("{")
+        status = json.loads(r.stdout[i:]) if i >= 0 else {}
+        err = None if r.returncode == 0 and isinstance(status, dict) and status else \
+            ((r.stderr or r.stdout).strip().splitlines() or ["exit %d" % r.returncode])[-1][:200]
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        status, err = {}, str(e)[:200]
+    p = _sheep_plan_from(status if isinstance(status, dict) and not err else {})
+    if err and old and old.get("cli") and old.get("plan") in ("free", "pro"):
+        row = dict(old, at=time.time(), error=err)   # the last good read's plan stands
+    else:
+        row = _sheep_plan_row(True, p["pro"], p["talk"], err, time.time())
+    if path:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name("plan.json.%d.tmp" % os.getpid())
+            tmp.write_text(json.dumps(row, sort_keys=True))
+            tmp.replace(path)
+        except OSError:
+            pass
+    return row
+
+
+def _sheep_plan_row(cli, pro, talk, err, at):
+    plan = "none" if not cli else {True: "pro", False: "free"}.get(pro, "unknown")
+    return {"cli": cli, "pro": pro, "talk": talk, "talk_off": pro is True and talk is False, "plan": plan,
+            "cap": SHEEP_CAPS["pro" if pro else "free"], "at": at, "error": err}
+
+
+def sheep_plan_words(plan):
+    """A budget's or a plan row's `plan` as a sentence says it: "Pro", "Free", or, for a plan never
+    read, "Free, as far as this Mac knows" (the cap it is budgeted at; never "Unknown")."""
+    name = plan if isinstance(plan, str) else (plan or {}).get("plan")
+    return {"free": "Free", "pro": "Pro", "none": "none"}.get(name, "Free, as far as this Mac knows")
+
+
+def sheep_talk_refusal(plan):
+    """The one line a relay says when the account cannot carry Talk, or None when it can or the
+    plan is not known (then Talk is tried as before, and its own refusal is the answer)."""
+    if not plan or plan.get("talk") is not False:
+        return None
+    if plan.get("talk_off"):
+        return "Talk is off for this account (spacesheep.dev/settings/talk) — the file backend still relays on this Mac"
+    return "Talk needs spacesheep Pro (%s) — the file backend still relays on this Mac" % SHEEP_PLAN_URL
+
+
+def sheep_record(by, ok=True, what="", err=""):
+    """Append one deploy to this Mac's log (`by`: keel, helm-board, helm-ship); `ok=False` is a
+    refusal for the publish cap, kept with the `until` its `retry in Ns` names (else an hour), which
+    helm's redeploys hold for. Never raises: a deploy that happened must not fail on its bookkeeping.
+    Writers take `deploys.lock`, never the log itself: the prune writes a new file and renames it
+    over the log, so readers (no lock) see the old file or the new one, never a half. The prune
+    runs when the oldest row is past twice SHEEP_KEEP, so about once a day, not on every append."""
+    d = sheep_dir()
+    if not d:
+        return
+    path = d / "deploys.jsonl"
+    now = time.time()
+    row = {"ts": round(now, 1), "by": by, "ok": bool(ok), "what": what[:80]}
+    if not ok:
+        m = _SHEEP_RETRY_RE.search(err or "")
+        row["until"] = round(now + (int(m.group(1)) if m else SHEEP_REFUSED_HOLD), 1)
+    try:
+        import fcntl
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "deploys.lock", "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            with open(path, "a+") as f:
+                f.write(json.dumps(row) + "\n")
+                f.seek(0)
+                first = f.readline()
+            if _sheep_ts(first) < now - 2 * SHEEP_KEEP:
+                keep = [l for l in path.read_text().splitlines() if _sheep_ts(l) > now - SHEEP_KEEP]
+                tmp = path.with_name("deploys.jsonl.%d.tmp" % os.getpid())
+                tmp.write_text("".join(l + "\n" for l in keep))
+                tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _sheep_ts(line):
+    try:
+        return float(json.loads(line).get("ts") or 0)
+    except (ValueError, TypeError, AttributeError):
+        return 0.0
+
+
+def _sheep_rows(hours=24):
+    d = sheep_dir()
+    if not d:
+        return []
+    since = time.time() - hours * 3600
+    try:
+        lines = (d / "deploys.jsonl").read_text().splitlines()
+    except OSError:
+        return []
+    rows = []
+    for l in lines:
+        try:
+            row = json.loads(l)
+            if isinstance(row, dict) and float(row.get("ts") or 0) >= since:
+                rows.append(row)
+        except (ValueError, TypeError):
+            continue
+    return rows
+
+
+def sheep_count(hours=24):
+    """This Mac's published deploys in the last `hours` (refusals not counted: they cost no publish)."""
+    return sum(1 for r in _sheep_rows(hours) if r.get("ok"))
+
+
+def sheep_refused_until():
+    """The latest `until` of a cap refusal in the log's 24 hours (epoch s), else 0."""
+    out = 0.0
+    for r in _sheep_rows():
+        if not r.get("ok"):
+            try:
+                out = max(out, float(r.get("until") or 0))
+            except (ValueError, TypeError):
+                pass
+    return out
+
+
+def sheep_machines():
+    """The machines that publish from the account: `sheep/machines` in the config dir, else the
+    hosts `lighthouse/hosts` lists, else 1."""
+    try:
+        n = int(config_line("sheep/machines") or 0)
+    except ValueError:
+        n = 0
+    return max(1, n or len(config_lines("lighthouse/hosts") or []))
+
+
+def sheep_budget(plan=None):
+    """{"count", "cap", "plan", "machines", "helm_limit", "keel_warn", "refused_until"}: this Mac's
+    24-hour count against its part of the account's cap (the comment above the caps says why a
+    part), and the hold a cap refusal from the server set."""
+    plan = plan or _sheep_plan_row(True, None, None, None, time.time())
+    machines = sheep_machines()
+    cap = int(plan.get("cap") or SHEEP_CAPS["free"])
+    return {"count": sheep_count(), "cap": cap, "plan": plan.get("plan") or "unknown", "machines": machines,
+            "helm_limit": int(cap * SHEEP_HELM_SHARE / machines), "keel_warn": int(cap * SHEEP_KEEL_WARN / machines),
+            "refused_until": sheep_refused_until()}
+
+
+def sheep_cap_refusal(text):
+    """True when a deploy's error reads as the publish cap's refusal: a limit word with "publish"
+    or the 24 hours within 40 characters of it."""
+    for m in _SHEEP_LIMIT_RE.finditer(text or ""):
+        if _SHEEP_CAP_NEAR_RE.search(text[max(0, m.start() - 40):m.end() + 40]):
+            return True
+    return False
+
+
+def sheep_cap_line(budget):
+    """The words a cap refusal is named with."""
+    return ("refused for the account's 24-hour publish cap (%d on spacesheep %s, %s; this Mac %d in 24 h)"
+            % (budget["cap"], sheep_plan_words(budget["plan"]), SHEEP_PLAN_URL, budget["count"]))

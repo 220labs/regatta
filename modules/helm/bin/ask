@@ -1128,7 +1128,9 @@ def poll_board(deadline=None):
         return
     cmd = shlex.split(os.environ.get("ASK_BOARD_CMD") or "") or [sys.executable, str(HERE.parent / "libexec" / "helm"), "board", "--deploy"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=min(float(os.environ.get("ASK_BOARD_TIMEOUT") or 240), left if left is not None else float("inf")))
+        # HELM_BOARD_POLL: the poll's log says a redeploy pause once, at its crossing (a hand-run, every time)
+        r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, HELM_BOARD_POLL="1"),
+                           timeout=min(float(os.environ.get("ASK_BOARD_TIMEOUT") or 240), left if left is not None else float("inf")))
         if r.returncode:
             raise RuntimeError("exit %d: %s" % (r.returncode, ((r.stderr or r.stdout).strip().splitlines() or ["no output"])[-1][:120]))
         print("ask poll: board — %s" % " · ".join(x.strip() for x in r.stdout.splitlines() if x.strip())[:300])

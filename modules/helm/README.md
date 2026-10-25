@@ -20,6 +20,21 @@ question takes instead of a prompt nobody would answer, and the board that shows
 | `hooks/ask_guard.py` | PreToolUse: denies AskUserQuestion in an unattended run, with the relay instruction; UserPromptSubmit: prints relays queued for the session; Notification: a banner for an ask nobody relays |
 | `hooks/talk_nudge.py` | SessionStart: tells a session on a Talk host how to listen for the owner's Session-tab messages |
 
+## spacesheep plans
+
+Helm works with no spacesheep at all and uses what a paid plan adds (facts from spacesheep.dev/plans
+and the CLI 1.31.0's source, read 2026-10-24; the plan is read by `spacesheep talk status`, cached an
+hour in the core's `sheep/plan.json`, which cannot tell Pro from Max):
+
+| Plan | What helm does |
+| --- | --- |
+| none (no CLI) | the board and each ship's page are local files (`regatta helm board` writes the board's, `regatta helm open` serves a ship's); asks relay by SendMessage or the file backend on this Mac; Talk says "no spacesheep on this Mac" and is skipped |
+| Free | the board and ship pages deploy, each publish logged in the core's `sheep/deploys.jsonl` beside keel's; above 75 % of this Mac's part of the 400-a-day cap (300 on one machine, 150 on two; the count is `sheep/machines` in the config dir, else the hosts `lighthouse/hosts` lists, else 1) they stop redeploying, the board's last deploy saying so (a ship page holds without it); a refusal for the cap from the server pauses them the same way until its retry, so keel's answer pages keep the rest; Talk relays answer "Talk needs spacesheep Pro" and the next backend takes the ask; the SessionStart nudge says nothing while the plan read is under an hour old |
+| Pro | the same with a 2,000-a-day cap (750 a Mac before the pause); Talk relays to a skipper on any Mac, and sessions on the `helm/talk-hosts` Macs are told to listen |
+| Max | Pro plus Streams: `helm.live stream` with a `spacesheep stream plans/<id>` process keeps a ship's page live with no redeploys. A refused stream (`plan_required`) keeps its process running, so helm also checks the server's list and redeploys while the stream is absent or silent for 2 minutes |
+
+The count is this Mac's; the cap is the account's, and deploys from other tools are not counted.
+
 ## Install
 
 ```bash

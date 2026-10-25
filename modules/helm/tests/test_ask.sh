@@ -69,6 +69,9 @@ unset DISPATCH_MANAGER DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_MANAGER_ACCOUN
       DISPATCH_REPO CLAUDE_UNATTENDED CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_BACKGROUND_TASKS MEMO_SHEEP_BIN
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 export SPACESHEEP_KEY="" CLAUDE_CODE_SESSION_ID=run-1 ASK_NO_PR=1
+# the account's plan (the core's sheep_plan): Pro, as every case before plans were read assumed; never
+# the Mac's own cache or CLI (a Free Mac would fail the Talk cases; a probe would leave the Mac)
+export REGATTA_SHEEP_PLAN=pro REGATTA_SHEEP_DIR="$T/sheep-state"
 mkdir -p "$T/sess" "$T/home/.claude" "$T/home/.claude-w"
 cp "$TD/surfaces.json" "$T/surfaces.json"
 printf '{"accounts": [{"label": "claude-a", "provider": "claude", "home": "%s/home/.claude"}, {"label": "claude-w", "provider": "claude", "home": "%s/home/.claude-w"}]}' "$T" "$T" > "$T/accounts.json"
@@ -230,6 +233,8 @@ class H(BaseHTTPRequestHandler):
         log.write(json.dumps({"auth": self.headers.get("Authorization"), "ua": self.headers.get("User-Agent"), **body}) + "\n"); log.flush()
         if body["session_id"] == "off":
             self.send_response(403); self.end_headers(); self.wfile.write(b'{"code": "talk_off", "error": "Turn on Talk"}'); return
+        if body["session_id"] == "free":
+            self.send_response(402); self.end_headers(); self.wfile.write(b'{"code": "plan_required", "error": "Talk is a Pro feature"}'); return
         self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok": true, "id": 7}')
     def log_message(self, *a): pass
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
@@ -247,6 +252,20 @@ live off ghost
 out=$(env SPACESHEEP_KEY=k-test "$E_SKIP"=off DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "talk: skipped — talk: talk_off" "K10: Talk off says so and the next backend is tried"
 rm "$T/sess/off.json"
+
+echo "Talk on a plan without it (spacesheep-tiers, 2026-10-24)"
+n0=$(wc -l < "$T/posts.jsonl" | tr -d ' ')
+out=$(env SPACESHEEP_KEY=k-test REGATTA_SHEEP_PLAN=free "$E_SKIP"=mgr-1 DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "talk: skipped — Talk needs spacesheep Pro (spacesheep.dev/plans) — the file backend still relays on this Mac" "Free: one line, and the next backend takes the ask"
+check "$(wc -l < "$T/posts.jsonl" | tr -d ' ')" "$n0" "  no POST was tried"
+out=$(env SPACESHEEP_KEY=k-test REGATTA_SHEEP_PLAN=pro-off "$E_SKIP"=mgr-1 DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "talk: skipped — Talk is off for this account (spacesheep.dev/settings/talk)" "Pro with Talk switched off: the settings, not the upgrade"
+live free ghost
+out=$(env SPACESHEEP_KEY=k-test "$E_SKIP"=free DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "talk: skipped — Talk needs spacesheep Pro" "a plan_required refusal from the server: the same line, not a code"
+rm "$T/sess/free.json"
+out=$(env MEMO_SHEEP_BIN="" "$E_SKIP"=far-away "$E_SKIP_HOST"=buildbox DISPATCH_PLAN_SPACE=abc "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "no spacesheep CLI: no spacesheep on this Mac — the file backend still relays here" "no CLI and no key: no spacesheep, not an error"
 
 echo "plan event and the run's report"
 "$HM" $SHIP demo --id p1 > /dev/null

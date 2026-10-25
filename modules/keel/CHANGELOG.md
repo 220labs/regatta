@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- spacesheep plans (spacesheep-tiers, 2026-10-24): every page publish goes in the core's deploy log,
+  shared with helm's redeploys; keel never skips one, warns once per crossing at 90 % of this Mac's part of
+  the 24-hour cap (by hand on stderr, in the checkpoint's hook as the row's `note`, the plan read from its cache
+  only there), and names a refusal for the cap as one, logged so helm pauses on it. The README's "spacesheep plans" says what each
+  plan gets.
+
 - Mermaid is fetched, not vendored: the repo keeps the version and sha256, and the first page with a
   diagram fetches `mermaid.min.js` from jsDelivr (else unpkg) into `~/Library/Caches/keel` (`~/.cache/keel`
   off a Mac), kept only when it matches the pin (`KEEL_CACHE_DIR`, `KEEL_MERMAID_URL`, `KEEL_MERMAID_FETCH=0`).

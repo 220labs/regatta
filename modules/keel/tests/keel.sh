@@ -1336,10 +1336,12 @@ EOF
 gitc "$G/sh" add docs/s.md; gitc "$G/sh" commit -qm "mirror memo"
 SM="$G/sh/docs/s.md"
 srun() { (export SHEEP_T="$S" MEMO_SHEEP_BIN="$S/bin/spacesheep" MEMO_SHEEP_STATE="$S/state" SPACESHEEP_KEY=ss_test \
-          MEMO_SHEEP_MCP="http://127.0.0.1:$(cat "$S/port")/mcp" MEMO_SHEEP_APP="http://127.0.0.1:$(cat "$S/port")"; run "$@"); }
+          MEMO_SHEEP_MCP="http://127.0.0.1:$(cat "$S/port")/mcp" MEMO_SHEEP_APP="http://127.0.0.1:$(cat "$S/port")" \
+          REGATTA_SHEEP_DIR="$S/budget"; unset REGATTA_SHEEP_PLAN; run "$@"); }
 
 srun sheep "$SM" > "$T/s1.out" 2>&1; rc=$?
 check "$rc" "0" "sheep deploys a memo"
+check "$(python3 -c 'import json,sys; print([json.loads(l)["by"] for l in open(sys.argv[1])])' "$S/budget/deploys.jsonl" 2>&1)" "['keel']" "…and the publish goes in this Mac's deploy log, which helm's redeploys share (spacesheep-tiers)"
 check "$(cat "$S/path0")" "$S/bin" "…with the CLI's own folder first on PATH, so its node is found (buildbox, 2026-10-05)"
 has "$T/s1.out" "page:   https://spacesheep.dev/@sam/memo (" "…and prints the page"
 SHA=$(git -C "$G/sh" rev-parse --short HEAD)
@@ -1588,6 +1590,41 @@ printf '{"comments": [{"id": "n1", "body": "still thin", "anchor_id": "%s"}]}\n'
 srun sheep pull --write "$SM" > /dev/null 2>&1
 check "$(grep -A2 '^Some context' "$SM" | tail -1)" "**Sam, $(date +%F):** still thin" "lines added above a block: its comment still lands under it"
 gitc "$G/sh" checkout -q -- docs/s.md
+
+echo "sheep — the publish budget: keel never skips, warns once per crossing, names a cap refusal (spacesheep-tiers)"
+cat > "$T/kbudget.py" <<'PY'
+import json, os, sys, time
+from importlib.machinery import SourceFileLoader as L
+m = L("m", sys.argv[1]).load_module()
+log = os.path.join(os.environ["REGATTA_SHEEP_DIR"], "deploys.jsonl")
+os.makedirs(os.path.dirname(log), exist_ok=True)
+if sys.argv[2] != "-":
+    with open(log, "w") as f:
+        for _ in range(int(sys.argv[2])):
+            f.write(json.dumps({"ts": time.time(), "by": "helm-board", "ok": True}) + "\n")
+cached = os.environ.get("KB_CACHED") == "1"
+w = m.sheep_book(sys.argv[4], "docs/x.md", cached=cached)
+print(sum(1 for l in open(log) if '"ok": true' in l), w or "-", m.sheep_cap_words(sys.argv[4], sys.argv[3], cached=cached) or "-")
+PY
+mkdir -p "$T/kb-cfg/sheep"; echo 2 > "$T/kb-cfg/sheep/machines"
+printf '#!/bin/sh\necho "$*" >> "%s/kb-calls"\necho "{\\"pro\\": false, \\"enabled\\": false}"\n' "$T" > "$T/kb-cli"; chmod +x "$T/kb-cli"
+kb() { env REGATTA_CONFIG="$T/kb-cfg" REGATTA_SHEEP_DIR="$T/kb-${KB_DIR:-$1}" MEMO_SHEEP_BIN="" ${KB_PLAN:+REGATTA_SHEEP_PLAN=$KB_PLAN} \
+         python3 "$T/kbudget.py" "$B/keel" "$1" "$2" "${KB_CLI:-/nonexistent}" 2>&1; }
+check "$(KB_PLAN=free kb 10 "space not found")" "11 - -" "under the line: the deploy logged, no warning, an ordinary failure not called the cap"
+KB_PLAN=free kb 179 "deploy refused — rate_limited: too many publishes (retry in 3600s)" > "$T/kb.out"
+has "$T/kb.out" "keel: 180 spacesheep publishes from this Mac in 24 h, near its part of the account's cap (spacesheep Free: 400 a day, shared by 2 machines" "at 180 on Free over two machines: keel warns, and still deploys"
+has "$T/kb.out" "refused for the account's 24-hour publish cap (400 on spacesheep Free, spacesheep.dev/plans; this Mac 180 in 24 h)" "  a cap refusal is named as one"
+check "$(grep -c '"ok": false' "$T/kb-179/deploys.jsonl")" "1" "  …and goes in the log, which pauses helm's redeploys too"
+check "$(KB_PLAN=free KB_DIR=179 kb - "x" | cut -c1-6)" "181 - " "  the next deploy over the line: no second warning (once per crossing)"
+KB_PLAN=free KB_DIR=179 kb 5 "x" > /dev/null; KB_PLAN=free KB_DIR=179 kb 179 "x" > "$T/kb2.out"
+has "$T/kb2.out" "keel: 180 spacesheep" "  back under the line, then over again: a new crossing warns again"
+KB_DIR=hook KB_CACHED=1 KB_CLI="$T/kb-cli" kb 179 "deploy refused — publish limit reached for 24h" > "$T/kb3.out"
+has "$T/kb3.out" "180 keel: 180 spacesheep publishes from this Mac in 24 h, near its part of the account's cap (spacesheep Free, as far as this Mac knows: 400 a day, shared by 2 machines" \
+  "the hook's path, no cached plan: Free's line, worded as not known, never 'unknown'"
+lacks "$T/kb3.out" "nknown" "  …in the warning and the cap's words alike"
+check "$(cat "$T/kb-calls" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and the CLI is never run there (its 20 s read past the checkpoint's 30 s kill)"
+KB_DIR=hand KB_CLI="$T/kb-cli" kb 179 "x" > /dev/null
+check "$(cat "$T/kb-calls" 2>/dev/null)" "talk status" "  by hand, over Free's line, the plan is read through the CLI"
 
 echo "sheep — M3, M5, M4, M20, M16, M18: the page's comments, read and kept (2026-10-15)"
 # M3: the text form's real shape (2026-10-04, 2026-10-08): a group line, the Co-shepherd's reply with

@@ -92,8 +92,53 @@ def render(pid, deploy=None):
 
 
 def stream_running(pid):
+    """A `spacesheep stream plans/<id>` process runs here and the server takes its values. The CLI
+    (1.31.0's lib/stream.js, read 2026-10-24) exits 3 only on a 401 or 403; any other refusal, such
+    as Streams' `plan_required` for an account without Max (its HTTP status unverified), is logged
+    and the process keeps running. So a process found is checked against the plan (no Pro, no Max)
+    and the server's own list: a stream absent or silent for STREAM_STALE reads as not live, and the
+    page falls back to redeploy. The verdict is kept STREAM_RECHECK, so a burst of reports asks once."""
     r = subprocess.run(["pgrep", "-f", "spacesheep stream plans/%s" % pid], capture_output=True, text=True)
-    return r.returncode == 0
+    if r.returncode != 0:
+        return False
+    return stream_taken(pid)
+
+
+STREAM_STALE = 120     # s: the hint's --every is 30 s; four missed values is a refused stream
+STREAM_RECHECK = 300
+
+
+def stream_taken(pid):
+    import asklib
+    plan = asklib.sheep_plan(cached_only=True) or {}
+    if plan.get("pro") is False:
+        return False
+    memo = cache_root() / pid / ".stream-checked"
+    try:
+        at, ok = memo.read_text().split()
+        if time.time() - float(at) < STREAM_RECHECK:
+            return ok == "1"
+    except (OSError, ValueError):
+        pass
+    cli = asklib.sheep_cli()
+    ok = True   # the list could not be read (offline, no CLI, a timeout): trust the process, as before
+    if cli:
+        try:
+            q = subprocess.run([cli, "streams", "plans/%s" % pid, "--json"], capture_output=True, text=True,
+                               env=asklib.sheep_env(cli), timeout=20)
+            # the CLI's list() throws the server's `body.error`, else `HTTP <status>`, and exits 1 (3 on
+            # a refused key): any of those is a stream the server does not take. Only a fetch that never
+            # reached the server ("fetch failed", Node's own words) leaves the process trusted.
+            if q.returncode:
+                ok = bool(re.search(r"fetch failed|could not reach", q.stderr + q.stdout, re.I))
+            else:
+                rows = json.loads(q.stdout or "[]")
+                row = next((x for x in rows if isinstance(x, dict) and x.get("path") == "plans/%s" % pid), None)
+                ok = bool(row and row.get("last_at") and time.time() - float(row["last_at"]) / 1000 < STREAM_STALE)
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            pass
+    _write(memo, "%d %d" % (time.time(), ok))
+    return ok
 
 
 def sheep_line(pid, st, d, deploy, rows):
@@ -118,12 +163,16 @@ def sheep_line(pid, st, d, deploy, rows):
             last = 0
         if time.time() - last < DEPLOY_EVERY:
             return "sheep: deployed %ds ago — the next report deploys" % (time.time() - last)
+        held = budget_hold()
+        if held:
+            return "sheep: " + held
     return deploy_plan(pid, st, d)
 
 
-def deploy_dir(src, files, space=None, title=None, message=None):
+def deploy_dir(src, files, space=None, title=None, message=None, by="helm"):
     """The CLI's deploy of `files` from `src` (a folder of its own: never the tails). Returns
-    (uuid, url) or raises RuntimeError with the CLI's words."""
+    (uuid, url) or raises RuntimeError with the CLI's words, a cap refusal named as such; each
+    publish goes in the core's deploy log as `by`."""
     sys.path.insert(0, str(HERE))
     import asklib
     cli = asklib.sheep_cli()
@@ -137,26 +186,99 @@ def deploy_dir(src, files, space=None, title=None, message=None):
     cmd += ["--space", space] if space else ["--title", title or src.name]
     if message:
         cmd += ["-m", message]
-    env = dict(os.environ)
-    k = asklib.sheep_key()
-    if k:
-        env["SPACESHEEP_KEY"] = k
-    env["PATH"] = os.pathsep.join([str(Path(cli).parent), env.get("PATH", ""), "/opt/homebrew/bin"])
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True, env=asklib.sheep_env(cli), timeout=120)
     try:
         res = json.loads(r.stdout)
     except ValueError:
         res = {}
     uuid = res.get("uuid") or res.get("id") or res.get("space_id")
+    c = asklib._common()
     if r.returncode or not uuid:
-        raise RuntimeError((res.get("message") or res.get("error") or r.stderr.strip()[-200:] or "exit %d" % r.returncode))
+        err = res.get("message") or res.get("error") or r.stderr.strip()[-200:] or "exit %d" % r.returncode
+        if c and hasattr(c, "sheep_cap_refusal") and c.sheep_cap_refusal(err):
+            # kept in the log with its retry, which pauses helm's redeploys (budget_hold) until then
+            c.sheep_record(by, ok=False, what=title or space or src.name, err=err)
+            err = "%s — %s" % (c.sheep_cap_line(c.sheep_budget(asklib.sheep_plan())), err)
+        raise RuntimeError(err)
+    if c and hasattr(c, "sheep_record"):
+        c.sheep_record(by, what=title or space or src.name)
     return uuid, res.get("url")
+
+
+# The publish budget (the core's sheep_budget(): this Mac's deploys in 24 h against its part of the
+# account's cap). Free allows 400 a day and one active ship alone can redeploy 1,440 times, so above
+# helm's share the board and the ship pages stop redeploying and leave the rest to keel's answer
+# pages, which never skip. A cap refusal from the server (kept in the log with its retry) pauses them
+# the same way. Crossing the line costs the board one last deploy that carries the note (its header),
+# and the pause is said once in the poll's log; the page keeps updating locally (helm open).
+PAUSED = "sheep-paused"
+
+
+def budget_hold(st=None):
+    """None when a redeploy may go; else the reason it may not. Only the board (`st`, its state)
+    writes or clears the pause marker: its crossing deploy carries the note into the header (that one
+    deploy goes, unless the server already refused one), and its resume clears it. A ship page (no
+    `st`) only holds: a ship crossing first and writing the marker left the board's own crossing
+    unseen, so the board never said the pause (landing review)."""
+    import asklib
+    c = asklib._common()
+    if not c or not hasattr(c, "sheep_budget"):
+        return None
+    b = c.sheep_budget(asklib.sheep_plan())
+    refused = float(b.get("refused_until") or 0) > time.time()
+    mark = cache_root() / PAUSED
+    if b["count"] < b["helm_limit"] and not refused:
+        if st is not None:
+            try:
+                mark.unlink()
+            except OSError:
+                pass
+            st.setdefault("header", {})["sheep"] = None   # drawn before this check cleared the pause
+        return None
+    note = budget_note(b, refused)
+    if st is None:
+        return note
+    if not mark.exists():
+        _write(mark, json.dumps({"at": time.time(), "count": b["count"], "limit": b["helm_limit"], "note": note}))
+        st.setdefault("header", {})["sheep"] = note
+        return note if refused else None   # refused: the server would refuse the note's deploy too
+    return note
+
+
+def paused_note():
+    """The pause's note while it holds (the marker budget_hold writes), else None."""
+    try:
+        return json.loads((cache_root() / PAUSED).read_text()).get("note")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def talk_note():
+    """The relay's own line when the cached plan has no Talk (the core's sheep_talk_refusal), else None.
+    Cache only: drawing the board never calls the CLI."""
+    import asklib
+    c = asklib._common()
+    if not c or not hasattr(c, "sheep_talk_refusal"):
+        return None
+    return c.sheep_talk_refusal(asklib.sheep_plan(cached_only=True))
+
+
+def budget_note(b, refused=False):
+    import asklib
+    words = asklib._common().sheep_plan_words(b["plan"])
+    if refused:
+        return ("redeploys paused: spacesheep refused a publish for the account's 24-hour cap (%d a day on %s), "
+                "until %s — the local board is current (regatta helm board)"
+                % (b["cap"], words, time.strftime("%H:%M", time.localtime(float(b["refused_until"])))))
+    return ("redeploys paused: %d of this Mac's %d publishes in 24 h (spacesheep %s caps the account at %d a day, "
+            "shared by %d machines; keel's answer pages keep the rest) — the local board is current (regatta helm board)"
+            % (b["count"], b["helm_limit"], words, b["cap"], b["machines"]))
 
 
 def deploy_plan(pid, st, d):
     try:
         uuid, url = deploy_dir(d, ("index.html", "state.json"), space=st.get("space"),
-                               title="Helm · %s" % (st.get("topic") or pid), message=time.strftime("%Y-%m-%d %H:%M"))
+                               title="Helm · %s" % (st.get("topic") or pid), message=time.strftime("%Y-%m-%d %H:%M"), by="helm-ship")
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return "sheep: deploy failed — %s" % e
     _write(d / ".deployed", str(time.time()))
@@ -813,7 +935,8 @@ def overview_state():
     return {"kind": "overview", "as_of": time.time(), "host": helmlib.host(), "columns": cols,
             "header": {"needs_owner": len(cols[0]["cards"]), "owner": helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
                        "stalled": None if "error" in judged else len(stalled),
-                       "stalls_note": judged.get("error") or "; ".join(judged.get("notes") or []) or None},
+                       "stalls_note": judged.get("error") or "; ".join(judged.get("notes") or []) or None,
+                       "sheep": paused_note(), "talk": talk_note()},
             "timeline": timeline(states)}
 
 
@@ -862,11 +985,27 @@ def overview(deploy=False, as_json=False):
             same = space and last.read_text().strip() == sig and time.time() - last.stat().st_mtime < 3600
         except OSError:
             same = False
-        if same:
+        # the hold before the unchanged check: a resume must redeploy the page that still says
+        # "paused" though no card moved (landing review: up to an hour of a stale note otherwise)
+        before = st.get("header", {}).get("sheep")
+        held = budget_hold(st) if space else None   # a board never deployed has no pin yet: it goes once
+        now = st.get("header", {}).get("sheep")
+        if now != before:   # the crossing (the deployed page says it, the log once) or the resume
+            _write(d / "state.json", json.dumps(st, ensure_ascii=False, sort_keys=True))
+            _write(d / "index.html", page(st, "Helm · board"))
+        if held:
+            # the poll's log says the pause once, at the crossing; a hand-run says why nothing deployed
+            if now != before or not os.environ.get("HELM_BOARD_POLL"):
+                out.append("sheep: " + held)
+            return out
+        if same and now == before:
             out.append("sheep: unchanged since the last deploy (%s)" % space)
             return out
+        if now and now != before:
+            out.append("sheep: " + now + " (after this deploy)")
         try:
-            uuid, url = deploy_dir(d, ("index.html", "state.json"), space=space, title="Helm · board", message=time.strftime("%Y-%m-%d %H:%M"))
+            uuid, url = deploy_dir(d, ("index.html", "state.json"), space=space, title="Helm · board",
+                                   message=time.strftime("%Y-%m-%d %H:%M"), by="helm-board")
             _write(pin, uuid)
             _write(last, sig)
             out.append("sheep: %s" % (url or uuid))
@@ -954,7 +1093,7 @@ function planView(s){var h='<div class="tasks"><table><tr><th>Task</th><th>Statu
  return h+'</table></div>'}
 function draw(){document.documentElement.dataset.view=view;var o=S.kind==='overview';
  document.getElementById('title').textContent=o?'Helm · board':'Helm · '+(S.topic||S.id);
- var hd=o?[S.header.needs_owner+' need '+(S.header.owner||'the owner'),S.header.stalled?S.header.stalled+' stalled':'',S.header.today_cost?'today '+money(S.header.today_cost):'',S.header.week||'']:['started '+(S.started?when(S.started):'none'),'due '+(S.due?when(S.due):'none'),S.cost!=null?money(S.totals.cost)+' of '+money(S.cost)+' est.':money(S.totals.cost)+' so far',S.totals.est_to_go?money(S.totals.est_to_go)+' to go':'',S.totals.open_asks+' open asks'];
+ var hd=o?[S.header.needs_owner+' need '+(S.header.owner||'the owner'),S.header.stalled?S.header.stalled+' stalled':'',S.header.today_cost?'today '+money(S.header.today_cost):'',S.header.week||'',S.header.talk||'',S.header.sheep||'']:['started '+(S.started?when(S.started):'none'),'due '+(S.due?when(S.due):'none'),S.cost!=null?money(S.totals.cost)+' of '+money(S.cost)+' est.':money(S.totals.cost)+' so far',S.totals.est_to_go?money(S.totals.est_to_go)+' to go':'',S.totals.open_asks+' open asks'];
  document.getElementById('head').textContent=hd.filter(Boolean).join(' · ');
  document.getElementById('lanes').className=o&&view==='board'?'':'hidden';
  var rows=o?S.timeline:[{plan:S.topic||S.id,id:S.id,bars:S.tasks.map(function(t){return{id:t.id,title:t.title,start:t.started||S.created,end:t.eta||t.updated,status:t.status,kind:t.kind,deps:t.deps,cost:t.cost,est:t.est_to_go,parked_at:t.parked_at,overrun:t.overrun,flags:(t.asks||[]).filter(function(a){return a.open}).map(function(a){return a.ref.split('#').pop()}),blockers:t.blockers}}),milestones:S.milestones,totals:S.totals}];
