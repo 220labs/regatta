@@ -15,6 +15,8 @@ N=$(date +%s); export HOOKWATCH_NOW=$N HOOKWATCH_HOST=test HOOKWATCH_GH="python3
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has() { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: no [$2] in $(head -c 600 "$1")"; fails=$((fails+1)); fi; }
+# BSD date -r <epoch>; GNU date -d @<epoch> (its -r takes a file). Each fails cleanly on the other.
+dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
 cat > "$T/gh.py" <<'EOF'
 import json, os, sys
 open(os.environ["GH_LOG"], "a").write(json.dumps(sys.argv[1:]) + "\n")
@@ -161,7 +163,7 @@ export HOOKWATCH_POST="python3 $T/post.py $T/posts"; : > "$T/posts"
 has "$T/o" "hookwatch: pinned primary at ${C1:0:12}, back from ${C2:0:12} (crash: h.py" "a fault within the window pins the primary at the clean sha"
 check "$(git -C "$R" rev-parse HEAD):$(git -C "$R" symbolic-ref -q HEAD || echo detached)" "$C1:detached" "  HEAD detached at the clean sha"
 check "$(head -1 "$R/modules/x/hooks/h.py")" "print('v1')" "  the pinned primary loads the old hook"
-RB="claude/test/$(date -r "$N" +%Y-%m-%d)-hookwatch-revert-${C2:0:7}"
+RB="claude/test/$(dateat "$N" +%Y-%m-%d)-hookwatch-revert-${C2:0:7}"
 RV=$(git -C "$W/origin.git" rev-parse "$RB" 2>/dev/null)
 check "$(git -C "$W/origin.git" rev-parse "$RV^{tree}"):$(git -C "$W/origin.git" rev-parse "$RV^@")" "$(git -C "$R" rev-parse "$C1^{tree}"):$C2" \
   "  the revert pushed as its own claude/* branch: the clean sha's tree on the pinned head, nothing else"
