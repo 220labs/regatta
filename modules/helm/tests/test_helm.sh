@@ -709,6 +709,26 @@ PY
     "  PLAN_NO_PEER: no ssh"
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-lookout-run" PLAN_HOST=laptop python3 -c "import sys; sys.path.insert(0, '$B'); import helm_render as h; print(h.peer_lookout_rows())")" \
     "{'buildbox': {'cards': [], 'armed': False}}" "  the probe itself, run here as the peer would: it finds keel through the core and reads its (empty) status"
+  # the embark memo (embark-on-helm, 2026-10-25): the newest open one leads the owner's column, labelled
+  # Embark — from a lookout card (here another host's branch) or a memo card
+  printf '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"armed": True, "cards": [{"doc": "demo@claude/laptop/2026-10-21-w:docs/w.md", "items": ["D1"], "card": "here"}, {"doc": "regatta@claude/buildbox/2026-10-25-embark:docs/embark/embark-2026-10-25.md", "items": ["D1", "D2"], "card": "no live session"}]}))\n' > "$T/keelembark"
+  chmod +x "$T/keelembark"
+  printf 'import json, sys\nc = [x for col in json.load(sys.stdin)["columns"] if col["name"] == "Needs Sam" for x in col["cards"]][0]\nprint(c["title"], "|", c.get("label"))\n' > "$T/first_card.py"
+  check "$(PLAN_KEEL="$T/keelembark" "$HM" $BOARD --json | python3 "$T/first_card.py")" \
+    "Embark 2026-10-25 — docs/embark/embark-2026-10-25.md D1 D2 | Embark" "the embark memo's card leads the owner's column, labelled Embark, from another host's branch"
+  cat > "$T/embark_first.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helm_render as h
+col = h.helmlib.columns()[0]
+cards = [h._card("ask", "an ask", col), h._card("memo", "Embark 2026-10-18 - old", col, doc="/p/regatta/docs/embark/embark-2026-10-18.md"),
+         h._card("memo", "Embark 2026-10-25 - new", col, doc="/p/regatta/.claude/worktrees/embark-2026-10-25/docs/embark/embark-2026-10-25.md"),
+         h._card("memo", "another doc", col, doc="/p/x/docs/embark-notes.md"), h._card("memo", "elsewhere", "Running", doc="/p/docs/embark/embark-2026-10-30.md")]
+out = h.embark_first(cards)
+print([c["title"] for c in out][:3], out[0].get("label"), len(out), h.embark_first(cards[:1] + cards[3:4]) == cards[:1] + cards[3:4])
+PY
+  check "$(python3 "$T/embark_first.py" "$B")" "['Embark 2026-10-25 - new', 'an ask', 'Embark 2026-10-18 - old'] Embark 5 True" \
+    "  the newest of two embark memos first, the older where it was; one in another column is not the owner's; none: unchanged"
   out=$("$HM" $BOARD); has "$out" "overview:" "overview renders a page"
   echo "skipper-modes S5: WAITING cards from both Macs, a peer's prompts, links on ask cards, held dnd items"
   printf '{"repos": {"regatta": {"github": "o/regatta"}}}\n' > "$T/s5-repos.json"
