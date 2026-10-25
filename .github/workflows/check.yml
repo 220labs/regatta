@@ -5,7 +5,7 @@
 # module appends its check here and there in the same change.
 #
 # The runner comes from the CI_RUNS_ON repository variable (see the job); unset, as in the twin
-# and forks, it is ubuntu. A matrix job reports as `check (<value>)`, and the branch protection must name exactly that;
+# and forks, it is ubuntu, and on a private repo the job fails at its first step instead. A matrix job reports as `check (<value>)`, and the branch protection must name exactly that;
 # read the names back with `gh pr checks <n>`, never predict them.
 # helloworld's suite makes scratch commits, some in repos with no identity of their own: the
 # runner gets one below, and the full history is not needed (each suite builds its own repos).
@@ -24,16 +24,20 @@ on:
   schedule:
     - cron: '17 9 * * *'   # 09:17 UTC daily, when a landing is seldom in flight
   workflow_dispatch:
-  # ready_for_review: a draft's pushes skip the job below, so leaving draft is what runs it
+  # ready_for_review: a draft's pushes skip the job below, so leaving draft is what runs it.
+  # closed: runs no job, but joins the concurrency group below and so cancels a run still going when
+  # the PR closes (wharf's template since 2026-10-18; here since costs S1, 2026-10-24). `pr merge`
+  # waits for this head's run before merging, so a merge cancels nothing it needs.
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
 permissions:
   contents: read
 # A newer push to the same ref makes the older run moot; every run bills the account's minutes.
 concurrency:
   # per event too: a push run whose job is skipped (CI_SKIP_MAIN_PUSH) would otherwise cancel a nightly
-  # or hand-started run on main that is going
-  group: check-${{ github.ref }}-${{ github.event_name }}
+  # or hand-started run on main that is going. Keyed on the PR number where there is one: a merged
+  # PR's `closed` event carries the base branch in github.ref, not refs/pull/N/merge.
+  group: check-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
   check:
@@ -41,7 +45,8 @@ jobs:
     # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
     # check, so a merge waits for a run on this head that is not skipped.
     if: >-
-      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'pull_request' ||
+        (github.event.action != 'closed' && !github.event.pull_request.draft)) &&
       (github.event_name != 'push' || vars.CI_SKIP_MAIN_PUSH != 'true')
     # The runner comes from the repository variable CI_RUNS_ON (a JSON label list), ubuntu-latest
     # where it is unset: a repo that runs its check on its own machine sets it in its settings,
@@ -49,15 +54,35 @@ jobs:
     # runs every pull request's code as its login, with that machine's credentials in reach: set
     # the variable only on a repo whose every writer you trust, never on one that takes forks' PRs.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    # A self-hosted Mac's whole check took 18.5 and 22 min (2026-10-21) beside its own sessions,
-    # most of it wharf-runs (about 15) and wharf (about 7); keel (about 10) and helm (about 3)
-    # joined with their scrubs (2026-10-22), so 60 is about twice the slowest run expected
+    # The job ran 40.45 min on the idle build Mac (run 40012393574, 2026-10-23: keel 8.2, wharf-runs
+    # 13.5) and 51.5 min beside its sessions (runs 40121322251 and 40121340160, 2026-10-24), so 60
+    # is about 1.2 times the slowest job, no longer twice it (docs/check-load-2026-10-23.md's Evidence,
+    # docs/host-power-costs-2026-10-24.md finding 8; re-read from the records, 2026-10-24). A run
+    # over it is a suite gone slow, or the runner under more load than on 2026-10-24.
     timeout-minutes: 60
     # keel's step runs where its session gate is: without hooks/sheep_gate.py keel's sheep fails
     # closed and its suite with it (178 cases on the twin's files, 2026-10-22). helm's step needs that
     # gate too (talk_nudge's cases). sheep_gate.py is public since keel-held (2026-10-23); the guard
     # stays for a copy without it.
     steps:
+      # A private repo with no CI_RUNS_ON would run on ubuntu-latest, which bills the account's minutes
+      # past the free quota (another private repo's hosted jobs were refused for billing from 2026-10-19). There the
+      # job fails here, at once, saying why: never an `if:` on the job, which GitHub reports as a passed
+      # check (costs S1, docs/host-power-costs-2026-10-24.md). This step's one minute is all it bills.
+      # The twin is public and keeps ubuntu-latest, which is free there.
+      - name: a private repo names its runner
+        if: vars.CI_RUNS_ON == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          # a payload without the repository (a scheduled run's may lack it) asks the API; a visibility
+          # that cannot be read fails like a private one
+          [ -n "$PRIVATE" ] || PRIVATE="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private || true)"
+          if [ "$PRIVATE" != false ]; then
+            echo "::error title=CI_RUNS_ON unset::$GITHUB_REPOSITORY is private (or its visibility unreadable: '$PRIVATE') and names no runner, so this check would bill ubuntu-latest minutes. Set the repository variable CI_RUNS_ON (wharf's ci-provider) and run it again."
+            exit 1
+          fi
       # On a machine of one's own the runner's login is a real one: HOME, git's global config and the
       # regatta config dir go to this job's temp dir (emptied at each job's start and end), never that
       # login's own, so a case that forgets to move HOME writes here. PyYAML is a per-user install
