@@ -1814,7 +1814,7 @@ class Ship:
         (`dispatch-rc live --no-reap`: read only; warm and waiting runs not counted), or (None, cap)
         when it cannot be read — then the start goes ahead and dispatch's own refusal decides. A
         launch refused there ends `never-started` at gate `refused` and is started again here."""
-        most = int(os.environ.get("DISPATCH_MAX_RUNS") or (8 if self.here == dispatch_host() else 3))   # bin/dispatch's max_runs; test_dispatch.sh checks the copy
+        most = int(os.environ.get("DISPATCH_MAX_RUNS") or (6 if self.here == dispatch_host() else 3))   # bin/dispatch's max_runs; test_dispatch.sh checks the copy
         topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", Path(wt).name)
         try:
             r = subprocess.run([os.environ.get("WHARF_DISPATCH_RC") or str(HERE / "dispatch-rc"), "live", "--no-reap",
