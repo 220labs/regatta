@@ -1,0 +1,41 @@
+name: Bug
+description: Something in Regatta did not do what it says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        From Claude Code, `/regatta:flare <what went wrong>` files this for you, with the versions and the
+        failing output attached. Everything here is public: leave out tokens, private paths and names.
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options: [regatta, atlas, aurora, helloworld, helm, keel, lighthouse, plumb, sextant, wharf, wharf-runs, not sure]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. claude plugin install keel@regatta
+        2. …
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The exact error or the command's output, pasted whole.
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`claude --version`, the module's version (`claude plugin list`), and the OS."

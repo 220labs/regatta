@@ -1,0 +1,16 @@
+name: Idea
+description: Something Regatta could do, or do better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you want to happen, and the work it would save you.
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options: [regatta, atlas, aurora, helloworld, helm, keel, lighthouse, plumb, sextant, wharf, wharf-runs, a new one, not sure]

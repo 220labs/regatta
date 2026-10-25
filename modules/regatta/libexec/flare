@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""regatta flare — a bug report, an idea or a question, filed as an issue on Regatta's public
+repo with the evidence beside it; a retry with the same id returns the first receipt. Stdlib,
+Python 3.9.
+
+    regatta flare "<message>" --client-id ID [--category bug|idea|question] [--title T]
+                  [--tag T]… [--attach FILE] [--repo OWNER/NAME] [--dry-run | --web] [--json]
+
+  --client-id   8-80 letters, digits, `_` or `-`: made once per report and reused on every retry,
+                so a retry finds the issue already filed (the body carries the id in a visible line)
+  --attach      a text file (the failing command and its output, a session's last exchanges):
+                quoted whole in a folded block under the message; past what an issue holds, its
+                tail is kept, a log's end being the part that matters
+  --dry-run     print the issue as it would be filed; nothing is sent
+  --web         a prefilled new-issue link to open and submit by hand, the attachment saved
+                beside it to paste; also the fallback when `gh` is missing or signed out
+  --repo        where it goes: else `regatta/flare-repo` in the config dir, else the public repo
+
+The receipt (`--json`): {"created": true|false|null, "number", "url", "repo", "client_id",
+"scanned"}; `created: false` is a report already filed under that id, `null` a link not yet
+submitted, `scanned: false` a text that went unscanned (no helloworld).
+
+Why GitHub issues: Regatta runs no server, and its public repo is where a stranger already is.
+An issue there is public, so the whole text meets helloworld's file scan before it is sent
+(machine and home paths, addresses, credential shapes, and the private word list where this
+Mac has one), not its commit-message scan, which drops trailer lines unscanned and refuses the
+shas and ids a bug report needs. A finding refuses the filing, exit 3, and the caller rewrites
+the text; without helloworld the scan is skipped and said so on stderr. A send needs a person:
+under CLAUDE_UNATTENDED only --dry-run and --web run. Exit 0 filed or found, 2 a usage error, a
+failed send or any crash, 3 refused by the scan (never 1: Python's own crash code).
+"""
+import argparse
+import contextlib
+import io
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlencode
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import common  # noqa: E402
+
+DEFAULT_REPO = "220labs/regatta"
+LABELS = {"bug": "bug", "idea": "enhancement", "question": "question"}  # GitHub's default labels
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+MESSAGE_MAX = 20000    # the message and its context, as spacesheep's own feedback takes
+BODY_MAX = 65000       # GitHub refuses an issue body over 65,536 characters; the attachment gives way
+URL_MAX = 7500         # a new-issue link GitHub and the browsers still open
+MARKER = "<sub>Filed with regatta flare, id %s</sub>"   # visible: a person sees why a retry found it
+
+
+class Refused(Exception):
+    pass
+
+
+class ScanRefused(Refused):
+    pass
+
+
+def environment():
+    """What a maintainer asks first: the modules and their versions, Claude Code's, the OS."""
+    def version(pj, name):
+        try:
+            meta = json.loads(pj.read_text())
+            return "%s %s" % (meta.get("name") or name, meta.get("version") or "?")
+        except (OSError, ValueError):
+            return "%s ?" % name
+    root = common.regatta_root()
+    if root:
+        mods = [version(pj, pj.parent.parent.name) for pj in sorted((root / "modules").glob("*/.claude-plugin/plugin.json"))]
+    else:   # a plugin install: each install path holds its own plugin.json
+        mods = [version(base / ".claude-plugin" / "plugin.json", name) for name, base in common._installed_roots()]
+    cc = "not found"
+    if shutil.which("claude"):
+        try:
+            cc = subprocess.run(["claude", "--version"], capture_output=True, text=True,
+                                timeout=10).stdout.strip() or "unknown"
+        except (OSError, subprocess.SubprocessError):
+            cc = "unknown"
+    return ["- Modules: %s" % (", ".join(mods) or "none found"),
+            "- Claude Code: %s" % cc,
+            "- OS: %s %s, Python %s" % (platform.system(), platform.release(), platform.python_version())]
+
+
+def read_attachment(path):
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise Refused("cannot read %s: %s" % (path, e.strerror or e))
+
+
+def fold(name, text, room):
+    """The attachment as a folded block of at most `room` characters, its tail kept past that."""
+    note = ""
+    fence = "`" * max(3, 1 + max((len(m) for m in re.findall(r"`+", text)), default=0))
+    wrap = "<details><summary>%s</summary>\n\n%s%s\n%s\n%s\n\n</details>"
+    keep = room - len(wrap % (name, "(the last 0000000 of 0000000 characters)\n\n", fence, "", fence))
+    if keep <= 0:
+        raise Refused("the message leaves no room for the attachment: shorten the message")
+    if len(text) > keep:
+        note = "(the last %d of %d characters)\n\n" % (keep, len(text))
+        text = text[-keep:]
+    return wrap % (name, note, fence, text.rstrip("\n"), fence)
+
+
+def body_of(message, args, env, attached=""):
+    parts = [message.strip(), "Category: %s" % args.category + ("  \nTags: " + ", ".join(args.tag) if args.tag else ""),
+             "### Environment\n\n" + "\n".join(env)]
+    if attached:
+        parts.append(attached)
+    parts.append(MARKER % args.client_id)
+    return "\n\n".join(parts) + "\n"
+
+
+def scan(title, body):
+    """helloworld's file scan over the title and the body, whole: True when it ran, False when
+    there is no helloworld; a finding raises ScanRefused, a list that does not read Refused."""
+    hw = common.tool("helloworld")
+    if not hw:
+        print("regatta flare: helloworld not installed: the text was not scanned for private words, paths or keys",
+              file=sys.stderr)
+        return False
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    try:   # a script with no .py: loaded by path, its functions called, its main never run
+        loader = SourceFileLoader("_helloworld", str(hw))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("_helloworld", loader))
+        loader.exec_module(mod)
+    except Exception as e:
+        raise Refused("helloworld would not load, so the text was not scanned: %s" % e)
+    note = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(note):   # its "no word list" line, kept off the receipt
+            words = mod.message_words() or []
+    except mod.Refused as e:
+        raise Refused("the scan could not run: %s" % e)
+    if note.getvalue().strip():
+        print("regatta flare:" + note.getvalue().rstrip(), file=sys.stderr)
+    rx = mod.words_regex(words)
+    hits = [("title", cat, txt) for _, _, cat, txt in mod.text_hits(title, rx)]
+    hits += [("body:%d" % mod.line_of(body, a), cat, txt) for a, _, cat, txt in mod.text_hits(body, rx)]
+    if hits:
+        for where, cat, txt in hits:
+            print(mod.mask_words("  %s: %s — %s" % (where, cat, txt), rx))
+        sys.stdout.flush()
+        raise ScanRefused("the issue would be public: rewrite or cut what the scan found, then send again")
+    return True
+
+
+def receipt_file(repo, cid):
+    return common.LOG_DIR / "flare" / ("%s--%s.json" % (repo.replace("/", "--"), cid))
+
+
+def stored(repo, cid):
+    try:
+        r = json.loads(receipt_file(repo, cid).read_text())
+        return r if r.get("repo") == repo and r.get("url") else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def store(receipt):
+    try:
+        f = receipt_file(receipt["repo"], receipt["client_id"])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(receipt) + "\n")
+    except OSError:
+        pass   # the marker lookup still finds it on a retry
+
+
+def gh_ready():
+    if not shutil.which("gh"):
+        return False
+    try:
+        # github.com only: a stale login on another host fails a bare `auth status`
+        return subprocess.run(["gh", "auth", "status", "--hostname", "github.com"],
+                              capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def gh(*args):
+    try:
+        r = subprocess.run(["gh"] + list(args), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise Refused("gh %s: %s" % (args[0], e))
+    if r.returncode:
+        raise Refused("gh %s %s: %s" % (args[0], args[1], (r.stderr or r.stdout).strip()))
+    return r.stdout
+
+
+def find_filed(repo, cid):
+    """The caller's own issue that carries this id's marker: the newest 100 they opened, listed
+    rather than searched, since GitHub's search index lags a just-filed issue, and the caller's
+    only, so another reporter's same id is never their receipt."""
+    try:
+        issues = json.loads(gh("issue", "list", "--repo", repo, "--author", "@me", "--state", "all",
+                               "--json", "number,url,body", "--limit", "100") or "[]")
+    except ValueError:
+        raise Refused("gh issue list printed no JSON: search the repo for %s before a retry" % cid)
+    for issue in issues if isinstance(issues, list) else []:
+        if (MARKER % cid) in (issue.get("body") or ""):
+            return issue
+    return None
+
+
+def create(repo, title, body, label):
+    fd, path = tempfile.mkstemp(suffix=".md")
+    with os.fdopen(fd, "w") as f:
+        f.write(body)
+    try:
+        args = ["issue", "create", "--repo", repo, "--title", title, "--body-file", path]
+        try:
+            return gh(*args + ["--label", label])
+        except Refused as e:
+            if "label" not in str(e).lower():
+                raise
+            return gh(*args)   # a fork without the label: filed unlabelled, its Category line still says
+    finally:
+        os.unlink(path)
+
+
+def web_link(repo, title, body, label, attached, cid):
+    """A new-issue link with the text in it; the attachment, too long for a link, saved to paste."""
+    saved = None
+    if attached:
+        fd, saved = tempfile.mkstemp(prefix="regatta-flare-", suffix=".md")
+        with os.fdopen(fd, "w") as f:
+            f.write(attached + "\n")
+        body = body.replace(attached, "(paste the attachment here)")
+    base = "https://github.com/%s/issues/new?" % repo
+    q = lambda b: base + urlencode({"title": title, "labels": label, "body": b})
+    url, keep = q(body), len(body)
+    while len(url) > URL_MAX and keep > 0:
+        # each character cut takes at least one off the link (urlencode only lengthens), so this ends
+        keep = max(keep - (len(url) - URL_MAX), 0)
+        url = q(body[:keep] + "\n\n(cut to fit a link)\n\n" + MARKER % cid)
+    return url, saved
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog="regatta flare", add_help=True)
+    p.add_argument("message")
+    p.add_argument("--client-id", required=True)
+    p.add_argument("--category", choices=sorted(LABELS), default="bug")
+    p.add_argument("--title")
+    p.add_argument("--tag", action="append", default=[])
+    p.add_argument("--attach")
+    p.add_argument("--repo")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--web", action="store_true")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    if not ID_RE.match(args.client_id):
+        raise Refused("--client-id must be 8-80 letters, digits, `_` or `-`")
+    message = args.message.strip()
+    if not message:
+        raise Refused("the message is empty")
+    if len(message) > MESSAGE_MAX:
+        raise Refused("the message is %d characters; keep it under %d and attach the rest" % (len(message), MESSAGE_MAX))
+    repo = args.repo or common.config_line("regatta/flare-repo") or DEFAULT_REPO
+    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+        raise Refused("the repo must be OWNER/NAME, not %r" % repo)
+    if os.environ.get("CLAUDE_UNATTENDED") and not (args.dry_run or args.web):
+        raise Refused("an unattended run never files a public issue: --dry-run, and hand the text to a person")
+    title = (args.title or message.splitlines()[0]).strip()
+    title = title if len(title) <= 80 else title[:77].rstrip() + "…"
+    label = LABELS[args.category]
+
+    def done(receipt, line):
+        print(json.dumps(receipt) if args.json else line)
+        return 0
+
+    old = stored(repo, args.client_id)
+    if old and not args.dry_run:
+        return done(dict(old, created=False), "already filed: %s" % old["url"])
+
+    env = environment()
+    attached = ""
+    if args.attach:
+        attached = fold(Path(args.attach).name, read_attachment(args.attach), BODY_MAX - len(body_of(message, args, env)) - 2)
+    body = body_of(message, args, env, attached)
+    scanned = scan(title, body)
+    if args.dry_run:
+        print("repo:   %s\ntitle:  %s\nlabel:  %s\n\n%s" % (repo, title, label, body))
+        print("(dry run: nothing was sent)")
+        return 0
+
+    if args.web or not gh_ready():
+        url, saved = web_link(repo, title, body, label, attached, args.client_id)
+        if not args.web:
+            print("regatta flare: gh missing or signed out: open the link and submit it", file=sys.stderr)
+        receipt = {"created": None, "number": None, "url": url, "repo": repo, "client_id": args.client_id, "scanned": scanned}
+        if saved:
+            receipt["attachment"] = saved
+        return done(receipt, "open and submit: %s%s" % (url, "\npaste the attachment from: %s" % saved if saved else ""))
+
+    hit = find_filed(repo, args.client_id)
+    if hit:
+        receipt = {"created": False, "number": hit["number"], "url": hit["url"], "repo": repo,
+                   "client_id": args.client_id, "scanned": scanned}
+        store(receipt)
+        return done(receipt, "already filed: %s" % hit["url"])
+    out = create(repo, title, body, label)
+    url = out.strip().splitlines()[-1] if out.strip() else ""
+    m = re.search(r"/issues/(\d+)$", url)
+    if not m:
+        raise Refused("gh issue create said %r, not an issue link: send again with the same id, which finds it if it was filed"
+                      % out.strip())
+    receipt = {"created": True, "number": int(m.group(1)), "url": url, "repo": repo, "client_id": args.client_id, "scanned": scanned}
+    store(receipt)
+    return done(receipt, "filed: %s" % url)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except ScanRefused as e:
+        print("regatta flare: %s" % e, file=sys.stderr)
+        sys.exit(3)
+    except Refused as e:
+        print("regatta flare: %s" % e, file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:   # a crash is never read as the scan's refusal
+        print("regatta flare: %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        sys.exit(2)
