@@ -3625,8 +3625,7 @@ echo "knowledge-numbers: /sextant reads the Wharf goals G1-G5, each a number wit
 WG="$T/wg"; mkdir -p "$WG/docs"
 # the dispatch Mac, as the overlay names it (wharf-runs/ssh): buildbox here. plumb's own wording of
 # the host and the owner is its scrub's, so the rows below match around those words.
-printf 'buildbox:buildbox-ssh\n' > "$REGATTA_CONFIG/wharf-runs/ssh" 2>/dev/null \
-  || { mkdir -p "$REGATTA_CONFIG/wharf-runs" && printf 'buildbox:buildbox-ssh\n' > "$REGATTA_CONFIG/wharf-runs/ssh"; }
+mkdir -p "$REGATTA_CONFIG/wharf-runs" && printf 'buildbox:buildbox-ssh\n' > "$REGATTA_CONFIG/wharf-runs/ssh"
 { echo "# Wharf"; echo; echo "## Goals — how we will know it worked"; echo
   echo "| Goal | Today | Target | How, when |"; echo "| --- | --- | --- | --- |"
   echo "| G1 — ships built end to end by \`wharf apply\` | 0 | 1 | \`plan.json\` |"

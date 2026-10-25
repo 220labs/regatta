@@ -50,6 +50,9 @@ hasnt() { case "$1" in *"$2"*) echo "  FAIL $3: [$2] found in [$1]"; fails=$((fa
 export ASK_SESSIONS_DIR="$T/sess" ASK_QUEUE_DIR="$T/q" ASK_NO_KEY_FILES=1 PLANS_DIR="$T/plans" PLAN_NO_RENDER=1 \
        ASK_CACHE_DIR="$T/cache" ATTENTION_LOG_DIR="$T/attention" PLAN_HOST=testhost SURFACES_FILE="$T/surfaces.json" HOME="$T/home" \
        ACCOUNTS_FILE="$T/accounts.json"
+# the scratch commits' identity: with HOME moved, check.yml's is gone (AGENTS.md, the HOME-move trap)
+export GIT_CONFIG_GLOBAL="$T/gitconfig"
+git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch main
 # the poll ends with `plan tick --json` (orchestration B4): every poll here runs a stub, never the real tick (ssh)
 cat > "$T/tick-ok" <<'EOF'
 #!/bin/sh

@@ -19,6 +19,9 @@ unset REGATTA_HOME REGATTA_LEGACY
 # are, would otherwise fail seven cases (B9 review)
 unset SSH_CONNECTION SSH_CLIENT SSH_TTY
 export HOME="$T/home" TZ=America/Los_Angeles REGATTA_CONFIG="$T/config"
+# the scratch commits' identity: with HOME moved, check.yml's is gone (AGENTS.md, the HOME-move trap)
+export GIT_CONFIG_GLOBAL="$T/gitconfig"
+git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch main
 OV="$T/overlay"; mkdir -p "$REGATTA_CONFIG/regatta" "$REGATTA_CONFIG/lighthouse" "$REGATTA_CONFIG/wharf-runs" "$OV/hooks"
 echo "$OV" > "$REGATTA_CONFIG/regatta/overlay"; : > "$OV/hooks/worktree_allow.py"; printf '#!/bin/sh
 exit 0
