@@ -63,6 +63,7 @@ EOF
 cat > "$T/claude" <<'EOF'
 #!/bin/sh
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+[ "$1" = --version ] && { [ -f "$T_NOVERSION" ] || echo "2.1.310 (Claude Code)"; exit 0; }
 if [ "$1" = auth ]; then
   if [ -f "$dir/stub-login" ]; then echo "{\"loggedIn\": true, \"email\": \"$(cat "$dir/stub-login")\", \"subscriptionType\": \"pro\"}"
   else echo '{"loggedIn": false}'; exit 1; fi
@@ -86,7 +87,7 @@ lim=''
 echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":\"2026-10-07T22:00:00+00:00\",\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":\"2026-10-10T20:00:00+00:00\",\"locked_reason\":null}$lim}}}}"
 EOF
 chmod +x "$T/claude"
-export T_PROBES="$T/probes"
+export T_PROBES="$T/probes" T_NOVERSION="$T/no-version" ACCOUNT_SETTLE=0
 at() { python3 -c "import datetime as d,zoneinfo as z;print(d.datetime($1,tzinfo=z.ZoneInfo('America/Los_Angeles')).timestamp())"; }
 WED=$(at 2026,10,7,12); SAT=$(at 2026,10,10,10); THU=$(at 2026,10,8,12)
 A() { python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
@@ -233,7 +234,9 @@ check "$(A check)" 1 "check: a shared link that became a real directory (R2)"
 has "$T/out" "links: sessions is a real directory" "…is named"
 
 echo "two dirs on one login (2026-10-05: spare signed in as the primary's account)"
-login() { echo "{\"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; }
+# a signed-in dir has started once, so it carries the first-start keys (bare_login: one that has not)
+login() { echo "{\"hasCompletedOnboarding\": true, \"lastOnboardingVersion\": \"2.1.300\", \"numStartups\": 3, \"claudeInChromeDefaultEnabled\": true, \"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; }
+bare_login() { echo "{\"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; }
 login "$HOME/.claude.json" u-primary p@example.com; login "$S1/.claude.json" u-primary p@example.com
 echo p@example.com > "$S1/stub-login"; ln -s "$P1/CLAUDE.md" "$S1/CLAUDE.md"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
@@ -250,6 +253,29 @@ login "$S1/.claude.json" u-second t@example.com; echo t@example.com > "$S1/stub-
 reset; use "$S1" "10 10"; use "$P1" "10 10"
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "its own login again → picked as before"
 check "$(A check)" 0 "check: clean once it has its own login"
+echo "check — the first-start keys (orca-launcher S2)"
+# what the always-on Mac's fallback dir held: a login, trust on each project, no onboarding (the design's S1, finding 1)
+cat > "$S1/.claude.json" <<'J'
+{"oauthAccount": {"accountUuid": "u-second", "emailAddress": "t@example.com"},
+ "projects": {"/p/plain": {"hasTrustDialogAccepted": true},
+              "/p/yes": {"hasTrustDialogAccepted": true, "hasClaudeMdExternalIncludesWarningShown": true, "hasClaudeMdExternalIncludesApproved": true},
+              "/p/untrusted": {"hasTrustDialogAccepted": false}}}
+J
+check "$(A check)" 1 "check: a signed-in dir without the first-start keys is a problem"
+has "$T/out" "⚠   spare" "…marked ⚠"
+has "$T/out" "first start: lacks hasCompletedOnboarding, lastOnboardingVersion, numStartups, claudeInChromeDefaultEnabled; 1 trusted project without the imports answer — $B/account setup" \
+  "…naming each key and the projects owed the answer (a Yes kept, an untrusted one not counted), with the fix"
+cat > "$S1/.claude.json" <<'J'
+{"oauthAccount": {"accountUuid": "u-second", "emailAddress": "t@example.com"},
+ "hasCompletedOnboarding": false, "lastOnboardingVersion": "2.1.300", "numStartups": 2, "claudeInChromeDefaultEnabled": false}
+J
+check "$(A check)" 1 "check: hasCompletedOnboarding false waits at the theme picker as an absent key does"
+has "$T/out" "first start: lacks hasCompletedOnboarding — " "…and only that key is named"
+echo '{"oauthAccount": ' > "$S1/.claude.json"
+check "$(A check)" 1 "check: a .claude.json that does not parse passes nothing"
+has "$T/out" "first start: $S1/.claude.json does not parse" "…and says so"
+login "$S1/.claude.json" u-second t@example.com
+check "$(A check)" 0 "…clean again with the keys"
 python3 - "$ACCOUNTS_FILE" <<'PY'
 import json, sys
 p = sys.argv[1]; d = json.load(open(p))
@@ -283,6 +309,8 @@ login "$HOME/.claude.json" u-primary p@example.com
 SA() { ACCOUNTS_FILE="$ACCOUNTS_FILE.f" A setup "$@"; }
 check "$(SA)" 1 "setup: a dir the file lists for this Mac and no login → exit 1"
 check "$([ -L "$F/projects" ] && [ -L "$F/CLAUDE.md" ] && echo linked)" linked "…the missing dir is made with its links (add --no-login)"
+check "$(python3 -c "import json;d=json.load(open('$F/.claude.json'));print(d['hasCompletedOnboarding'], d['lastOnboardingVersion'], d['numStartups'], d['claudeInChromeDefaultEnabled'])")" "True 2.1.310 1 False" \
+  "…and its first-start keys, the version read from \`claude --version\` (orca-launcher S2)"
 has "$T/out" "work: not signed in on laptop" "…and the login it owes is named"
 has "$T/out" "CLAUDE_CONFIG_DIR=$F claude auth login" "…with the line to run"
 has "$T/out" "spare: not listed for laptop (parked)" "a parked row (macs: []) is left alone"
@@ -310,6 +338,65 @@ mkdir -p "$HOME/projects/overlay"; ln -sfn "$B" "$HOME/projects/overlay/bin"; ln
 check "$(ACCOUNT_SSH="sh -c" ACCOUNTS_FILE="$ACCOUNTS_FILE.f" A setup --host server)" 1 "setup --host runs on the peer (a stub ssh: sh -c) and passes its exit"
 has "$T/out" "ssh -t server-claude" "…its lines in the ssh -t form"
 check "$(ACCOUNT_LOGINS="$T/none.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.f" A setup)" 1 "no logins file → says so, exit 1"
+
+echo "setup — the first-start keys an unattended interactive start needs (orca-launcher S2)"
+# that dir's shape: signed in, trusted, never through onboarding; written whole and atomically, as a
+# Claude Code save is, so a read never meets half a file
+fixture() { python3 - "$F/.claude.json" <<'PY'
+import json, os, sys
+d = {"oauthAccount": {"accountUuid": "u-f", "emailAddress": "f@example.com"}, "theme": "dark",
+     "projects": {"/p/plain": {"hasTrustDialogAccepted": True, "allowedTools": ["Read"]},
+                  "/p/yes": {"hasTrustDialogAccepted": True, "hasClaudeMdExternalIncludesWarningShown": True,
+                             "hasClaudeMdExternalIncludesApproved": True},
+                  "/p/unshown": {"hasTrustDialogAccepted": True, "hasClaudeMdExternalIncludesWarningShown": False,
+                                 "hasClaudeMdExternalIncludesApproved": False},
+                  "/p/untrusted": {"hasTrustDialogAccepted": False}}}
+open(sys.argv[1] + ".fx", "w").write(json.dumps(d))
+os.replace(sys.argv[1] + ".fx", sys.argv[1])
+PY
+}
+keys() { python3 -c "
+import json, os, sys
+d = json.load(open(sys.argv[1])); p = d['projects']
+a = lambda k: (p[k].get('hasClaudeMdExternalIncludesWarningShown'), p[k].get('hasClaudeMdExternalIncludesApproved'))
+print(d.get('hasCompletedOnboarding'), d.get('lastOnboardingVersion'), d.get('numStartups'), d.get('claudeInChromeDefaultEnabled'), d['theme'], d['oauthAccount']['emailAddress'],
+      '|', a('/p/plain'), p['/p/plain']['allowedTools'], '|', a('/p/yes'), '|', a('/p/unshown'), '|', sorted(p['/p/untrusted']),
+      '|', oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$F/.claude.json"; }
+fixture; chmod 600 "$F/.claude.json"
+check "$(SA)" 0 "setup: a signed-in dir without the first-start keys → written, nothing owed"
+has "$T/out" "keys work: 7 first-start keys written to $F/.claude.json" "…counted and named"
+check "$(keys)" "True 2.1.310 1 False dark f@example.com | (True, False) ['Read'] | (True, True) | (True, False) | ['hasTrustDialogAccepted'] | 0o600" \
+  "…onboarding done at the installed version, the Chrome offer and the imports answered No (each trusted project); a Yes, an untrusted project, every other key and the file's mode kept"
+check "$(python3 -c "import json;d=json.load(open('$HOME/.claude.json'));print(d['lastOnboardingVersion'], d['numStartups'], d['claudeInChromeDefaultEnabled'])")" "2.1.300 3 True" \
+  "…a dir that has started keeps its own version, count and Yes to Chrome"
+check "$(SA)" 0 "a second run writes nothing"
+hasnt "$T/out" "keys work" "…and prints no keys line"
+fixture; touch "$T_NOVERSION"
+check "$(SA)" 1 "claude gives no version → owed, never a guessed lastOnboardingVersion"
+has "$T/out" "work: first-start keys owed — \`$T/claude --version\` gave no version" "…naming the command"
+check "$(keys | cut -d' ' -f1-4)" "None None None None" "…and the file untouched"
+rm -f "$T_NOVERSION"
+echo '{"oauthAccount": ' > "$F/.claude.json"
+check "$(SA)" 1 "a .claude.json that does not parse → owed"
+has "$T/out" "work: first-start keys owed — $F/.claude.json:" "…naming the file"
+check "$(cat "$F/.claude.json")" '{"oauthAccount": ' "…which is left as it was"
+# A Claude Code save that read before setup's write lands after it: the file as it was, $1 times
+strip_keys() {
+  n=0; i=0
+  while [ $n -lt "$1" ] && [ $i -lt 300 ]; do
+    if grep -q hasCompletedOnboarding "$F/.claude.json" 2>/dev/null; then fixture; n=$((n+1)); fi
+    sleep 0.02; i=$((i+1))
+  done
+}
+fixture; strip_keys 1 & sp=$!
+check "$(ACCOUNT_SETTLE=0.6 SA)" 0 "a save that takes the keys once → read back and written again"
+wait $sp
+check "$(keys | cut -d' ' -f1-4)" "True 2.1.310 1 False" "…and they hold"
+fixture; strip_keys 2 & sp=$!
+check "$(ACCOUNT_SETTLE=0.6 SA)" 1 "…twice → owed, never a loop"
+wait $sp
+has "$T/out" "work: first-start keys owed — a Claude Code save took the keys twice from $F/.claude.json — run setup again" "…saying so"
+login "$F/.claude.json" u-other x@example.com
 
 echo "the deny list and Fable (work-account E2)"
 PR="$HOME/projects"; mkdir -p "$PR/cv" "$PR/studio"

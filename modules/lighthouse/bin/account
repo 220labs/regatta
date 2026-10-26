@@ -13,9 +13,9 @@
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
     account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
     account exhausted --window W --resets-at T [--session S]    record a locked window (bin/statusline calls it)
-    account check                                               per row: login, links, settings, probe age, cooldowns
-    account add LABEL [--no-login]                              make a Claude row's config dir, then its /login
-    account setup [--host PEER] [--no-record]                   build this Mac (or the peer) from the logins file
+    account check                                               per row: login, links, first-start keys, settings, probe age, cooldowns
+    account add LABEL [--no-login]                              make a Claude row's config dir, its first-start keys, then its /login
+    account setup [--host PEER] [--no-record]                   build this Mac (or the peer) from the logins file; every dir's first-start keys
     account doctor [--local] [--json]                           both Macs against the logins file, a fix per problem
 
 Design: docs/record/multi-account-design-2026-10-02.md (D1–D7, the owner 2026-10-02); orchestration
@@ -1595,6 +1595,142 @@ def worktree_hook(a):
         return False
 
 
+# ---------------------------------------------------------------------------- the first start
+
+# What a completed first start leaves in a dir's .claude.json (docs/orca-launcher-2026-10-24.md S2,
+# S1's finding 1): without them an interactive start waits at the theme picker, then the login
+# method, though the keychain holds a good login — `-p` and `auth status` skip that screen, so
+# neither shows it (a login dir on the always-on Mac: ten runs that never started, 2026-10-24). Per trusted
+# project, the external-imports dialog answered No ahead: what the default dir answered wherever
+# it was asked, and what trust-projects' --no-external-imports gives
+# an employer row. Past those, with the Chrome extension installed, 2.1.310 offers to turn browser
+# tools on while `claudeInChromeDefaultEnabled` is unset (its ChromeAutoEnableDialog: "Skipping
+# offer: decision already recorded" once it holds a value; S2's live probe met it behind the theme
+# picker, which S1's copy never passed): written as the dialog's own default, No, so no consent is
+# given for the owner; `/chrome` in that dir turns it on. Only an absent key is written, never over
+# an answer a person or Claude Code gave; a dir whose answer is Yes keeps it.
+try:
+    SETTLE = float(os.environ.get("ACCOUNT_SETTLE", "2"))
+except ValueError:   # a stray export must not kill `account allowed`, which the guard runs on each prompt
+    SETTLE = 2.0
+
+
+def claude_version():
+    """The installed claude's version (`2.1.310`), read once; None when it does not answer."""
+    try:
+        r = subprocess.run([claude_bin(), "--version"], capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.match(r"\s*(\d+\.\d+\.\d+)", r.stdout or "")
+    return m.group(1) if m else None
+
+
+def first_start_wants(cfg, version):
+    """→ (top-level keys to add, {project: keys to add}) for a parsed .claude.json. A key counts as
+    present once it holds any value but an explicit no (hasCompletedOnboarding false, the warning
+    not shown): those are the screens that wait."""
+    top = {}
+    if cfg.get("hasCompletedOnboarding") is not True:
+        top["hasCompletedOnboarding"] = True
+    if not cfg.get("lastOnboardingVersion"):
+        top["lastOnboardingVersion"] = version
+    if not isinstance(cfg.get("numStartups"), int):
+        top["numStartups"] = 1
+    if not isinstance(cfg.get("claudeInChromeDefaultEnabled"), bool):
+        top["claudeInChromeDefaultEnabled"] = False
+    per = {}
+    for d, e in (cfg.get("projects") if isinstance(cfg.get("projects"), dict) else {}).items():
+        if not isinstance(e, dict) or e.get("hasTrustDialogAccepted") is not True:
+            continue   # trust is its own consent (trust-projects); an untrusted dir stops earlier anyway
+        w = {}
+        if e.get("hasClaudeMdExternalIncludesWarningShown") is not True:
+            w["hasClaudeMdExternalIncludesWarningShown"] = True
+        if "hasClaudeMdExternalIncludesApproved" not in e:
+            w["hasClaudeMdExternalIncludesApproved"] = False
+        if w:
+            per[d] = w
+    return top, per
+
+
+def first_start_missing(a):
+    """→ the check's line for a Claude dir lacking the first-start keys, or None when it has them.
+    An unreadable .claude.json is a line too: nothing can be judged, so nothing passes."""
+    p = claude_json(a)
+    try:
+        cfg = json.loads(p.read_text())
+    except OSError:
+        cfg = {}   # no file yet: every key is owed
+    except ValueError:
+        return f"first start: {p} does not parse"
+    if not isinstance(cfg, dict):
+        return f"first start: {p} is no JSON object"
+    top, per = first_start_wants(cfg, "?")
+    if not top and not per:
+        return None
+    parts = (["lacks " + ", ".join(top)] if top else []) + \
+            ([f"{len(per)} trusted project{'s' if len(per) != 1 else ''} without the imports answer"] if per else [])
+    return "first start: " + "; ".join(parts) + f" — {BIN / 'account'} setup"
+
+
+def write_first_start(a, version):
+    """Writes the keys first_start_wants names into the dir's .claude.json, read back after SETTLE
+    and written once more if a Claude Code save took them (its save is read-modify-write under its
+    own lock: trust-projects' header); never in a loop, never over a file that does not parse.
+    → (n keys written, problem or None)."""
+    p = claude_json(a)
+    if not version:
+        return 0, f"`{claude_bin()} --version` gave no version to record as lastOnboardingVersion"
+
+    def load():
+        if not p.exists():
+            return {}
+        v = json.loads(p.read_text())
+        if not isinstance(v, dict):
+            raise ValueError("no JSON object")
+        return v
+
+    def put(cfg, top, per):
+        cfg.update(top)
+        projects = cfg.setdefault("projects", {})
+        for d, w in per.items():
+            projects[d] = {**projects[d], **w}
+        target = p.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f"{target.name}.first-start-{os.getpid()}")
+        tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+        if target.exists():
+            os.chmod(tmp, os.stat(target).st_mode & 0o7777)
+        json.loads(tmp.read_text())   # never swap in a file Claude Code cannot parse
+        os.replace(tmp, target)
+
+    try:
+        cfg = load()
+        top, per = first_start_wants(cfg, version)
+        n = len(top) + sum(len(w) for w in per.values())
+        if not n:
+            return 0, None
+        put(cfg, top, per)
+        time.sleep(SETTLE)
+        cfg = load()
+        if any(first_start_wants(cfg, version)):   # the one retry
+            put(cfg, *first_start_wants(cfg, version))
+            time.sleep(SETTLE)
+            if any(first_start_wants(load(), version)):
+                return n, f"a Claude Code save took the keys twice from {p} — run setup again"
+        return n, None
+    except (OSError, ValueError) as e:
+        return 0, f"{p}: {e}"
+
+
+def first_start_line(a, version):
+    """setup's and add's line for the keys: None when the dir had them all."""
+    n, problem = write_first_start(a, version)
+    if problem:
+        return f"  ⚠   {a['label']}: first-start keys owed — {problem}"
+    return f"  keys {a['label']}: {n} first-start key{'s' if n != 1 else ''} written to {claude_json(a)}" if n else None
+
+
 def cmd_check(reg):
     if not reg["accounts"]:
         print(f"account: no registry at {REGISTRY}")
@@ -1628,6 +1764,10 @@ def cmd_check(reg):
         if lp:
             bad += 1
             notes.append("links: " + "; ".join(lp))
+        fs = first_start_missing(a)
+        if fs:
+            bad += 1
+            notes.append(fs)
         if not is_default(a):
             tr = subprocess.run(trust_argv(a, "--check"), capture_output=True, text=True,
                                 env={**os.environ, "CLAUDE_CONFIG_DIR": str(a["home"])})
@@ -1648,7 +1788,7 @@ def cmd_check(reg):
         cd = cooldown(a, t)
         if cd:
             notes.append(f"cooling down until {when(cd)}")
-        mark = "ok" if not lp and not a.get("same_as") and (st or {}).get("loggedIn") else "⚠ "
+        mark = "ok" if not lp and not fs and not a.get("same_as") and (st or {}).get("loggedIn") else "⚠ "
         print(f"  {mark}  {a['label']}{' (primary)' if a.get('primary') else ''}: " + "; ".join(notes))
     return 1 if bad else 0
 
@@ -1712,6 +1852,11 @@ def cmd_add(reg, label, login, say_login=True):
         r = subprocess.run(argv, env=env, capture_output=True, text=True)
         print(f"  {'ran   ' if r.returncode == 0 else '⚠ fail'}  {Path(argv[0]).name} {' '.join(argv[1:])} for {home}"
               + ("" if r.returncode == 0 else f": {(r.stderr or r.stdout).strip()[:200]}"))
+    # after trust, so the imports answer reaches every project trust-projects just wrote
+    keys = first_start_line(a, claude_version())
+    if keys:
+        print(keys)
+        memory_bad = memory_bad or "⚠" in keys
     key = hashlib.sha256(str(home).encode()).hexdigest()[:8]
     if login:
         open_in_terminal([claude_bin(), "auth", "login"], {"CLAUDE_CONFIG_DIR": str(home)})
@@ -1734,7 +1879,7 @@ def cmd_setup(reg, record=True, peer=None):
     if not logins:
         print(f"account: no logins file at {path}")
         return 1
-    mac, owed, changed = this_mac(), 0, False
+    mac, owed, changed, version = this_mac(), 0, False, None
     for a in reg["accounts"]:
         if a["provider"] != "claude":
             continue
@@ -1753,6 +1898,13 @@ def cmd_setup(reg, record=True, peer=None):
         if not a["home"].is_dir():
             print(f"  add {a['label']}: {a['home']} missing on {mac}")
             cmd_add(reg, a["label"], False, say_login=False)
+        # every dir this Mac carries, Orca's and the default one included: a start there must reach
+        # its prompt with no person at the screen (orca-launcher S2)
+        version = version or claude_version()
+        keys = first_start_line(a, version)
+        if keys:
+            print(keys)
+            owed += "⚠" in keys
         _, email = login_of(a)
         want = e.get("email")
         if not email:
