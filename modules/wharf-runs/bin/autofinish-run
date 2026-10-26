@@ -2,8 +2,104 @@
 """autofinish-run — a fresh, unattended `/finish` on one claude/* worktree, and how it ended.
 
     autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|typed|yolo|dnd|chain|ship] [--merge | --hold]
-                   [--digest D] [--session ID] [--dry]
+                   [--digest D] [--session ID] [--on here] [--dry]
     autofinish-run notify [WORKTREE]      the run's own session: whom to message, and the text (below)
+    autofinish-run peer-start|peer-sync … the peer's half of a run sent there (Where, below); ssh calls them
+
+Where (the owner, 2026-10-22: "laptop is mobile … that's the reason why I've asked to dispatch all possible
+work to [the other Mac]"; that day two network drops on the laptop killed three landings mid-turn): a run
+started on a Mac that has a peer goes to the peer, as `dispatch` sends a seeded run since 2026-10-13.
+The peer is this Mac's line in the config dir's `wharf-runs/finish-on` (`<host>:<peer>`), else in
+`wharf-runs/orca-pairs` — the Mac whose Orca serves this one takes its landings too; ssh reaches it
+by `wharf-runs/ssh`'s `<peer>:<alias>`. No line, or this Mac is the peer: here, silently. `--on here`
+keeps the run here. Before anything is sent, here, under the start lock: the refusals below and the
+lock (this Mac's sessions are the ones a run must not cut into), then what keeps a run here because
+its /finish needs this Mac's state, each said in one line:
+  - the caller's CLAUDE_CODE_OAUTH_TOKEN (a credential only this caller holds; a caller's
+    CLAUDE_CONFIG_DIR names a login on this Mac only, so a sent run takes the peer's own pick);
+  - a repo outside the projects folder (the peer keeps its clones in its own, by the same path);
+then a warm run of the branch here is ended (a busy one: refused, as for a run here), and the tip read
+again — its last checkpoint goes with the send (landing review, 2026-10-22: it was ended after the
+push and the probe, so that commit was left behind);
+  - uncommitted files in the worktree (the peer would land the branch without them);
+  - a tip origin lacks: pushed first (`git push origin <tip>:refs/heads/<branch>`, never forced),
+    and origin's branch ahead of or apart from it, or a push that fails, keeps it here;
+  - the probe (ssh ConnectTimeout 10 s, BatchMode; exit 255 is "unreachable", as dispatch's
+    `--fallback here`): the peer lacks the repo, or its autofinish-run predates `peer-start`;
+  - the time: every check keeps inside SEND_BUDGET from the start (110 s; 40 s for --by typed) less
+    STAY_RESERVE (25 s; 6 s), what a run that stays still needs — the sweep's start_runner waits
+    120 s and the start lock is taken over at START_LOCK_S, cold_prompt waits 45 s. A check that
+    would run past it is cut short, and the run stays here, saying so.
+Then the bundle written here (the branch's sessions are this Mac's), this Mac's state and lock written
+in the run's session id with `"host": "<peer>"`, and `ssh <alias> autofinish-run peer-start …` sends the
+bundle on stdin, its ssh within what is left of the budget less STAY_RESERVE, which a run the peer
+cannot take still needs here, but never under SSH_FLOOR (10 s; past the reserve, its pick reads the
+cache): from here
+on a caller that kills this process leaves a state the sweep settles (dead(), below). On the peer,
+peer-start fetches the branch, finds its worktree or creates it from origin (the repo's worktrees folder, by topic,
+as `pickup open` does), checks it holds this very tip, refuses what the job would (the refusals
+below and the lock, against the peer's own state), and hands the start to a one-shot LaunchAgent in
+the GUI domain: over ssh the login keychain is locked, so a claude or an `account pick` started from
+the ssh session reads no login (lessons/claude-code.md, 2026-10-06 and 2026-10-18). That job is this
+script, `--on here` with the session id, the bundle and a ticket (`<common git dir>/claude/autofinish-peer/
+<session>.json`: {"session", "scheduled", "rc", "said", "label", "branch", "worktree"}, then "began" when
+the job starts, and "state" and "line" at the run's end; every write under an flock on `<ticket>.lock`,
+update_json()) it fills with its exit; its env holds AUTOFINISH_JOB and a PATH (launchd's own lacks
+Homebrew's `gh`), and AUTOFINISH_CALLER_UNATTENDED when the sending Mac's caller had CLAUDE_UNATTENDED
+(`--unattended-caller`: landing() holds there as it would here; ssh carries no variable); the login is
+the peer's own `account pick`. A job launchd starts more than JOB_LATE_S (300 s) after it was scheduled
+(loaded, never run, then a login) refuses (3): the sending Mac writes off a job with no `began` at
+PRE_START_S, so one that runs began well before (the second landing review, 2026-10-24: both were
+PRE_START_S, and a job starting at 590 s could run beside the start the write-off allowed); the next
+peer-start boots out a job that never began and removes its plist. peer-start first buries a run of its
+own that died (dead(), as peer-sync does). A `--by chain` relaunch is judged where its stop happened:
+here by chain_refusal before the send, and there by the plain refusal unless that Mac's own last run on
+this tip ran and ended there, neither refused nor died (refusal()'s `sent`, stopped_on(); until that review
+the peer always refused it, having no stop on record, and until the third it still refused it after a run
+of its own it refused or that died).
+The approval travels with the run (D2-A, the lander digest of 2026-10-22, private docs: "the yes belongs to
+whoever started the landing, not to the host it runs on"): peer-start's `--from <this host>` makes the
+peer's prompt `/finish <branch> --unattended --from=<this host>`, and /finish step 11.4 there takes this
+host's path — the laptop's merges, as the same landing here would have. A yolo launch carries none
+(E12: it stops at a held PR on any host); `--from` is refused (exit 2) from an unattended caller, to
+this script without `--ticket`, and to peer-start (AGENTS.md trap: a flag that stands for a yes);
+`"from"` in the peer's state names it; the job alone may pass `--from` (from_refusal(): AUTOFINISH_JOB,
+a pending ticket of that session, no CLAUDE_UNATTENDED or SKIPPER_SCOPE). Answers: 0 scheduled; 3
+refused there (a busy session holds its worktree, a run on that tip there) — refused here too, the
+state given back, and a run of the peer's own on this tip (its answer's `ran` and `line`) written here
+as this Mac's (adopt(): its end recorded, or, still going, waited on), so the next sweep meets the
+same-tip refusal here rather than sending again each pass (second landing review); 4 the peer cannot (its
+copy of the branch apart from origin's, dirty, the tip not on its origin), or any answer but 0 and 255
+(peer-start's traceback; it schedules last, so nothing is going there) — given back, and the run
+starts here with a line saying why. 255 once the probe passed (the connection dropped, no answer in
+time) stands as sent: the run may be going there, so it is never started here as well — the waiter
+settles it.
+Here, a detached waiter (its pid in autofinish-waiter.json, as for a run here) asks the peer every
+AUTOFINISH_PEER_POLL s (60) — `peer-sync`, which buries a run dead there as that Mac's sweep would —
+and refreshes this Mac's lock each time while it names the run: checkpoint.py frees a lock unseen
+for 2 h, and a /finish there may run longer. An unreachable peer is asked again, never read as an end.
+Once the peer has an end it is written here as the run's own would be: the state's ended, outcome,
+pr, gate and account, the lock and marker released, the peer's `autofinished` line appended to this
+repo's (made as record() makes one when the peer's state came without it), and the day's log line
+with `on <peer>`. A job that refused before any session (its ticket's rc 3), a run sent with no ticket
+on the peer after PRE_START_S, or a ticket whose job never ran: never-started at `refused`, so the tip
+may start again (a refused job was gate never-started until the landing review, 2026-10-22, which
+blocked the tip for good); refused for no account there (exit 4): the run starts here instead. A
+peer asked and silent for PEER_WAIT_S (9 h; dispatch ends a run at 8 h) — counted from the first ask
+unanswered since its last answer, and started again after a gap of ASK_GAP_S in the asking (this Mac
+asleep), so a laptop waking offline after a night is no peer silent all night — or one that started the
+run and has no record of it any more (peer_gone()): the run is buried here as `died`, its PR comment
+saying it may have ended there unseen; the waiter, and the sweep's dead() after a reboot here or a
+waiter killed, alike (peer_overdue()), which also buries a sent run with no record here PRE_START_S
+after its start. Before the landing review, a silent peer blocked the worktree for good, `--on here`
+included. A peer that answers is believed: a run still going there is its own sweep's to bury, and
+while it answers so, the sweep's dead() refreshes this Mac's lock as the waiter does (a waiter past
+twice PEER_WAIT_S leaves it to the sweep). The sweep asks within PEER_ASK_S, and a peer that did not
+answer is not asked again for a minute: its bury loop is serial, and each run passed over so counts as
+asked and unanswered. Only the bury pass asks: bin/autofinish's verdicts and `--dry-run` call dead() with
+`apply` False, which runs no ssh (peer-sync buries there) and writes nothing. `dispatch --status` lists such runs from
+`run-seed-runs/peer/`. Who else is told: checkpoint.py's once-notice, at a panel's next prompt here —
+the run's session is on the peer, and SendMessage reaches only its own Mac's sessions.
 
 E1 of docs/autofinish-design-2026-10-02.md (D13): the runner. Whoever decides that a branch should
 launch without the owner's wait — the sweep (rules A, B, D, E, L), `/autofinish` (C), a typed `/finish` handed
@@ -84,7 +180,8 @@ refusals and both write:
     CLAUDE_CODE_OAUTH_TOKEN is an explicit choice and is kept, no pick, unless that dir's row has
     a window locked or is parked (`limits --all --parked --json --cached`: parked, locked, or cooling
     down after an exhaustion):
-    then the pick decides, and with no row to move to it refuses (2026-10-22). Kept:
+    then the pick decides, and with no row to move to it refuses (2026-10-22). A run sent to the peer
+    keeps the token here, and not the dir: the peer takes its own pick (Where). Kept:
     a panel session on the work login handing its /finish off cold, or a test (bin/autofinish's start_runner and dispatch --yolo's
     launch pass neither, so the sweep, the override and a yolo launch always pick). A pick past PICK_TIMEOUT (a probe hanging) falls back
     to `pick --cached`; --by typed picks `--cached` from the start (cold_prompt's 45 s, a hook's);
@@ -99,8 +196,9 @@ refusals and both write:
     one panel, and the branch is another's;
   - a session id is chosen, and `<git dir>/claude/autofinish.json` written with it (the contract
     the hooks read — `{"started", "session", "tip", "by", "rule", "window", "account", "ended",
-    "outcome", "pr", "gate"}`, plus `"merge": true` for a `--merge` launch and `"hold": "<why>"` for a
-    held one (S3b) — each key absent otherwise — and nothing else), then the worktree lock `owner.json` (hooks/common.py's
+    "outcome", "pr", "gate"}`, plus `"merge": true` for a `--merge` launch, `"hold": "<why>"` for a
+    held one (S3b), `"host": "<peer>"` for a run sent to the peer and `"from": "<host>"` on the peer for
+    a run that host sent (Where) — each key absent otherwise — and nothing else), then the worktree lock `owner.json` (hooks/common.py's
     write_owner) in that id's name: the session holds the lock from its first call (P8), and a
     panel session still open on the branch is refused its next write, with the reason.
     Should the detach fail after that, the lock is given back (the previous owner.json, or none)
@@ -224,11 +322,14 @@ The run's own output (dispatch's log and this child's) goes to
 written and run — the state, the lock, the bundle's head, and dispatch's own dry run, claude's
 whole command line included — and writes nothing.
 
-Exit: 0 started (or --dry), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
+Exit: 0 started (or --dry; or sent to the peer), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
 a claude/* worktree, 3 refused (same tip, a run going, another start under way, a lock in use, no
-account may run it now), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4).
+account may run it now), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4), or
+(the peer's job only) no account may run it on that Mac.
 Tests (bin/test_autofinish_run.sh) replace dispatch's commands with DISPATCH_CLAUDE, _SCREEN and the
-rest; AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
+rest; AUTOFINISH_HOST names this Mac, AUTOFINISH_ON its peer ("" none), AUTOFINISH_SSH ssh and
+AUTOFINISH_LAUNCHCTL launchctl, AUTOFINISH_END_WARM `dispatch-rc end-warm`, AUTOFINISH_PEER_WAIT and
+AUTOFINISH_SEND_BUDGET their constants; AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
 DISPATCH_ACCOUNT; the tests mostly run the real one on a fixture registry), AUTOFINISH_API_STUB names a Python file whose
 `api()` stands in for common.api. Python 3.9, stdlib only.
 """
@@ -271,7 +372,7 @@ START_LOCK = STATE + ".lock"
 WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for dead()
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
-OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "eff_mode", "land_mode", "arm")   # written only when set: a launch without --merge or a hold keeps the file it always had
+OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "host", "from", "eff_mode", "land_mode", "arm")   # written only when set: a launch without --merge or a hold keeps the file it always had
 # eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
 # (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
 # has no mode now, never a bare `by: yolo` (follow-ups item 4). land_mode: the branch's mode landing() read
@@ -286,6 +387,8 @@ REFUSED = common.REFUSED   # the gate of a start dispatch refused before any ses
 REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
 DIED = "died"
 DIED_WHY = "the runner died before an outcome: the Mac lost power or the process was killed; nothing merged"
+PEER_DIED_WHY = ("the run was sent to %s, and no end came back in time: it may have ended there unseen, so "
+                 "look at this PR before starting it again")
 PRE_START_S = 600   # a state this young with no run record yet: its child may still be writing the bundle
 START_LOCK_S = 130   # the refusals and the writes take a second, the pick at most PICK_TIMEOUT + 5 s (a caller
                      # with its own dir first `which`, 10 s, and its row, 5 s, both cached), ending a warm
@@ -298,6 +401,9 @@ COMMENT_CAP = 3000   # characters of the ⚠ block in the PR comment
 # its chain (DEPTH, BRIEF) or delete its launchd job (LABEL) — dispatch's own list, plus the chain's.
 KEEP_CLAUDE = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
 DROP_DISPATCH = tuple(p + v for p in ("DISPATCH_", "RUN_SEED_") for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF"))
+# The peer's job markers end with the job: in the /finish session they read as an unattended caller to
+# every suite and sibling launch it runs (fourth landing review, CR 5)
+DROP_JOB = ("AUTOFINISH_JOB", "AUTOFINISH_CALLER_UNATTENDED")
 NAME_RE = re.compile(r"^claude/(?:[a-z0-9-]+/)?\d{4}-\d{2}-\d{2}-(?P<topic>.+)$")  # pickup's NAME_RE
 # --by chain (the chain manager's tick, orchestration B3): which stops it may relaunch, and how often.
 # The patterns are bin/stalls.py's NET_RE and LOGIN_RE, character for character (test_helm.sh compares
@@ -306,6 +412,39 @@ S4_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNR
 LOGIN_RE = re.compile(r"Not logged in|/login\b|OAuth token|authentication_error", re.I)
 CHAIN = "autofinish-chain.json"   # {"tip", "sessions"}: the chain relaunches on that tip (chain_refusal)
 CHAIN_RELAUNCHES = 2                 # D4 = C (the owner, 2026-10-14): two retries per step, a launch's tip included
+# Where (the header): the peer a run goes to, how it is reached, and its half's files
+PEER_KEYS = ("wharf-runs/finish-on", "wharf-runs/orca-pairs")
+SSH_KEY = "wharf-runs/ssh"
+SSH = os.environ.get("AUTOFINISH_SSH") or "ssh"
+LAUNCHCTL = os.environ.get("AUTOFINISH_LAUNCHCTL") or "launchctl"
+RCHOSTS = os.environ.get("DISPATCH_RCHOSTS") or os.path.join(HERE, "rc-hosts")   # dispatch's launcher (TCC)
+END_WARM = os.environ.get("AUTOFINISH_END_WARM")   # tests: in place of `dispatch-rc end-warm`, given BRANCH PRIMARY
+SHIPPED = "autofinish-bundle.shipped.md"   # the bundle the sending Mac wrote, on the peer
+PEER_RUNS = os.path.join(RUNS, "peer")      # this Mac's record of each run it sent: `dispatch --status`
+JOB_PREFIX = "org.regatta.autofinish"
+PROBE_S = 10            # ssh ConnectTimeout: an asleep peer holds a connect for the OS's ~75 s (dispatch's)
+PEER_POLL = float(os.environ.get("AUTOFINISH_PEER_POLL") or 60)
+PEER_WAIT_S = float(os.environ.get("AUTOFINISH_PEER_WAIT") or 9 * 3600)  # dispatch ends a run at DISPATCH_MAX_H
+                        # (8 h): a peer asked and silent this long, the run counts as died here (peer_overdue)
+ASK_GAP_S = 1800        # asks further apart than this (the Mac asleep, no waiter and no sweep): the silence
+                        # starts again — the sweep asks every 10 min, the waiter every PEER_POLL
+PEER_ASK_S = 30         # the sweep's ask (dead(), bury()): its bury loop is serial, so one peer that hangs
+                        # costs a pass this, once (_down), not 90 s per sent run (second landing review, 9)
+JOB_LATE_S = PRE_START_S // 2   # a job launchd starts later than this refuses; the sending Mac writes one off
+                        # at PRE_START_S, so a job that runs began 300 s before then (review 7: no margin)
+# A send's checks run before this process returns, and its callers wait a bounded time: the sweep's
+# start_runner RUNNER_TIMEOUT (120 s, and START_LOCK_S the same), cold_prompt's typed hand-off 45 s.
+# The send keeps inside SEND_BUDGET from the start; the checks stop STAY_RESERVE short of it, what a
+# run that stays here still needs (the pick, PICK_TIMEOUT + 5 s, --cached for a typed one, and the writes)
+SEND_BUDGET, SEND_BUDGET_TYPED = 110, 40
+STAY_RESERVE, STAY_RESERVE_TYPED = 25, 6
+SSH_FLOOR = 10   # the send's ssh gets at least this, past the budget: the state is written by then, and a
+                 # caller that kills this process leaves a run the sweep settles from the peer (dead())
+SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")   # common.host_name()'s shape: what --from carries
+# the peer's copy of this script, found as dispatch's guard finds its: the regatta checkout its `home` names
+REMOTE_BIN = ('h=$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null); '
+              'case "$h" in "~"*) h="$HOME${h#\\~}";; esac; rb="$h/modules/wharf-runs/bin/autofinish-run"; ')
 ROLLBACK_RE = re.compile(r"^.*\brollback:\s.*$", re.M)
 MERGED_RE = re.compile(r"\bmerged #(\d+)")
 PULL_RE = re.compile(r"/pull/(\d+)\b")
@@ -487,20 +626,40 @@ def chain_refusal(t, prev):
     return None
 
 
-def refusal(t, prev, by=None):
-    """Why no run starts now, or None."""
-    if by == "chain":
+def stopped_on(t, prev):
+    """True when PREV is a run on this tip that started and ended, neither refused nor died: a stop a
+    chain relaunch may be judged by where PREV was recorded (refusal()'s `sent`). One still going
+    counts too, so that refusal says it has not ended."""
+    if not prev or prev.get("tip") != t.tip:
+        return False
+    return not prev.get("ended") or (prev.get("gate") not in REFUSED_GATES and prev.get("outcome") != DIED)
+
+
+def refusal(t, prev, by=None, sent=False):
+    """Why no run starts now, or None. `sent`: judged on the peer, for a run the sending Mac sent
+    (peer-start and its job). A chain relaunch is judged where its stop happened: the sending Mac ran
+    chain_refusal on its own record of the stop, under its start lock, before it sent; the peer has
+    no record of a stop on this tip unless its own last run is on it, and then judges that one. Else
+    the plain refusal, which `--by sweep` gets anyway (second landing review, 1: a chain relaunch sent
+    to the peer was always refused there, so the network-drop relaunch the chain exists for ran on
+    neither Mac). A stop made there is a run of the peer's own on this tip that ran and ended: one it
+    refused, or one that died, made no stop there, and chain_refusal would refuse it for want of one
+    (third landing review, S2: the second's fix still refused those two)."""
+    if by == "chain" and not (sent and not stopped_on(t, prev)):
         return chain_refusal(t, prev)
     if not prev:
         return None
     if prev.get("tip") == t.tip and prev.get("gate") not in REFUSED_GATES and prev.get("outcome") != DIED:
         if not prev.get("ended"):
-            return "a run on this tip started %s (session %s) has not ended" % (
-                prev.get("started"), str(prev.get("session"))[:8])
+            return "a run on this tip started %s (session %s) has not ended%s" % (
+                prev.get("started"), str(prev.get("session"))[:8], ", on %s" % prev["host"] if on_peer(prev) else "")
         return ("its run on this tip (%s) ended %s, %s%s — no retry on the same tip" % (
             t.tip[:7], prev.get("ended"), prev.get("outcome"),
             " at %s" % prev["gate"] if prev.get("gate") else ""))
     if not prev.get("ended") and prev.get("session"):
+        if on_peer(prev):   # no record of it here: the peer has it, until the waiter or the sweep settles it
+            return "a run is going on %s (session %s, tip %s, started %s)" % (
+                prev["host"], prev["session"][:8], str(prev.get("tip"))[:7], prev.get("started"))
         if run_live(prev["session"]):
             return "a run is going on this worktree (session %s, tip %s)" % (
                 prev["session"][:8], str(prev.get("tip"))[:7])
@@ -1053,10 +1212,12 @@ def rotation(argv):
     return 0
 
 
-def finish_prompt(branch, by=None, merge=False, hold=None):
-    """The prompt the run starts with (the header's)."""
+def finish_prompt(branch, by=None, merge=False, hold=None, sent_from=None):
+    """The prompt the run starts with (the header's). `--from=<host>`: a run that host sent here, whose
+    approval is that host's at /finish step 11.4 (D2-A, the header's Where); one word, so /finish's
+    one-word branch argument stays one word."""
     return "/finish %s --unattended" % branch + (" --%s" % by if by in LAND_BY else "") + (" --hold" if hold else "") \
-        + (" --merge" if merge else "")
+        + (" --merge" if merge else "") + (" --from=%s" % sent_from if sent_from else "")
 
 
 def _lander():
@@ -1074,6 +1235,14 @@ def main_of(t):
             return json.load(f).get("main") or "main"
     except (OSError, ValueError, AttributeError):
         return "main"
+
+
+def unattended_caller():
+    """True when the launch's caller is an unattended run: CLAUDE_UNATTENDED here, or, in the peer's job,
+    AUTOFINISH_CALLER_UNATTENDED, which peer-start sets when the sending Mac's caller had it. The job's
+    env holds only what its plist names, so landing() there read an unattended `--by override` as a
+    person (second landing review, 6). The variable can only hold a landing, never grant one."""
+    return bool(os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("AUTOFINISH_CALLER_UNATTENDED"))
 
 
 def landing(t, by, rule):
@@ -1107,7 +1276,7 @@ def landing(t, by, rule):
     # yes (the second landing review)
     unread = af.mode_unreadable(why_mode)
     # `ship` is the keel's yes to merge, not a person at the keyboard: mode ask holds it too
-    person = by in PERSON_BY and not os.environ.get("CLAUDE_UNATTENDED")
+    person = by in PERSON_BY and not unattended_caller()
     if mode == "ask" and not person:
         return "mode ask — nothing lands by itself", mode, None
     if by == "brief":
@@ -1118,7 +1287,7 @@ def landing(t, by, rule):
     if by not in LAND_BY and rule != "M" and by != "ship":
         return None, mode, None
     # bin/autofinish's effective_mode: the one rule bin/pr's re-check reads too (follow-ups' landing review, item 8)
-    standing = by == "yolo" and mode is None and not unread and not os.environ.get("CLAUDE_UNATTENDED") and merge_auto(t)
+    standing = by == "yolo" and mode is None and not unread and not unattended_caller() and merge_auto(t)
     eff = af.effective_mode(by, mode, standing_yes=standing, unreadable=unread)
     if unread:
         return "the mode is unreadable now (%s)" % why_mode, mode, eff
@@ -1149,7 +1318,7 @@ def regatta_main():
     return os.path.abspath(str(root)) if os.path.realpath(top) == os.path.realpath(str(root)) else top
 
 
-def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None):
+def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None, sent_from=None):
     """dispatch --start, with E1's lists. The FINISH_TOOLS rules are the modules' in
     the regatta main checkout (/finish runs its tools there since B14b, 2026-10-23, which deleted the
     overlay's shims; B14a's D1-A), in the two spellings a session types them in: under `~/` and the
@@ -1173,7 +1342,7 @@ def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None):
         # `regatta pr merge` among them, which no deny pattern matched (the B14b landing review)
         for tool in FINISH_TOOLS:
             allow += ["Bash(%s/modules/%s*)" % (root, tool), "Bash(python3 %s/modules/%s*)" % (root, tool)]
-    prompt = finish_prompt(t.branch, by, merge, hold)
+    prompt = finish_prompt(t.branch, by, merge, hold=hold, sent_from=sent_from)
     cmd = [DISPATCH, "--start", prompt, t.path, t.window,
            "--session-id", sid]   # opus: dispatch's default (header)
     if arm:   # the rotation's arm, by full id (the header); none: dispatch's default, today's finisher
@@ -1207,7 +1376,7 @@ def merge_auto(t):
 
 def start_env(t):
     env = {k: v for k, v in os.environ.items()
-           if not (k.startswith("CLAUDE") and k not in KEEP_CLAUDE) and k not in DROP_DISPATCH}
+           if not (k.startswith("CLAUDE") and k not in KEEP_CLAUDE) and k not in DROP_DISPATCH + DROP_JOB}
     env["DISPATCH_LOG"] = t.runlog
     return env
 
@@ -1230,14 +1399,24 @@ def bundle_text(t):
                 "prompts: git log --reverse --format='%%h %%s%%n%%b' main..HEAD)\n" % (t.branch, type(e).__name__, e))
 
 
-def write_bundle(t, st):
+def write_bundle(t, st, shipped=None):
+    """The bundle, from this Mac's transcripts — or, for a run the sending Mac sent here (Where),
+    the text that Mac wrote from its own: the branch's sessions were there."""
     path = os.path.join(t.state_dir, BUNDLE)
+    text = None
+    if shipped:
+        try:
+            with open(shipped, errors="replace") as f:
+                text = f.read()
+        except OSError as e:
+            text = "(the bundle the sending Mac wrote is unreadable here: %s; this Mac's own follows)\n\n%s" % (
+                e, bundle_text(t))
     with open(path, "w") as f:
         f.write("# The conversation's record for /finish %s --unattended\n\n" % t.branch)
         f.write("Written %s by bin/autofinish-run for session %s, tip %s — read it as the old "
                 "session's record (design section 7): its prompts, its last asks and replies.\n\n"
                 % (now_iso(), st["session"], t.tip[:7]))
-        f.write(bundle_text(t))
+        f.write(text if text is not None else bundle_text(t))
     return path
 
 
@@ -1348,13 +1527,14 @@ def comment(t, st, outcome, gate, lines):
         return None, "no comment: no open pull request for %s" % t.branch
     what = {"never-started": "never started", DIED: "runner died"}.get(outcome) or "stopped at %s" % gate
     head = ("**autofinish %s** — `%s`, session `%s`, tip `%s`, rule %s, started by %s at %s."
-            % (what, finish_prompt(t.branch, st.get("by"), st.get("merge"), st.get("hold")), st["session"], str(st.get("tip") or t.tip)[:7], st.get("rule"), st.get("by"),
+            % (what, finish_prompt(t.branch, st.get("by"), st.get("merge"), st.get("hold"), st.get("from")), st["session"], str(st.get("tip") or t.tip)[:7], st.get("rule"), st.get("by"),
                st.get("started")))
     quoted = "\n".join(lines)
     if len(quoted) > COMMENT_CAP:
         quoted = quoted[:COMMENT_CAP - 1] + "…"
     if outcome == DIED:  # its words first, then dispatch's log as it was left
-        body = head + "\n\n" + DIED_WHY + ".\n\n" + ("```\n%s\n```" % quoted) + (
+        why = (PEER_DIED_WHY % st["host"]) if on_peer(st) else DIED_WHY
+        body = head + "\n\n" + why + ".\n\n" + ("```\n%s\n```" % quoted) + (
             "\n\nThe sweep may judge this branch once more — not once this PR is out of `WIP:`, nor "
             "a branch the runner had already curated locally; a second death on this tip waits for a prompt. "
             "The transcript, if any, is session `%s` on %s." % (st["session"], common.host_name()))
@@ -1425,7 +1605,7 @@ def wait_for_end(t, st, cmd):
         log_from = 0
     p = None
     try:
-        print("%s autofinish-run: bundle %s" % (now_iso(), write_bundle(t, st)), flush=True)
+        print("%s autofinish-run: bundle %s" % (now_iso(), write_bundle(t, st, getattr(t, "shipped", None))), flush=True)
         p = subprocess.Popen(cmd, env=start_env(t))
         rc = p.wait()
     except BaseException as e:  # SystemExit from SIGTERM included: the finally below is the point
@@ -1464,6 +1644,20 @@ def wait_for_end(t, st, cmd):
                                                          "the outcome could not be recorded; " + "; ".join(notes)))
 
 
+def record_line(ended, outcome, branch, gate, pr, first, tip=None):
+    """`<iso> <outcome> <branch> <detail>`: the shape hooks/common.py's autofinished() parses, and its
+    phrase reads an empty launched detail as `#?` — never a `#None`; a died line as bury() writes it."""
+    if outcome in common.LAUNCHED_OUTCOMES:
+        detail = "%s %s%s" % (outcome, branch, " #%s" % pr if pr else "")
+    elif outcome == "never-started":
+        detail = "never-started %s %s" % (branch, first)
+    elif outcome == DIED:
+        detail = "died %s %s %s" % (branch, str(tip or "")[:7], first)
+    else:
+        detail = "stopped %s %s %s" % (branch, gate, first)
+    return (str(ended) + " " + detail).rstrip()
+
+
 def record(t, st, log_from, rc, why, notes):
     sid = st["session"]
     outcome, pr, gate, lines = read_outcome(t, sid, log_from)
@@ -1494,19 +1688,15 @@ def record(t, st, log_from, rc, why, notes):
             except OSError:
                 pass
     first = lines[0] if lines else ""
-    # `<iso> <outcome> <branch> <detail>`: the shape hooks/common.py's autofinished() parses, and
-    # its phrase reads an empty launched detail as `#?` — never a `#None`
-    if outcome in common.LAUNCHED_OUTCOMES:
-        detail = "%s %s%s" % (outcome, t.branch, " #%s" % pr if pr else "")
-    elif outcome == "never-started":
-        detail = "never-started %s %s" % (t.branch, first)
-    else:
-        detail = "stopped %s %s %s" % (t.branch, gate, first)
-    line = st["ended"] + " " + detail.rstrip()
+    line = record_line(st["ended"], outcome, t.branch, gate, pr, first, t.tip)
     if gate not in REFUSED_GATES:   # nothing ran: no record for the session start to report
         os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
         with open(os.path.join(t.common, "claude", RECORD), "a") as f:
             f.write(line + "\n")
+    try:   # a run a peer sent here: its end where that Mac reads it
+        ticket_end(t, st, line if gate not in REFUSED_GATES else None)
+    except OSError:
+        traceback.print_exc()
     try:
         fenced = rotation_row(t, st, outcome, gate, pr) if gate not in REFUSED_GATES else None
     except Exception as e:  # noqa: BLE001 — a lost row is said, never a lost record
@@ -1536,15 +1726,33 @@ def waiter_alive(state_dir, sid):
     return load_bin("dispatch-rc").running(w["pid"], w.get("start"))
 
 
-def dead(t, st, now=None, state_dir=None):
+def dead(t, st, now=None, state_dir=None, apply=True):
     """Why this worktree's run died without an outcome, or None: no run, an ended one, or one that
     may still live. Never a guess on the dying side — a waiter still running, a watcher not yet
-    recorded, or a dispatch end its waiter is still recording, is no death."""
+    recorded, or a dispatch end its waiter is still recording, is no death. `apply` False is read-only
+    (bin/autofinish's verdicts and `--dry-run`): a run sent to the peer is judged from this Mac's record
+    of it and an answer this process already had, with no ssh, no record written and no lock refreshed
+    (third landing review, S3); the armed sweep's bury pass, before the verdicts, asks."""
     if not st or st.get("ended") or not st.get("session") or not st.get("started"):
         return None
     if state_dir and waiter_alive(state_dir, st["session"]):
         return None
     now = time.time() if now is None else now
+    if on_peer(st):   # nothing of it runs here: dead once the peer tells its end, or past its time (bury writes it)
+        rec = peer_record(st["session"])[1]
+        ans = peer_ask(rec, timeout=PEER_ASK_S, apply=apply) if rec else None
+        kind = settle(None, st, ans, rec, apply=False) if ans is not None else None
+        if kind:
+            return "its waiter here is gone, and %s has the run's end (%s)" % (st["host"], kind)
+        overdue = peer_overdue(st, rec, ans, now)
+        if not overdue and ans is not None and state_dir and apply:
+            # the peer says it goes on, and no waiter here refreshes the lock (a caller killed, a reboot):
+            # the sweep does, or checkpoint.py frees it at 2 h under a /finish there (second landing review, 5)
+            try:
+                refresh_lock(state_dir, st["session"])
+            except OSError:
+                pass
+        return overdue
     try:
         started = datetime.datetime.fromisoformat(st["started"]).timestamp()
     except (TypeError, ValueError):
@@ -1589,7 +1797,19 @@ def bury(t, why):
         st = read_state(t)
         if not st or st.get("ended"):
             return None
-        sid = st["session"]
+        sid, prec = st["session"], None
+        if on_peer(st):   # its end is the peer's to tell: written here as the waiter would have
+            prec = peer_record(sid)[1]
+            ans = peer_ask(prec, timeout=PEER_ASK_S) if prec else None
+            kind = settle(t, st, ans, prec) if ans is not None else None
+            if kind:
+                return "%s run %s %s recorded from %s after its waiter here died — %s, %s" % (
+                    now_iso(), t.repo, t.branch, st["host"], kind, st.get("outcome"))
+            overdue = peer_overdue(st, prec, ans)
+            if not overdue:
+                return None
+            why = "%s; %s" % (why, overdue) if why and why != overdue else overdue
+            # past its time with no word from the peer: died, written as for a run here (below)
         holder = (common.read_owner(t.state_dir) or {}).get("session")
         notes = release(t, sid) if not holder or holder == sid else [
             "the lock is session %s's now: left as it is" % str(holder)[:8]]
@@ -1607,8 +1827,13 @@ def bury(t, why):
         st.update(ended=now_iso(), outcome=DIED, pr=pr, gate=None)   # ended after the comment: the
         write_state(t, st)                                           # retry's GitHub quiet starts here
         os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
+        died_line = "%s died %s %s %s" % (st["ended"], t.branch, str(st.get("tip"))[:7], lines[0])
         with open(os.path.join(t.common, "claude", RECORD), "a") as f:
-            f.write("%s died %s %s %s\n" % (st["ended"], t.branch, str(st.get("tip"))[:7], lines[0]))
+            f.write(died_line + "\n")
+        try:
+            ticket_end(t, st, died_line)
+        except OSError:
+            traceback.print_exc()
         try:
             fenced = rotation_row(t, st, DIED, None, pr)
         except Exception as e:  # noqa: BLE001 — a lost row is said, never a lost record
@@ -1616,14 +1841,880 @@ def bury(t, why):
         extra = [x for x in [said, why, fenced] + notes if x]
         line = "%s run %s %s died session=%s tip=%s rule=%s by=%s account=%s — %s; %s" % (
             st["ended"], t.repo, t.branch, sid[:8], str(st.get("tip"))[:7], st.get("rule"), st.get("by"),
-            st.get("account") or "-", lines[0][:300], "; ".join(extra))
+            st.get("account") or "-", lines[0][:300], "; ".join(extra + (["on %s" % st["host"]] if prec else [])))
         log(line)
+        if prec:
+            prec.update(ended=st["ended"], outcome=DIED, pr=pr, gate=None)
+            save_peer_record(prec)
         return line
     finally:
         try:
             os.remove(held)
         except OSError:
             pass
+
+
+# ---- where: a run on the peer (the header's Where) ------------------------------------------------
+
+def self_host():
+    return (os.environ.get("AUTOFINISH_HOST") or common.host_name() or "").lower()
+
+
+def on_peer(st):
+    """True for a run this Mac sent to its peer: its state names another host."""
+    return bool(st and st.get("host") and str(st["host"]).lower() != self_host())
+
+
+def _pairs(key):
+    return [(h.strip().lower(), v.strip()) for h, _, v in (l.partition(":") for l in common.config_lines(key) or [])]
+
+
+def peer_of():
+    """(peer, alias, why): where this Mac's runs go. (None, None, None) for nowhere — no line for this
+    Mac, or it is the peer; (peer, None, why) when ssh has no alias for it."""
+    me = self_host()
+    pin = os.environ.get("AUTOFINISH_ON")
+    if pin is not None:   # the tests' pin; empty is no peer
+        peer = pin.strip().lower()
+    else:
+        peer = next((v.lower() for key in PEER_KEYS for h, v in _pairs(key) if h == me and v), "")
+    if not peer or peer == me:
+        return None, None, None
+    alias = next((v for h, v in _pairs(SSH_KEY) if h == peer and v), None)
+    return peer, alias, None if alias else "no ssh alias for %s in the config dir's %s" % (peer, SSH_KEY)
+
+
+def repo_rel(path):
+    """The repo's path under the projects folder (the peer has it at the same place under its own), or None."""
+    root = os.path.realpath(os.path.join(HOME, "projects")) + os.sep
+    p = os.path.realpath(path)
+    return p[len(root):] if p.startswith(root) else None
+
+
+def quiet_git(where, *args, timeout=60):
+    """(rc, out, err) of a git call that may reach origin: never a prompt, never a hang."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        r = subprocess.run(["git", "-C", where, *args], capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return 124, "", "no answer in %d s" % timeout
+    except OSError as e:
+        return 127, "", str(e)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def is_ancestor(where, a, b):
+    return subprocess.run(["git", "-C", where, "merge-base", "--is-ancestor", a, b], capture_output=True).returncode == 0
+
+
+class OutOfTime(Exception):
+    """The send's checks would run past the caller's wait (SEND_BUDGET): the run stays here."""
+
+
+class WarmBusy(Exception):
+    """The branch's warm run could not be ended before the send: a refusal, as start_here's is."""
+
+
+def left(t, want):
+    """Seconds a check may take: `want`, or less to keep STAY_RESERVE inside the budget. Raises
+    OutOfTime with under 3 s left — a check cut that short would only fail."""
+    have = getattr(t, "deadline", time.time() + want + 1000) - time.time() - getattr(t, "reserve", 0)
+    if have < 3:
+        raise OutOfTime("out of time for the send's checks (%d s budget)" % getattr(t, "budget", 0))
+    return min(want, have)
+
+
+def static_stay(t):
+    """What keeps the run here without asking git or the peer (the header's list), or None."""
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return "the caller's CLAUDE_CODE_OAUTH_TOKEN is a login only this caller holds"
+    if not repo_rel(t.primary):
+        return "%s is not under the projects folder, where the peer keeps its clones" % t.primary
+    return None
+
+
+def stay_reason(t, dry=False):
+    """Why this run's /finish needs this Mac (the header's list), or None — pushing the tip first
+    when origin lacks it and is behind it. Each call to origin within the send's budget (left())."""
+    why = static_stay(t)
+    if why:
+        return why
+    dirty = [l for l in git(t.path, "status", "--porcelain").splitlines() if l.strip()]
+    if dirty:
+        return "%d uncommitted file(s) in the worktree: the peer would land the branch without them" % len(dirty)
+    rc, out, err = quiet_git(t.path, "ls-remote", "origin", "refs/heads/" + t.branch, timeout=left(t, 20))
+    if rc:
+        return "origin could not be read: %s" % (err[-160:] or "exit %d" % rc)
+    remote = (out.split() or [""])[0]
+    if remote == t.tip:
+        return None
+    if remote and not is_ancestor(t.path, remote, t.tip):
+        return "origin's %s is at %s, which this worktree's tip %s does not contain" % (t.branch, remote[:7], t.tip[:7])
+    if dry:
+        print("would push %s to origin first (origin has %s)" % (t.tip[:7], remote[:7] or "no such branch"))
+        return None
+    rc, _, err = quiet_git(t.path, "push", "-q", "origin", "%s:refs/heads/%s" % (t.tip, t.branch), timeout=left(t, 45))
+    return "its tip is not on origin, and the push failed: %s" % (err[-160:] or "exit %d" % rc) if rc else None
+
+
+def ssh_run(alias, cmd, stdin=None, timeout=60):
+    """(rc, out, err) of cmd on the peer; no connection and no answer in time are both 255. With no
+    stdin to send, /dev/null: ssh would read the caller's (a sweep's, a hook's) and hand it over."""
+    kw = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        r = subprocess.run([SSH, "-o", "ConnectTimeout=%d" % PROBE_S, "-o", "BatchMode=yes", alias, cmd],
+                           capture_output=True, text=True, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        return 255, "", "no answer in %d s" % timeout
+    except OSError as e:
+        return 255, "", str(e)
+    return r.returncode, r.stdout, r.stderr
+
+
+def remote_repo(rel):
+    return '"$HOME/projects/"%s' % shlex.quote(rel)
+
+
+def probe_cmd(rel):
+    return (REMOTE_BIN + 'grep -q -- peer-start "$rb" 2>/dev/null || { echo "autofinish-run on $(hostname -s) '
+            'predates the peer start: pull its regatta main" >&2; exit 3; }; [ -d %s/.git ] || '
+            '{ echo "no clone of "%s" on $(hostname -s)" >&2; exit 3; }' % (remote_repo(rel), shlex.quote(rel)))
+
+
+def sync_cmd(rec):
+    return REMOTE_BIN + '"$rb" peer-sync --repo %s --branch %s --session %s' % (
+        remote_repo(rec["rel"]), shlex.quote(rec["branch"]), rec["session"])
+
+
+def ladder_stay(t, args, by):
+    """Why the landing ladder keeps this run here, or None. landing() reads this Mac's helm plans
+    (bin/autofinish's landing_mode) and the keel's no from this Mac's state; the peer has neither,
+    so its job would judge the run afresh and could merge what this Mac holds. A plain landing — no
+    hold, no mode, no mode or ship launch — is the one sent (merge of main's skipper-modes S3b and S6,
+    2026-10-23); carrying the ladder's verdict to the peer is open (the lander digest of 2026-10-22)."""
+    hold, mode, keel_hold = getattr(t, "ladder", (None, None, False, None))[:3]
+    if hold or keel_hold:
+        return "the landing ladder holds it here (%s): the peer has none of this Mac's plans" % hold
+    if mode or by in LAND_BY or by == "ship" or args.rule == "M":
+        return "a %s launch is judged by this Mac's plans, which the peer lacks" % (
+            "mode %s" % mode if mode else "--by %s" % by if by in LAND_BY + ("ship",) else "rule M")
+    # the yes at the brief (main's autofinish-exclude S7) is this Mac's briefs file, read by brief_held
+    # here; peer-start takes no `--by brief` (the merge of main, 2026-10-25)
+    if by == "brief":
+        return "a --by brief launch is this Mac's yes at the brief, which the peer lacks"
+    return None
+
+
+def route(t, args, by=None):
+    """(peer, alias) when this run goes to the peer, else None — with a line saying why when a peer
+    exists and the run stays here (the header's Where). A warm run of the branch is ended before the
+    checks that read the tip, so its last checkpoint goes with the send (landing review, 2026-10-22:
+    it was ended after the push and the probe); one that cannot be ended raises WarmBusy. Every check
+    keeps inside the send's budget (left()); one that would not stays here, saying so."""
+    if args.on == "here":
+        return None
+    peer, alias, why = peer_of()
+    if not peer:
+        return None
+    why = why or static_stay(t) or ladder_stay(t, args, by or args.by)
+    try:
+        if not why:
+            busy = end_warm(t, args, cap=left(t, 90))
+            if busy:
+                raise WarmBusy(busy)
+            t.warm_ended = True
+            tip = git(t.path, "rev-parse", "HEAD")
+            if tip and tip != t.tip:
+                print("autofinish-run: %s moved to %s as its warm run ended: that tip is the one sent" % (t.branch, tip[:7]))
+                t.tip = tip
+            why = stay_reason(t, args.dry)
+        if not why:
+            rc, _, err = ssh_run(alias, probe_cmd(repo_rel(t.primary)), timeout=left(t, PROBE_S + 15))
+            if rc == 255:
+                why = "%s is unreachable (ssh exit 255%s)" % (peer, ": " + err.strip()[-120:] if err.strip() else "")
+            elif rc:
+                why = (err.strip().splitlines() or ["the probe of %s failed (exit %d)" % (peer, rc)])[-1]
+    except OutOfTime as e:
+        why = str(e)
+    if why:
+        print("autofinish-run: %s stays on this Mac — %s" % (t.branch, why))
+        t.stay = why
+        return None
+    return peer, alias
+
+
+def peer_record(sid):
+    """(path, record) of this Mac's record of a run it sent, or (None, None)."""
+    for path in glob.glob(os.path.join(PEER_RUNS, "*.%s.json" % sid[:8])):
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("session") == sid:
+            return path, rec
+    return None, None
+
+
+def write_json(path, d):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=1, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def save_peer_record(rec):
+    path = peer_record(rec["session"])[0] or os.path.join(
+        PEER_RUNS, "%s-finish-%s.%s.json" % (str(rec["started"])[:10], rec["topic"], rec["session"][:8]))
+    write_json(path, rec)
+
+
+_asked = {}   # sid -> (time, answer): dead() and bury() ask once per sweep, not twice
+_down = {}    # alias -> time of its last ssh 255: the sweep's other sent runs on it are not asked for a minute
+
+
+def peer_ask(rec, fresh=False, timeout=90, apply=True):
+    """The peer's peer-sync answer about this run, or None when it cannot be had now. Each real ask is
+    kept in this Mac's record of the run (save_peer_record), for peer_overdue: `answered`, the last
+    answer; `asked`, the last ask; `silent`, the first ask unanswered since the last answer. A peer this
+    pass found unreachable (`_down`) is not asked again, and that counts as an ask unanswered: else the
+    run asked second on a down peer kept no `asked`, its silence started again every ASK_GAP_S, and k
+    runs sent there took about k × PEER_WAIT_S to bury (third landing review, S3). `apply` False (the
+    sweep's verdicts, `--dry-run`): no ssh — peer-sync buries on the peer — and no write; only this
+    process's answer of the last minute."""
+    hit = _asked.get(rec["session"])
+    if hit and not fresh and time.time() - hit[0] < 60:
+        return hit[1]
+    if not apply:
+        return None
+    alias = rec.get("alias") or peer_of()[1]
+    if not alias:
+        return None
+    if not fresh and time.time() - _down.get(alias, 0) < 60:
+        rc, out = 255, ""   # this pass found the peer unreachable already: the same answer, unasked
+    else:
+        rc, out, _ = ssh_run(alias, sync_cmd(rec), timeout=timeout)
+        if rc == 255:
+            _down[alias] = time.time()
+    try:
+        ans = json.loads(out.strip().splitlines()[-1]) if rc == 0 else None
+    except (ValueError, IndexError):
+        ans = None
+    ans = ans if isinstance(ans, dict) else None
+    _asked[rec["session"]] = (time.time(), ans)
+    t0 = now_iso()
+    if ans is not None:
+        rec.update(answered=t0, silent=None)
+    elif not rec.get("silent") or age(rec.get("asked")) > ASK_GAP_S:
+        rec["silent"] = t0   # the silence starts here: none yet, or this Mac was not asking (asleep)
+    rec["asked"] = t0
+    try:
+        save_peer_record(rec)
+    except OSError:
+        pass
+    return ans
+
+
+def age(iso, now=None):
+    try:
+        return (time.time() if now is None else now) - datetime.datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError):
+        return 0
+
+
+def peer_gone(st, ans, now=None):
+    """True when the peer started the run (its job exited 0) and holds no record of it any more: no state
+    in the ticket, and no worktree state in the run's id. Read as "still going" until the second landing
+    review (10), which blocked the worktree for good."""
+    tk = ans.get("ticket") if isinstance(ans.get("ticket"), dict) else {}
+    rs = ans.get("state") if isinstance(ans.get("state"), dict) else {}
+    return (tk.get("session") == st["session"] and tk.get("rc") == 0 and rs.get("session") != st["session"]
+            and age(tk.get("scheduled"), now) > PRE_START_S)
+
+
+def peer_overdue(st, rec, ans, now=None):
+    """Why a run sent to the peer counts as died with no end from there, or None. Without this, a
+    peer that never answers again would block the worktree for good, `--on here` included (landing
+    review, 2026-10-22): no record here of the send PRE_START_S after its start (this process was
+    killed between the state and the record); the peer asked and silent for PEER_WAIT_S; or the peer
+    has no record of a run its job started (peer_gone). The silence is counted from the first ask
+    unanswered since the last answer, and starts again when this Mac stopped asking for ASK_GAP_S —
+    asleep, or neither waiter nor sweep running: a laptop that wakes offline after a night is not a
+    peer silent all night (second landing review, 3: one unanswered poll past 9 h from the start buried
+    a run that had answered until then). A peer that answers is believed, a run there still going
+    included: its own sweep buries it."""
+    started = age(st.get("started"), now)
+    if not rec:
+        return ("no record here of the send to %s, %d min after its start" % (st["host"], started // 60)
+                if started > PRE_START_S else None)
+    if ans is not None:
+        return ("%s started the run and has no record of it now (no state there, no worktree in its id)"
+                % st["host"] if peer_gone(st, ans, now) else None)
+    silent = rec.get("silent")
+    if silent and age(rec.get("asked"), now) <= ASK_GAP_S and age(silent, now) > PEER_WAIT_S:
+        return "no answer from %s for %.1f h of asking (last answer %s)" % (
+            st["host"], age(silent, now) / 3600, rec.get("answered") or "none")
+    return None
+
+
+def refresh_lock(state_dir, sid, branch=None):
+    """The lock's `seen` set to now while it still names the run: checkpoint.py frees a lock unseen for
+    OWNER_TTL (2 h), and a /finish on the peer may run longer, so this Mac's sessions would write under
+    it (landing review, 2026-10-22). Another holder's lock is left alone. True when refreshed. The waiter
+    calls it each poll, the sweep's dead() while the peer answers (second landing review, 5)."""
+    lock = common.read_owner(state_dir)
+    if not lock or lock.get("session") != sid:
+        return False
+    common.write_owner(state_dir, sid, lock.get("branch") or branch, lock.get("handover"))
+    return True
+
+
+def settle(t, st, ans, rec, apply=True):
+    """What the peer's answer says of the run sent there: None while it goes on or cannot be told,
+    else the kind of end — `ended`, `refused`, `no-account`, `lost` — and, applied, that end written
+    here as the run's own would be (the header's Where)."""
+    sid = st["session"]
+    tk = ans.get("ticket") if isinstance(ans.get("ticket"), dict) else {}
+    rs = ans.get("state") if isinstance(ans.get("state"), dict) else {}
+    ours = rs.get("session") == sid
+    if ours and rs.get("ended"):
+        kind = "ended"
+    elif tk.get("session") == sid and isinstance(tk.get("rc"), int) and tk["rc"] and not ours:
+        kind = "no-account" if tk["rc"] == 4 else "refused"
+    elif not ours and tk.get("session") != sid and age(st.get("started")) > PRE_START_S:
+        kind, tk = "lost", dict(tk, said="the peer has no ticket for this run: it never got there")
+    elif not ours and tk.get("session") == sid and tk.get("rc") is None and not tk.get("began") \
+            and age(tk.get("scheduled")) > PRE_START_S:
+        # a job that runs wrote `began` first, at most JOB_LATE_S after it was scheduled (main)
+        kind, tk = "lost", dict(tk, said="the peer's job never ran (launchd started nothing)")
+    elif not ours and tk.get("session") == sid and tk.get("rc") is None and age(tk.get("began")) > PRE_START_S:
+        # it began, and wrote neither a state nor its exit: killed before its writes, so nothing ran
+        kind, tk = "lost", dict(tk, said="the peer's job began %s and wrote nothing since" % tk.get("began"))
+    else:
+        return None
+    if apply:
+        record_peer_end(t, st, kind, rs, tk, ans.get("line"), rec)
+    return kind
+
+
+def record_peer_end(t, st, kind, rs, tk, line, rec):
+    """The peer's end, written here: the state, the lock, the record line, the log and this Mac's
+    record of the run. Nothing ran there (`lost`, `no-account`, or the job `refused` before any
+    session): never-started at refused, so the tip may start again, as the header says — a refused
+    job was gate never-started until the landing review (2026-10-22), which blocked the tip for good."""
+    sid, peer = st["session"], st["host"]
+    if kind == "ended":
+        st.update(ended=rs["ended"], outcome=rs.get("outcome"), pr=rs.get("pr"), gate=rs.get("gate"),
+                  account=rs.get("account") or st.get("account"))
+        # `<iso> <outcome> <branch> <detail>`: the detail is what the log quotes
+        first = (line or "").split(" ", 3)[3] if line and len(line.split(" ", 3)) == 4 else ""
+        if not line:   # the state came from the peer's worktree (no ticket line): the line as record() writes it
+            first = first or "its end on %s came without its line" % peer
+            line = record_line(st["ended"], st["outcome"], t.branch, st.get("gate"), st.get("pr"), first, st.get("tip"))
+    else:
+        said = tk.get("said") or "exit %s" % tk.get("rc")
+        first = "%s on %s: %s" % ({"refused": "refused", "no-account": "no account may run it"}.get(kind, "lost"), peer, said)
+        st.update(ended=now_iso(), outcome="never-started", pr=None, gate=REFUSED)
+        line = "%s never-started %s %s" % (st["ended"], t.branch, first)
+    write_state(t, st)
+    notes = release(t, sid)
+    if st["gate"] not in REFUSED_GATES:
+        try:
+            os.unlink(os.path.join(t.state_dir, common.AUTOFINISH_OVERRIDE))
+        except OSError:
+            pass
+        os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
+        with open(os.path.join(t.common, "claude", RECORD), "a") as f:
+            f.write(line.rstrip("\n") + "\n")
+    log(common.RUN_END % (
+        st["ended"], t.repo, t.branch, st["outcome"], " gate=%s" % st["gate"] if st.get("gate") else "",
+        " pr=#%s" % st["pr"] if st.get("pr") else "", sid[:8], str(st.get("tip"))[:7], st.get("rule"), st.get("by"),
+        st.get("account") or "-", first[:300], "; " + "; ".join(["on %s" % peer] + notes)))
+    if rec:
+        rec.update(ended=st["ended"], outcome=st["outcome"], pr=st.get("pr"), gate=st.get("gate"),
+                   account=st.get("account"))
+        save_peer_record(rec)
+
+
+def adopt(t, prev, rec, ans):
+    """peer-start refused the send because a run of the peer's own holds this tip — its answer's `ran`
+    (that run's contract) and `line` (its autofinished line): that run is written here as this Mac's,
+    so the next sweep meets the same-tip refusal here instead of sending again (second landing review,
+    2: the refusal was given back as `refused`, which bin/autofinish's restartable() re-sends every pass,
+    and this Mac never learned that run's end). Ended there: its end written as record_peer_end writes
+    one — or, when this Mac had that end already (a chain relaunch the peer refused), its state put
+    back. Going there: the state and the lock in its id, a record of it, and a waiter, as for a send.
+    Called after give_back, under the start lock. Returns what was done, or None for no run on this tip."""
+    ran, line = ans["ran"], ans.get("line")
+    rsid, peer = str(ran.get("session") or ""), rec["host"]
+    if not SID_RE.match(rsid) or ran.get("tip") != t.tip:
+        return None
+    if prev and prev.get("session") == rsid and prev.get("ended") and prev.get("outcome") == ran.get("outcome"):
+        write_state(t, prev)
+        return "this Mac had that run's end already (%s, %s)" % (rsid[:8], prev.get("outcome"))
+    st = dict(contract(ran), host=peer, ended=None, outcome=None, pr=None, gate=None)
+    st.pop("from", None)   # this Mac's record of a run on the peer: `host`, as for a send
+    rec2 = dict(peer_record(rsid)[1] or rec, session=rsid, started=ran.get("started") or rec["started"],
+                tip=t.tip, ended=None, outcome=None, pr=None, gate=None, answered=now_iso(), silent=None)
+    if ran.get("ended"):
+        record_peer_end(t, st, "ended", ran, {}, line, rec2)
+        return "its run %s on this tip ended there %s, %s: recorded here" % (rsid[:8], ran.get("ended"), st.get("outcome"))
+    write_state(t, st)
+    common.write_owner(t.state_dir, rsid, t.branch)
+    save_peer_record(rec2)
+    log("%s run %s %s adopted session=%s tip=%s — its run on %s goes on there" % (
+        now_iso(), t.repo, t.branch, rsid[:8], t.tip[:7], peer))
+    try:
+        detach(lambda: wait_on_peer(t, st, rec2, None), t.runlog)
+    except OSError as e:
+        return "its run %s on this tip goes on there; no waiter here (%s): the sweep settles it" % (rsid[:8], e)
+    return "its run %s on this tip goes on there: this Mac waits on it" % rsid[:8]
+
+
+def wait_on_peer(t, st, rec, again):
+    """The detached waiter of a run sent to the peer: ask until the peer has its end, then write it
+    here; `again`, the command that starts it here when the peer had no account for it."""
+    def term(signum, _frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, term)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    sid = st["session"]
+    try:
+        rc_mod = load_bin("dispatch-rc")
+        with open(os.path.join(t.state_dir, WAITER), "w") as f:
+            json.dump({"session": sid, "pid": os.getpid(), "start": rc_mod.proc_start(os.getpid())}, f)
+    except Exception:
+        traceback.print_exc()
+    # past twice PEER_WAIT_S with the peer still saying the run goes on (dispatch ends one at 8 h there), the
+    # waiter leaves it to the sweep's dead(), which goes on believing an answering peer and refreshing the lock
+    cap, kind, quiet = time.time() + 2 * PEER_WAIT_S, None, 0
+    try:
+        while True:
+            try:
+                refresh_lock(t.state_dir, sid, t.branch)
+            except OSError:
+                traceback.print_exc()
+            ans = peer_ask(rec, fresh=True)
+            if ans is None:
+                quiet += 1
+                if quiet in (1, 10, 60):   # said, not every minute: a laptop on the move drops often
+                    print("%s %s did not answer (try %d): asked again in %d s" % (now_iso(), st["host"], quiet, PEER_POLL), flush=True)
+            else:
+                quiet = 0
+                cur = read_state(t) or {}
+                if cur.get("session") != sid or cur.get("ended"):
+                    print("%s the state is another's or ended here already: nothing to write" % now_iso(), flush=True)
+                    return
+                kind = settle(t, st, ans, rec)
+                if kind:
+                    break
+            overdue = peer_overdue(st, rec, ans)
+            if overdue:   # silent for PEER_WAIT_S of asking, or the peer lost the run: bury() writes `died`
+                said = bury(t, overdue)
+                print("%s no end from %s: %s — %s" % (now_iso(), st["host"], overdue,
+                                                     said or "the sweep settles it from there"), flush=True)
+                return
+            if time.time() > cap:
+                print("%s %s still says the run goes on after %.1f h: the sweep settles it from there" % (
+                    now_iso(), st["host"], 2 * PEER_WAIT_S / 3600), flush=True)
+                return
+            time.sleep(PEER_POLL)
+    except SystemExit as e:
+        print("%s the waiter ended (signal %s): the sweep settles the run from %s" % (now_iso(), e.code, st["host"]), flush=True)
+        return
+    print("%s the run on %s: %s — %s" % (now_iso(), st["host"], kind, st.get("outcome")), flush=True)
+    if kind == "no-account" and again:
+        print("%s no account may run it on %s: starting it here — %s" % (now_iso(), st["host"], " ".join(again)), flush=True)
+        r = subprocess.run(again, capture_output=True, text=True)
+        print((r.stdout + r.stderr).strip(), flush=True)
+
+
+def start_on_peer(t, args, prev, by, via, peer, alias):
+    """Send the run to the peer (the header's Where): this Mac's state and lock in the run's id, the
+    bundle on stdin, peer-start's answer, then the waiter. Under the start lock main() holds."""
+    rel = repo_rel(t.primary)
+    sid = str(uuid.uuid4())
+    st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
+          "window": t.window, "account": None, "ended": None, "outcome": None, "pr": None, "gate": None,
+          "merge": args.merge, "host": peer}
+    # D2-A: this Mac's approval travels with the run (`--from=<this host>` in the peer's prompt, which
+    # /finish step 11.4 honours there). Only a plain landing is sent (ladder_stay): no mode launch
+    # (yolo, dnd, ship) and no hold reaches here, so there is no other approval to carry
+    sent_from = self_host()
+    cmd = REMOTE_BIN + '"$rb" peer-start --repo %s --branch %s --tip %s --run-session %s --rule %s --by %s%s%s%s' % (
+        remote_repo(rel), shlex.quote(t.branch), t.tip, sid, args.rule, by, " --merge" if args.merge else "",
+        " --from %s" % shlex.quote(sent_from) if sent_from else "",
+        # landing() there reads it as here (unattended_caller): ssh carries no CLAUDE_UNATTENDED
+        " --unattended-caller" if unattended_caller() else "")
+    text = bundle_text(t)
+    if args.dry:
+        print("autofinish-run --dry: %s in %s, tip %s, rule %s, by %s%s — on %s" % (
+            t.branch, t.path, t.tip[:7], args.rule, by, via, peer))
+        print("would write %s:" % os.path.join(t.state_dir, STATE))
+        print("  " + json.dumps(contract(st), ensure_ascii=False))
+        print("would write %s: session %s" % (os.path.join(t.state_dir, common.OWNER_FILE), sid))
+        print("would send the bundle (%d characters) to %s and run there:" % (len(text), peer))
+        print("  " + " ".join(shlex.quote(c) for c in (SSH, alias, cmd)))
+        return 0
+    try:
+        with open(os.path.join(t.state_dir, common.OWNER_FILE)) as f:
+            before = f.read()
+    except OSError:
+        before = None
+    write_state(t, st)
+    common.write_owner(t.state_dir, sid, t.branch)
+    if args.by == "chain":
+        count_chain(t, prev, sid)
+    log("%s run %s %s started session=%s tip=%s rule=%s by=%s%s account=- window=\"%s\" — on %s" % (
+        st["started"], t.repo, t.branch, sid[:8], t.tip[:7], args.rule, by, via + (" merge=yes" if args.merge else ""),
+        t.window, peer))
+    rec = {"host": peer, "alias": alias, "repo": t.primary, "rel": rel, "branch": t.branch, "topic": t.topic,
+           "session": sid, "started": st["started"], "tip": t.tip, "worktree": t.path, "peer_worktree": None,
+           "label": None, "ended": None, "outcome": None, "pr": None, "gate": None, "account": None}
+    save_peer_record(rec)
+    # within what is left of the caller's wait less STAY_RESERVE, which a run the peer cannot take
+    # still needs here (second landing review, 11), never under SSH_FLOOR: the state is written, so a
+    # caller that kills this process leaves a run dead() settles from the peer
+    wait = max(SSH_FLOOR, min(120, getattr(t, "deadline", time.time() + 120) - time.time() - getattr(t, "reserve", 0)))
+    rc, out, err = ssh_run(alias, cmd, stdin=text, timeout=wait)
+    said = (err.strip().splitlines() or ["exit %d" % rc])[-1]
+    if rc not in (0, 2, 3, 4, 255):   # peer-start's traceback, a shell's 127: it scheduled nothing
+        said = "%s (exit %d)" % (said, rc)
+    # Only 255 (ssh's own: the connection, or no answer in time) may hide a start there. Any other
+    # answer came from peer-start, which schedules last: nothing is going there (landing review,
+    # 2026-10-22 — a traceback read as "maybe sent" was written off as lost and re-sent every sweep)
+    if rc not in (0, 255):   # nothing scheduled there: this Mac's state given back as it was
+        give_back(t, sid, before, st)
+        rec.update(ended=st["ended"], outcome=st["outcome"], gate=st["gate"])
+        save_peer_record(rec)
+        log("%s run %s %s refused tip=%s rule=%s by=%s — %s answered: %s" % (
+            now_iso(), t.repo, t.branch, t.tip[:7], args.rule, by, peer, said))
+        if rc == 3:
+            try:
+                ran = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+            except ValueError:
+                ran = {}
+            adopted = adopt(t, prev, rec, ran) if isinstance(ran, dict) and isinstance(ran.get("ran"), dict) else None
+            print("autofinish-run: not starting %s — refused on %s: %s%s" % (
+                t.branch, peer, said, "; " + adopted if adopted else ""), file=sys.stderr)
+            return 3
+        if time.time() > getattr(t, "deadline", time.time()) - getattr(t, "reserve", 0):
+            t.pick_cached = True   # SSH_FLOOR ate into the reserve: the pick here reads the cache
+        t.stay = "%s cannot take it: %s" % (peer, said)
+        print("autofinish-run: %s stays on this Mac — %s" % (t.branch, t.stay))
+        return start_here(t, args, read_state(t), by, via)
+    if rc == 0:
+        try:
+            got = json.loads(out.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            got = {}
+        rec.update(peer_worktree=got.get("worktree"), label=got.get("label"), answered=now_iso())
+        save_peer_record(rec)
+        head = "started on %s: %s in %s" % (peer, finish_prompt(t.branch, by, args.merge, sent_from=sent_from), rec["peer_worktree"] or "?")
+    else:   # 255 once the probe passed: the answer was lost on the way, it may be going there — never here too
+        head = ("sent to %s, its answer lost (ssh exit %d: %s): the run may be going there; the waiter "
+                "settles it, and it is not started here as well" % (peer, rc, said))
+    again = None
+    if by != "chain":   # the chain's tick relaunches by itself
+        again = [os.path.join(HERE, "autofinish-run"), t.path, "--on", "here", "--rule", args.rule, "--by", by] + (
+            ["--merge"] if args.merge else [])
+    try:
+        detach(lambda: wait_on_peer(t, st, rec, again), t.runlog)
+    except OSError as e:
+        head += "; no waiter here (%s): the sweep settles it from %s" % (e, peer)
+    print("%s — session %s, window and Remote Control \"%s\" there; state %s; log %s" % (
+        head, sid, t.window, os.path.join(t.state_dir, STATE), t.runlog))
+    return 0
+
+
+# the peer's half -----------------------------------------------------------------------------------
+
+def tickets_dir(common_dir):
+    """Tickets live in the common git dir: a launched branch's worktree may be gone before the
+    sending Mac asks for its end."""
+    return os.path.join(common_dir, "claude", "autofinish-peer")
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def update_json(path, fn):
+    """fn(the JSON at path, or None) written back unless it returns None, under an flock on `<path>.lock`:
+    a ticket is written by the job's exit, by its waiter's end and by peer-start, and the job's exit
+    read it before the waiter's end and wrote after, losing the end (second landing review, 12)."""
+    import fcntl
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        d = fn(read_json(path))
+        if d is not None:
+            write_json(path, d)
+        return d
+
+
+def ticket_end(t, st, line):
+    """The run's end into its ticket, when the run is one a peer sent here."""
+    path = os.path.join(tickets_dir(t.common), "%s.json" % st.get("session"))
+    if os.path.exists(path):
+        update_json(path, lambda tk: dict(tk, state=contract(st), line=line) if tk is not None else None)
+
+
+def worktree_of(repo, branch):
+    path = None
+    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+        elif line == "branch refs/heads/" + branch:
+            return path
+    return None
+
+
+def peer_worktree(repo, branch, tip):
+    """(path, 0, None) of the branch's worktree here at `tip` — found, else created from origin as
+    `pickup open` does, fast-forwarded when behind — or (None, code, why): 3 refused, 4 cannot."""
+    m = NAME_RE.match(branch)
+    if not m:
+        return None, 2, "%s is not a claude/<host>/<date>-<topic> branch" % branch
+    rc, _, err = quiet_git(repo, "fetch", "-q", "origin", "+refs/heads/%s:refs/remotes/origin/%s" % (branch, branch), timeout=60)
+    if rc:
+        return None, 4, "fetching origin's %s failed here: %s" % (branch, err[-160:] or "exit %d" % rc)
+    otip = git(repo, "rev-parse", "refs/remotes/origin/" + branch)
+    if otip != tip:
+        return None, 4, "origin's %s is at %s here, not %s" % (branch, otip[:7] or "nothing", tip[:7])
+    wt = worktree_of(repo, branch)
+    if wt and os.path.realpath(wt) == os.path.realpath(repo):
+        return None, 4, "%s is checked out in the primary checkout here" % branch
+    if wt and not os.path.isdir(wt):
+        git(repo, "worktree", "prune")   # forget the vanished folder, or `add` refuses the branch
+        wt = None
+    if not wt:
+        want = base = os.path.join(repo, ".claude", "worktrees", m.group("topic"))
+        n = 2
+        while os.path.exists(want):
+            want, n = "%s-%d" % (base, n), n + 1
+        local = git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)
+        add = [want, branch] if local else ["--track", "-b", branch, want, "refs/remotes/origin/" + branch]
+        rc, _, err = quiet_git(repo, "worktree", "add", "-q", *add, timeout=120)
+        if rc or git(want, "symbolic-ref", "--short", "HEAD") != branch:
+            return None, 4, "git worktree add failed here: %s" % (err[-160:] or "exit %d" % rc)
+        env = os.path.join(repo, ".env")
+        if os.path.lexists(env) and not os.path.lexists(os.path.join(want, ".env")):
+            os.symlink(env, os.path.join(want, ".env"))
+        wt = want
+    if [l for l in git(wt, "status", "--porcelain").splitlines() if l.strip()]:
+        return None, 4, "its worktree here (%s) has uncommitted changes" % wt
+    head = git(wt, "rev-parse", "HEAD")
+    if head != tip:
+        if not is_ancestor(wt, head, tip):
+            return None, 4, "its worktree here is at %s, apart from origin's %s" % (head[:7], tip[:7])
+        here = Tree(wt)
+        why = lock_refusal(here, None, False)
+        if why:
+            return None, 3, why
+        # An unended run here keeps its tree: judged before the fast-forward, not after it as
+        # peer_start's refusal() is (fourth landing review, CR 4). A dead one is buried, as there.
+        prev = read_state(here)
+        if prev and not prev.get("ended"):
+            died = dead(here, prev, state_dir=here.state_dir)
+            if not (died and bury(here, died)):
+                return None, 3, "a run here on %s has not ended: its tree is not moved under it" % (prev.get("tip") or "?")[:7]
+        rc, _, err = quiet_git(wt, "merge", "-q", "--ff-only", tip)
+        if rc:
+            return None, 4, "fast-forwarding its worktree here failed: %s" % (err[-160:] or "exit %d" % rc)
+    return wt, 0, None
+
+
+def job_bin():
+    """The script a launchd job names: the overlay's shim where one is installed, else this module in
+    its main checkout (AGENTS.md: never a worktree's copy) — dispatch's jobbin."""
+    old = common.legacy_root()
+    if old and os.path.isfile(os.path.join(str(old), "bin", "autofinish-run")):
+        return os.path.join(str(old), "bin", "autofinish-run")
+    return os.path.join(HERE, "autofinish-run")
+
+
+def job_path():
+    """The job's PATH: launchd gives a LaunchAgent only /usr/bin:/bin:/usr/sbin:/sbin, so `gh` from
+    Homebrew was not found and no stop comment reached the PR (landing review, 2026-10-22). dispatch's
+    jobs prepend the same three (its `export PATH=`); the ssh session's own PATH follows, deduplicated."""
+    seen, out = set(), []
+    for d in [os.path.join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"] + (
+            os.environ.get("PATH") or "").split(os.pathsep) + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]:
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return os.pathsep.join(out)
+
+
+def launchctl(*args):
+    try:
+        return subprocess.run([LAUNCHCTL, *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess([], 1, "", str(e))
+
+
+def peer_start(argv):
+    """`peer-start`: over ssh from the sending Mac. Finds or creates the branch's worktree at the
+    tip it names, keeps the shipped bundle, and schedules the start as a one-shot LaunchAgent in the
+    GUI domain (the keychain, the header's Where). Prints {"worktree", "label", "host"}."""
+    import plistlib
+    ap = argparse.ArgumentParser(prog="autofinish-run peer-start")
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--branch", required=True)
+    ap.add_argument("--tip", required=True)
+    ap.add_argument("--run-session", required=True)
+    ap.add_argument("--rule", choices="ABCDEL", default="C")
+    ap.add_argument("--by", choices=("sweep", "override", "typed", "yolo", "chain"), default="override")
+    ap.add_argument("--merge", action="store_true")
+    ap.add_argument("--from", dest="sent_from", metavar="HOST")   # D2-A: the sending Mac, whose approval the run carries
+    ap.add_argument("--unattended-caller", action="store_true")   # the sender's caller had CLAUDE_UNATTENDED
+    args = ap.parse_args(argv)
+    # Both markers from_refusal and run_main refuse: the job's env holds neither, so a skipper calling
+    # peer-start itself would pass them on unseen (fourth landing review, CR 1)
+    unattended = any(os.environ.get(n) for n in ("CLAUDE_UNATTENDED", "SKIPPER_SCOPE"))
+    if args.sent_from and (not HOST_RE.match(args.sent_from) or unattended):
+        # ssh carries no CLAUDE_UNATTENDED; a run on this Mac calling peer-start itself does
+        print("autofinish-run peer-start: --from takes a host name, and never from an unattended caller", file=sys.stderr)
+        return 2
+    # The job's env holds only AUTOFINISH_JOB and PATH, so run_main's refusal never sees the caller:
+    # refuse here, before anything is written (AGENTS.md trap: a person's-yes flag).
+    if args.merge and (args.by not in MERGE_BY or unattended):
+        print("autofinish-run peer-start: --merge needs a person's yes (--by %s, not an unattended caller)"
+              % " or ".join(MERGE_BY), file=sys.stderr)
+        return 2
+    if not SID_RE.match(args.run_session):
+        print("autofinish-run peer-start: --run-session takes a session uuid", file=sys.stderr)
+        return 2
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    wt, code, why = peer_worktree(repo, args.branch, args.tip)
+    if why:
+        print("autofinish-run peer-start: %s" % why, file=sys.stderr)
+        return code
+    t = Tree(wt)
+    bad = t.problem()
+    if bad:
+        print("autofinish-run peer-start: %s: %s" % (wt, bad), file=sys.stderr)
+        return 4
+    # What the job would refuse, refused now (exit 3): the sending Mac hears it at once and gives its
+    # state back, where a refusal in the job is only read a poll later (landing review, 2026-10-22).
+    # A run here that died is buried first, as peer-sync would: else its tip read as one still going
+    prev = read_state(t)
+    if prev and not prev.get("ended"):
+        died = dead(t, prev, state_dir=t.state_dir)
+        if died and bury(t, died):
+            prev = read_state(t)
+    why = refusal(t, prev, args.by, sent=True) or lock_refusal(t, None, args.by == "typed")
+    if why:
+        print("autofinish-run peer-start: %s" % why, file=sys.stderr)
+        # a run of this Mac's own on that tip: its contract and line, so the sending Mac records it
+        # rather than give its state back and send again every sweep (second landing review, 2)
+        if prev and prev.get("tip") == t.tip and prev.get("session") and prev.get("gate") not in REFUSED_GATES \
+                and prev.get("outcome") != DIED:
+            tk = read_json(os.path.join(tickets_dir(t.common), "%s.json" % prev["session"])) or {}
+            print(json.dumps({"ran": contract(prev), "line": tk.get("line"), "host": self_host()}, ensure_ascii=False))
+        return 3
+    os.makedirs(t.state_dir, exist_ok=True)
+    shipped = os.path.join(t.state_dir, SHIPPED)
+    with open(shipped, "w") as f:
+        f.write(sys.stdin.read())
+    tdir = tickets_dir(t.common)
+    uid = os.getuid()
+    # a job stays loaded once its one run is done (its plist file gone): booted out at the next send,
+    # once its run has ended — never one still running, whose waiter it would take down. One that never
+    # ran past PRE_START_S, the sending Mac has written off as lost: booted out and its plist removed,
+    # or the next login would start it with that old session id (landing review, 2026-10-22)
+    for old in glob.glob(os.path.join(tdir, "*.json")):
+        tk = read_json(old) or {}
+        if not tk.get("label") or tk.get("booted"):
+            continue
+        never = tk.get("rc") is None and not tk.get("began") and not tk.get("state") and age(tk.get("scheduled")) > PRE_START_S
+        if (tk.get("state") or {}).get("ended") or tk.get("rc") or never:
+            launchctl("bootout", "gui/%d/%s" % (uid, tk["label"]))
+            if never:
+                try:
+                    os.remove(os.path.join(HOME, "Library", "LaunchAgents", tk["label"] + ".plist"))
+                except OSError:
+                    pass
+            update_json(old, lambda d: dict(d, booted=True) if d is not None else None)
+    label = "%s.%s.%s" % (JOB_PREFIX, re.sub(r"[^A-Za-z0-9-]", "-", t.repo), args.run_session[:8])
+    ticket = os.path.join(tdir, "%s.json" % args.run_session)
+    write_json(ticket, {"session": args.run_session, "scheduled": now_iso(), "rc": None, "said": None,
+                        "label": label, "branch": t.branch, "worktree": t.path})
+    prog = [job_bin(), t.path, "--on", "here", "--run-session", args.run_session, "--bundle", shipped,
+            "--ticket", ticket, "--rule", args.rule, "--by", args.by] + (["--merge"] if args.merge else []) + (
+            ["--from", args.sent_from] if args.sent_from else [])
+    try:   # dispatch's launcher (TCC: one identity), when this Mac's sitting is done
+        r = subprocess.run([RCHOSTS, "--launcher", prog[0]], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            prog = [r.stdout.strip()] + prog
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    plist = os.path.join(HOME, "Library", "LaunchAgents", label + ".plist")
+    os.makedirs(os.path.dirname(plist), exist_ok=True)
+    os.makedirs(os.path.dirname(t.runlog), exist_ok=True)
+    with open(plist, "wb") as f:
+        env = {"AUTOFINISH_JOB": plist, "PATH": job_path()}
+        if args.unattended_caller:
+            env["AUTOFINISH_CALLER_UNATTENDED"] = "1"   # landing() holds as it would on the sending Mac
+        plistlib.dump({"Label": label, "ProgramArguments": prog, "RunAtLoad": True, "AbandonProcessGroup": True,
+                       "EnvironmentVariables": env,
+                       "StandardOutPath": t.runlog, "StandardErrorPath": t.runlog}, f)
+    launchctl("bootout", "gui/%d/%s" % (uid, label))
+    r = launchctl("bootstrap", "gui/%d" % uid, plist)
+    if r.returncode:   # bootout returns before the old job is gone (dispatch's retry)
+        time.sleep(2)
+        r = launchctl("bootstrap", "gui/%d" % uid, plist)
+    if r.returncode:
+        try:
+            os.remove(plist)
+        except OSError:
+            pass
+        update_json(ticket, lambda d: dict(d or {}, rc=4, said="launchctl bootstrap failed"))
+        print("autofinish-run peer-start: launchctl bootstrap failed here: %s" % (r.stderr.strip()[-160:] or r.returncode),
+              file=sys.stderr)
+        return 4
+    print(json.dumps({"worktree": t.path, "label": label, "host": self_host()}))
+    return 0
+
+
+def peer_sync(argv):
+    """`peer-sync`: over ssh from the sending Mac. What this Mac knows of the run: its ticket, its
+    state (a dead one buried first, as the sweep here would) and its `autofinished` line, as JSON."""
+    ap = argparse.ArgumentParser(prog="autofinish-run peer-sync")
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--branch", required=True)
+    ap.add_argument("--session", required=True)
+    args = ap.parse_args(argv)
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    cdir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    out = {"host": self_host(), "ticket": None, "state": None, "line": None}
+    tk = read_json(os.path.join(tickets_dir(cdir), "%s.json" % args.session)) if cdir else None
+    out["ticket"] = tk
+    if tk and isinstance(tk.get("state"), dict):
+        out["state"], out["line"] = tk["state"], tk.get("line")
+    else:
+        wt = worktree_of(repo, args.branch) if cdir else None
+        if wt and os.path.isdir(wt):
+            t = Tree(wt)
+            st = read_state(t)
+            if st and st.get("session") == args.session and not st.get("ended"):
+                why = dead(t, st, state_dir=t.state_dir)
+                if why:
+                    bury(t, why)
+                    st = read_state(t)
+                    tk = read_json(os.path.join(tickets_dir(cdir), "%s.json" % args.session)) or tk
+                    out["ticket"], out["line"] = tk, (tk or {}).get("line")
+            out["state"] = st
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
 
 
 def detach(fn, out_path):
@@ -1656,6 +2747,20 @@ def detach(fn, out_path):
         sys.stdout.flush()
         sys.stderr.flush()
     os._exit(code)
+
+
+class Tee(io.TextIOBase):
+    """stderr kept as it goes, for the ticket: what a refusal said reaches the sending Mac."""
+
+    def __init__(self, real):
+        self.real, self.kept = real, io.StringIO()
+
+    def write(self, s):
+        self.kept.write(s)
+        return self.real.write(s)
+
+    def flush(self):
+        self.real.flush()
 
 
 def lease_refusal(dry):
@@ -1776,6 +2881,10 @@ def ship_refusal(t, digest):
 def main(argv):
     if argv[:1] == ["notify"]:
         return notify(argv[1:])
+    if argv[:1] == ["peer-start"]:
+        return peer_start(argv[1:])
+    if argv[:1] == ["peer-sync"]:
+        return peer_sync(argv[1:])
     if argv[:1] == ["rotation"]:
         return rotation(argv[1:])
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
@@ -1787,8 +2896,81 @@ def main(argv):
     ap.add_argument("--hold", action="store_true", help="stop at a ready PR whatever the mode: the keel's no (S6)")
     ap.add_argument("--digest", metavar="D", help="--by ship's: the ship's pinned digest, whose keel said merge")
     ap.add_argument("--session", metavar="ID", help="the caller's own session: its lock is no refusal")
+    ap.add_argument("--on", choices=("here",), help="keep the run on this Mac (the header's Where)")
+    # the peer's job (peer-start's LaunchAgent): the id the sending Mac chose, its bundle, the ticket
+    ap.add_argument("--run-session", metavar="ID", help=argparse.SUPPRESS)
+    ap.add_argument("--bundle", metavar="FILE", help=argparse.SUPPRESS)
+    ap.add_argument("--ticket", metavar="FILE", help=argparse.SUPPRESS)
+    ap.add_argument("--from", dest="sent_from", metavar="HOST", help=argparse.SUPPRESS)   # D2-A, the job's only
     ap.add_argument("--dry", action="store_true")
     args = ap.parse_args(argv)
+    if os.environ.get("AUTOFINISH_JOB"):
+        try:   # a one-shot job: its plist goes at once, so a login never runs it again
+            os.remove(os.environ["AUTOFINISH_JOB"])
+        except OSError:
+            pass
+    if args.run_session and not SID_RE.match(args.run_session):
+        print("autofinish-run: --run-session takes a session uuid", file=sys.stderr)
+        return 2
+    if args.sent_from and from_refusal(args):
+        # the sending Mac's approval: only peer-start's job carries it, never an unattended caller here
+        # (AGENTS.md trap: a flag that stands for a yes)
+        print("autofinish-run: --from is the peer's job's — %s" % from_refusal(args), file=sys.stderr)
+        return 2
+    if not args.ticket:
+        return run_main(args)
+    real, sys.stderr = sys.stderr, Tee(sys.stderr)
+    rc, late = None, []
+
+    def begin(tk):
+        """`began` written, under the ticket's lock, unless launchd started this job late: a job loaded,
+        never run, then started at a login — the sending Mac writes such a run off at PRE_START_S and may
+        start it again. The cutoff is JOB_LATE_S, half of that, so a job that runs has written `began`
+        long before the write-off (second landing review, 7: both were PRE_START_S, and a job starting
+        at 590 s ran beside the start the write-off allowed)."""
+        if not tk or tk.get("session") != args.run_session or tk.get("rc") is not None:
+            return None
+        if age(tk.get("scheduled")) > JOB_LATE_S:
+            late.append(age(tk.get("scheduled")))
+            return None
+        return dict(tk, began=now_iso())
+    try:
+        update_json(args.ticket, begin)
+        if late:
+            print("autofinish-run: not starting %s — its job ran %d s after it was scheduled; the sending Mac "
+                  "writes it off at %d s" % (args.worktree, late[0], PRE_START_S), file=sys.stderr)
+            rc = 3
+            return rc
+        rc = run_main(args)
+        return rc
+    finally:
+        kept, sys.stderr = sys.stderr.kept.getvalue(), real
+        lines = [l for l in kept.splitlines() if l.strip()]
+        update_json(args.ticket, lambda tk: dict(tk, rc=1 if rc is None else rc, said=(lines[-1] if lines else None) if rc else None)
+                    if tk and tk.get("session") == args.run_session else None)
+
+
+def from_refusal(args):
+    """Why `--from` is not this caller's, or None. It stands for the sending Mac's yes, so the guard is the
+    job's whole shape (second landing review, 4: "some --ticket was given" was all): launchd's job env
+    (AUTOFINISH_JOB, the plist peer-start wrote), a ticket that names this --run-session and has no exit
+    yet, a host name, and no unattended caller or skipper (CLAUDE_UNATTENDED, SKIPPER_SCOPE)."""
+    if not HOST_RE.match(args.sent_from):
+        return "it takes a host name"
+    for n in ("CLAUDE_UNATTENDED", "SKIPPER_SCOPE"):
+        if os.environ.get(n):
+            return "never an unattended caller's (%s is set)" % n
+    if not os.environ.get("AUTOFINISH_JOB"):
+        return "it runs only as peer-start's launchd job (no AUTOFINISH_JOB)"
+    if not args.run_session or not args.ticket:
+        return "it goes with --run-session and --ticket"
+    tk = read_json(args.ticket) or {}
+    if tk.get("session") != args.run_session or tk.get("rc") is not None:
+        return "its ticket %s names no pending run of session %s" % (args.ticket, args.run_session[:8])
+    return None
+
+
+def run_main(args):
     if args.merge and args.by not in MERGE_BY:
         print("autofinish-run: --merge needs a person's yes, so --by %s (not %s) only" % (" or ".join(MERGE_BY), args.by),
               file=sys.stderr)
@@ -1824,6 +3006,10 @@ def main(argv):
         if why:
             print("autofinish-run: %s" % why, file=sys.stderr)
             return 2
+    t.shipped, t.stay = args.bundle, None
+    typed = args.by == "typed"
+    t.budget = float(os.environ.get("AUTOFINISH_SEND_BUDGET") or (SEND_BUDGET_TYPED if typed else SEND_BUDGET))
+    t.deadline, t.reserve = time.time() + t.budget, STAY_RESERVE_TYPED if typed else STAY_RESERVE
     # --dry writes nothing, the start lock included: it only says what a start would meet
     held = None if args.dry else take_start_lock(t)
     if not args.dry and not held:
@@ -1842,51 +3028,55 @@ def main(argv):
                 pass
 
 
-def start(t, args):
-    """The refusals, the writes and the detach, under the start lock main() holds."""
-    prev = read_state(t)
-    why = refusal(t, prev, args.by) or lock_refusal(t, args.session, args.by == "typed")
-    if why:
-        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
-        if not args.dry:
-            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
-                                                                    args.rule, args.by, why))
-        return 3
-    try:
-        # cached for --dry, and for a typed hand-off: cold_prompt waits 45 s on this, in a prompt hook.
-        # Before the warm run's end below: a run no account can take ends nothing
-        label, cfg, picked = account_pick(t, cached=args.dry or args.by == "typed")
-    except NoAccount as e:
-        why = "no account may run this now — %s" % e
-        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
-        if not args.dry:
-            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
-                                                                    args.rule, args.by, why))
-        return 3
-    # A seeded run of this branch is kept the cache's hour, past autofinish's 40 min: it is ended
-    # first, then the branch launches (the owner, D2 of docs/dispatch-warm-hour-2026-10-08.md: C). A busy
-    # one is not the launch's to end: no launch.
-    # Under the start lock and the sweep's RUNNER_TIMEOUT (both 120 s): ending a run takes ~15 s
-    # with its window out of view (close tries, the SIGTERM wait, CLOSE_WAIT), so 90 s, and a
-    # timeout is a refusal — the next sweep tries again (re-review of 2026-10-08). A typed hand-off
-    # gets 30 s: cold_prompt kills this process at 45 s, and a refusal lets the /finish run in its tab.
+def refuse(t, args, why):
+    print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
+    if not args.dry:
+        log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                args.rule, args.by, why))
+    return 3
+
+
+def end_warm(t, args, cap=None):
+    """A seeded run of this branch is kept the cache's hour, past autofinish's 40 min: it is ended
+    first, then the branch launches (the owner, D2 of docs/dispatch-warm-hour-2026-10-08.md: C). A busy
+    one is not the launch's to end: no launch — the why, else None.
+    Under the start lock and the sweep's RUNNER_TIMEOUT (both 120 s): ending a run takes ~15 s
+    with its window out of view (close tries, the SIGTERM wait, CLOSE_WAIT), so 90 s, and a
+    timeout is a refusal — the next sweep tries again (re-review of 2026-10-08). A typed hand-off
+    gets 30 s: cold_prompt kills this process at 45 s, and a refusal lets the /finish run in its tab."""
     warm_s = 30 if args.by == "typed" else 90
+    if cap is not None:   # a send's budget (route())
+        warm_s = min(warm_s, cap)
     try:
-        warm = subprocess.run([sys.executable, os.path.join(HERE, "dispatch-rc"), "end-warm", t.branch, t.primary]
-                              + (["--dry-run"] if args.dry else []), capture_output=True, text=True, timeout=warm_s)
+        warm = subprocess.run((shlex.split(END_WARM) if END_WARM else [sys.executable, os.path.join(HERE, "dispatch-rc"), "end-warm"])
+                              + [t.branch, t.primary] + (["--dry-run"] if args.dry else []),
+                              capture_output=True, text=True, timeout=warm_s)
     except subprocess.TimeoutExpired:
         warm = subprocess.CompletedProcess([], 1, "", "ending its warm run took over %d s" % warm_s)
     if warm.stdout.strip():
         print(warm.stdout.strip())
     if warm.returncode:
-        why = "its dispatch run could not be ended first: " + (warm.stdout.strip() or warm.stderr.strip()[-200:])
-        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
-        if not args.dry:
-            log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
-                                                                    args.rule, args.by, why))
-        return 3
-    use_account(cfg)
-    sid = str(uuid.uuid4())
+        return "its dispatch run could not be ended first: " + (warm.stdout.strip() or warm.stderr.strip()[-200:])
+    return None
+
+
+def count_chain(t, prev, sid):
+    """A chain start, counted before the detach: a start that fails is refused, which chain_refusal skips."""
+    tmp = os.path.join(t.state_dir, "%s.%d" % (CHAIN, os.getpid()))
+    with open(tmp, "w") as f:
+        json.dump({"tip": t.tip, "sessions": chain_spent(t, prev) + [sid]}, f)
+    os.replace(tmp, os.path.join(t.state_dir, CHAIN))
+
+
+def start(t, args):
+    """The refusals, then where the run goes (the header's Where), under the start lock main() holds."""
+    prev = read_state(t)
+    # --run-session in the peer's job: judging a run the sending Mac sent (refusal()'s `sent`). Only the
+    # job's env makes it one: a local --run-session alone skipped chain_refusal (fourth landing review, CR 3)
+    sent = bool(args.run_session and os.environ.get("AUTOFINISH_JOB"))
+    why = refusal(t, prev, args.by, sent=sent) or lock_refusal(t, args.session, args.by == "typed")
+    if why:
+        return refuse(t, args, why)
     # A chain relaunch of a yolo launch is a yolo launch again (chain-manager E3; bin/autofinish's
     # runner_by() keeps a died yolo retry yolo for the same reason): a plain /finish --unattended
     # would merge the answers yolo took where the yolo run stops at a held PR. Recorded as `yolo`,
@@ -1896,7 +3086,10 @@ def start(t, args):
     # as `chain` it would pass landing() with no hold and bin/pr's re-judge would skip it, so a class-2
     # diff held at the brief, or a ship the keel held, would land on the tick's relaunch. Its hold, too,
     # is carried: a relaunch never holds less than the run it continues.
-    by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in CHAIN_KEEPS else args.by
+    # On the peer, only its own run on this tip: a sent chain's prev may be an older tip's run (refusal()'s
+    # `sent`). The sending Mac resolved the launch already, and sends only a plain one (ladder_stay)
+    by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in CHAIN_KEEPS \
+        and (not args.run_session or (prev or {}).get("tip") == t.tip) else args.by
     via = " via=chain" if args.by == "chain" else ""
     hold, mode, eff = landing(t, by, args.rule)
     if args.by == "chain" and not hold and (prev or {}).get("hold"):
@@ -1910,6 +3103,37 @@ def start(t, args):
         hold = SHIP_HOLD
     if hold and args.merge:
         args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
+    t.ladder = (hold, mode, keel_hold, eff)
+    try:
+        where = None if args.run_session else route(t, args, by)   # the peer's own job runs here
+    except WarmBusy as e:   # this Mac's warm run writes in this worktree: ended before the send, or no start
+        return refuse(t, args, str(e))
+    if where:
+        return start_on_peer(t, args, prev, by, via, *where)
+    return start_here(t, args, prev, by, via)
+
+
+def start_here(t, args, prev, by, via):
+    """The run on this Mac: the login, the warm run, the writes and the detach."""
+    hold, mode, keel_hold, eff = t.ladder
+    try:
+        # cached for --dry, and for a typed hand-off: cold_prompt waits 45 s on this, in a prompt hook.
+        # Before the warm run's end below: a run no account can take ends nothing. A run route() meant
+        # to send had its warm run ended there already, before the pick (its last checkpoint goes with
+        # the send, and the peer takes its own pick); one that then stays and finds no account ended it
+        # for nothing — a seeded run's cache hour, the price of reading the tip once (second landing review, 8)
+        label, cfg, picked = account_pick(t, cached=args.dry or args.by == "typed" or getattr(t, "pick_cached", False))
+    except NoAccount as e:
+        why = "no account may run this now — %s" % e
+        refuse(t, args, why)
+        return 4 if args.ticket else 3   # the peer's job: the sending Mac starts it there instead
+    if getattr(t, "stay", None):
+        picked += "; here: %s" % t.stay
+    why = None if getattr(t, "warm_ended", False) else end_warm(t, args)   # route() ended it already
+    if why:
+        return refuse(t, args, why)
+    use_account(cfg)
+    sid = args.run_session or str(uuid.uuid4())
     try:
         arm, arm_why = draw_arm(t)
     except Exception as e:  # noqa: BLE001 — the rotation never costs a start: today's finisher
@@ -1918,8 +3142,9 @@ def start(t, args):
     arm_off = not arm and not arm_why.startswith("rotation off: no %s" % ROTATION_KEY)
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.window, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
-          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "eff_mode": eff, "land_mode": mode, "arm": arm}
-    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm)
+          "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "from": args.sent_from,
+          "eff_mode": eff, "land_mode": mode, "arm": arm}
+    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")
     except Exception as e:  # who to tell is never worth the launch: notify then sends nothing
@@ -1941,7 +3166,7 @@ def start(t, args):
         print("  " + " ".join(shlex.quote(c) for c in cmd))
         print("dispatch --start --dry-run says the session would be:")
         sys.stdout.flush()
-        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold, arm=arm), env=start_env(t))
+        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from), env=start_env(t))
     try:
         with open(os.path.join(t.state_dir, common.OWNER_FILE)) as f:
             before = f.read()
@@ -1953,11 +3178,8 @@ def start(t, args):
     except OSError as e:  # never worth the launch: notify then finds no file and sends nothing
         print("autofinish-run: %s not written — %s" % (NOTIFY, e), file=sys.stderr)
     common.write_owner(t.state_dir, sid, t.branch)
-    if args.by == "chain":   # counted before the detach: a start that fails is refused, which chain_refusal skips
-        tmp = os.path.join(t.state_dir, "%s.%d" % (CHAIN, os.getpid()))
-        with open(tmp, "w") as f:
-            json.dump({"tip": t.tip, "sessions": chain_spent(t, prev) + [sid]}, f)
-        os.replace(tmp, os.path.join(t.state_dir, CHAIN))
+    if args.by == "chain":
+        count_chain(t, prev, sid)
     log("%s run %s %s started session=%s tip=%s rule=%s by=%s%s account=%s window=\"%s\" — %s" % (
         st["started"], t.repo, t.branch, sid[:8], t.tip[:7], args.rule, by, via + (" merge=yes" if args.merge else "")
         + (" hold=\"%s\"" % hold if hold else "") + (" arm=%s" % arm["name"] if arm else " arm=off (%s)" % arm_why if arm_off else ""),
@@ -1972,7 +3194,8 @@ def start(t, args):
             st["ended"], t.repo, t.branch, REFUSED, sid[:8], t.tip[:7], args.rule, by, e))
         return 1
     print("started: %s — window and Remote Control \"%s\", session %s, account %s; state %s; log %s"
-          % (finish_prompt(t.branch, by, args.merge, hold), t.window, sid, label or "unchanged", os.path.join(t.state_dir, STATE), t.runlog))
+          % (finish_prompt(t.branch, by, args.merge, hold=hold, sent_from=args.sent_from), t.window, sid, label or "unchanged",
+             os.path.join(t.state_dir, STATE), t.runlog))
     return 0
 
 

@@ -201,10 +201,20 @@ def decide(data):
     # (docs/work-account-2026-10-06.md, R4): name the account rather than promise the phone.
     a = re.search(r", account ([^;]+);", run.stdout)
     on = f" on {a.group(1)}" if a and a.group(1) != "None" else ""
+    peer = sent_to(run.stdout)
+    if peer:
+        on = f" on {peer} (sent there)"
     why = f"cold {ctx // 1000}k ({age(idle)})" if idle > COLD_S else f"on Fable, {ctx // 1000}k"
     return "block", (f"{why} — /finish runs by itself in the window \"{window}\"{on} (the phone shows it on its own login); "
             f"its PR carries the report; /finish --here runs it in this tab at the full "
             f"re-write (~{price})")
+
+
+def sent_to(out):
+    """The peer autofinish-run sent the run to, from its first line (its header, Where), or None: that
+    Mac holds the window, so the line must not name it as if it were here (second landing review, 13)."""
+    m = re.search(r"^(?:started on|sent to) ([A-Za-z0-9-]+)[:,]", out or "", re.M)
+    return m.group(1) if m else None
 
 
 def main():

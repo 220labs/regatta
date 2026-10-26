@@ -1178,6 +1178,558 @@ reg ', "confidential": true'
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"], d["fenced_now"] > 0)' "$T/out")" "0 True" "  a repo confidential now: its rows are passed over"
 rm -f "$ROT"; unset CLAUDE_REPOS_JSON
 
+echo "Where: a run started on the laptop goes to its peer (the owner, 2026-10-22: the laptop is mobile)"
+# the peer is a second HOME and config dir; ssh runs the command there as a login would, with none of
+# this shell's variables a real ssh would not carry, and launchctl runs a bootstrapped job at once
+PH="$(cd "$T" && pwd -P)/peer"   # realpath: git reports /private/var
+mkdir -p "$PH/projects"; cp -R "$REGATTA_CONFIG" "$PH/config"
+cat > "$T/ssh" <<EOF
+#!/bin/bash
+echo "ssh \$*" >> "$T/ssh.calls"
+while [ "\${1:-}" = -o ]; do shift 2; done
+host=\$1; shift
+[ -n "\${SSH_DOWN:-}" ] && { echo "ssh: connect to host \$host port 22: Operation timed out" >&2; exit 255; }
+# SSH_SYNC_DOWN: the peer stops answering once the run is sent; SSH_START_RC: peer-start dies with a traceback
+case "\$1" in *peer-sync*) [ -n "\${SSH_SYNC_DOWN:-}" ] && { echo "ssh: connect to host \$host: Network is unreachable" >&2; exit 255; };; esac
+case "\$1" in *"peer-start --repo"*) [ -n "\${SSH_START_RC:-}" ] && { echo "Traceback (most recent call last):" >&2; echo "KeyError: 'x'" >&2; exit "\$SSH_START_RC"; };;
+               *) [ -n "\${SSH_STDIN_LOG:-}" ] && cat >> "\$SSH_STDIN_LOG";; esac
+sh=/bin/bash; [ -x /bin/zsh ] && sh=/bin/zsh
+exec env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u AUTOFINISH_ON -u SSH_DOWN \
+  -u SSH_SYNC_DOWN -u SSH_START_RC -u SSH_STDIN_LOG -u AUTOFINISH_PEER_WAIT -u AUTOFINISH_END_WARM -u AUTOFINISH_SEND_BUDGET \
+  -u CLAUDE_UNATTENDED -u SKIPPER_SCOPE \
+  HOME="$PH" REGATTA_CONFIG="$PH/config" AUTOFINISH_HOST=buildbox "\$sh" -c "\$1"
+EOF
+cat > "$T/launchctl" <<EOF
+#!/bin/bash
+echo "launchctl \$*" >> "$T/launchctl.calls"
+[ "\$1" = bootstrap ] || exit 0
+cp "\$3" "$T/last.plist"
+exec python3 - "\$3" <<'PY'
+import os, plistlib, subprocess, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+out = open(p["StandardOutPath"], "a")
+subprocess.Popen(p["ProgramArguments"], env=dict(os.environ, **p.get("EnvironmentVariables", {})),
+                 stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+PY
+EOF
+chmod +x "$T/ssh" "$T/launchctl"
+# the laptop's repo in the projects folder (the peer has its clone at the same place), on its own bare origin
+git init -q --bare "$T/land.git"
+L="$HOME/projects/land"; git init -q -b main "$L"
+git -C "$L" config user.email t@t; git -C "$L" config user.name t
+printf -- '- check: `true`\n- physical: none\n' > "$L/AGENTS.md"; git -C "$L" add AGENTS.md; git -C "$L" commit -qm init
+git -C "$L" remote add origin https://github.com/test/land.git
+git -C "$L" config url."$T/land.git".insteadOf https://github.com/test/land.git
+LB=claude/laptop/2026-10-22-land; LW="$L/.claude/worktrees/land"
+git -C "$L" worktree add -q -b $LB "$LW" main
+echo work > "$LW/f"; git -C "$LW" add f; git -C "$LW" commit -qm "the land work" -m "Prompt: land it from the peer"
+git -C "$L" send-pack "$T/land.git" "$LB:refs/heads/$LB" "main:refs/heads/main" >/dev/null 2>&1
+git -C "$L" update-ref refs/remotes/origin/main main
+git clone -q "$T/land.git" "$PH/projects/land"; PR="$PH/projects/land"
+git -C "$PR" remote set-url origin https://github.com/test/land.git
+git -C "$PR" config url."$T/land.git".insteadOf https://github.com/test/land.git
+git -C "$PR" config user.email t@t; git -C "$PR" config user.name t
+mkdir -p "$REGATTA_CONFIG/wharf-runs"
+echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/orca-pairs"; echo "buildbox:box-alias" > "$REGATTA_CONFIG/wharf-runs/ssh"
+export AUTOFINISH_SSH="$T/ssh" AUTOFINISH_LAUNCHCTL="$T/launchctl" AUTOFINISH_PEER_POLL=0.3 DISPATCH_RCHOSTS=/usr/bin/false
+LGD="$(git -C "$LW" rev-parse --absolute-git-dir)"; LSTATE="$LGD/claude/autofinish.json"; LLOCK="$LGD/claude/owner.json"
+PW="$PR/.claude/worktrees/land"; PLOGS="$PH/Library/Logs/claude-weekly"
+lfield() { python3 -c 'import json, sys; v = json.load(open(sys.argv[1])).get(sys.argv[2]); print("null" if v is None else v)' "$LSTATE" "$1"; }
+lended() { for _ in $(seq 1 200); do [ "$(lfield ended 2>/dev/null)" != null ] && [ -n "$(lfield ended 2>/dev/null)" ] && return 0; sleep 0.2; done; echo "  (no end recorded here in 40 s)"; tail -5 "$LOGS"/*-dispatch-finish-land.log 2>/dev/null; return 1; }
+laf() { AUTOFINISH_HOST=laptop CLAUDE_CODE_SESSION_ID=caller "$B/autofinish-run" "$LW" "$@"; }
+lnext() { git -C "$LW" commit -q --allow-empty -m "$1"; }
+
+: > "$T/ssh.calls"; : > "$T/api.log"
+LTIP=$(git -C "$LW" rev-parse HEAD)
+STUB_REPLY="$T/launch.txt" laf --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "sent: exit 0"
+has "$T/out" "started on buildbox: /finish $LB --unattended --from=laptop in $PW" "  said where: the peer, in the worktree it made there"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import cold_prompt; print(cold_prompt.sent_to(open(sys.argv[2]).read()))' "$B/../hooks" "$T/out")" \
+  "buildbox" "  a typed hand-off's line names the peer, where the window is (cold_prompt.sent_to; second landing review, 13)"
+LSID=$(lfield session)
+check "$(lfield host)" "buildbox" "  the state here names the host"
+has "$T/ssh.calls" "-o ConnectTimeout=10 -o BatchMode=yes box-alias" "  ssh by the config's alias, a 10 s connect, never a prompt"
+has "$T/ssh.calls" "peer-start --repo \"\$HOME/projects/\"land --branch $LB --tip $LTIP --run-session $LSID" "  peer-start with the tip and the session id chosen here"
+lended
+check "$(lfield outcome)/$(lfield pr)/$(lfield gate)" "launched/42/null" "the peer's end, written here: launched #42"
+check "$(git -C "$PW" symbolic-ref --short HEAD 2>/dev/null)/$(git -C "$PW" rev-parse HEAD 2>/dev/null)" "$LB/$LTIP" "  the peer's worktree made from origin, at this very tip"
+has "$T/launchctl.calls" "bootstrap gui/$(id -u) $PH/Library/LaunchAgents/org.regatta.autofinish.land.${LSID:0:8}.plist" "  started by a LaunchAgent in the GUI domain (the keychain)"
+check "$(ls "$PH/Library/LaunchAgents/" 2>/dev/null | wc -l | tr -d ' ')" "0" "  whose plist is gone once it ran: a login never runs it again"
+has "$T/claude.calls" "claude /finish $LB --unattended --from=laptop --session-id $LSID" "  the session there has the id chosen here…"
+PGD="$(git -C "$PW" rev-parse --absolute-git-dir)"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("from"))' "$PGD/claude/autofinish.json")" "laptop" \
+  "  …and carries the laptop's approval (D2-A): --from=laptop, \"from\" in its state there"
+check "$(python3 -c 'import plistlib, sys; print("/opt/homebrew/bin" in plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]["PATH"].split(":"))' "$T/last.plist")" \
+  "True" "  its job's PATH has Homebrew's (gh for the stop comment)"
+has "$T/at-start.$LSID.bundle" "the land work" "  its bundle is the one written here"
+check "$([ -f "$LLOCK" ] && echo kept || echo gone)" "gone" "the lock here released"
+has "$L/.git/claude/autofinished" "launched $LB #42" "the peer's autofinished line appended here"
+has "$AFLOG" " run land $LB started session=${LSID:0:8} tip=${LTIP:0:7} rule=A by=sweep account=- window=\"finish · land\" — on buildbox" "the log here: the send"
+has "$AFLOG" " run land $LB launched pr=#42 session=${LSID:0:8}" "  and the end"
+has "$AFLOG" "; on buildbox" "  saying where it ran"
+has "$PLOGS/autofinish-$(date +%Y-%m-%d).log" " run land $LB launched pr=#42 session=${LSID:0:8}" "the peer's own log has the run"
+python3 "$B/dispatch-rc" status > "$T/out" 2>&1
+has "$T/out" "finish-land" "dispatch --status here lists it…"
+has "$T/out" "on buildbox · ended" "  …on the peer, ended"
+has "$T/out" "launched #42" "  …launched #42"
+
+echo "Where: the same tip, refused here from the record the peer's end left"
+STUB_REPLY="$T/launch.txt" laf > "$T/out" 2>&1; check "$?" "3" "refused"
+has "$T/out" "no retry on the same tip" "  as for a run here"
+
+echo "Where: --on here keeps today's run"
+lnext "here on purpose"; : > "$T/ssh.calls"
+STUB_REPLY="$T/stop.txt" laf --on here > "$T/out" 2>&1; check "$?" "0" "started"
+has "$T/out" "started: /finish $LB --unattended — window" "  here"
+check "$(wc -c < "$T/ssh.calls" | tr -d ' ')" "0" "  no ssh at all"
+lended; check "$(lfield host)/$(lfield outcome)" "null/stopped" "  no host in its state"
+
+echo "Where: an unpushed tip is pushed first, then sent"
+lnext "not pushed yet"; LTIP=$(git -C "$LW" rev-parse HEAD)
+STUB_REPLY="$T/launch.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
+check "$(git -C "$T/land.git" rev-parse "refs/heads/$LB")" "$LTIP" "  origin has the tip"
+has "$T/out" "started on buildbox" "  and the run went to the peer"
+lended; check "$(lfield outcome)" "launched" "  launched there"
+
+echo "Where: what keeps a run here says why"
+lnext "dirty"; echo scratch > "$LW/untracked.txt"
+STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "uncommitted files: started"
+has "$T/out" "stays on this Mac — 1 uncommitted file(s) in the worktree" "  here, saying why"
+lended; check "$(lfield host)" "null" "  a run here"
+has "$AFLOG" "; here: 1 uncommitted file(s)" "  and the start's log line says it stayed"
+rm -f "$LW/untracked.txt"
+lnext "peer down"
+SSH_DOWN=1 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "the peer unreachable: started"
+has "$T/out" "stays on this Mac — buildbox is unreachable (ssh exit 255" "  here, saying so"
+lended; check "$(lfield host)" "null" "  a run here"
+lnext "no clone there"; mv "$PR" "$PR.off"
+STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "the peer has no clone: started"
+has "$T/out" "stays on this Mac — no clone of land on" "  here, saying so"
+lended; mv "$PR.off" "$PR"
+lnext "a token"
+CLAUDE_CODE_OAUTH_TOKEN=tok laf --dry > "$T/out" 2>&1
+has "$T/out" "stays on this Mac — the caller's CLAUDE_CODE_OAUTH_TOKEN" "a caller's OAuth token keeps it here"
+sed -i.bak '/^laptop:/d' "$REGATTA_CONFIG/wharf-runs/orca-pairs" && rm -f "$REGATTA_CONFIG/wharf-runs/orca-pairs.bak"
+laf --dry > "$T/out" 2>&1
+hasnt "$T/out" "stays on this Mac" "no peer line for this Mac: here, without a word"
+hasnt "$T/out" "on buildbox" "  and nothing sent"
+echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/finish-on"
+before=$(cksum < "$LSTATE")
+laf --dry > "$T/out" 2>&1
+has "$T/out" "— on buildbox" "finish-on names the peer as well (a --dry: what would be sent)"
+has "$T/out" "would send the bundle" "  the bundle and the ssh line"
+check "$(cksum < "$LSTATE")" "$before" "  and nothing written"
+rm -f "$REGATTA_CONFIG/wharf-runs/finish-on"; echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/orca-pairs"
+
+echo "Where: peer-start refuses --merge from an unattended caller, before anything is written"
+CLAUDE_UNATTENDED=1 "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by override --merge > "$T/out" 2>&1
+check "$?" "2" "refused"
+has "$T/out" "needs a person's yes" "  saying why"
+"$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by sweep --merge > "$T/out" 2>&1
+check "$?" "2" "a --by outside the person's yes is refused too"
+SKIPPER_SCOPE=s "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by override --merge > "$T/out" 2>&1
+check "$?" "2" "--merge from a skipper (SKIPPER_SCOPE): refused, as run_main refuses it (CR 1)"
+
+echo "Where: the peer cannot take it (its worktree dirty): started here instead"
+echo dirt > "$PW/dirt.txt"
+STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "started"
+has "$T/out" "stays on this Mac — buildbox cannot take it: autofinish-run peer-start: its worktree here ($PW) has uncommitted changes" "  here, with the peer's words"
+lended; check "$(lfield host)/$(lfield outcome)" "null/stopped" "  a run here"
+rm -f "$PW/dirt.txt"
+
+echo "Where: the waiter here dies; a start is refused while the run goes on there, and the sweep settles it"
+lnext "waiter dies"; LTIP=$(git -C "$LW" rev-parse HEAD)
+AUTOFINISH_PEER_POLL=600 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
+LSID=$(lfield session)
+for _ in $(seq 1 50); do [ -s "$LGD/claude/autofinish-waiter.json" ] && break; sleep 0.2; done
+WP=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pid"])' "$LGD/claude/autofinish-waiter.json")
+kill -TERM "$WP"; sleep 0.5
+laf > "$T/out" 2>&1; check "$?" "3" "a second start while it goes on there: refused"
+has "$T/out" "(session ${LSID:0:8}) has not ended, on buildbox" "  naming the host"
+for _ in $(seq 1 150); do grep -q '"line"' "$PR/.git/claude/autofinish-peer/$LSID.json" 2>/dev/null && grep -q '"stopped"' "$PR/.git/claude/autofinish-peer/$LSID.json" && break; sleep 0.2; done
+check "$(lfield ended)" "null" "  the peer ended it, nothing here knows yet"
+AUTOFINISH_HOST=laptop python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+st = m.read_state(t)
+why = m.dead(None, st, state_dir=t.state_dir)
+print("dead:", why)
+print("bury:", m.bury(t, why) if why else None)
+EOF
+has "$T/out" "dead: its waiter here is gone, and buildbox has the run's end (ended)" "dead() asks the peer"
+has "$T/out" "recorded from buildbox after its waiter here died — ended, stopped" "bury() writes the peer's end here"
+check "$(lfield outcome)/$(lfield gate)" "stopped/G4" "  the state: stopped at G4"
+check "$([ -f "$LLOCK" ] && echo kept || echo gone)" "gone" "  the lock released"
+has "$L/.git/claude/autofinished" "stopped $LB G4 ⚠ step 4" "  the stop's line appended here"
+
+echo "Where: D2-A — only a plain landing is sent; --from is the peer's job's alone"
+lnext "yolo"
+laf --by yolo --dry > "$T/out" 2>&1
+has "$T/out" "stays on this Mac — " "a yolo launch stays here: the landing ladder reads this Mac's plans…"
+hasnt "$T/out" "— on buildbox" "  …so nothing is sent"
+hasnt "$T/out" "--from" "  …and it carries no approval"
+"$B/autofinish-run" "$LW" --from laptop --dry > "$T/out" 2>&1; check "$?" "2" "--from without --ticket: refused"
+has "$T/out" "--from is the peer's job's" "  saying whose it is"
+CLAUDE_UNATTENDED=1 "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by sweep --from laptop > "$T/out" 2>&1
+check "$?" "2" "peer-start's --from from an unattended caller: refused"
+SKIPPER_SCOPE=s "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by sweep --from laptop > "$T/out" 2>&1
+check "$?" "2" "peer-start's --from from a skipper: refused (CR 1)"
+
+echo "Where: a peer that goes silent — the lock here kept fresh, then the run buried as died past its time"
+lnext "silent peer"; LTIP=$(git -C "$LW" rev-parse HEAD); : > "$T/api.log"
+SSH_SYNC_DOWN=1 AUTOFINISH_PEER_WAIT=20 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
+LSID=$(lfield session)
+python3 - "$LLOCK" <<'EOF'
+import json, sys, time
+d = json.load(open(sys.argv[1])); d["seen"] = time.time() - 7000; json.dump(d, open(sys.argv[1], "w"))
+EOF
+fresh() { python3 -c 'import json, sys, time; d = json.load(open(sys.argv[1])); print("fresh" if time.time() - d["seen"] < 60 and d["session"] == sys.argv[2] else "stale")' "$LLOCK" "$LSID" 2>/dev/null; }
+for _ in $(seq 1 50); do [ "$(fresh)" = fresh ] && break; sleep 0.2; done   # a poll is 0.3 s; the run is buried at 20 s
+check "$(fresh)" \
+  "fresh" "  the waiter refreshed the lock an hour and more of quiet had aged (checkpoint.py frees it at 2 h)"
+lended
+check "$(lfield outcome)/$(lfield gate)" "died/null" "  no answer past AUTOFINISH_PEER_WAIT: died here"
+check "$([ -f "$LLOCK" ] && echo kept || echo gone)" "gone" "  the lock released"
+has "$AFLOG" " run land $LB died session=${LSID:0:8}" "  the day's log says so…"
+has "$AFLOG" "no answer from buildbox" "  …and why"
+has "$T/api.log" "may have ended there unseen" "  the PR comment says the run may have ended there"
+laf --on here --dry > "$T/out" 2>&1; check "$?" "0" "  and the worktree is free again: --on here is no longer refused"
+AUTOFINISH_HOST=laptop python3 - "$B/autofinish-run" > "$T/out" 2>&1 <<'EOF'
+import datetime, sys, uuid
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+ago = lambda s: (datetime.datetime.now().astimezone() - datetime.timedelta(seconds=s)).isoformat(timespec="seconds")
+print("old:", m.dead(None, {"session": str(uuid.uuid4()), "started": ago(660), "host": "buildbox"}))
+print("young:", m.dead(None, {"session": str(uuid.uuid4()), "started": ago(120), "host": "buildbox"}))
+EOF
+has "$T/out" "old: no record here of the send to buildbox, 11 min after its start" "dead(): a sent run with no record here, past PRE_START_S"
+has "$T/out" "young: None" "  not before"
+
+echo "Where: peer-start refuses what the job would, at once"
+for _ in $(seq 1 150); do grep -q '"line"' "$PR/.git/claude/autofinish-peer/$LSID.json" 2>/dev/null && break; sleep 0.2; done
+"$T/ssh" box-alias "\"$B/autofinish-run\" peer-start --repo \"\$HOME/projects/land\" --branch $LB --tip $LTIP --run-session 00000000-0000-4000-8000-0000000000aa --by sweep" > "$T/out" 2>&1
+check "$?" "3" "a tip the peer already ran: 3"
+has "$T/out" "no retry on the same tip" "  saying why"
+
+echo "Where: a send the peer refuses for a run of its own on this tip — that run recorded here, never sent again (second landing review, 2)"
+# here: the silent peer's run buried as died; there: that very run, stopped at G4. The died tip may start once more
+check "$(lfield session)/$(lfield outcome)" "$LSID/died" "the state here: the run buried as died"
+: > "$T/ssh.calls"
+STUB_REPLY="$T/stop.txt" laf --by sweep --rule A > "$T/out" 2>&1; check "$?" "3" "sent again, refused there: 3"
+has "$T/out" "its run ${LSID:0:8} on this tip ended there" "  the peer's run on that tip…"
+has "$T/out" "recorded here" "  …recorded here"
+check "$(lfield session)/$(lfield outcome)/$(lfield gate)/$(lfield host)" "$LSID/stopped/G4/buildbox" "  the state: that run, stopped at G4 there"
+check "$(tail -1 "$L/.git/claude/autofinished" | cut -d' ' -f2-5)" "stopped $LB G4 ⚠" "  its stop line appended here"
+check "$([ -f "$LLOCK" ] && echo held || echo free)" "free" "  no lock left behind"
+: > "$T/ssh.calls"
+STUB_REPLY="$T/stop.txt" laf --by sweep --rule A > "$T/out" 2>&1; check "$?" "3" "the next sweep's start: refused here"
+has "$T/out" "no retry on the same tip" "  by the same-tip rule"
+check "$(wc -c < "$T/ssh.calls" | tr -d ' ')" "0" "  with no send: the loop is broken"
+
+echo "Where: the peer's answers, written here — a refused job may start again; an end without its line"
+AUTOFINISH_HOST=laptop python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import sys, uuid
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+for kind, ans in (("refused", lambda sid: {"ticket": {"session": sid, "rc": 3, "said": "a session holds it"}, "state": None, "line": None}),
+                  ("ended", lambda sid: {"ticket": None, "line": None, "state": {"session": sid, "ended": m.now_iso(),
+                                         "outcome": "stopped", "gate": "G4", "pr": None}})):
+    sid = str(uuid.uuid4())
+    st = {"started": m.now_iso(), "session": sid, "tip": t.tip, "by": "sweep", "rule": "A", "window": t.window,
+          "account": None, "ended": None, "outcome": None, "pr": None, "gate": None, "host": "buildbox"}
+    m.write_state(t, st)
+    print(kind, m.settle(t, st, ans(sid), None), m.read_state(t).get("outcome"), m.read_state(t).get("gate"))
+EOF
+has "$T/out" "refused refused never-started refused" "a job that refused there: never-started at refused, the tip may start again"
+has "$T/out" "ended ended stopped G4" "an end whose line did not come: written, no crash"
+has "$L/.git/claude/autofinished" "stopped $LB G4 its end on buildbox came without its line" "  its autofinished line made here"
+
+echo "Where: peer-start dies (exit 1): nothing went there, so the run starts here"
+lnext "peer-start dies"
+SSH_START_RC=1 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "started"
+has "$T/out" "stays on this Mac — buildbox cannot take it: KeyError: 'x' (exit 1)" "  here, with the peer's last words and the exit"
+lended; check "$(lfield host)/$(lfield outcome)" "null/stopped" "  a run here, not a run waited on there"
+
+echo "Where: a job launchd starts late refuses; the next send boots out one that never ran"
+STALE=00000000-0000-4000-8000-0000000000bb; TK="$PR/.git/claude/autofinish-peer/$STALE.json"
+mkdir -p "$PH/Library/LaunchAgents"; : > "$PH/Library/LaunchAgents/org.regatta.autofinish.land.never.plist"
+python3 - "$TK" "$STALE" <<'EOF'
+import datetime, json, sys
+then = (datetime.datetime.now().astimezone() - datetime.timedelta(minutes=20)).isoformat(timespec="seconds")
+json.dump({"session": sys.argv[2], "scheduled": then, "rc": None, "said": None, "label": "org.regatta.autofinish.land.never"}, open(sys.argv[1], "w"))
+EOF
+"$T/ssh" box-alias "\"$B/autofinish-run\" \"$PW\" --on here --run-session $STALE --ticket \"$TK\" --by sweep" > "$T/out" 2>&1
+check "$?" "3" "a job 20 min late: refused"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rc"], "writes it off" in (d["said"] or ""))' "$TK")" "3 True" "  its ticket says so"
+python3 - "$TK" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1])); d["rc"] = None; d["said"] = None; json.dump(d, open(sys.argv[1], "w"))
+EOF
+
+echo "Where: the warm run is ended before the send, and its last commit goes with it"
+cat > "$T/end-warm" <<EOF
+#!/bin/bash
+git -C "$LW" commit -q --allow-empty -m "the warm run's last checkpoint"
+EOF
+chmod +x "$T/end-warm"
+lnext "warm"; : > "$T/ssh.calls"
+AUTOFINISH_END_WARM="$T/end-warm" STUB_REPLY="$T/launch.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
+LTIP=$(git -C "$LW" rev-parse HEAD)
+has "$T/out" "moved to ${LTIP:0:7} as its warm run ended" "  the tip read again after the warm run's end"
+has "$T/ssh.calls" "--tip $LTIP" "  and that tip sent"
+check "$(git -C "$T/land.git" rev-parse "refs/heads/$LB")" "$LTIP" "  pushed first"
+lended; check "$(lfield outcome)" "launched" "  launched there"
+check "$([ -e "$PH/Library/LaunchAgents/org.regatta.autofinish.land.never.plist" ] && echo kept || echo gone)" "gone" \
+  "the send booted out the job that never ran, its plist gone"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("booted"))' "$TK")" "True" "  its ticket marked"
+
+echo "Where: the send's budget, and ssh's stdin"
+lnext "budget"
+AUTOFINISH_SEND_BUDGET=20 laf --dry > "$T/out" 2>&1
+has "$T/out" "stays on this Mac — out of time for the send's checks (20 s budget)" "checks that would outrun the caller's wait: here, saying so"
+: > "$T/stdin.log"
+echo "the caller's stdin" | SSH_STDIN_LOG="$T/stdin.log" laf --dry > "$T/out" 2>&1
+has "$T/out" "— on buildbox" "a probe ran…"
+check "$(wc -c < "$T/stdin.log" | tr -d ' ')" "0" "  …reading /dev/null, never the caller's stdin"
+
+echo "Where: a chain relaunch goes to the peer, judged here where its stop happened (second landing review, 1)"
+lnext "network drop"; LTIP=$(git -C "$LW" rev-parse HEAD)
+printf 'Working on step 11.\nAPI Error: Connection error.\n' > "$T/netdrop.txt"
+STUB_REPLY="$T/netdrop.txt" laf --on here > "$T/out" 2>&1; lended
+check "$(lfield outcome)/$(lfield gate)" "stopped/no-landing" "a run here stopped by the network"
+: > "$T/ssh.calls"
+CLAUDE_UNATTENDED=1 STUB_REPLY="$T/launch.txt" laf --by chain > "$T/out" 2>&1; check "$?" "0" "the chain's relaunch: sent"
+has "$T/out" "started on buildbox" "  to the peer, which has no record of the stop and judges it plainly"
+LSID=$(lfield session)
+lended; check "$(lfield outcome)/$(lfield host)" "launched/buildbox" "  launched there"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("by"))' "$PGD/claude/autofinish.json")" "chain" "  recorded there as the chain's"
+has "$T/ssh.calls" "--by chain --from laptop --unattended-caller" "an unattended caller's send says so (second landing review, 6)…"
+check "$(python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"].get("AUTOFINISH_CALLER_UNATTENDED"))' "$T/last.plist")" \
+  "1" "  …and the job there reads it as one: landing() holds as it would here"
+AUTOFINISH_CALLER_UNATTENDED=1 python3 - "$B/autofinish-run" > "$T/out" 2>&1 <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+print("unattended:", m.unattended_caller())
+EOF
+has "$T/out" "unattended: True" "  (unattended_caller reads the job's variable)"
+python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+m.last_stop = lambda t: None   # the peer has no autofinished line of the laptop's stop
+on = lambda **k: dict({"tip": t.tip, "session": "11111111-0000-4000-8000-000000000000", "started": "2026-10-25T10:00:00-07:00",
+                      "ended": "2026-10-25T10:05:00-07:00"}, **k)
+for name, prev in (("refused", on(outcome="refused", gate="refused")), ("died", on(outcome=m.DIED, gate=None)),
+                   ("stopped elsewhere", on(outcome="stopped", gate="review")), ("going", on(ended=None))):
+    print("%s: %s" % (name, m.refusal(t, prev, "chain", sent=True) or "starts"))
+EOF
+has "$T/out" "refused: starts" "a sent chain on a peer whose own run on the tip was refused starts: the stop was not there (third landing review, S2)"
+has "$T/out" "died: starts" "  nor when that run died: the plain refusal, as --by sweep gets"
+has "$T/out" "stopped elsewhere: its run on this tip ended stopped at review, not stopped by the network" "  a stop the peer's own run made there is still judged there"
+has "$T/out" "going: a run on this tip started" "  and a run still going there still refuses"
+python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import argparse, os, sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2]); seen = []
+m.refusal = lambda t, prev, by=None, sent=False: seen.append(sent) or "stop"
+m.refuse = lambda t, args, why: 9
+args = argparse.Namespace(by="chain", run_session="11111111-0000-4000-8000-000000000000", session=None)
+os.environ.pop("AUTOFINISH_JOB", None); m.start(t, args)
+os.environ["AUTOFINISH_JOB"] = "/nonexistent.plist"; m.start(t, args)
+print("sent:", seen)
+EOF
+has "$T/out" "sent: [False, True]" "  a --run-session outside the job's env is judged as a run of this Mac's, chain_refusal and all (fourth landing review, CR 3)"
+python3 - "$B/autofinish-run" "$T" > "$T/out" 2>&1 <<'EOF'
+import os, sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+os.environ["AUTOFINISH_JOB"] = "/x.plist"; os.environ["AUTOFINISH_CALLER_UNATTENDED"] = "1"
+env = m.start_env(type("T", (), {"runlog": "/dev/null"})())
+print("job env:", "AUTOFINISH_JOB" in env, "AUTOFINISH_CALLER_UNATTENDED" in env)
+wt = os.path.join(sys.argv[2], "ffwt"); os.makedirs(wt, exist_ok=True)
+merges = []
+m.quiet_git = lambda d, *a, **k: (merges.append(a) if a[:1] == ("merge",) else None) or (0, "", "")
+m.git = lambda d, *a: {"status": ""}.get(a[0], "aaaa" if a[-1] == "HEAD" else "bbbb")
+m.worktree_of = lambda repo, branch: wt
+m.is_ancestor = lambda d, a, b: True
+m.Tree = lambda p: type("T", (), {"state_dir": p})()
+m.lock_refusal = lambda t, caller, typed: None
+m.read_state = lambda t: {"tip": "aaaa", "session": "s", "started": "2026-10-25T10:00:00-07:00", "ended": None}
+for name, died in (("live", None), ("dead", "died")):
+    m.dead = lambda t, st, **k: died; m.bury = lambda t, d: True; merges.clear()
+    _, code, why = m.peer_worktree("/repo", "claude/h/2026-10-25-x", "bbbb")
+    print("%s: %s %s merged=%s" % (name, code, why, bool(merges)))
+EOF
+has "$T/out" "job env: False False" "the peer's job markers stay out of the /finish session's env (fourth landing review, CR 5)"
+has "$T/out" "live: 3 a run here on aaaa has not ended: its tree is not moved under it merged=False" "an unended run on the peer keeps its tree: refused before the fast-forward (CR 4)"
+has "$T/out" "dead: 0 None merged=True" "  a dead one is buried and the tree moves"
+
+echo "Where: --from is the job's alone — its env, a pending ticket of its session, no skipper (second landing review, 4)"
+FS=00000000-0000-4000-8000-0000000000cc; FTK="$T/from-ticket.json"
+fticket() { python3 - "$FTK" "$FS" "$1" <<'EOF'
+import datetime, json, sys
+json.dump({"session": sys.argv[2], "scheduled": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+           "rc": None if sys.argv[3] == "none" else int(sys.argv[3])}, open(sys.argv[1], "w"))
+EOF
+}
+fticket none
+"$B/autofinish-run" "$LW" --on here --run-session $FS --ticket "$FTK" --from laptop --dry > "$T/out" 2>&1; check "$?" "2" "a --ticket without the job's env: refused"
+has "$T/out" "no AUTOFINISH_JOB" "  saying so"
+AUTOFINISH_JOB="$T/no.plist" SKIPPER_SCOPE=s "$B/autofinish-run" "$LW" --on here --run-session $FS --ticket "$FTK" --from laptop --dry > "$T/out" 2>&1
+check "$?" "2" "a skipper: refused"
+fticket 0
+AUTOFINISH_JOB="$T/no.plist" "$B/autofinish-run" "$LW" --on here --run-session $FS --ticket "$FTK" --from laptop --dry > "$T/out" 2>&1
+check "$?" "2" "a ticket whose run has an exit already: refused"
+has "$T/out" "names no pending run" "  saying so"
+
+echo "Where: the peer's silence, its lost runs, the sweep's asks (second landing review, 3, 5, 7, 9, 10, 12)"
+T="$T" AUTOFINISH_HOST=laptop SSH_DOWN=1 python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import datetime, json, os, subprocess, sys, time, uuid
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+ago = lambda s: (datetime.datetime.now().astimezone() - datetime.timedelta(seconds=s)).isoformat(timespec="seconds")
+def sent(started_s, **rec):
+    sid = str(uuid.uuid4())
+    st = {"session": sid, "started": ago(started_s), "host": "buildbox", "tip": t.tip}
+    r = dict({"host": "buildbox", "alias": "box-alias", "rel": "land", "branch": t.branch, "topic": t.topic,
+              "session": sid, "started": st["started"]}, **rec)
+    return st, r
+# 3: ten hours after the start, the peer answered a minute ago; this ask fails
+st, rec = sent(36000, answered=ago(60), silent=None, asked=ago(60))
+print("answered lately:", m.peer_overdue(st, rec, m.peer_ask(rec, fresh=True)))
+# 3: the last ask was a night ago (asleep), silent since then: the silence starts again now
+st, rec = sent(36000, answered=ago(35000), silent=ago(34000), asked=ago(33000))
+print("woke offline:", m.peer_overdue(st, rec, m.peer_ask(rec, fresh=True)))
+# 3: asked all along, silent for ten hours: died
+st, rec = sent(36000, answered=ago(35000), silent=ago(34000), asked=ago(300))
+print("silent all along:", m.peer_overdue(st, rec, m.peer_ask(rec, fresh=True)))
+# 9: the sweep's second ask of a peer that just failed one is not made; dead() reads `now`
+calls = open(os.environ["T"] + "/ssh.calls").read().count("peer-sync")
+st2, rec2 = sent(120)
+print("asked again:", m.peer_ask(rec2), open(os.environ["T"] + "/ssh.calls").read().count("peer-sync") - calls)
+print("counted:", bool(rec2.get("asked")), rec2.get("silent") == rec2.get("asked"))
+print("now:", m.dead(None, {"session": str(uuid.uuid4()), "started": ago(0), "host": "buildbox"}, now=time.time() + 3600))
+# 10: the peer's job exited 0 and the peer holds no record of the run
+st, rec = sent(1200)
+gone = {"ticket": {"session": st["session"], "rc": 0, "scheduled": ago(1190)}, "state": None, "line": None}
+print("gone:", m.settle(None, st, gone, rec, apply=False), "|", m.peer_overdue(st, rec, gone))
+# 7: a job that began, younger than its write-off, is going — not lost
+began = {"ticket": {"session": st["session"], "rc": None, "scheduled": ago(700), "began": ago(400)}, "state": None}
+print("began:", m.settle(None, st, began, rec, apply=False))
+began["ticket"]["began"] = ago(650)
+print("began long ago:", m.settle(None, st, began, rec, apply=False))
+# 5: the sweep's dead() refreshes the lock while the peer answers that the run goes on
+st, rec = sent(60)
+m.save_peer_record(rec)
+sd = os.path.join(os.environ["T"], "lockdir"); os.makedirs(sd, exist_ok=True)
+m.common.write_owner(sd, st["session"], t.branch)
+lk = json.load(open(os.path.join(sd, m.common.OWNER_FILE))); lk["seen"] = time.time() - 7000
+json.dump(lk, open(os.path.join(sd, m.common.OWNER_FILE), "w"))
+m._asked.clear(); m._down.clear()
+calls = open(os.environ["T"] + "/ssh.calls").read().count("peer-sync")
+before = open(m.peer_record(st["session"])[0]).read()
+print("read-only:", m.dead(None, st, state_dir=sd, apply=False),
+      open(os.environ["T"] + "/ssh.calls").read().count("peer-sync") - calls,
+      open(m.peer_record(st["session"])[0]).read() == before,
+      round(time.time() - json.load(open(os.path.join(sd, m.common.OWNER_FILE)))["seen"]) > 6000)
+m.peer_ask = lambda r, fresh=False, timeout=90, apply=True: {"ticket": {"session": r["session"], "rc": 0, "scheduled": ago(60)},
+                                                 "state": {"session": r["session"], "ended": None}}
+print("going:", m.dead(None, st, state_dir=sd), round(time.time() - json.load(open(os.path.join(sd, m.common.OWNER_FILE)))["seen"]) < 60)
+# 12: a ticket write waits for the lock another writer holds
+tk = os.path.join(os.environ["T"], "lock-ticket.json"); m.write_json(tk, {"session": "x"})
+import fcntl
+h = open(tk + ".lock", "a"); fcntl.flock(h, fcntl.LOCK_EX)
+p = subprocess.Popen([sys.executable, "-c", "import sys; from importlib.machinery import SourceFileLoader; "
+                      "m = SourceFileLoader('afr', sys.argv[1]).load_module(); m.update_json(sys.argv[2], lambda d: dict(d, rc=0))",
+                      sys.argv[1], tk])
+time.sleep(1.5)
+print("waits:", p.poll() is None)
+fcntl.flock(h, fcntl.LOCK_UN); p.wait(timeout=20)
+print("then:", json.load(open(tk)).get("rc"))
+EOF
+has "$T/out" "answered lately: None" "a peer that answered a minute ago is not buried for one failed ask, 10 h from the start (3)"
+has "$T/out" "woke offline: None" "  nor on waking offline after a night: the silence starts again"
+has "$T/out" "silent all along: no answer from buildbox for 9." "  asked and silent for PEER_WAIT_S: died"
+has "$T/out" "asked again: None 0" "the sweep does not ask a peer that just failed again (9)"
+has "$T/out" "counted: True True" "  and that run counts as asked, silent from then: k runs on a down peer bury in PEER_WAIT_S, not k × (third landing review, S3)"
+has "$T/out" "now: no record here of the send to buildbox, 60 min after its start" "  and dead() reads its now"
+has "$T/out" "gone: None | buildbox started the run and has no record of it now" "a run the peer started and lost: died, not going on forever (10)"
+has "$T/out" "began: None" "a job that began is no lost job (7)"
+has "$T/out" "began long ago: lost" "  until it wrote nothing for PRE_START_S"
+has "$T/out" "going: None True" "the sweep's dead() refreshes the lock while the peer answers (5)"
+has "$T/out" "read-only: None 0 True True" "dead(apply=False) asks no peer, writes no record and leaves the lock (third landing review, S3)"
+has "$T/out" "waits: True" "a ticket write waits for the lock (12)…"
+has "$T/out" "then: 0" "  …then writes"
+python3 - "$B/autofinish" "$LW" > "$T/out" 2>&1 <<'EOF'
+import subprocess, sys, types
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+af = SourceFileLoader("af", sys.argv[1]).load_module()
+seen = {}
+def dead(t, run, now=None, state_dir=None, apply=True):
+    seen["apply"] = apply
+    return "stub"
+af._runner = types.SimpleNamespace(dead=dead)
+wt = Path(sys.argv[2])
+gd = Path(subprocess.run(["git", "-C", str(wt), "rev-parse", "--path-format=absolute", "--git-dir"],
+                         capture_output=True, text=True).stdout.strip())
+top = Path(subprocess.run(["git", "-C", str(wt), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                          capture_output=True, text=True).stdout.strip()).parent
+af.common.autofinish_run = lambda state: {"session": "x", "started": "2026-10-25T10:00:00-07:00"}
+af.common.moved = lambda state: None
+af.override = lambda state: "yes"
+print("verdict:", af.verdict(top, wt, "claude/laptop/2026-10-22-land", gd, "main", ("all", [], None, [])).split(" (")[0],
+      "apply:", seen.get("apply"))
+print("bury pass:", af.dead_run(gd / "claude", {"session": "x", "started": "2026-10-25T10:00:00-07:00"}), "apply:", seen["apply"])
+EOF
+has "$T/out" "verdict: skip: died, not recorded yet apply: False" "bin/autofinish's verdict (the sweep's verdicts, --dry-run) asks dead() read-only (S3)"
+has "$T/out" "bury pass: stub apply: True" "  and its bury pass asks it to act"
+STALE6=00000000-0000-4000-8000-0000000000dd; TK6="$PR/.git/claude/autofinish-peer/$STALE6.json"
+python3 - "$TK6" "$STALE6" <<'EOF'
+import datetime, json, sys
+then = (datetime.datetime.now().astimezone() - datetime.timedelta(minutes=6)).isoformat(timespec="seconds")
+json.dump({"session": sys.argv[2], "scheduled": then, "rc": None, "said": None, "label": "x"}, open(sys.argv[1], "w"))
+EOF
+"$T/ssh" box-alias "\"$B/autofinish-run\" \"$PW\" --on here --run-session $STALE6 --ticket \"$TK6\" --by sweep" > "$T/out" 2>&1
+check "$?" "3" "a job 6 min late refuses: inside the sending Mac's 10 min, with a margin (7)"
+has "$T/out" "writes it off at 600 s" "  saying why"
+
+echo "Where: the send's ssh leaves STAY_RESERVE to a run that stays (second landing review, 11)"
+AUTOFINISH_HOST=laptop python3 - "$B/autofinish-run" "$LW" > "$T/out" 2>&1 <<'EOF'
+import sys, time, types
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+t.deadline, t.reserve, t.budget = time.time() + 40, 25, 110
+seen = {}
+def ssh_run(alias, cmd, stdin=None, timeout=60):
+    seen["timeout"] = timeout
+    return 4, "", "the peer cannot"
+m.ssh_run = ssh_run
+m.bundle_text = lambda t: "bundle"
+def start_here(t, args, prev, by, via):
+    seen["cached"] = getattr(t, "pick_cached", False)
+    return 0
+m.start_here = start_here
+args = types.SimpleNamespace(rule="A", merge=False, dry=False, by="sweep")
+m.start_on_peer(t, args, m.read_state(t), "sweep", "", "buildbox", "box-alias")
+print("ssh wait:", round(seen["timeout"]), "pick cached:", seen.get("cached"))
+EOF
+has "$T/out" "ssh wait: 15 pick cached: False" "  its wait is what the budget leaves less the reserve, so the stay keeps its pick"
+rm -rf "$REGATTA_CONFIG/wharf-runs"
+unset AUTOFINISH_SSH AUTOFINISH_LAUNCHCTL AUTOFINISH_PEER_POLL DISPATCH_RCHOSTS
+
 echo "dispatch --start's own guards"
 "$B/dispatch" --start p "$W" n --undeny 'Bash(nope)' --dry-run > "$T/out" 2>&1; check "$?" "2" "--undeny of an entry not on the list is refused"
 "$B/dispatch" $BR --allow x > /dev/null 2>&1; check "$?" "2" "--allow without --start is refused"

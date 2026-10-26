@@ -19,7 +19,8 @@ What is read:
                      (bin/harness_adapters/claude_code.py) — nothing of Claude's is read here
     autofinished     <common git dir>/claude/autofinished of each repo in repos.json cloned here,
                      with the stopped worktree's autofinish.json (the laptop's only: the build box
-                     is disarmed for launch, so a launch stalls only here)
+                     is disarmed for launch, and a landing the laptop sends there writes its end
+                     here too — autofinish-run's Where — so a launch stalls only here)
     the plan store   helmlib.state() of every plan on this Mac (S7)
     ask poll's cache ~/Library/Caches/ask/asks.json: a WAITING line whose branch holds an open D-item
                      is already an ask (`asks N`), never also a stall (launch review, S6)
