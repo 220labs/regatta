@@ -1,0 +1,783 @@
+#!/usr/bin/env python3
+"""bench — rebuild a landed task from its brief with one model arm; grade it with the landed tests.
+
+    bench prepare TASK --work DIR                  the bundle, the hidden tests, the baseline
+    bench run TASK --arm MODEL:EFFORT --rep N --work DIR --out FILE [--budget 25] [--timeout 90]
+    bench drive PLAN --work DIR --out FILE [--parallel 3] [--stop 450] [--ceiling 515] [--self T]
+    bench ledger FILE [--self T]                   list cost so far: rows, live runs, the caller
+    bench rescan FILE --tasks DIR                  judge every row's isolation again, today's rule
+    bench table FILE [--ratio R]                   the results as a Markdown table
+
+`run` is the one verb a run is: a task and an arm in, one JSON line appended to FILE out. `drive`
+calls it for each [task, arm, rep] of a plan, in the plan's order, at most --parallel at once, and
+starts nothing once the ledger passes --stop or the next run's --budget could take it past
+--ceiling; a ledger it cannot read stops it. A continuous bench calls `run` the same way.
+
+A TASK is a JSON file:
+    {"id", "repo": the source checkout, "seed": the brief's commit, "tip": the landed branch's tip,
+     "branch": the branch the build works on, "brief": the brief's path in the seed,
+     "hidden": the test files the landed diff changed, "grade": the scripts that grade it,
+     "rewrite": paths the brief names for the source checkout (pointed at the clone instead)}
+
+Isolation. The build runs in a clone of a `git bundle` of the seed's ancestry: no remote, no later
+ref, so the landed answer is not in it. Its primary checkout sits on `main` at the seed's parent and
+the build in a worktree on the task's branch at the seed, as a dispatched run starts. The prompt is
+the brief, with the source checkout's paths rewritten to the clone (at the seed they named the
+same files). After the run every transcript (subagents' too) is scanned: a `gh` call, a web fetch,
+a git fetch, clone, pull or ls-remote or a curl naming the source repo, or a read of the source checkout voids the
+run; every other network call or use of the source checkout's tools is logged in the row.
+
+Grading. The landed versions of the hidden files are copied over the build's final tree (its
+branch's tip, anything uncommitted committed first) and the grade scripts run there through
+wharf-runs' `check`, under its slots, never by hand. A case is a suite's `  ok   <label>` line.
+`prepare` grades the seed and the tip the same way: the hidden cases are those ok at the tip and
+not at the seed (none: the task is dropped), the stable cases those ok at both. A run scores the
+hidden cases it passes (all, some, none) and is suite-green when it keeps every stable case.
+
+Cost is list price from the transcripts at plumb's own table (`bin/usage-report`'s PRICES), the
+same figure Claude Code reports; `--max-budget-usd` is passed and the transcript is watched too,
+so a run past its budget is ended either way.
+"""
+import argparse
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLUMB = os.path.dirname(os.path.dirname(HERE))
+MODULES = os.path.dirname(PLUMB)
+MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "fable": "claude-fable-5-1",
+          "haiku": "claude-haiku-5-5"}
+OK_RE = re.compile(r"^\s*ok\s+(.+?)\s*$")
+FAIL_RE = re.compile(r"^\s*FAIL\s+(.+?)\s*$")
+# the variables a dispatched parent carries that would tie a build to the parent's plan or session;
+# CLAUDE_UNATTENDED stays: a dispatched build is unattended, and the build should meet what it meets
+DROP_ENV = re.compile(r"^(DISPATCH_|RUN_SEED_|CLAUDE_CODE_SESSION_ID$|CLAUDE_CODE_BRIDGE_SESSION_ID$|"
+                      r"CLAUDE_CODE_MESSAGING_|CLAUDE_PID$|CLAUDE_EFFORT$|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$)")
+NET_GIT = re.compile(r"\bgit\b[^|;&\n]*\b(fetch|clone|pull|ls-remote)\b")
+
+
+def die(msg, code=2):
+    print("bench: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def sh(args, **kw):
+    kw.setdefault("stdout", subprocess.PIPE)
+    kw.setdefault("stderr", subprocess.PIPE)
+    return subprocess.run(args, universal_newlines=True, **kw)
+
+
+def git(repo, *args, check=True):
+    r = sh(["git", "-C", repo] + list(args))
+    if check and r.returncode:
+        die("git %s failed in %s: %s" % (" ".join(args), repo, r.stderr.strip()))
+    return r.stdout.strip()
+
+
+def load_task(path):
+    with open(path) as f:
+        t = json.load(f)
+    for k in ("id", "repo", "seed", "tip", "branch", "brief", "hidden", "grade"):
+        if k not in t:
+            die("%s: no %r" % (path, k))
+    t["repo"] = os.path.expanduser(t["repo"])
+    return t
+
+
+def prices():
+    """plumb's own price table and cost function, from bin/usage-report beside this bench."""
+    src = os.path.join(PLUMB, "bin", "usage-report")
+    loader = importlib.machinery.SourceFileLoader("usage_report", src)
+    spec = importlib.util.spec_from_loader("usage_report", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod.cost_of
+
+
+COST_OF = None
+
+
+def config_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def transcripts(sid):
+    """A session's transcript and its subagents', by session id."""
+    main = glob.glob(os.path.join(config_dir(), "projects", "*", sid + ".jsonl"))
+    subs = glob.glob(os.path.join(config_dir(), "projects", "*", sid, "subagents", "*.jsonl"))
+    return main + subs
+
+
+def entries(paths):
+    for p in paths:
+        try:
+            with open(p) as f:
+                for line in f:
+                    try:
+                        yield json.loads(line)
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+
+
+def calls_of(paths):
+    """One call per request id, its fullest copy; Claude Code's own <synthetic> entries skipped
+    (AGENTS.md's trap). Each: (model, input, output, cache read, cache write 5m, cache write 1h)."""
+    calls = {}
+    for d in entries(paths):
+        if d.get("type") != "assistant":
+            continue
+        m = d.get("message") or {}
+        u = m.get("usage")
+        if not u or m.get("model") == "<synthetic>":
+            continue
+        key = d.get("requestId") or d.get("uuid") or id(d)
+        out = u.get("output_tokens") or 0
+        if key in calls and calls[key][2] >= out:
+            continue
+        cc = u.get("cache_creation") or {}
+        cw5, cw1 = cc.get("ephemeral_5m_input_tokens") or 0, cc.get("ephemeral_1h_input_tokens") or 0
+        if not cw5 and not cw1:
+            cw5 = u.get("cache_creation_input_tokens") or 0
+        calls[key] = (m.get("model"), u.get("input_tokens") or 0, out,
+                      u.get("cache_read_input_tokens") or 0, cw5, cw1)
+    return list(calls.values())
+
+
+def cost(paths):
+    """List cost of the transcripts (subagents' included) at plumb's prices, per token class."""
+    global COST_OF
+    COST_OF = COST_OF or prices()
+    calls = calls_of(paths)
+    return round(sum(COST_OF(*c) for c in calls), 4), len(calls)
+
+
+def cost_detail(paths):
+    """The cache-aware cost, the cache-blind one (every input token at the plain input rate, as if
+    nothing were cached), and the calls per resolved model."""
+    global COST_OF
+    COST_OF = COST_OF or prices()
+    calls = calls_of(paths)
+    aware = sum(COST_OF(*c) for c in calls)
+    blind = sum(COST_OF(c[0], c[1] + c[3] + c[4] + c[5], c[2], 0, 0, 0) for c in calls)
+    models = {}
+    for c in calls:
+        models[c[0] or "?"] = models.get(c[0] or "?", 0) + 1
+    return round(aware, 4), round(blind, 4), models
+
+
+def hooks_seen(paths):
+    """How many hook results the main transcript holds: 0 means the build ran without hooks."""
+    n = 0
+    for d in entries(paths[:1]):
+        a = d.get("attachment") or {}
+        if (isinstance(a, dict) and str(a.get("type", "")).startswith("hook")) or d.get("type") == "hook":
+            n += 1
+        elif d.get("type") == "system" and "hook" in str(d.get("subtype", "")).lower():
+            n += 1
+    return n
+
+
+def tool_uses(paths):
+    for d in entries(paths):
+        if d.get("type") != "assistant":
+            continue
+        for b in (d.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                yield b.get("name") or "", b.get("input") or {}
+
+
+HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n\s*\1\s*(?:\n|$)", re.S)
+READERS = {"cat", "sed", "grep", "egrep", "rg", "head", "tail", "less", "more", "awk", "diff", "cmp", "find",
+           "ls", "wc", "tree", "stat", "bat", "nl", "strings", "xxd", "od"}
+GIT_READS = {"show", "log", "diff", "blame", "grep", "cat-file", "archive", "ls-files", "ls-tree"}
+
+
+def split_heredocs(cmd):
+    """(the command with every heredoc body cut, the bodies)."""
+    bodies = [m.group(2) for m in HEREDOC_RE.finditer(cmd)]
+    return HEREDOC_RE.sub(lambda m: m.group(0).split("\n", 1)[0] + "\n", cmd), bodies
+
+
+def segments(cmd):
+    """The simple commands of a shell line: split on newlines, ;, &&, || and |."""
+    return [x.strip() for x in re.split(r"\n|;|&&|\|\||\|", cmd) if x.strip()]
+
+
+def first_word(seg):
+    words = seg.split()
+    while words and (re.match(r"^[A-Za-z_]\w*=", words[0]) or words[0] in ("time", "sudo", "env", "nohup", "command")):
+        words = words[1:]
+    return words
+
+
+def isolation(paths, forbidden, names=()):
+    """(void hits, logged hits) from the build's tool calls; `forbidden` are the source checkout's
+    spellings, `names` its repo's names on a remote. A `gh` at command position (heredoc bodies cut:
+    code being written that mentions gh is no call), a web fetch, a network git or curl naming the
+    source repo on a remote (another repo's fetch, as a brief may ask for, cannot show the landed
+    answer: logged), or a read of the source checkout
+    (a Read, Grep or Glob there; a reading command naming it; a heredoc that opens a file there)
+    voids the run. A tool run over the source checkout, or a git fetch with no remote to reach, is
+    logged."""
+    void, logged = [], []
+    for name, inp in tool_uses(paths):
+        text = json.dumps(inp)
+        cmd = (inp.get("command") or "") if isinstance(inp, dict) else ""
+        hit = lambda why: (why, name, (cmd or text)[:300])  # noqa: E731
+        if name in ("WebFetch", "WebSearch"):
+            void.append(hit("web"))
+            continue
+        named = [f for f in forbidden if f in text]
+        if not cmd:
+            if named:
+                (void if name in ("Read", "Grep", "Glob", "NotebookRead") else logged).append(
+                    hit("source-read" if name in ("Read", "Grep", "Glob", "NotebookRead") else "source-edit"))
+            continue
+        line, bodies = split_heredocs(cmd)
+        segs = segments(line)
+        for seg in segs:
+            w = first_word(seg)
+            if not w:
+                continue
+            if w[0] == "gh":
+                void.append(hit("gh"))
+            elif w[0] == "git" and NET_GIT.search(seg):
+                (void if remote_names(seg, names) else logged).append(hit("git-net"))
+            elif w[0] in ("curl", "wget"):
+                (void if remote_names(seg, names) else logged).append(hit("net"))
+        if not named:
+            continue
+        reads = False
+        for seg in segs:
+            if not any(f in seg for f in forbidden):
+                continue
+            w = first_word(seg)
+            if w and (w[0] in READERS or (w[0] == "git" and any(x in GIT_READS for x in w[1:6]))):
+                reads = True
+        for b in bodies:
+            if any(f in b for f in forbidden) and re.search(r"open\(|read_text|readlines|\bcat\b|\bsed\b", b):
+                reads = True
+        (void if reads else logged).append(hit("source-read" if reads else "source-tool"))
+    return void, logged
+
+
+def remote_names(seg, names):
+    """Whether a network command names one of the source repo's names in a URL or an owner/name."""
+    urls = re.findall(r"(?:https?://|git@)\S+", seg) + re.findall(r"\b[\w.-]+/[\w.-]+\b", seg)
+    return any(re.search(r"(^|[/:])%s(\.git)?/?$" % re.escape(n), u.rstrip("'\"")) for u in urls for n in names)
+
+
+def names_of(t):
+    return t.get("remote_names") or [os.path.basename(t["repo"].rstrip("/"))]
+
+
+def cmd_rescan(a):
+    """Judge every row's isolation again from its transcripts, with today's rule."""
+    rows = rows_of(a.file)
+    tasks = {}
+    for r in rows:
+        t = tasks.get(r["task"]) or load_task(os.path.join(a.tasks, r["task"] + ".json"))
+        tasks[r["task"]] = t
+        void, logged = isolation(transcripts(r["session"]), forbidden_of(t), names_of(t))
+        was = r["void"]
+        r.update(void=bool(void), void_hits=void[:10], logged_hits=logged[:20])
+        if was != r["void"]:
+            print("%s %s r%d: void %s → %s" % (r["task"], r["arm"], r["rep"], was, r["void"]))
+    with open(a.file + ".tmp", "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.rename(a.file + ".tmp", a.file)
+    return 0
+
+
+# --- the clone -----------------------------------------------------------------------------------
+
+def task_dir(work, t):
+    return os.path.join(work, t["id"])
+
+
+def bundle(work, t):
+    """The seed's ancestry as one bundle: the seed as `seed`, its parent as `main`."""
+    d = task_dir(work, t)
+    b = os.path.join(d, "seed.bundle")
+    if os.path.exists(b):
+        return b
+    os.makedirs(d, exist_ok=True)
+    src = t["repo"]
+    git(src, "update-ref", "refs/bench/%s/seed" % t["id"], t["seed"])
+    git(src, "update-ref", "refs/bench/%s/main" % t["id"], t["seed"] + "~1")
+    try:
+        git(src, "bundle", "create", b + ".tmp", "refs/bench/%s/seed" % t["id"], "refs/bench/%s/main" % t["id"])
+    finally:
+        git(src, "update-ref", "-d", "refs/bench/%s/seed" % t["id"], check=False)
+        git(src, "update-ref", "-d", "refs/bench/%s/main" % t["id"], check=False)
+    os.rename(b + ".tmp", b)
+    return b
+
+
+def clone(work, t, name):
+    """A fresh clone for one run: primary on main (the seed's parent), the build's worktree on the
+    task's branch at the seed, no remote."""
+    b = bundle(work, t)
+    root = os.path.join(task_dir(work, t), name)
+    if os.path.exists(root):
+        shutil.rmtree(root)
+    primary = os.path.join(root, "repo")
+    os.makedirs(root)
+    r = sh(["git", "init", "-q", "-b", "main-unborn", primary])
+    if r.returncode:
+        die("git init failed: " + r.stderr.strip())
+    git(primary, "fetch", "-q", b, "refs/bench/%s/main:refs/heads/main" % t["id"],
+        "refs/bench/%s/seed:refs/heads/%s" % (t["id"], t["branch"]))
+    git(primary, "checkout", "-q", "main")
+    topic = t["branch"].rsplit("/", 1)[-1]
+    topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", topic)
+    wt = os.path.join(primary, ".claude", "worktrees", topic)
+    git(primary, "worktree", "add", "-q", wt, t["branch"])
+    for k in ("user.name", "user.email"):
+        v = git(t["repo"], "config", k, check=False)
+        if v:
+            git(primary, "config", k, v)
+    return primary, wt
+
+
+def hidden_files(work, t):
+    """The landed versions of the hidden files, read once from the source repo."""
+    d = os.path.join(task_dir(work, t), "hidden")
+    if not os.path.isdir(d):
+        tmp = d + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        for f in t["hidden"]:
+            r = sh(["git", "-C", t["repo"], "show", "%s:%s" % (t["tip"], f)])
+            if r.returncode:
+                die("no %s at the tip: %s" % (f, r.stderr.strip()))
+            p = os.path.join(tmp, f)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write(r.stdout)
+            mode = sh(["git", "-C", t["repo"], "ls-tree", t["tip"], f]).stdout.split()[:1]
+            if mode == ["100755"]:
+                os.chmod(p, 0o755)
+        os.rename(tmp, d)
+    return d
+
+
+# --- grading -------------------------------------------------------------------------------------
+
+def check_tool():
+    return os.environ.get("BENCH_CHECK") or os.path.join(MODULES, "wharf-runs", "bin", "check")
+
+
+def grade(work, t, src_repo, commit, out, overlay=True):
+    """Run the grade scripts on `commit` of `src_repo`, the landed hidden files over it, through
+    check's slots; the ok and FAIL labels, per script and in all."""
+    g = os.path.join(out, "tree")
+    shutil.rmtree(g, ignore_errors=True)
+    r = sh(["git", "clone", "-q", "--no-checkout", src_repo, g])
+    if r.returncode:
+        die("grade clone failed: " + r.stderr.strip())
+    git(g, "checkout", "-q", "-B", "main", commit)
+    git(g, "remote", "remove", "origin", check=False)
+    if overlay:
+        h = hidden_files(work, t)
+        for f in t["hidden"]:
+            dst = os.path.join(g, f)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(os.path.join(h, f), dst)
+    line = "- check: `%s`" % " && ".join("bash " + s for s in t["grade"])
+    agents = os.path.join(g, "AGENTS.md")
+    text = open(agents).read() if os.path.exists(agents) else ""
+    if re.search(r"^- check:", text, re.M):
+        text = re.sub(r"^- check:.*$", lambda m: line, text, count=1, flags=re.M)
+    else:
+        text = line + "\n" + text
+    with open(agents, "w") as f:
+        f.write(text)
+    git(g, "add", "-A")
+    git(g, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q", "--allow-empty",
+        "-m", "bench: grade")
+    logs = os.path.join(out, "logs")
+    shutil.rmtree(logs, ignore_errors=True)
+    env = dict(os.environ, CHECK_PASS_TTL="0")
+    t0 = time.time()
+    r = sh([check_tool(), g, "--full", "--fresh", "--out", logs], env=env)
+    secs = round(time.time() - t0)
+    ok, fail, summary = parse_logs(logs)
+    shutil.rmtree(g, ignore_errors=True)
+    return {"rc": r.returncode, "secs": secs, "ok": sorted(ok), "fail": sorted(fail), "summary": summary,
+            "logs": logs}
+
+
+def label(text):
+    """A case label as it reads on any run: temp paths, shas, pids and clock times masked."""
+    text = re.sub(r"(/private)?/(var/folders|tmp|private/tmp)/\S+", "<tmp>", text)
+    text = re.sub(r"\btmp\.[A-Za-z0-9]{6,}\S*", "<tmp>", text)
+    text = re.sub(r"\b[0-9a-f]{7,40}\b", "<sha>", text)
+    text = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b", "<time>", text)
+    text = re.sub(r"\bpid \d+\b", "pid <n>", text)
+    text = re.sub(r"\b\d{4,}\b", "<n>", text)   # a pid or a port in a case's own words
+    return text
+
+
+def parse_logs(logs):
+    ok, fail = set(), set()
+    for p in sorted(glob.glob(os.path.join(logs, "*.log"))):
+        for raw in open(p, errors="replace"):
+            m = OK_RE.match(raw)
+            if m:
+                ok.add(label(m.group(1)))
+                continue
+            m = FAIL_RE.match(raw)
+            if m:
+                fail.add(label(re.split(r": (?:expected|missing|found) ", m.group(1))[0]))
+    summary = ""
+    try:
+        summary = open(os.path.join(logs, "summary")).read().strip().splitlines()[-1]
+    except (OSError, IndexError):
+        pass
+    return ok, fail, summary
+
+
+def cmd_prepare(a):
+    t = load_task(a.task)
+    d = task_dir(a.work, t)
+    os.makedirs(d, exist_ok=True)
+    bundle(a.work, t)
+    hidden_files(a.work, t)
+    if a.relabel:   # the kept logs, read again (a change to label())
+        seed, tip = {}, {}
+        for side, x in (("seed", seed), ("tip", tip)):
+            logs = os.path.join(d, "baseline-" + side, "logs")
+            ok, fail, summ = parse_logs(logs)
+            x.update(ok=sorted(ok), fail=sorted(fail), summary=summ, secs=0,
+                     rc=0 if summ.startswith("DONE") and summ.split()[1].split("/")[0] == summ.split()[1].split("/")[1] else 1)
+    else:
+        seed = grade(a.work, t, t["repo"], t["seed"], os.path.join(d, "baseline-seed"))
+        tip = grade(a.work, t, t["repo"], t["tip"], os.path.join(d, "baseline-tip"), overlay=False)
+    hidden = sorted(set(tip["ok"]) - set(seed["ok"]))
+    stable = sorted(set(tip["ok"]) & set(seed["ok"]))
+    landed = diff_lines(t["repo"], t["seed"], t["tip"])
+    base = {"task": t["id"], "hidden": hidden, "stable": stable, "seed_rc": seed["rc"], "tip_rc": tip["rc"],
+            "seed_summary": seed["summary"], "tip_summary": tip["summary"], "tip_fail": tip["fail"],
+            "landed_diff": landed, "drop": not hidden, "secs": seed["secs"] + tip["secs"]}
+    with open(os.path.join(d, "baseline.json"), "w") as f:
+        json.dump(base, f, indent=1)
+    print("%s: %d hidden case(s), %d stable; seed %s, tip %s; landed %d lines%s" % (
+        t["id"], len(hidden), len(stable), seed["summary"], tip["summary"], landed,
+        " — DROPPED: the hidden tests pass on the seed" if not hidden else ""))
+    return 0 if hidden else 3
+
+
+def diff_lines(repo, a, b):
+    n = 0
+    for row in git(repo, "diff", "--numstat", a, b, "--", "modules").splitlines():
+        x = row.split("\t")
+        if len(x) == 3 and x[0] != "-":
+            n += int(x[0]) + int(x[1])
+    return n
+
+
+# --- one run -------------------------------------------------------------------------------------
+
+def prompt_of(t, primary):
+    brief = git(t["repo"], "show", "%s:%s" % (t["seed"], t["brief"]))
+    for p in sorted(t.get("rewrite") or [], key=len, reverse=True):
+        brief = brief.replace(p, primary)
+    return brief
+
+
+def forbidden_of(t):
+    out = {t["repo"]}
+    for p in t.get("rewrite") or []:
+        out.add(p)
+        out.add(os.path.expanduser(p))
+    return sorted(x for x in out if x)
+
+
+def final_commit(primary, wt, t, seed):
+    """The build's work: anything uncommitted in a worktree committed, then the task branch's tip,
+    else the newest other branch past the seed."""
+    trees = [ln[len("worktree "):] for ln in git(primary, "worktree", "list", "--porcelain").splitlines()
+             if ln.startswith("worktree ")]
+    for w in trees:
+        if not os.path.isdir(w):
+            continue
+        if sh(["git", "-C", w, "status", "--porcelain"]).stdout.strip():
+            git(w, "add", "-A", check=False)
+            git(w, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-q",
+                "-m", "bench: what the build left uncommitted", check=False)
+    own = git(primary, "rev-parse", "-q", "--verify", "refs/heads/" + t["branch"], check=False)
+    if own and own != seed:
+        return own, t["branch"]
+    best = None
+    for row in git(primary, "for-each-ref", "--sort=-committerdate",
+                   "--format=%(objectname) %(refname:short)", "refs/heads").splitlines():
+        sha, name = row.split(" ", 1)
+        if name == "main" or sha == seed:
+            continue
+        if sh(["git", "-C", primary, "merge-base", "--is-ancestor", seed, sha]).returncode == 0:
+            best = (sha, name)
+            break
+    return best or (seed, "(nothing built)")
+
+
+def cmd_run(a):
+    t = load_task(a.task)
+    d = task_dir(a.work, t)
+    base_p = os.path.join(d, "baseline.json")
+    if not os.path.exists(base_p):
+        die("no baseline for %s: run `bench prepare` first" % t["id"])
+    base = json.load(open(base_p))
+    if base.get("drop"):
+        die("%s was dropped at its baseline" % t["id"])
+    model_key, effort = a.arm.split(":")
+    model = MODELS.get(model_key, model_key)
+    name = "%s-%s-r%d" % (model_key, effort, a.rep)
+    primary, wt = clone(a.work, t, name)
+    seed = git(wt, "rev-parse", "HEAD")
+    sid = a.session_id or str(uuid.uuid4())
+    prompt = prompt_of(t, primary)
+    env = {k: v for k, v in os.environ.items() if not DROP_ENV.match(k)}
+    cmdline = [a.claude, "-p", prompt, "--model", model, "--effort", effort, "--session-id", sid,
+               "--max-budget-usd", str(a.budget), "--output-format", "json", "--permission-mode", a.mode]
+    run_dir = os.path.join(d, name)
+    with open(os.path.join(run_dir, "prompt.md"), "w") as f:
+        f.write(prompt)
+    with open(a.out + ".started", "a") as f:   # the ledger prices a started run that never wrote its row
+        f.write(sid + "\n")
+    started = time.time()
+    out_f = open(os.path.join(run_dir, "claude.json"), "w")
+    err_f = open(os.path.join(run_dir, "claude.err"), "w")
+    p = subprocess.Popen(cmdline, cwd=wt, env=env, stdout=out_f, stderr=err_f, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
+    ended = None
+    while p.poll() is None:
+        time.sleep(20)
+        spent, _ = cost(transcripts(sid))
+        if spent > a.budget:
+            ended = "budget: $%.2f past $%s" % (spent, a.budget)
+        elif time.time() - started > a.timeout * 60:
+            ended = "timeout: %d min" % a.timeout
+        if ended:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+                time.sleep(10)
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.wait()
+    wall = round(time.time() - started)
+    out_f.close()
+    err_f.close()
+    result = {}
+    try:
+        result = json.load(open(os.path.join(run_dir, "claude.json")))
+    except (OSError, ValueError):
+        pass
+    paths = transcripts(sid)
+    if not paths:
+        die("no transcript for session %s: the ledger cannot be read" % sid, 4)
+    spent, calls = cost(paths)
+    _, blind, models = cost_detail(paths)
+    # a call on another model than the arm's (bar a small helper model) is a fallback: flagged, not scored
+    foreign = {m: n for m, n in models.items() if m != model and "haiku" not in m}
+    void, logged = isolation(paths, forbidden_of(t), names_of(t))
+    commit, ref = final_commit(primary, wt, t, seed)
+    g = grade(a.work, t, primary, commit, os.path.join(run_dir, "grade"))
+    ok = set(g["ok"])
+    h_pass = [c for c in base["hidden"] if c in ok]
+    lost = [c for c in base["stable"] if c not in ok]
+    row = {
+        "task": t["id"], "arm": "%s:%s" % (model_key, effort), "model": model, "effort": effort, "rep": a.rep,
+        "session": sid, "ended": ended or result.get("subtype") or "exit %s" % p.returncode,
+        "turns": result.get("num_turns"), "wall_s": wall, "cost_list": spent, "calls": calls,
+        "cost_claude": result.get("total_cost_usd"), "cost_blind": blind, "models": models,
+        "fallback": foreign, "hooks_seen": hooks_seen(paths), "transcripts": len(paths),
+        "ref": ref, "commit": commit, "diff_lines": diff_lines(primary, seed, commit),
+        "hidden_pass": len(h_pass), "hidden_total": len(base["hidden"]),
+        "hidden": "all" if len(h_pass) == len(base["hidden"]) else ("none" if not h_pass else "some"),
+        "suite_green": not lost, "stable_lost": lost[:20], "stable_lost_n": len(lost),
+        "grade_summary": g["summary"], "grade_secs": g["secs"],
+        "void": bool(void), "void_hits": void[:10], "logged_hits": logged[:20],
+        "finished": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    with open(a.out, "a") as f:
+        f.write(json.dumps(row) + "\n")
+    print("%s %s r%d: hidden %d/%d, suite %s, $%.2f list, %d min, %d lines%s" % (
+        t["id"], row["arm"], a.rep, len(h_pass), len(base["hidden"]), "green" if not lost else "RED",
+        spent, wall // 60, row["diff_lines"], " — VOID" if void else ""))
+    if not a.keep:
+        shutil.rmtree(os.path.join(run_dir, "repo"), ignore_errors=True)
+    return 0
+
+
+# --- the ledger and the driver -------------------------------------------------------------------
+
+def rows_of(path):
+    out = []
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def ledger(path, selves, live=()):
+    """List cost so far: every row's, every live run's transcript, and the callers' own sessions."""
+    rows = rows_of(path)
+    total = sum(r["cost_list"] for r in rows)
+    have = {r["session"] for r in rows}
+    started = []
+    if os.path.exists(path + ".started"):
+        started = [x.strip() for x in open(path + ".started") if x.strip()]
+    dead = {x for x in started if x not in have and x not in set(live)}   # ended without a row
+    live = set(live) | dead
+    live_cost = sum(cost(transcripts(s))[0] for s in live)
+    dead_cost = sum(cost(transcripts(s))[0] for s in dead)
+    self_cost = 0.0
+    for s in selves:
+        ps = [s] if os.path.isfile(s) else transcripts(s)
+        if not ps:
+            raise RuntimeError("no transcript for " + s)
+        self_cost += cost(ps)[0]
+    return {"rows": round(total, 2), "live": round(live_cost, 2), "self": round(self_cost, 2),
+            "dead": round(dead_cost, 2),
+            "total": round(total + live_cost + self_cost, 2), "runs": len(rows)}
+
+
+def cmd_ledger(a):
+    print(json.dumps(ledger(a.file, a.self or [])))
+    return 0
+
+
+def cmd_drive(a):
+    plan = json.load(open(a.plan))
+    done = {(r["task"], r["arm"], r["rep"]) for r in rows_of(a.out)}
+    todo = [x for x in plan if (os.path.splitext(os.path.basename(x[0]))[0], x[1], x[2]) not in done]
+    running = {}   # pid → (item, Popen, the run's session id)
+    log = open(os.path.join(a.work, "drive.log"), "a")
+
+    def say(msg):
+        line = time.strftime("%H:%M ") + msg
+        print(line, flush=True)
+        log.write(line + "\n")
+        log.flush()
+
+    stopped = None
+    while todo or running:
+        for pid, (item, p, _) in list(running.items()):
+            if p.poll() is not None:
+                say("ended %s %s r%d rc=%s" % (item[0], item[1], item[2], p.returncode))
+                del running[pid]
+        if not stopped and os.path.exists(os.path.join(a.work, "STOP")):
+            stopped = "the file STOP exists in the work folder"   # a stop is a file write, not a kill
+        if todo and not stopped and len(running) < a.parallel:
+            try:
+                led = ledger(a.out, a.self or [], [x[2] for x in running.values()])
+            except (RuntimeError, OSError, ValueError) as e:
+                stopped = "the ledger cannot be read: %s" % e
+            else:
+                # a live run may still spend up to its budget: count each at its cap
+                worst = led["rows"] + led["self"] + led["dead"] + a.budget * (len(running) + 1)
+                if led["total"] >= a.stop:
+                    stopped = "ledger $%.2f past the stop line $%s" % (led["total"], a.stop)
+                elif worst > a.ceiling:
+                    if not running:
+                        stopped = "the next run could pass the ceiling ($%.2f + $%s > $%s)" % (
+                            led["rows"] + led["self"], a.budget, a.ceiling)
+                else:
+                    item = todo.pop(0)
+                    sid = str(uuid.uuid4())
+                    args = [sys.executable, os.path.abspath(__file__), "run", item[0], "--arm", item[1],
+                            "--rep", str(item[2]), "--work", a.work, "--out", a.out, "--budget", str(a.budget),
+                            "--timeout", str(a.timeout), "--session-id", sid]
+                    p = subprocess.Popen(args, stdout=log, stderr=log, stdin=subprocess.DEVNULL)
+                    running[p.pid] = (item, p, sid)
+                    say("start %s %s r%d (ledger $%.2f, %d running)" % (
+                        os.path.basename(item[0]), item[1], item[2], led["total"], len(running)))
+                    time.sleep(a.stagger)
+                    continue
+            if stopped:
+                say("STOP: " + stopped + "; %d not started" % len(todo))
+        if not running and (stopped or not todo):
+            break
+        time.sleep(15)
+    say("DONE %d rows%s" % (len(rows_of(a.out)), "; stopped: " + stopped if stopped else ""))
+    return 0
+
+
+def cmd_table(a):
+    rows = rows_of(a.file)
+    print("| task | arm | rep | hidden | suite | list | effective | wall | diff | ended |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for r in rows:
+        print("| %s | %s | %d | %s %d/%d | %s | $%.2f | $%.2f | %d min | %d | %s%s |" % (
+            r["task"], r["arm"], r["rep"], r["hidden"], r["hidden_pass"], r["hidden_total"],
+            "green" if r["suite_green"] else "red (%d lost)" % r["stable_lost_n"], r["cost_list"],
+            r["cost_list"] * a.ratio, r["wall_s"] // 60, r["diff_lines"], r["ended"],
+            " **void**" if r["void"] else ""))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="bench", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="verb")
+    p = sub.add_parser("prepare")
+    p.add_argument("task")
+    p.add_argument("--work", required=True)
+    p.add_argument("--relabel", action="store_true", help="re-read the kept baseline logs, grade nothing")
+    p = sub.add_parser("run")
+    p.add_argument("task")
+    p.add_argument("--arm", required=True, help="model:effort, e.g. sonnet:high")
+    p.add_argument("--rep", type=int, default=1)
+    p.add_argument("--work", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--budget", type=float, default=25)
+    p.add_argument("--timeout", type=int, default=90, help="minutes")
+    p.add_argument("--mode", default="auto", help="the permission mode")
+    p.add_argument("--claude", default="claude")
+    p.add_argument("--keep", action="store_true", help="keep the clone")
+    p.add_argument("--session-id", help="the build's session id (the driver's, to count it live)")
+    p = sub.add_parser("drive")
+    p.add_argument("plan")
+    p.add_argument("--work", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--parallel", type=int, default=3)
+    p.add_argument("--stop", type=float, default=450)
+    p.add_argument("--ceiling", type=float, default=515)
+    p.add_argument("--budget", type=float, default=25)
+    p.add_argument("--timeout", type=int, default=90)
+    p.add_argument("--stagger", type=int, default=60, help="seconds between starts")
+    p.add_argument("--self", action="append", help="a caller's session id or transcript, counted in the ledger")
+    p = sub.add_parser("ledger")
+    p.add_argument("file")
+    p.add_argument("--self", action="append")
+    p = sub.add_parser("rescan")
+    p.add_argument("file")
+    p.add_argument("--tasks", required=True, help="the folder of task files, <id>.json")
+    p = sub.add_parser("table")
+    p.add_argument("file")
+    p.add_argument("--ratio", type=float, default=1.0, help="effective ÷ list")
+    a = ap.parse_args(argv)
+    if not a.verb:
+        ap.print_help()
+        return 2
+    return {"prepare": cmd_prepare, "run": cmd_run, "drive": cmd_drive, "ledger": cmd_ledger,
+            "rescan": cmd_rescan, "table": cmd_table}[a.verb](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
