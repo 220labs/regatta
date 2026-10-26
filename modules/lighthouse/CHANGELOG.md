@@ -4,6 +4,15 @@
 
 - deadman: `inbox_repo` defaults to the config dir's `helm/logbook-repo`, helm's renamed stall-road key;
   the old `helm/inbox-repo` is not read (2026-10-25).
+- `account setup` writes the first-start keys into every login dir this Mac carries, Orca's and the
+  default one included, and `account add` into a new one (orca-launcher S2, docs/orca-launcher-2026-10-24.md):
+  `hasCompletedOnboarding`, `lastOnboardingVersion` (the installed `claude --version`), `numStartups`,
+  `claudeInChromeDefaultEnabled` as the Chrome offer's own default (No; `/chrome` turns it on), and on each
+  trusted project the external-imports dialog answered No ahead. Without them an interactive
+  start waits at the theme picker though the login is good, which `-p` and `auth status` never show
+  (a login dir on the always-on Mac, 2026-10-24). Only an absent key (or a not-yet-done false) is written; a Yes, or Approved in either form, is kept; a file that does
+  not parse is left as it was; a Claude Code save that takes the keys is met by one read-back and one
+  rewrite, as trust-projects does. `account check` fails a dir lacking any of them, naming each.
 - beacon: `round_icon` — a config whose icon is a round badge of its own gets it filling the round pill
   (40px, a 4px rim) and larger and bare in the window's header (38px). `/chat` answers `offer: true` on a
   reply holding the hand-off sentence where the sink relays, and the widget puts a "Talk to a person"
