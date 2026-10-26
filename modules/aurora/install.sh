@@ -75,6 +75,15 @@ case "${1:-}" in
       3|4|5) echo "aurora: not loading the job on this host — $(printf '%s\n' "$out" | tail -n 1) (--remove unloads one loaded before)" >&2; exit 1 ;;
       *) echo "aurora: not loading the job — the core's host rule could not tell whether this host runs it (exit $rc${why:+: $why})" >&2; exit 1 ;;
     esac
+    # Then the job's own dry run, as before the rule moved into the core: a weekly-run that dies
+    # past the rule would otherwise be loaded and die each night (the finish review, 2026-10-25).
+    err=$(mktemp); rc=0
+    out=$("$here/bin/weekly-run" aurora "$vault" --dry-run 2>"$err") || rc=$?
+    why=$(tail -n 1 "$err"); rm -f "$err"
+    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q "the night's order"; then
+      echo "aurora: not loading the job — its dry run planned no night (exit $rc${why:+: $why})" >&2
+      exit 1
+    fi
     logs=$(where logs)
     mkdir -p "$la" "$logs"
     python3 - "$job" "$label" "$plist" "$vault" "$logs" <<'PY'

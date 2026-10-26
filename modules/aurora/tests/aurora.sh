@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aurora's suite: weekly-run under a scratch HOME and config dir, every name made up. `where` from
 # atlas's keys and their overrides; the refusals (no core, no vault, no aurora/host beside an
-# overlay); the host rule (aurora/host, a scope's yard, the deprecated skip-hosts); tonight's plan; a night whose wharf is missing (the tend and
+# overlay); how weekly-run treats the core's host-rule verdicts; tonight's plan; a night whose wharf is missing (the tend and
 # the classify fail their own steps, the dream still runs and lands); the unattended skills'
 # commands held to the allowlist; the embark step's memo (it parses, carries its context, lands on
 # a branch of its own); a plain launchd environment; install.sh against a scratch launchd.
@@ -331,6 +331,14 @@ echo "$out" | grep -q "the regatta core is missing"; check $? 0 "    saying so"
 printf '#!/bin/sh\n[ "$1" = where ] && { echo "vault %s"; echo "regatta %s"; exit 0; }\nexit 1\n' "$T/no-such-vault" "$R/modules/regatta/bin/regatta" > "$T/stubmod/bin/weekly-run"
 out=$(sh "$T/stubmod/install.sh" --schedule 2>&1); check $? 1 "  a vault that is not a folder: refused (the dry run it replaced refused it)"
 echo "$out" | grep -q "the vault $T/no-such-vault is not a folder"; check $? 0 "    saying so"
+# Past the rule, the job's own dry run must plan the night: a stub that dies, or prints nothing
+echo "$host" > "$REGATTA_CONFIG/aurora/host"
+printf '#!/bin/sh\n[ "$1" = where ] && { echo "vault %s"; echo "regatta %s"; exit 0; }\necho "boom: the dry run died" >&2\nexit 1\n' "$V" "$R/modules/regatta/bin/regatta" > "$T/stubmod/bin/weekly-run"
+out=$(sh "$T/stubmod/install.sh" --schedule 2>&1); check $? 1 "--schedule whose dry run crashed past the rule: refused (the AGENTS.md trap)"
+echo "$out" | grep -q "its dry run planned no night (exit 1: boom: the dry run died)"; check $? 0 "  with its exit code and last stderr line"
+printf '#!/bin/sh\n[ "$1" = where ] && { echo "vault %s"; echo "regatta %s"; exit 0; }\nexit 0\n' "$V" "$R/modules/regatta/bin/regatta" > "$T/stubmod/bin/weekly-run"
+out=$(sh "$T/stubmod/install.sh" --schedule 2>&1); check $? 1 "  a dry run that printed nothing, exit 0: refused too"
+echo "$out" | grep -q "its dry run planned no night (exit 0)"; check $? 0 "    saying so"
 check "$(ls "$T/agents" 2>/dev/null | wc -l | tr -d ' ')" 0 "  no plist written"
 echo "$host" > "$REGATTA_CONFIG/aurora/host"
 sh "$D/install.sh" --schedule >/dev/null; check $? 0 "--schedule without an overlay"

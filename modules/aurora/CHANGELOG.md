@@ -4,8 +4,8 @@
 
 - The host rule is the core's (2026-10-24): weekly-run asks `common.weekly_host` in the same python
   that checks the core loads (one start, not two), and `install.sh --schedule` asks `regatta
-  weekly-host aurora` instead of reading its dry run's lines; an exit that is none of the rule's
-  refuses as before ("could not tell"), and so does a vault that is not a folder (the dry run used to
+  weekly-host aurora` before its dry run, and quotes the rule's line rather than the dry run's; the dry
+  run still has to plan the night, and an exit that is none of the rule's refuses as before ("could not tell"), and so does a vault that is not a folder (the dry run used to
   catch it). Lines unchanged but two: the neither-key refusal and the skip-hosts deprecation note
   name "your overlay's bootstrap.sh --config".
 - The embark step (embark-on-helm, 2026-10-25; the owner, 2026-10-24: "I want embark presented to me
