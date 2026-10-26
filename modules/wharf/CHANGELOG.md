@@ -7,6 +7,8 @@
 
 - sync.py runs `secrets check --fix` only under claude-host (orca-launcher S4, 2026-10-25): `.env` is a link
   into Drive's _secrets, which an ungranted responsible process (Orca's app) blocks on.
+- `session_status` reads the core's `handed` closing kind as its own status, `handed to its launch`
+  (2026-10-25, yolo-launch review D1-B), so helm can tell a hand-over from a run waiting on its own work.
 - checkpoint denies writes in a primary checkout on a detached HEAD (hookwatch's pin) as on main, and
   guards /autofinish's marker and the yes at the brief as records under an unattended run; sync.py names a
   detached primary, and hookwatch's pin when its state names it (autofinish-exclude landing review, 2026-10-24).

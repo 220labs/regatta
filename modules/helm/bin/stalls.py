@@ -399,7 +399,7 @@ WAITING_ON_OWNER = "waiting on the owner"
 
 def reply_kind(text):
     """bin/session_status.py's closing() on the last reply: done | waiting on the owner (WAITING_ON_OWNER,
-    whatever wharf's WAITING says) | waiting on skipper (manager) | waiting on its own work | None — the
+    whatever wharf's WAITING says) | waiting on skipper (manager) | handed to its launch | waiting on its own work | None — the
     Stop hook's own reading of the line, so the same line counts here or none."""
     if not text:
         return None
@@ -516,6 +516,16 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
             if managed and read is not None and far and far not in read:
                 continue   # its manager runs on a host with no road from here (a yard to the laptop): unknown, never "gone" (S8)
             stalls.append(_stall("S6", host, st, name, "closing line: RELAYED, its manager gone", ev, now, since))
+            continue
+        # session_status.HANDED: a yolo or dnd run handed its landing to dispatch's launch, and no launch
+        # record superseded it (`later`, above) — dispatch declined, and says why in the record's `launch`.
+        # Raised, never retried: a re-dispatched build ends on the same line and meets the same gate
+        # (yolo-launch review D1-B, 2026-10-25; before it this read as S1's "nothing woke it").
+        if kind == "handed to its launch":
+            why = str(st.get("launch") or "")
+            if (ended or not alive) and not why.startswith("started"):   # a launch that stopped is S4/S5's card
+                stalls.append(_stall("S6", host, st, name, "closing line: hand-over, its launch never started",
+                                     ev + ["dispatch: %s" % (why[:TEXT_LINE] if why else "no launch recorded")], now, since))
             continue
         if kind == "waiting on its own work":   # session_status.PENDING: ended, or idle past A4, and nothing woke it
             if ended or not alive:   # S1 retries: never under a live process
@@ -1027,6 +1037,8 @@ def title(s, now):
         what += " at %s" % (s.get("gate") or "?")
     elif s["class"] == "S6" and "RELAYED" in (s.get("rule") or ""):
         what = "relayed to a manager that is gone"
+    elif s["class"] == "S6" and "hand-over" in (s.get("rule") or ""):
+        what = "handed over, its launch never started"
     elif s["class"] == "S6" and s.get("key_kind") == "question":
         what = "an Orca worker asks"
     elif s["class"] == WONT_START:

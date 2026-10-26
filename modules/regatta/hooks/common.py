@@ -1298,6 +1298,17 @@ FINISH_LINES = (ADDRESS + "IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'
                 ADDRESS + "THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.")
 WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
 PENDING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR SOMETHING — "
+# `handed`: a dispatched yolo or dnd run hands its landing to dispatch's launch (wharf-runs' yolo_launch,
+# autofinish-run) — a WAITING FOR SOMETHING line, since the work goes on without the owner, but its own
+# kind, so that dispatch launches on it, dispatch-rc ends the run at once, and helm raises a launch that
+# never started instead of retrying the build (yolo-launch review D1-B, 2026-10-25). Before it, two runs on
+# 2026-10-24 (b14b-shrink, hookwatch-date) waited on dispatch while dispatch read them as waiting on their
+# own work. HANDOVER_LINE is what dispatch's prompt names; HANDED_WHAT also takes the two free forms those
+# runs wrote, anchored at the what's start, so a line waiting on something else first ("the reviewers,
+# then dispatch's launch") stays pending.
+HANDOVER_LINE = PENDING_PREFIX + "dispatch's launch (autofinish-run)"
+HANDED_WHAT = (r"(?:[Dd]ispatch's (?:(?:yolo|dnd) )?launch\b|[Dd]ispatch to start the (?:(?:yolo|dnd) )?launch\b"
+               r"|autofinish-run\b).*")
 # /autofinish (autofinish design E6, D7): the session is done and the launcher takes the branch.
 # Allowed only when the session's own dry run says `start` — checkpoint.py's Stop checks it
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
@@ -1322,6 +1333,7 @@ CLOSING = (
     ("done", _TO + r"THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — .+"),
     ("waiting", _TO + r"THIS SESSION WAITS TO MOVE TO \S+ — .+"),                   # /move, peer away
     ("waiting", re.escape(WAITING_PREFIX) + r"\S.*"),                               # A1: any ask
+    ("handed", re.escape(PENDING_PREFIX) + HANDED_WHAT),                            # before pending: its landing is dispatch's
     ("pending", re.escape(PENDING_PREFIX) + r"\S.*"),                               # no ask: it carries on by itself
     # session-asks R4: a dispatched run that relayed its ask waits on its skipper, not on the owner
     ("relayed", r"RELAYED TO \S.* — \S.*"),
@@ -1388,7 +1400,7 @@ def bare(line):
 
 
 def closing_kind(line):
-    """'done', 'waiting', 'pending', 'relayed' or None for one line of a reply. Markup around it doesn't change what
+    """'done', 'waiting', 'handed', 'pending', 'relayed' or None for one line of a reply. Markup around it doesn't change what
     it says, so it doesn't change the answer."""
     line = bare(line)
     for kind, rx in _CLOSING_RE:

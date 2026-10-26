@@ -530,7 +530,8 @@ def said_its_end(st, rec):
     """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
     fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
     outcome from (read_outcome). A RELAYED line is no end: that run waits for its manager's answer
-    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it.
+    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
+    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher.
     False whenever it cannot tell."""
     if common is None or not rec or rec.get("status") != "idle" or not st.get("session"):
         return False

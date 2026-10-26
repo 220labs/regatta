@@ -6,6 +6,10 @@
   puts the newest open `docs/embark/embark-<date>.md` first, titled and labelled Embark, whether it
   came from this Mac's `keel list` or a lookout card (this Mac's or a peer's).
 
+- A run that ended on the hand-over line, with no launch record after it, is an S6 raised to the owner
+  carrying dispatch's reason from the record's `launch`, never S1's retry: a re-dispatched build would
+  end on the same line and meet the same gate (2026-10-25, yolo-launch review D1-B). One whose launch
+  started is no card here; a launch that stops is S4 or S5 as before.
 - The skipper's `claude` starts through `claude-host` where wharf-runs' `rc-hosts --launcher claude`
   names one, as dispatch's runs do: skipper-ears S1 (2026-10-24) saw a bare `claude` under launchd hang
   before its first turn on the yard, its binary denied Full Disk Access, and every case pass through

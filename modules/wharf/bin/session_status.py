@@ -16,7 +16,8 @@ decide() — first match wins; each answer names the rule that gave it:
     closing line       a fixed upper-case last line: /finish's "BUT READ THE NOTE" → "done — read
                        the note" (D6); the WAITING line (orchestration proposal A1) → waiting on
                        the owner; the RELAYED line (session-asks R4) → waiting on skipper; the WAITING
-                       FOR SOMETHING line → waiting on its own work; every other fixed line → done
+                       FOR SOMETHING line → waiting on its own work, and its hand-over form
+                       (common.HANDOVER_LINE) → handed to its launch; every other fixed line → done
     pending tool call  a tool call with no result after the owner's last prompt: a permission or an
                        interrupted call → waiting on the owner
     api error          the last record is Claude Code's stand-in for an API failure (a limit, an
@@ -34,6 +35,7 @@ import sys
 
 DONE, NOTE, BLOCKED, RUNNING = "done", "done — read the note", "blocked", "running"
 PENDING = "waiting on its own work"   # WAITING FOR SOMETHING: its reviewers, check or poll wake it
+HANDED = "handed to its launch"   # the hand-over line (common.HANDOVER_LINE): dispatch's launch takes the landing
 RELAYED = "waiting on skipper"   # session-asks R4: the RELAYED line — an ask is out with the run's skipper
 RELAYED_BEFORE_S5 = "waiting on manager"   # the same, from a peer's checkout older than rename S5 (stalls reads both)
 UNSURE, GUARDED_WORDS = "unsure", "guarded — open it"
@@ -159,6 +161,8 @@ def closing(text):
         return WAITING
     if kind == "relayed":
         return RELAYED
+    if kind == "handed":   # its own word for helm: an ended run whose launch never started is raised, never retried
+        return HANDED
     if kind == "pending":   # never RUNNING, the busy word (D5): the session may be gone and nothing wake it
         return PENDING
     if kind == "done":

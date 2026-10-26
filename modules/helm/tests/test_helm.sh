@@ -987,6 +987,21 @@ PY
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-far-step'])")" \
     "['S6']" "  and one on a peer read here, its manager not live there, is orphaned as before"
   rm -f "$R/11-relay-far.json" "$HOME/.claude/projects/-t/sid-relay-far-step.jsonl"   # the branch alone judges nothing
+  # yolo-launch review D1-B: a run that ended on the hand-over line and whose launch dispatch declined is
+  # raised with dispatch's reason, never retried (it read as S1's "nothing woke it"); one whose launch started is no card
+  git -C "$D" branch claude/t/2026-10-14-handed-step
+  rec 14-handed.json handed-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 10 min" \
+    "launch=no launch — autofinish is disarmed on this Mac (bin/autofinish arm)"
+  say sid-handed-step "Built.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)"
+  hj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$hj" | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['topic']=='handed-step']; print([(x['class'], x['action'], x['raise_to'], x['title']) for x in s], [e for x in s for e in x['evidence'] if e.startswith('dispatch: ')])")" \
+    "[('S6', 'raise', 'owner', 'handed-step · S6 handed over, its launch never started')] ['dispatch: no launch — autofinish is disarmed on this Mac (bin/autofinish arm)']" \
+    "D1-B: the hand-over with its launch declined: raised to the owner with dispatch's reason, never S1's retry"
+  rec 14-handed.json handed-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 10 min" "launch=started: autofinish-run --rule M --by yolo"
+  check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='handed-step'])")" \
+    "[]" "  its launch started: no card here (a launch that stops is S4 or S5)"
+  rm -f "$R/14-handed.json" "$HOME/.claude/projects/-t/sid-handed-step.jsonl"
   printf '{"pid": %s, "sessionId": "mgr-1", "status": "busy", "statusUpdatedAt": %s000}' "$$" "$now" > "$T/sess/mgr.json"
   check "$(python3 "$B/stalls.py" --json | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['class']=='S7'][0]; print(s['raise_to'], s['column'])")" \
     "skipper Blocked" "  S7 goes to its skipper (raise_to, rename S5) while that session is live"

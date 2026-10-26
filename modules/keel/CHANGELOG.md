@@ -12,6 +12,10 @@
   only there), and names a refusal for the cap as one, logged so helm pauses on it. The README's "spacesheep plans" says what each
   plan gets.
 
+- A `handed` line that asks the owner for something is blocked as a pending one is (2026-10-25,
+  finish review).
+- The Stop lint takes the core's `handed` closing kind where it takes a pending line (2026-10-25,
+  yolo-launch review D1-B).
 - Mermaid is fetched, not vendored: the repo keeps the version and sha256, and the first page with a
   diagram fetches `mermaid.min.js` from jsDelivr (else unpkg) into `~/Library/Caches/keel` (`~/.cache/keel`
   off a Mac), kept only when it matches the pin (`KEEL_CACHE_DIR`, `KEEL_MERMAID_URL`, `KEEL_MERMAID_FETCH=0`).

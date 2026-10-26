@@ -266,7 +266,7 @@ core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
 # (`wharf-runs/label-prefix`), the laptop and the owner (the core's), the projects folder. Read
 # through the core; where it cannot load (a config the overlay left incomplete), the files
 # themselves, so a missing key is a default and never a broken run.
-peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; projects="$HOME/projects"
+peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; handover=""; projects="$HOME/projects"
 eval "$(python3 - "$here" <<'CORE'
 import os, shlex, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
@@ -293,6 +293,7 @@ out["dhost"] = first("wharf-runs/dispatch-host")
 out["lprefix"] = first("wharf-runs/label-prefix", "org.regatta.claude")
 out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") or first("regatta/laptop", "laptop"))
 out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
+out["handover"] = common.HANDOVER_LINE if common else ""
 out["projects"] = str(common.PROJECTS) if common else os.path.expanduser("~/projects")
 if common:
     old = common.overlay_root()
@@ -371,6 +372,16 @@ else
   max_runs="${DISPATCH_MAX_RUNS:-3}"
 fi
 who="${owner:-the owner}"   # text addressed to the owner (common.OWNER_NAME)
+# The line a yolo or dnd run ends on to hand its landing to yolo_launch (yolo-launch, 2026-10-25): the
+# core's HANDOVER_LINE, a WAITING FOR SOMETHING line of its own closing kind, `handed`. Until then the
+# prompt named no line, the house rules made each run write its own, and yolo_launch read every one as
+# "waits on its own work": two runs on 2026-10-24 (b14b-shrink, hookwatch-date) waited on dispatch while
+# dispatch declined, each landing found by hand. The kind lives in the core so that dispatch, dispatch-rc
+# (ends the run at once) and helm (raises a launch that never started) read one fact (review D1-B).
+# no apostrophe inside a ${…}: bash looks for its closing quote there, even within double quotes, and
+# the script's parse runs away (this line's first form broke every dispatch call)
+[ -n "$handover" ] || handover="THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)"
+handnext="${handover%% — *} — <the next step, in one line>"   # a dnd step that scheduled the next one
 # Memory beside the cap (2026-10-22: six runs left a 16 GB host thrashing, load 65 and swap full,
 # with four slots still free): bin/headroom reads this host's memory against its wharf-runs/headroom
 # line. Over it (exit 3), prints why and fails — the run is refused as at the cap; anything else that
@@ -1346,8 +1357,11 @@ run_rc() {   # PROMPT DIR SCREEN [probe] — with the start lock held; drops it 
   # nothing, and autofinish-run waits for this watcher to return — an hour of that would hold a
   # detached waiter and one of DISPATCH_MAX_RUNS slots per launch, and the 10-minute sweep would
   # start refusing. A seeded branch run keeps the hour (dispatch-rc's IDLE).
-  # A --yolo build ends idle too: its launch waits on this watcher, and nobody picks it up either.
-  local idle_for=""; { [ "$start" = 1 ] || [ "$yolo" = 1 ]; } && idle_for=600
+  # A --yolo build ends idle too: its launch waits on this watcher, and nobody picks it up either; so
+  # does a dnd step, whose owner is not there to pick it up (yolo-launch review D2, 2026-10-25: a dnd rc
+  # run sat its whole warm hour before its launch). On the hand-over line it ends at once (dispatch-rc's
+  # said_its_end reads the `handed` kind as an end).
+  local idle_for=""; { [ "$start" = 1 ] || [ "$yolo" = 1 ] || [ "$mode" = dnd ]; } && idle_for=600
   chain_record
   record mode=rc background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" \
     started="$(date +%s)" log="$log" screen="$scr" screendir="$SCREENDIR" runner="$runner" rc_name="$name · $shown" \
@@ -1478,7 +1492,9 @@ PY
 #   - the run ended on its own: exit 0 headless; interactively, idle after its last turn (dispatch-rc
 #     watch returns 0 for every end — `dispatch --end`, a crash, the lifetime cap — so its record's
 #     end_reason decides, not the exit)
-#   - its last reply, read from the transcript, carries no ⚠ and no WAITING line
+#   - its last reply, read from the transcript, carries no ⚠ and no WAITING line; a WAITING FOR SOMETHING
+#     line only when it is the hand-over (the core's `handed` kind: $handover, or a free form naming
+#     dispatch's launch first)
 #   - no next step is scheduled on this branch (dispatch --next): the launch would curate under it
 #   - autofinish is armed on this Mac and the week is not tight: the sweep's two switches, which a
 #     launch started from here would otherwise skip (the build Mac stays disarmed)
@@ -1490,6 +1506,9 @@ PY
 #     (mode_now), not the one the run started with: a ship lowered mid-flight launches nothing, and the
 #     launch carries the mode read now. Whether it merges is autofinish-run's: it reads plan.json itself
 #     and holds the slice at a ready PR, never trusting this `--by`.
+# Each outcome also goes into the run record as `launch` (yolo-launch review D1, 2026-10-25): helm's card
+# on a hand-over whose launch never started says why, where it once read the line as "nothing woke it"
+# and would retry the build, declined the same way each time.
 AFRUN="${DISPATCH_AUTOFINISH_RUN:-$here/bin/autofinish-run}"   # the tests stand one in
 mode_now() {   # the run's mode at this moment: read_mode, as resolve_mode read it at the start (a torn read is ask)
   local torn m
@@ -1497,18 +1516,26 @@ mode_now() {   # the run's mode at this moment: read_mode, as resolve_mode read 
   read -r torn m < <(read_mode "$([ "$mode_torn" = 1 ] || echo "$mode")")
   echo "$m"
 }
+note_launch() {   # WHAT — into the run record's `launch`; a record that will not read keeps the log line alone
+  python3 -c 'import json, sys
+try:
+    s = json.load(open(sys.argv[1])); s["launch"] = sys.argv[2]; json.dump(s, open(sys.argv[1], "w"), indent=1)
+except (OSError, ValueError):
+    pass' "$state" "$1"
+}
+declined() { echo "== $m: no launch — $1"; note_launch "no launch — $1"; }   # yolo_launch's $m
 yolo_launch() {   # RC — the build run's exit
   { [ "$yolo" = 1 ] || [ "$mode" = dnd ]; } || return 0
   local m="$mode"; [ "$yolo" = 1 ] && m=yolo
-  if [ "$1" != 0 ]; then echo "== $m: no launch — the build run ended with $1"; return 0; fi
+  if [ "$1" != 0 ]; then declined "the build run ended with $1"; return 0; fi
   local why nxt now_m
   now_m=$(mode_now)
   case "$now_m" in
     dnd|yolo) m="$now_m";;
-    *) echo "== $m: no launch — the mode is now ${now_m:-unreadable} (plan.json): the sweep judges it under that mode's rules"; return 0;;
+    *) declined "the mode is now ${now_m:-unreadable} (plan.json): the sweep judges it under that mode's rules"; return 0;;
   esac
   nxt=$(jobs | grep -v "/${DISPATCH_LABEL:-/}\.plist\$" | head -1)
-  if [ -n "$nxt" ]; then echo "== $m: no launch — a next step is scheduled on this branch ($(basename "$nxt"))"; return 0; fi
+  if [ -n "$nxt" ]; then declined "a next step is scheduled on this branch ($(basename "$nxt"))"; return 0; fi
   why=$(python3 - "$state" "$here" "$branch" "$repo" "$core" <<'PY'
 import glob, json, os, sys
 state, here, branch, repo, core = sys.argv[1:6]
@@ -1536,9 +1563,13 @@ try:
             if '"type":"assistant"' not in line:
                 continue
             try:
-                content = json.loads(line).get("message", {}).get("content")
+                msg = json.loads(line).get("message", {})
             except ValueError:
                 continue
+            # Claude Code's own entry for an API error or "No response requested." is no reply of the run's
+            if msg.get("model") == "<synthetic>":
+                continue
+            content = msg.get("content")
             if isinstance(content, list):
                 said = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
                 text = said.strip() or text
@@ -1549,7 +1580,7 @@ if not text:
 kind = common.ending(text)[0]
 if "\u26a0" in text or kind in ("waiting", "relayed"):
     print("its last reply stops for %s: %s" % (common.OWNER_NAME or "the owner", [l for l in text.splitlines() if l.strip()][-1][:120])); sys.exit()
-if kind == "pending":
+if kind == "pending":   # the hand-over is its own kind, `handed`, and goes on
     print("its last reply waits on its own work: %s" % [l for l in text.splitlines() if l.strip()][-1][:120]); sys.exit()
 if not common.autofinish_armed():
     print("autofinish is disarmed on this Mac (bin/autofinish arm)"); sys.exit()
@@ -1564,9 +1595,9 @@ if kind == "none":
 elif kind == "tight":
     print("the week is tight (%s)" % detail)
 PY
-)
-  if [ -n "$why" ]; then echo "== $m: no launch — $why"; return 0; fi
-  if [ -n "$(git -C "$wt" status --porcelain)" ]; then echo "== $m: no launch — $wt has uncommitted changes"; return 0; fi
+) || why="its launch gate failed (exit $?)${why:+: $why}"   # a crash is a reason, never an empty pass (review D3)
+  if [ -n "$why" ]; then declined "$why"; return 0; fi
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then declined "$wt has uncommitted changes"; return 0; fi
   local base open
   base=$(python3 -c 'import json, sys
 try:
@@ -1574,7 +1605,7 @@ try:
 except (OSError, ValueError):
     print("main")' "$wt/.claude/workflow.json")
   git -C "$wt" fetch -q origin "$base" 2>/dev/null
-  git -C "$wt" rev-parse -q --verify "origin/$base" >/dev/null || { echo "== $m: no launch — origin/$base unreadable here"; return 0; }
+  git -C "$wt" rev-parse -q --verify "origin/$base" >/dev/null || { declined "origin/$base unreadable here"; return 0; }
   open=$(git -C "$wt" -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM "origin/$base...HEAD" -- '*.md' | while IFS= read -r f; do
     python3 "${p_keel:-$here/bin/keel}" parse "$wt/$f" 2>/dev/null | python3 -c 'import json, sys
 try:
@@ -1585,7 +1616,7 @@ o = [i["id"] for i in d.get("items", []) if not i.get("settled")]
 if o:
     print("%s %s" % (sys.argv[1], ",".join(o)))' "$f"
   done)
-  if [ -n "$open" ]; then echo "== $m: no launch — open for $who: ${open//$'\n'/; }"; return 0; fi
+  if [ -n "$open" ]; then declined "open for $who: ${open//$'\n'/; }"; return 0; fi
   # The sweep's rule M takes a deployed branch only with a `taken` doc (bin/autofinish verdict(): rule
   # L's /finish would read its taken answers as open, and its held slice never applied); without one,
   # rule L launches it at once, `--by sweep`: live ahead of main is drift, and dnd's slice would hold a
@@ -1619,6 +1650,7 @@ PY
     echo "== $m: deployed ($live) with no taken doc — rule L's start, as the sweep's: at once, --by sweep"
   fi
   echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $by"
+  note_launch "started: autofinish-run --rule $rule --by $by"
   # autofinish-run returns at once: its child is double-forked and setsid, out of this job's
   # process group, which launchd ends with the job: probed 2026-10-08 on the build Mac, a setsid grandchild
   # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
@@ -1626,7 +1658,10 @@ PY
   # the sweep's start_runner does — a build on a second login must not run on it past its ceiling (review, 2026-10-08)
   env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
     "$AFRUN" "$wt" --rule "$rule" --by "$by" 2>&1
-  echo "== $m: autofinish-run exit $?"
+  arc=$?
+  echo "== $m: autofinish-run exit $arc"
+  # a refusal (same tip, a lock, no account) wrote no run state, so "started" would hide the hand-over from helm
+  [ "$arc" = 0 ] || note_launch "no launch — autofinish-run exit $arc"
 }
 
 # --start --dry-run: what would run, printed and nothing written — not even the log's header
@@ -1727,17 +1762,21 @@ fi
   # A brief asked for the foreground on 2026-10-04 (idea-redaction) and the run backgrounded anyway:
   # prose alone does not hold, so run_env enforces it unless --background allow (rule: engineering).
   prompt="You are an unattended session started by dispatch on $(hostname -s) at $(date '+%F %H:%M %Z'); nobody is watching, so decide from the brief and do not ask. Your worktree is $wt on branch $branch. Read the brief at $brief and do what it says. Run the project's check from AGENTS.md before calling anything done, through \`$p_check $wt --out <dir>\` (<dir> under your scratchpad; it runs the line scoped to what this branch changed, one script at a time under a slot, and says SKIP or PASSED for what it need not run — both are the check passing), in the foreground: never run_in_background, Monitor or a background agent you would wait for — this run ends with your reply, and whatever is still running dies unread. One Bash call stops at 30 minutes: start it as \`nohup $p_check $wt --out <dir> > <dir>.out 2>&1 &\` in one call, then poll <dir>/summary in later calls until its last line starts DONE, INTERRUPTED or REFUSED; an UNRUN line names a command only this branch's check line has — run it by its own Bash call; a REFUSED line (a prose check line, none at all) means the check is run by hand as AGENTS.md says. Commit; do not push, except through \`dispatch --next --repo $repo\`; never merge into main or launch (the checkpoint hook pushes, /finish launches). End with what changed, what you verified, and what you left for $who. ${note}"
+  # Whether to land is never a D-item (the owner, 2026-10-23); a yolo or dnd run hands it to dispatch on
+  # the hand-over line its mode's paragraph names, so the base text must not tell it to ask (review D4)
+  land="Whether to land the branch is never such a decision: no D-item for it — end with the WAITING line asking it (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc)."
+  case "$mode" in yolo|dnd) land="Whether to land the branch is never such a decision: no D-item for it, and no WAITING line asks it — this run's mode hands the landing to dispatch, as below (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc).";; esac
   # session-asks (R2–R4, B5): the three steps instead of an ask, and the plan reports — helm's tools
   # (G22): without its ask and helm those lines leave the prompt, and a decision the run cannot make
   # ends it on the WAITING line
   if [ -n "$p_ask" ] && [ -n "$p_helm" ]; then
     prompt="$prompt
 
-First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. Whether to land the branch is never such a decision: no D-item for it — end with the WAITING line asking it (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc). Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
+First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. $land Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
   else
     prompt="$prompt
 
-When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it. Whether to land the branch is never such a decision: no D-item for it — end with the WAITING line asking it (the owner, 2026-10-23: a landing D-item cost a page round-trip for a yes that rarely matters to the doc)."
+When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it. $land"
   fi
   prompt="$prompt When the brief names steps of a Course doc (a \`Steps:\` line), mark each one done once its check is green — \`python3 ${p_keel:-$here/bin/keel} step <doc> <S> done --branch $branch --stamp\` — and commit it: /finish and autofinish refuse a branch whose brief names an open step."
   # The gate per mode travels in the prompt (E12: "the brief carries the gate"; skipper-modes S3): keel
@@ -1746,12 +1785,12 @@ When the brief leaves a decision you cannot make from it, do not ask (AskUserQue
     yolo)
     prompt="$prompt
 
-The owner's yolo (mode yolo, dispatch --yolo; E12 of docs/autofinish-design-2026-10-02.md, skipper-modes D1): one pass, up to a launch. Where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo <the doc>\` instead and commit what it wrote. Exit 0: every open item with a bare Recommended pick, Reversible: no included, now holds that pick as a 'Taken unattended' answer — build on those answers here, inline, in this session. Exit 3, or any other exit: it stopped (at an item with no pick, a conditional or a reopened one, or on an error it printed) and wrote nothing — build nothing that rests on that list; end with the WAITING line naming the item and the doc. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. Do not schedule a next step (dispatch --next): a yolo run is one pass, and a step waiting on this branch stops its launch. Do not run /finish: once this run ends with its worktree clean and no doc this branch changed holding an open item, dispatch starts the launch (autofinish-run --by yolo), which lands it while the ship's mode is still yolo, past the check and the review gate (skipper-modes S3b)."
+The owner's yolo (mode yolo, dispatch --yolo; E12 of docs/autofinish-design-2026-10-02.md, skipper-modes D1): one pass, up to a launch. Where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo <the doc>\` instead and commit what it wrote. Exit 0: every open item with a bare Recommended pick, Reversible: no included, now holds that pick as a 'Taken unattended' answer — build on those answers here, inline, in this session. Exit 3, or any other exit: it stopped (at an item with no pick, a conditional or a reopened one, or on an error it printed) and wrote nothing — build nothing that rests on that list; end with the WAITING line naming the item and the doc. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. Do not schedule a next step (dispatch --next): a yolo run is one pass, and a step waiting on this branch stops its launch. Do not run /finish: once this run ends with its worktree clean and no doc this branch changed holding an open item, dispatch starts the launch (autofinish-run --by yolo), which lands it while the ship's mode is still yolo, past the check and the review gate (skipper-modes S3b). The landing is not asked here, so no WAITING line asks it: once the work is built and committed, and keel yolo took every item it met (exit 0, or no D-list at all), end on exactly \`$handover\`, nothing after it but links. That line hands the landing to dispatch; any other WAITING line (the one keel yolo's stop owes), a RELAYED line or a ⚠ stops it."
       ;;
     dnd)
     prompt="$prompt
 
-The owner's do-not-disturb (mode dnd, skipper-modes D1-A): where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo --dnd <the doc>\` instead and commit what it wrote. It takes every bare Recommended pick, Reversible: no included, as a 'Taken unattended ($who's dnd …)' answer, except the held classes (money in an option, a repo that is not physical: none, a deletion or a public publish, a third party's answer, no pick, a conditional, unmarked or reopened item). Exit 0: nothing held — build on the answers. Exit 4: it printed each held item as 'held Dn' — relay each one as above (ask relay <doc> <Dn>), park what rests on them, and build the rest on the answers it took. Any other exit: it wrote nothing — build nothing that rests on that list and relay its items. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. A dnd answer is not $who's word, but the mode is his yes to land (skipper-modes S3b): do not run /finish — once the last step on this branch ends with its worktree clean and nothing open, dispatch starts the launch (autofinish-run --by dnd), which lands it unless the branch is in the held slice (money, a physical repo, a public publish, a deletion of data, a gated path), where it stops at a ready PR for $who's tap."
+The owner's do-not-disturb (mode dnd, skipper-modes D1-A): where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo --dnd <the doc>\` instead and commit what it wrote. It takes every bare Recommended pick, Reversible: no included, as a 'Taken unattended ($who's dnd …)' answer, except the held classes (money in an option, a repo that is not physical: none, a deletion or a public publish, a third party's answer, no pick, a conditional, unmarked or reopened item). Exit 0: nothing held — build on the answers. Exit 4: it printed each held item as 'held Dn' — relay each one as above (ask relay <doc> <Dn>), park what rests on them, and build the rest on the answers it took. Any other exit: it wrote nothing — build nothing that rests on that list and relay its items. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. A dnd answer is not $who's word, but the mode is his yes to land (skipper-modes S3b): do not run /finish — once the last step on this branch ends with its worktree clean and nothing open, dispatch starts the launch (autofinish-run --by dnd), which lands it unless the branch is in the held slice (money, a physical repo, a public publish, a deletion of data, a gated path), where it stops at a ready PR for $who's tap. The landing is not asked here, so no WAITING line asks it: when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`$handover\`, nothing after it but links. That line hands the landing to dispatch; any other WAITING line, a RELAYED line or a ⚠ stops it. A step that scheduled the next one waits for no launch: it ends on \`$handnext\`."
       ;;
     ask)
     prompt="$prompt

@@ -454,6 +454,8 @@ for l in "the reviewers, then pick A or B in D2" "the check; then log in to gh" 
   tf_ "$T/kw4.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
   check "$(blocks "$T/kw4.jsonl" 'end on .SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  WAITING FOR SOMETHING that asks ('$l') blocks"
 done
+tf_ "$T/kw4h.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — autofinish-run, once you approve D3'
+check "$(blocks "$T/kw4h.jsonl" 'end on .SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  a hand-over line that asks (D3) blocks as a pending one does"
 tf_ "$T/kw5.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — the PR to merge, polled here (per D6).'
 check "$(quiet "$T/kw5.jsonl")" 0 "  a D-number cited in parentheses is no ask here either"
 for l in "keel's suite (paste-paths.sh) to pass" "the review of D3's build" "the login probe on the other Mac" "the reviewers' approval verdicts" "CI's approval of PR 41" "the gh login check" "the review of the D2 doc"; do
