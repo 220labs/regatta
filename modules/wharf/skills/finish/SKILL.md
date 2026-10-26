@@ -39,7 +39,7 @@ docs/subagent-cache-2026-10-04.md: "why are we limiting finish to just myself if
 the agentic version anyways"; it was `disable-model-invocation` until then). The gates make a
 launch safe, not who typed the command: step 4 stops on any open item, step 9 proves the
 rewrite, and on the other Mac step 11.4 asks before merging — except in a `merge: auto` repo
-(the two knowledge repos), where nothing asks. So a main session calls it when
+(the two knowledge repos), where nothing asks, and for a landing the laptop sent there (`--from=<the laptop>`). So a main session calls it when
 the owner's message said finish, land or launch, or when a chain the owner started ends green (the keel skill, `modules/keel/skills/keel/`, "After
 Save, go on"). Not when the work merely looks done, not on "ship it" (rule: git-workflow — "ship
 it" is not merge), and never from a subagent, whose prompt is the parent's, not the owner's. The
@@ -92,7 +92,8 @@ them as in any session. A launch with `autofinish-run --merge` carries the owner
 `--unattended --merge`): step 11.4 then merges on the other Mac without asking, this branch's PR only.
 So does a ship's launch by the yard's tick (`autofinish-run --merge --by ship`: the keel's merge
 default, re-read from the pinned blueprint; skipper-resilience S6); where the keel said no, it
-launches `--hold` instead (below). Nothing else differs.
+launches `--hold` instead (below). A landing the laptop sent to the other Mac ends
+`--from=<the laptop>`: step 11.4 takes the laptop's path there (D2-A, 2026-10-23). Nothing else differs.
 
 **`--yolo`, `--dnd`, `--hold`** (with `--unattended` only; autofinish E12 and skipper-modes S3b —
 `bin/autofinish-run --by yolo|dnd`, or the sweep's rule M, started this launch). Some of the branch's
@@ -580,6 +581,19 @@ session's work sharing the branch — note them; they're reported separately.
        2026-09-24: "enable agents to auto-merge PR from /finish with my explicit approval").
        `/finish … --merge` in the message that started this `/finish` is that yes, given up
        front: skip the question and take the laptop's path (D3, 2026-09-25).
+       **A landing another Mac sent here** — the prompt ends `--unattended … --from=<host>`,
+       which `autofinish-run`'s job on this Mac writes (its header, Where; it refuses `--from` to any
+       other caller of its own — no job env, no pending ticket, an unattended run or a skipper — but a
+       prompt is text, so the words are believed as a `--merge` in it is) — takes `<host>`'s
+       path, not this host's: `<host>` the laptop `regatta/laptop` names is the laptop's path above,
+       no question, as the same landing would have merged there. The owner, 2026-10-22: "laptop is
+       mobile … That's the reason why I've asked to dispatch all possible work to [the other Mac]";
+       D2-A (regatta's private digest of the lander's move, 2026-10-22; the skipper's pick on those words,
+       2026-10-23): the yes belongs to whoever started the landing, not to the host it runs on.
+       Changed that day: until then a landing the laptop handed to the other Mac stopped here at a
+       PR for the owner's tap. It grants nothing the run would not have had on `<host>` — `--yolo`
+       still never reaches this step, step 4 still stops, and any other `--from` host asks as this
+       one does.
        **A repo whose `origin/main` has `.github/workflows/automerge.yml`** asks nothing: the owner
        chose automerge for it (docs/ci-automerge-rollout-2026-10-06.md, D1 = B), and step 3's
        `pr ready` already armed it, so the question would come after the answer. Run `bin/pr

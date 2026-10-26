@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
+  `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other
+  Mac as it would have on the laptop (D2-A of the lander's move, 2026-10-23).
+
 - checkpoint's 🐑 note carries a `keel sheep --hook` row's `note` (keel's publish-budget warning), after
   the pages and any failure (spacesheep-tiers, 2026-10-24).
 
