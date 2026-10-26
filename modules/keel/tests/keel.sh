@@ -1262,6 +1262,8 @@ case "$1" in
           m=$(printf '%s\n' "$@" | grep -A1 '^-m$' | tail -1); echo "$m" > "$SHEEP_T/version"
           printf '{"uuid":"sp-1","url":"https://spacesheep.dev/@sam/memo","sha":"x%s","is_update":%s}\n' "$n" "$([ "$n" -gt 1 ] && echo true || echo false)" ;;
   versions) printf '{"versions":[{"version_name":"%s","created_at":"2026-10-03T22:00:00Z"}]}\n' "$(cat "$SHEEP_T/version")" ;;
+  read) [ "$2" = sp-gone ] && { echo "✗ space not found" >&2; exit 1; }  # R6: a space the server lost
+        [ -f "$SHEEP_T/read-fail" ] && { echo "✗ cannot read" >&2; exit 1; }; cat "$SHEEP_T/page.html" ;;  # the live page: the last one deployed
 esac
 EOF
 chmod +x "$S/bin/spacesheep"
@@ -1307,6 +1309,8 @@ class H(BaseHTTPRequestHandler):
         res = {"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": text}]}}
         if name == "add_comment" and os.path.exists(T + "/fail-add"):  # M4: a reply that fails part-way
             res = {"jsonrpc": "2.0", "id": msg["id"], "error": {"message": "boom"}}
+        if name == "list_comments" and os.path.exists(T + "/fail-list"):  # R6: a page whose comments do not read
+            res = {"jsonrpc": "2.0", "id": msg["id"], "error": {"message": "unwell"}}
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         self.wfile.write(("event: message\ndata: %s\n\n" % json.dumps(res)).encode())
 s = HTTPServer(("127.0.0.1", 0), H)
@@ -1493,7 +1497,7 @@ cat > "$S/comments.txt" <<EOF
 {"comments": [
  {"id": "c1r", "body": "and tell Alex", "parent_id": "c1", "created_at": "2026-10-03T21:01:00Z"},
  {"id": "c1", "body": "no — wait for Monday", "anchor_id": "D1", "created_at": "2026-10-03T21:00:00Z", "resolved": false,
-  "replies": [{"id": "c1b", "body": "memo: taken into docs/s.md", "is_bot": true}]},
+  "replies": [{"id": "c1b", "body": "memo: seen", "is_bot": true}]},
  {"id": "c2", "body": "A, after all", "anchor_id": "D2", "created_at": "2026-10-03T20:00:00.123456789Z"},
  {"id": "c3", "body": "B is fine", "anchor_id": "D2", "created_at": "2026-10-03T19:00:00Z"},
  {"id": "c4", "body": "thin", "anchor_id": "$PID", "created_at": "2026-10-03T19:30:00Z"},
@@ -1501,6 +1505,8 @@ cat > "$S/comments.txt" <<EOF
  {"id": "c6", "body": "old point", "anchor_id": "D1", "resolved": true}
 ]}
 EOF
+# the deploys above read the comments too (the anchor carry, 2026-10-24): count this pull's calls alone
+: > "$S/mcp.log"
 srun sheep pull "$SM" > "$T/p1.out" 2>&1; rc=$?
 check "$rc" "0" "pull previews"
 check "$(git -C "$G/sh" status --porcelain docs/s.md)" "" "…writing nothing"
@@ -1519,9 +1525,9 @@ check "$(grep -A2 '➤ Recommended: B' "$SM" | tail -1)" "  A, after all" "D2: t
 check "$(grep -A2 '^Some context' "$SM" | tail -1)" "**Sam, $(date +%F):** thin" "a block comment is a note under its line"
 has "$SM" "**Sam, $(date +%F):** whole thing reads well" "an unanchored comment is open feedback"
 check "$(grep -c '"add_comment"' "$S/mcp.log")" "5" "one memo: reply per thread taken, and one on the superseded"
-check "$(grep -c '"resolve_comment"' "$S/mcp.log")" "5" "…and each resolved"
+check "$(grep -c '"resolve_comment"' "$S/mcp.log")" "0" "A: none resolved — a taken thread stays open on the page, its marker in place (2026-10-24)"
 has "$S/mcp.log" '"parent_id": "c1"' "the reply is in the thread"
-has "$S/mcp.log" '"comment_id": "c3"' "the superseded D2 thread is resolved too, so no later pull reverts D2"
+has "$S/mcp.log" '"parent_id": "c3"' "the superseded D2 thread gets its reply too, and is marked taken, so no later pull reverts D2"
 gitc "$G/sh" checkout -q -- docs/s.md
 srun sheep pull "$SM" > "$T/p2b.out" 2>&1
 has "$T/p2b.out" "would merge 0 threads" "threads taken once are never taken again (the pin records them)"
@@ -1843,7 +1849,7 @@ check "$(grep -A2 '➤ Recommended: B' "$SM" | tail -1)" "  A - the page's pick"
 has "$SM" "**Sam, $(date +%F):** sent from the phone" "…and its feedback"
 check "$(grep -A2 '^Some context' "$SM" | tail -1)" "**Sam, $(date +%F):** from the page" "…and its note, under its line"
 check "$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; print([x["event"] for x in r if x["path"].endswith("/sh/docs/s.md")][-1:])' "$MEMO_STATE_DIR/touches.jsonl")" "['save']" "…and records the touch a form Save did: the doc no longer stands (F9)"
-has "$S/mcp.log" '"comment_id": "q1"' "…the superseded comment is resolved, so no later pull reverts D2"
+has "$S/mcp.log" '"parent_id": "q1"' "…the superseded comment is replied to and marked taken, so no later pull reverts D2"
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); p=[v for k, v in d.items() if k.endswith("docs/s.md")][0]; print(p["events_after"], len(p["saves"]))' "$S/state/sheep.json")" "2 0" "…the cursor past both events, no Save left pending"
 # the receipt (2026-10-20): the pin keeps it for the next deploy, and every open tab gets it at once
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=[v for k, v in d.items() if k.endswith("docs/s.md")][0]["receipt"]; print(r["saves"], r["what"], r["refused"], r["at"][:4])' "$S/state/sheep.json")" \
@@ -1884,6 +1890,579 @@ has "$T/w3.out" "memo sheep wait: 1 new comment thread — taking it in" "…one
 check "$(grep -A1 'D1 — Ship it' "$SM" | tail -1)" "  ➤ Answer: and one more thing" "…and the comment is taken into the memo"
 gitc "$G/sh" checkout -q -- docs/s.md
 rm -f "$S/events.json"
+
+echo "sheep — threads kept, anchors carried, successors in place (docs/sheep-threads-2026-10-24.md)"
+# a helper module call: python3 "$KP" <keel> <fn-body> reads sys.argv; written to a file, never a quoted heredoc in "$(…)" (bash 3.2)
+KP="$T/kp.py"
+cat > "$KP" <<'PY'
+import json, os, sys
+from importlib.machinery import SourceFileLoader as L
+m = L("m", sys.argv[1]).load_module()
+what, args = sys.argv[2], sys.argv[3:]
+if what == "ids":  # the blocks of a page: id and quote, one per line
+    for b in m.live_blocks(open(args[0]).read()):
+        print("%s\t%s" % (b[0], b[1]))
+elif what == "pin":  # one field of one pin, as JSON
+    print(json.dumps((m.pins().get(args[0]) or {}).get(args[1]), sort_keys=True))
+elif what == "match":  # carry_match over (id, quote, row, at) rows given as JSON
+    print(json.dumps(m.carry_match(*json.loads(args[0])), sort_keys=True))
+elif what == "ratio":
+    import difflib
+    print("%.2f" % difflib.SequenceMatcher(None, args[0], args[1], autojunk=False).ratio())
+elif what == "openwords":
+    pin = m.pins().get(args[0]) or {}
+    threads = m.comment_threads(json.load(open(args[1])))
+    print(sorted(m.open_words(threads, pin)))
+elif what == "blob":
+    print(json.dumps(m.sheep_blob(args[0])[2]))
+elif what == "family":
+    print(m.id_family(args[0]))
+elif what == "late":  # late_replies over a comments file, the thread ids in args[0] taken: [(thread id, [reply ids])]
+    th = m.comment_threads(json.load(open(args[1])))
+    print(json.dumps([(t["id"], [r["id"] for r in rs]) for t, rs in m.late_replies(th, {}, set(args[0].split()))]))
+elif what == "shifts":  # repeat_shifts over (id, quote, row, at) rows given as JSON
+    print(json.dumps(m.repeat_shifts(*json.loads(args[0])), sort_keys=True))
+elif what == "routetimeout":  # a socket that takes the connection and never answers (finding 13)
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(5)
+    m.SHEEP_APP = "http://127.0.0.1:%d" % s.getsockname()[1]
+    try:
+        m.sheep_comments(None, "k", "sp", timeout=1, fallback=False)
+    except m.Stop as e:
+        print(e, "failed" in m._WEB)
+PY
+kp() { (export SHEEP_T="$S" MEMO_SHEEP_BIN="$S/bin/spacesheep" MEMO_SHEEP_STATE="$S/state" SPACESHEEP_KEY=ss_test \
+          MEMO_SHEEP_MCP="http://127.0.0.1:$(cat "$S/port")/mcp" MEMO_SHEEP_APP="http://127.0.0.1:$(cat "$S/port")"; python3 "$KP" "$B/keel" "$@"); }
+# finish review (2026-10-25): the "line is gone" reply is no take, so an owner's reply typed before it is still late
+cat > "$T/late.json" <<'EOF'
+{"comments": [
+ {"id": "L1", "parent_id": null, "body": "first", "anchor_id": "D1", "resolved_at": null, "created_at": "2026-10-25T09:00:00Z", "via": null},
+ {"id": "L1a", "parent_id": "L1", "body": "memo: taken into docs/x.md as D1's answer", "via": "claude", "created_at": "2026-10-25T09:01:00Z"},
+ {"id": "L1b", "parent_id": "L1", "body": "actually B", "via": null, "created_at": "2026-10-25T09:02:00Z"},
+ {"id": "L1c", "parent_id": "L1", "body": "memo: the line this was on is gone from the page", "via": "claude", "created_at": "2026-10-25T09:03:00Z"}
+]}
+EOF
+check "$(kp late L1 "$T/late.json")" '[["L1", ["L1b"]]]' "finish review: a reply typed before the gone-reply is still late (only a take's reply counts as the ack)"
+TK="sh@claude/sh:docs/t.md"
+cat > "$G/sh/docs/t.md" <<'EOF'
+# Carry me
+
+Alpha line that stays put.
+
+Beta line about the cache warming on Monday morning.
+
+Gamma line that will be rewritten entirely.
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t.md; gitc "$G/sh" commit -qm "carry me"
+srun sheep "$G/sh/docs/t.md" > "$T/k1.out" 2>&1
+kp ids "$S/page.html" > "$T/k1.ids"
+BETA=$(grep 'Beta line' "$T/k1.ids" | cut -f1); GAMMA=$(grep 'Gamma line' "$T/k1.ids" | cut -f1); ALPHA=$(grep 'Alpha line' "$T/k1.ids" | cut -f1)
+check "$(echo "$BETA $GAMMA" | grep -cE '^b-[0-9a-f]{8} b-[0-9a-f]{8}$')" "1" "B: the first page names each block by its line's hash"
+# A: a taken thread stays open, and a reply under it after the take is still named and still wakes a wait
+cat > "$S/web-comments.json" <<EOF
+{"comments": [
+ {"id": "a1", "parent_id": null, "body": "yes, go", "anchor_id": "D1", "resolved_at": null, "created_at": "2026-10-24T10:00:00Z", "via": null},
+ {"id": "kb", "parent_id": null, "body": "Monday is too early", "anchor_id": "$BETA", "resolved_at": null, "created_at": "2026-10-24T10:01:00Z", "via": null},
+ {"id": "kg", "parent_id": null, "body": "gamma needs a source", "anchor_id": "$GAMMA", "resolved_at": null, "created_at": "2026-10-24T10:02:00Z", "via": null}
+]}
+EOF
+n0=$(grep -c '"resolve_comment"' "$S/mcp.log")
+srun sheep pull --write "$G/sh/docs/t.md" > "$T/k2.out" 2>&1; rc=$?
+check "$rc" "0" "A: pull --write takes the three threads"
+has "$T/k2.out" "replied in 3 threads, left open" "…replies in each and says they stay open"
+check "$(grep -c '"resolve_comment"' "$S/mcp.log")" "$n0" "…and resolves none"
+gitc "$G/sh" commit -qam "taken"
+# a1r is dated after the commit above, as a real late reply is: one older than the doc's commit loses to git (git_answer_since)
+cat > "$S/web-comments.json" <<EOF
+{"comments": [
+ {"id": "a1", "parent_id": null, "body": "yes, go", "anchor_id": "D1", "resolved_at": null, "created_at": "2026-10-24T10:00:00Z", "via": null},
+ {"id": "a1m", "parent_id": "a1", "body": "memo: taken into docs/t.md as D1's answer", "anchor_id": null, "resolved_at": null, "created_at": "2026-10-24T10:05:00Z", "via": "claude"},
+ {"id": "a1r", "parent_id": "a1", "body": "on second thought, wait", "anchor_id": null, "resolved_at": null, "created_at": "2030-01-01T11:00:00Z", "via": null},
+ {"id": "kb", "parent_id": null, "body": "Monday is too early", "anchor_id": "$BETA", "resolved_at": null, "created_at": "2026-10-24T10:01:00Z", "via": null},
+ {"id": "kg", "parent_id": null, "body": "gamma needs a source", "anchor_id": "$GAMMA", "resolved_at": null, "created_at": "2026-10-24T10:02:00Z", "via": null}
+]}
+EOF
+srun sheep pull "$G/sh/docs/t.md" > "$T/k3.out" 2>&1
+has "$T/k3.out" "would merge 1 thread " "A: an open thread already taken is not taken again (the pin's taken, not the thread's state)…"
+has "$T/k3.out" "[a1] → D1: on second thought, wait" "R11: …while the owner's reply under it is taken in, as D1's answer"
+lacks "$T/k3.out" "late reply:" "…and not merely named as late"
+check "$(kp openwords "$TK" "$S/web-comments.json")" "['a1+late']" "…and wakes a wait (open_words), while the taken threads count for nothing"
+cp "$S/state/sheep.json" "$T/k3.pins"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["taken"]=[]; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "$TK"
+srun sheep pull "$G/sh/docs/t.md" > "$T/k3b.out" 2>&1
+has "$T/k3b.out" "would merge 3 threads" "A: a pin that lost its taken still skips the thread holding this tool's taken-into reply…"
+has "$T/k3b.out" "[a1] → D1: on second thought, wait" "R2: …and takes the reply under it as late, not the root again"
+check "$(kp openwords "$TK" "$S/web-comments.json")" "['a1+late', 'kb', 'kg']" "R2: open_words reads the taken-into reply too: the thread wakes a wait only for its late reply"
+cp "$T/k3.pins" "$S/state/sheep.json"
+# R2: the old c1 fixture — a taken-into reply with no time, the owner's reply after it, no pin at all
+cat > "$T/c1old.json" <<'EOF'
+{"comments": [
+ {"id": "c1r", "body": "and tell Alex", "parent_id": "c1", "created_at": "2026-10-03T21:01:00Z"},
+ {"id": "c1", "body": "no — wait for Monday", "anchor_id": "D1", "created_at": "2026-10-03T21:00:00Z", "resolved": false,
+  "replies": [{"id": "c1b", "body": "memo: taken into docs/s.md", "is_bot": true}]}
+]}
+EOF
+check "$(kp openwords "nopin@claude/x:docs/none.md" "$T/c1old.json")" "['c1+late']" "R2: with no pin, a thread taken by its reply is no open thread, and the reply after it is late"
+srun sheep pull --write "$G/sh/docs/t.md" > "$T/k3w.out" 2>&1
+check "$(sed -n '/➤ Answer:/,/^---/p' "$G/sh/docs/t.md" | grep -o -e 'yes, go' -e 'on second thought, wait' | wc -l | tr -d ' ')" "2" "R11: --write puts the thread's words again as D1's answer, the reply after the root"
+gitc "$G/sh" commit -qam "late reply taken"
+srun sheep pull "$G/sh/docs/t.md" > "$T/k3c.out" 2>&1
+has "$T/k3c.out" "would merge 0 threads" "…once: the take records the reply as seen"
+# B: an edited line keeps its id and so its thread; a rewritten one gets one reply; the rest untouched
+sedi -e 's/Monday morning/Tuesday morning/' -e 's/^Gamma line that will be rewritten entirely\./Completely different words, about the budget./' "$G/sh/docs/t.md"
+gitc "$G/sh" commit -qam "edit beta, rewrite gamma"; TSHA=$(git -C "$G/sh" log -1 --format=%h -- docs/t.md)
+srun sheep "$G/sh/docs/t.md" > "$T/k4.out" 2>&1; rc=$?
+check "$rc" "0" "B: the redeploy"
+kp ids "$S/page.html" > "$T/k4.ids"
+check "$(grep "^$BETA	" "$T/k4.ids" | cut -f2)" "Beta line about the cache warming on Tuesday morning." "B: the edited line inherits the commented id"
+check "$(grep -c "^$GAMMA	" "$T/k4.ids")" "0" "…the rewritten one does not (below the ratio)"
+check "$(grep "^$ALPHA	" "$T/k4.ids" | cut -f2)" "Alpha line that stays put." "…and an untouched line keeps its own"
+check "$(kp ratio 'Beta line about the cache warming on Monday morning.' 'Beta line about the cache warming on Tuesday morning.') $(kp ratio 'Gamma line that will be rewritten entirely.' 'Completely different words, about the budget.')" "0.93 0.20" "…the two ratios, against CARRY_RATIO 0.6"
+check "$(kp pin "$TK" ss | python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]]["quote"])' "$BETA")" "Beta line about the cache warming on Tuesday morning." "…the pin maps the inherited id to the new line, for merge"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep -c "the line this was on is gone from $TSHA; the thread stays here")" "1" "B: the thread on the rewritten line gets one memo: reply naming the commit"
+has "$S/mcp.log" '"parent_id": "kg", "body": "memo: the line this was on is gone' "…in that thread"
+# the reply is on the page now; a later deploy edits another line and must not reply twice, nor drop the inherited id
+python3 - "$S/web-comments.json" "$TSHA" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["comments"].append({"id": "kgm", "parent_id": "kg", "body": "memo: the line this was on is gone from %s; the thread stays here." % sys.argv[2], "via": "claude", "created_at": "2026-10-24T12:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["ss"]={}; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "$TK"
+sedi -e 's/Tuesday morning/Tuesday at nine/' -e 's/^Alpha line that stays put\./Alpha line that stays put, mostly./' "$G/sh/docs/t.md"
+gitc "$G/sh" commit -qam "edit beta again"
+srun sheep "$G/sh/docs/t.md" > "$T/k5.out" 2>&1
+kp ids "$S/page.html" > "$T/k5.ids"
+check "$(grep "^$BETA	" "$T/k5.ids" | cut -f2)" "Beta line about the cache warming on Tuesday at nine." "B: a second edit keeps the inherited id: read back from the live page, with the pin's ss emptied (the other Mac's deploy)"
+check "$(grep -c "^$ALPHA	" "$T/k5.ids")" "0" "…while an edited line nobody commented on takes its new hash"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep -c 'the line this was on is gone')" "1" "…and the orphaned thread is not told twice"
+# carry_match: one-to-one, best ratio first, the nearer line breaking a tie, the row label kept apart
+check "$(kp match '[[["o1","the cache warms at nine","",3],["o2","the cache warms at ten","",9]],[["n1","the cache warms at nine!","",4],["n2","the cache warms at noon","",20]],["o1","o2"]]')" '{"n1": "o1", "n2": "o2"}' "carry_match: each old id to one new block, the best ratio first"
+check "$(kp match '[[["o1","same words here","",3]],[["n1","same words here.","",30],["n2","same words here.","",4]],["o1"]]')" '{"n2": "o1"}' "…a tie goes to the nearer line"
+check "$(kp match '[[["o1","a cell","Keep",3]],[["n1","a cell","Drop",3]],["o1"]]')" '{}' "…and never across row labels"
+check "$(kp match '[[["o1","a line","",3],["o2","a line","",5]],[["o1","a line","",3],["n2","a line!","",5]],["o2"]]')" '{"n2": "o2"}' "…an id still rendered is not gone, and only a commented one is carried"
+# a live page that will not read: the deploy goes on, the carry waits for the next one
+touch "$S/read-fail"
+sedi -e 's/Tuesday at nine/Tuesday at ten/' "$G/sh/docs/t.md"; gitc "$G/sh" commit -qam "edit beta, read fails"
+srun sheep "$G/sh/docs/t.md" > "$T/k6.out" 2>&1; rc=$?
+rm -f "$S/read-fail"
+check "$rc" "0" "B: a live page that does not read still deploys"
+has "$T/k6.out" "the comments' anchors not carried this time (the live page did not read" "…and says the carry waits"
+sedi -e 's/^Alpha line that stays put, mostly\./Alpha line that stays put, mostly, again./' "$G/sh/docs/t.md"; gitc "$G/sh" commit -qam "edit alpha after the skipped carry"
+srun sheep "$G/sh/docs/t.md" > "$T/k7.out" 2>&1
+kp ids "$S/page.html" > "$T/k7.ids"
+check "$(grep "^$BETA	" "$T/k7.ids" | cut -f2)" "Beta line about the cache warming on Tuesday at ten." "B: the next deploy catches the skipped carry up: the heir published under its own id takes the commented id back"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep -c 'the line this was on is gone')" "1" "…and tells no thread its line is gone"
+check "$(kp match '[[["o1","- A — land it now","",3]],[["n1","- B — hold it now","",3]],["o1"]]')" '{}' "carry_match: a short line carries only as a near-copy (0.82 here, CARRY_SHORT_RATIO 0.88)"
+gitc "$G/sh" reset -q --hard HEAD~2
+rm -f "$S/web-comments.json"
+
+# R1, R8, R9 (the second landing review): a thread told its line is gone stays put, and costs no read;
+# a repeated line keeps its copy's number when an earlier copy goes
+cat > "$G/sh/docs/t2.md" <<'EOF'
+# Repeat and delete
+
+Delta line about the deploy on Friday evening.
+
+Delta line about the deploy on Sunday evening.
+
+Echo line about the weekly budget review meeting.
+
+Same line twice.
+
+Filler between the two copies of the line.
+
+Same line twice.
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t2.md; gitc "$G/sh" commit -qm "repeat and delete"
+srun sheep "$G/sh/docs/t2.md" > "$T/r1a.out" 2>&1
+kp ids "$S/page.html" > "$T/r1a.ids"
+FRI=$(grep 'Friday' "$T/r1a.ids" | cut -f1); SUN=$(grep 'Sunday' "$T/r1a.ids" | cut -f1); ECHO=$(grep 'Echo line' "$T/r1a.ids" | cut -f1)
+SAME1=$(grep 'Same line twice' "$T/r1a.ids" | sed -n 1p | cut -f1); SAME2=$(grep 'Same line twice' "$T/r1a.ids" | sed -n 2p | cut -f1)
+check "$SAME2" "$SAME1-2" "R9: a repeated line's second copy is numbered -2"
+cat > "$S/web-comments.json" <<EOF
+{"comments": [
+ {"id": "rf", "parent_id": null, "body": "friday is wrong", "anchor_id": "$FRI", "resolved_at": null, "created_at": "2026-10-24T10:00:00Z", "via": null},
+ {"id": "re", "parent_id": null, "body": "echo needs a number", "anchor_id": "$ECHO", "resolved_at": null, "created_at": "2026-10-24T10:01:00Z", "via": null},
+ {"id": "rs", "parent_id": null, "body": "the second copy is the one", "anchor_id": "$SAME2", "resolved_at": null, "created_at": "2026-10-24T10:02:00Z", "via": null}
+]}
+EOF
+python3 - "$G/sh/docs/t2.md" <<'PY'
+import sys
+f = sys.argv[1]
+lines = open(f).read().split("\n")
+lines = [l for l in lines if "Friday evening" not in l]
+del lines[lines.index("Same line twice.")]
+open(f, "w").write("\n".join(lines))
+PY
+gitc "$G/sh" commit -qam "drop friday and the first copy"
+srun sheep "$G/sh/docs/t2.md" > "$T/r1b.out" 2>&1
+kp ids "$S/page.html" > "$T/r1b.ids"
+check "$(grep "^$SAME2	" "$T/r1b.ids" | cut -f2)" "Same line twice." "R9: deleting a repeated line's first copy leaves the second copy its number, and so its thread"
+check "$(grep -c "^$SAME1	" "$T/r1b.ids")" "0" "…the deleted copy's number is on no block"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep -c '"parent_id": "rs"')" "0" "…and the second copy's thread gets no false \"gone\" reply"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep '"parent_id": "rf"' | grep -c 'the line this was on is gone')" "1" "R1: the deleted line's thread is told once"
+python3 - "$S/web-comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["comments"].append({"id": "rfm", "parent_id": "rf", "body": "memo: the line this was on is gone from abc1234; the thread stays here.", "via": "claude", "created_at": "2026-10-24T12:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+sedi -e 's/weekly budget/monthly budget/' "$G/sh/docs/t2.md"; gitc "$G/sh" commit -qam "edit echo"
+srun sheep "$G/sh/docs/t2.md" > "$T/r1c.out" 2>&1
+kp ids "$S/page.html" > "$T/r1c.ids"
+check "$(grep "^$SUN	" "$T/r1c.ids" | cut -f2)" "Delta line about the deploy on Sunday evening." "R1: a told thread does not move to a similar line (0.93) at a later deploy: the Sunday line keeps its own id"
+check "$(grep -c "^$FRI	" "$T/r1c.ids")" "0" "…the gone line's id is on no block"
+check "$(grep "^$ECHO	" "$T/r1c.ids" | cut -f2)" "Echo line about the monthly budget review meeting." "…while the edited, commented line still inherits its id"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep -c '"parent_id": "rf"')" "1" "…and the told thread is not told twice"
+check "$(kp match '[[["o1","the cache warms at nine","",3]],[["n1","the cache warms at nine!","",4]],["o1","n1"]]')" '{}' "R1: carry_match never makes a block whose own id comments name another thread's heir"
+# R8: with only the told thread's id missing, a deploy reads no live page
+python3 - "$S/web-comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["comments"] = [c for c in d["comments"] if c["id"] in ("rf", "rfm")]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+n0=$(grep -c '^read' "$S/cli.log")
+sedi -e 's/two copies of the line/two copies of that line/' "$G/sh/docs/t2.md"; gitc "$G/sh" commit -qam "edit the filler"
+srun sheep "$G/sh/docs/t2.md" > "$T/r1d.out" 2>&1; rc=$?
+check "$rc $(grep -c '^read' "$S/cli.log")" "0 $n0" "R8: a told thread is no reason to read the live page on every later deploy"
+rm -f "$S/web-comments.json"
+
+# C1: a renamed doc deploys into its old page; the old pin points at it
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]="sp-t"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "$TK"
+mkdir -p "$G/sh/docs/record"; gitc "$G/sh" mv docs/t.md docs/record/t.md; gitc "$G/sh" commit -qm "archive t"
+srun sheep "$G/sh/docs/record/t.md" > "$T/c1.out" 2>&1; rc=$?
+check "$rc" "0" "C: a renamed doc deploys"
+check "$(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space sp-t')" "1" "…into the page its old path had"
+has "$T/c1.out" "docs/record/t.md renamed from docs/t.md" "…and says so"
+check "$(kp pin "$TK" moved_to)" '"sh@claude/sh:docs/record/t.md"' "…the old pin says where the page went"
+check "$(kp pin "$TK" space)" "null" "…and gives the space up, so the drain and the lookout pass it by"
+check "$(kp pin sh@claude/sh:docs/record/t.md taken | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin)))')" "['a1', 'kb', 'kg']" "…the new pin keeps the threads already taken"
+n0=$(grep -c '^deploy' "$S/cli.log")
+check "$(kp blob "$TK" 2>/dev/null)" "false" "C: a deploy of the old key (the lookout's) deploys nothing"
+check "$(grep -c '^deploy' "$S/cli.log")" "$n0" "…not a single deploy"
+printf '# Revived\n\n- **D1 — Again?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' > "$G/sh/docs/t.md"
+gitc "$G/sh" add docs/t.md; gitc "$G/sh" commit -qm "t revived"
+srun sheep "$G/sh/docs/t.md" > "$T/c1r.out" 2>&1
+check "$(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space')" "0" "C: a doc revived at its old path gets a page of its own, not the renamed doc's"
+check "$(kp pin "$TK" moved_to)" "null" "…and its pin forgets the move"
+gitc "$G/sh" rm -q docs/t.md; gitc "$G/sh" commit -qm "t gone again"
+# C2: a doc whose head says it supersedes another gets a page of its own (D3-A, 2026-10-25: the handover is not built)
+cat > "$G/sh/docs/u.md" <<'EOF'
+# Old plan
+
+- **D1 — Which?** Old question.
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/u.md; gitc "$G/sh" commit -qm "old plan"
+srun sheep "$G/sh/docs/u.md" > /dev/null 2>&1
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]="sp-u"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "sh@claude/sh:docs/u.md"
+printf '# New plan\n\nSupersedes: `docs/u.md`\n\n- **D1 — Something else?** A new question.\n\n  ➤ Recommended: B\n\n  ➤ Answer:\n\n---\n' > "$G/sh/docs/v.md"
+gitc "$G/sh" add docs/v.md; gitc "$G/sh" commit -qm "new plan"
+srun sheep "$G/sh/docs/v.md" > "$T/c2.out" 2>&1; rc=$?
+check "$rc $(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space')" "0 0" "C2: a doc headed Supersedes: deploys to a page of its own"
+check "$(kp pin sh@claude/sh:docs/u.md space) $(kp pin sh@claude/sh:docs/u.md moved_to)" '"sp-u" null' "…and the old doc keeps its page"
+gitc "$G/sh" push -q origin claude/sh 2>/dev/null
+# C3: a doc read from main after its branch landed takes the branch's page
+# the bare repo has no main yet: this clone makes its own, so the landing is a local fast-forward
+mkclone "$G/lm"; git -C "$G/lm" symbolic-ref HEAD refs/heads/main; printf 'lm\n' > "$G/lm/README"; gitc "$G/lm" add README; gitc "$G/lm" commit -qm init
+gitc "$G/lm" checkout -q -b claude/lm; mkdir -p "$G/lm/docs"
+printf '# Landed\n\n- **D1 — Land?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' > "$G/lm/docs/w.md"
+gitc "$G/lm" add docs/w.md; gitc "$G/lm" commit -qm "w"
+srun sheep "$G/lm/docs/w.md" > /dev/null 2>&1
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]="sp-w"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "lm@claude/lm:docs/w.md"
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm
+srun sheep "$G/lm/docs/w.md" > "$T/c3.out" 2>&1; rc=$?
+check "$rc" "0" "C: the landed doc deploys from main"
+check "$(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space sp-w')" "1" "…into the branch's page, not a new one"
+has "$T/c3.out" "docs/w.md landed from claude/lm" "…and says so"
+check "$(kp pin lm@claude/lm:docs/w.md moved_to)" '"lm@main:docs/w.md"' "…the branch's pin points at main's"
+# …but main does not take a page from a branch still at work on the doc
+gitc "$G/lm" checkout -q -b claude/lm2; printf '# Busy\n\n- **D1 — Wait?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' > "$G/lm/docs/x.md"
+gitc "$G/lm" add docs/x.md; gitc "$G/lm" commit -qm "x"
+srun sheep "$G/lm/docs/x.md" > /dev/null 2>&1
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]="sp-x"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "lm@claude/lm2:docs/x.md"
+gitc "$G/lm" checkout -q main; printf '# Busy\n\nmain'"'"'s own copy\n\n- **D1 — Wait?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' > "$G/lm/docs/x.md"
+gitc "$G/lm" add docs/x.md; gitc "$G/lm" commit -qm "x on main"
+srun sheep "$G/lm/docs/x.md" > /dev/null 2>&1
+check "$(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space')" "0" "…a branch whose doc differs and whose ref lives keeps its page"
+check "$(kp pin lm@claude/lm2:docs/x.md moved_to)" "null" "…and its pin"
+printf '# Same\n\n- **D1 — Keep?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' > "$G/lm/docs/y.md"
+gitc "$G/lm" add docs/y.md; gitc "$G/lm" commit -qm "y on main"; gitc "$G/lm" checkout -q -b claude/lm3
+printf 'other\n' > "$G/lm/other.txt"; gitc "$G/lm" add other.txt; gitc "$G/lm" commit -qm "lm3 at work elsewhere"
+srun sheep "$G/lm/docs/y.md" > /dev/null 2>&1
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]="sp-y"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "lm@claude/lm3:docs/y.md"
+gitc "$G/lm" checkout -q main
+srun sheep "$G/lm/docs/y.md" > /dev/null 2>&1
+check "$(grep '^deploy' "$S/cli.log" | tail -1 | grep -c -- '--space')" "0" "…nor from a live branch that never changed the doc, though its blob is main's"
+check "$(kp pin lm@claude/lm3:docs/y.md moved_to)" "null" "…which keeps its pin"
+
+# the second landing review: R3, R4, R10 (what proves a landing); R5 and R6 went with Supersedes: (D3-A)
+setspace() { python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]=sys.argv[3]; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "$1" "$2"; }
+lastspace() { grep '^deploy' "$S/cli.log" | tail -1 | grep -o -- '--space [^ ]*' | cut -d' ' -f2; }
+doc() { printf '# %s\n\n%b- **D1 — %s?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' "$1" "$2" "$1"; }
+doc Idle "" > "$G/lm/docs/z.md"; gitc "$G/lm" add docs/z.md; gitc "$G/lm" commit -qm "z on main"
+gitc "$G/lm" checkout -q -b claude/lm4
+srun sheep "$G/lm/docs/z.md" > /dev/null 2>&1; setspace lm@claude/lm4:docs/z.md sp-z
+gitc "$G/lm" checkout -q main
+srun sheep "$G/lm/docs/z.md" > /dev/null 2>&1
+check "$(lastspace)" "" "R3: …nor from a branch with no commits of its own, merged by the ancestor test"
+check "$(kp pin lm@claude/lm4:docs/z.md moved_to)" "null" "…which keeps its pin"
+doc Dropped "" > "$G/lm/docs/q.md"; gitc "$G/lm" add docs/q.md; gitc "$G/lm" commit -qm "q on main"
+gitc "$G/lm" checkout -q -b claude/lm5; doc Dropped "A line main never got.\n\n" > "$G/lm/docs/q.md"; gitc "$G/lm" commit -qam "q on lm5"
+srun sheep "$G/lm/docs/q.md" > /dev/null 2>&1; setspace lm@claude/lm5:docs/q.md sp-q
+gitc "$G/lm" checkout -q main; gitc "$G/lm" branch -q -D claude/lm5
+srun sheep "$G/lm/docs/q.md" > /dev/null 2>&1
+check "$(lastspace)" "" "R4: a branch deleted unmerged hands main no page: its page's own commit holds another blob"
+check "$(kp pin lm@claude/lm5:docs/q.md moved_to)" "null" "…and keeps its pin, pending Saves and all"
+doc Worktree "" > "$G/lm/docs/r.md"; gitc "$G/lm" add docs/r.md; gitc "$G/lm" commit -qm "r on main"
+gitc "$G/lm" worktree add -q "$G/lm-wt" -b claude/lm6
+doc Worktree "Changed in the worktree.\n\n" > "$G/lm-wt/docs/r.md"; gitc "$G/lm-wt" commit -qam "r on lm6"
+srun sheep "$G/lm-wt/docs/r.md" > /dev/null 2>&1; setspace lm@claude/lm6:docs/r.md sp-r
+check "$(kp pin lm@claude/lm6:docs/r.md fork)" "\"$(git -C "$G/lm" rev-parse main)\"" "R3: a claude/* deploy records where the branch left main"
+gitc "$G/lm" merge -q --ff-only claude/lm6
+srun sheep "$G/lm/docs/r.md" > "$T/r10a.out" 2>&1
+check "$(lastspace)" "sp-r" "R10: main takes a landed branch's page though the branch's worktree is still here"
+has "$T/r10a.out" "docs/r.md landed from claude/lm6" "…and says so"
+doc GiveWay "" > "$G/lm/docs/g.md"; gitc "$G/lm" add docs/g.md; gitc "$G/lm" commit -qm "g on main"
+srun sheep "$G/lm/docs/g.md" > /dev/null 2>&1; setspace lm@main:docs/g.md sp-gm
+gitc "$G/lm" checkout -q -b claude/lm7; doc GiveWay "Changed on lm7.\n\n" > "$G/lm/docs/g.md"; gitc "$G/lm" commit -qam "g on lm7"
+srun sheep "$G/lm/docs/g.md" > /dev/null 2>&1; setspace lm@claude/lm7:docs/g.md sp-g7
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm7
+echo '{"comments": []}' > "$S/web-comments.json"
+srun sheep "$G/lm/docs/g.md" > "$T/r10b.out" 2>&1
+check "$(lastspace)" "sp-g7" "R10: main's own page, empty, gives way to the landed branch's"
+has "$T/r10b.out" "main's empty page gave way to it" "…and says so"
+check "$(kp pin lm@main:docs/g.md gave_up_space) $(kp pin lm@claude/lm7:docs/g.md moved_to)" '"sp-gm" "lm@main:docs/g.md"' "…main's pin names the page it gave up, the branch's points at main's"
+doc Kept "" > "$G/lm/docs/h.md"; gitc "$G/lm" add docs/h.md; gitc "$G/lm" commit -qm "h on main"
+srun sheep "$G/lm/docs/h.md" > /dev/null 2>&1; setspace lm@main:docs/h.md sp-hm
+gitc "$G/lm" checkout -q -b claude/lm9; doc Kept "Changed on lm9.\n\n" > "$G/lm/docs/h.md"; gitc "$G/lm" commit -qam "h on lm9"
+srun sheep "$G/lm/docs/h.md" > /dev/null 2>&1; setspace lm@claude/lm9:docs/h.md sp-h9
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm9
+echo '{"comments": [{"id": "hm1", "parent_id": null, "body": "a thought on main", "anchor_id": null, "resolved_at": null, "created_at": "2026-10-24T10:00:00Z", "via": null}]}' > "$S/web-comments.json"
+srun sheep "$G/lm/docs/h.md" > "$T/r10c.out" 2>&1
+check "$(lastspace)" "sp-hm" "R10: main's own page with a thread on it keeps it"
+check "$(kp pin lm@main:docs/h.md kept_over)" '["lm@claude/lm9:docs/h.md"]' "…and records the branch, so its page is read once"
+
+# the third landing review (2026-10-25): findings 3 and 5-15
+check "$(kp family b-12345678) $(kp family b-12345678-2) $(kp family b-1234abcd-3)" "b-12345678 b-12345678 b-1234abcd" "finding 5: an all-digit hash is no copy number; a number after the hash is"
+check "$(kp shifts '[[["b-11111111","x","",1]],[["b-22222222","x","",1]]]')" '{}' "finding 5: two all-digit hashes are not copies of one line"
+check "$(kp routetimeout)" "the comments route did not answer in 1s False" "finding 13: a read the hook's budget cut short does not mark the route failed"
+# finding 7: a copy inserted above a commented line leaves the thread on its line
+cat > "$G/sh/docs/t3.md" <<'EOF'
+# Copies
+
+Intro line about the copies.
+
+Same words, said once.
+
+Outro line about the copies.
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t3.md; gitc "$G/sh" commit -qm "copies"
+srun sheep "$G/sh/docs/t3.md" > /dev/null 2>&1
+SAMEW=$(kp ids "$S/page.html" | grep 'Same words' | cut -f1)
+cat > "$S/web-comments.json" <<EOF
+{"comments": [{"id": "c7", "parent_id": null, "body": "this one, not a copy", "anchor_id": "$SAMEW", "resolved_at": null, "created_at": "2026-10-25T10:00:00Z", "via": null}]}
+EOF
+perl -0pi -e 's/# Copies\n/# Copies\n\nSame words, said once.\n/' "$G/sh/docs/t3.md"; gitc "$G/sh" commit -qam "a copy above"
+srun sheep "$G/sh/docs/t3.md" > /dev/null 2>&1
+check "$(kp ids "$S/page.html" | grep -A1 'Intro line' | tail -1 | cut -f1)" "$SAMEW" "finding 7: a copy inserted above a commented line leaves the thread's id on its line"
+check "$(kp ids "$S/page.html" | grep 'Same words' | head -1 | cut -f1)" "$SAMEW-3" "…and the copy above takes a number no block had"
+n0=$(grep -c '^read' "$S/cli.log")
+perl -pi -e 's/^Outro line about the copies\./Outro line about the copies, edited./' "$G/sh/docs/t3.md"; gitc "$G/sh" commit -qam "edit the outro"
+srun sheep "$G/sh/docs/t3.md" > /dev/null 2>&1
+check "$(grep -c '^read' "$S/cli.log") $(kp ids "$S/page.html" | grep -A1 'Intro line' | tail -1 | cut -f1)" "$n0 $SAMEW" "…and the next deploy keeps both copies' numbers from this Mac's last page, with no read"
+# finding 15: an inherited id is kept from the pin's aliases, with no read of the live page
+cat > "$G/sh/docs/t4.md" <<'EOF'
+# Alias
+
+Kappa line about the release train leaving on Monday.
+
+Lambda line nobody comments on.
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t4.md; gitc "$G/sh" commit -qm "alias"
+srun sheep "$G/sh/docs/t4.md" > /dev/null 2>&1
+KAPPA=$(kp ids "$S/page.html" | grep 'Kappa line' | cut -f1)
+cat > "$S/web-comments.json" <<EOF
+{"comments": [{"id": "k15", "parent_id": null, "body": "Monday is a holiday", "anchor_id": "$KAPPA", "resolved_at": null, "created_at": "2026-10-25T10:00:00Z", "via": null}]}
+EOF
+sedi -e 's/leaving on Monday/leaving on Tuesday/' "$G/sh/docs/t4.md"; gitc "$G/sh" commit -qam "kappa on tuesday"
+srun sheep "$G/sh/docs/t4.md" > /dev/null 2>&1
+check "$(kp ids "$S/page.html" | grep 'Kappa line' | cut -f1)" "$KAPPA" "finding 15: the edited line inherits the commented id"
+n0=$(grep -c '^read' "$S/cli.log")
+sedi -e 's/^Lambda line nobody comments on\./Lambda line nobody ever comments on./' "$G/sh/docs/t4.md"; gitc "$G/sh" commit -qam "edit lambda"
+srun sheep "$G/sh/docs/t4.md" > /dev/null 2>&1
+check "$(grep -c '^read' "$S/cli.log") $(kp ids "$S/page.html" | grep 'Kappa line' | cut -f1)" "$n0 $KAPPA" "…and a later deploy keeps it from the pin's aliases, with no read of the live page"
+# finding 3: a deleted line's thread not yet told never moves onto a similar neighbour the deploy did not add
+cat > "$G/sh/docs/t5.md" <<'EOF'
+# Untold
+
+Mu line about the deploy window on Friday evening.
+
+Mu line about the deploy window on Sunday evening.
+
+Nu line nobody comments on.
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t5.md; gitc "$G/sh" commit -qm "untold"
+srun sheep "$G/sh/docs/t5.md" > /dev/null 2>&1
+FRIM=$(kp ids "$S/page.html" | grep 'Friday' | cut -f1); SUNM=$(kp ids "$S/page.html" | grep 'Sunday' | cut -f1)
+cat > "$S/web-comments.json" <<EOF
+{"comments": [{"id": "f3", "parent_id": null, "body": "friday is wrong", "anchor_id": "$FRIM", "resolved_at": null, "created_at": "2026-10-25T10:00:00Z", "via": null}]}
+EOF
+perl -ni -e 'print unless /Friday evening/' "$G/sh/docs/t5.md"; gitc "$G/sh" commit -qam "drop friday"
+touch "$S/fail-add"
+srun sheep "$G/sh/docs/t5.md" > "$T/f3a.out" 2>&1; rc=$?
+rm -f "$S/fail-add"
+check "$rc" "0" "finding 3: a deploy whose \"gone\" reply fails still deploys"
+sedi -e 's/^Nu line nobody comments on\./Nu line nobody ever comments on./' "$G/sh/docs/t5.md"; gitc "$G/sh" commit -qam "edit nu"
+srun sheep "$G/sh/docs/t5.md" > /dev/null 2>&1
+check "$(kp ids "$S/page.html" | grep 'Sunday' | cut -f1)" "$SUNM" "finding 3: the next deploy leaves the untold thread off the unchanged Sunday line (0.93)"
+check "$(grep '"add_comment"' "$S/mcp.log" | grep '"parent_id": "f3"' | grep -c 'the line this was on is gone')" "2" "…and tells it its line is gone, the failed try and this one"
+# finding 11: a reply typed between a take's write and its commit is taken in, not lost to git's answer
+cat > "$G/sh/docs/t6.md" <<'EOF'
+# Late
+
+- **D1 — Go?** Body.
+
+  ➤ Recommended: yes
+
+  ➤ Answer:
+
+---
+EOF
+gitc "$G/sh" add docs/t6.md; gitc "$G/sh" commit -qm "late"
+srun sheep "$G/sh/docs/t6.md" > /dev/null 2>&1
+cat > "$S/web-comments.json" <<'EOF'
+{"comments": [{"id": "l1", "parent_id": null, "body": "yes, go now", "anchor_id": "D1", "resolved_at": null, "created_at": "2026-10-25T09:00:00Z", "via": null}]}
+EOF
+srun sheep pull --write "$G/sh/docs/t6.md" > /dev/null 2>&1
+python3 - "$S/web-comments.json" <<'PY'
+import datetime, json, sys
+d = json.load(open(sys.argv[1]))
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+d["comments"] += [{"id": "l1m", "parent_id": "l1", "body": "memo: taken into docs/t6.md as D1's answer", "via": "claude", "created_at": now},
+                  {"id": "l1r", "parent_id": "l1", "body": "actually, hold it", "via": None, "created_at": now}]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+sleep 1.2; gitc "$G/sh" commit -qam "the take, committed after the reply"
+srun sheep pull "$G/sh/docs/t6.md" > "$T/f11.out" 2>&1
+has "$T/f11.out" "[l1] → D1: actually, hold it" "finding 11: a reply typed between a take's write and its commit is taken in"
+lacks "$T/f11.out" "changed in git after it" "…not kept out by the answer the take itself wrote"
+rm -f "$S/web-comments.json"
+# finding 14: a redeploy after main fast-forwarded keeps the fork recorded before, so the landing is still proved
+doc Forked "" > "$G/lm/docs/f.md"; gitc "$G/lm" add docs/f.md; gitc "$G/lm" commit -qm "f on main"
+F0=$(git -C "$G/lm" rev-parse main)
+gitc "$G/lm" checkout -q -b claude/lm11; doc Forked "Changed on lm11.\n\n" > "$G/lm/docs/f.md"; gitc "$G/lm" commit -qam "f on lm11"
+srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm11; gitc "$G/lm" checkout -q claude/lm11
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["fmt"]="an older format"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@claude/lm11:docs/f.md
+srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1; setspace lm@claude/lm11:docs/f.md sp-f
+check "$(kp pin lm@claude/lm11:docs/f.md fork)" "\"$F0\"" "finding 14: a redeploy after main fast-forwarded keeps the fork recorded before"
+gitc "$G/lm" checkout -q main
+srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1
+check "$(lastspace)" "sp-f" "…so main still proves the landing and takes the page"
+# finding 12: on main, a landed branch's page of a renamed doc wins over main's page of the old path
+doc Renamed "" > "$G/lm/docs/a12.md"; gitc "$G/lm" add docs/a12.md; gitc "$G/lm" commit -qm "a12 on main"
+srun sheep "$G/lm/docs/a12.md" > /dev/null 2>&1; setspace lm@main:docs/a12.md sp-a12m
+gitc "$G/lm" checkout -q -b claude/lm12; gitc "$G/lm" mv docs/a12.md docs/b12.md; gitc "$G/lm" commit -qm "a12 renamed b12"
+doc Renamed "Changed on lm12.\n\n" > "$G/lm/docs/b12.md"; gitc "$G/lm" commit -qam "b12 on lm12"
+srun sheep "$G/lm/docs/b12.md" > /dev/null 2>&1; setspace lm@claude/lm12:docs/b12.md sp-b12
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm12
+srun sheep "$G/lm/docs/b12.md" > "$T/f12.out" 2>&1
+check "$(lastspace)" "sp-b12" "finding 12: on main, the landed branch's page wins over main's page of the doc's old path"
+has "$T/f12.out" "docs/b12.md landed from claude/lm12" "…and says so"
+# findings 9 and 6: main's page gives way only when its comments read, and its room holds no Save
+doc Unread "" > "$G/lm/docs/g2.md"; gitc "$G/lm" add docs/g2.md; gitc "$G/lm" commit -qm "g2 on main"
+srun sheep "$G/lm/docs/g2.md" > /dev/null 2>&1; setspace lm@main:docs/g2.md sp-g2m
+gitc "$G/lm" checkout -q -b claude/lm13; doc Unread "Changed on lm13.\n\n" > "$G/lm/docs/g2.md"; gitc "$G/lm" commit -qam "g2 on lm13"
+srun sheep "$G/lm/docs/g2.md" > /dev/null 2>&1; setspace lm@claude/lm13:docs/g2.md sp-g13
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm13
+rm -f "$S/web-comments.json"; cp "$S/comments.txt" "$T/comments.kept" 2>/dev/null || :; printf 'a shape this tool has never seen\n' > "$S/comments.txt"
+srun sheep "$G/lm/docs/g2.md" > "$T/f9.out" 2>&1
+cp "$T/comments.kept" "$S/comments.txt" 2>/dev/null || :
+check "$(lastspace)" "sp-g2m" "finding 9: main's page whose comments come back unreadable does not give way"
+has "$T/f9.out" "cannot read" "…and says why"
+setspace lm@main:docs/g2.md sp-g2m  # the stub answers every deploy with sp-1
+echo '{"comments": []}' > "$S/web-comments.json"
+cat > "$S/events.json" <<'EOF'
+[{"seq": 1, "at": "2026-10-25T10:00:00Z", "name": "memo-save", "data": {"items": {"D1": "no, wait"}, "comments": [], "feedback": ""}}]
+EOF
+srun sheep "$G/lm/docs/g2.md" > "$T/f6.out" 2>&1
+rm -f "$S/events.json"
+check "$(kp pin lm@main:docs/g2.md kept_over) $(kp pin lm@main:docs/g2.md space)" '["lm@claude/lm13:docs/g2.md"] "sp-g2m"' "finding 6: a Save still in main's room keeps main's page"
+has "$T/f6.out" "a Save not taken in" "…and says so"
+# finding 10: main's page giving way drops what main kept of it; finding 8: a pin with no sha reads cleanly
+doc Cursor "" > "$G/lm/docs/g3.md"; gitc "$G/lm" add docs/g3.md; gitc "$G/lm" commit -qm "g3 on main"
+srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1; setspace lm@main:docs/g3.md sp-g3m
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].update(events_after=5, receipt={"at": "x"}, opens_seen={"s|c": 1}); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g3.md
+gitc "$G/lm" checkout -q -b claude/lm14; doc Cursor "Changed on lm14.\n\n" > "$G/lm/docs/g3.md"; gitc "$G/lm" commit -qam "g3 on lm14"
+srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1; setspace lm@claude/lm14:docs/g3.md sp-g14
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm14
+srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1
+check "$(lastspace) $(kp pin lm@main:docs/g3.md events_after) $(kp pin lm@main:docs/g3.md receipt) $(kp pin lm@main:docs/g3.md opens_seen)" "sp-g14 null null null" "finding 10: main's page giving way drops main's cursors and receipt with it"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].pop("sha", None); d[sys.argv[2]].pop("branch", None); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g3.md
+srun sheep check "$G/lm/docs/g3.md" > "$T/f8.out" 2>&1; rc=$?
+check "$rc" "0" "finding 8: sheep check on a pin with no sha (a deploy that failed after it took a page over) answers"
+lacks "$T/f8.out" "Traceback" "…with no KeyError"
+# the finish review: the owner's set-aside words (refused_saves) on main's pin keep main's page, as a pending Save does
+doc Refused "" > "$G/lm/docs/g4.md"; gitc "$G/lm" add docs/g4.md; gitc "$G/lm" commit -qm "g4 on main"
+srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1; setspace lm@main:docs/g4.md sp-g4m
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].update(refused_saves=[{"D1": "C, with a cap"}]); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g4.md
+gitc "$G/lm" checkout -q -b claude/lm15; doc Refused "Changed on lm15.\n\n" > "$G/lm/docs/g4.md"; gitc "$G/lm" commit -qam "g4 on lm15"
+srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1; setspace lm@claude/lm15:docs/g4.md sp-g15
+gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm15
+echo '{"comments": []}' > "$S/web-comments.json"
+srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1
+check "$(kp pin lm@main:docs/g4.md kept_over) $(kp pin lm@main:docs/g4.md refused_saves)" '["lm@claude/lm15:docs/g4.md"] [{"D1": "C, with a cap"}]' "the finish review: set-aside words on main's pin keep main's page"
+rm -f "$S/web-comments.json"
 
 echo "serve — the form on 127.0.0.1, Save writes into the memo"
 cp "$T/memo.md" "$T/s.md"

@@ -11,11 +11,34 @@
   the 24-hour cap (by hand on stderr, in the checkpoint's hook as the row's `note`, the plan read from its cache
   only there), and names a refusal for the cap as one, logged so helm pauses on it. The README's "spacesheep plans" says what each
   plan gets.
-
 - A `handed` line that asks the owner for something is blocked as a pending one is (2026-10-25,
   finish review).
 - The Stop lint takes the core's `handed` closing kind where it takes a pending line (2026-10-25,
   yolo-launch review D1-B).
+- A course page keeps its discussions (docs/sheep-threads-2026-10-24.md): `sheep pull --write`
+  replies in each thread it takes or supersedes and no longer resolves it, so the thread and its
+  marker stay on the page; a redeploy gives an edited line the id its comments name (the live page's
+  ids, matched by row label and a difflib ratio of 0.6 or more), and a thread whose line is gone gets
+  one `memo:` reply saying so; a renamed doc and a doc read from `main` after its branch landed deploy
+  into the earlier page, whose pin then says `moved_to`. A doc headed `Supersedes:` gets a page of its
+  own: that handover was built, reviewed three times and taken out (D3-A, 2026-10-25).
+  list_comments' text form reads the `[pinned to block #<id>]` group line.
+- The second landing review's fixes to the above (R1–R12, docs/sheep-threads-2026-10-24.md): a thread
+  told its line is gone never moves to a neighbour, nor costs a read of the live page; a repeated line's
+  copies keep their numbers; every reader counts a thread with this tool's taken-into reply as taken;
+  an owner's reply under an open taken thread is taken in; `main` takes a branch's page only on proof
+  from the page's own commit and the fork its pin recorded, worktree or not, and its own empty page
+  gives way; the hook's budget covers every call.
+- The third landing review's fixes (findings 3, 5-15): a thread not yet told its line is gone carries
+  only to a block the deploy that dropped its line added; an inherited id is kept from the pin's
+  `aliases` with no read of the live page, and a copy inserted above a commented line no longer takes its
+  thread; `main`'s page gives way only once its comments read and its room is drained, and drops its own
+  cursors when it does; on `main` a landed branch's page wins over a rename; a fork recorded before a
+  fast-forward stays; a reply typed between a take's write and its commit is taken in; a pin with no
+  `sha` reads cleanly; a timeout cut short by the hook's budget no longer marks the comments route failed.
+- The finish review's fixes: a kept-open thread older than the last pull no longer overwrites a newer Save or
+  GitHub edit; a resolved thread on a gone line no longer keeps the live read alive on every deploy; only a
+  take's reply counts as the ack a later reply is judged against.
 - Mermaid is fetched, not vendored: the repo keeps the version and sha256, and the first page with a
   diagram fetches `mermaid.min.js` from jsDelivr (else unpkg) into `~/Library/Caches/keel` (`~/.cache/keel`
   off a Mac), kept only when it matches the pin (`KEEL_CACHE_DIR`, `KEEL_MERMAID_URL`, `KEEL_MERMAID_FETCH=0`).
