@@ -1609,16 +1609,18 @@ if kill -0 $HOLD 2>/dev/null; then kill $HOLD; check "alive" "ended" "the sideca
 else wait $HOLD; check "$?" "0" "the sidecar ends within a period of its parent's death, exit 0"; fi
 has "$(cat "$T/hold.out")" "has ended — the sidecar ends with it" "  saying so"
 # a renewal refused in the loop (the yard took the ship back) ends the sidecar, exit 4: it never takes it back
-# the stand-in parent is named claude (a link to sleep): stand-down signals only a live claude.
-# Its argv[0] is per OS (twin-ci-2, 2026-10-25): macOS's `ps -o comm=` reports argv[0], so there it is
-# the link's path; Linux's comm is the basename of the path exec'd (the link's name) whatever argv[0] says, and a
-# multicall coreutils (uutils, ubuntu's since 25.10) picks its tool by argv[0] (inferred from the CI
-# symptoms, not seen in a runner log) — run as `claude` it exits at
-# once, and every case below passed or failed on a dead parent. There argv[0] is `sleep`.
-mkdir -p "$T/fakeclaude"; ln -sf /bin/sleep "$T/fakeclaude/claude"
-if [ "$(uname)" = Darwin ]; then FAKE_ARGV0="$T/fakeclaude/claude"; else FAKE_ARGV0=sleep; fi
-(exec -a "$FAKE_ARGV0" "$T/fakeclaude/claude" 300) & PARENT=$!; disown $PARENT   # stand-down ends it below: no job notice from this shell
-# polled, not a fixed sleep: until the subshell execs, ps names bash (code-review, twin-ci-2's finish)
+# the stand-in parent is named claude: stand-down signals only a live claude. Its form is per OS, so
+# that `ps -o comm=` names it claude on each (twin-ci-3, 2026-10-25). macOS's comm is argv[0], and a
+# script's argv[0] is its interpreter (/bin/sh, probed), so there it is a link to /bin/sleep, as before.
+# Linux's comm is the basename of the path exec'd, a #!/bin/sh script's included; and ubuntu's uutils
+# coreutils is one multicall binary, and a link or copy of sleep named claude was dead at once
+# (twin-ci-2's `exec -a sleep` over the link too; the cause is inferred, no runner log was read). There it is a
+# script that calls sleep by its own name, and ends by itself after $1 seconds as sleep would.
+mkdir -p "$T/fakeclaude"
+if [ "$(uname)" = Darwin ]; then ln -sf /bin/sleep "$T/fakeclaude/claude"
+else printf '#!/bin/sh\ni=0\nwhile [ "$i" -lt "${1:-300}" ]; do sleep 1; i=$((i+1)); done\n' > "$T/fakeclaude/claude"; chmod +x "$T/fakeclaude/claude"; fi
+"$T/fakeclaude/claude" 300 & PARENT=$!; disown $PARENT   # stand-down ends it below: no job notice from this shell
+# polled, not a fixed sleep: until the child execs, ps names bash (code-review, twin-ci-2's finish)
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do PCOMM=$(/bin/ps -o comm= -p $PARENT 2>/dev/null); [ "${PCOMM##*/}" = claude ] && break; sleep 0.25; done
 check "${PCOMM:+${PCOMM##*/}}" "claude" "the stand-in claude lives, and ps names it claude"
 HELM_HOLD_EVERY=1 HELM_HOLD_PARENT=$PARENT "$LX/helm" skipper --hold --scope dock > "$T/hold.out" 2>&1 & HOLD=$!
@@ -1646,7 +1648,7 @@ check "$(kill -0 $PARENT 2>/dev/null && echo alive || echo ended)" "ended" "  it
 kill $PARENT 2>/dev/null
 # through claude-host the record's pid is the launcher's (a parent that waits), claude its child: the
 # session's registry record names the child, which stand-down signals (the launcher's review, 2026-10-24)
-printf '#!/bin/bash\n(exec -a "%s" "%s" 300) & c=$!\ntrap '"'"'kill -TERM $c 2>/dev/null'"'"' TERM INT HUP\nwait $c\n' "$FAKE_ARGV0" "$T/fakeclaude/claude" > "$T/fakehost"
+printf '#!/bin/bash\n"%s" 300 & c=$!\ntrap '"'"'kill -TERM $c 2>/dev/null'"'"' TERM INT HUP\nwait $c\n' "$T/fakeclaude/claude" > "$T/fakehost"
 chmod +x "$T/fakehost"; "$T/fakehost" & HOSTP=$!; disown $HOSTP
 for _ in 1 2 3 4 5 6 7 8; do KID=$(pgrep -P $HOSTP); [ -n "$KID" ] && break; sleep 0.25; done
 check "$([ -n "$KID" ] && echo found || echo none)" "found" "  the launcher's claude child lives (no child: every case below is vacuous)"
