@@ -24,4 +24,11 @@ Read `README.md` first: it is the chart. For an agent:
   same answer twice; from the laptop it names no host (dispatch's own Where default), and it leaves
   another host's GitHub answer to that host's lookout. `tests/test_lookout.sh` stubs hail, harness,
   pickup, dispatch, autofinish and spacesheep; nothing there may reach a real one.
+- `skills/figure/` is private-first, off the allowlist until its scrub: its example names a host and a
+  person. `bin/keel`'s figures section (render, safe_svg, restyle) is public; the skill loads keel as a
+  module for the style table and the text measure, so the two never disagree.
+- `keel render`'s cases (tests/keel.sh, "figures") run Chrome on a Mac outside CI only; the
+  Excalidraw half also needs the library in keel's cache folder (the first render fetches it) and says
+  so when it skips. Chrome is started without `--user-data-dir`: with a fresh one it did not exit
+  on one of the Macs (2026-10-23).
 - check: `bash modules/keel/tests/check.sh` (on a Mac: some cases read the overlay's peers).
