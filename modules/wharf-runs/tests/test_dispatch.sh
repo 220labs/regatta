@@ -1141,13 +1141,12 @@ own sess-A
 FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "2" "  and six are its cap: refused"
 has "$T/out" "6 runs are busy already" "    saying so"
 reap "$RUNS"/00000000-00002*
-# wharf and stalls_tick.py hold their own copy of the cap; both went stale at 5 -> 8 -> 10 (2026-10-20); 8 since 2026-10-23, 6 since 2026-10-25
-# dispatch's first max_runs default is the dispatch host's; each copy is the first number its
-# DISPATCH_MAX_RUNS fallback names, whatever host test guards it
-cap_d=$(sed -nE 's/^ *max_runs="\$\{DISPATCH_MAX_RUNS:-([0-9]+)\}"$/\1/p' "$B/dispatch" | head -1)
-cap_w=$(sed -nE 's/.*DISPATCH_MAX_RUNS"\) or \(([0-9]+) if .*/\1/p' "$B/wharf" | head -1)
-cap_s=$(sed -nE 's/.*DISPATCH_MAX_RUNS"\) or \(([0-9]+) if .*/\1/p' "$STALLS_TICK" 2>/dev/null | head -1)
-check "$cap_w $cap_s" "${cap_d:-none} ${cap_d:-none}" "  wharf and stalls_tick.py carry dispatch's dispatch-host cap ($cap_d)"
+# the cap has one home, dispatch's max_runs: wharf and stalls_tick.py ask `--cap` (their own copies
+# went stale at 5 -> 8 -> 10, and 8 -> 6 sat unmerged on a conflict; 2026-10-25)
+check "$(DISPATCH_HOST=buildbox "$B/dispatch" --cap) $(DISPATCH_HOST=elsewhere "$B/dispatch" --cap) $(DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=4 "$B/dispatch" --cap)" \
+  "6 3 4" "--cap: 6 on the dispatch host, 3 elsewhere, DISPATCH_MAX_RUNS over either"
+check "$(grep -c -- '"--cap"' "$B/wharf") $(grep -c -- '"--cap"' "$STALLS_TICK" 2>/dev/null) $(grep -cE 'DISPATCH_MAX_RUNS"\) or \([0-9]' "$B/wharf" "$STALLS_TICK" 2>/dev/null | awk -F: '{n+=$NF} END {print n+0}')" \
+  "1 1 0" "  wharf and stalls_tick.py ask dispatch --cap and carry no number of their own"
 own sess-A
 FIRE=" " CLAUDE_UNATTENDED=dispatch DISPATCH_BRIEF=0000000 nx > "$T/out" 2>&1; check "$?" "0" "a clean, committed step starts the next (an unattended run's, on a new brief)"
 has "$T/out" "started: claude is running $NB (opus high) in screen run-repo-step" "  confirmed from the log"

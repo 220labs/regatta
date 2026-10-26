@@ -403,9 +403,15 @@ def run_cap(s):
         busy = int(r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
-    # dispatch's own numbers (its max_runs; test_dispatch.sh checks the copy): 6 on a build box (a
-    # host the laptop reaches over ssh, `wharf-runs/ssh`), 3 elsewhere, DISPATCH_MAX_RUNS over either
-    cap = int(os.environ.get("DISPATCH_MAX_RUNS") or (6 if helmlib.host() in helmlib.ssh_peers() else 3))
+    # dispatch's own number (`dispatch --cap`: its home; a copy here went stale at every change, and
+    # judged the dispatch host by `wharf-runs/ssh` where dispatch reads `wharf-runs/dispatch-host`);
+    # DISPATCH_MAX_RUNS is what dispatch would read first, so a stub dispatch need not know --cap
+    try:
+        cap = int(os.environ.get("DISPATCH_MAX_RUNS") or subprocess.run(
+            [os.environ.get("STALLS_DISPATCH") or peer_exe("dispatch"), "--cap"],
+            capture_output=True, text=True, timeout=30).stdout.strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
     return busy, cap
 
 

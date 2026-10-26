@@ -134,16 +134,6 @@ import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
 core_path.require()
 import common  # noqa: E402
 import blueprintlib  # noqa: E402
-def dispatch_host():
-    """The Mac runs are dispatched to (`wharf-runs/dispatch-host`, else the first peer of
-    `wharf-runs/ssh`), lower-case, or "" when neither key is set: it holds the larger run cap
-    (bin/dispatch's max_runs)."""
-    h = common.config_line("wharf-runs/dispatch-host")
-    if not h:
-        h = (common.config_lines("wharf-runs/ssh") or [""])[0].split(":", 1)[0]
-    return h.strip().lower()
-
-
 # helmlib (ships, their locks and events) and asklib are helm's (M11), still the overlay's until
 # B12: found through the core, after this folder; without them there is no ship to check or apply.
 # Exit 1, which dispatch's --next reads from `wharf next` as "not a ship's block": true where helm is
@@ -1813,8 +1803,13 @@ class Ship:
         """(runs busy on this Mac, dispatch's cap) as dispatch counts them before a start
         (`dispatch-rc live --no-reap`: read only; warm and waiting runs not counted), or (None, cap)
         when it cannot be read — then the start goes ahead and dispatch's own refusal decides. A
-        launch refused there ends `never-started` at gate `refused` and is started again here."""
-        most = int(os.environ.get("DISPATCH_MAX_RUNS") or (6 if self.here == dispatch_host() else 3))   # bin/dispatch's max_runs; test_dispatch.sh checks the copy
+        launch refused there ends `never-started` at gate `refused` and is started again here. The
+        cap is dispatch's `--cap` (its one home; DISPATCH_MAX_RUNS first, as dispatch reads it)."""
+        try:
+            most = int(os.environ.get("DISPATCH_MAX_RUNS") or subprocess.run(
+                [str(HERE / "dispatch"), "--cap"], capture_output=True, text=True, timeout=30).stdout.strip())
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return None, None
         topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", Path(wt).name)
         try:
             r = subprocess.run([os.environ.get("WHARF_DISPATCH_RC") or str(HERE / "dispatch-rc"), "live", "--no-reap",
