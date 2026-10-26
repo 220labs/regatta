@@ -15,6 +15,26 @@
   `rc-hosts --agents` notes which automations start a claude in Orca, and counts a precheck firing
   through another checkout's clock OUTSIDE, as a line's is.
 
+- `autofinish-run` sends a landing to the Mac's peer (`wharf-runs/finish-on`, else `orca-pairs`; ssh by
+  `wharf-runs/ssh`), as `dispatch` sends a seeded run; `--on here` keeps it, and so does anything its
+  `/finish` needs from this Mac (a caller's OAuth token, uncommitted files, a held or moded landing, a
+  peer that cannot be reached), each said in one line. The peer starts it from a one-shot LaunchAgent
+  (`peer-start`), this Mac's waiter asks it for the end (`peer-sync`) and writes it here as a run of its
+  own would, and the laptop's approval travels with the run (`--from`, step 11.4). The second landing
+  review's sixteen findings are in (2026-10-24): a chain relaunch is sent and judged where its stop
+  happened; a peer's refusal for a run of its own on the tip records that run here, where it used to be
+  re-sent every sweep; a silent peer is counted from the first unanswered ask, not from the start, so a
+  Mac waking offline after a night buries nothing; the sweep refreshes this Mac's lock while the peer
+  answers, and asks a hanging peer once a pass; a job starting late refuses at half the write-off time;
+  ticket writes take a lock. Cases in `test_autofinish_run.sh` (its "Where" cases). The third landing
+  review (2026-10-25): a sent chain is judged on the peer only by a stop its own run made there, never
+  by one it refused or that died; a run passed over for a peer found down this pass counts as asked;
+  `dead()` takes `apply`, and bin/autofinish's verdicts and `--dry-run` call it read-only (no ssh, no
+  write). A `--by brief` launch stays on this Mac. The fourth (2026-10-25): `peer-start` refuses `--from`
+  and `--merge` under `SKIPPER_SCOPE` as well, and `--run-session` is judged as a sent run only in the
+  peer's job (`AUTOFINISH_JOB`); an unended run on the peer refuses the fast-forward of its tree, and
+  the job's markers stay out of the `/finish` session's env.
+
 - `cold_prompt` hands every typed `/finish` to a fresh run (costs S7, 2026-10-24), not only a cold or
   Fable one. Cold or Fable, as before: the hook starts the runner and blocks the prompt. Warm, on any
   other model: the prompt passes with a context line asking the session to write and commit the

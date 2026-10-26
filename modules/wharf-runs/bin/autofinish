@@ -72,7 +72,9 @@ The run record — the contract E1's runner writes and the hooks read (hooks/com
      "rule": "A|B|C|D|E|L|M", "window": str, "account": label|dir|"oauth-token"|null, "ended": iso|null,
      "outcome": "launched|stopped|never-started|died"|null, "pr": int|null, "gate": str|null}
     plus `"merge": true` for a run started with `--merge`, `"hold": "<why>"` for one held at a ready
-    PR (S3b; autofinish-run's header); each absent otherwise
+    PR (S3b; autofinish-run's header), `"host": "<peer>"` for one sent to the peer and `"from":
+    "<host>"` on the peer for one that host sent (autofinish-run's header, Where: its end comes from
+    there, through the waiter or dead()/bury()); each absent otherwise
     (`launched` was `landed` before the rename's S4, 2026-10-19; every reader takes both)
   Written before the runner's first call (owner.json then names `session`), `ended` and
   `outcome` at its end. While `ended` is null and the lock names `session`, checkpoint.py tells
@@ -1292,12 +1294,13 @@ def runner():
         return _runner
 
 
-def dead_run(state, run):
+def dead_run(state, run, apply=True):
     """Why the worktree's unended run is dead, or None (bin/autofinish-run's dead()); `state` is
-    its <git dir>/claude, where the waiter's pid is."""
+    its <git dir>/claude, where the waiter's pid is. `apply` False for a verdict: read-only, no ssh to
+    a peer and no write (the lander's third landing review, S3)."""
     if not run or run.get("ended"):
         return None
-    return runner().dead(None, run, now=now(), state_dir=str(state))
+    return runner().dead(None, run, now=now(), state_dir=str(state), apply=apply)
 
 
 def died_twice(wt, branch):
@@ -1386,7 +1389,7 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
     if m:
         return f"skip: moved ({common.moved_line(m)})"
     run = common.autofinish_run(state)
-    why = dead_run(state, run)
+    why = dead_run(state, run, apply=False)   # a verdict writes nothing: the bury pass asked already
     if why:
         return f"skip: died, not recorded yet ({why}; session {str(run.get('session'))[:8]}) — an armed sweep records it"
     owner = (common.read_owner(state) or {}).get("session")

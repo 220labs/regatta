@@ -1811,6 +1811,28 @@ def status():
                 print("    attach: SCREENDIR=%s screen -x %s" % (st["screendir"], st["screen"]))
         if running:
             print("    end it now: dispatch --end %s --repo %s" % (st.get("topic"), st.get("repo")))
+    # the /finish runs autofinish-run sent to the peer (its header, Where): their record here is
+    # this Mac's copy, settled by its waiter or the sweep — the session itself is the peer's
+    for path in sorted(glob.glob(os.path.join(RUNS, "peer", "*.json"))):
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            started = datetime.datetime.fromisoformat(rec["started"]).timestamp()
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if started < cutoff:
+            continue
+        shown += 1
+        if rec.get("ended"):
+            state = "ended %s, %s%s%s" % (str(rec["ended"])[5:16].replace("T", " "), rec.get("outcome"),
+                                          " at %s" % rec["gate"] if rec.get("gate") else "",
+                                          " #%s" % rec["pr"] if rec.get("pr") else "")
+        else:
+            state = "sent, no end here yet"
+        print("%-28s %s · on %s · %s" % ("finish-" + str(rec.get("topic", "?")), os.path.basename(rec.get("repo", "?")),
+                                         rec.get("host", "?"), state))
+        print("    started %s, session %s, there in %s" % (
+            time.strftime("%m-%d %H:%M", time.localtime(started)), rec.get("session"), rec.get("peer_worktree") or "?"))
     if not shown:
         print("no dispatch runs in the last 7 days")
     return 0
