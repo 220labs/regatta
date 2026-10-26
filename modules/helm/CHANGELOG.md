@@ -31,8 +31,9 @@
 - The stall road's repo key is `helm/logbook-repo` (was `helm/inbox-repo`, no longer read): `inbox`
   names strangers' contacts only, and operational issues land in a project's logbook (the owner,
   2026-10-24).
-- `stalls_tick.py`'s copy of the dispatch host's run cap is 6, following `bin/dispatch` (the owner,
-  2026-10-23 and 2026-10-25; wharf-runs' CHANGELOG says why).
+- `stalls_tick.py` asks `dispatch --cap` for the run cap instead of carrying a copy of it (6 on the
+  dispatch host since 2026-10-25; wharf-runs' CHANGELOG says why). The copy also gave the dispatch host's
+  cap to any `wharf-runs/ssh` peer, where dispatch reads `wharf-runs/dispatch-host`.
 - The skipper's rotation: while a ship needs it, a skipper 8 h old, or past 200k tokens of context
   (its last main-thread call, `<synthetic>` entries skipped) once an hour old, hands over at its first
   quiet pass — its session idle 10 minutes by the registry's status stamp, no question of its own open

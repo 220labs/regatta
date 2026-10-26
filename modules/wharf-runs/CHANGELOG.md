@@ -61,8 +61,9 @@
 - The dispatch host's run cap is 6, from 10: 8 first (the owner, 2026-10-23), then 6 (2026-10-25: "it's
   too slow" at 8; runs already going finish, the cap only refuses new ones). At 10 the build Mac sat at load
   110–130 for hours (uptime that evening) beside its CI runner, and every check there took twice its
-  quiet time. The copies in `bin/wharf` and helm's `stalls_tick.py` follow, as
-  test_dispatch checks. The same evening the build Mac got a second CI runner instance for this
+  quiet time. `dispatch --cap` prints this Mac's cap, and `bin/wharf` and helm's `stalls_tick.py` ask it
+  instead of carrying their own copy, which went stale at every change (test_dispatch checks that neither
+  holds a number). The 2026-10-23 evening the build Mac got a second CI runner instance for this
   repo, installed by hand with ci-provider's recipe (a verb for a second instance is owed): the one
   runner was the queue every landing waited in.
 - `clock`, `yard-node`, `node/` and their suites are scrubbed, ready to list when they are (the

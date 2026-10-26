@@ -119,6 +119,8 @@
 #               (`<host>:<alias>`); a berth that cannot run keeps the dispatch host (Where).
 #   --slots     `<busy> <cap>` for this Mac: the runs counted against the cap, and the cap (berth reads
 #               a peer's over ssh, so the cap has one home).
+#   --cap       this Mac's cap alone, without counting runs: bin/wharf and helm's stalls_tick ask it,
+#               so the number lives only here (both carried a copy, stale at every change until 2026-10-25).
 #   --status    every run of the last 7 days: running/ended, last activity, session id, VS Code link.
 #               It also ends an orphan (its watcher gone, claude still there) once idle 1 min — a look
 #               at the runs is when one is noticed, and a separate verb would be one more to remember.
@@ -361,7 +363,7 @@ fi
 # to 8: at 10 the build Mac sat at load 110-130 for hours (uptime that evening) with its CI runner
 # beside the runs, and every check there took twice its quiet time; 2026-10-25, 6: "it's too slow" at 8). So: 6 on the
 # dispatch host, 3 on any other Mac. DISPATCH_MAX_RUNS overrides either; DISPATCH_HOST is
-# machine()'s, for the tests.
+# machine()'s, for the tests. The only home of these numbers: every other reader asks `--cap`.
 self_host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
 if [ -n "$dispatch_host" ] && [ "$(lc "$self_host")" = "$(lc "$dispatch_host")" ]; then
   max_runs="${DISPATCH_MAX_RUNS:-6}"
@@ -414,6 +416,7 @@ while [ $# -gt 0 ]; do
     --mode) mode="${2:-}"; case "$mode" in default|ask|dnd|yolo) mode_given=1;; *) echo "dispatch: --mode takes default, ask, dnd or yolo" >&2; exit 2;; esac; shift 2;;
     --background) bg="${2:-}"; case "$bg" in allow|deny) ;; *) echo "dispatch: --background takes allow or deny" >&2; exit 2;; esac; shift 2;;
     --status) exec python3 "$here/bin/dispatch-rc" status;;
+    --cap) echo "$max_runs"; exit 0;;
     --slots) n=$(python3 "$here/bin/dispatch-rc" live --no-reap "" "" 2>/dev/null) || n="?"; echo "${n:-?} $max_runs"; exit 0;;
     --end) end="$2"; shift 2;;
     -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d'; exit 0;;   # the whole header, however long
