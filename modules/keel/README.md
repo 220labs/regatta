@@ -17,6 +17,8 @@ to the session as commits. Was `memo` until 2026-10-14; moved in from the overla
 | `hooks/doc_answers.py` | UserPromptSubmit: a prompt that says a doc is answered fetches the branch first |
 | `hooks/sheep_gate.py` | the gate in front of every sessionpipe hook entry: the private repos and every confidential scope stay on the Mac |
 | `skills/keel` (`/keel`) | hand a doc's D-list over and take the answers back |
+| `keel render` | a PNG per ```` ```mermaid ```` fence and per Excalidraw figure, offline in headless Chrome, so a session looks at its diagram before the hand-over; a figure's `docs/<stem>/<name>.excalidraw` → its committed `.svg`, in the doc's `Figure style:` (soft, clean, sketch). The page inlines a linked `.svg`, sanitised, with no library; `lint` fails a stale one. Excalidraw's drawing library, `@excalidraw/utils` (MIT, 19.6 MB), is fetched once into keel's cache folder, beside Mermaid's, and sha-pinned |
+| `skills/figure` | draw that figure from Python: the emitter (bound labels, measured text, fixedPoint arrows), the palette and panel grid. Off the allowlist for now |
 | `vendor/mermaid/` | the Mermaid pin (version, sha256, MIT license): fetched once into the cache, then inlined |
 | `tests/check.sh` | the five suites; no network |
 

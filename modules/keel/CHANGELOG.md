@@ -73,6 +73,21 @@
   answered at the tip counts as gone, so a poll carrying stale asks never moves the record past the
   answer; an item written answered stays judged, so a hand answer after a reopen hails; the end
   card and a tip's card join under one id.
+- Figures (diagram-tools, 2026-10-23; the Excalidraw evaluation's D1 and D2): `keel render <doc>` draws
+  every ```` ```mermaid ```` fence to a PNG with the cached, pinned Mermaid under headless Chrome,
+  offline, exits 1 on a fence that does not parse (naming its line) or a library off its pin, and never
+  writes a PNG into a tracked folder. An Excalidraw source beside the doc (`docs/<stem>/<name>.excalidraw`)
+  is drawn by `@excalidraw/utils` 0.1.5, fetched once into the cache and sha-pinned, to its `.svg`, marked
+  with the source's sha256 and the style. Styles: soft (the default: Nunito, roughness 1, solid), clean,
+  sketch; a doc picks one with `Figure style:`. The form and course page show a figure line's `.svg`,
+  sanitised, as an `<img>` of a `data:` URI, so a browser runs nothing in it, fetches nothing and keeps
+  its style inside; with no library. A figure link reads only the doc's own `docs/<stem>/`. `lint` fails
+  a figure whose `.svg` is missing or stale, and any link the page would show as alt text. A deploy, the
+  lookout's redeploy and `sheep check` count the figure folder's commits; `render --style` other than
+  the doc's draws a preview PNG and leaves the `.svg`.
+  The private `figure` skill draws one from Python; a session sees it once the overlay's skill links
+  name `keel/figure`. The architect pair and the sounder render and look before the hand-over.
+
 - The rest of the lookout's fixes before arming (crosstalk S11c, 2026-10-22; items 9–16 and 23–30 of
   `docs/lookout-s5-2026-10-22.md`): a brief whose run did not start is briefed again with its
   `Steps:` hold turned into a `Released:` line, so `keel landing` holds nothing for it; a run takes

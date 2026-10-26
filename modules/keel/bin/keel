@@ -8,6 +8,8 @@
     keel link <memo.md>                           # the title and decision count, then the line
     keel pull <memo.md>                           # take in commits made on GitHub; name the answers that changed
     keel build <memo.md> [-o <out.html>]          # --form: the page; publish it with capabilities {db: {}}
+    keel render <doc> [-o DIR] [--style S] [--force]   # a PNG per mermaid fence and Excalidraw figure, to look at;
+                                                  #   docs/<stem>/<name>.excalidraw → its .svg beside it, which the page inlines
     keel merge <memo.md> <answers.json> [--write] # --form: answers from the page's store → the memo
     keel serve <memo.md> [--keep] [--idle S]      # the form on 127.0.0.1 where the doc has no page — a VS Code tab
     keel parse <memo.md>                          # the decisions, steps, goals and derived status, as JSON
@@ -176,7 +178,8 @@ writes it into the record's banner at launch, where bin/docs-index carries it in
 Renamed from memo-form on 2026-09-29 (docs/feedback-2026-09-29.md, D1; `/feedback` turned out to be Claude Code's own command, so `memo`). Stdlib only,
 Python 3.9. The page is self-contained: no fonts, no CDN; one library, Mermaid, pinned by version and
 sha256, fetched once into the cache (vendor/mermaid/README.md) and inlined only into a page whose doc
-draws a diagram (entry S13, 2026-10-15; fetched, not vendored, since 2026-10-23).
+draws a diagram (entry S13, 2026-10-15; fetched, not vendored, since 2026-10-23). An Excalidraw
+figure is embedded as its rendered, sanitised SVG in an <img> — no library (the "figures" section).
 """
 import argparse
 import datetime as dt
@@ -975,7 +978,8 @@ def lint(text, strict=False, path=None):
             warnings.append("%s (line %d): no `Reversible: yes|no` line — no default can ever take it (yolo, "
                             "the stand sweep); mark it above `➤ Recommended:`" % (it["id"], it["start"] + 1))
     ke, kw = keel_lint(text, path)
-    return errors + ke, warnings + kw + kind_warnings(text, path)
+    fe, fw = figure_lint(text, path)
+    return errors + ke + fe, warnings + kw + fw + kind_warnings(text, path)
 
 
 def written_by(lines):
@@ -1835,11 +1839,18 @@ def render_md(lines, base=None, shift=0, ctx=None, pick=False):
                     break
             out.append("</%s>" % kind)
             continue
+        im = IMAGE_LINE_RE.match(s)
+        if im and "://" not in im.group(2):
+            # a figure on its own line: its .svg inlined (figure_html; diagram-tools, 2026-10-23)
+            out.append(figure_html(im.group(1), im.group(2), ctx, mark(i, ind(line))))
+            i += 1
+            continue
         buf = []
         first = i
         while i < n and lines[i].strip() and not STOP_RE.match(lines[i].strip()) \
                 and not lines[i].strip().startswith(("|", ">")) and not fence_mark(lines[i]) \
                 and not re.match(r"^(\s*)([-*]|\d+\.)\s+", lines[i]) \
+                and not (i > first and IMAGE_LINE_RE.match(lines[i].strip())) \
                 and not (i > first and options_at(lines, i)):
             buf.append(lines[i].strip())
             i += 1
@@ -2014,6 +2025,553 @@ def mermaid_scripts(body):
         return ""
     return "<script>%s</script>\n<script>%s</script>" % (src, MERMAID_RUN)
 
+
+# ----------------------------------------------------------------------------- figures
+
+# `keel render` and the inlined figure (diagram-tools, 2026-10-23; the Excalidraw evaluation of
+# 2026-10-22, D1 and D2 as the owner answered them). No session saw its own diagram: the page draws
+# Mermaid in the owner's browser. `render` draws every ```mermaid fence to a PNG with the cached,
+# pinned mermaid.min.js under headless Chrome, offline, and every Excalidraw source beside the doc
+# (docs/<stem>/<name>.excalidraw) to its committed <name>.svg, plus a PNG to look at. The page then
+# shows a linked .svg, sanitised (safe_svg), as an <img> of a data: URI: no script, no library — "no extra
+# libraries in the course docs" (the owner, 2026-10-23). Mermaid fences stay as they were.
+#
+# @excalidraw/utils (MIT) does the Excalidraw drawing. It is 19.6 MB with its fonts inlined, five
+# times mermaid.min.js, so it is fetched once per machine into the cache and pinned by sha256 like
+# Mermaid, never vendored: the repo stays text of a sane size, and a file that is not the pinned
+# build is refused the same way. The pin is jsDelivr's own listed hash of dist/prod/index.js
+# (data.jsdelivr.com, checked against the download 2026-10-23).
+EXCALIDRAW_VERSION = "0.1.5"
+EXCALIDRAW_URL = "https://cdn.jsdelivr.net/npm/@excalidraw/utils@%s/dist/prod/index.js" % EXCALIDRAW_VERSION
+EXCALIDRAW_SHA256 = "06f86a3efc9a8a9ef7070edbb2efaa0bab3cfd8069b6ed174796395cfc3168c3"
+
+# The three styles (the owner, 2026-10-23: "leave the other 2 styles as an option for keel, but we
+# default to soft"). A doc picks one with a `Figure style: clean` line above its first `## `.
+# `hachure` is for shapes the emitter marked customData.role = "action"; the rest stay solid.
+FIGURE_STYLES = {
+    "soft": {"fontFamily": 6, "shape_rough": 1, "line_rough": 1, "action_fill": "solid"},      # Nunito
+    "clean": {"fontFamily": 2, "shape_rough": 0, "line_rough": 0, "action_fill": "solid"},     # Helvetica
+    "sketch": {"fontFamily": 1, "shape_rough": 2, "line_rough": 1, "action_fill": "hachure"},  # Virgil
+}
+FIGURE_STYLE = "soft"
+FIGURE_STYLE_RE = re.compile(r"^Figure style:\s*(\S+)", re.I)
+# em per character, a little over what Chrome measured for typical labels in each font (2026-10-23:
+# Nunito 0.50 mean, 0.59 on a line of digits and W; Helvetica 0.49; Virgil 0.53): a label box a
+# shade wide only widens the gap Excalidraw masks out of an arrow, one too narrow spills.
+FONT_EM = {1: 0.56, 2: 0.53, 3: 0.62, 5: 0.56, 6: 0.55, 8: 0.6}
+LINE_HEIGHT = 1.25
+FIGURE_MARK_RE = re.compile(r"<!-- keel render: source sha256 ([0-9a-f]{64}), style (\w+) -->")
+IMAGE_LINE_RE = re.compile(r'^!\[([^\]]*)\]\(<?([^)\s>]+\.svg)>?(?:\s+"[^"]*")?\)$', re.I)
+SVG_MAX = 4 * 1024 * 1024
+
+
+def figure_style(text):
+    """The doc's `Figure style:` (header only, before the first `## `), else soft. An unknown one
+    is a Stop naming the three."""
+    for l in text.split("\n"):
+        if l.startswith("## "):
+            break
+        m = FIGURE_STYLE_RE.match(l.strip())
+        if m:
+            s = m.group(1).strip("`*.").lower()
+            if s not in FIGURE_STYLES:
+                raise Stop("Figure style: %r is not one of %s" % (s, ", ".join(FIGURE_STYLES)))
+            return s
+    return FIGURE_STYLE
+
+
+def text_size(text, size, family):
+    """(width, height) of a text element: the longest line at the font's measured em, LINE_HEIGHT a line."""
+    lines = text.split("\n")
+    return (round(max(len(l) for l in lines) * size * FONT_EM.get(family, 0.6), 1),
+            round(len(lines) * size * LINE_HEIGHT, 1))
+
+
+def restyle(scene, style):
+    """A copy of the scene in `style`: every text in its font, re-measured about its anchor (a
+    centred label keeps its centre); shapes and lines at its roughness; a shape marked
+    customData.role "action" in its action fill, every other filled shape solid."""
+    st = FIGURE_STYLES[style]
+    scene = json.loads(json.dumps(scene))
+    for e in scene.get("elements", []):
+        t = e.get("type")
+        if t in ("rectangle", "ellipse", "diamond"):
+            e["roughness"] = st["shape_rough"]
+            if e.get("backgroundColor", "transparent") != "transparent":
+                e["fillStyle"] = st["action_fill"] if (e.get("customData") or {}).get("role") == "action" else "solid"
+        elif t in ("arrow", "line"):
+            e["roughness"] = st["line_rough"]
+        elif t == "text":
+            ow, oh = e.get("width", 0), e.get("height", 0)
+            e["fontFamily"] = st["fontFamily"]
+            e["lineHeight"] = LINE_HEIGHT
+            w, h = text_size(e.get("text", ""), e.get("fontSize", 20), st["fontFamily"])
+            align = e.get("textAlign", "left")
+            if align == "center":
+                e["x"] = round(e.get("x", 0) + (ow - w) / 2, 1)
+            elif align == "right":
+                e["x"] = round(e.get("x", 0) + ow - w, 1)
+            if e.get("containerId") or e.get("verticalAlign") == "middle":
+                e["y"] = round(e.get("y", 0) + (oh - h) / 2, 1)
+            e["width"], e["height"] = w, h
+    return scene
+
+
+def file_sha256(p):
+    import hashlib
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def figure_dir(doc):
+    """docs/<stem>/ for docs/<stem>.md: where a doc's Excalidraw sources and their SVGs live."""
+    doc = Path(doc)
+    return doc.parent / doc.stem
+
+
+def figure_state(src, style):
+    """For an .excalidraw source: (word, svg path) — "missing" (no .svg), "current" (the .svg's
+    keel render mark names this source's sha256 and `style`), "stale" (it names another), or
+    "unmarked" / "unmarked-older" for an .svg keel did not render, judged by mtime alone (a
+    checkout rewrites mtimes, so that is only ever a warning)."""
+    svg = Path(src).with_suffix(".svg")
+    if not svg.is_file():
+        return "missing", svg
+    try:
+        head = svg.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return "missing", svg
+    m = FIGURE_MARK_RE.search(head)
+    if m:
+        return ("current" if m.group(1) == file_sha256(src) and m.group(2) == style else "stale"), svg
+    return ("unmarked-older" if svg.stat().st_mtime < Path(src).stat().st_mtime else "unmarked"), svg
+
+
+def figure_lint(text, path):
+    """(errors, warnings) for a doc's figures: an Excalidraw source beside it whose .svg is missing
+    or was rendered from another version of it, or in another style, is an error (the page would
+    show the old picture); an .svg keel did not render and that is older than its source, a
+    warning; an image line naming an .svg that is not there, an error."""
+    errors, warnings = [], []
+    if not path:
+        return errors, warnings
+    path = Path(path)
+    try:
+        style = figure_style(text)
+    except Stop as e:
+        return [str(e)], warnings
+    fd = figure_dir(path)
+    for src in sorted(fd.glob("*.excalidraw")) if fd.is_dir() else []:
+        word, svg = figure_state(src, style)
+        rel = src.relative_to(path.parent)
+        if word == "missing":
+            errors.append("%s has no %s — run `keel render %s`" % (rel, svg.name, path.name))
+        elif word == "stale":
+            errors.append("%s is not rendered from this %s in style %s — run `keel render %s`"
+                          % (svg.relative_to(path.parent), src.name, style, path.name))
+        elif word == "unmarked-older":
+            warnings.append("%s is older than %s and keel did not render it — run `keel render %s`"
+                            % (svg.relative_to(path.parent), src.name, path.name))
+    fences, read = fenced(text.split("\n")), figs_on_disk(path)
+    for k, l in enumerate(text.split("\n")):
+        m = IMAGE_LINE_RE.match(l.strip())
+        if m and not fences[k] and "://" not in m.group(2):
+            why = figure_check(read, m.group(2))[1]   # the page's own judge: lint is red where it shows alt text
+            if why:
+                errors.append("line %d: the figure %s is %s" % (k + 1, m.group(2), why))
+    return errors, warnings
+
+
+SVG_NS, XLINK_NS = "http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink"
+SVG_DROP = {"script", "foreignobject", "iframe", "object", "embed", "audio", "video", "animate", "set",
+            "animatemotion", "animatetransform", "handler", "listener"}   # matched lower-cased: an HTML parser folds case
+SVG_DROP_ATTRS = {"src", "action", "formaction", "data", "content", "srcset"}   # an HTML tag's URL in an SVG
+SAFE_DATA_RE = re.compile(r"^data:(?:font/|application/(?:x-)?font|image/(?:png|jpeg|gif|webp)[;,])", re.I)
+
+
+def safe_svg(raw, prefix):
+    """The SVG as static markup fit to inline into the page, or None: parsed (a DOCTYPE or ENTITY is
+    refused unread), its root an <svg>; no script, foreignObject, embed or animation element; no on*
+    attribute; an href only to `#id` or a data: font or raster image; in style text and attributes, a
+    url() only to `#id` or such data, no @import; every id prefixed with `prefix` and every
+    reference to it, so two figures on one page never share a mask (Excalidraw names its arrow
+    masks mask-<id>). Comments go. The second line, not the first: the page shows the result as an
+    <img> (figure_html), where a browser runs no script, fetches nothing and keeps its style inside."""
+    import xml.etree.ElementTree as ET
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)", raw, re.I):
+        return None
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+    if root.tag != "{%s}svg" % SVG_NS:
+        return None
+
+    def local(n):
+        return n.rsplit("}", 1)[-1]
+
+    def urls(v):
+        v = re.sub(r"@import[^;]*;?", "", v, flags=re.I)
+        v = re.sub(r"expression\s*\(", "none(", v, flags=re.I)
+
+        def one(m):
+            u = m.group(2).strip()
+            if u.startswith("#"):
+                return "url(#%s%s)" % (prefix, u[1:])
+            return m.group(0) if SAFE_DATA_RE.match(u) else "none"
+        return re.sub(r"""url\(\s*(['"]?)(.*?)\1\s*\)""", one, v, flags=re.I | re.S)
+
+    def clean(el):
+        for child in list(el):
+            if not isinstance(child.tag, str) or local(child.tag).lower() in SVG_DROP:
+                el.remove(child)
+                continue
+            clean(child)
+        for k in list(el.attrib):
+            v, name = el.attrib[k], local(k).lower()
+            if name.startswith("on") or "javascript:" in v.lower().replace(" ", "") or name in SVG_DROP_ATTRS:
+                del el.attrib[k]
+            elif name == "href":
+                if v.startswith("#"):
+                    el.attrib[k] = "#" + prefix + v[1:]
+                elif not SAFE_DATA_RE.match(v):
+                    del el.attrib[k]
+            elif name == "id":
+                el.attrib[k] = prefix + v
+            elif "url(" in v.lower() or name == "style":
+                el.attrib[k] = urls(v)
+        if local(el.tag) == "style" and el.text:
+            el.text = urls(el.text)
+    clean(root)
+    ET.register_namespace("", SVG_NS)
+    ET.register_namespace("xlink", XLINK_NS)
+    return ET.tostring(root, encoding="unicode")
+
+
+def figure_check(read, rel):
+    """(svg, None) for a figure line's link the page can show, else (None, why) — one judge for the
+    page (figure_html) and lint, so lint is red whenever the page would show a placeholder."""
+    if not read:
+        return None, "no doc folder to read it from"
+    raw, why = read(rel)
+    if raw is None:
+        return None, why
+    svg = safe_svg(raw, "f-")
+    return (svg, None) if svg is not None else (None, "not an SVG keel can inline safely")
+
+
+def figs_on_disk(doc):
+    """The figure reader for a doc on disk: a link reads an .svg under the doc's own figure folder
+    (docs/<stem>/), and nothing else — the folder the deploy's dirty check and version sha cover."""
+    doc = Path(doc)
+    fd = figure_dir(doc).resolve()
+
+    def read(rel):
+        target = (doc.parent / rel).resolve()
+        if fd not in target.parents:
+            return None, "outside %s/, the doc's figure folder" % fd.name
+        if not target.is_file():
+            return None, "not there"
+        if target.stat().st_size > SVG_MAX:
+            return None, "over %d MB" % (SVG_MAX // 1024 // 1024)
+        return target.read_text(encoding="utf-8", errors="replace"), None
+    return read
+
+
+def figs_in_git(gd, ref, rel_doc):
+    """The figure reader for a doc as `ref` holds it in `gd` (the lookout's redeploy, sheep_blob):
+    the same folder rule as figs_on_disk, read with git show."""
+    stem = posixpath.splitext(rel_doc)[0]
+
+    def read(rel):
+        path = posixpath.normpath(posixpath.join(posixpath.dirname(rel_doc), rel))
+        if not path.startswith(stem + "/"):
+            return None, "outside %s/, the doc's figure folder" % posixpath.basename(stem)
+        size = git(gd, "cat-file", "-s", "%s:%s" % (ref, path), check=False).stdout.strip()
+        if not size.isdigit():
+            return None, "not there"
+        if int(size) > SVG_MAX:
+            return None, "over %d MB" % (SVG_MAX // 1024 // 1024)
+        return git(gd, "show", "%s:%s" % (ref, path)).stdout, None
+    return read
+
+
+def figure_html(alt, rel, ctx, attrs=""):
+    """A `![alt](x.svg)` line as the page shows it: the SVG, through safe_svg, as an <img> whose
+    src is a data: URI — no script runs, nothing is fetched and its <style> stays inside it (the
+    landing review, 2026-10-25: inlined markup let an upper-case <SCRIPT>, an HTML breakout tag and a
+    page-wide style through); a link the reader refuses, or an unsafe SVG, as its alt text and
+    path (why on stderr)."""
+    import base64
+    read = (ctx or {}).get("figs")
+    svg, why = figure_check(read, rel)
+    if svg is not None:
+        src = "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return '<figure class="fig"%s><img src="%s" alt="%s"></figure>' % (attrs, src, html.escape(alt or ""))
+    if read:
+        print("keel: figure %s not inlined: %s" % (rel, why), file=sys.stderr)
+    return '<p class="fig-missing"%s>Figure: %s (<code>%s</code>)</p>' % (
+        attrs, html.escape(alt or "untitled", quote=False), html.escape(rel, quote=False))
+
+
+def chrome_path():
+    """KEEL_CHROME, else Google Chrome on a Mac, else chromium / google-chrome on PATH, else None."""
+    import shutil
+    env = os.environ.get("KEEL_CHROME")
+    if env:
+        return env if os.access(env, os.X_OK) else None
+    mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if os.access(mac, os.X_OK):
+        return mac
+    for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        p = shutil.which(n)
+        if p:
+            return p
+    return None
+
+
+def chrome_run(chrome, args, timeout=90):
+    """One headless Chrome, bounded: it never returned in an unattended session on a headless host, and with a
+    fresh --user-data-dir it did not exit on a Mac (2026-10-23), so none is passed. Returns stdout
+    as text, or raises Stop naming the timeout."""
+    cmd = [chrome, "--headless=new", "--disable-gpu", "--no-first-run", "--hide-scrollbars",
+           "--allow-file-access-from-files"] + (["--no-sandbox"] if sys.platform.startswith("linux") else []) + args
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Stop("render: headless Chrome did not finish in %d s (no window server for this session?)" % timeout)
+    return r.stdout.decode("utf-8", errors="replace")
+
+
+def chrome_results(chrome, page_html, work, name):
+    """Load a page that leaves a JSON list in <pre id="out">, and return the list."""
+    p = Path(work) / (name + ".html")
+    p.write_text(page_html, encoding="utf-8")
+    dom = chrome_run(chrome, ["--virtual-time-budget=20000", "--dump-dom", p.as_uri()])
+    m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
+    try:
+        return json.loads(html.unescape(m.group(1))) if m else None
+    except ValueError:
+        return None
+
+
+def svg_sized(svg):
+    """The SVG with its root's width/height set from its viewBox and its style dropped (Mermaid
+    writes width="100%" and a max-width), plus (w, h); (svg, None) without a viewBox."""
+    head, rest = svg.split(">", 1)
+    vb = re.search(r'viewBox="\s*([-\d.]+)[\s,]+([-\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"', head)
+    if not vb:
+        return svg, None
+    w, h = int(round(float(vb.group(3)))), int(round(float(vb.group(4))))
+    head = re.sub(r'\s(width|height|style)="[^"]*"', "", head)
+    if "xmlns=" not in head:
+        head += ' xmlns="%s"' % SVG_NS
+    return '%s width="%d" height="%d">%s' % (head, w, h, rest), (w, h)
+
+
+def screenshot(chrome, svg, size, out, work, scale=2):
+    """The SVG as a PNG at its own size, `scale` device pixels a pixel, on white."""
+    p = Path(work) / (out.stem + ".shot.html")
+    p.write_text('<!doctype html><meta charset=utf-8><style>html,body{margin:0;background:#fff}'
+                 'svg{display:block}</style>\n' + svg, encoding="utf-8")
+    if out.exists():
+        out.unlink()
+    chrome_run(chrome, ["--force-device-scale-factor=%d" % scale, "--window-size=%d,%d" % size,
+                        "--screenshot=%s" % out, "--virtual-time-budget=5000", p.as_uri()])
+    return out.is_file() and out.stat().st_size > 0 and out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def excalidraw_lib_path():
+    """Where the library is read from: KEEL_EXCALIDRAW_UTILS, else keel's cache folder, Mermaid's."""
+    return Path(os.environ.get("KEEL_EXCALIDRAW_UTILS") or _keel_cache() / ("excalidraw-utils-%s.js" % EXCALIDRAW_VERSION))
+
+
+def excalidraw_lib():
+    """The pinned @excalidraw/utils, fetched into the cache on first use; a Stop when it cannot be
+    had or is not the pinned build. KEEL_EXCALIDRAW_UTILS names another copy (still sha-checked)."""
+    import hashlib
+    lib = excalidraw_lib_path()
+    if not lib.is_file() and not os.environ.get("KEEL_EXCALIDRAW_UTILS"):
+        # mermaid_fetch's shape: a temp file per process, renamed only once it matches the pin, so two
+        # first renders never read each other's half; IncompleteRead is no OSError (the landing review)
+        import http.client
+        import time
+        import urllib.request
+        lib.parent.mkdir(parents=True, exist_ok=True)
+        part = lib.with_name("%s.%d.tmp" % (lib.name, os.getpid()))
+        print("keel: fetching @excalidraw/utils %s once (19.6 MB) into %s" % (EXCALIDRAW_VERSION, lib.parent), file=sys.stderr)
+        end, buf = time.monotonic() + 300, bytearray()
+        try:
+            with urllib.request.urlopen(EXCALIDRAW_URL, timeout=60) as r:
+                while time.monotonic() < end and len(buf) <= 32 * 1024 * 1024:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    buf += chunk
+            if hashlib.sha256(bytes(buf)).hexdigest() != EXCALIDRAW_SHA256:
+                raise Stop("render: the download of %s does not match its pin (or ran past 300 s) — nothing kept"
+                           % EXCALIDRAW_URL)
+            part.write_bytes(bytes(buf))
+            os.replace(part, lib)
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            raise Stop("render: cannot fetch %s: %s" % (EXCALIDRAW_URL, e))
+        finally:
+            if part.exists():
+                part.unlink()
+    if not lib.is_file():
+        raise Stop("render: no %s" % lib)
+    got = hashlib.sha256(lib.read_bytes()).hexdigest()
+    if got != EXCALIDRAW_SHA256:
+        raise Stop("render: %s does not match its pin (sha256 %s…, pin %s…)" % (lib, got[:12], EXCALIDRAW_SHA256[:12]))
+    return lib
+
+
+def mermaid_fences(lines):
+    """[(line number of the opening fence, 1-based, the diagram's text)] for every ```mermaid fence."""
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        opener = fence_mark(lines[i])
+        if not opener:
+            i += 1
+            continue
+        first, buf = i, []
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        i += 1
+        while i < n and not _common().fence_closes(lines[i], opener, indent):
+            buf.append(lines[i])
+            i += 1
+        i += 1
+        if MERMAID_FENCE_RE.match(lines[first]):
+            out.append((first + 1, "\n".join(buf)))
+    return out
+
+
+MERMAID_RENDER_PAGE = """<!doctype html><meta charset=utf-8><body><pre id="out">pending</pre>
+<script type="application/json" id="src">%(src)s</script>
+<script src="%(js)s"></script>
+<script>
+(async function(){var o=document.getElementById("out"),srcs=JSON.parse(document.getElementById("src").textContent),res=[];
+try{mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:"default"});}catch(e){o.textContent=JSON.stringify([{err:String(e)}]);return;}
+for(var k=0;k<srcs.length;k++){try{await mermaid.parse(srcs[k]);var r=await mermaid.render("keelfig"+k,srcs[k]);res.push({svg:r.svg});}
+catch(e){res.push({err:String(e&&e.message||e)});}}
+o.textContent=JSON.stringify(res);})();
+</script>"""
+
+EXCALIDRAW_RENDER_PAGE = """<!doctype html><meta charset=utf-8><body><pre id="out">pending</pre>
+<script type="application/json" id="src">%(src)s</script>
+<script type=module>
+import { exportToSvg } from "%(js)s";
+const o = document.getElementById("out"), res = [];
+for (const s of JSON.parse(document.getElementById("src").textContent)) {
+  try {
+    const svg = await exportToSvg({data: {elements: (s.elements || []).filter(e => !e.isDeleted),
+      appState: Object.assign({viewBackgroundColor: "#ffffff"}, s.appState || {}, {exportBackground: true}),
+      files: s.files || {}}, config: {padding: 20}});
+    await document.fonts.ready;
+    res.push({svg: new XMLSerializer().serializeToString(svg)});   // XML: outerHTML writes &nbsp;
+  } catch (e) { res.push({err: String(e && e.stack || e)}); }
+}
+o.textContent = JSON.stringify(res);
+</script>"""
+
+
+def json_for_script(x):
+    return json.dumps(x).replace("</", "<\\/")
+
+
+def render(doc, out=None, style=None, force=False):
+    """`keel render`: a PNG per ```mermaid fence and per Excalidraw source into `out`, and each
+    source's .svg beside it when it is missing or stale (or `force`). Exit 1 on a parse error (the
+    fence's line named), a library off its pin, or a picture Chrome did not draw; 2 without Chrome."""
+    import tempfile
+    doc = Path(doc)
+    if not doc.is_file():
+        raise Stop("render: no doc at %s" % doc)
+    text = doc.read_text()
+    # a --style other than the doc's is a preview: its PNGs only, the committed .svg left in the doc's
+    # style, or lint would call it stale (the landing review, 2026-10-25)
+    preview = bool(style) and style != figure_style(text)
+    style = style or figure_style(text)
+    if style not in FIGURE_STYLES:
+        raise Stop("render: --style %r is not one of %s" % (style, ", ".join(FIGURE_STYLES)))
+    out = Path(out) if out else Path(tempfile.gettempdir()) / "keel-render" / doc.stem
+    out.mkdir(parents=True, exist_ok=True)
+    top = subprocess.run(["git", "-C", str(out), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode == 0 and subprocess.run(["git", "-C", str(out), "check-ignore", "-q", "."]).returncode != 0:
+        # a PNG is a binary, and binaries stay out of git (the checkpoint hook commits what it finds)
+        raise Stop("render: %s is inside the repo at %s and not ignored — PNGs stay out of git; leave -o out"
+                   % (out, top.stdout.strip()))
+    fences = mermaid_fences(text.split("\n"))
+    fd = figure_dir(doc)
+    sources = sorted(fd.glob("*.excalidraw")) if fd.is_dir() else []
+    if not fences and not sources:
+        print("%s: no mermaid fence and no %s/*.excalidraw — nothing to render" % (doc.name, fd.name))
+        return 0
+    chrome = chrome_path()
+    if not chrome:
+        print("keel render: no Chrome (KEEL_CHROME, Google Chrome, chromium) — nothing rendered", file=sys.stderr)
+        return 2
+    bad = 0
+    with tempfile.TemporaryDirectory(prefix="keel-render-") as work:
+        if fences:
+            js = mermaid_source()
+            if not js:
+                raise Stop("render: %s is missing or not the pinned build — refused" % MERMAID_JS)
+            # the text mermaid_source returned, never MERMAID_JS: a cache it could not write has no file
+            # there, and Chrome then blamed the fence (the landing review, 2026-10-25)
+            mjs = Path(work) / "mermaid.js"
+            mjs.write_text(js, encoding="utf-8")
+            res = chrome_results(chrome, MERMAID_RENDER_PAGE % {
+                "src": json_for_script([f[1] for f in fences]), "js": mjs.as_uri()}, work, "mermaid") or []
+            for k, (line, _) in enumerate(fences):
+                r = res[k] if k < len(res) else {"err": "Chrome returned no result"}
+                if r.get("err"):
+                    print("%s:%d: mermaid: %s" % (doc, line, " ".join(r["err"].split())[:300]), file=sys.stderr)
+                    bad += 1
+                    continue
+                svg, size = svg_sized(r["svg"])
+                png = out / ("%s-mermaid-L%d.png" % (doc.stem, line))
+                if not size or not screenshot(chrome, svg, size, png, work):
+                    print("%s:%d: mermaid: no PNG drawn" % (doc, line), file=sys.stderr)
+                    bad += 1
+                    continue
+                print("%s:%d: %s (%dx%d)" % (doc, line, png, size[0], size[1]))
+        if sources:
+            lib = excalidraw_lib()
+            scenes = []
+            for src in sources:
+                try:
+                    scene = json.loads(src.read_text(encoding="utf-8"))
+                except ValueError as e:
+                    raise Stop("render: %s is not JSON: %s" % (src, e))
+                if isinstance(scene, list):
+                    scene = {"elements": scene}
+                scenes.append(restyle(scene, style))
+            res = chrome_results(chrome, EXCALIDRAW_RENDER_PAGE % {
+                "src": json_for_script(scenes), "js": lib.as_uri()}, work, "excalidraw") or []
+            for k, src in enumerate(sources):
+                r = res[k] if k < len(res) else {"err": "Chrome returned no result"}
+                if r.get("err"):
+                    print("%s: excalidraw: %s" % (src, " ".join(r["err"].split())[:300]), file=sys.stderr)
+                    bad += 1
+                    continue
+                svg, size = svg_sized(r["svg"])
+                word, target = figure_state(src, style)
+                mark = "<!-- keel render: source sha256 %s, style %s -->" % (file_sha256(src), style)
+                write = (force or word != "current") and not preview
+                if write:
+                    target.write_text(re.sub(r"^(<svg\b[^>]*>)", lambda m: m.group(1) + mark, svg, count=1) + "\n",
+                                      encoding="utf-8")
+                png = out / ("%s-%s.png" % (doc.stem, src.stem))
+                if not size or not screenshot(chrome, svg, size, png, work):
+                    print("%s: excalidraw: no PNG drawn" % src, file=sys.stderr)
+                    bad += 1
+                    continue
+                print("%s: %s %s, %s (%dx%d, %s)" % (src, target.name, "written" if write else "left (a preview)" if preview
+                                                     else "current", png, size[0], size[1], style))
+    print("look at each PNG before the hand-over (Read the file)" if not bad else
+          "keel render: %d of %d not drawn" % (bad, len(fences) + len(sources)))
+    return 1 if bad else 0
+
 CSS = """
 :root{--paper:#FAFAF7;--ink:#1E2528;--muted:#66706F;--line:#DCDDD6;--card:#FFFFFF;--accent:#1F6F78;--accent-ink:#FFFFFF;--soft:#EDF3F2;--warn:#8A5A1B;--warn-bg:#FBF3E3;--code:#F1F1EC;--ok:#2D7A4F;--bad:#B3261E}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--paper:#15181A;--ink:#E6E7E2;--muted:#9AA3A1;--line:#2C3235;--card:#1C2022;--accent:#5FB8C0;--accent-ink:#0F1A1C;--soft:#1F2C2E;--warn:#E0B36A;--warn-bg:#2E2718;--code:#22282A;--ok:#5CC98B;--bad:#FF8A80}}
@@ -2031,6 +2589,9 @@ code{font:.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code
 pre{background:var(--code);padding:.75rem;overflow-x:auto;border-radius:6px}
 pre code{background:none;padding:0}
 pre.mermaid{background:none;text-align:center;white-space:pre-wrap}
+.fig{margin:1rem 0;text-align:center;overflow-x:auto}
+.fig img{max-width:100%;height:auto}
+.fig-missing{color:var(--muted);font-style:italic}
 blockquote{border-left:3px solid var(--line);padding-left:.75rem;color:var(--muted)}
 hr{border:0;border-top:1px solid var(--line);margin:1.5rem 0}
 .tbl{overflow-x:auto;margin:.5rem 0}
@@ -2608,7 +3169,7 @@ def ss_anchor(ctx, at, row=None):
     return sid
 
 
-def page_parts(text, page=False):
+def page_parts(text, page=False, figs=None):
     """(lines, items, feedback_line, the page's HTML parts, ctx) — `build` renders them, `merge`
     reads ctx["anchors"] to place each note exactly where the page showed it. Every item is a card;
     the feedback section (parse's feedback_section: after the last item) and what follows it are not
@@ -2617,9 +3178,11 @@ def page_parts(text, page=False):
     spacesheep's comments: a decision card `data-ss-id="D<n>"`, every other block a content hash
     (ss_anchor), mapped back in ctx["ss"]. Until 2026-10-14 the page was read-only and a comment
     anywhere on a card was its answer; now the card has the answer box, so a comment on a line
-    inside it is a note on that line and one on the card's own head is the answer."""
+    inside it is a note on that line and one on the card's own head is the answer.
+    `figs`: the figure reader (figs_on_disk, figs_in_git) a figure line's .svg is read through
+    (figure_html); without it a figure shows as its alt text."""
     lines, items, feedback_line = parse(text)
-    ctx = {"lines": lines, "anchors": {}}
+    ctx = {"lines": lines, "anchors": {}, "figs": figs}
     if page:
         ctx["ss"] = {}
     # segments: markdown between items, cards for items; the feedback section is never above an item
@@ -2662,17 +3225,17 @@ def page_parts(text, page=False):
     return lines, items, feedback_line, parts, ctx
 
 
-def build(text, source_name, post=None):
-    return render_form(text, source_name, post=post)[0]
+def build(text, source_name, post=None, figs=None):
+    return render_form(text, source_name, post=post, figs=figs)[0]
 
 
-def render_form(text, source_name, post=None, sheep=None):
+def render_form(text, source_name, post=None, sheep=None, figs=None):
     """The form as one HTML page; returns (html, ctx). `post`: memo serve's answer URL. `sheep`:
     the spacesheep page's footer facts ({rel, sha, branch, read, edit}) — the same form, anchored
     for comments, its Save sent through spacesheep's page bridge (`window.ss.emit("memo-save",
     doc)`; probed 2026-10-14: an emit reaches live_events in under 2 s, its data intact) for
     `sheep wait` and `sheep pull` to take."""
-    lines, items, feedback_line, parts, ctx = page_parts(text, page=bool(sheep))
+    lines, items, feedback_line, parts, ctx = page_parts(text, page=bool(sheep), figs=figs)
     title = title_of(text, Path(source_name).stem)
     existing_feedback = ""
     if feedback_line is not None:
@@ -2812,7 +3375,7 @@ button.secondary:hover:not([disabled]){background:var(--fire-tint);border-color:
 """
 
 
-def sheep_page(text, source_name, meta):
+def sheep_page(text, source_name, meta, figs=None):
     """The spacesheep page: the form (render_form), answerable from the phone. A Save there is an
     event `sheep wait` wakes the session on; a comment on a decision card answers it, on any other
     block leaves a note there, on the page is open feedback — `sheep pull` brings both back
@@ -2821,7 +3384,7 @@ def sheep_page(text, source_name, meta):
     A whole document, never a fragment: spacesheep injects its page runtime (`window.ss`, the
     comment anchors) only into one with <html> and <body>; a fragment gets none, and the Save
     failed with "page bridge did not load" (probed 2026-10-14, the same script both ways)."""
-    page, ctx = render_form(text, source_name, sheep=meta)
+    page, ctx = render_form(text, source_name, sheep=meta, figs=figs)
     return PAGE_HEAD + page + "</body></html>", ctx
 
 
@@ -3068,7 +3631,7 @@ def serve(memo, port=0, once=True, idle=110 * 60):
                 return self.send(404, "not found", "text/plain")
             # read the memo on every load: a reload shows what the session changed meanwhile
             try:
-                page = build(path.read_text(), path.name, post=base + "answers")
+                page = build(path.read_text(), path.name, post=base + "answers", figs=figs_on_disk(path))
             except (Stop, OSError, ValueError) as e:
                 return self.send(500, "memo serve cannot show %s: %s" % (path.name, e), "text/plain; charset=utf-8")
             record_open(path)  # one row per page that built — the page never polls (E14: `opened`)
@@ -4822,8 +5385,11 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     why = never_mirrored(repo, rel)
     if why:
         raise Stop(why)
-    if p and git(top, "status", "--porcelain", "--", rel).stdout.strip():
-        raise Uncommitted("%s has uncommitted changes — the page is a copy of git; commit first" % rel)
+    dirty = git(top, "status", "--porcelain", "--", rel, posixpath.splitext(rel)[0]).stdout if p else ""
+    if dirty.strip():
+        # the figure folder too: the page inlines its .svg files (figure_html)
+        raise Uncommitted("%s has uncommitted changes — the page is a copy of git; commit first"
+                          % (rel if rel in dirty else posixpath.splitext(rel)[0] + "/"))
     text = p.read_text() if p else src["text"]
     name = p.name if p else Path(rel).name
     _, items, _ = parse(text)
@@ -4832,7 +5398,9 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     if src:
         sha = src["sha"]
     else:
-        sha = git(top, "log", "-1", "--format=%H", "--", rel).stdout.strip() or git(top, "rev-parse", "HEAD").stdout.strip()
+        # the doc's figure folder counts: a re-rendered .svg alone changes the page (figure_html)
+        sha = git(top, "log", "-1", "--format=%H", "--", rel, posixpath.splitext(rel)[0]).stdout.strip() \
+            or git(top, "rev-parse", "HEAD").stdout.strip()
     pin = pins().get(key) or {}
     if pin.get("moved_to") and pin.get("moved_sha") in (None, sha):
         return moved_page(key, pin)
@@ -4860,7 +5428,7 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     view, edit = urls(slug, branch, rel) if slug else ("", "")
     shown = pin.get("receipt")
     page, ctx = sheep_page(text, name, {"rel": rel, "sha": sha, "branch": branch, "read": view, "edit": edit,
-                                          "receipt": shown})
+                                          "receipt": shown}, figs=figs_on_disk(p) if p else src.get("figs"))
     import time
     carried, orphans, mcp = {}, [], None
     left = None if deadline is None else deadline - time.time()
@@ -5112,10 +5680,11 @@ def sheep_check(memo):
             pass
     if not sha:
         return pin, "not deployed since %s took its page over (%s) — memo sheep %s" % (rel, pin.get("url") or "no link", p)
-    head = git(top, "log", "-1", "--format=%H", "--", rel).stdout.strip()
-    if head == sha or git(top, "diff", "--quiet", sha, head, "--", rel, check=False).returncode == 0:
+    figs = posixpath.splitext(rel)[0]   # the figure folder: a re-rendered .svg alone changes the page
+    head = git(top, "log", "-1", "--format=%H", "--", rel, figs).stdout.strip()
+    if head == sha or git(top, "diff", "--quiet", sha, head, "--", rel, figs, check=False).returncode == 0:
         return pin, "current (%s, %s@%s, from %s) — %s" % (rel, pin.get("branch") or branch, sha[:7], src, pin.get("url"))
-    n = git(top, "rev-list", "--count", "%s..%s" % (sha, head), "--", rel, check=False).stdout.strip() or "?"
+    n = git(top, "rev-list", "--count", "%s..%s" % (sha, head), "--", rel, figs, check=False).stdout.strip() or "?"
     return pin, "behind by %s commit%s (page %s from %s, memo %s) — memo sheep %s" % (
         n, "" if n == "1" else "s", sha[:7], src, head[:7], p)
 
@@ -6216,8 +6785,8 @@ def plumb_commit(loc, new_text, what, saved_by=(), items=()):
 
 def sheep_blob(key, ref=None, gd=None):
     """Deploy pin `key`'s page from its branch as git holds it (`ref` in `gd`, default the local
-    branch in the primary; the lookout passes helm's poll mirror) — the doc's last commit on that
-    ref names the version, as a checkout's deploy names it."""
+    branch in the primary; the lookout passes helm's poll mirror) — the last commit on that
+    ref to the doc or its figure folder names the version, as a checkout's deploy names it."""
     name, branch, rel = key_parts(key)
     top = Path(pin_row(key, pins().get(key) or {})["repo"])
     pin = pins().get(key) or {}
@@ -6228,9 +6797,10 @@ def sheep_blob(key, ref=None, gd=None):
     if not text:
         raise Stop("%s: %s is not on %s" % (key, rel, ref))
     m = GITHUB_RE.match(git(top, "config", "--get", "remote.origin.url", check=False).stdout.strip())
-    sha = git(gd, "log", "-1", "--format=%H", ref, "--", rel).stdout.strip()
+    # the figure folder counts, as a checkout's deploy counts it (sheep), and its figures come from the ref
+    sha = git(gd, "log", "-1", "--format=%H", ref, "--", rel, posixpath.splitext(rel)[0]).stdout.strip()
     return sheep(None, src={"top": top, "branch": branch, "rel": rel, "slug": m.group(1) if m else None, "key": key,
-                            "repo": name, "text": text, "sha": sha})
+                            "repo": name, "text": text, "sha": sha, "figs": figs_in_git(gd, ref, rel)})
 
 
 SHEEP_USAGE = ("usage: memo sheep <doc> | sheep pull <doc> [--write] [--plumb] | sheep wait <doc> [--quiet S] [--idle S] [--poll S] | "
@@ -9471,6 +10041,11 @@ def main(argv=None):
         if name == "lint":
             sp.add_argument("--strict", action="store_true", help="answered items too: the doc as it read when handed over")
             sp.add_argument("--set", action="store_true", help="the doc is an entry: lint every file of its set and each `<slug> D2` across it")
+    rd = sub.add_parser("render", help="a PNG per mermaid fence and per Excalidraw figure, offline in headless Chrome; each figure's .svg beside it")
+    rd.add_argument("memo")
+    rd.add_argument("-o", "--out", help="where the PNGs go (default: <tmp>/keel-render/<doc stem>; never a tracked folder)")
+    rd.add_argument("--style", choices=sorted(FIGURE_STYLES), help="the figures' style (default: the doc's `Figure style:`, else soft)")
+    rd.add_argument("--force", action="store_true", help="rewrite every figure's .svg, current or not")
     b = sub.add_parser("build", help="--form: render the memo as a form page")
     b.add_argument("memo")
     b.add_argument("-o", "--out", help="output HTML (default: <memo stem>.form.html in the current directory)")
@@ -9664,6 +10239,8 @@ def main(argv=None):
             return light_write(a.memo, a.why, review=a.review, session=a.session)
         if a.cmd == "landing":
             return landing(a.where, a.base)
+        if a.cmd == "render":
+            return render(a.memo, out=a.out, style=a.style, force=a.force)
         if a.cmd == "lookout":
             if a.json and not a.status:
                 # without --status it would run a live pass and print text (S6 review)
@@ -9734,7 +10311,7 @@ def main(argv=None):
             return 1 if bad else 0
         if a.cmd == "build":
             out = Path(a.out) if a.out else Path.cwd() / (memo.stem + ".form.html")
-            out.write_text(build(text, memo.name))
+            out.write_text(build(text, memo.name, figs=figs_on_disk(memo)))
             _, items, _ = parse(text)
             print("%s: %d decision%s → %s" % (memo.name, len(items), "" if len(items) == 1 else "s", out))
             return 0

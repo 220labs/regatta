@@ -4573,5 +4573,189 @@ grep -v '^Gate: light' "$ST/lit/docs/d.md" > "$ST/lit/docs/e.md"
 check "$(owed_course "$ST/lit/docs/e.md")" "None" \
   "…but an answered doc with no light gate still owes it (an old-shape doc's answers are pre-filled picks)"
 unset TERM_PROGRAM
+
+echo "figures: an Excalidraw figure's SVG shown as an image, sanitised; lint on a stale one; keel render (diagram-tools)"
+FG="$T/fig"; mkdir -p "$FG/docs/d" "$FG/docs/f" "$FG/elsewhere"
+# a hostile SVG: every way in that safe_svg closes (an upper-case SCRIPT, a lower-case foreignobject and
+# an HTML img among them: the landing review, 2026-10-25), and an id a second copy of it repeats
+cat > "$FG/docs/f/bad.svg" <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10" width="10" height="10" onload="alert(1)">
+<!-- keel render: a comment goes -->
+<defs><style>@import url(https://example.com/x.css); .a{background:url(https://example.com/i.png)} @font-face{font-family:F;src:url(data:font/woff2,AAAA)}</style>
+<mask id="m1"><rect width="10" height="10"/></mask></defs>
+<script>alert(2)</script><foreignObject><div>hi</div></foreignObject>
+<a href="https://example.com/"><rect mask="url(#m1)" onclick="alert(3)" width="5" height="5" style="fill:url(https://example.com/p)"/></a>
+<use xlink:href="#m1"/><image href="javascript:alert(4)"/><image href="data:image/png,AAAA"/>
+<SCRIPT>alert(5)</SCRIPT><foreignobject><p>hi</p></foreignobject><img src="https://example.com/t.png"/>
+<text x="1" y="9">kept</text></svg>
+EOF
+cp "$FG/docs/f/bad.svg" "$FG/elsewhere/out.svg"; cp "$FG/docs/f/bad.svg" "$FG/docs/d/side.svg"
+printf '# Figures\n\n![first](f/bad.svg)\n\n![second](f/bad.svg)\n\n![away](../elsewhere/out.svg)\n\n![side](d/side.svg)\n\n![gone](f/none.svg)\n\nprose ![inline](f/bad.svg) stays text\n' > "$FG/docs/f.md"
+"$B/keel" build "$FG/docs/f.md" -o "$T/fig.html" > /dev/null 2> "$T/fig.err"
+python3 - "$T/fig.html" > "$T/fig.out" <<'PY'
+import base64, re, sys
+p = open(sys.argv[1]).read()
+figs = re.findall(r'<figure class="fig"[^>]*>(.*?)</figure>', p, re.S)
+m = re.fullmatch(r'<img src="data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)" alt="first">', figs[0])
+f = base64.b64decode(m.group(1)).decode("utf-8") if m else ""
+print(len(figs), bool(m), "kept" in f)
+print(any(x in f.lower() for x in ("<script", "alert", "onload", "onclick", "foreignobject", "example.com", "@import", "javascript")))
+print(re.findall(r' id="([^"]+)"', f), re.findall(r'url\(#[^)]+\)', f), re.findall(r'href="(#[^"]*)"', f))
+print("data:font/woff2" in f, "data:image/png" in f)
+print(len(re.findall(r'class="fig-missing"', p)), "Figure: away" in p, "Figure: side" in p, "Figure: gone" in p,
+      "prose ![inline](f/bad.svg) stays text" in p)
+PY
+check "$(sed -n 1p "$T/fig.out")" "2 True True" "figure: a figure line's .svg shown as an <img> of a data: URI with its alt, its text kept"
+check "$(sed -n 2p "$T/fig.out")" "False" "…no script (any case), foreignObject, on* attribute, javascript:, @import, HTML src or outside URL survives"
+check "$(sed -n 3p "$T/fig.out")" "['f-m1'] ['url(#f-m1)'] ['#f-m1']" "…every id prefixed, and each url(#…) and href to it"
+check "$(sed -n 4p "$T/fig.out")" "True True" "…data: fonts and raster images stay"
+check "$(sed -n 5p "$T/fig.out")" "3 True True True True" "…a figure outside the doc's figure folder (a sibling's too) or missing shows as its alt text; an image mid-sentence stays prose"
+has "$T/fig.err" "../elsewhere/out.svg not inlined: outside f/, the doc's figure folder" "…and says why on stderr"
+has "$T/fig.err" "d/side.svg not inlined: outside f/, the doc's figure folder" "…a sibling doc's figure folder too: the deploy's sha covers only this doc's"
+# the lookout's redeploy reads a doc's figures from its branch, by the same folder rule
+git init -q "$FG/gitfig" && mkdir -p "$FG/gitfig/docs/g" && cp "$FG/elsewhere/out.svg" "$FG/gitfig/docs/g/a.svg"
+printf '# G\n' > "$FG/gitfig/docs/g.md"; printf '<svg/>\n' > "$FG/gitfig/docs/x.svg"
+git -C "$FG/gitfig" add -A && git -C "$FG/gitfig" -c user.name=t -c user.email=t@t commit -qm g
+python3 - "$B/keel" "$FG/gitfig" > "$T/gf.out" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("m", sys.argv[1]).load_module()
+r = m.figs_in_git(sys.argv[2], "HEAD", "docs/g.md")
+print("kept" in (r("g/a.svg")[0] or ""), r("x.svg")[1], "|", r("g/none.svg")[1])
+PY
+check "$(cat "$T/gf.out")" "True outside g/, the doc's figure folder | not there" "figs_in_git: a figure read from the ref; a link out of the doc's figure folder refused"
+# lint: a source beside the doc with no .svg, then one keel rendered from it, then the source changed
+printf '# Lint figures\n\n![a](d/a.svg)\n' > "$FG/docs/d.md"
+rm -f "$FG/docs/d/bad.svg"
+printf '{"type":"excalidraw","version":2,"elements":[]}\n' > "$FG/docs/d/a.excalidraw"
+"$B/keel" lint "$FG/docs/d.md" > "$T/fl.out"; rc=$?
+check "$rc" "1" "figure lint: an .excalidraw with no .svg fails"
+has "$T/fl.out" "d/a.excalidraw has no a.svg — run \`keel render d.md\`" "…naming the source and the verb"
+has "$T/fl.out" "line 3: the figure d/a.svg is not there" "…and the image line that names it"
+mark() { printf '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><!-- keel render: source sha256 %s, style %s --></svg>\n' "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$FG/docs/d/a.excalidraw")" "$1" > "$FG/docs/d/a.svg"; }
+mark soft
+check "$("$B/keel" lint "$FG/docs/d.md")" "$FG/docs/d.md: no findings" "…rendered from this source in the default style: clean"
+printf '# Lint figures\n\nFigure style: clean\n\n![a](d/a.svg)\n' > "$FG/docs/d.md"
+"$B/keel" lint "$FG/docs/d.md" > "$T/fl.out"; rc=$?
+check "$rc" "1" "…the doc asks for another style: stale"
+has "$T/fl.out" "d/a.svg is not rendered from this a.excalidraw in style clean" "…naming the style"
+mark clean; printf '\n' >> "$FG/docs/d/a.excalidraw"
+"$B/keel" lint "$FG/docs/d.md" > "$T/fl.out"; rc=$?
+check "$rc" "1" "…the source changed after its render: stale"
+printf '<svg xmlns="http://www.w3.org/2000/svg"/>\n' > "$FG/docs/d/a.svg"; touch -t 202601010000 "$FG/docs/d/a.svg"
+"$B/keel" lint "$FG/docs/d.md" > "$T/fl.out"; rc=$?
+check "$rc" "0" "…an .svg keel did not render, older than its source: a warning only (mtimes move on a checkout)"
+has "$T/fl.out" "warning: d/a.svg is older than a.excalidraw and keel did not render it" "…said as one"
+sedi 's/clean/fancy/' "$FG/docs/d.md"
+check "$("$B/keel" lint "$FG/docs/d.md" | grep -c "Figure style: 'fancy' is not one of soft, clean, sketch")" "1" "…an unknown Figure style is an error"
+printf '# E\n\n![away](../elsewhere/out.svg)\n' > "$FG/docs/e.md"
+"$B/keel" lint "$FG/docs/e.md" > "$T/fl.out"; rc=$?
+check "$rc" "1" "figure lint: a link the page would show as alt text fails, by the page's own judge"
+has "$T/fl.out" "line 3: the figure ../elsewhere/out.svg is outside e/, the doc's figure folder" "…saying why"
+# render's refusals that need no browser: PNGs into a tracked folder, a library off its pin
+git init -q "$FG/repo"
+printf '# R\n\n```mermaid\nflowchart LR\n  A --> B\n```\n' > "$FG/docs/r.md"
+"$B/keel" render "$FG/docs/r.md" -o "$FG/repo/out" > /dev/null 2> "$T/fr.err"; rc=$?
+check "$rc" "1" "render: -o inside a repo, not ignored, is refused"
+has "$T/fr.err" "PNGs stay out of git" "…saying why"
+python3 - "$B/keel" "$T/fake-mermaid.js" "$FG/docs/r.md" "$FG/out-fake" > "$T/fp.out" 2>&1 <<'PY'
+import os, sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+m = L("m", sys.argv[1]).load_module()
+m.MERMAID_JS = Path(sys.argv[2])
+m.chrome_path = lambda: "/bin/true"   # the pin is judged before any browser runs
+try:
+    m.render(sys.argv[3], out=sys.argv[4])
+    print("rendered")
+except m.Stop as e:
+    print("refused:", e)
+os.environ["KEEL_EXCALIDRAW_UTILS"] = sys.argv[2]
+try:
+    m.excalidraw_lib()
+    print("loaded")
+except m.Stop as e:
+    print("refused:", e)
+PY
+has "$T/fp.out" "is missing or not the pinned build — refused" "render: a mermaid.min.js off its pin is refused"
+has "$T/fp.out" "fake-mermaid.js does not match its pin" "render: an @excalidraw/utils off its pin is refused"
+check "$(ls "$FG/out-fake" 2>/dev/null | wc -l | tr -d ' ')" "0" "…and nothing is drawn"
+python3 - "$B/keel" > "$T/rs.out" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("m", sys.argv[1]).load_module()
+s = {"elements": [{"type": "rectangle", "id": "a", "x": 0, "y": 0, "width": 200, "height": 60, "backgroundColor": "#a5d8ff",
+                   "customData": {"role": "action"}},
+                  {"type": "rectangle", "id": "b", "x": 300, "y": 0, "width": 200, "height": 60, "backgroundColor": "#b2f2bb"},
+                  {"type": "text", "id": "t", "x": 50, "y": 20, "width": 100, "height": 25, "text": "abcdefghij", "fontSize": 20,
+                   "textAlign": "center", "verticalAlign": "middle", "containerId": "a"}]}
+for st in ("soft", "clean", "sketch"):
+    r = {e["id"]: e for e in m.restyle(s, st)["elements"]}
+    t = r["t"]
+    print(st, r["a"]["fillStyle"], r["b"]["fillStyle"], r["a"]["roughness"], t["fontFamily"], round(t["x"] + t["width"] / 2, 1))
+PY
+check "$(cat "$T/rs.out" | tr '\n' ';')" "soft solid solid 1 6 100.0;clean solid solid 0 2 100.0;sketch hachure solid 2 1 100.0;" \
+  "restyle: Nunito, Helvetica, Virgil; hachure only on an action step in sketch; a centred label keeps its centre"
+# In a browser, on a Mac that has Chrome (CI runs no browser case), from this Mac's own keel cache,
+# not the suite's: Mermaid must be there already (the first page with a diagram fetches it), and the
+# Excalidraw half needs its library there too (the first `keel render` of a figure fetches it, 19.6 MB,
+# once). The suite fetches neither.
+MJS=$(env -u KEEL_CACHE_DIR python3 -c 'import sys
+from importlib.machinery import SourceFileLoader as L
+print(L("m", sys.argv[1]).load_module().MERMAID_JS)' "$B/keel")
+if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ] && [ -z "${CI:-}" ] && [ -f "$MJS" ]; then
+  SUITE_CACHE=$KEEL_CACHE_DIR; export KEEL_CACHE_DIR=$(dirname "$MJS")
+  printf '# R\n\n```mermaid\nflowchart LR\n  A[one] --> B[two]\n```\n\nprose\n\n```mermaid\nflowchart LR\n  A -->\n```\n' > "$FG/docs/r.md"
+  perl -e 'alarm shift; exec @ARGV' 300 "$B/keel" render "$FG/docs/r.md" -o "$FG/out" > "$T/rm.out" 2> "$T/rm.err"; rc=$?
+  if [ "$rc" = 142 ]; then echo "  skip render in Chrome: it did not finish in 300 s (no window server for this session?)"
+  else
+    check "$rc" "1" "render: a fence that does not parse exits 1"
+    has "$T/rm.err" "$FG/docs/r.md:10: mermaid: Parse error" "…naming the fence's line"
+    check "$(head -c 4 "$FG/out/r-mermaid-L3.png" | od -An -c | tr -d ' ')" "211PNG" "…and the good fence is a PNG"
+    CACHE_LIB=$(python3 -c 'import sys
+from importlib.machinery import SourceFileLoader as L
+print(L("m", sys.argv[1]).load_module().excalidraw_lib_path())' "$B/keel")
+    if [ -f "$CACHE_LIB" ]; then
+      mkdir -p "$FG/docs/s"
+      cat > "$FG/docs/s/flow.excalidraw" <<'EOF'
+{"type": "excalidraw", "version": 2, "elements": [
+ {"type": "rectangle", "id": "a", "x": 0, "y": 0, "width": 200, "height": 70, "backgroundColor": "#a5d8ff", "fillStyle": "solid", "strokeColor": "#1e1e1e", "strokeWidth": 2, "roundness": {"type": 3}, "customData": {"role": "action"}, "boundElements": [{"id": "at", "type": "text"}, {"id": "ar", "type": "arrow"}]},
+ {"type": "text", "id": "at", "x": 45, "y": 22.5, "width": 110, "height": 25, "text": "a brief", "fontSize": 20, "textAlign": "center", "verticalAlign": "middle", "containerId": "a", "lineHeight": 1.25},
+ {"type": "rectangle", "id": "b", "x": 400, "y": 0, "width": 200, "height": 70, "backgroundColor": "#b2f2bb", "fillStyle": "solid", "strokeColor": "#1e1e1e", "strokeWidth": 2, "roundness": {"type": 3}, "boundElements": [{"id": "bt", "type": "text"}, {"id": "ar", "type": "arrow"}]},
+ {"type": "text", "id": "bt", "x": 445, "y": 22.5, "width": 110, "height": 25, "text": "a session", "fontSize": 20, "textAlign": "center", "verticalAlign": "middle", "containerId": "b", "lineHeight": 1.25},
+ {"type": "arrow", "id": "ar", "x": 204, "y": 35, "width": 192, "height": 0, "points": [[0, 0], [192, 0]], "endArrowhead": "arrow", "strokeColor": "#1e1e1e", "strokeWidth": 2, "startBinding": {"elementId": "a", "fixedPoint": [1, 0.5]}, "endBinding": {"elementId": "b", "fixedPoint": [0, 0.5]}, "boundElements": [{"id": "al", "type": "text"}]},
+ {"type": "text", "id": "al", "x": 270, "y": 25, "width": 60, "height": 20, "text": "starts", "fontSize": 16, "textAlign": "center", "verticalAlign": "middle", "containerId": "ar", "lineHeight": 1.25}
+], "appState": {"viewBackgroundColor": "#ffffff"}, "files": {}}
+EOF
+      out3=""
+      for st in soft clean sketch; do
+        printf '# S\n\nFigure style: %s\n\n![flow](s/flow.svg)\n' "$st" > "$FG/docs/s.md"
+        perl -e 'alarm shift; exec @ARGV' 300 "$B/keel" render "$FG/docs/s.md" -o "$FG/out-$st" > "$T/rx.out" 2>&1; rc=$?
+        fam=$(grep -o 'font-family="[A-Za-z]*' "$FG/docs/s/flow.svg" | head -1 | cut -d'"' -f2)
+        png=$(head -c 4 "$FG/out-$st/s-flow.png" 2>/dev/null | od -An -c | tr -d ' ')
+        out3="$out3$st $rc $fam $png $(grep -o 'style [a-z]* -->' "$FG/docs/s/flow.svg");"
+      done
+      check "$out3" "soft 0 Nunito 211PNG style soft -->;clean 0 Helvetica 211PNG style clean -->;sketch 0 Virgil 211PNG style sketch -->;" \
+        "render: one figure in all three styles — its .svg rewritten in each font and marked with it, a PNG of each"
+      cp "$FG/docs/s/flow.svg" "$T/flow.svg"
+      "$B/keel" render "$FG/docs/s.md" -o "$FG/out-again" > "$T/rx.out" 2>&1
+      has "$T/rx.out" "flow.svg current" "…a current .svg is left alone"
+      cmp -s "$T/flow.svg" "$FG/docs/s/flow.svg"; check "$?" "0" "…byte for byte"
+      printf '# S\n\n![flow](s/flow.svg)\n' > "$FG/docs/s.md"
+      "$B/keel" lint "$FG/docs/s.md" > "$T/fl.out"; rc=$?
+      check "$rc" "1" "…and lint calls it stale once the doc's own style (soft, by default) differs"
+      "$B/keel" render "$FG/docs/s.md" -o "$FG/out-soft" > /dev/null 2>&1; cp "$FG/docs/s/flow.svg" "$T/flow-soft.svg"
+      perl -e 'alarm shift; exec @ARGV' 300 "$B/keel" render "$FG/docs/s.md" --style clean -o "$FG/out-preview" > "$T/rx.out" 2>&1; rc=$?
+      check "$rc $(head -c 4 "$FG/out-preview/s-flow.png" 2>/dev/null | od -An -c | tr -d ' ')" "0 211PNG" "render --style other than the doc's: a preview PNG"
+      has "$T/rx.out" "flow.svg left (a preview)" "…said so"
+      cmp -s "$T/flow-soft.svg" "$FG/docs/s/flow.svg"; check "$?" "0" "…and the committed .svg untouched, so lint stays clean"
+    else
+      echo "  skip render of an Excalidraw figure: no $CACHE_LIB (the first \`keel render\` of a figure fetches it)"
+    fi
+  fi
+  export KEEL_CACHE_DIR=$SUITE_CACHE
+else
+  echo "  skip render in Chrome: no Chrome on this machine, a CI run, or no $MJS (the first page with a diagram fetches it)"
+fi
 echo
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi
