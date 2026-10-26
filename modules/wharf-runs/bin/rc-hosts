@@ -1322,7 +1322,11 @@ def agent_problem(args):
 def automations(on):
     """--agents' second half: the clock's Orca automations (wharf-runs' bin/clock, knowledge-layers S7).
     Orca starts each run's claude itself — the app is that run's responsible process and its grants
-    are the app's — so a run is never bare. What the run launches is the question: its one launcher
+    are the app's, which hold no Drive grant (docs/orca-launcher-2026-10-24.md) — unless the precheck
+    fires the job and exits non-zero (seam P, that doc's S3): then a scheduled run starts no claude in
+    Orca, and only a manual one does. Each automation gets a `note` line saying which (clock check
+    fails the one without), and a precheck firing through another checkout's clock is OUTSIDE, as its
+    line's is. What the run launches is the question too: its one launcher
     line's script starts the real job, through a launchd one-shot that goes through claude-host only
     for the primary checkout's script (dispatch's, or clock fire's job), so a line naming another
     copy is OUTSIDE, counted once ready as a plist's is. A line naming no path is a `--` note: the
@@ -1345,18 +1349,30 @@ def automations(on):
         print(f"  note     Orca automations: not read ({str(e).strip() or type(e).__name__})")
         return 0
     counted = 0
+    # a fire's own clock writes and loads the plist each night: the primary's, or this module's own
+    # (the copy rc-hosts runs from), never another checkout's
+    ours = {str((PRIMARY / "bin" / "clock").resolve()), str((BIN / "clock").resolve())}
+    outside = lambda cl: "/" in cl and str(Path(os.path.expandvars(cl)).expanduser().resolve()) not in ours
     for a in autos:
         name = a.get("name") or a.get("id")
         line, _ = clock.launcher_line(a.get("prompt"))
         parsed = clock.parse_line(line)[0] if line else None
         if not parsed:
             continue   # not the clock's shape: clock check judges it, nothing here starts a claimer
+        fires, why = clock.precheck_fires(a)
+        if fires:
+            pc = shlex.split(clock.precheck_command(a))[0]
+            if outside(pc):
+                tag = "OUTSIDE " if on else "note    "
+                counted += on
+                print(f"  {tag} automation {name}: its precheck fires through {pc}, not the primary checkout's clock")
+                continue
+            print(f"  note     automation {name}: its precheck fires the job through launchd (seam P); only a manual run starts a claude in Orca")
+        else:
+            print(f"  note     automation {name}: Orca starts a claude for each run — {why}")
         if parsed[1] == "fired":
-            # the fired line's own clock writes and loads the plist each night: the primary's, or
-            # this module's own (the copy rc-hosts runs from), never another checkout's
             cl = shlex.split(line)[0]
-            ours = {str((PRIMARY / "bin" / "clock").resolve()), str((BIN / "clock").resolve())}
-            if "/" in cl and str(Path(os.path.expandvars(cl)).expanduser().resolve()) not in ours:
+            if outside(cl):
                 tag = "OUTSIDE " if on else "note    "
                 counted += on
                 print(f"  {tag} automation {name}: fires through {cl}, not the primary checkout's clock")
