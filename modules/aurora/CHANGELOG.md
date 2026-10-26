@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The suite gives git an identity of its own (`GIT_CONFIG_GLOBAL`, a made-up address) after moving
+  HOME: the embark cases failed on the public twin's CI, where the runner cannot guess one (twin-ci-4,
+  2026-10-25).
 - The host rule is the core's (2026-10-24): weekly-run asks `common.weekly_host` in the same python
   that checks the core loads (one start, not two), and `install.sh --schedule` asks `regatta
   weekly-host aurora` before its dry run, and quotes the rule's line rather than the dry run's; the dry

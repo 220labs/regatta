@@ -14,6 +14,11 @@ W="$D/bin/weekly-run"
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" REGATTA_CONFIG="$T/config" WEEKLY_LOG_DIR="$T/logs"
+# The moved HOME drops check.yml's git identity, and the code under test commits (the embark memo,
+# the dream): an ubuntu runner cannot guess one from its hostname as a Mac does (the twin's CI,
+# 2026-10-25). The file replaces check.yml's, so it carries that one's init.defaultBranch too.
+export GIT_CONFIG_GLOBAL="$T/gitconfig"
+git config --global user.name t; git config --global user.email t@example.invalid; git config --global init.defaultBranch main
 # The embark step ends every sextant job: a scratch checkout, `keel embark` and `keel line` stood in,
 # so no rehearsal adds a worktree to this repo or deploys a page (the embark block sets its own)
 export WEEKLY_EMBARK_REPO="$T/no-embark-repo" WEEKLY_KEEL_EMBARK="$T/no-keel-embark.json" WEEKLY_KEEL_LINE=echo
