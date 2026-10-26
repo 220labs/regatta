@@ -200,6 +200,14 @@ case "${1:-}" in
       3|4|5) echo "install.sh --schedule: $(printf '%s\n' "$out" | tail -n 1) — not loading the job (--unschedule removes one loaded before)" >&2; exit 1 ;;
       *) echo "install.sh --schedule: the core's host rule could not tell whether this host runs /sextant (exit $rc${why:+: $why}) — not loading the job" >&2; exit 1 ;;
     esac
+    # Then the runner's own dry run, as before the rule moved into the core: a sextant-run that dies
+    # past the rule would otherwise be loaded and die each week (the finish review, 2026-10-25)
+    err=$(mktemp); rc=0
+    out=$(python3 "$self/libexec/sextant-run" run "${SEXTANT_CWD:-/}" --dry-run 2>"$err") || rc=$?
+    why=$(tail -n 1 "$err"); rm -f "$err"
+    if [ "$rc" != 0 ] || ! printf '%s\n' "$out" | grep -q '^sextant-run: /sextant in '; then
+      echo "install.sh --schedule: the runner's dry run planned no run (exit $rc${why:+: $why}) — not loading the job" >&2; exit 1
+    fi
     # A bootout kills a running job, and a /sextant killed mid-run leaves its worktrees half-written
     if "$wlc" print "gui/$(id -u)/$wlabel" 2>/dev/null | grep -q 'pid = '; then
       echo "install.sh --schedule: $wlabel is running right now — rerun when it is done" >&2; exit 1
