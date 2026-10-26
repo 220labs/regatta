@@ -72,6 +72,11 @@ unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPA
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 export CLAUDE_CODE_SESSION_ID=mgr-1
 mkdir -p "$T/home" "$T/sess"
+# The moved HOME drops check.yml's git identity, and the pinned-doc block commits without -c: a runner
+# cannot guess one from its hostname as a Mac does (twin-ci-4, 2026-10-25). A file of the suite's own,
+# never the caller's (config_fixture.sh unset theirs); it carries check.yml's init.defaultBranch too.
+export GIT_CONFIG_GLOBAL="$T/gitconfig"
+git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch main
 if [ -n "$OVL" ]; then cp "$OVL/settings/surfaces.json" "$T/surfaces.json"; else echo '{}' > "$T/surfaces.json"; fi
 echo '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-01-04"}}}' > "$COST_RATIO"
 
