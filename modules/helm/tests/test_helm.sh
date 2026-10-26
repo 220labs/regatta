@@ -63,6 +63,9 @@ unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPA
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
       HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST \
       DEADMAN_CONFIG DEADMAN_URL DEADMAN_PING_SECRET DEADMAN_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first); deadman's (S11)
+# and every other DISPATCH_* a dispatched run carries: a list by name fell behind dispatch's
+# DISPATCH_TASK, _MODE and _BRIEF, and "no run variable either" failed only in a dispatched run (2026-10-23)
+unset $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p')
 export CLAUDE_CODE_SESSION_ID=mgr-1
 # the account's plan and this Mac's deploy log (the core's sheep_*): Pro, an empty log of the suite's own —
 # never the Mac's cache, nor a probe of its CLI (spacesheep-tiers)
