@@ -639,8 +639,9 @@ HEAD=$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=
 python3 - "$T/autos.json" "$HEAD" "$P" "$HOME" <<'PY'
 import json, sys
 out, head, p, home = sys.argv[1:]
-mk = lambda n, line: {"id": n, "name": n, "prompt": head + "\n\n" + line}
-json.dump([mk("night", p + "/clock fire aurora -- " + p + "/weekly-run aurora " + home),
+mk = lambda n, line, pc=None: {"id": n, "name": n, "prompt": head + "\n\n" + line, "precheck": {"command": pc} if pc else None}
+json.dump([mk("night", p + "/clock fire aurora -- " + p + "/weekly-run aurora " + home,
+              p + "/clock fire aurora --precheck --due -- " + p + "/weekly-run aurora " + home),
            mk("pass", p + "/dispatch claude/x --repo r --account a"),
            mk("free", "Tidy the docs")], open(out, "w"))
 PY
@@ -648,17 +649,24 @@ check "$(RC --agents)" "0" "automations whose lines name the primary's scripts: 
 has "$T/out" "ok       automation night: Orca starts its run; weekly-run is the primary checkout's" "…a fired job named"
 has "$T/out" "ok       automation pass: Orca starts its run; dispatch is the primary checkout's" "…a dispatch line named"
 hasnt "$T/out" "automation free" "…a prompt not in the clock's shape is clock check's, not this check's"
-python3 - "$T/autos.json" "$HEAD" "$HOME" <<'PY'
+# seam P (orca-launcher S3): which automations start a claude in Orca is a note, never a count
+has "$T/out" "note     automation night: its precheck fires the job through launchd (seam P); only a manual run starts a claude in Orca" "…a precheck that fires the job: a note saying so"
+has "$T/out" "note     automation pass: Orca starts a claude for each run — no precheck fires its job" "…one without: a note naming the precheck to give it"
+hasnt "$T/out" "--       automation" "…both in no line bootstrap.sh --check counts"
+python3 - "$T/autos.json" "$HEAD" "$HOME" "$P" <<'PY'
 import json, sys
-out, head, home = sys.argv[1:]
+out, head, home, p = sys.argv[1:]
 json.dump([{"id": "wt", "name": "wt", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/dispatch claude/x"},
            {"id": "bare", "name": "bare", "prompt": head + "\n\ndispatch claude/x"},
-           {"id": "fc", "name": "fc", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/clock fire aurora -- " + home + "/projects/overlay/bin/weekly-run aurora " + home}], open(out, "w"))
+           {"id": "fc", "name": "fc", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/clock fire aurora -- " + home + "/projects/overlay/bin/weekly-run aurora " + home},
+           {"id": "pc", "name": "pc", "prompt": head + "\n\n" + p + "/dispatch claude/x --repo r --account a",
+            "precheck": {"command": home + "/projects/overlay-copy/bin/clock fire pc --precheck -- " + p + "/dispatch claude/x --repo r --account a"}}], open(out, "w"))
 PY
 check "$(RC --agents)" "1" "an automation launching another copy's dispatch, or firing through another clock, counts, once ready"
 has "$T/out" "OUTSIDE  automation wt: launches dispatch from outside $P" "…named OUTSIDE"
 has "$T/out" "note     automation bare: dispatch named without a path" "…a pathless line is a note"
 has "$T/out" "OUTSIDE  automation fc: fires through" "…a fire through another checkout's clock named OUTSIDE"
+has "$T/out" "OUTSIDE  automation pc: its precheck fires through" "…a precheck firing through another checkout's clock named OUTSIDE too"
 echo '[]' > "$T/autos.json"
 printf '#!/bin/sh\nexit 1\n' > "$T/stub/orca.down"; chmod +x "$T/stub/orca.down"
 check "$(ORCA_HOST_CLI="$T/stub/orca.down" RC --agents)" "0" "Orca unread: a note, never a failure"

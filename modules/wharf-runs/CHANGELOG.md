@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `clock`'s seam P (S3 of docs/orca-launcher-2026-10-24.md, picked by its S1 findings): an automation's
+  precheck fires its job and exits non-zero, so a scheduled run starts no claude in Orca, whose app holds
+  no Drive grant. `clock fire NAME --precheck [--due] -- ARGV…` is that precheck: `--due` runs the job's
+  own `weekly-run JOB CWD --due` first (exit 3 is "not due", anything else fires), then the fire, the
+  outcome on stdout's first line, exit 1 (4 when nothing fired). Every fire appends a JSON line to
+  `fire.log` in the log dir. `check` fails an automation whose precheck does not fire the job its
+  launcher line names, through the line's own clock, and reads this Mac's last skipped run against
+  `fire.log` (a manual run, which skips the precheck, is a note). `schedule` refuses the same, prints
+  the precheck to give, and asks the clock the precheck names for that form's dry run, so a primary
+  checkout older than this change cannot be wired in (every run would skip with nothing fired).
+  `rc-hosts --agents` notes which automations start a claude in Orca, and counts a precheck firing
+  through another checkout's clock OUTSIDE, as a line's is.
+
 - `cold_prompt` hands every typed `/finish` to a fresh run (costs S7, 2026-10-24), not only a cold or
   Fable one. Cold or Fable, as before: the hook starts the runner and blocks the prompt. Warm, on any
   other model: the prompt passes with a context line asking the session to write and commit the
