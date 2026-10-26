@@ -2,7 +2,8 @@
 # The core's check: where the core, a peer and the private config are found (C2, C3), the private
 # values with and without their keys (neutral stand-ins only), the regatta
 # CLI, the gate's table order and its write through a config symlink, jev's key files, and the
-# shim `regatta shim` makes, under every way a caller loads a file (the design's P5).
+# shim `regatta shim` makes, under every way a caller loads a file (the design's P5), and the
+# transcript reader's last main-chain call.
 # Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is written,
 # and the one read is the autofinish_exclude case's: the caller's config dir's `regatta/overlay` marker.
 #   bash modules/regatta/tests/check.sh
@@ -547,6 +548,59 @@ for p in off:
     print("OFF " + p)
 PY
 }
+echo "transcript: the last main-chain call (one reader for cold_prompt, pickup, the harness adapter)"
+cat > "$T/tx.py" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import transcript as tx
+d = sys.argv[2]
+def rec(model="claude-opus-5-5", ts="2026-10-24T10:00:00.000Z", side=False, u=None):
+    u = {"input_tokens": 3, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20} if u is None else u
+    return {"type": "assistant", "isSidechain": side, "timestamp": ts, "message": {"model": model, "content": [], "usage": u}}
+def write(name, rows):
+    p = os.path.join(d, name)
+    with open(p, "w") as f:
+        f.write("".join((r if isinstance(r, str) else json.dumps(r, separators=(",", ":"))) + "\n" for r in rows))
+    return p
+user = {"type": "user", "timestamp": "2026-10-24T10:05:00Z", "message": {"content": "hi"}}
+zero = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+case = sys.argv[3]
+if case == "real":
+    print(tx.last_call(write("a", [rec(model="x"), rec(), user])))
+elif case == "sidechain":
+    print(tx.last_call(write("b", [rec(), rec(model="claude-sonnet-5-5", side=True, ts="2026-10-24T11:00:00Z")]))[1])
+elif case == "synthetic":
+    print(tx.last_call(write("c", [rec(), rec(model="<synthetic>", u=zero, ts="2026-10-24T11:00:00Z")]))[1:])
+elif case == "zero":
+    print(tx.last_call(write("e", [rec(), rec(model="claude-fable-5-1", u=zero, ts="2026-10-24T11:00:00Z")]))[1:])
+elif case == "nocall":
+    print(tx.last_call(write("f", [user, rec(side=True), rec(model="<synthetic>", u=zero)])), tx.last_call(os.path.join(d, "none")), tx.last_call(""))
+elif case == "cut":
+    # one line whose second half is a whole call of its own: cut there, the half must not count
+    inner = json.dumps(rec(model="half"), separators=(",", ":"))
+    p = write("g", [rec(model="whole"), json.dumps(user, separators=(",", ":")) + inner])
+    print(tx.last_call(p, tail=len(inner) + 1), tx.last_call(p)[1])
+elif case == "edge":
+    # the tail starts exactly at a line start: that line is whole and counts
+    last = json.dumps(rec(model="edge"), separators=(",", ":"))
+    p = write("h", [rec(model="before"), last])
+    print(tx.last_call(p, tail=len(last) + 1)[1])
+elif case == "time":
+    print(tx.last_call(write("i", [rec(ts="nope")]))[0], tx.call(rec(ts="2026-10-24T10:00:00+00:00"))[0])
+elif case == "line":
+    print(tx.call_line("{not json"), tx.call_line(json.dumps(user)), tx.call_line("{\"type\":\"assistant\",\"usage\":"), tx.call_line(json.dumps(rec()))[1:])
+PY
+TX() { python3 -I "$T/tx.py" "$M/hooks" "$T" "$1" 2>&1; }
+check "$(TX real)" "(1792836000.0, 'claude-opus-5-5', 123)" "a real call: its epoch, model and input + cache read + cache write"
+check "$(TX sidechain)" "claude-opus-5-5" "  a later sidechain call is a subagent: the main chain's wins"
+check "$(TX synthetic)" "('claude-opus-5-5', 123)" "  a <synthetic> entry after a real call is no call"
+check "$(TX zero)" "('claude-opus-5-5', 123)" "  nor is a zero total"
+check "$(TX nocall)" "None None None" "  no call, no file, no path: None"
+check "$(TX cut)" "None whole" "  a line cut at the tail's start is dropped, even when its rest parses"
+check "$(TX edge)" "edge" "  a tail that starts at a line start keeps that line"
+check "$(TX time)" "None 1792836000.0" "  a time that does not parse: epoch None; an offset time reads"
+check "$(TX line)" "None None None ('claude-opus-5-5', 123)" "  call_line(): foreign, user or cut lines are None"
+
 echo "module files not yet public (a note: every module targets the twin, none is forced)"
 out=$(notpublic "$ROOT")
 printf '%s\n' "$out" | sed -n 's/^COUNT /  --   /p'

@@ -28,6 +28,7 @@
   suite's environment reset unsets DISPATCH_*, RUN_SEED_*, SKIPPER_*, HELM_* and AUTOFINISH_* by
   pattern. 42 cases.
 
+- `cold_prompt`, `pickup` and the harness adapter read a transcript's last call through the core's `hooks/transcript.py` (needs a core that has it); the adapter reads a peer session's model from it.
 - `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
   that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),
   since the fork from origin/main; every other command runs each time, and the whole line runs on a

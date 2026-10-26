@@ -43,7 +43,6 @@ Tests: modules/wharf-runs/tests/cold_prompt.sh (moved from the overlay's hooks/t
 S7). Seams: COLD_PROMPT_NOW, CLAUDE_AUTOFINISH_RUN,
 COLD_PROMPT_TIMEOUT (seconds, in place of RUN_TIMEOUT_S).
 """
-import datetime
 import json
 import os
 import re
@@ -61,6 +60,7 @@ core_path.add()
 CORE_MISSING = "regatta core not found — run the overlay's bootstrap.sh --config, or install the regatta core"
 try:
     import common  # noqa: E402
+    import transcript  # noqa: E402 — the core's one last-call reader
 except Exception as exc:  # a broken core as well as a missing one: never exit 1
     # No core (docs/regatta-modules-2026-10-16.md C4): one line, a quiet exit — a nudge is never
     # worth a prompt. An importer (a test) gets the error itself.
@@ -75,7 +75,6 @@ COLD_S = 55 * 60
 # Price of re-writing the context, per million tokens, at the 1-hour write (2x base): Opus 5.5
 # base $4 → $8, Fable 5.1 base $10 → $20 (pricing page, read 2026-10-04; design section 3).
 WRITE_PER_M = {"opus": 8.0, "fable": 20.0, "sonnet": 6.0}
-TAIL_BYTES = 2_000_000
 RUNNER = os.environ.get("CLAUDE_AUTOFINISH_RUN") or str(Path(__file__).resolve().parent.parent / "bin" / "autofinish-run")
 RUN_TIMEOUT_S = 45  # autofinish-run returns once it has detached: a second, unless it first ends a warm run (30 s cap for --by typed); its account pick is --cached
 
@@ -93,39 +92,12 @@ def finish_args(prompt):
     return p.split()[1:]
 
 
-def last_call(transcript):
-    """(epoch, model, context tokens) of the transcript's last assistant call, or None."""
-    try:
-        with open(transcript, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - TAIL_BYTES))
-            lines = f.read().decode("utf-8", "replace").splitlines()
-    except OSError:
-        return None
-    for raw in reversed(lines):
-        if '"assistant"' not in raw:
-            continue
-        try:
-            r = json.loads(raw)
-        except ValueError:
-            continue
-        if r.get("type") != "assistant" or r.get("isSidechain"):
-            continue
-        msg = r.get("message") or {}
-        u = msg.get("usage") or {}
-        if not u or msg.get("model") == "<synthetic>":
-            continue  # Claude Code's own entry (an API error, "No response requested."): no call
-        ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
-            + (u.get("cache_creation_input_tokens") or 0)
-        if not ctx:
-            continue  # all-zero usage reads as no call too (AGENTS.md's <synthetic> trap)
-        try:
-            ts = datetime.datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00")).timestamp()
-        except (KeyError, ValueError):
-            return None
-        return ts, msg.get("model") or "", ctx
-    return None
+def last_call(path):
+    """(epoch, model, context tokens) of the transcript's last main-chain call (the core's reader:
+    sidechains, `<synthetic>` stand-ins and zero totals skipped), or None — also when its time does
+    not parse, so no age is guessed."""
+    c = transcript.last_call(path)
+    return c if c and c[0] is not None else None
 
 
 def family(model):

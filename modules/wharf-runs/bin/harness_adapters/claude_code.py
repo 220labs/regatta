@@ -11,7 +11,9 @@ both send this file's source to a peer Mac over ssh and run it there (pickup's P
 same): one reader judges a session on both Macs, never two copies that drift. Hence every helper's
 name starts with an underscore: stalls.py's probe appends dispatch-rc's typed(), running(),
 proc_start() and watcher_gone() after this source, and a public name here would be overwritten.
-The one thing read from the repo, bin/dispatch-rc, is loaded when it is there and skipped when it
+Two things come from the repo: what counts as a call (_model_of), the core's hooks/transcript.py
+from the peer's own checkout, so the rule is never a fifth copy (2026-10-24; none there, no model);
+and bin/dispatch-rc, which is loaded when it is there and skipped when it
 is not (_rc()): the registry alone still answers.
 
 What it reads:
@@ -28,8 +30,10 @@ What it reads:
                                     topic, repo, the screen to attach to, a run's end
     ~/.claude*/projects/*/<id>.jsonl  a session's transcript, any login's: the last assistant text,
                                     when it was said, the model and effort Claude Code writes on each
-                                    assistant record (bin/pickup's model_of), and whether the last
-                                    record is Claude Code's stand-in for an API failure
+                                    assistant record (what a call is: the core's transcript.call,
+                                    the one import outside this file, found on the peer
+                                    through its own regatta checkout), and whether the last record
+                                    is Claude Code's stand-in for an API failure
 
 The mapping (contract section 3, S1–S7), exactly its table:
     registry busy, shell            → working (shell: idle with a background shell — still working)
@@ -278,15 +282,42 @@ def last_reply(session_id, records=None):
     return {"text": text[-TEXT_CAP:], "at": at, "api_error": api_error, "last_at": last_at}
 
 
+_CORE_TRANSCRIPT = []
+
+
+def _transcript_lib():
+    """The core's hooks/transcript.py — the one rule for what a main-chain call is — or None.
+    Imported where the caller put the core on sys.path (bin/harness here, dispatch-rc, stalls.py),
+    else loaded from the regatta checkout _launcher() names: source sent over stdin has no path, so
+    on a peer it is that Mac's own core. Loaded once. None (no core): no model is read."""
+    if not _CORE_TRANSCRIPT:
+        mod = None
+        try:
+            import transcript as mod
+            if not callable(getattr(mod, "call", None)):
+                mod = None   # some other module of that name
+        except Exception:   # noqa: BLE001 — no core on the path: the checkout's below
+            mod = None
+        if mod is None:
+            f = os.path.join(os.path.dirname(os.path.normpath(_launcher(None))), "regatta", "hooks", "transcript.py")
+            try:
+                loader = importlib.machinery.SourceFileLoader("regatta_core_transcript", f)
+                mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+                loader.exec_module(mod)
+            except Exception:   # noqa: BLE001
+                mod = None
+        _CORE_TRANSCRIPT.append(mod)
+    return _CORE_TRANSCRIPT[0]
+
+
 def _model_of(records):
-    """(model, effort) of the last real assistant record on the main chain; a `<synthetic>` one
-    (Claude Code's stand-in for an error) names no model."""
-    for e in reversed(records):
-        if e.get("type") != "assistant" or e.get("isSidechain"):
-            continue
-        m = (e.get("message") or {}).get("model")
-        if m and not m.startswith("<"):
-            return m, e.get("effort")
+    """(model, effort) of the main chain's last call, as the core's transcript.call judges one
+    (sidechains, `<synthetic>` stand-ins and zero totals skipped); (None, None) with none, or no core."""
+    lib = _transcript_lib()
+    for e in reversed(records if lib else []):
+        c = lib.call(e)
+        if c:
+            return c[1] or None, e.get("effort")
     return None, None
 
 
