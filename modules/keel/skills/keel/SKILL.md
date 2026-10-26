@@ -196,19 +196,25 @@ transcripts are never mirrored: their form is keel serve's.
   on it; an answer changed in git after the comment, or since the commit the Save's page showed —
   git wins). A Save `merge` refuses is set aside in the pin's `refused_saves`, named in the
   output, and never blocks the next pull: copy its words from there if they matter. Relay it, then `keel sheep pull <doc> --write`: the memo is rewritten
-  through `merge`, each thread taken gets one `memo:` reply and is resolved. Commit it on its
+  through `merge`, each thread taken gets one `memo:` reply and stays open (the owner resolves a thread, never this tool). Commit it on its
   branch, then act the memo's way (`> **Done.** …`). A preview that says no comment was read
   although the page has some means `list_comments` answered in a shape this tool has not seen:
   the raw answer is saved where the line says — teach `comment_threads` that shape, never guess.
 - The pin map (doc → space) is per branch and per Mac, in `~/.local/state/memo/sheep.json`: a
-  doc first deployed on the other Mac gets a second page here.
+  doc first deployed on the other Mac gets a second page here. A doc with no pin takes over an
+  earlier page when it is renamed (`git mv`) or read from `main` after its branch landed. The old pin
+  says `moved_to`, and a deploy of the old doc prints where its page went. A renamed or landed doc's
+  old path that changes again gets a page of its own. A doc that replaces another under a new name
+  (a `Supersedes:` line) gets a page of its own too: hand the owner the new one.
 - Never fix a memo through the page: a comment starting `@co-shepherd` or `@spacesheep` lets
   spacesheep's own agent answer or edit the deployed page, and the next deploy from git overwrites
   an edit without a word. Its reply carries `via: co-shepherd` (`@Co-shepherd 🐑 (asked by …)` in
   the text form) and is never read as the owner's words.
-- A pull also names two things it does not take in: a reply the owner typed under a thread already
-  taken (`late reply:`), and a thread resolved on the page that no pull read (`resolved on the
-  page, not read:`); each is named once, so say it again as a new comment if it matters.
+- A reply the owner types under a thread already taken, while the thread is open, is taken in by
+  the next pull (on a D-card, the thread's words again as the answer). A pull names two things it
+  does not take in: such a reply under a resolved thread (`late reply:`), and a thread resolved on
+  the page that no pull read (`resolved on the page, not read:`); each is named once, so say it
+  again as a new comment if it matters.
   `keel sheep prune [--dry-run]` drops, from this Mac's pin map only (no call to spacesheep),
   the pins of branches gone from origin and over 14 days old, with their page folders.
   `keel sheep drain [--if-due]` (`ask poll`, at most every 6 h) empties every recent page's room — opens into `opens.jsonl`, the page's reading heartbeat (`memo-read`, a minute each) into `reads.jsonl` for crew-report; neither wakes a `wait`.

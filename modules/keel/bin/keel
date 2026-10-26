@@ -135,6 +135,13 @@ not the answer). A `.` or `:` separator needs the opening `**`, and a title must
 wrapped sentence that starts a line with "D2." is prose, and so is a range "D5–D8". One id twice is an error naming both
 lines. An item with no `➤` line still counts; `merge` inserts the line. Fenced code is skipped.
 
+A doc's page outlives the doc's path (docs/sheep-threads-2026-10-24.md, C): `keel sheep <doc>` with
+no page of its own deploys into an earlier one when git shows the doc renamed from a path that had
+a page, or when the doc is read from `main` after the branch that had it landed. The old page's
+threads stay; the old doc's pin says `moved_to`, and a deploy of the old doc names the new one and
+stops (adopt_page). A doc that replaces another gets a page of its own (D3-A of that doc: a
+`Supersedes:` handover is a design of its own, not built).
+
 Recommendations stand (D11-A of docs/autofinish-design-2026-10-02.md, built as its E10): an
 unanswered doc's `➤ Recommended:` picks become its answers 24 h after the link, unless the owner
 touched it meanwhile — `status` computes that, `stand --apply` writes it. See `stand_status`.
@@ -2587,7 +2594,8 @@ def ss_anchor(ctx, at, row=None):
     """The page's `data-ss-id` for a block, from its content: `b-` + 8 hex of the line's text (and
     the row label), `-2`… for a repeat. Not the line number — a line added above would renumber
     every block below, and an open comment would then name another block (review, 2026-10-03);
-    spacesheep keeps comments across redeploys only while the ids stay put. ctx["ss"] maps each id
+    spacesheep keeps comments across redeploys only while the ids stay put, so an edited line that
+    comments name takes its old id back at deploy (carry_anchors). ctx["ss"] maps each id
     back to what `merge` places a note by: the line, its text, the row label."""
     import hashlib
     quote = ctx["lines"][at].strip()
@@ -4225,6 +4233,12 @@ SS_ID_RE = re.compile(r"^(D\d+|b-[0-9a-f]{8}(?:-\d+)?)$")
 BOT_VIA = {"co-shepherd", "claude", "session", "agent", "bot", "mcp", "api", "spacesheep"}
 BOT_HEAD_RE = re.compile(r"\b(?:Claude|bot)\b|Co-shepherd|spacesheep\b|\basked by\b|🐑|🤖|\(via\b", re.I)
 DEPLOY_TIMEOUT = 25
+# The anchor carry (carry_anchors) reads the comments and the live page before a redeploy, each
+# within 8 s; under the hook's budget it runs only with CARRY_LEFT seconds left, and leaves the
+# deploy DEPLOY_MIN of them. A skipped carry is caught up by the next deploy, through the pin's
+# `ss` (every id this Mac rendered) where the live page no longer shows the old id.
+CARRY_LEFT = 12
+DEPLOY_MIN = 6
 # The page's shape. A pin of another shape is redeployed even when the memo's commit is the one it
 # shows: 2 (2026-10-14) is the form, where 1 (no `fmt`) was the read-only copy; 3 (2026-10-14) the
 # form as a whole document, the only shape spacesheep gives its page bridge (sheep_page); 4
@@ -4381,6 +4395,415 @@ def sheep_where(memo):
     return p, top, branch, rel, (m.group(1) if m else None), "%s@%s:%s" % (repo, branch, rel), repo
 
 
+# Anchors carried across versions (docs/sheep-threads-2026-10-24.md, B). A block's id is a hash of
+# its line (ss_anchor), so an edit gives it a new id, and spacesheep keeps a comment on its block
+# only while the id stays put: an edited line lost its thread's marker.
+CARRY_RATIO = 0.6
+# A short line shares most of its letters with its neighbours: "- A — land it now" against
+# "- B — hold it now" scores 0.82 (review 2026-10-24), so under 30 characters only a near-copy carries.
+CARRY_SHORT, CARRY_SHORT_RATIO = 30, 0.88
+GONE_WORDS = "the line this was on is gone from"
+BLOCK_ID_RE = re.compile(r"^b-[0-9a-f]{8}(?:-\d+)?$")
+
+
+def live_blocks(page):
+    """[(id, quote, row, at)] for each commented-on kind of block a page carries, in page order:
+    its `data-ss-id` with the `data-q`, `data-row` and `data-at` render_md writes beside it. Read
+    from the deployed page, so an id this or the other Mac carried over is read back as it is."""
+    from html.parser import HTMLParser
+    out = []
+
+    class Blocks(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            sid = a.get("data-ss-id") or ""
+            if BLOCK_ID_RE.match(sid):
+                try:
+                    at = int(a.get("data-at"))
+                except (TypeError, ValueError):
+                    at = None
+                out.append((sid, a.get("data-q") or "", a.get("data-row") or "", at))
+    Blocks(convert_charrefs=True).feed(page)
+    return out
+
+
+def carry_match(old, new, wanted, stale=()):
+    """{new id: old id} — each block of `new` that inherits a commented id of `old`. A candidate
+    pair: an old id in `wanted` (comments name it) that the new render lacks, a new id the old page
+    lacks (for an old id in `stale`, {id: the ids the deploy that dropped it added}, read from the pin
+    because the live page had lost it, one of those ids, though the old page has it too: a deploy that
+    skipped the carry published its heir under the heir's own id, and only this catches it up — the
+    review of 2026-10-24 found the false "gone" reply; any id no comment names moved a thread not yet
+    told onto an unchanged neighbour, the third landing review's finding 3), the same row label, and
+    difflib's ratio of the two lines' text at least CARRY_RATIO.
+    Pairs go one-to-one, best ratio first, the nearer source line breaking a tie. Blocks are
+    (id, quote, row, at), as live_blocks reads them.
+
+    0.6 is where the cases put it (measured 2026-10-24): one word changed in a sentence of a dozen
+    scores 0.93, a clause rewritten 0.78-0.85, two different lines of one doc 0.2-0.4 (the suite's
+    sheep B case checks the first and the last). Two short table rows can pass 0.6 on their markup
+    alone (0.65), which is why the row label must match too. A line rewritten whole loses its
+    thread to the orphan reply instead: the owner's comment was about words that are gone, and a
+    wrong home is worse than none."""
+    import difflib
+    old_ids, new_ids = {b[0] for b in old}, {b[0] for b in new}
+    gone = [b for b in old if b[0] in wanted and b[0] not in new_ids]
+    # a block whose own id comments name is never another thread's heir (R1, the second landing review)
+    fresh = [b for b in new if b[0] not in old_ids and b[0] not in wanted]
+    free = [b for b in new if b[0] not in wanted]
+    pairs = []
+    stale = stale if isinstance(stale, dict) else {}
+    for o in gone:
+        for n in ([b for b in free if b[0] in stale[o[0]]] if o[0] in stale else fresh):
+            if o[2] != n[2]:
+                continue
+            r = difflib.SequenceMatcher(None, o[1], n[1], autojunk=False).ratio()
+            if r >= (CARRY_SHORT_RATIO if min(len(o[1]), len(n[1])) < CARRY_SHORT else CARRY_RATIO):
+                pairs.append((-r, abs((o[3] or 0) - (n[3] or 0)), o[0], n[0]))
+    out, used = {}, set()
+    for _, _, oid, nid in sorted(pairs):
+        if oid not in used and nid not in out:
+            out[nid] = oid
+            used.add(oid)
+    return out
+
+
+def id_family(sid):
+    """A block id without its copy number: `b-<hash>` for `b-<hash>`, `-2`, `-3` (ss_anchor). Only
+    a number after the 8-hex hash is one: a hash of eight digits ends in `-<digits>` too (one id in 43,
+    the third landing review's finding 5)."""
+    return re.sub(r"^(b-[0-9a-f]{8})-\d+$", r"\1", sid)
+
+
+def pin_aliases(pin, ss):
+    """{rendered id: the id it inherited} from the pin's `aliases` (the renames of this Mac's last
+    deploy), for each rendered id that is back unchanged and the only copy of its line, and whose
+    inherited id no block renders as its own. An inherited id stays the block's without a read of the
+    live page on every later deploy (the third landing review's finding 15); a repeated line's copies
+    are left to repeat_shifts, whose numbers move."""
+    fam = {}
+    for sid in ss:
+        fam[id_family(sid)] = fam.get(id_family(sid), 0) + 1
+    out, used = {}, set()
+    for sid, to in sorted((pin.get("aliases") or {}).items()):
+        if sid in ss and to not in ss and to not in used and fam[id_family(sid)] == 1 and BLOCK_ID_RE.match(to or ""):
+            out[sid] = to
+            used.add(to)
+    return out
+
+
+def repeat_shifts(old, new):
+    """{new id: old id} for a line that repeats: ss_anchor numbers copies of one line `b-<hash>`,
+    `-2`, `-3` in page order, so deleting the first copy hands the second's thread no block (the
+    survivor is `b-<hash>` now) and a false "gone" reply follows (R9, the second landing review). The
+    old live page and the new render are aligned as sequences of (text, row); each copy the two share
+    in an unchanged run takes back the id it had. A new copy no old one aligned with keeps its own id
+    unless an aligned copy took it, and then takes the next number no old block had, so the renamed
+    render's ids stay unique and no old thread lands on a copy it was not on."""
+    import difflib
+    base = id_family
+    sm = difflib.SequenceMatcher(None, [(b[1], b[2]) for b in old], [(b[1], b[2]) for b in new], autojunk=False)
+    out = {}
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for o, n in zip(old[i1:i2], new[j1:j2]):
+                if o[0] != n[0] and base(o[0]) == base(n[0]):
+                    out[n[0]] = o[0]
+    if not out:
+        return out
+    took = set(out.values())
+    avoid = took | {b[0] for b in new} | {b[0] for b in old}
+    for b in new:
+        if b[0] not in out and b[0] in took:  # an unaligned copy whose number an aligned one took back
+            k = 2
+            while "%s-%d" % (base(b[0]), k) in avoid:
+                k += 1
+            out[b[0]] = "%s-%d" % (base(b[0]), k)
+            avoid.add(out[b[0]])
+    return out
+
+
+class LazyMcp:
+    """An Mcp made at its first call: the comments route needs none, and a deploy that reads the
+    comments must not pay for an MCP handshake it never uses."""
+
+    def __init__(self, key, timeout=30):
+        self.key, self.m, self.timeout = key, None, timeout
+
+    def call(self, name, arguments):
+        if self.m is None:
+            self.m = Mcp(self.key, timeout=self.timeout)
+        return self.m.call(name, arguments)
+
+
+def carry_anchors(cli, pin, ctx, timeout=8, last=()):
+    """Before a redeploy: ({rendered id: id it takes} to rename in the page at once, the open threads
+    whose block is gone with no heir, the Mcp to reply with). The old ids are those the page's comments name (the
+    comments route's `anchor_id`); what each was comes from the live page (the CLI's `read`), not
+    the pin, which misses a deploy whose carry was skipped or that another tool made. An id
+    the live page no longer shows (gone before this ran, or lost to a deploy that skipped this)
+    falls back to the pin's `ss`, every id this Mac ever rendered. An inherited id is read back
+    from the live page on the next deploy and inherited again, so it stays the block's for good.
+
+    A comment whose anchor is gone, as spacesheep shows it (probed on a throwaway private space,
+    2026-10-24, then deleted): the comments route still returns the thread with its `anchor_id`
+    and `anchor_version_sha`, list_comments still groups it under `[pinned to block #<id>]`, and
+    the viewer's panel still lists it with a "Show on the page" button labelled by its
+    `anchor_text` (the bare id when it has none); the page's marker goes, as the element it
+    stood on is gone (read from the viewer's script; the screenshot tool draws the page alone). So
+    the thread is not lost, only unplaced: one `memo:` reply says where its line went.
+
+    An id whose thread holds that reply is settled (the second landing review, R1 and R8): it is
+    never taken from the pin's `ss` again, where any line no comment names could inherit it and move
+    the thread onto a neighbour, and it is no reason to read the live page, unless `last` (the blocks
+    of the page this Mac deployed last) shows the line back. Lines that repeat take back their copy's
+    number first (repeat_shifts).
+
+    Where every commented id is rendered, `last` stands in for the live page and nothing is read (the
+    pin's `aliases` first: pin_aliases), unless a commented line repeats and its copies differ from
+    `last`'s even after repeat_shifts against it: a copy inserted above takes the commented copy's number
+    with no id going missing (the third landing review's finding 7)."""
+    k = sheep_key()
+    ali = pin_aliases(pin, ctx["ss"])
+    if not (k and pin.get("space")):
+        return ali, [], None
+    # three timed reads at most (web-session, the comments, the live page), each under `timeout`;
+    # no list_comments fallback, whose handshake would be three more (review 2026-10-24)
+    mcp = LazyMcp(k, timeout=timeout)
+    threads = comment_threads(sheep_comments(mcp, k, pin["space"], timeout=timeout, fallback=False))
+    wanted = {t["anchor"] for t in threads if BLOCK_ID_RE.match(t["anchor"] or "")}
+    # a resolved thread on a line since gone is never told (orphans skip it): it must not keep the live
+    # read alive on every later deploy (finish review, 2026-10-25)
+    wanted_open = {t["anchor"] for t in threads if t["anchor"] in wanted and not t["resolved"]}
+    told = {t["anchor"] for t in threads if t["anchor"] in wanted and any(
+        c["text"].strip().startswith(ACK) and GONE_WORDS in c["text"] for c in t["replies"])}
+    last = list(last)
+    new0 = [(ali.get(sid, sid), v["quote"], v["row"], v["at"]) for sid, v in ctx["ss"].items()]
+
+    def renamed(shifts, carried):  # {rendered id: the id it takes}, through the alias, the shift and the carry
+        out = {}
+        for sid in ctx["ss"]:
+            mid = shifts.get(ali.get(sid, sid), ali.get(sid, sid))
+            if carried.get(mid, mid) != sid:
+                out[sid] = carried.get(mid, mid)
+        return out
+
+    def copies(blocks, f):
+        return [tuple(b[:3]) for b in blocks if id_family(b[0]) == f]
+    loc = repeat_shifts(last, new0) if last else {}
+    mine = [(loc.get(b[0], b[0]),) + tuple(b[1:]) for b in new0]
+    fams = {id_family(w) for w in wanted}
+    moved = any(copies(mine, f) != copies(last, f) for f in fams if len(copies(mine, f)) > 1 or len(copies(last, f)) > 1)
+    if not wanted_open - {b[0] for b in mine} - (told - {b[0] for b in last}) and not moved:
+        return renamed(loc, {}), [], mcp
+    try:
+        r = subprocess.run([cli, "read", pin["space"], "index.html"], capture_output=True, text=True,
+                           env=sheep_env(cli), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Stop("the live page did not read in %ds" % timeout)
+    if r.returncode:
+        raise Stop("the live page did not read: %s" % ((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:120]))
+    old = live_blocks(r.stdout)
+    have, stale, dropped = {b[0] for b in old}, {}, pin.get("dropped_with") or {}
+    shifts = repeat_shifts(old, new0)
+    new = [(shifts.get(b[0], b[0]),) + b[1:] for b in new0]
+    for sid in sorted(wanted - have - told):
+        v = (pin.get("ss") or {}).get(sid)
+        if v:
+            old.append((sid, v.get("quote") or "", v.get("row") or "", v.get("at")))
+            # only a block the deploy that dropped it added can be its heir; none known, the orphan reply (finding 3)
+            stale[sid] = set(dropped.get(sid) or ())
+    carried = carry_match(old, new, wanted, stale)
+    renames = renamed(shifts, carried)
+    ids = {renames.get(sid, sid) for sid in ctx["ss"]}
+    orphans = [t for t in threads if t["anchor"] in wanted and t["anchor"] not in ids and t["anchor"] not in told
+               and not t["resolved"]]
+    return renames, orphans, mcp
+
+def moved_page(key, pin):
+    """A deploy of a doc whose page moved to its successor's pin: the page's link, nothing deployed
+    (the old doc never redeploys over the new one). Follows a chain of moves."""
+    seen, at, target = {key}, pin["moved_to"], {}
+    while True:
+        target = pins().get(at) or {}
+        if not target.get("moved_to") or target["moved_to"] in seen:
+            break
+        seen.add(at)
+        at = target["moved_to"]
+    url = target.get("url") or pin.get("url") or ""
+    print("memo: %s's page moved to %s — %s" % (key, at, url), file=sys.stderr)
+    return url, target.get("sha") or pin.get("sha") or "", False
+
+
+# What a successor's pin takes from its predecessor's, the same doc renamed or landed: the page, its
+# block ids and the room's cursor, and what a pull read and wrote.
+ADOPT_ALWAYS = ("space", "url", "ss", "aliases", "dropped_with", "taken", "seen_replies", "resolved_seen", "events_after",
+                "events_at", "opens_seen", "reads_seen", "old_space")
+
+
+def read_threads(mcp, k, space, timeout, fallback):
+    """The page's threads (comment_threads), or Stop when spacesheep answered something that is not
+    an empty page and no thread came out of it: list_comments' text in a shape this tool cannot read
+    must not pass for a page nobody commented on (sheep_pull dumps it; the third landing review's
+    finding 9 found adopt_page reading it as no thread)."""
+    raw = sheep_comments(mcp, k, space, timeout=timeout, fallback=fallback)
+    threads = comment_threads(raw)
+    empty = (isinstance(raw, dict) and raw.get("comments") == []) or (
+        isinstance(raw, str) and re.match(r"^\s*No comments\b", raw) and len(raw) < 200)
+    if not threads and raw and not empty:
+        raise Stop("the comments came back in a shape this tool cannot read")
+    return threads
+ADOPT_SAME_DOC = ("saves", "refused_saves", "applied", "applied_at", "receipt", "receipt_shown")
+
+
+def page_fork(top, ref):
+    """The commit a claude/* branch forked from main at, as a deploy finds it: the newest point `ref`
+    shares with refs/heads/main or refs/remotes/origin/main, or None. The pin keeps it (`fork`), so
+    a later read from `main` can tell a branch that changed the doc from one that only carries main's
+    copy (branch_landed)."""
+    mains = [x for x in ("refs/heads/main", "refs/remotes/origin/main")
+             if git(top, "rev-parse", "-q", "--verify", x, check=False).returncode == 0]
+    if not mains:
+        return None
+    return git(top, "merge-base", ref, *mains, check=False).stdout.strip() or None
+
+
+def branch_landed(top, b, rel, pin, mine, ref):
+    """Whether claude/* branch `b`'s page of `rel` landed in `ref`, whose blob of the doc is `mine`.
+    The proof is the page's own commit, the pin's `sha` (the doc's last commit as that page showed
+    it): it holds `mine`, and it changed the doc since the fork point the pin recorded at a deploy
+    (page_fork; for a pin from before forks were kept, the merge base of `ref` and that commit, which
+    a fast-forwarded branch fails: it keeps its page, the safe side). Where the branch's ref still
+    exists here or on origin, it holds `mine` too: a branch at work on the doc since keeps its page.
+    Whether a worktree has the branch out does not count. The manager's picks of 2026-10-24 for the
+    second landing review: R3 (`--is-ancestor` alone passed a branch with no commits of its own, the
+    vacuous proof of AGENTS.md's trap), R4 (a gone ref alone passed a branch deleted unmerged) and R10
+    (a landed branch's live worktree split the page in two)."""
+    def blob(x):
+        return git(top, "rev-parse", "-q", "--verify", "%s:%s" % (x, rel), check=False).stdout.strip()
+    sha = pin.get("sha") or ""
+    if not (mine and sha and git(top, "rev-parse", "-q", "--verify", sha + "^{commit}", check=False).returncode == 0):
+        return False
+    if blob(sha) != mine:
+        return False
+    for x in ("refs/heads/" + b, "refs/remotes/origin/" + b):
+        if git(top, "rev-parse", "-q", "--verify", x, check=False).returncode == 0 and blob(x) != mine:
+            return False
+    fork = pin.get("fork")
+    if not (fork and git(top, "rev-parse", "-q", "--verify", fork + "^{commit}", check=False).returncode == 0):
+        fork = git(top, "merge-base", ref, sha, check=False).stdout.strip()
+    return bool(fork) and git(top, "diff", "--quiet", fork, sha, "--", rel, check=False).returncode == 1
+
+
+def landed_pin(top, repo, rel, key, every, ref):
+    """The pin key of the newest claude/* page of `rel` whose branch landed in `ref` (branch_landed),
+    or None."""
+    mine = git(top, "rev-parse", "-q", "--verify", "%s:%s" % (ref, rel), check=False).stdout.strip()
+    landed = []
+    for k in every:
+        try:
+            name, b, path = key_parts(k)
+        except Stop:
+            continue
+        pin = every.get(k) or {}
+        if (name == repo and path == rel and b.startswith("claude/") and k != key and pin.get("space")
+                and not pin.get("moved_to") and branch_landed(top, b, rel, pin, mine, ref)):
+            landed.append(k)
+    return max(landed, key=lambda k: str(every[k].get("deployed") or "")) if landed else None
+
+
+def adopt_page(top, branch, rel, key, repo, ref="HEAD", deadline=None):
+    """The pin a doc takes over an earlier page for, or None (docs/sheep-threads-2026-10-24.md, C):
+    1. git shows the doc renamed (`git log --follow --diff-filter=R` on its branch) from a path
+       whose pin on this branch has a page;
+    2. it is read from `main`, and a `claude/*` branch's pin of the same path has a page whose
+       branch landed (branch_landed). The page made on the branch would otherwise be left behind,
+       and `main` would get a second, empty one.
+    On `main`, 2 is asked before 1 (finding 12). Only 2 runs for a doc that has a page already: `main`'s
+    own page, made before the landing was seen, gives way when no thread is on it (the manager's pick
+    for R10); one with threads keeps them and records the branch in `kept_over`, so its page is read once.
+    The new pin takes the page (ADOPT_ALWAYS and ADOPT_SAME_DOC); the old one gets `moved_to` and
+    loses its space, so the drain and the lookout pass it by and a deploy of it is moved_page. A doc
+    whose head says `Supersedes:` takes nothing: who owns an adopted thread, its Saves and the room
+    was never settled, and three reviews each found it wrong (D3-A, 2026-10-25)."""
+    import time
+    every = pins()
+    have = (every.get(key) or {}).get("space")
+
+    def live(k):
+        return k != key and (every.get(k) or {}).get("space") and not every[k].get("moved_to")
+    old, how = None, None
+    if have:
+        if branch != "main":
+            return None
+        old = landed_pin(top, repo, rel, key, every, ref)
+        if not old or old in (every[key].get("kept_over") or []):
+            return None
+        k = sheep_key()
+        left = None if deadline is None else deadline - time.time()
+        if not k or (left is not None and left < CARRY_LEFT):
+            return None  # main's page stays this time; the next deploy asks again
+        try:
+            t = 8 if left is None else max(2, min(8, int((left - DEPLOY_MIN) / 3)))
+            mcp = LazyMcp(k, timeout=t)
+            on_main = read_threads(mcp, k, have, timeout=t, fallback=left is None)
+            if not on_main and not every[key].get("saves") and not every[key].get("refused_saves"):
+                # a Save still in main's room is the owner's word too: drained into main's pin first,
+                # by main's own cursor (the third landing review's finding 6); the handshake and one
+                # live_events calls (drain_saves pages: two at least) must fit what the hook has left
+                if deadline is not None and deadline - time.time() - DEPLOY_MIN < t * (4 if mcp.m is None else 2):
+                    return None  # main's page stays this time; the next deploy asks again
+                drain_saves(mcp, key, have, row=pin_row(key, every[key]))
+                every = pins()
+        except Exception as e:  # Stop, or a truncated answer: main's page stays
+            print("memo: %s landed from %s, and main's own page did not read (%s) — the next deploy asks again"
+                  % (rel, key_parts(old)[1], e), file=sys.stderr)
+            return None
+        if on_main or every[key].get("saves") or every[key].get("refused_saves"):
+            # the owner's words on main's page (a thread, or a Save no pull took yet) keep it
+            update_pin(key, lambda pin: dict(pin, kept_over=sorted(set(pin.get("kept_over") or []) | {old})))
+            print("memo: %s landed from %s, whose page stays apart: main's own page has %s"
+                  % (rel, key_parts(old)[1], "%d thread%s" % (len(on_main), "" if len(on_main) == 1 else "s") if on_main
+                     else "a Save not taken in"), file=sys.stderr)
+            return None
+        how = "landed from %s, and main's empty page gave way to it" % key_parts(old)[1]
+    else:
+        if branch == "main":
+            # first: a branch that renamed the doc and landed left its page on the new path's pin,
+            # while main's pin of the old path holds main's own (the third landing review's finding 12)
+            old = landed_pin(top, repo, rel, key, every, ref)
+            how = "landed from %s" % key_parts(old)[1] if old else None
+        r = git(top, "log", "--follow", "--diff-filter=R", "--name-status", "--format=", ref, "--", rel, check=False)
+        for l in r.stdout.splitlines() if not old else []:
+            parts = l.split("\t")
+            if len(parts) == 3 and parts[0].startswith("R") and live("%s@%s:%s" % (repo, branch, parts[1])):
+                old, how = "%s@%s:%s" % (repo, branch, parts[1]), "renamed from %s" % parts[1]
+                break
+    if not old:
+        return None
+    was = every[old]
+    keys = ADOPT_ALWAYS + ADOPT_SAME_DOC
+    carry = {k: was[k] for k in keys if k in was}
+    carry["adopted_from"] = old
+    if have:
+        carry["gave_up_space"] = have
+    # no `sha` or `fmt` of its own any more: the page shows the old doc until this one deploys. Main's
+    # page giving way drops what it kept of that page too, cursors and receipt: the branch pin's own, or
+    # none (the third landing review's finding 10). A pin with no page keeps what survived a lost space (M19).
+    drop = ("sha", "fmt") + (ADOPT_ALWAYS + ADOPT_SAME_DOC if have else ())
+    new = update_pin(key, lambda pin: dict({k: v for k, v in pin.items() if k not in drop}, **carry))
+
+    def leave(pin):
+        moved = {k: v for k, v in pin.items() if k not in ADOPT_ALWAYS + ADOPT_SAME_DOC or k in ("url", "ss")}
+        moved["moved_to"] = key
+        # a later commit at the old path (a rename undone, the branch at work again) takes it back (sheep)
+        moved["moved_sha"] = pin.get("sha")
+        return moved
+    update_pin(old, leave)
+    print("memo: %s %s — its page, with every thread on it, is this doc's now" % (rel, how), file=sys.stderr)
+    return new
+
+
 def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, notes=None):
     """Deploy the memo's page; returns (url, sha, deployed?). The page is the committed memo: a
     keel with uncommitted changes is refused, so a version name always names what git holds; a
@@ -4411,6 +4834,21 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     else:
         sha = git(top, "log", "-1", "--format=%H", "--", rel).stdout.strip() or git(top, "rev-parse", "HEAD").stdout.strip()
     pin = pins().get(key) or {}
+    if pin.get("moved_to") and pin.get("moved_sha") in (None, sha):
+        return moved_page(key, pin)
+    if pin.get("moved_to"):
+        # the old doc changed after its page moved by a rename or a landing (a rename undone, the
+        # branch at work again): it gets a page of its own, and the successor keeps the old one
+        # (review 2026-10-24)
+        print("memo: %s changed since its page moved to %s — it deploys to a page of its own" % (rel, pin["moved_to"]), file=sys.stderr)
+        pin = update_pin(key, lambda pin: {k: v for k, v in pin.items() if k not in ("moved_to", "moved_sha", "url", "sha")})
+    if not pin.get("space") or branch == "main":
+        pin = adopt_page(top, branch, rel, key, repo, ref=sha if src else "HEAD", deadline=deadline) or pin
+    fork = page_fork(top, sha if src else "HEAD") if branch.startswith("claude/") else None
+    if fork and git(top, "merge-base", "--is-ancestor", sha, fork, check=False).returncode == 0:
+        # main already holds the page's own commit (a fast-forward since): that merge base proves
+        # nothing, and the fork recorded before it stays (the third landing review's finding 14)
+        fork = None
     # a receipt the page does not show yet is a reason to deploy too: a pull whose Saves were refused,
     # or added nothing, changes no file, so no new commit would ever carry it (review 2026-10-20)
     if (pin.get("sha") == sha and pin.get("url") and pin.get("fmt") == PAGE_FMT
@@ -4423,7 +4861,33 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     shown = pin.get("receipt")
     page, ctx = sheep_page(text, name, {"rel": rel, "sha": sha, "branch": branch, "read": view, "edit": edit,
                                           "receipt": shown})
+    import time
+    carried, orphans, mcp = {}, [], None
+    left = None if deadline is None else deadline - time.time()
     out = page_dir(key)
+    try:
+        last = live_blocks((out / "index.html").read_text())
+    except OSError:
+        last = []
+    if pin.get("space") and (left is None or left >= CARRY_LEFT):
+        try:  # three reads at most, and under the hook's budget they leave the deploy DEPLOY_MIN seconds
+            carried, orphans, mcp = carry_anchors(cli, pin, ctx, timeout=8 if left is None else max(2, min(8, int((left - DEPLOY_MIN) / 3))),
+                                                  last=last)
+        except Exception as e:  # Stop, or a page of a shape never seen: a carry never stops the deploy
+            carried, orphans = pin_aliases(pin, ctx["ss"]), []
+            print("memo: the comments' anchors not carried this time (%s)" % (e if isinstance(e, Stop) else "%s: %s" % (type(e).__name__, e)),
+                  file=sys.stderr)
+    elif pin.get("space"):
+        carried = pin_aliases(pin, ctx["ss"])  # this Mac's own last renames need no read
+        print("memo: the comments' anchors not carried — the hook's time is short; the next deploy catches up", file=sys.stderr)
+    if deadline is not None:
+        # every path, not only the carry's: adoption's reads also spent the budget (R7, the second landing review)
+        timeout = max(3, min(timeout, int(deadline - time.time())))
+    if carried:
+        # all at once: a repeated line's copies can swap numbers (repeat_shifts), which one replace after
+        # another would merge into one id; carry_anchors keeps the renamed ids unique
+        page = re.sub(r' data-ss-id="([^"]+)"', lambda m: ' data-ss-id="%s"' % carried.get(m.group(1), m.group(1)), page)
+        ctx["ss"] = {carried.get(sid, sid): v for sid, v in ctx["ss"].items()}
     out.mkdir(parents=True, exist_ok=True)
     (out / "index.html").write_text(page)
     cmd = [cli, "deploy", str(out), "-m", "%s@%s" % (branch, sha[:7]), "--no-manifest", "--json"]
@@ -4459,7 +4923,6 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     # (M19). Only the CLI's own `✗` error line counts (its wording is unverified: any "not found"),
     # not a 404 somewhere in a body. The pin keeps what is the owner's — pending Saves, refused ones,
     # taken threads, the block ids — and drops what belonged to the lost space.
-    import time
     gone = next((l for l in r.stderr.splitlines() if l.strip().startswith("✗")), "")
     if (r.returncode and pin.get("space") and re.search(r"not[ _]found|no such space|does not exist", gone, re.I)
             and (deadline is None or deadline - time.time() >= DEPLOY_TIMEOUT)):
@@ -4488,8 +4951,28 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
                     "repo_path": str(top) if src else (doc_key(p) or [pin.get("repo_path")])[0],  # where `prune` asks whether the branch lives
                     "deployed": dt.datetime.now().isoformat(timespec="seconds"),
                     "ss": dict(pin.get("ss") or {}, **ctx["ss"])})
+        if fork:  # where the branch left main, for branch_landed once it lands (R3)
+            pin["fork"] = fork
+        # what the carry renamed, so the next deploy keeps it unread (pin_aliases), and which blocks
+        # this deploy added beside each it dropped: the only heirs a thread not yet told may take later
+        pin["aliases"] = dict(carried)
+        prev, now_ids = {b[0] for b in last}, set(ctx["ss"])
+        dw = {k: v for k, v in (pin.get("dropped_with") or {}).items() if k not in now_ids}
+        for d in sorted(prev - now_ids):
+            dw[d] = sorted(now_ids - prev)
+        pin["dropped_with"] = dict(list(dw.items())[-200:])
         return pin
     update_pin(key, change)
+    for t in orphans if space == pin.get("space") else []:
+        # the first call pays the MCP handshake: three posts, each up to the Mcp's timeout (R7)
+        if deadline is not None and time.time() + mcp.timeout * (3 if mcp.m is None else 1) > deadline:
+            break  # the next deploy finds the thread unanswered and replies then
+        try:
+            mcp.call("add_comment", {"uuid": space, "parent_id": t["id"],
+                                     "body": "%s %s %s; the thread stays here." % (ACK, GONE_WORDS, sha[:7])})
+        except Exception as e:  # the deploy is done; the next one finds the thread unanswered and tries again
+            print("memo: no reply on the thread whose line is gone (%s)" % e, file=sys.stderr)
+            break
     warn = sheep_book(cli, rel, cached=deadline is not None)
     if warn and notes is not None:
         notes.append(warn)
@@ -4610,7 +5093,9 @@ def sheep_check(memo):
     pin = pins().get(key)
     if not pin or not pin.get("space"):  # a pin may hold only what survived a lost space (M19)
         return None, "no page for %s on %s on this Mac yet — memo sheep %s" % (rel, branch, p)
-    sha, src = pin["sha"], "this Mac's pin"
+    # a pin that took a page over (adopt_page) has no `sha` until its first deploy lands: with no
+    # version to read either, that is what is said (the third landing review's finding 8)
+    sha, src = pin.get("sha"), "this Mac's pin"
     cli = sheep_bin()
     if cli:
         try:
@@ -4625,9 +5110,11 @@ def sheep_check(memo):
                 sha, src = full, "the page's newest version"
         except (subprocess.TimeoutExpired, ValueError, AttributeError, KeyError):
             pass
+    if not sha:
+        return pin, "not deployed since %s took its page over (%s) — memo sheep %s" % (rel, pin.get("url") or "no link", p)
     head = git(top, "log", "-1", "--format=%H", "--", rel).stdout.strip()
     if head == sha or git(top, "diff", "--quiet", sha, head, "--", rel, check=False).returncode == 0:
-        return pin, "current (%s, %s@%s, from %s) — %s" % (rel, pin["branch"], sha[:7], src, pin["url"])
+        return pin, "current (%s, %s@%s, from %s) — %s" % (rel, pin.get("branch") or branch, sha[:7], src, pin.get("url"))
     n = git(top, "rev-list", "--count", "%s..%s" % (sha, head), "--", rel, check=False).stdout.strip() or "?"
     return pin, "behind by %s commit%s (page %s from %s, memo %s) — memo sheep %s" % (
         n, "" if n == "1" else "s", sha[:7], src, head[:7], p)
@@ -4636,7 +5123,7 @@ def sheep_check(memo):
 _WEB = {}  # the web session the key trades for: {cookie, until}, one per run
 
 
-def sheep_comments(mcp, k, space):
+def sheep_comments(mcp, k, space, timeout=20, fallback=True):
     """The page's comments. First the viewer's own JSON route — the key trades for a 12-hour web
     session (POST /api/account/web-session), whose cookie reads GET /api/space/<id>/comments:
     {comments: [{id, parent_id, body, anchor_id, resolved_at, via, …}]}, read 2026-10-14. Its
@@ -4659,16 +5146,18 @@ def sheep_comments(mcp, k, space):
     if time.time() - _WEB.get("failed", 0) < 600:
         # the route failed a moment ago: no second POST of the key to web-session, no second warning
         # for every poll of a wait — it is tried again after ten minutes
+        if not fallback:
+            raise Stop("the comments route failed a moment ago")
         return mcp.call("list_comments", {"uuid": space})
     try:
         if _WEB.get("until", 0) < time.time():
             req = urllib.request.Request(SHEEP_APP + "/api/account/web-session", data=b"{}", method="POST",
                                          headers=dict(ua, **{"Authorization": "Bearer " + k, "Content-Type": "application/json"}))
-            with opener.open(req, timeout=20) as r:
+            with opener.open(req, timeout=timeout) as r:
                 s = json.loads(r.read().decode())
             _WEB.update(cookie="%s=%s" % (s["cookie"], s["token"]), until=time.time() + int(s.get("expires_in") or 3600) - 300)
         req = urllib.request.Request(SHEEP_APP + "/api/space/%s/comments" % space, headers=dict(ua, Cookie=_WEB["cookie"]))
-        with opener.open(req, timeout=20) as r:
+        with opener.open(req, timeout=timeout) as r:
             d = json.loads(r.read().decode())
         if isinstance(d, dict) and isinstance(d.get("comments"), list):
             return {"comments": d["comments"]}
@@ -4677,8 +5166,17 @@ def sheep_comments(mcp, k, space):
         why = "HTTP %d" % e.code
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
         why = type(e).__name__
+        import socket
+        if timeout < 20 and (isinstance(e, (TimeoutError, socket.timeout)) or isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout))):
+            # a read the hook's budget cut short says nothing of the route: it is not marked failed for
+            # ten minutes, and the session it traded stays (the third landing review's finding 13)
+            if not fallback:
+                raise Stop("the comments route did not answer in %ds" % timeout)
+            return mcp.call("list_comments", {"uuid": space})
     _WEB.clear()
     _WEB["failed"] = time.time()
+    if not fallback:  # a caller under a time budget: list_comments' handshake is three more round trips
+        raise Stop("the comments route failed (%s)" % why)
     print("memo: the comments route failed (%s) — read through list_comments, whose text cannot tell a bot's "
           "reply by `via`" % why, file=sys.stderr)
     return mcp.call("list_comments", {"uuid": space})
@@ -4688,8 +5186,8 @@ class Mcp:
     """spacesheep's MCP server, the way the CLI talks to it: one initialize + initialized per
     instance, the Mcp-Session-Id echoed, a JSON or an SSE body, the text content parsed."""
 
-    def __init__(self, key):
-        self.key, self.session, self.n = key, None, 1
+    def __init__(self, key, timeout=30):
+        self.key, self.session, self.n, self.timeout = key, None, 1, timeout
         self._post({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                     "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "memo", "version": "1"}}})
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -4707,7 +5205,7 @@ class Mcp:
             h["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(SHEEP_MCP, data=json.dumps(msg).encode(), headers=h, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 self.session = r.headers.get("Mcp-Session-Id") or self.session
                 body = r.read().decode("utf-8", "replace")
                 ctype = r.headers.get("Content-Type", "")
@@ -4814,8 +5312,9 @@ def comment_threads(raw):
             # body; a same-indent line under a header is body until then.
             m = re.search(r"\[id:\s*([A-Za-z0-9_-]+)\s*\]", line)
             if not m:
-                g = re.match(r"^\s*\[on (.+)\]\s*$", line)
-                if g:  # the group line: `[on the whole page]`, or the block the comments below hang on
+                g = re.match(r"^\s*\[(?:on|pinned to block) (.+)\]\s*$", line)
+                if g:  # the group line: `[on the whole page]`, or the block the comments below hang on;
+                    # read 2026-10-24: `[pinned to block #b-22222222 — “Second paragraph”]`
                     group = next((t for t in re.findall(r"[A-Za-z0-9-]+", g.group(1)) if SS_ID_RE.match(t)), None)
                     cur = None
                     continue
@@ -4899,21 +5398,50 @@ def in_doc(words, doc, feedback=False):
     return False
 
 
+# The marks this tool's replies leave in a thread it took: taken into the doc, or left out as
+# superseded by a newer thread on the same D-card.
+TAKEN_MARKS = (" taken into ", "; left out of ")
+
+
+def taken_ids(threads, pin):
+    """The ids of the threads a pull took: the pin's `taken`, and each thread holding one of this
+    tool's TAKEN_MARKS replies. A thread stays open once taken (A), so its reply is the page's own
+    mark of it, and a pin rebuilt, pruned or made on the other Mac must neither take it twice nor
+    count it as open: every reader asks here (R2, the second landing review — until then only
+    sheep_answers read the replies, and a wait woke for a thread long taken)."""
+    return set((pin or {}).get("taken") or []) | {t["id"] for t in threads if any(
+        c["text"].strip().startswith(ACK) and any(m in c["text"] for m in TAKEN_MARKS) for c in t["replies"])}
+
+
 def sheep_answers(threads, pin, doc=""):
     """The open threads as the answers document `merge` takes. Returns (answers, taken, skipped):
     `taken` [(thread, what)], `skipped` [(thread, why, superseded?)]. A thread's words are its
     root's and every reply that is not this tool's own nor the bot's; several threads on one
-    decision: the newest wins, and the rest are superseded — resolved on --write too, or the next
-    pull would take the older one and revert the answer (review, 2026-10-03)."""
+    decision: the newest wins, and the rest are superseded — marked taken on --write too, or the
+    next pull would take the older one and revert the answer (review, 2026-10-03).
+
+    A thread taken before and still open, with the owner's replies since (late_replies), is the
+    owner answering in it: a thread stays open once taken (A), so a reply under it is the natural
+    way to say "actually B" (R11, the second landing review — until then the reply was only named).
+    On a D-card it is taken again with all of its words, as a new thread would be, and counts from
+    the newest reply's time against the card's other threads; elsewhere only the new replies are
+    taken, as the root's words are in the doc already. Such a take is a copy of the thread whose
+    `at` and `text` are the newest reply's. A resolved thread's late reply is still only named."""
     items, notes, feedback, taken, skipped = {}, [], [], [], []
     ss = pin.get("ss") or {}
-    done = set(pin.get("taken") or [])
+    done = taken_ids(threads, pin)
     open_ = []
     for k, t in enumerate(threads):
-        words = [c["text"].strip() for c in [t] + t["replies"]
-                 if c["text"].strip() and not c["bot"] and not c["text"].strip().startswith(ACK)]
+        words = [c["text"].strip() for c in [t] + t["replies"] if own_words(c)]
         if words and not t["resolved"] and t["id"] not in done:
             open_.append((k, t, "\n".join(words)))
+    for t, rs in late_replies(threads, pin, done):
+        if t["resolved"]:
+            continue
+        newest = max(rs, key=lambda c: epoch(c["at"]) or 0)
+        whole = re.match(r"^D\d+$", t["anchor"] or "")
+        words = [c["text"].strip() for c in ([t] + t["replies"] if whole else rs) if own_words(c)]
+        open_.append((threads.index(t), dict(t, at=newest["at"], text=newest["text"]), "\n".join(words)))
     when = {t["id"]: (epoch(t["at"]) or 0, k) for k, t, _ in open_}
     newest = {}
     for k, t, _ in open_:
@@ -4944,12 +5472,15 @@ def own_words(c):
     return bool(c["text"].strip()) and not c["bot"] and not c["text"].strip().startswith(ACK)
 
 
-def late_replies(threads, pin):
-    """[(thread, [reply, …])] — the owner's replies in a thread already taken that the take did not see
-    (M20): the pin keeps the reply ids a take read (`seen_replies`); a thread taken before that was
-    kept is judged by its newest `memo:` reply's time, and with none to compare, not at all. Such
-    a reply sits under a resolved thread, where nobody looks, and no pull takes it in."""
-    done, seen, out = set(pin.get("taken") or []), pin.get("seen_replies") or {}, []
+def late_replies(threads, pin, done=None):
+    """[(thread, [reply, …])] — the owner's replies in a thread already taken (taken_ids, or `done`)
+    that the take did not see (M20): the pin keeps the reply ids a take read (`seen_replies`); a
+    thread taken before that was kept is judged by its newest `memo:` reply's time, and with none to
+    compare, not at all. `open_words` wakes a wait for each; a pull takes those in an open thread
+    (sheep_answers, R11) and names those in a resolved one once, to be said again as a new comment."""
+    pin = pin or {}
+    done = taken_ids(threads, pin) if done is None else done
+    seen, out = pin.get("seen_replies") or {}, []
     for t in threads:
         if t["id"] not in done:
             continue
@@ -4957,7 +5488,8 @@ def late_replies(threads, pin):
         if t["id"] in seen:
             late = [r for r in mine if r["id"] not in seen[t["id"]]]
         else:
-            acks = [epoch(r["at"]) or 0 for r in t["replies"] if r["text"].strip().startswith(ACK)]
+            acks = [epoch(r["at"]) or 0 for r in t["replies"]
+                    if r["text"].strip().startswith(ACK) and any(m in r["text"] for m in TAKEN_MARKS)]
             late = [r for r in mine if acks and (epoch(r["at"]) or 0) > max(acks)]
         if late:
             out.append((t, late))
@@ -4967,7 +5499,7 @@ def late_replies(threads, pin):
 def unread_resolved(threads, pin):
     """Threads resolved on the page with the owner's words in them that no pull took (M20): they leave
     the open list silently, so a pull names each once (`resolved_seen`)."""
-    done, seen = set(pin.get("taken") or []), set(pin.get("resolved_seen") or [])
+    done, seen = taken_ids(threads, pin), set(pin.get("resolved_seen") or [])
     return [t for t in threads if t["resolved"] and t["id"] not in done and t["id"] not in seen
             and any(own_words(c) for c in [t] + t["replies"])]
 
@@ -4982,6 +5514,8 @@ def git_answer_since(top, rel, stamp, pin_sha, d, now, ref="HEAD"):
     if when is not None:
         base = git(top, "log", "-1", "--before=@%d" % int(when), "--format=%H", ref, "--", rel, check=False).stdout.strip()
     base = base or pin_sha
+    if not base:  # no commit before the comment, and a pin not deployed since it took its page over
+        return False
     old = git(top, "show", "%s:%s" % (base, rel), check=False).stdout
     if not old:
         return False
@@ -5139,7 +5673,7 @@ def answer_at(top, rel, sha, d):
 def fold_saves(answers, taken, skipped, saves, top=None, rel=None, now=None, text="", applied=None, kept_out=None):
     """The page's Saves over the comments' answers, oldest first: a Save is the form's own answers
     document, so its items, notes and feedback go in as `merge` takes them from memo serve. Per
-    decision, the newer word wins: a comment on it older than the Save is superseded (resolved
+    decision, the newer word wins: a comment on it older than the Save is superseded (marked taken,
     with that reply), a newer one keeps it and the Save's answer for it is dropped; and a decision
     git changed since the commit the page showed (`sha`) keeps git's answer — the page was out of
     date (review 2026-10-14). A note or a feedback block already in the doc, or already taken from
@@ -5233,9 +5767,13 @@ def push_receipt(mcp, space, receipt):
 def sheep_pull(memo, write=False, plumb=False):
     """Comments and the page's Saves → the memo, through `merge`. Without --write: what would
     change, nothing written or posted (Saves are drained into the pin, never applied). With it: the
-    memo rewritten, then each thread taken (and each superseded) gets one `memo:` reply and is
-    resolved — after the write, so a failed write leaves every thread open; a thread taken is
-    recorded in the pin, so a failure part-way never merges it twice; the Saves applied leave it.
+    memo rewritten, then each thread taken (and each superseded) gets one `memo:` reply — after the
+    write, so a failed write posts nothing; a thread taken is recorded in the pin, so a failure
+    part-way never merges it twice; the Saves applied leave it. The thread stays open (the owner,
+    2026-10-24: "we should try to keep all the discussions that happened"): until then each was
+    resolved, which collapses it and takes its marker off the page. The pin's `taken` is what stops a
+    second take, `seen_replies` what names a later reply (late_replies), never the thread's state; a
+    thread the owner resolves by hand stays the owner's, and this tool never resolves one.
     `plumb` (the lookout's, crosstalk S3): `memo` is a pin key or a doc path; the doc is the
     branch's blob in the primary checkout, fast-forwarded from origin first, and the write is a
     commit made by plumbing as pickup's `seed` makes one, then pushed (plumb_where, plumb_commit) —
@@ -5283,8 +5821,16 @@ def sheep_pull(memo, write=False, plumb=False):
         now, _ = answers_of(text)
     except Stop:
         now = {}
+    pulled = pin.get("applied") or {}
     for t, d in list(taken):
-        if d in answers["items"] and git_answer_since(top, rel, t["at"], pin["sha"], d, now, ref="HEAD" if p else "refs/heads/" + branch):
+        # git's answer the one a pull wrote from the page is no newer word: a reply typed between that
+        # write and its commit dates before the commit, and is the owner's latest (finding 11)
+        # only a thread newer than that write: an older one kept open (git changed after it) would else
+        # overwrite a later Save or GitHub edit with the owner's oldest word (finish review, 2026-10-25)
+        if pulled.get(d) and " ".join((now.get(d) or "").split()) == pulled[d] and (
+                epoch(t["at"]) or 0) >= int(float((pin.get("applied_at") or {}).get(d) or 0)):  # comment times are whole seconds
+            continue
+        if d in answers["items"] and git_answer_since(top, rel, t["at"], pin.get("sha"), d, now, ref="HEAD" if p else "refs/heads/" + branch):
             skipped.append((t, "%s changed in git after it (git's answer kept)" % d, False))
             taken.remove((t, d))
             del answers["items"][d]
@@ -5308,13 +5854,16 @@ def sheep_pull(memo, write=False, plumb=False):
         kept += kept_here
     new_text, rep = merge(text, answers)
     late, unread = late_replies(threads, pin), unread_resolved(threads, pin)
+    took_late = {t["id"] for t, _ in taken} | {t["id"] for t, _, _ in skipped}
     for t, rs in late:
+        if t["id"] in took_late:
+            continue  # an open thread's: taken in above (R11)
         print("  late reply: [%s] %d new reply%s after it was taken, not read: %s — say it again as a new comment"
               % (t["id"], len(rs), "" if len(rs) == 1 else "s", rs[-1]["text"].strip().split("\n")[0][:70]))
     for t in unread:
         print("  resolved on the page, not read: [%s] %s" % (t["id"], next(c["text"] for c in [t] + t["replies"] if own_words(c)).strip().split("\n")[0][:70]))
     for t, why, _ in skipped:
-        print("  %s: [%s] %s" % ("resolve" if write and _ else "kept open", t["id"], why))
+        print("  %s: [%s] %s" % ("left out" if write and _ else "kept open", t["id"], why))
     for t, what in taken:
         print("  [%s] → %s: %s" % (t["id"], what, t["text"].strip().split("\n")[0][:70]))
     for line_ in save_lines:
@@ -5331,7 +5880,7 @@ def sheep_pull(memo, write=False, plumb=False):
                               if len(saves) > len(refused) else "")
     parse(new_text)  # each part passed alone; the whole is checked again before a write
     if not write:
-        print("%s: would merge %s — %s (preview; --write to apply and resolve them)" % (rel, what, summary))
+        print("%s: would merge %s — %s (preview; --write to apply and reply in them)" % (rel, what, summary))
         return 0
     committed = None
     if new_text != text and p:
@@ -5347,14 +5896,16 @@ def sheep_pull(memo, write=False, plumb=False):
     done = {(s.get("seq"), s.get("at")) for s in saves}
     set_aside = [dict(sv, why=why) for sv, why in refused]
     # every thread this write took or superseded is marked taken at once, with the doc: a reply or
-    # resolve that fails part-way (the server, the network) then leaves the later threads' words
+    # reply that fails part-way (the server, the network) then leaves the later threads' words
     # in the memo and recorded, so the next pull cannot append them a second time (M4)
     just = [t for t, _ in taken] + [t for t, _, sup in skipped if sup]
     ids = {t["id"] for t in just}
     # what each take read, so a reply typed after it shows as late; and what was surfaced above, once
     seen = {t["id"]: [c["id"] for c in t["replies"] if own_words(c)] for t in just}
+    kept_open = {t["id"] for t, _, sup in skipped if not sup}
     for t, rs in late:
-        seen[t["id"]] = [c["id"] for c in t["replies"] if own_words(c)]
+        if t["id"] not in kept_open:  # a late reply left out stays late, for the next pull (finding 11)
+            seen[t["id"]] = [c["id"] for c in t["replies"] if own_words(c)]
     wrote = answers_of(new_text)[0]
     applied = {d: " ".join(wrote.get(d, "").split()) for d in answers["items"]}
     applied_at = take_in_times(applied, now, now_ts())
@@ -5387,21 +5938,20 @@ def sheep_pull(memo, write=False, plumb=False):
     for t, body in replies:
         update_pin(key, lambda pin: dict(pin, taken=sorted(set(pin.get("taken") or []) | {t["id"]})))
         mcp.call("add_comment", {"uuid": pin["space"], "parent_id": t["id"], "body": body})
-        mcp.call("resolve_comment", {"uuid": pin["space"], "comment_id": t["id"]})
-    print("%s: merged %s and resolved %d thread%s — %s" % (rel, what, len(replies), "" if len(replies) == 1 else "s", summary))
+    print("%s: merged %s and replied in %d thread%s, left open — %s" % (rel, what, len(replies), "" if len(replies) == 1 else "s", summary))
     return 0
 
 
-def open_words(threads, taken, pin=None):
-    """{thread id: how many of the owner's words it holds} for each open thread not yet taken — a new
-    thread or a new reply in one changes it. With the pin: a late reply under a taken thread too
-    (M20), keyed `<id>+late`, so a wait wakes for it as for a new comment."""
-    out = {}
+def open_words(threads, pin):
+    """{thread id: how many of the owner's words it holds} for each open thread not yet taken
+    (taken_ids) — a new thread or a new reply in one changes it — and a late reply under a taken
+    thread (M20), keyed `<id>+late`, so a wait wakes for it as for a new comment."""
+    out, taken = {}, taken_ids(threads, pin)
     for t in threads:
         n = sum(1 for c in [t] + t["replies"] if own_words(c))
         if n and not t["resolved"] and t["id"] not in taken:
             out[t["id"]] = n
-    for t, rs in late_replies(threads, pin) if pin else []:
+    for t, rs in late_replies(threads, pin, taken):
         out[t["id"] + "+late"] = len(rs)
     return out
 
@@ -5449,7 +5999,7 @@ def sheep_wait(memo, quiet=WAIT_QUIET, idle=110 * 60, poll=WAIT_POLL):
             now = time.time()
             if now >= next_poll:
                 cur_pin = pins().get(key) or {}
-                words = open_words(comment_threads(sheep_comments(mcp, k, space)), set(cur_pin.get("taken") or []), cur_pin)
+                words = open_words(comment_threads(sheep_comments(mcp, k, space)), cur_pin)
                 base = words if base is None else base
                 new = {t: n for t, n in words.items() if base.get(t) != n}
                 if new != seen:
@@ -5670,6 +6220,9 @@ def sheep_blob(key, ref=None, gd=None):
     ref names the version, as a checkout's deploy names it."""
     name, branch, rel = key_parts(key)
     top = Path(pin_row(key, pins().get(key) or {})["repo"])
+    pin = pins().get(key) or {}
+    if pin.get("moved_to"):  # before the blob: a renamed doc's old path is not on its branch
+        return moved_page(key, pin)
     gd, ref = gd or top, ref or "refs/heads/" + branch
     text = git(gd, "show", "%s:%s" % (ref, rel), check=False).stdout
     if not text:
@@ -8591,7 +9144,7 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
             notes.append("%s: comments not read (%s)" % (key, str(e)[:120]))
             fails += 1
             continue
-        words = open_words(threads, set(pin.get("taken") or []), pin)
+        words = open_words(threads, pin)
         before = prev["comments"].get(key)
         new_comments[key] = words
         fresh = {t: n for t, n in words.items() if (before or {}).get(t) != n}
