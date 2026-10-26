@@ -9,6 +9,7 @@ the behaviour happens, run the trivial baseline before any model — and read an
 line by line, never by its arrow lines: two benches on 2026-10-02 scored the wrong labels
 before a reviewer caught it.
 
+- `builders/` — which model and effort builds a specced task: an arm rebuilds a landed task from its brief, graded by the landed tests (2026-10-24)
 - `decisions/` — can a model tell which decisions the owner will write on (2026-10-02)
 - `sessions/` — can a model tell a session's state from its transcript (2026-10-02)
 - `docs/` — how the owner reads and answers docs: a measurement, re-run by hand

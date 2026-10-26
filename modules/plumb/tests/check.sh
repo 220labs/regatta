@@ -38,6 +38,11 @@ if [ -d "$M/bench" ]; then
       && echo "  ok   sessions/test_collect.py" || { echo "  FAIL sessions/test_collect.py"; rc=1; }
     benches="decisions/jev.py sessions/arms.py sessions/collect.py sessions/score.py decisions/corpus.py sessions/sheet.py"
   fi
+  # builders/: the harness's pure parts (labels, the isolation rule, cost, the ledger); stdlib, no peer
+  python3 "$M/bench/builders/test_bench.py" > "${TMPDIR:-/tmp}/plumb-builders.$$" 2>&1 \
+    && echo "  ok   builders/test_bench.py" || { cat "${TMPDIR:-/tmp}/plumb-builders.$$"; rc=1; }
+  rm -f "${TMPDIR:-/tmp}/plumb-builders.$$"
+  python3 "$M/bench/builders/bench" --help > /dev/null 2>&1 && echo "  ok   bench/builders/bench --help" || { echo "  FAIL bench/builders/bench --help"; rc=1; }
   # G37: each bench with arguments that loads a peer starts and reads them. jev.py and arms.py load
   # jev lazily, sheet.py on use, so for those three this proves start-up only; docs.py has no --help.
   for b in $benches; do
