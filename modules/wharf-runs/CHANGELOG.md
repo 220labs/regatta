@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `test_wharf.sh` gives git an identity of its own (`GIT_CONFIG_GLOBAL`, a made-up address) after
+  moving HOME: its pinned-doc block committed without one, which only a Mac's hostname supplied
+  (twin-ci-4, 2026-10-25; the suite is macOS-only on the twin, so the twin never saw it).
 - `clock`'s seam P (S3 of docs/orca-launcher-2026-10-24.md, picked by its S1 findings): an automation's
   precheck fires its job and exits non-zero, so a scheduled run starts no claude in Orca, whose app holds
   no Drive grant. `clock fire NAME --precheck [--due] -- ARGV…` is that precheck: `--due` runs the job's
