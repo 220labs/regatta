@@ -1374,6 +1374,8 @@ has "$T/status" "d0000015 $WAITON (live: waiting)" "the registry waits for input
 has "$T/status" "d0000016 unsure" "a prompt after the last reply, never answered: unsure, not the older done"
 has "$T/status" "d0000017 None" "a session whose last reply is on another branch: no status on this one"
 has "$T/status" "d0000018 waiting on its own work (closing line)" "WAITING FOR SOMETHING: its own status, never running (D5's busy word)"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_status as s; print(*s.code_rule("Built.\n\n" + s.common.HANDOVER_LINE), sep=" / ")' "$WBIN")" "handed to its launch / closing line" \
+  "  the hand-over line: its own status, which helm raises instead of retrying (yolo-launch review D1-B)"
 check "$(wc -l < "$T/status" | xargs)" "18" "…one status per session, none missing"
 check "$(P show theta --no-fetch)" 0 "show theta"
 has "$T/out" "live now (busy) → running (live: busy)" "the session line ends in its status"

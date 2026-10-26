@@ -29,6 +29,22 @@
   pattern. 42 cases.
 
 - `cold_prompt`, `pickup` and the harness adapter read a transcript's last call through the core's `hooks/transcript.py` (needs a core that has it); the adapter reads a peer session's model from it.
+- dispatch records `no launch — autofinish-run exit N` when the launcher refuses, instead of leaving
+  `started`, so helm shows the hand-over (2026-10-25, finish review).
+- A yolo or dnd run hands its landing to dispatch by one line (2026-10-25). The two prompts end the
+  run, once its work is committed, on the core's `HANDOVER_LINE` (`<owner>, THIS SESSION IS WAITING FOR
+  SOMETHING — dispatch's launch (autofinish-run)`), and `yolo_launch` launches on the core's `handed`
+  kind: that line, or the two free forms the stuck runs wrote. A WAITING FOR SOMETHING line naming
+  something else first still waits. Why: two yolo runs on 2026-10-24 ended naming dispatch's launch,
+  dispatch read that as a wait, and neither landed until found by hand.
+- The yolo launch's review fixes (2026-10-25, docs/yolo-launch-review-2026-10-25.md). Every outcome
+  of `yolo_launch` goes into the run record as `launch`, which helm's card reads (D1). A dnd rc run ends
+  10 minutes idle, as a yolo one does, and either ends at once on the hand-over line (D2). The launch
+  gate failing (a crash) is a reason not to launch; it used to pass every gate (D3). The prompts no
+  longer tell a yolo or dnd run to ask about landing. A yolo run hands over only when keel yolo stopped
+  at nothing, and a dnd step with a next one scheduled ends on WAITING FOR SOMETHING naming that step
+  (D4). The gate's transcript reader skips Claude Code's `<synthetic>` entries. `autofinish`'s sweep
+  vetoes a hand-over while its session is live, as it does a pending line.
 - `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
   that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),
   since the fork from origin/main; every other command runs each time, and the whole line runs on a

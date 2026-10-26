@@ -917,7 +917,8 @@ def last_reply(path):
 
 def reply_veto(text, live=True):
     """Why this reply leaves the next move to the owner, or None. `live`: a session is on the branch —
-    a WAITING FOR SOMETHING reply vetoes only then: with its session gone, nothing wakes it."""
+    a WAITING FOR SOMETHING reply, or the hand-over line, vetoes only then: with its session gone, nothing
+    wakes it, and a hand-over dispatch declined (disarmed, the week) is the sweep's to take once it may."""
     kind, _, _ = common.ending(text)
     if kind == "waiting":
         return f"waiting for {OWNER} (last reply ends in the WAITING line)"
@@ -925,6 +926,8 @@ def reply_veto(text, live=True):
         return "waiting on its skipper (last reply ends in the RELAYED line)"
     if kind == "pending" and live:  # mid-work: its reviewers, check or poll wake it, never launched under it
         return "waiting on its own work (last reply ends in the WAITING FOR SOMETHING line)"
+    if kind == "handed" and live:  # dispatch's launch takes it as the run ends: never a second start under it
+        return "handed to dispatch's launch (last reply ends in the hand-over line)"
     for line in reversed(text.splitlines()):
         line = common.bare(line.strip())
         if not line or LINK_ONLY.match(line):

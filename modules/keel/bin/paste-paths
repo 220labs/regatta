@@ -741,7 +741,7 @@ def pending_asks(line: str) -> bool:
 
 def two_waits_findings(kind: str, line: str) -> list[str]:
     common = _common()
-    if kind == "pending" and pending_asks(line):
+    if kind in ("pending", "handed") and pending_asks(line):
         return [f"the WAITING FOR SOMETHING line says the owner has nothing to do, and this one asks the owner "
                 f"for something — end on `{common.WAITING_PREFIX}<what, in one line>` instead"]
     if kind == "waiting" and NOTHING_ASKED.search(line) and not (asks_owner(line) or pending_asks(line)):
@@ -769,7 +769,7 @@ def closing_findings(reply: str, command=None, bash=(), last=None, background=Fa
         return [f"`{common.bare(problem[1])[:70]}` is not one of the fixed closing lines — use one "
                 f"word for word: the skill's own, {waiting}, or {pending} when the owner has "
                 f"nothing to do"]
-    if kind == "pending":
+    if kind in ("pending", "handed"):
         out = two_waits_findings(kind, line)
         if out:
             return out
@@ -796,7 +796,7 @@ def closing_findings(reply: str, command=None, bash=(), last=None, background=Fa
     tail = (last if last is not None else reply).strip().splitlines()[-1:] or [""]
     if background and kind is None and WAITS.search(tail[0]):
         owes = False
-    if owes and kind not in ("waiting", "pending", "relayed") and line not in common.FINISH_LINES:
+    if owes and kind not in ("waiting", "handed", "pending", "relayed") and line not in common.FINISH_LINES:
         fixed = " / ".join(f"`{l}`" for l in common.FINISH_LINES)
         return [f"/{command or 'finish'} ends with one of its closing lines, on its own, as the "
                 f"very last thing said: {fixed} — or {waiting} when the next move is the owner's, "

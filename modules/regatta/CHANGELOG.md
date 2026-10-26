@@ -25,6 +25,10 @@
   lighthouse's account (costs S8, 2026-10-24).
 
 - `hooks/transcript.py`: one reader of a session transcript's last main-chain call (`call`, `call_line`, `last_call`: epoch, model, context; skips sidechains, `<synthetic>` and zero totals). wharf-runs needs it.
+- A closing kind of its own for the hand-over (2026-10-25, yolo-launch review D1-B): `handed`, a
+  WAITING FOR SOMETHING line whose what is dispatch's launch, `HANDOVER_LINE` or the two free forms
+  of 2026-10-24 (`HANDED_WHAT`). dispatch launches on it, dispatch-rc ends the run on it, and helm
+  raises a declined launch instead of retrying the build.
 - The list's cases moved to `tests/classes.sh`, on `autofinish_exclude` (autofinish-exclude landing review,
   2026-10-24): class 1's walk follows a shell's `$(tool x)` (weekly-run's tend), and a class-2 walk fails on
   any import of a leak gate's that is off `autofinish_leaks`.

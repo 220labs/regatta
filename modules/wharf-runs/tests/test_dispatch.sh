@@ -1370,7 +1370,8 @@ git -c user.email=t@t -c user.name=t commit -qm "doc" \${YDEPLOY:+-m "Deployed: 
 # its transcript, where yolo_launch reads the last reply (\$YREPLY)
 sid=""; prev=""; for a in "\$@"; do [ "\$prev" = --session-id ] && sid="\$a"; prev="\$a"; done
 mkdir -p "\$HOME/.claude/projects/t"
-python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[1]}]}}, separators=(",", ":")))' "\${YREPLY:-Built.}" > "\$HOME/.claude/projects/t/\$sid.jsonl"
+if [ -n "\${YRAW:-}" ]; then printf '%s\n' "\$YRAW" > "\$HOME/.claude/projects/t/\$sid.jsonl"; else
+python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[1]}]}}, separators=(",", ":")))' "\${YREPLY:-Built.}" > "\$HOME/.claude/projects/t/\$sid.jsonl"; fi
 EOF
 cat > "$T/afrun" <<EOF
 #!/bin/sh
@@ -1436,10 +1437,41 @@ has "$HOME/yolo-dup.log" "open for Sam: docs/d.md (memo could not parse it)" "a 
 YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-next.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
 has "$HOME/yolo-next.log" "== yolo: no launch — a next step is scheduled on this branch" "a next step waiting on the branch: no launch"
 "$B/dispatch" $BR --repo "$T/repo" --cancel >/dev/null
+YREPLY="Reviewers started.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers, then dispatch's launch" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-pend.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$HOME/yolo-pend.log" "== yolo: no launch — its last reply waits on its own work" "a build that ends WAITING FOR SOMETHING on its own work: no launch"
+newest_launch() { python3 -c 'import glob, json, os, sys; f = max(glob.glob(sys.argv[1] + "/*.json"), key=os.path.getmtime); print(json.load(open(f)).get("launch"))' "$HOME/Library/Logs/claude-weekly/run-seed-runs"; }
+check "$(newest_launch | grep -cF 'no launch — its last reply waits on its own work: ')" "1" "  the run record keeps why, for helm's card (review D1)"
+# review D3: the gate's reader crashing (a transcript entry whose message is no object) is a reason, never an empty pass
+YRAW='{"type":"assistant","message":"x"}' YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-crash.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$HOME/yolo-crash.log" "== yolo: no launch — its launch gate failed (exit 1)" "a gate that crashes: no launch (review D3, it failed open)"
+# Claude Code's own <synthetic> entry after the run's last reply is not its reply (the rotation's finish review)
+YRAW='{"type":"assistant","message":{"content":[{"type":"text","text":"SAM, THIS SESSION IS WAITING FOR YOU — the check fails on X"}]}}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}' YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-synth.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$HOME/yolo-synth.log" "== yolo: no launch — its last reply stops for Sam" "  a <synthetic> entry after a WAITING line: the WAITING line is read"
 check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called by any of them"
+# the hand-over (yolo-launch, 2026-10-25): the prompt names one WAITING FOR SOMETHING line, and a run
+# ending on it, or on a free form naming dispatch's launch first (the two runs of 2026-10-24), is handed
+: > "$T/claude.calls"
+YREPLY="Built.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-hand.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/claude.calls" "end on exactly \`SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "the yolo prompt names the hand-over line"
+has "$T/claude.calls" "and keel yolo took every item it met (exit 0, or no D-list at all), end on exactly" "  only when keel yolo stopped at nothing (review D4)"
+has "$T/claude.calls" "no WAITING line asks it — this run's mode hands the landing to dispatch" "  and the base text no longer tells it to ask about landing (review D4)"
+has "$HOME/yolo-hand.log" "starting the launch: autofinish-run $T/repo/.claude/worktrees/demo --by yolo" "  a build ending on it: the launch starts"
+check "$(newest_launch)" "started: autofinish-run --rule M --by yolo" "  and the run record says it started"
+: > "$T/af.calls"
+YREPLY="Built.
+**SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch to start the yolo launch of B14b ([x#1](https://example.com/x/pull/1))**" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-hand2.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  and on a free form naming dispatch's launch first (b14b-shrink's words)"
+: > "$T/af.calls"
+YREPLY="Built.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's yolo launch (autofinish-run --by yolo), which starts once this run ends with the tree clean" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-hand3.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  and on hookwatch-date's words (review D5)"
 : > "$T/claude.calls"
 DISPATCH_CLAUDE="$T/yclaude" YMARK=yes DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-off.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 grep -q "keel yolo <the doc>" "$T/claude.calls"; check "$?" "1" "without --yolo: no gate in the prompt"
+has "$T/claude.calls" "no D-item for it — end with the WAITING line asking it" "  and the landing is asked on the WAITING line, as before"
 grep -q "== yolo" "$HOME/yolo-off.log"; check "$?" "1" "  and no launch"
 # the launch's side: autofinish-run --by yolo asks /finish for --yolo, which follows the repo's key
 grep -q '\*\*Without `--hold`\*\* — the mode is the' "$FINISH_SKILL"; check "$?" "0" "/finish --yolo|--dnd: without --hold the mode is the yes (S3b)…"
@@ -1476,11 +1508,18 @@ YMARK=no YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPAT
 has "$HOME/mode-dnd.log" "== mode dnd" "mode dnd from the plist: read at fire time, logged"
 has "$T/claude.calls" "keel yolo --dnd <the doc>" "  the prompt's gate is keel yolo --dnd"
 has "$T/claude.calls" "relay each one as above (ask relay <doc> <Dn>)" "  …and its held items are relayed"
+has "$T/claude.calls" "when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "  …and, as the last step with nothing relayed, it ends on the hand-over line"
+has "$T/claude.calls" "A step that scheduled the next one waits for no launch: it ends on \`SAM, THIS SESSION IS WAITING FOR SOMETHING — <the next step, in one line>\`" "  …a step with a next one scheduled does not (review D4)"
 grep -q "Taken unattended (Sam's dnd, " "$T/repo/.claude/worktrees/demo/docs/d.md"; check "$?" "0" "  a Reversible: no pick taken as the owner's dnd"
 grep -q "== yolo" "$HOME/mode-dnd.log"; check "$?" "1" "  …no yolo launch: dnd is not yolo"
 has "$HOME/mode-dnd.log" "== dnd: the build run ended clean — starting the launch: autofinish-run $T/repo/.claude/worktrees/demo --by dnd" \
   "  …but a dnd launch (S3b, the owner: \"dnd: I want to automerge as well\")"
 has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by dnd" "  through autofinish-run --rule M --by dnd, which holds the slice itself"
+: > "$T/af.calls"
+YREPLY="Built.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" \
+  DISPATCH_LOG="$HOME/mode-dnd-hand.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by dnd" "a dnd build ending on the hand-over line: the launch starts (review D5)"
 : > "$T/af.calls"
 # the follow-ups' landing review, item 1: a deployed build is the sweep's rule L unless it holds a taken doc
 DW="$T/repo/.claude/worktrees/demo"; pre=$(git -C "$DW" rev-parse HEAD)
@@ -1646,9 +1685,11 @@ import re, sys
 src = open(sys.argv[1]).read()
 print("has-idle-for" if 'idle_for=600' in src else "no-idle-for")
 print("recorded" if '${idle_for:+idle="$idle_for"}' in src else "not-recorded")
+print("dnd-idle" if '[ "$mode" = dnd ]; } && idle_for=600' in src else "dnd-warm")
 PY
 has "$T/idle.out" "has-idle-for" "a --start run (autofinish's /finish) keeps the 10 minutes its caller waits on…"
 has "$T/idle.out" "recorded" "  …written into the run's record, which the watcher reads"
+has "$T/idle.out" "dnd-idle" "  a dnd step keeps the 10 minutes too: its owner is not there to pick it up (review D2)"
 check "$(env -u DISPATCH_IDLE python3 -c "
 import importlib.machinery as m, importlib.util as u
 l = m.SourceFileLoader('d', '$B/dispatch-rc'); s = u.spec_from_loader('d', l)
@@ -1684,9 +1725,11 @@ out.append(int(d.idle_limit(a, st)))
 reg("busy"); out.append(int(d.idle_limit(a, st)))
 reg("idle"); out.append(int(d.idle_limit(a, dict(st, idle=None))))
 said("RELAYED TO coding-7 — D1, the cadence"); out.append(int(d.idle_limit(a, st)))
+said(d.common.PENDING_PREFIX + "the two reviewers"); out.append(int(d.idle_limit(a, st)))
+said(d.common.HANDOVER_LINE); out.append(int(d.idle_limit(a, st)))
 print(*out)
 PY2
-)" "600 60 600 3600 600" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its manager (RELAYED), as before (skipper, 2026-10-19)"
+)" "600 60 600 3600 600 600 60" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its manager (RELAYED) or its own work, as before (skipper, 2026-10-19); the hand-over line: 1 min (review D2)"
 kill $ENDP 2>/dev/null
 
 echo "an API-error end is nudged once, not ended as idle (the dropped connection of 2026-10-22)"
