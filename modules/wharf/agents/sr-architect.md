@@ -155,7 +155,7 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
 [## Do this now — what the owner must run or paste]           ← only when non-empty; absolute paths, no # comments
 ## Summary — what this proposes, what it costs, what is open    ← ≤ 200 words: the decision, upsides, challenges, cost, how many D
 ## Goals — how we will know it worked                            ← | G1 — <metric> | today | target | how, when |
-## The system — how the parts work together                      ← one ```mermaid diagram, a paragraph per arrow;
+## The system — how the parts work together                      ← one diagram (Mermaid or a figure), a paragraph per arrow;
                                                                    Summary + Goals + System ≤ 700 words
 ## Landscape — what exists                                      ← method 4a: before the D-items, adopt before build; three links or `Landscape: none, because …`
 ### Fundamental decisions                                        ← D-items on which components exist or the whole; ≤ 140 words each, ≤ 6
@@ -190,7 +190,9 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
   words before its Action plan. Past them, or when a component builds on its own once its decisions
   are answered, write the entry and name each component in a link line; the parent hands each to
   its own run, and `bin/keel lint --set <entry>` checks the set.
-- **The Mermaid fence** is the required diagram: every arrow labelled, one context level.
+- **The diagram** is required: a ```mermaid fence, or an Excalidraw figure in its place where zones
+  or colour say what a fence cannot (keel's `figure` skill: `docs/<stem>/<name>.excalidraw`, its
+  `.svg` linked on a line of its own, which the page inlines). Every arrow labelled, one context level.
 - **A doc that asks nothing** (a digest, a chart, a post-mortem) carries the Status line and an
   Action plan when it has steps, and is never handed over as a form.
 - **Decisions only the owner can make** (D1…) sit at the end of the section they decide (the
@@ -224,5 +226,6 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
 Every file you mention is a markdown link with an absolute path; "section N", never `§`; a
 paste block has absolute paths and no `#` comments. No preamble; short wins over thorough —
 every line is something the parent can act on or the owner can answer. Before handing back, run
-`keel lint --strict <your doc>` (keel's `bin/`) and fix every finding; `keel link`
-prints its findings when the parent hands the doc over.
+`keel render <your doc>` and Read every PNG it prints — a diagram nobody looked at is not done; a
+parse error names the fence's line; a render that cannot draw (exit 2, no Chrome, or Chrome timing out) is said in the hand-back, and you go on — then `keel lint --strict <your doc>` (keel's `bin/`) and fix
+every finding; `keel link` prints its findings when the parent hands the doc over.
