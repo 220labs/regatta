@@ -227,7 +227,7 @@ proj = os.path.join(home, ".claude", "projects")
 def transcript(slug, sid, rows):
     d = os.path.join(proj, slug); os.makedirs(d, exist_ok=True)
     open(os.path.join(d, sid + ".jsonl"), "w").write("".join(json.dumps(r) + "\n" for r in rows))
-a = lambda model, **kw: dict(type="assistant", message={"model": model, "content": []}, effort="high", **kw)
+a = lambda model, **kw: dict(type="assistant", message={"model": model, "content": [], "usage": {"input_tokens": 5, "cache_read_input_tokens": 1000}}, effort="high", **kw)   # every real call carries usage (0 of 27,062 without, 2026-10-24)
 transcript(re.sub(r"[^A-Za-z0-9]", "-", repo), "s-busy", [a("claude-opus-5-5", gitBranch="x"), a("claude-sonnet-5-5", isSidechain=True)])
 transcript("-elsewhere", "s-idle", [a("claude-sonnet-5-5")])   # not under its cwd's slug: found by search
 err = lambda kind, **kw: dict(type="assistant", isApiErrorMessage=True, error=kind, message={"model": "<synthetic>", "content": []}, **kw)

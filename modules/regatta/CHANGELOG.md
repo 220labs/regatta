@@ -24,6 +24,7 @@
 - `extra_usage(xu)`: a usage answer's paid-overage object in one parse, for plumb's usage-report and
   lighthouse's account (costs S8, 2026-10-24).
 
+- `hooks/transcript.py`: one reader of a session transcript's last main-chain call (`call`, `call_line`, `last_call`: epoch, model, context; skips sidechains, `<synthetic>` and zero totals). wharf-runs needs it.
 - The list's cases moved to `tests/classes.sh`, on `autofinish_exclude` (autofinish-exclude landing review,
   2026-10-24): class 1's walk follows a shell's `$(tool x)` (weekly-run's tend), and a class-2 walk fails on
   any import of a leak gate's that is off `autofinish_leaks`.

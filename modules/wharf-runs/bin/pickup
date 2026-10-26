@@ -202,6 +202,10 @@ sys.path.insert(0, str(BIN.parent / "lib"))
 import core_path  # noqa: E402 — the regatta core (C2); none: one line, exit 2
 core_path.require()
 import common  # noqa: E402
+try:
+    from transcript import call, call_line  # noqa: E402 — the core's one test of a call (peer_probe_source ships both)
+except ImportError:   # a core older than transcript.py (a plugin install): C4's one line, exit 2
+    sys.exit("pickup: the regatta core predates hooks/transcript.py — update the regatta plugin")
 # wharf (M2, a hard edge) holds session_status, fork_claude_session (its bin/), branches and
 # checkpoint (its hooks/): both folders join the path after the core's, this module's bin/ first.
 for _peer in ("branches.py", "session_status.py"):
@@ -483,14 +487,15 @@ def prompt_text(record):
 def context_step(line, st):
     """One transcript line into `st`: the context the last main-chain API call carried
     (docs/record/pickup-cold-handoff-2026-09-29.md E1). `ctx` = input + cache read + cache write of
-    the last assistant record with usage — a compaction shows as a drop, so the last one
-    wins; `ctx_at` = when that request began (the last user/tool-result record before it),
-    `ctx_end` = the record's own time, `ttl` = the cache bucket its writes go into ("5m" in
-    usage overage), `first_ctx` = the first call's size, a fresh session's cost here.
-    Regexes on the raw line, never json.loads: tool output runs to megabytes a line and `list`
-    reads every transcript — so per line only substring tests, and the lines themselves kept
-    (references, not copies) for context_done() to read the times from, once. Uses only
-    `re`, because PEER_PROBE carries its source to the other machine.
+    the last call — a compaction shows as a drop, so the last one wins; `ctx_at` = when that request
+    began (the last user/tool-result record before it), `ctx_end` = the record's own time, `ttl` =
+    the cache bucket its writes go into ("5m" in usage overage), `first_ctx` = the first call's size,
+    a fresh session's cost here. What counts as a call is the core's `transcript.call_line`
+    (sidechains, `<synthetic>` stand-ins and zero totals skipped), the one rule every reader shares;
+    it parses only lines that name an assistant and a usage. User lines — tool output runs to
+    megabytes a line and `list` reads every transcript — get substring tests only, and the lines
+    themselves are kept (references, not copies) for context_done() to read the times from, once.
+    PEER_PROBE carries this source and the core's to the other machine.
     The record type decides first: a user record holding an Agent tool's result carries a
     `"usage":{` of its own (toolUseResult.usage) and is still a request's start (review
     2026-09-29). `isSidechain` is the record's second key, so only the head is searched."""
@@ -500,18 +505,15 @@ def context_step(line, st):
         if '"isSidechain":true' not in line[:300]:
             st["_user"] = line
         return
-    u = line.find('"usage":{')
-    if (u < 0 or '"type":"assistant"' not in line or '"isSidechain":true' in line[:300]
-            or '"model":"<synthetic>"' in line):  # an error stand-in: zero usage (usage-report skips them too)
+    c = call_line(line)
+    if not c:
         return
+    total = c[2]
     n = {}
-    for m in USAGE_NUM.finditer(line, u):  # the top-level fields come first; `iterations` repeats them
+    for m in USAGE_NUM.finditer(line, max(0, line.find('"usage":{'))):  # the top-level fields come first; `iterations` repeats them
         n.setdefault(m.group(1), int(m.group(2)))
         if len(n) == 5:
             break
-    total = n.get("input_tokens", 0) + n.get("cache_read_input_tokens", 0) + n.get("cache_creation_input_tokens", 0)
-    if not total:
-        return
     w5, w1 = n.get("ephemeral_5m_input_tokens", 0), n.get("ephemeral_1h_input_tokens", 0)
     if w5 or w1:  # a call that wrote nothing says nothing about the TTL: keep the last one's
         st["ttl"] = "5m" if w5 and not w1 else "1h"
@@ -724,10 +726,11 @@ def peer_tool(name):
 
 
 def peer_probe_source():
-    """PEER_PROBE with the context reader in front: the same code measures a transcript there
-    as here, rather than a second copy of the rules that could drift."""
+    """PEER_PROBE with the context reader in front — the core's call test and pickup's step reader:
+    the same code measures a transcript there as here, rather than a second copy of the rules that
+    could drift."""
     return "\n".join(["import datetime, re", f"USAGE_NUM = re.compile({USAGE_NUM.pattern!r})",
-                      inspect.getsource(context_step), inspect.getsource(context_done),
+                      inspect.getsource(call), inspect.getsource(call_line), inspect.getsource(context_step), inspect.getsource(context_done),
                       inspect.getsource(branch_replies), PEER_PROBE])
 
 
