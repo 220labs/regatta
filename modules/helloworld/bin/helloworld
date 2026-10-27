@@ -294,9 +294,35 @@ class Refused(Exception):
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
 
 
+def stdin_file(data):
+    """`data` as a file for a child's stdin (None stays None), never `input=`. `communicate()` polls,
+    then writes up to 512 bytes blocking; on macOS 12 (git 2.37, Python 3.9) that write blocked while
+    a `cat-file --batch` fed the gate's object ids blocked writing its full stdout, for hours (both
+    sampled, 2026-10-27). Why poll said writable is unread: on macOS 26 it waits for 512 bytes free.
+    A file has no write side to block. A temp dir that will not take it is a refusal (exit 2), never
+    a traceback's exit 1, which reads as words found."""
+    if data is None:
+        return None
+    try:
+        f = tempfile.TemporaryFile()
+        try:
+            f.write(data.encode() if isinstance(data, str) else data)
+            f.seek(0)
+        except BaseException:
+            f.close()
+            raise
+    except OSError as e:
+        raise Refused(f"git's input could not go to a temporary file: {e}")
+    return f
+
+
 def git(repo, *args, check=True, env=None, input=None):
     e = dict(os.environ, **{**GIT_ENV, **(env or {})})
-    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=e, input=input)
+    f = stdin_file(input)
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=e, stdin=f)
+    finally:
+        f and f.close()
     if check and r.returncode:
         raise Refused(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()}")
     return r
@@ -578,7 +604,11 @@ def address_ok(addr, allowed, committer=False):
 
 
 def git_bytes(repo, *args, input=None):
-    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, input=input, env=dict(os.environ, **GIT_ENV))
+    f = stdin_file(input)
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, stdin=f, env=dict(os.environ, **GIT_ENV))
+    finally:
+        f and f.close()
     if r.returncode:
         raise Refused(f"git {' '.join(args[:3])}: {r.stderr.decode(errors='replace').strip()}")
     return r.stdout

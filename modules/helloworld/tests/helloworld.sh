@@ -1237,5 +1237,29 @@ has "$T/gh.body" "squashed: no private commit has the public main's tree" "  the
 python3 "$B/helloworld" publish "$R2" --squash > "$T/out" 2>&1
 check "$?" 2 "--squash without --pr: a usage error"
 
+# git's stdin is a temporary file, never `input=`: communicate()'s pipe hung a cat-file --batch for
+# hours on macOS 12 (2026-10-27). Structural, so a revert fails on every Mac, not only the one that hung.
+stdinunit() { python3 -c '
+import importlib.machinery as m, importlib.util as u, os, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+seen, real = [], mod.subprocess.run
+def run(*a, **k):
+    seen.append(("input" in k, k.get("stdin") is None or hasattr(k.get("stdin"), "fileno")))
+    return real(*a, **k)
+mod.subprocess.run = run
+repo = sys.argv[2]
+ids = mod.git(repo, "rev-list", "--objects", "--all").stdout.split()[::2][:2000]
+out = mod.git_bytes(repo, "cat-file", "--batch-check", input="\n".join(ids) + "\n")
+h = mod.git(repo, "hash-object", "--stdin", input="hi\n").stdout.strip()
+print(len(out.splitlines()) == len(ids), h == "45b983be36b73c0788dc9cbcb76cbb80fc7bb057",
+      all(not i and s for i, s in seen))
+mod.tempfile.tempdir = sys.argv[3]
+try:
+    mod.git(repo, "hash-object", "--stdin", input="hi\n"); print("no refusal")
+except mod.Refused as e:
+    print("refused" if "temporary file" in str(e) else e)' "$B/helloworld" "$R" "$T/no-such-tmp"; }
+check "$(stdinunit | head -1)" "True True True" "git's input goes as a file, never input=: a batch, a str, no call with input"
+check "$(stdinunit | tail -1)" "refused" "  a temp dir that is gone: Refused (exit 2), not a traceback"
 echo
 [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }

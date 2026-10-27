@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- git's stdin goes through a temporary file, never a pipe: a `cat-file --batch` fed the gate's
+  object ids hung for hours on macOS 12 (git 2.37, Python 3.9). A temp dir that will not take the
+  file is a refusal (exit 2).
 - The replay judges every commit's tree with the reviewed ref's exemptions, and with that commit's
   own allowlist and credits: an exemption is text that goes public with the ref anyway, in the one
   file it names, so commits made before it was exempted no longer fold into the exemption's. A
