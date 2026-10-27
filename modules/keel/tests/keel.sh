@@ -2165,10 +2165,13 @@ cat > "$T/c1old.json" <<'EOF'
 {"comments": [
  {"id": "c1r", "body": "and tell Alex", "parent_id": "c1", "created_at": "2026-10-03T21:01:00Z"},
  {"id": "c1", "body": "no — wait for Monday", "anchor_id": "D1", "created_at": "2026-10-03T21:00:00Z", "resolved": false,
-  "replies": [{"id": "c1b", "body": "memo: taken into docs/s.md", "is_bot": true}]}
+  "replies": [{"id": "c1b", "body": "memo: taken into docs/s.md", "is_bot": true, "via": "claude"}]}
 ]}
 EOF
 check "$(kp openwords "nopin@claude/x:docs/none.md" "$T/c1old.json")" "['c1+late']" "R2: with no pin, a thread taken by its reply is no open thread, and the reply after it is late"
+# routed comments' finding E: the same mark with no `via` and no id in `sent` is anyone's typing — the thread is open
+sed 's/, "via": "claude"//' "$T/c1old.json" > "$T/c1typed.json"
+check "$(kp openwords "nopin@claude/x:docs/none.md" "$T/c1typed.json")" "['c1']" "finding E: a mark this tool did not post takes nothing — the thread stays open"
 srun sheep pull --write "$G/sh/docs/t.md" > "$T/k3w.out" 2>&1
 check "$(sed -n '/➤ Answer:/,/^---/p' "$G/sh/docs/t.md" | grep -o -e 'yes, go' -e 'on second thought, wait' | wc -l | tr -d ' ')" "2" "R11: --write puts the thread's words again as D1's answer, the reply after the root"
 gitc "$G/sh" commit -qam "late reply taken"

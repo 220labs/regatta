@@ -5771,6 +5771,11 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
         # (review 2026-10-24)
         print("memo: %s changed since its page moved to %s — it deploys to a page of its own" % (rel, pin["moved_to"]), file=sys.stderr)
         pin = update_pin(key, lambda pin: {k: v for k, v in pin.items() if k not in ("moved_to", "moved_sha", "url", "sha")})
+    r = routed_line(text)
+    if r:   # the line's page, from a routed run's first checkpoint on: never a second page (S2 review, finding 1)
+        pin = line_first(key, pin, r["space"])
+        if not pin.get("space") and pin.get("old_space") != r["space"]:
+            pin = update_pin(key, lambda p: dict(p, space=r["space"]))
     if not pin.get("space") or branch == "main":
         pin = adopt_page(top, branch, rel, key, repo, ref=sha if src else "HEAD", deadline=deadline) or pin
     fork = page_fork(top, sha if src else "HEAD") if branch.startswith("claude/") else None
@@ -6224,7 +6229,9 @@ def comment_threads(raw, sent=None):
                         a = _first(a, "id", "ss_id", "anchor_id")
                     st = str(o.get("status") or "").lower()
                     via = o.get("via") if isinstance(o.get("via"), str) and o.get("via") else None
+                    mail = o.get("author_email") if isinstance(o.get("author_email"), str) else author.get("email")
                     c = {"id": str(cid), "text": body, "anchor": str(a) if a else None, "replies": [],
+                         "_email": mail.strip().lower() if isinstance(mail, str) and mail.strip() else None,
                          "at": str(_first(o, "created_at", "createdAt", "created", "time", "timestamp") or ""),
                          "resolved": bool(o.get("resolved") or o.get("resolved_at") or st == "resolved"),
                          "bot": bool(o.get("is_bot") or o.get("bot") or author.get("is_bot") or author.get("bot")
@@ -6283,7 +6290,7 @@ def comment_threads(raw, sent=None):
             if not sep:
                 head, body = rest, ""
             head = line[:m.start()] + " " + head
-            cur = {"id": m.group(1), "_ind": ind, "text": body.strip(), "replies": [], "_open": not sep, "via": None,
+            cur = {"id": m.group(1), "_ind": ind, "text": body.strip(), "replies": [], "_open": not sep, "via": None, "form": "text",
                    "anchor": next((t for t in re.findall(r"[A-Za-z0-9-]+", head) if SS_ID_RE.match(t)), group),
                    "resolved": bool(re.search(r"\bresolved\b", head, re.I)) and not re.search(r"\bunresolved\b", head, re.I),
                    "bot": bool(BOT_HEAD_RE.search(head))}  # F7: the shepherd's header
@@ -6302,10 +6309,24 @@ def comment_threads(raw, sent=None):
         c["text"] = re.sub(r"^↳\s*", "", c["text"])
         if c["id"] in sent:
             c["bot"] = True
+        c["own"] = (c.get("via") or "").lower() == "claude" or c["id"] in sent
         if c["parent"] and c["parent"] in by_id and c["parent"] != c["id"]:
             by_id[c["parent"]]["replies"].append(c)
         else:
             out.append(c)
+    # Who wrote it (routed comments, cutover; judge section 2): `owner` when the comment's author_email
+    # is the owner's address — that of any reply this tool posted (the key posts as the owner's account),
+    # else the overlay's OWNER_EMAIL_KEY — and, with no address to compare (the text form, or neither
+    # source), whenever it is no agent's, as every reader took it before. `shared`: the page holds
+    # comments from more than one account (entry D1-B: until the owner's S1 probe, a page comment starts
+    # work unconfirmed only on an unshared page). The address itself is dropped here: it never reaches a
+    # doc, a log or a brief.
+    mine = next((c["_email"] for c in order if c["own"] and c.get("_email")), None) or owner_email()
+    mails = {c["_email"] for c in order if c.get("_email")}
+    for c in order:
+        email = c.pop("_email", None)
+        c["owner"] = not c["bot"] and not c["own"] and (email == mine if (mine and email) else True)
+        c["shared"] = len(mails) > 1
     return out
 
 
@@ -6353,8 +6374,22 @@ def in_doc(words, doc, feedback=False):
 
 
 # The marks this tool's replies leave in a thread it took: taken into the doc, or left out as
-# superseded by a newer thread on the same D-card.
-TAKEN_MARKS = (" taken into ", "; left out of ")
+# superseded by a newer thread on the same D-card; and the routing marks that count as taken —
+# routed into a run, closed on the owner's `no`, settled by `keel settle` (ROUTED_MARKS: the other
+# four of the seven are an offer, a lease, a refusal and a stop, and take nothing).
+TAKEN_MARKS = (" taken into ", "; left out of ", ": routed into ", ": closed by ", ": settled by ")
+
+
+def is_mark(c, taken=True):
+    """Whether comment `c` is one of this tool's marks: posted by it (`own`: `via == "claude"` or its
+    id in the pin's `sent`, routed comments' finding E — the text alone counted until 2026-10-26, so
+    anyone on a shared page could type one) and starting with ACK; `taken`: one of TAKEN_MARKS.
+    The text form carries no `via` at all, so there a taken mark counts by its words as before, for
+    taking only (finding 4: a pull would else take every old thread again); mark_kind, the gate's
+    reader, asks with `taken` false and still needs `own`."""
+    t = c["text"].strip()
+    mine = bool(c.get("own")) or (taken and c.get("form") == "text")
+    return mine and t.startswith(ACK) and (not taken or any(m in t for m in TAKEN_MARKS))
 
 
 def taken_ids(threads, pin):
@@ -6363,15 +6398,33 @@ def taken_ids(threads, pin):
     mark of it, and a pin rebuilt, pruned or made on the other Mac must neither take it twice nor
     count it as open: every reader asks here (R2, the second landing review — until then only
     sheep_answers read the replies, and a wait woke for a thread long taken)."""
-    return set((pin or {}).get("taken") or []) | {t["id"] for t in threads if any(
-        c["text"].strip().startswith(ACK) and any(m in c["text"] for m in TAKEN_MARKS) for c in t["replies"])}
+    return set((pin or {}).get("taken") or []) | {t["id"] for t in threads if any(is_mark(c) for c in t["replies"])}
 
 
-def talking_ids(pin, take=()):
+def talking_ids(pin, take=(), threads=None):
     """The threads a session is talking in (`sheep reply` without --take; the pin's `talking`), bar
     those `take` names: every pull leaves them alone, the session's, the wait's and the lookout's
-    (part D, docs/sheep-listen-2026-10-24.md), until `--take` takes one in as any other."""
-    return set((pin or {}).get("talking") or []) - set(take or ())
+    (part D, docs/sheep-listen-2026-10-24.md), until `--take` takes one in as any other. With the
+    page's `threads`, derived too (routed comments, judge section 2): a thread not taken with a reply of
+    this tool's that is no mark — so a host whose pin never saw the reply (another host's, a pin rebuilt
+    from a `Routed:` line) reads the conversation alike."""
+    out = set((pin or {}).get("talking") or [])
+    if threads:
+        done = taken_ids(threads, pin)
+        out |= {t["id"] for t in threads if t["id"] not in done and any(
+            c.get("own") and c["text"].strip() and not c["text"].strip().startswith(ACK) for c in t["replies"])}
+    return out - set(take or ())
+
+
+def talk_answered(t):
+    """Whether thread `t`'s newest owner words have a reply of a session's (an own reply that is no
+    `memo:` mark) as new as them: a conversation's turn already taken."""
+    if not t:
+        return False
+    said = [epoch(c["at"]) or 0 for c in [t] + t["replies"] if own_words(c)]
+    ours = [epoch(c["at"]) or 0 for c in t["replies"]
+            if c.get("own") and c["text"].strip() and not c["text"].strip().startswith(ACK)]
+    return bool(said and ours) and max(ours) >= max(said)
 
 
 def sheep_answers(threads, pin, doc="", take=()):
@@ -6391,7 +6444,7 @@ def sheep_answers(threads, pin, doc="", take=()):
     talking thread (talking_ids) is neither, until `take` names it."""
     items, notes, feedback, taken, skipped = {}, [], [], [], []
     ss = pin.get("ss") or {}
-    done, talking = taken_ids(threads, pin), talking_ids(pin, take)
+    done, talking = taken_ids(threads, pin), talking_ids(pin, take, threads)
     open_ = []
     for k, t in enumerate(threads):
         words = [c["text"].strip() for c in [t] + t["replies"] if own_words(c)]
@@ -6453,8 +6506,7 @@ def late_replies(threads, pin, done=None):
         if t["id"] in seen:
             late = [r for r in mine if r["id"] not in seen[t["id"]]]
         else:
-            acks = [epoch(r["at"]) or 0 for r in t["replies"]
-                    if r["text"].strip().startswith(ACK) and any(m in r["text"] for m in TAKEN_MARKS)]
+            acks = [epoch(r["at"]) or 0 for r in t["replies"] if is_mark(r)]
             late = [r for r in mine if acks and (epoch(r["at"]) or 0) > max(acks)]
         if late:
             out.append((t, late))
@@ -6750,7 +6802,8 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
         p, top, branch, rel, slug, key = None, loc["top"], loc["branch"], loc["rel"], loc["slug"], loc["key"]
     else:
         p, top, branch, rel, slug, key, _ = sheep_where(memo)
-    pin = pins().get(key)
+    # the pin, else the doc's `Routed:` line (doc_page): a host that never deployed the page reads it too
+    pin = doc_page(key, p.read_text() if p else loc["text"])
     if not pin or not pin.get("space"):  # a pin may hold only what survived a lost space (M19)
         raise Stop("no page for %s on %s on this Mac — %s sheep %s" % (rel, branch, keel_cmd(), p or key))
     if p and git(top, "status", "--porcelain", "--", rel).stdout.strip():
@@ -6780,7 +6833,7 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
         if c.get("odd_via"):
             print("  comment [%s] came via %r, not a known agent — read as %s words" % (c["id"], c["odd_via"], WHOSE))
     drain_saves(mcp, key, pin["space"], path=p, row=None if p else pin_row(key, pin))
-    pin = pins().get(key) or pin
+    pin = dict(pin, **(pins().get(key) or {}))
     saves = pin.get("saves") or []
     text = p.read_text() if p else loc["text"]
     answers, taken, skipped = sheep_answers(threads, pin, doc=text, take=take)
@@ -6820,7 +6873,7 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
         save_lines += lines_
         kept += kept_here
     new_text, rep = merge(text, answers)
-    talking = talking_ids(pin, take)
+    talking = talking_ids(pin, take, threads)
     # a talking thread's replies are the session's to answer: never late, never marked seen below
     late = [(t, rs) for t, rs in late_replies(threads, pin) if t["id"] not in talking]
     unread = unread_resolved(threads, pin)
@@ -6900,7 +6953,9 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
                    "refused": [{"saved": stamp_of(sv), "why": why[:200]} for sv, why in refused]}
         update_pin(key, lambda pin: dict(pin, receipt=receipt))
         print("  receipt: %s" % push_receipt(mcp, pin["space"], receipt))
-        if new_text == text:  # no rewrite, so no commit to redeploy with: the page takes the receipt now
+        if new_text == text and pin.get("from_line"):   # the page is another host's pin: it redeploys (finding J)
+            print("  receipt: the host holding the page's pin redeploys it")
+        elif new_text == text:  # no rewrite, so no commit to redeploy with: the page takes the receipt now
             try:
                 sheep(p) if p else sheep_blob(key)
                 print("  receipt: the page redeployed with it")
@@ -6912,7 +6967,9 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
     replies += [(t, "%s %s; left out of %s." % (ACK, why, rel)) for t, why, sup in skipped if sup]
     for t, body in replies:
         update_pin(key, lambda pin: dict(pin, taken=sorted(set(pin.get("taken") or []) | {t["id"]})))
-        mcp.call("add_comment", {"uuid": pin["space"], "parent_id": t["id"], "body": body})
+        mark = posted_id(mcp.call("add_comment", {"uuid": pin["space"], "parent_id": t["id"], "body": body}))
+        if mark and mark != t["id"]:   # the mark is this tool's by its id too, where no `via` says so (finding E)
+            update_pin(key, lambda pin: dict(pin, sent=sorted(set(pin.get("sent") or []) | {mark})))
     print("%s: merged %s and replied in %d thread%s, left open — %s" % (rel, what, len(replies), "" if len(replies) == 1 else "s", summary))
     return 0
 
@@ -6934,6 +6991,8 @@ def open_words(threads, pin):
 def comment_url(pin, tid, chat=True):
     """The page with one thread open, `?comment=<thread id>`: as chat hands it over (chat_page), or with
     `chat` false the spacesheep.dev link, for text that is committed (a lookout run's brief)."""
+    if not pin.get("url"):   # a page known by its `Routed:` line alone: no address here, only its id
+        return "page %s, thread %s" % (pin.get("space"), tid)
     u = chat_page(pin["url"]) if chat else pin["url"]
     return "%s%scomment=%s" % (u, "&" if "?" in u else "?", quote(str(tid), safe=""))
 
@@ -6994,14 +7053,14 @@ def sheep_threads(memo, ids=()):
     `sheep wait` prints it — what a hailed session or a lookout run reads before `sheep reply`.
     `ids`: only those threads. Reads only; takes nothing in."""
     p, top, branch, rel, slug, key, _ = sheep_where(memo)
-    pin = pins().get(key)
+    pin = doc_page(key, p.read_text())
     if not pin or not pin.get("space"):
-        raise Stop("no page for %s on %s on this Mac — %s sheep %s" % (rel, branch, keel_cmd(), p))
+        raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it — %s sheep %s" % (rel, branch, keel_cmd(), p))
     k = sheep_key()
     if not k:
-        raise Stop("no SPACESHEEP_KEY (environment, the config dir's regatta/.env, or the CLI's login)")
+        raise Stop("no SPACESHEEP_KEY here (environment, the config dir's regatta/.env, or the CLI's login)")
     threads = comment_threads(sheep_comments(Mcp(k), k, pin["space"]), sent=pin.get("sent"))
-    done, talking = taken_ids(threads, pin), talking_ids(pin)
+    done, talking = taken_ids(threads, pin), talking_ids(pin, threads=threads)
     late = {t["id"] for t, _ in late_replies(threads, pin, done)}
     shown = [t for t in threads if (t["id"] in ids if ids else (not t["resolved"] and any(own_words(c) for c in [t] + t["replies"])
                                                                 and (t["id"] not in done or t["id"] in talking or t["id"] in late)))]
@@ -7065,9 +7124,9 @@ def sheep_reply(memo, tid, text, take=False):
     --take <id>`). The reply's id, when the answer names one, goes in the pin's `sent`, so no reader
     takes the session's own words for the owner's."""
     p, top, branch, rel, slug, key, _ = sheep_where(memo)
-    pin = pins().get(key)
+    pin = doc_page(key, p.read_text())
     if not pin or not pin.get("space"):
-        raise Stop("no page for %s on %s on this Mac — %s sheep %s" % (rel, branch, keel_cmd(), p))
+        raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it — %s sheep %s" % (rel, branch, keel_cmd(), p))
     if text == "-":
         text = sys.stdin.read()
     body = text.strip()
@@ -7205,7 +7264,7 @@ def sheep_wait(memo, quiet=WAIT_QUIET, idle=110 * 60, poll=WAIT_POLL):
         doc = p.read_text()
         for t in threads:
             if t["id"] in ids:
-                print("\n".join(thread_lines(t, pin, doc, talking=t["id"] in talking_ids(pin))))
+                print("\n".join(thread_lines(t, pin, doc, talking=t["id"] in talking_ids(pin, threads=threads))))
         print("\n".join(talk_moves(p, ids)))
         return 0
     print("keel sheep wait: %s — taking it in" % why, flush=True)
@@ -7216,6 +7275,686 @@ def sheep_wait(memo, quiet=WAIT_QUIET, idle=110 * 60, poll=WAIT_POLL):
               "takes them once that is fixed" % (e, keel_cmd(), p))
         return 1
     print("next: commit %s on %s, then act on the answers the memo's way" % (rel, branch))
+    return 0
+
+
+# ----------------------------------------------------------------------------- routed comments
+# docs/routed-comments-2026-10-26.md, S2; the cutover component, docs/routed-comments-cutover-2026-10-26.md.
+# A doc routed for work keeps being read after its run starts, and after it lands. The state is the page
+# and the doc, never a host's pin: one `Routed: <ISO time> · page <space id> · <branch>` line under the
+# doc's `Status:`, written by `pickup seed --file` and `pickup brief` in their own commit before any
+# dispatch (`keel routed line`), and `memo:` marks on the page, which count only as this tool's own
+# (is_mark). The gate, `keel routed check`, refuses new work while an act thread on the page is
+# unreflected, an owner thread nobody judged, or a Save the doc lacks; `keel settle` is the attended way
+# round it. routed.jsonl is this host's cache of verdicts and acts: another host judges a thread again
+# (one call at most), it never needs this one's.
+ROUTED_RE = re.compile(r"^Routed:[ \t]*(\S+)[ \t]+·[ \t]+page[ \t]+(\S+)[ \t]+·[ \t]+(\S+)[ \t]*$", re.M)
+ROUTED_DAYS = 14          # a routed page is read on every pass this long after its line, landed or not
+ROUTED_LOG = "routed.jsonl"
+OWNER_EMAIL_KEY = "keel/owner-email"   # the overlay's: the owner's address where no reply of ours carries it
+ROUTED_BY = "Routed-By:"  # the trailer of a commit that writes the line (pickup's): no person's answer
+# The seven marks (cutover, "The marks"): kind → (what follows `memo: `, counts as taken). The judge
+# posts them from S4 on; `keel routed mark` is their one writer, `keel settle` the settled one's.
+ROUTED_MARKS = {
+    "routed": ("routed into %(branch)s's run, %(date)s", True),
+    "would-start": ("would start: %(act)s (%(cls)s) — reply go to start, no to close", False),
+    "closed": ("closed by %(who)s, %(date)s", True),
+    "settled": ("settled by %(who)s, %(date)s: %(why)s", True),
+    "claiming": ("claiming for %(host)s, %(time)s", False),
+    "not-started": ("not started — %(why)s", False),
+    "stopped": ("stopped, %(date)s", False),
+}
+MARK_WORDS = (("routed", "routed into "), ("would-start", "would start:"), ("closed", "closed by "),
+              ("settled", "settled by "), ("claiming", "claiming for "), ("not-started", "not started"),
+              ("stopped", "stopped,"))
+# The labels of the one model call (judge section 3), the bench's words (evidence section 4).
+ROUTED_LABELS = {
+    "act-plain": "the writer asks for work that is cheap or clearly reversible (a doc edit, a rename, a one-file fix, writing a section, a design pass)",
+    "act-held": "the writer asks for work in a held class: money, a deletion, a merge or landing, a revert, a force-push, a publish, a rename of a repo, revoking access, sending to a third party, deploying to a device",
+    "act-unclear": "the writer wants something done but what is not clear enough to start",
+    "question": "the writer asks something and expects an answer, not work",
+    "answer": "the writer answers a decision or the agent's question (a letter, yes, no, a short choice)",
+    "remark": "an observation with no ask",
+}
+ROUTED_ASK = ("Label each comment left on a design document's page. writer: owner = the person who owns the "
+              "project, other = anyone else; anchor: line = a paragraph of the doc, D-card = a decision card "
+              "with lettered options, reply = a reply under the agent's own question.")
+# entry D1-B's held verbs, beside DND_HOLDS: a thread naming one is never a plain act
+HELD_VERBS_RE = re.compile(r"\b(?:merg(?:e|es|ed|ing)|land(?:s|ed|ing)?|revert\w*|force-push\w*|rename (?:the |a |this |that )?repo\w*"
+                           r"|revok\w*|publish\w*|buy\w*|bought|send\w*|sent to|delet\w*|deploy\w*)\b", re.I)
+ANSWER_WORDS_RE = re.compile(r"^\s*(?:[A-H]|yes|no|y|n|ok(?:ay)?|go|stop|agreed|fine|done|thanks?|thank you|👍|✅)\s*[.!]*\s*$", re.I)
+GO_WORDS_RE = re.compile(r"^\s*(?:go|yes|no|stop)\b", re.I)
+
+
+def line_stands(top, rel, ln):
+    """Whether routing `ln` still stands: its branch's tip, here or on origin, or main's (where it
+    lands) holds the same line. A branch gone from both (landed and deleted, or never fetched here)
+    says nothing against it. The case it catches: `pickup brief --unroute` took the line out on its
+    branch (a released start) inside the window, and the lookout kept reading the dead page (S2's
+    finish review, finding 8)."""
+    own = [r for r in ("refs/heads/" + ln["branch"], "refs/remotes/origin/" + ln["branch"])
+           if git(top, "rev-parse", "-q", "--verify", r, check=False).returncode == 0]
+    if not own:
+        return True
+    for r in own + ["refs/heads/main", "refs/remotes/origin/main"]:
+        cur = routed_line(git(top, "show", "%s:%s" % (r, rel), check=False).stdout)
+        if cur and (cur["space"], cur["branch"]) == (ln["space"], ln["branch"]):
+            return True
+    return False
+
+
+def routed_docs(tops, horizon):
+    """{pin key: {space, at}} of every doc whose `Routed:` line is newer than `horizon`, on any ref the
+    repos' checkouts hold (their origin refs included): one `git log -G` per repo over the window. The
+    key names the line's branch; one key per page — the newest line wins, so a doc routed again is read
+    once, under its newest routing. A line taken back since (line_stands) names no page."""
+    out, page = {}, {}
+    for name, top in sorted(tops.items()):
+        if not Path(top).is_dir():
+            continue
+        r = git(top, "log", "--all", "--since=@%d" % int(horizon), "-G", "^Routed: ", "--format=%x1e%H",
+                "--name-only", "--", "*.md", check=False)
+        for rec in r.stdout.split("\x1e"):
+            lines = [l for l in rec.strip().splitlines() if l.strip()]
+            for rel in lines[1:]:
+                ln = routed_line(git(top, "show", "%s:%s" % (lines[0], rel), check=False).stdout)
+                at = epoch(ln["at"]) if ln else None
+                if not at or at < horizon:
+                    continue
+                key = "%s@%s:%s" % (name, ln["branch"], rel)
+                if key in out and out[key]["at"] >= at:
+                    continue   # git log runs newest first: a key keeps its newest line's space
+                if not line_stands(top, rel, ln):
+                    continue
+                was = page.get((name, rel, ln["space"]))
+                if was and out[was]["at"] >= at:
+                    continue
+                out.pop(was, None)
+                page[(name, rel, ln["space"])] = key
+                out[key] = {"space": ln["space"], "at": at}
+    return out
+
+
+def owner_email():
+    """The overlay's OWNER_EMAIL_KEY, lower-cased, or None. Read per call (tests move the config dir)."""
+    v = (_config_lines(OWNER_EMAIL_KEY) or [""])[0].strip().lower()
+    return v or None
+
+
+def routed_line(text):
+    """{at, space, branch, line} of the doc's `Routed:` line (the first), or None."""
+    m = ROUTED_RE.search(text or "")
+    if not m:
+        return None
+    return {"at": m.group(1), "space": m.group(2), "branch": m.group(3), "line": (text or "")[:m.start()].count("\n")}
+
+
+def with_routed(text, at, space, branch):
+    """The doc with its `Routed:` line rewritten, else put under its `Status:` line, else under its
+    title, else first. Rewritten at each routing: one line, the newest routing's."""
+    line = "Routed: %s · page %s · %s" % (at, space, branch)
+    lines = text.split("\n")
+    r = routed_line(text)
+    if r and (r["space"], r["branch"]) == (space, branch):
+        return text   # the same routing briefed again (a lookout retry): the record stands as written
+    if r:
+        lines[r["line"]] = line
+        return "\n".join(lines)
+    st = next((k for k, l in enumerate(lines[:60]) if l.startswith("Status:")), None)
+    if st is not None:
+        lines.insert(st + 1, line)
+    else:
+        h = next((k for k, l in enumerate(lines[:20]) if l.startswith("# ")), None)
+        if h is None:
+            lines[0:0] = [line, ""]
+        elif h + 1 < len(lines) and not lines[h + 1].strip():
+            lines[h + 1:h + 1] = ["", line]
+        else:
+            lines[h + 1:h + 1] = ["", line, ""]
+    return "\n".join(lines)
+
+
+def without_routed(text):
+    """The doc with its `Routed:` line taken out (a refused start, lookout_release), and the blank
+    line with_routed put above it under a title."""
+    r = routed_line(text)
+    if not r:
+        return text
+    lines = text.split("\n")
+    k = r["line"]
+    del lines[k]
+    if 0 < k < len(lines) and not lines[k - 1].strip() and not lines[k].strip():
+        del lines[k]
+    return "\n".join(lines)
+
+
+# What a pin holds of its own page, dropped when line_first points it at the line's page: the address,
+# the commit it shows, its block ids and the room's cursors. Saves, taken threads and `sent` are the
+# doc's and the ids', and stay.
+PAGE_OF_SPACE = ("url", "sha", "fmt", "ss", "aliases", "dropped_with", "events_after", "events_at",
+                 "opens_seen", "reads_seen", "receipt_shown")
+
+
+def line_first(key, pin, space):
+    """`key`'s pin pointed at the `Routed:` line's page `space` when it holds another (S2's finding 1:
+    a seeded run's first checkpoint mirrored the doc to a second, empty page, which every reader then
+    read instead of the line's). The line is the routing's record, so it wins, as in routing_page; the
+    page given up is kept in `gave_up_space` and said once. The pin keeps no address or commit, so this
+    host's next deploy goes to the line's page (sheep: `--space`), and one page carries the doc. A space
+    this pin lost (`old_space`: the server no longer had it) is never taken back, or every deploy
+    would make a page again."""
+    pin = pin or {}
+    if not space or pin.get("space") in (None, space) or pin.get("old_space") == space:
+        return pin
+    gone = pin["space"]
+
+    def to_line(p):
+        p = {k: v for k, v in p.items() if k not in PAGE_OF_SPACE}
+        p.update(space=space, gave_up_space=gone)
+        return p
+    print("memo: %s's page is its Routed: line's (%s); this Mac's own page %s is left, unread"
+          % (key, space, gone), file=sys.stderr)
+    return update_pin(key, to_line)
+
+
+def doc_page(key, text):
+    """The design's page_of(doc) (`page_of` here is the mirror's address map): the doc's `Routed:`
+    line first — this host's pin for `key` pointed at it (line_first) — then the pin alone, else the
+    line as a pin holding its space alone. A pin with no `url` comes back `from_line`: nothing here
+    deploys it from a read; the host holding the page's pin redeploys (finding J). Else the pin as it
+    is (it may hold only what survived a lost space) or None."""
+    pin = pins().get(key) or {}
+    r = routed_line(text)
+    if r:
+        pin = line_first(key, pin, r["space"])
+    if pin.get("space"):
+        return pin if pin.get("url") else dict(pin, from_line=True)
+    if r:
+        return dict(pin, space=r["space"], from_line=True)
+    return pin or None
+
+
+def routing_page(name, rel, key, text):
+    """(space, pin key or None) of the page a routing names: the doc's own `Routed:` line, else this
+    host's pin for `key`, else the newest pin of the same doc on any branch (the page a session
+    deployed while it wrote the doc); (None, None) for a doc with no page."""
+    r = routed_line(text)
+    if r:
+        return r["space"], key if (pins().get(key) or {}).get("space") == r["space"] else None
+    ps = pins()
+    if (ps.get(key) or {}).get("space"):
+        return ps[key]["space"], key
+    same = [(str(p.get("deployed") or ""), k) for k, p in ps.items() if isinstance(p, dict) and p.get("space")
+            and not p.get("moved_to") and k.partition("@")[0] == name and k.partition(":")[2] == rel]
+    if not same:
+        return None, None
+    k = max(same)[1]
+    return ps[k]["space"], k
+
+
+def routed_log(row):
+    state_dir().mkdir(parents=True, exist_ok=True)
+    row = dict({"ts": now_ts(), "host": lookout_host()[0]}, **row)
+    with open(state_dir() / ROUTED_LOG, "a") as f:
+        f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    return row
+
+
+def routed_rows():
+    out = []
+    try:
+        for l in (state_dir() / ROUTED_LOG).read_text().splitlines():
+            try:
+                r = json.loads(l)
+            except ValueError:
+                continue
+            if isinstance(r, dict):
+                out.append(r)
+    except OSError:
+        pass
+    return out
+
+
+def mark_kind(c):
+    """The kind of one of this tool's marks (ROUTED_MARKS, or `taken` for a pull's take), or None for
+    any other comment — a reply of ours that is talk, or a mark typed by someone else (is_mark)."""
+    if not is_mark(c, taken=False):
+        return None
+    t = c["text"].strip()[len(ACK):].strip()
+    for kind, words in MARK_WORDS:
+        if t.startswith(words):
+            return kind
+    return "taken" if any(m in c["text"] for m in TAKEN_MARKS[:2]) else None
+
+
+def mark_body(kind, **kw):
+    if kind not in ROUTED_MARKS:
+        raise Stop("no mark %r — one of %s" % (kind, ", ".join(ROUTED_MARKS)))
+    try:
+        return "%s %s" % (ACK, ROUTED_MARKS[kind][0] % kw)
+    except KeyError as e:
+        raise Stop("the %s mark needs --%s" % (kind, str(e).strip("'")))
+
+
+def room_saves(mcp, space):
+    """Every Save the page's room still holds, read from seq 0 with no cursor and no pin written —
+    a host judges Saves by content against the doc (save_owed), so no cursor is shared. The room kept
+    every event from seq 1 on pages nine days old (S2's probe, 2026-10-26)."""
+    after, got = 0, []
+    for _ in range(50):   # 500 events at most, as the room keeps
+        res = mcp.call("live_events", {"uuid": space, "after": after, "wait_seconds": 0})
+        if not isinstance(res, dict) or not isinstance(res.get("events", []), list):
+            raise Stop("spacesheep live_events answered in a shape this tool has not seen: %s" % str(res)[:160])
+        evs = [e for e in res.get("events") or [] if isinstance(e, dict)]
+        got += [{"seq": e.get("seq"), "at": e.get("at"), "data": e["data"]} for e in evs
+                if e.get("name") == SAVE_EVENT and isinstance(e.get("data"), dict)]
+        top = max([after] + [e["seq"] for e in evs if isinstance(e.get("seq"), int)])
+        if not evs or top <= after:
+            break
+        after = top
+    return got
+
+
+def save_stamp(sv):
+    """How a doc's `> **Settled.**` line names a Save: the page's own `savedAt`, the same on every
+    host, else its seq in the room."""
+    d = sv.get("data") if isinstance(sv.get("data"), dict) else {}
+    return str(d.get("savedAt") or "") or "seq %s" % sv.get("seq")
+
+
+def save_owed(sv, text, top=None, rel=None):
+    """Whether Save `sv` holds what the doc still owes it: save_lacks, less an answer git changed
+    after the commit the page showed — git's is then the newer word, as fold_saves keeps it — and
+    never one the doc settles (`keel settle <doc> save:<seq>`): a Save whose commit no host can read,
+    or one a pull refused, would else hold the gate for good (S2's finish review, finding 3)."""
+    if "**Settled.** Save %s:" % save_stamp(sv) in text or not save_lacks(sv, text):
+        return False
+    d = sv.get("data") if isinstance(sv.get("data"), dict) else {}
+    try:
+        now = answers_of(text)[0]
+    except Stop:
+        now = {}
+    items = d.get("items") if isinstance(d.get("items"), dict) else {}
+    differ = [k for k, v in items.items() if isinstance(v, str) and v.strip()
+              and " ".join(v.split()) != " ".join((now.get(k) or "").split())]
+    if top and rel and d.get("sha"):
+        differ = [k for k in differ if answer_at(top, rel, d["sha"], k) in (None, now.get(k))]
+    if differ:
+        return True
+    for c in d.get("comments") or []:   # a note or feedback the doc lacks: no git answer covers those
+        if isinstance(c, dict) and str(c.get("text") or "").strip() and not in_doc(str(c["text"]).strip(), text):
+            return True
+    fb = d.get("feedback") if isinstance(d.get("feedback"), str) else ""
+    return bool(fb.strip()) and not in_doc(fb.strip(), text, feedback=True)
+
+
+def comment_anchor(t, thread):
+    """How the one model call names a comment's anchor: a D-card, a reply under our question, a line."""
+    if re.match(r"^D\d+$", thread.get("anchor") or ""):
+        return "D-card"
+    return "reply" if t is not thread else "line"
+
+
+def _gate():
+    p = _common().tool("gate")
+    if not p:
+        raise ImportError("no gate tool")
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader("regatta_gate", str(p)).load_module()
+
+
+def judge_thread(t, repo):
+    """(label, by, why) for an owner thread's newest words (judge section 3, its deterministic layer
+    first): a D-card thread is an answer; `go`, `yes`, `no` or `stop` under our `would start` mark is
+    that answer; a held class (DND_HOLDS, entry D1-B's verbs) is act-held; a bare letter, yes or ok an
+    answer. The rest goes to the one call, `gate.classify("keel.comment", …)`: a row that is off, a
+    repo on the guarded list (refused without the owner's quote, which this never passes), or any
+    failure leaves the thread held (`act-unclear`, by `held`) — the gate holds what it cannot judge."""
+    cs = [t] + t["replies"]
+    marks = [c for c in t["replies"] if mark_kind(c)]
+    last_mark = max(marks, key=lambda c: epoch(c["at"]) or 0) if marks else None
+    said = [c for c in cs if c.get("owner") and own_words(c)
+            and (last_mark is None or (epoch(c["at"]) or 0) > (epoch(last_mark["at"]) or 0))]
+    if not said:
+        return "remark", "rules", "no owner words since the last mark"
+    words = "\n".join(c["text"].strip() for c in said)
+    if re.match(r"^D\d+$", t.get("anchor") or ""):
+        return "answer", "rules", "a D-card thread"
+    # a held class first: "yes, and merge it" under an offer is no plain go (finding 5)
+    held = next((why for why, rx in DND_HOLDS if rx.search(words)), None) or (
+        "a held verb" if HELD_VERBS_RE.search(words) else None)
+    if held:
+        return "act-held", "rules", held
+    if last_mark is not None and mark_kind(last_mark) == "would-start" and GO_WORDS_RE.match(said[-1]["text"]):
+        return "answer", "rules", "go/no under the offer"
+    if len(said) == 1 and ANSWER_WORDS_RE.match(words):
+        return "answer", "rules", "a bare answer"
+    item = 'writer=owner anchor=%s: "%s"' % (comment_anchor(said[-1], t), words[:1500].replace('"', "'"))
+    try:
+        res = _gate().classify("keel.comment", {"1": item}, ROUTED_ASK, ROUTED_LABELS, source=repo, caller="keel routed")
+    except Exception as e:   # GateError (no row yet: entry S4 adds it; guarded), GateOff, no core
+        return "act-unclear", "held", "not judged: %s" % str(e)[:120]
+    if res is None:
+        return "act-unclear", "held", "the keel.comment call is off"
+    label = str(((res.get("items") or {}).get("1") or {}).get("label") or "")
+    return (label, "model", "") if label in ROUTED_LABELS else ("act-unclear", "held", "the call answered %r" % label[:40])
+
+
+def routed_judge(threads, key, space, repo, routing=(), log=True):
+    """[(thread, why)] the gate holds, and how many threads it judged here. A thread holds while: its
+    newest word is our `would start` offer (neither go nor no yet), our `not started` or a `claiming`
+    lease (an act in flight); or the owner wrote after its last mark — or it has none — and those words
+    judge an act (routed.jsonl's verdict when it is as new as them, else judge_thread here, logged).
+    A thread whose newest word is a taken mark, a stop, or our talk reply is reflected; another
+    writer's words are data, never owed. `routing`: the threads being routed by this start."""
+    verdicts = {}
+    for r in routed_rows():
+        if r.get("event") == "judged" and r.get("space") == space and r.get("thread"):
+            verdicts[r["thread"]] = r
+    owed, judged = [], 0
+    for t in threads:
+        if t["resolved"] or t["id"] in routing:
+            continue
+        said = [c for c in [t] + t["replies"] if c.get("owner") and own_words(c)]
+        if not said:
+            continue
+        newest = max(epoch(c["at"]) or 0 for c in said)
+        marks = sorted((c for c in t["replies"] if mark_kind(c)), key=lambda c: epoch(c["at"]) or 0)
+        if marks and (epoch(marks[-1]["at"]) or 0) >= newest:
+            kind = mark_kind(marks[-1])
+            if kind == "would-start":
+                owed.append((t, "offered, neither go nor no"))
+            elif kind in ("not-started", "claiming", "stopped"):
+                # stopped counts as nothing, the thread stays open (the cutover's marks table): owed, never cleared
+                owed.append((t, {"not-started": "an act not started", "claiming": "an act being claimed",
+                                 "stopped": "an act stopped"}[kind]))
+            continue
+        if any(c.get("own") and not c["text"].strip().startswith(ACK) and (epoch(c["at"]) or 0) >= newest
+               for c in t["replies"]):
+            continue   # a session answered the owner's newest words in the thread: talk, not owed
+        v = verdicts.get(t["id"])
+        if v and v.get("by") != "held" and float(v.get("words_at") or 0) >= newest:   # a held row is no verdict: judge again
+            label, why = v.get("label") or "", v.get("why") or ""
+        else:
+            label, by, why = judge_thread(t, repo)
+            judged += 1
+            if log:
+                routed_log({"event": "judged", "doc": key, "space": space, "thread": t["id"], "label": label,
+                            "by": by, "why": why, "words_at": newest})
+        if label.startswith("act"):
+            owed.append((t, "%s%s" % (label, " — %s" % why if why else "")))
+    return owed, judged
+
+
+def routed_check(key, text, space, pin=None, top=None, routing=(), log=True):
+    """The gate on one doc: (refusal or None, notes). Exit 3's text names the threads and the Saves,
+    and how each is cleared; it stays out of PICKUP_PASSING_RE, so the lookout cards it once. A page
+    that does not read refuses with "run it again" (a pass through); a host with no key reads nothing
+    and judges nothing, and says so (the design's first case)."""
+    name, branch, rel = key_parts(key)
+    k = sheep_key()
+    if not k:
+        return None, ["no SPACESHEEP_KEY here — %s's page not read, nothing judged" % rel]
+    try:
+        mcp = Mcp(k)
+        threads = comment_threads(sheep_comments(mcp, k, space), sent=(pin or {}).get("sent"))
+        saves = room_saves(mcp, space)
+    except Stop as e:
+        return "could not read %s's page (%s) — run it again" % (rel, str(e)[:120]), []
+    owed, judged = routed_judge(threads, key, space, name, routing=routing, log=log)
+    lacking = [sv for sv in saves if save_owed(sv, text, top, rel)]
+    notes = ["%s: %d thread%s read, %d judged here" % (rel, len(threads), "" if len(threads) == 1 else "s", judged)]
+    if not (owed or lacking):
+        return None, notes
+    why = "unreflected on %s's page: %d thread%s, %d Save%s — `keel sheep pull %s --write`, or `keel settle %s <id|save:seq> --why \"…\"`" % (
+        rel, len(owed), "" if len(owed) == 1 else "s", len(lacking), "" if len(lacking) == 1 else "s", rel, rel)
+    why += "".join("; [%s] %s" % (t["id"], w) for t, w in owed[:5]) + ("; …" if len(owed) > 5 else "")
+    why += "".join("; [save:%s] %s" % (sv.get("seq"), save_stamp(sv)) for sv in lacking[:5]) + ("; …" if len(lacking) > 5 else "")
+    if log:
+        routed_log({"event": "refused", "doc": key, "space": space, "threads": [t["id"] for t, _ in owed],
+                    "saves": [sv.get("seq") for sv in lacking]})
+    return why, notes
+
+
+def brief_docs(top, ref, brief):
+    """The docs a brief names that are in the tree at `ref`: a path relative to the repo, absolute
+    under its checkout, or a pin key's `:path`; never a brief itself (docs/handoff/)."""
+    out = []
+    for tok in re.findall(r"[^\s`'\"()<>\[\]]+\.md\b", brief):
+        for cand in (tok.rpartition(":")[2], tok):
+            rel = cand
+            if rel.startswith("/") or rel.startswith("~"):
+                parts = Path(rel).expanduser().parts
+                rel = "/".join(parts[parts.index("docs"):]) if "docs" in parts else ""
+            rel = re.sub(r"^(\./)+", "", rel)
+            if (rel and rel not in out and not rel.startswith("docs/handoff/")
+                    and git(top, "cat-file", "-e", "%s:%s" % (ref, rel), check=False).returncode == 0):
+                out.append(rel)
+                break
+    return out
+
+
+def routed_last_step(rel):
+    k = home_rel(overlay_cmd("keel"))   # the run may go to a peer whose home differs (run_brief does the same)
+    return ("Last step: `%s sheep pull %s --write`, then `%s routed check %s` — name each unreflected "
+            "thread it lists in your closing line." % (k, rel, k, rel))
+
+
+def routed_line_cmd(top, ref, branch, brief, check=False, drop=False, routing=(), dry=False):
+    """`keel routed line`, pickup's call (seed --file, brief): for each doc the brief names that has a
+    page, the doc's new text — the `Routed:` line written (or, `drop`, taken out: lookout_release) —
+    for the caller's own commit, before dispatch (finding D). `check` runs the gate on each first (seed
+    is new work; brief is not gated, cutover's table), less the threads `routing` names — the ones this
+    start routes (finding 7: a seed started from a comment refused on its own thread). `dry` (pickup's
+    --dry-run): routed.jsonl gets no row, a judged thread none either (finding 6). (exit code, JSON): 3
+    when the gate refused."""
+    top = Path(top).expanduser().resolve()
+    name = repo_name(top)
+    at = dt.datetime.fromtimestamp(now_ts(), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    docs, refused, notes, paged = [], [], [], []
+    for rel in brief_docs(top, ref, brief):
+        text = git(top, "show", "%s:%s" % (ref, rel), check=False).stdout
+        key = "%s@%s:%s" % (name, branch, rel)
+        space, pkey = routing_page(name, rel, key, text)
+        if not space:
+            continue
+        if drop:
+            new = without_routed(text)
+        else:
+            if check:
+                why, more = routed_check(key, text, space, pin=pins().get(pkey) if pkey else None, top=top,
+                                         routing=routing, log=not dry)
+                notes += more
+                if why:
+                    refused.append(why)
+                    continue
+            new = with_routed(text, at, space, branch)
+            paged.append(rel)   # the last step names every routed doc, its line new or already there (a retry)
+        if new != text:
+            docs.append({"rel": rel, "text": new, "space": space})
+            if not (drop or dry):
+                routed_log({"event": "routed", "doc": key, "space": space, "branch": branch})
+    out = {"docs": docs, "refused": refused, "notes": notes,
+           "last_step": " ".join(routed_last_step(rel) for rel in paged)}
+    return (3 if refused else 0), out
+
+
+def post_mark(key, pin, tid, body):
+    """One mark as a reply in thread `tid`, its id put in the pin's `sent` (is_mark's other proof)."""
+    k = sheep_key()
+    if not k:
+        raise Stop("no SPACESHEEP_KEY here")
+    res = Mcp(k).call("add_comment", {"uuid": pin["space"], "parent_id": tid, "body": body})
+    new = posted_id(res)
+    if new and new != tid:
+        update_pin(key, lambda p: dict(p, sent=sorted(set(p.get("sent") or []) | {new})))
+    return new
+
+
+def page_threads(memo):
+    """(p, key, pin, threads) of a doc in a checkout, its page by doc_page."""
+    p, top, branch, rel, slug, key, _ = sheep_where(memo)
+    pin = doc_page(key, p.read_text())
+    if not pin or not pin.get("space"):
+        raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it" % (rel, branch))
+    k = sheep_key()
+    if not k:
+        raise Stop("no SPACESHEEP_KEY here (environment, the config dir's regatta/.env, or the CLI's login)")
+    return p, key, pin, comment_threads(sheep_comments(Mcp(k), k, pin["space"]), sent=pin.get("sent"))
+
+
+def find_thread(threads, tid):
+    """The root thread `tid` names: a thread or reply id, or `Dn` — the newest open thread on that card."""
+    if re.match(r"^D\d+$", tid):
+        on = [t for t in threads if t["anchor"] == tid and not t["resolved"]]
+        if not on:
+            raise Stop("no open thread on %s" % tid)
+        return max(on, key=lambda t: epoch(t["at"]) or 0)
+    t = next((t for t in threads if tid == t["id"] or any(tid == c["id"] for c in t["replies"])), None)
+    if not t:
+        raise Stop("no thread [%s] on the page" % tid)
+    return t
+
+
+def routed_mark(memo, tid, kind, **kw):
+    """`keel routed mark <doc> <thread> <kind>`: one of ROUTED_MARKS posted as this tool's reply. The
+    settled mark is `keel settle`'s alone (it writes the doc too, and refuses an unattended caller)."""
+    if kind == "settled":
+        raise Stop("the settled mark is keel settle's: it writes the doc's > **Settled.** line too")
+    if kind in ("routed", "closed") and os.environ.get("CLAUDE_UNATTENDED"):
+        raise Stop("an unattended run does not post a %r mark: it stands for a person's word, and clears the gate" % kind)
+    kw.setdefault("date", dt.datetime.fromtimestamp(now_ts()).strftime("%Y-%m-%d"))
+    kw.setdefault("time", dt.datetime.fromtimestamp(now_ts(), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    kw.setdefault("host", lookout_host()[0])
+    body = mark_body(kind, **kw)
+    p, key, pin, threads = page_threads(memo)
+    t = find_thread(threads, tid)
+    new = post_mark(key, pin, t["id"], body)
+    routed_log({"event": "mark", "doc": key, "space": pin["space"], "thread": t["id"], "kind": kind, "id": new})
+    print("marked [%s]: %s" % (t["id"], body))
+    return 0
+
+
+def login_label():
+    """The login a settle is made from: the config dir's name (`.claude-x` → claude-x), as the account
+    rows name them; `claude` for the default dir."""
+    d = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    return Path(d).name.lstrip(".") or "claude"
+
+
+def settle(memo, tid, why):
+    """`keel settle <doc> <thread id|Dn> --why "<reason>"`: the attended way past the gate. Posts the
+    `settled by` mark and writes `> **Settled.** <why>` under the thread's anchor in the doc (a D-item:
+    after its block; a line: after the line the page quotes; else the end of Open feedback, else the
+    doc's end), left for the session to commit; the session id goes to routed.jsonl. Refused under
+    CLAUDE_UNATTENDED (exit 3): a flag that stands for a yes refuses an unattended caller. Never a resolve."""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        print("keel settle: refused in an unattended session (CLAUDE_UNATTENDED=%s) — settling is attended only"
+              % os.environ["CLAUDE_UNATTENDED"], file=sys.stderr)
+        return 3
+    why = " ".join((why or "").split())
+    if not why:
+        raise Stop("settle: --why \"<reason>\" — the line the doc and the mark carry")
+    if tid.startswith("save:"):
+        return settle_save(memo, tid[len("save:"):], why)
+    p, key, pin, threads = page_threads(memo)
+    if git(p.parent, "status", "--porcelain", "--", p.name).stdout.strip():
+        raise Stop("%s has uncommitted changes — commit them first; nothing posted" % p.name)
+    t = find_thread(threads, tid)
+    date = dt.datetime.fromtimestamp(now_ts()).strftime("%Y-%m-%d")
+    text = p.read_text()
+    lines = text.split("\n")
+    quote = "  > **Settled.** %s" % why
+    at = None
+    if re.match(r"^D\d+$", t["anchor"] or ""):
+        it = next((i for i in parse(text)[1] if i["id"] == t["anchor"]), None)
+        if it:   # after the item, past any `  >` replies under its answer
+            at = k = it["end"]
+            while k < len(lines) and (lines[k].startswith("  >") or not lines[k].strip()):
+                at = k + 1 if lines[k].startswith("  >") else at
+                k += 1
+    elif t["anchor"]:
+        q = (((pin.get("ss") or {}).get(t["anchor"]) or {}).get("quote") or "").strip()
+        k = next((k for k, l in enumerate(lines) if q and q[:60] in l), None)
+        if k is not None:
+            at, quote = k + 1, "> **Settled.** %s" % why
+    if at is None:   # the whole page, or a line the doc no longer has: the doc's end (Open feedback is last)
+        at, quote = len(lines), "> **Settled.** %s" % why
+        while at > 0 and not lines[at - 1].strip():
+            at -= 1
+    lines[at:at] = ["", quote]
+    new = post_mark(key, pin, t["id"], mark_body("settled", who=login_label(), date=date, why=why))
+    p.write_text("\n".join(lines))
+    routed_log({"event": "settled", "doc": key, "space": pin["space"], "thread": t["id"], "id": new,
+                "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None, "why": why})
+    print("settled [%s] on %s: %s — commit %s" % (t["id"], p.name, why, p.name))
+    return 0
+
+
+def settle_save(memo, which, why):
+    """settle's road for a Save the gate holds (`save:<seq>`, or its savedAt): no thread to mark, so the
+    doc alone carries it — `> **Settled.** Save <stamp>: <why>` at its end, which save_owed reads on
+    every host. Only a Save the doc still owes: one it holds needs no settling."""
+    p, top, branch, rel, slug, key, _ = sheep_where(memo)
+    text = p.read_text()
+    pin = doc_page(key, text)
+    if not pin or not pin.get("space"):
+        raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it" % (rel, branch))
+    k = sheep_key()
+    if not k:
+        raise Stop("no SPACESHEEP_KEY here (environment, the config dir's regatta/.env, or the CLI's login)")
+    if git(p.parent, "status", "--porcelain", "--", p.name).stdout.strip():
+        raise Stop("%s has uncommitted changes — commit them first; nothing written" % p.name)
+    sv = next((sv for sv in room_saves(Mcp(k), pin["space"]) if which in (str(sv.get("seq")), save_stamp(sv))), None)
+    if not sv:
+        raise Stop("no Save %s in %s's room" % (which, rel))
+    if not save_owed(sv, text, top, rel):
+        raise Stop("Save %s owes %s nothing — no settling needed" % (which, rel))
+    lines = text.split("\n")
+    at = len(lines)
+    while at > 0 and not lines[at - 1].strip():
+        at -= 1
+    lines[at:at] = ["", "> **Settled.** Save %s: %s" % (save_stamp(sv), why)]
+    p.write_text("\n".join(lines))
+    routed_log({"event": "settled", "doc": key, "space": pin["space"], "save": sv.get("seq"),
+                "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None, "why": why})
+    print("settled Save %s on %s: %s — commit %s" % (save_stamp(sv), p.name, why, p.name))
+    return 0
+
+
+def routed_status(as_json=False):
+    """`keel routed status`: this host's routed.jsonl by doc — its routings, the threads judged and how,
+    the refusals, the settles and marks (G1–G4's place to look; S7 reads it across hosts)."""
+    since = now_ts() - ROUTED_DAYS * 86400
+    docs = {}
+    for r in routed_rows():
+        if float(r.get("ts") or 0) < since or not r.get("doc"):
+            continue
+        d = docs.setdefault(r["doc"], {"routed": [], "judged": {}, "refused": 0, "settled": 0, "marks": 0})
+        ev = r.get("event")
+        if ev == "routed":
+            d["routed"].append(r.get("branch"))
+        elif ev == "judged":
+            d["judged"][r.get("thread")] = "%s (%s)" % (r.get("label"), r.get("by"))
+        elif ev == "refused":
+            d["refused"] += 1
+        elif ev == "settled":
+            d["settled"] += 1
+        elif ev == "mark":
+            d["marks"] += 1
+    if as_json:
+        print(json.dumps(docs, ensure_ascii=False, indent=1, sort_keys=True))
+        return 0
+    if not docs:
+        print("routed: nothing on this host in %d days (%s)" % (ROUTED_DAYS, state_dir() / ROUTED_LOG))
+        return 0
+    for key, d in sorted(docs.items()):
+        print("%s — routed %d× (%s), %d thread%s judged, %d refusal%s, %d settled, %d mark%s" % (
+            key, len(d["routed"]), ", ".join(dict.fromkeys(b for b in d["routed"] if b)) or "—", len(d["judged"]),
+            "" if len(d["judged"]) == 1 else "s", d["refused"], "" if d["refused"] == 1 else "s", d["settled"],
+            d["marks"], "" if d["marks"] == 1 else "s"))
+        for tid, v in sorted(d["judged"].items()):
+            print("    [%s] %s" % (tid, v))
     return 0
 
 
@@ -9302,6 +10041,15 @@ def not_owners_answer(body, now, got, runs, own_save=True):
         return "the lookout's own Save"
     if any(dispatched(s, runs) for s in session_marks(body)):
         return "a dispatched run's"
+    # routed comments (cutover, "After"): the routing commit itself (pickup's Seed:/Brief:, with the
+    # `Routed:` line and its ROUTED_BY trailer) and a review stamp are no person's word either. A run's
+    # checkpoints are known by its session above, from this host's run records only: S3's `running_on`
+    # names a run on another host.
+    first = body.strip().split("\n", 1)[0]
+    if ROUTED_BY in body or first.startswith(("Seed: ", "Brief: the next step of ")):
+        return "the routing commit's"
+    if first.startswith("Docs: review stamp"):
+        return "a review stamp's"
     return None
 
 
@@ -10113,6 +10861,10 @@ def lookout_start(path):
             held = True   # whether pickup committed is unknown: released all the same
             raise
         held = not r.returncode   # pickup refuses before it commits, or takes the brief back (its push)
+        # whether this brief wrote a doc's `Routed:` line (pickup names only the lines it changed): a re-brief
+        # leaves an earlier routing's line as it was, and the release must not take that run's record out
+        # (S2 landing review, 2026-10-26); a timed-out brief leaves it unknown, so nothing is unrouted
+        req["routed"] = held and bool(re.search(r"^  routed: ", r.stdout or "", re.M))
         if r.returncode:
             why = last_line(r)
             res = lookout_card(ev, "pickup brief refused: %s; no run started" % why,
@@ -10155,7 +10907,10 @@ def lookout_release(req, env, why):
     pickup may have committed nothing: the released brief then goes on in its place, a hold of none."""
     text = released_brief(req["text"], re.sub(r"^no live session for .*? — ", "", why), keep=req.get("keep") or ())
     try:
-        r = subprocess.run([req["pickup"], "brief", req["branch"], "--repo", req["top"], "--text", text],
+        # --unroute: the doc's `Routed:` line, written in the start's brief commit, comes out with the hold
+        # (routed comments, finding D) — the run it named is not coming; only a line this start wrote
+        r = subprocess.run([req["pickup"], "brief", req["branch"], "--repo", req["top"], "--text", text]
+                           + (["--unroute"] if req.get("routed") else []),
                            capture_output=True, text=True, timeout=180, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         r = None
@@ -10402,9 +11157,24 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
         return (isinstance(p, dict) and p.get("talking") and p.get("space") and not p.get("moved_to") and on_branch
                 and drain_due_ts(p) >= now_ts() - LOOKOUT_DAYS * 86400)
     talked = {k for k, p in pinned.items() if talks(k, p)}
+    # routed pages (routed comments S2, finding C): every doc whose `Routed:` line is within ROUTED_DAYS,
+    # open items or none, landed or not, read on every host — from this host's pin, else from the line;
+    # its first read here counts every open thread as new, and the prune below keeps it
+    routed = routed_docs(tops, now_ts() - ROUTED_DAYS * 86400)
+    if routed and not sheep_key():
+        # judges nothing, and says so once: lookout.jsonl keeps a card per id (the design's first case)
+        events.append({"doc": "routed pages", "kind": "nokey", "id": "nokey:%s" % lookout_host()[0], "items": [],
+                       "skip": None, "sessions": [], "top": None, "branch": "", "rel": "", "view": None,
+                       "card": "no SPACESHEEP_KEY here — %d routed page%s not read on %s, nothing judged"
+                               % (len(routed), "" if len(routed) == 1 else "s", lookout_host()[0])})
+        routed = {}
     fails = 0
-    for key in sorted(set(asks) | talked):
+    for key in sorted(set(asks) | talked | set(routed)):
         pin = pinned.get(key)
+        if key in routed:   # the line's page first (finding 1): a run's own mirror is a second page
+            pin = line_first(key, pin, routed[key]["space"])
+            if not pin.get("space"):
+                pin = dict(pin, space=routed[key]["space"], from_line=True)
         if not (pin and pin.get("space")):
             continue
         if fails >= 3:
@@ -10417,7 +11187,7 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
                 drain_saves(mcp(), key, pin["space"], row=pin_row(key, pin))
                 mcp_box[1] += 1
                 fails = 0
-                pin = pins().get(key) or pin
+                pin = dict(pin, **(pins().get(key) or {}))   # a page read from its line keeps its space
             except Exception as e:  # Stop, a refused call: this page waits for the next pass
                 notes.append("%s: not drained (%s)" % (key, str(e)[:120]))
                 fails += 1
@@ -10447,10 +11217,16 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
         fresh = {t: n for t, n in words.items() if (before or {}).get(t) != n}
         # new words in a thread a session talks in (`sheep reply`) are a turn of a conversation: its own
         # event, whose run, when no session is live, answers it (part D, section 3); the rest as before
-        talking = talking_ids(pin)
+        talking = talking_ids(pin, threads=threads)
         talk = {t: n for t, n in fresh.items() if t.partition("+")[0] in talking}
-        fresh = {t: n for t, n in fresh.items() if t not in talk and key in asks}
+        fresh = {t: n for t, n in fresh.items() if t not in talk and (key in asks or key in routed)}
         import hashlib
+        if before is None and key in routed:   # no baseline for a routed page: a comment typed before routing is new
+            before = {}
+            # …but a conversation a session already answered is no new turn (finding 2): at a host's first
+            # read only a talking thread whose owner wrote after our newest reply wakes anyone
+            byid = {t["id"]: t for t in threads}
+            talk = {t: n for t, n in talk.items() if not talk_answered(byid.get(t.partition("+")[0]))}
         if before is not None and fresh:
             events.append({"doc": key, "kind": "comment", "id": "comments:" + hashlib.sha1(
                 json.dumps(sorted(fresh.items())).encode()).hexdigest()[:12], "items": [], "skip": None, "sessions": [],
@@ -10463,7 +11239,7 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
                 "top": top, "branch": branch, "rel": rel, "view": None, "threads": ids,
                 "talk": talk_quote([t for t in threads if t["id"] in ids], pin, text)})
     for key in list(new_comments):
-        if key not in asks and key not in talked:
+        if key not in asks and key not in talked and key not in routed:
             del new_comments[key]
     return events, {"open": new_open, "comments": new_comments, "pending": []}
 
@@ -10475,6 +11251,8 @@ def lookout_act(ev, here, laptop, runs, dry):
         row["saved_by"] = ev["saved_by"]
     if ev["skip"]:
         return dict(row, action="skipped", why=ev["skip"])
+    if ev["kind"] == "nokey":   # this host's own state, no branch's: before the host rule
+        return dict(row, action="card", card=ev["card"])
     if not laptop and not ev["branch"].startswith("claude/%s/" % here):
         # A host other than the laptop acts on its own branches; another host's lookout owns the rest. One
         # pushed lately is the owner's to know about (the laptop may be asleep); an older one is left to that host.
@@ -10866,6 +11644,32 @@ def main(argv=None):
     ci.add_argument("--done", action="store_true")
     ci.add_argument("--who", help="the name the mark carries (default: session <id[:8]>, else $USER)")
     ci.add_argument("--date", help="default today")
+    ro = sub.add_parser("routed", help="routed comments S2: check <doc> (the gate, exit 3) | status | mark <doc> <thread> <kind> | line (pickup's)")
+    rsub = ro.add_subparsers(dest="routed", required=True)
+    rc = rsub.add_parser("check", help="refuse (exit 3) while an act thread on the doc's page is unreflected, an owner thread unjudged or a Save lacking")
+    rc.add_argument("memo")
+    rc.add_argument("--routing", nargs="*", default=[], help="the threads this start routes (excluded)")
+    rs = rsub.add_parser("status", help="this host's routed.jsonl by doc: routings, verdicts, refusals, settles")
+    rs.add_argument("--json", action="store_true")
+    rm = rsub.add_parser("mark", help="post one of the seven marks as this tool's reply: " + ", ".join(k for k in ROUTED_MARKS if k != "settled"))
+    rm.add_argument("memo")
+    rm.add_argument("thread", help="a thread or reply id, or Dn (the newest open thread on that card)")
+    rm.add_argument("kind", choices=[k for k in ROUTED_MARKS if k != "settled"])
+    for f in ("branch", "act", "cls", "who", "why", "host", "date"):
+        rm.add_argument("--" + f)
+    rl = rsub.add_parser("line", help=argparse.SUPPRESS)   # pickup's: the docs a brief names, with their Routed: line, as JSON
+    rl.add_argument("--repo", required=True)
+    rl.add_argument("--ref", required=True)
+    rl.add_argument("--branch", required=True)
+    rl.add_argument("--brief", required=True, help="the brief's file, or - for stdin")
+    rl.add_argument("--check", action="store_true", help="run the gate on each doc first (pickup seed)")
+    rl.add_argument("--drop", action="store_true", help="take the line out (a refused start)")
+    rl.add_argument("--routing", nargs="*", default=[], help="the threads this start routes (the gate passes them)")
+    rl.add_argument("--dry-run", action="store_true", help="pickup's --dry-run: nothing logged")
+    se = sub.add_parser("settle", help="routed comments: settle a thread the gate holds — the mark and > **Settled.** in the doc (attended only, exit 3 unattended)")
+    se.add_argument("memo")
+    se.add_argument("thread", help="a thread or reply id, or Dn")
+    se.add_argument("--why", required=True)
     m = sub.add_parser("merge", help="--form: write the page's answers back into the memo")
     m.add_argument("memo")
     m.add_argument("answers", help="JSON from the page's store (or the copied text); - for stdin")
@@ -10996,6 +11800,39 @@ def main(argv=None):
             return 0
         if a.cmd == "checkin":
             return checkin(a.memo, done=a.done, who=a.who, today=a.date)
+        if a.cmd == "settle":
+            return settle(a.memo, a.thread, a.why)
+        if a.cmd == "routed":
+            if a.routed == "status":
+                return routed_status(as_json=a.json)
+            if getattr(a, "routing", None) and os.environ.get("CLAUDE_UNATTENDED"):
+                # --routing passes the threads it names, a person's word that this start reflects them: a flag
+                # that stands for a yes refuses an unattended caller (AGENTS.md, Traps; S2 landing review)
+                raise Stop("an unattended run does not pass --routing (CLAUDE_UNATTENDED=%s): it clears the gate "
+                           "for the threads it names" % os.environ["CLAUDE_UNATTENDED"])
+            if a.routed == "mark":
+                return routed_mark(a.memo, a.thread, a.kind, **{f: getattr(a, f) for f in ("branch", "act", "cls", "who", "why", "host", "date")
+                                                                 if getattr(a, f) is not None})
+            if a.routed == "line":
+                brief = sys.stdin.read() if a.brief == "-" else Path(a.brief).read_text()
+                rc, out = routed_line_cmd(a.repo, a.ref, a.branch, brief, check=a.check, drop=a.drop,
+                                          routing=a.routing, dry=a.dry_run)
+                print(json.dumps(out, ensure_ascii=False))
+                return rc
+            p, top, branch, rel, slug, key, _ = sheep_where(a.memo)
+            text = p.read_text()
+            space, pkey = routing_page(key.partition("@")[0], rel, key, text)
+            if not space:
+                print("%s: no page here and no `Routed:` line — nothing to check" % rel)
+                return 0
+            why, notes = routed_check(key, text, space, pin=pins().get(pkey) if pkey else None, top=top, routing=a.routing)
+            for n in notes:
+                print(n)
+            if why:
+                print(why)
+                return 3
+            print("%s: clear — no act thread unreflected, no owner thread unjudged, no Save lacking" % rel)
+            return 0
         if a.cmd == "step":
             old, new = keel_step(a.memo, a.step, " ".join(a.word), date=a.date, branch=a.branch, note=a.note,
                                  stamp_after=a.stamp)
