@@ -30,6 +30,11 @@ export SPACESHEEP_CONFIG_DIR="$T/ss-config"
 # it set it per call. CLAUDE_CODE_ENTRYPOINT=sdk-cli (a Remote Control session running the suite)
 # keeps every link https the same way, so the mirror's cases would fail there (review, 2026-10-16).
 unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT
+# A CI job's BASH_ENV may re-export the job's PATH in every non-interactive bash (CircleCI's did until
+# .circleci/linux-tools.sh stopped writing it there): a stub run by `#!/usr/bin/env bash` saw that
+# PATH, not the one a case set (the sheep CLI's own folder first, a claude that is not there). Each keel
+# suite drops it; the PATH it names is already inherited.
+unset BASH_ENV
 trap 'reap; rm -rf "$T"' EXIT
 fails=0
 # BSD and GNU sed disagree on `-i ''` (GNU takes '' as the script and the real script as a file name); `-i.bak` and a rm work on both.
@@ -1438,8 +1443,23 @@ printf '{"pid": %s, "port": 4999, "site": "https://spacesheep.dev"}\n' "$MPID" >
 check "$("$B/sheep" url https://spacesheep.dev/@a/b)" "https://spacesheep.dev/@a/b" "…nor a mirror.json whose process is gone"
 printf '{"pid": 0, "port": 4999, "site": "https://spacesheep.dev"}\n' > "$SPACESHEEP_CONFIG_DIR/mirror.json"
 check "$("$B/sheep" url https://spacesheep.dev/@a/b)" "https://spacesheep.dev/@a/b" "…nor pid 0, which kill(0) would call alive"
-printf '{"pid": 1, "port": 4999, "site": "https://spacesheep.dev"}\n' > "$SPACESHEEP_CONFIG_DIR/mirror.json"
-check "$("$B/sheep" url https://spacesheep.dev/@a/b)" "https://spacesheep.dev/@a/b" "…nor a pid another user holds (EPERM: a stale file, as the CLI reads it)"
+# A pid another user holds: launchd's 1 on a Mac. On Linux pid 1 may be ours (a container's init), so
+# the first process of another uid, else a sudo'd sleep, else the case skips (as root nothing is EPERM).
+OTHER_PID=""; SUDO_PID=""
+if [ "$(uname)" = Darwin ]; then OTHER_PID=1
+else
+  # the REAL uid decides what kill(pid, 0) may signal: a sudo process shows uid 0 but keeps ours
+  other_pid() { ps -eo pid=,ruid= | awk -v me="$(id -u)" '$2 != me {print $1; exit}'; }
+  OTHER_PID=$(other_pid)
+  if [ -z "$OTHER_PID" ] && [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null; then
+    sudo -n sleep 60 & SUDO_PID=$!; sleep 0.5; OTHER_PID=$(other_pid)
+  fi
+fi
+if [ -n "$OTHER_PID" ]; then
+  printf '{"pid": %s, "port": 4999, "site": "https://spacesheep.dev"}\n' "$OTHER_PID" > "$SPACESHEEP_CONFIG_DIR/mirror.json"
+  check "$("$B/sheep" url https://spacesheep.dev/@a/b)" "https://spacesheep.dev/@a/b" "…nor a pid another user holds (EPERM: a stale file, as the CLI reads it)"
+else echo "  skip …a pid another user holds (EPERM): no process of another user, and no sudo, here"; fi
+[ -z "$SUDO_PID" ] || { sudo -n kill "$OTHER_PID" 2>/dev/null; wait "$SUDO_PID" 2>/dev/null; }
 printf '{"pid": %s, "port": 4999}\n' "$$" > "$SPACESHEEP_CONFIG_DIR/mirror.json"; chmod 000 "$SPACESHEEP_CONFIG_DIR/mirror.json"
 check "$("$B/sheep" url https://spacesheep.dev/@a/b 2>&1)" "https://spacesheep.dev/@a/b" "…nor an unreadable mirror.json, and no traceback"
 chmod 600 "$SPACESHEEP_CONFIG_DIR/mirror.json"
@@ -3860,7 +3880,8 @@ check "$(python3 -c "import json,os; print([os.path.basename(r['path']) for r in
 has "$T/klist.txt" "↳ Topic — alpha" "list: a component row is marked"
 check "$(python3 -c "import json,os; print([(os.path.basename(r['path']), r.get('keel')) for r in json.load(open('$T/klist.json')) if r.get('keel')][:2])")" "[('topic-2026-10-15.md', {'word': 'building', 'steps': [1, 3]}), ('topic-alpha-2026-10-15.md', {'word': 'building', 'steps': [1, 2]})]" "list --json: a doc that carries the Keel gets its word and k of j steps, a component its entry's (entry S5)"
 check "$(python3 -c "import json; print([r['path'].rsplit('/',1)[1] for r in json.load(open('$T/klist.json')) if not r.get('keel')])")" "['topic-research-2026-10-15.md']" "…and a doc without one gets none"
-check "$(python3 - "$(dirname "$( (peer helm_render.py; peer plan_render.py) | grep -m1 .)")" "$T/klist.json" <<'PYX'
+# (awk reads to the end: `grep -m1` closed the pipe on `peer`, a BrokenPipeError in the log on Linux)
+check "$(python3 - "$(dirname "$( (peer helm_render.py; peer plan_render.py) | awk 'NF && !got {print; got = 1}')")" "$T/klist.json" <<'PYX'
 import json, sys
 sys.path.insert(0, sys.argv[1])  # helm's board renderer, through the core's tool()
 try:

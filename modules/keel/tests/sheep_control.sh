@@ -23,6 +23,7 @@ export SHEEP_SESSIONPIPE="$T/bin/sessionpipe" SHEEP_LAUNCHCTL="$T/bin/launchctl"
 export SHEEP_LAUNCH_AGENTS="$T/LaunchAgents" SHEEP_PROJECTS="$H/projects" SHEEP_ENV_FILE="$T/none.env"
 export REGATTA_SHEEP_DIR="$T/sheep-dir"
 unset SESSIONPIPE_CONFIG SPACESHEEP_KEY REGATTA_SHEEP_PLAN
+unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 mkdir -p "$T/bin" "$H/.config/sessionpipe" "$H/projects" "$SHEEP_LAUNCH_AGENTS"
 cat > "$T/bin/sessionpipe" <<EOF
 #!/bin/sh

@@ -19,7 +19,7 @@ Read `README.md` first: it is the chart. For an agent:
   known flake). Its headless-Chrome case is bounded at 90 s and skips when Chrome never returns.
 - The lookout (crosstalk S3, `docs/crosstalk-2026-10-20.md`) never takes a `sheep wait` lock to test
   it: a `LOCK_EX|LOCK_NB` take ends a wait starting that instant. `lock_held` reads it (F_GETLK on
-  macOS, which sees a flock; lsof elsewhere). Its run (S5, `lookout_gone`) writes a `dispatching`
+  macOS, which sees a flock; /proc/locks on Linux; lsof elsewhere). Its run (S5, `lookout_gone`) writes a `dispatching`
   row before `pickup brief`, so a pass that dies mid-start or a failed dispatch never starts the
   same answer twice; from the laptop it names no host (dispatch's own Where default), and it leaves
   another host's GitHub answer to that host's lookout. `tests/test_lookout.sh` stubs hail, harness,
