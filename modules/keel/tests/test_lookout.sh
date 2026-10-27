@@ -51,10 +51,11 @@ v=\$(cat "$T/hail-verdict" 2>/dev/null || echo delivered)
 printf '{\n "road": "socket",\n "verdict": "%s",\n "target": "%s",\n "at": 0\n}\n' "\$v" "\$1"
 EOF
 # pickup brief BRANCH --repo R --text T: the call logged, the brief kept as brief-<n>.md; exit from pickup-rc,
-# its refusal from pickup-why; it sleeps pickup-sleep seconds first (a start that takes its time)
+# its refusal from pickup-why; while pickup-hold exists it waits first, up to 30 s, for the case to
+# write pickup-go (a start that takes its time, held exactly as long as the case looks; a fixed 6 s before)
 cat > "$T/bin/pickup" <<EOF
 #!/usr/bin/env bash
-[ -f "$T/pickup-sleep" ] && sleep "\$(cat "$T/pickup-sleep")"
+[ -f "$T/pickup-hold" ] && for _ in \$(seq 1 300); do [ -f "$T/pickup-go" ] && break; sleep 0.1; done
 printf '%s\n' "\$1 \$2 \$3 \$4" >> "$T/pickup.log"
 n=\$(wc -l < "$T/pickup.log" | tr -d ' ')
 printf '%s' "\$6" > "$T/brief-\$n.md"
@@ -619,12 +620,12 @@ asks "$B3=D1"
 lk
 gh_answer "$B3" D1 "A"
 asks
-echo 6 > "$T/pickup-sleep"
+rm -f "$T/pickup-go"; touch "$T/pickup-hold"
 "$B/keel" lookout > "$T/out" 2>&1
 check "$(starts)" "1" "item 3: the pass returns while its start runs out of process"
 has "$T/out" "answer demo@$B3:docs/d.md D1 — dispatching · " "…its row says the run is starting"
 lacks "$T/pickup.log" "brief $B3" "…pickup brief not yet done"
-settle; rm -f "$T/pickup-sleep"
+touch "$T/pickup-go"; settle; rm -f "$T/pickup-hold" "$T/pickup-go"
 check "$(tail -1 "$T/pickup.log")" "brief $B3 --repo $P" "…then briefed by the detached half"
 lk
 has "$T/out" "answer demo@$B3:docs/d.md D1 — dispatched · scheduled com.run.2026-10-21-three" "…and the next pass reads it: dispatched"
@@ -1344,7 +1345,7 @@ check "$(git -C "$P/.claude/worktrees/w" rev-parse HEAD^) $(git -C "$P/.claude/w
 check "$("$B/keel" parse "$P/.claude/worktrees/w/docs/d.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["answer"].strip())')" "A" "…the answer in its working copy"
 
 echo "lookout — new words in a thread a session talks in (part D of docs/sheep-listen-2026-10-24.md, section 3)"
-rm -f "$T/week" "$T/pickup-rc" "$T/dispatch-rc" "$T/harness-list-rc" "$T/hail-verdict" "$T/pickup-sleep"
+rm -f "$T/week" "$T/pickup-rc" "$T/dispatch-rc" "$T/harness-list-rc" "$T/hail-verdict" "$T/pickup-hold" "$T/pickup-go"
 "$B/keel" lookout --arm > /dev/null
 talking() {  # talking BRANCH ID… — the pin's talking threads, as `sheep reply` leaves them
   python3 - "$MEMO_SHEEP_STATE/sheep.json" "demo@$1:docs/d.md" "${@:2}" <<'EOF'

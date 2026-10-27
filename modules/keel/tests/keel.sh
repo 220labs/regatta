@@ -42,6 +42,11 @@ sedi() { local f="${!#}"; sed -i.bak "$@" && rm -f "$f.bak"; }
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; fails=$((fails+1)); fi; }
 lacks() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; fails=$((fails+1)); else echo "  ok   $3"; fi; }
+# backdate <seconds> <path>…: each mtime moved back, the order among them kept — where a case once
+# slept a second so later files would read newer (suite-time, 2026-10-23)
+backdate() { python3 -c 'import os, sys
+for p in sys.argv[2:]:
+    st = os.stat(p); os.utime(p, (st.st_atime, st.st_mtime - float(sys.argv[1])))' "$@"; }
 
 cat > "$T/memo.md" <<'EOF'
 # Repo sync — design (2026-09-22)
@@ -221,7 +226,7 @@ printf '# Not a memo\n\n**D1 — Inside a folder.** ➤ Answer: yes.\n' > "$T/ro
 mkdir -p "$T/root/repo-a/docs/record"
 printf '# Moved record\n\n**D1 — Kept.** ➤ Answer: yes.\n' > "$T/root/repo-a/docs/record/rec-2026-09-01.md"
 cp "$T/root/repo-a/docs/record/rec-2026-09-01.md" "$T/root/repo-a/.claude/worktrees/x/docs/rec-2026-09-01.md"  # forked before the move
-sleep 1
+backdate 2 $(find "$T/root")   # everything so far older than what follows (mktemp paths hold no space)
 printf '# Poem plan\n\n**D1 — Print it.** ➤ Answer: yes.\n' > "$T/root/films/repo-b/docs/plan.md"
 cp "$T/dup.md" "$T/root/repo-a/docs/dup.md"
 "$B/keel" list --root "$T/root" > "$T/list.out" 2> "$T/list.err"
@@ -1294,6 +1299,9 @@ class H(BaseHTTPRequestHandler):
                 return self.web(200, '{"cookie": "ss_app", "token": "tok-1", "expires_in": 43200}')
             return self.web(404, '{"error": "not found"}')
         msg = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        # comments read before the call is logged: a case that polls the log for a read then knows
+        # the reader's base is taken (the w3 poll; landing review)
+        listed = open(T + "/comments.txt").read() if msg.get("params", {}).get("name") == "list_comments" else None
         with open(T + "/mcp.log", "a") as f:
             f.write(json.dumps({"auth": self.headers.get("Authorization"), "ua": self.headers.get("User-Agent"), "sid": self.headers.get("Mcp-Session-Id"), **msg}) + "\n")
         if "id" not in msg:
@@ -1303,7 +1311,7 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Mcp-Session-Id", "s-42"); self.end_headers(); self.wfile.write(body.encode()); return
         name = msg["params"]["name"]
-        text = open(T + "/comments.txt").read() if name == "list_comments" else '{"ok": true}'
+        text = listed if name == "list_comments" else '{"ok": true}'
         if name == "add_comment" and os.path.exists(T + "/add-id"):  # part D: the new comment's id, as a reply's answer may give it
             text = json.dumps({"id": open(T + "/add-id").read().strip()})
         if name == "live_events":  # the room: events.json, past `after`, as spacesheep answers it
@@ -1933,9 +1941,12 @@ check "$rc" "0" "wait with nothing on the page stops at --idle"
 has "$T/w2.out" "nothing on the page in 0 min" "…and says nothing came"
 
 printf '{"comments": [{"id": "old", "body": "said before the wait"}]}\n' > "$S/comments.txt"
+ncomm() { cat "$S/mcp.log" "$S/web.log" 2>/dev/null | grep -c -e '"list_comments"' -e '/comments"'; }   # the stub's comment reads
+n0=$(ncomm)
 srun sheep wait "$SM" --idle 20 --poll 1 --quiet 1 > "$T/w3.out" 2>&1 &
 wpid=$!
-sleep 1.5
+# the lock taken and the base read (its first comment read) before the second wait and the new comment
+for _ in $(seq 150); do grep -q "listening on" "$T/w3.out" 2>/dev/null && [ "$(ncomm)" -gt "$n0" ] && break; sleep 0.1; done
 srun sheep wait "$SM" --idle 5 > "$T/w4.out" 2>&1
 has "$T/w4.out" "another wait already listens" "a second wait on the same page steps aside"
 printf '{"comments": [{"id": "old", "body": "said before the wait"}, {"id": "new1", "body": "and one more thing", "anchor_id": "D1", "created_at": "2099-01-01T00:00:00Z"}]}\n' > "$S/comments.txt"
@@ -2833,12 +2844,13 @@ python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); [v.pop("saves"
 
 # S4: a Save drained into the pin while a wait listens wakes it at the next round, not only at its start
 echo '{"comments": []}' > "$S/comments.txt"
+n0=$(ncomm)
 srun sheep wait "$SM" --idle 12 --poll 1 --quiet 1 > "$T/w5.out" 2>&1 &
 wpid=$!
 # Inject only once the wait is past its start-up check and in its loop: a Save there already wakes it
 # with the same words, and the case would pass without the per-round check it is for (review 2026-10-18).
-for _ in $(seq 100); do grep -q "listening on" "$T/w5.out" 2>/dev/null && break; sleep 0.1; done
-sleep 1.5
+# Its first comment read is in the loop (a fixed 1.5 s after "listening on" before, suite-time 2026-10-23).
+for _ in $(seq 150); do grep -q "listening on" "$T/w5.out" 2>/dev/null && [ "$(ncomm)" -gt "$n0" ] && break; sleep 0.1; done
 # The drain goes through keel's own update_pin, as a real `sheep pull` does. An in-place json.dump
 # here truncates sheep.json under the live wait: when its own locked update_pin (drain_saves, every
 # round) reads that empty file, it writes back a map without the Save — and without the pin's space
@@ -3873,7 +3885,8 @@ has "$T/kst.out" "stamped topic-alpha-2026-10-15.md: Status: building — 1 of 1
 has "$T/kst.out" "unchanged topic-beta-2026-10-15.md:" "…an agreeing one untouched"
 "$B/keel" open --root "$T/kroot" --json > "$T/kopen.json"
 check "$(python3 -c "import json,os; print([(os.path.basename(r['path']), bool(r.get('set'))) for r in json.load(open('$T/kopen.json')) if 'topic' in r['path']])")" "[('topic-beta-2026-10-15.md', True)]" "open: a component with open items is a row of its own, marked as in a set"
-touch "$R/topic-beta-2026-10-15.md"; sleep 1; touch "$R/topic-alpha-2026-10-15.md"
+touch "$R/topic-beta-2026-10-15.md" "$R/topic-alpha-2026-10-15.md"
+backdate 2 "$R/topic-beta-2026-10-15.md" "$R/topic-2026-10-15.md"   # alpha newer than beta and than the entry just stamped
 "$B/keel" list --root "$T/kroot" --limit 0 --json > "$T/klist.json"
 check "$(python3 -c "import json,os; print([os.path.basename(r['path']) for r in json.load(open('$T/klist.json'))])")" "['topic-2026-10-15.md', 'topic-alpha-2026-10-15.md', 'topic-beta-2026-10-15.md', 'topic-research-2026-10-15.md']" "list: the set together, the entry first, though a component is newer"
 "$B/keel" list --root "$T/kroot" --limit 0 > "$T/klist.txt"
@@ -4308,6 +4321,30 @@ PY
     check "$WLF" "hidden | Not saved" "…and hidden off the mirror"
   fi
 fi
+# chrome_dom <virtual ms> <page> <dom>: Chrome's --dump-dom, bounded at 90 s; exit 142 when the bound
+# hit before a whole DOM. Headless Chrome in an unattended buildbox session never returned and hung
+# the suite for 20 minutes (2026-10-19, B4); in a dispatched session it writes the whole DOM and then
+# never exits (its updater's IPC stalls the shutdown): four 90 s alarms, every case skipped
+# (2026-10-23). So the dump's closing tag is polled for and Chrome ended there. One profile dir per
+# page: a Chrome ended mid-shutdown never hands its lock to the next, and pages run side by side.
+chrome_dom() {
+  local i cp rc=142 ud="$T/chrome-$(basename "$2" .html)" end=$((SECONDS + 90))
+  "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$ud" --virtual-time-budget="$1" \
+    --window-size=500,700 --dump-dom "file://$2" 2>/dev/null > "$3" & cp=$!
+  # wall time, not a count of rounds: under load each round's forks stretch a count several-fold
+  while [ "$SECONDS" -lt "$end" ]; do
+    if grep -q '</html>' "$3" 2>/dev/null; then rc=0; break; fi
+    if ! kill -0 "$cp" 2>/dev/null; then wait "$cp"; rc=$?; grep -q '</html>' "$3" 2>/dev/null && rc=0; break; fi
+    sleep 0.1
+  done
+  # SIGTERM asks Chrome to shut down on its UI thread, which a stalled Chrome may never do: 3 s, then
+  # SIGKILL, so the wait below is bounded (the old alarm's SIGALRM it never caught; landing review)
+  kill "$cp" 2>/dev/null
+  for i in $(seq 1 30); do kill -0 "$cp" 2>/dev/null || break; sleep 0.1; done
+  # only while it lives: a pid already reaped may belong to another process by now
+  kill -0 "$cp" 2>/dev/null && kill -KILL "$cp" 2>/dev/null; wait "$cp" 2>/dev/null
+  return $rc
+}
 if [ -x "$CHROME" ]; then
   python3 - "$B/keel" "$K/one.md" "$T/navp.html" <<'PY'
 import sys
@@ -4331,10 +4368,8 @@ window.addEventListener('load',function(){
 </script>"""
 Path(sys.argv[3]).write_text(m.PAGE_HEAD + probe + m.build(Path(sys.argv[2]).read_text(), "one.md") + "</body></html>")
 PY
-  # Bounded: headless Chrome in an unattended buildbox session never returned and hung the suite
-  # for 20 minutes (2026-10-19, B4); a run that has to be killed is a skip, said, not a failure.
-  perl -e 'alarm shift; exec @ARGV' 90 "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$T/chrome" --virtual-time-budget=4000 \
-    --window-size=500,700 --dump-dom "file://$T/navp.html" 2>/dev/null > "$T/navp.dom"; crc=$?
+  # Bounded (chrome_dom): a run that has to be killed before its DOM is a skip, said, not a failure.
+  chrome_dom 4000 "$T/navp.html" "$T/navp.dom"; crc=$?
   sed -n 's/.*<pre id="probe">\([^<]*\)<.*/\1/p' "$T/navp.dom" > "$T/navp.out"
   if [ "$crc" = 142 ]; then echo "  skip footer in Chrome: Chrome did not finish in 90 s (no window server for this session?)"
   else check "$(cat "$T/navp.out")" "2/2 answered | card-D1 | card-D2 | card-feedback | No decision, note or feedback further down. | card-D2 | 1/2 answered | fits | clear" "footer in Chrome: ↓ walks the cards to the feedback and stops there, ↑ goes back, the count follows the boxes, keeps its width beside the state, the open pop-up stays on the page, and the state pill clears the count by 10 px or more"; fi
@@ -4402,12 +4437,11 @@ window.addEventListener('load',function(){ setTimeout(function(){
 </script>""" % (partly, taken)
 Path(sys.argv[4].replace("navr", "navs")).write_text(page2.replace("<body>", "<body>" + seq, 1))
 PY
-  perl -e 'alarm shift; exec @ARGV' 90 "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$T/chrome" --virtual-time-budget=9000 \
-    --window-size=500,700 --dump-dom "file://$T/navq.html" 2>/dev/null > "$T/navq.dom"; crc=$?
-  perl -e 'alarm shift; exec @ARGV' 90 "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$T/chrome" --virtual-time-budget=2000 \
-    --window-size=500,700 --dump-dom "file://$T/navr.html" 2>/dev/null > "$T/navr.dom"; rrc=$?
-  perl -e 'alarm shift; exec @ARGV' 90 "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$T/chrome" --virtual-time-budget=2000 \
-    --window-size=500,700 --dump-dom "file://$T/navs.html" 2>/dev/null > "$T/navs.dom"; src=$?
+  # the three pages side by side: their timers run on Chrome's virtual clock, never the Mac's
+  chrome_dom 9000 "$T/navq.html" "$T/navq.dom" & cq=$!
+  chrome_dom 2000 "$T/navr.html" "$T/navr.dom" & cr=$!
+  chrome_dom 2000 "$T/navs.html" "$T/navs.dom" & cs=$!
+  wait $cq; crc=$?; wait $cr; rrc=$?; wait $cs; src=$?
   if [ "$crc" = 142 ] || [ "$rrc" = 142 ] || [ "$src" = 142 ]; then echo "  skip the spacesheep footer in Chrome: Chrome did not finish in 90 s"
   else
     check "$(sed -n 's/.*<pre id="probe">\([^<]*\)<.*/\1/p' "$T/navq.dom")" \

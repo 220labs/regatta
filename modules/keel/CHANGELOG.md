@@ -278,6 +278,19 @@
 - Carried from the overlay after the move (B4's carry, 2026-10-20): `keel light` (light B1), the
   rename's launch word in `paste-paths`, `doc_answers.py` and `/keel` (S3, S4), the Wharf goals'
   case in `tests/keel.sh` (wharf S8, through `peer knowledge-numbers`).
+- Suite time (2026-10-23): `tests/keel.sh`'s four headless Chrome runs poll for the dump's closing
+  tag and end Chrome there (`chrome_dom`, one profile dir per page, the last three side by side). In
+  a dispatched session Chrome writes the whole DOM and never exits (its updater's IPC), so each ran
+  into its 90 s alarm and was skipped: now they run, and pass (995 to 999 cases). The two `sheep wait`
+  cases poll for the wait's first comment read where 1.5 s sleeps stood; two mtime orderings backdate
+  instead of sleeping a second; test_lookout's slow-start stub waits for the case's go, not 6 s.
+  `tests/check.sh` runs paste-paths, owed, test_lookout and sheep_gate side by side once keel.sh is
+  done. Timed under load 35 to 140 on 10 cores: keel.sh 11.4 min before, 6.3 after; the whole check
+  12.4 to 13.3 min after (test_lookout 3.0, paste-paths 1.2, owed and sheep_gate under 0.1 each, alone).
+  A quiet Mac where Chrome hangs loses the same 6 min of alarms (not measured there). The landing
+  (2026-10-27): `chrome_dom`'s 90 s is wall time, and a Chrome that ignores the end is killed after
+  3 s; sheep_control (new on main since) runs alone after the four; cut short, check.sh ends the four
+  and prints what each wrote so far.
 
 ## 0.1.0 — 2026-10-19
 
