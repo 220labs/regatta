@@ -386,7 +386,9 @@ def ask_merge(findings, pairs, repo, row):
     body_f = "\n".join(json.dumps({"id": f["id"], "file": f["file"], "line": f["line"], "claim": claim(f)},
                                   ensure_ascii=False) for f in findings)
     body_p = "\n".join("%s: a=%s b=%s" % (p["id"], p["a"], p["b"]) for p in pairs) or "(none)"
-    cmd = ["claude", "-p", *gate.claude_flags(row), "--output-format", "json",
+    # CLAUDE_BIN as bin/gate reads it: a suite names its stand-in by path, so a failed exec of it can
+    # never fall through to a real `claude` later on PATH (which answers "Not logged in")
+    cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", *gate.claude_flags(row), "--output-format", "json",
            "--tools", "", "--setting-sources", "", "--no-session-persistence"]
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     p = subprocess.run(cmd, input=PROMPT % (body_f, body_p), cwd=repo or None, env=env,
