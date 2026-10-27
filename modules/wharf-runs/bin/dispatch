@@ -217,8 +217,9 @@
 #            A marker is read back against this host's registry (common.scope_of_marker) and refused
 #            when no confidential scope here has it, or the registry will not read; given twice, refused.
 #            Carried as given to the dispatch host and a scheduled job, and as its marker alone in a
-#            queue entry (pushed to the queue's home, or node-local from the scope's checkout; a host
-#            whose registry lacks the scope refuses the fired job, as above); the run's record keeps the
+#            queue entry, which queues node-local (dispatch-queue's route: queue-local/_spawn/, never
+#            the fleet ref, until S6 reviews a spawn at claim); a claimed job it refuses hands its entry
+#            back (refused), never left claimed; the run's record keeps the
 #            scope's name as `origin` (local state; nothing pushed names it) and the marker as
 #            `origin_mark`. Recorded only here: refusing a confidential origin without its review is S6's.
 #   --next   a finished step starts the next one itself, on the dispatch host (header, Where), in about two minutes — instead of a
@@ -545,25 +546,31 @@ fi
 # pushed, so the seed commit carries the marker and only a registry here can say which scope. A name
 # is held to the same test, a confidential scope here: an open scope's name, or a typo, would be
 # recorded as a confidential origin S6 trusts (the re-review). A fired job refused here removes its
-# own plist first: the cleanup trap is not set yet, and a plist left behind fires again next year.
-LC="${DISPATCH_LAUNCHCTL:-launchctl}"
+# own plist first: the cleanup trap is not set yet, and a plist left behind fires again next year. A
+# job the queue claimed hands its entry back first (refused, as queue_refused does): exiting here left
+# it claimed with no job, its slot held for the lease (the S5 rebase review). The why names no scope:
+# a refusal is pushed with a fleet entry. Bootout last: it signals this script.
 LA="$HOME/Library/LaunchAgents"
 origin_refuse() {
   echo "dispatch: --origin $origin: $1" >&2
+  [ -n "$fromq" ] && [ "$dry" = 0 ] \
+    && python3 "$Q" refused "$fromq" --label "${DISPATCH_LABEL:-}" --why "its confidential origin does not read in $self_host's registry" "${qctx[@]}" >&2
   [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
   exit 2
 }
 origin_scope=""; origin_marker=""
 if [ -n "$origin" ]; then
-  # two lines: the scope's name, then its marker — what the queue's entry carries (queue_args)
+  # two lines: the scope's name, then its marker — what the queue's entry carries (queue_args). One
+  # read of the registry judges the tear and the scopes (the torn-registry trap)
   origin_read=$(python3 - "$core" "$origin" <<'PY' 2>/dev/null
 import sys
 sys.path.insert(0, sys.argv[1])
 import common
-if common.registry_unreadable():
+reg, torn = common.read_registry()
+if torn:
     sys.exit(3)
 o = sys.argv[2]
-s = (common.scope_of_marker(o) if o.startswith(common.SCOPE_MARK) else (o if o in common.confidential_scopes() else "")) or ""
+s = (common.scope_of_marker(o, reg=reg) if o.startswith(common.SCOPE_MARK) else (o if o in common.confidential_scopes(reg=reg) else "")) or ""
 print(s + "\n" + (common.scope_marker(s) if s else ""))
 PY
 ) || origin_refuse "the registry cannot be read here, so no scope can be judged (fails closed)"
@@ -1467,7 +1474,8 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   launch=$("$RCH" --launcher "$jobbin" 2>/dev/null) && args="<string>$launch</string>$args"
   # the caller's cwd, for the queue's route should the run be refused at fire time (queue_refused): a
   # fired job starts in /, and a run sent from a confidential scope's checkout stays in that scope
-  origin="${DISPATCH_ORIGIN:-$PWD}"
+  # (not $origin: that is --origin's scope or marker, S5)
+  ocwd="${DISPATCH_ORIGIN:-$PWD}"
   mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
     local k v
     for k in $SKIPPER_ENV; do
@@ -1479,7 +1487,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
 <plist version=\"1.0\"><dict>
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key><array>$args</array>
-  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$origin" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
+  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$ocwd" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
   <key>StartCalendarInterval</key><dict><key>Month</key><integer>$((10#$mo))</integer><key>Day</key><integer>$((10#$dy))</integer><key>Hour</key><integer>$((10#$hr))</integer><key>Minute</key><integer>$((10#$mi))</integer></dict>
   <key>StandardOutPath</key><string>$log</string>
   <key>StandardErrorPath</key><string>$log</string>
@@ -1685,7 +1693,7 @@ chain_record() {
   crec+=(prio="$prio")   # the run's rank in the queue (dispatch --priority); S4's --next inherits it
   [ -n "$fromq" ] && crec+=(queue="$fromq")
   [ -n "${origin_scope:-}" ] && crec+=(origin="$origin_scope")
-  [ "${origin_scope:-}" != "${origin:-}" ] && crec+=(origin_mark="$origin")
+  [ -n "${origin_marker:-}" ] && crec+=(origin_mark="$origin_marker")   # a name given records its marker too
   for a in ${chain[@]+"${chain[@]}"}; do
     case "$a" in
       # the run record keeps its keys (manager, plan…: read by stalls, the board, a re-dispatch);

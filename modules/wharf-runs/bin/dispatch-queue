@@ -1229,11 +1229,12 @@ def has_review(repo, branch):
     return False
 
 
-def route(repo, branch, cwd):
+def route(repo, branch, cwd, args=()):
     """(store, confined): where BRANCH's entry goes. The registry first: torn reads as no scopes, so a
     torn one refuses (the fence trap). Then the repo's scope, the caller's cwd's, a spawn's `.review` — all
     from that one parse: a write torn between a second read and the first reads as no scopes (common's
-    read_registry docstring; the review's item 8)."""
+    read_registry docstring; the review's item 8). ARGS: the entry's
+    flags — a confidential `--origin` is a spawn too, `.review` or not (S1's "a confidential seed origin")."""
     reg, torn = common.read_registry()
     if torn:
         raise Refused("dispatch: the scope registry (repos.json) is unreadable — refused: a torn registry reads as no "
@@ -1243,8 +1244,10 @@ def route(repo, branch, cwd):
     sc = confidential_scope(repo, reg) or confidential_scope(str(Path(repo).resolve()), reg) or confidential_scope(toplevel(cwd), reg)
     if sc:
         return Local(sc), False
-    if has_review(repo, branch):
-        # a spawn out of a node: queued in the node until spawn_review_ok() checks its review at claim
+    if flag_values(list(args), "--origin") or has_review(repo, branch):
+        # a spawn out of a node: queued in the node until spawn_review_ok() checks its review at claim.
+        # A seed's `.review` says so, and so does a run given --origin by hand: its marker reads back
+        # only where the scope is registered, which a fleet host may not be (the S5 rebase review)
         return Local("_spawn"), True
     url = home()
     if not url:
@@ -1377,7 +1380,7 @@ def cmd_enqueue(a, ctx):
         # relayed (AGENTS.md: a new dispatch refusal reuses them; the fourth review's item 12)
         raise Refused("dispatch: %s — refused: end with the WAITING line — the next step waits for a run to end and for %s "
                       "to raise it (a dispatch by hand)" % (why, getattr(common, "OWNER_NAME", "") or "the owner"))
-    store, confined = route(a.repo, a.branch, a.cwd or os.getcwd())
+    store, confined = route(a.repo, a.branch, a.cwd or os.getcwd(), args)
     if isinstance(store, Fleet):
         flush(store)
     k = key_of(repo, a.branch)
