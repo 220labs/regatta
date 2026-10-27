@@ -316,6 +316,16 @@ skipper-modes S1, S3b, S5 and its landing review.
   refuses a skipper's answer in mode `ask`. The board: WAITING cards from both Macs (repo, "waiting
   on <owner>", a link; stalls' probe reads the last line only), a peer's permission prompts, course
   and GitHub links on ask cards, held dnd items in the owner's column; `ask poll` renders and deploys it.
+- Suite time (2026-10-23): `tests/test_helm.sh` runs its old-names and new-names passes side by
+  side, and `tests/check.sh` runs `test_ask` beside it, each printed whole in order; the `--hold`
+  sidecar's two cases and the listener's parent poll for the state (`until_`) where fixed 3, 1.5 and
+  0.5 s sleeps stood (the first `--hold` case waits out two passes, as the 3 s did); the `--renew`
+  case drops its 1 s sleep (`until` is a float `now + TTL`). Cut short, both check.sh and test_helm's
+  two passes end their suites and print what each wrote so far. All 1931 cases kept, plus one. Timed
+  under load 20 to 160 on 10 cores (no quiet Mac that day): main's test_helm 15.7 min beside this one's
+  12.2 at the same load; the whole check 7.5 min before (sequential, load 20), 7.4 to 8.0 after (load
+  50 to 125). On a quiet Mac the check should take about its slower pass, some 1.7 min (from 4;
+  not measured).
 
 ## 0.2.0 — 2026-10-22
 
