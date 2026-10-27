@@ -121,6 +121,7 @@ check "$(nothing delta)" "none" "  nothing written"
 echo "a clean brief: seeded with its review, started with its origin"
 mark; check "$(S epsilon --from node --repo "$P/demo" --file "$T/clean.md" --dry-run)" 0 "--dry-run: reviewed, then says what it would do"
 has "$T/out" "and docs/handoff/$TODAY-epsilon.review" "  naming the review"
+has "$T/out" "a seed out of a confidential scope routes nothing" "  and routing nothing: keel would read the brief before its review (routed comments S2 beside S5)"
 check "$(nothing epsilon)" "none" "  nothing written"
 SN=claude/laptop/$TODAY-epsilon
 mark; check "$(S epsilon --from node --repo "$P/demo" --file "$T/clean.md")" 0 "seed --from: exit 0"
