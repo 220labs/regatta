@@ -567,6 +567,10 @@ reap_run() {    # reap_run <dispatch pid> [claude pid]: end a background run, it
   kill -TERM "$rs" 2>/dev/null; sleep 1; kill -KILL "$rs" 2>/dev/null
   return 0
 }
+# dead_ <pid>: back once the process is gone, or after 2.5 s — the poll that replaced a flat
+# `sleep 0.5` before each "its claude ended" check: a TERM'd stub leaves within a tenth or two of a
+# second, and on a loaded Mac 0.5 s was a guess either way. The check after it still decides.
+dead_() { local i; for i in $(seq 1 25); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
 wait_run() {    # wait_run <dispatch pid> [claude pid] [secs]: wait for the run to end, else reap it (and FAIL)
   local rs=$1 end=$((SECONDS + ${3:-30}))
   while [ "$SECONDS" -lt "$end" ]; do kill -0 "$rs" 2>/dev/null || { wait "$rs"; return 0; }; sleep 0.2; done
@@ -895,7 +899,7 @@ OP=$(orphan lost sess-lost 2)
 "$B/dispatch" --status > "$T/out"
 has "$T/out" "ended" "--status: an idle orphan…"
 grep -q '"end_reason": "orphaned: its watcher was gone' "$RUNS/00000000-000002-repo.lost.json"; check "$?" "0" "  …is ended, and says why"
-sleep 0.5; kill -0 $OP 2>/dev/null; check "$?" "1" "  its claude got SIGTERM"
+dead_ $OP; kill -0 $OP 2>/dev/null; check "$?" "1" "  its claude got SIGTERM"
 # --end: busy or not, a person asked
 EP2=$(orphan endme sess-endme 3)
 python3 - "$RUNS/00000000-000003-repo.endme.json" <<'PY'
@@ -904,7 +908,7 @@ p = sys.argv[1]; s = json.load(open(p)); s.pop("watcher"); json.dump(s, open(p, 
 PY
 "$B/dispatch" --end endme > "$T/out" 2>&1; check "$?" "0" "--end ends a live run"
 grep -q '"end_reason": "ended by dispatch --end' "$RUNS/00000000-000003-repo.endme.json"; check "$?" "0" "  recorded as such"
-sleep 0.5; kill -0 $EP2 2>/dev/null; check "$?" "1" "  its claude ended"
+dead_ $EP2; kill -0 $EP2 2>/dev/null; check "$?" "1" "  its claude ended"
 # a watched run: the watcher sees claude go first, and keeps --end's reason
 STUB_RUN=busy DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/end.log" "$B/dispatch" $BR --repo "$T/repo" &
 RS=$!; for _ in $(seq 1 150); do grep -q "== claude" "$HOME/end.log" 2>/dev/null && break; sleep 0.2; done
@@ -983,7 +987,7 @@ python3 "$B/dispatch-rc" end-warm claude/laptop/2026-10-08-launch "$T/repo" --dr
 check "$rc $(kill -0 $EWA 2>/dev/null && echo alive)" "0 alive" "--dry-run names the warm run and ends nothing"
 has "$T/out" "would end the warm run of claude/laptop/2026-10-08-launch" "  said"
 python3 "$B/dispatch-rc" end-warm claude/laptop/2026-10-08-launch "$T/repo" > "$T/out"; rc=$?
-sleep 0.5
+dead_ $EWA
 check "$rc $(kill -0 $EWA 2>/dev/null && echo alive || echo ended) $(kill -0 $EWB 2>/dev/null && echo alive)" "0 ended alive" \
   "the branch's warm run is ended; another branch's is not"
 has "$(ls "$RUNS"/00000000-00002$EWA-*.json)" "ended for its landing" "  and its record says why"
@@ -2015,7 +2019,7 @@ check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("en
 grep -q -- "-m window 60 --close" "$T/yabai.calls"; check "$?" "1" "a pickup session idle 2 min: left alone — the claude desktop is for these (D2)"
 kill -0 $WARM 2>/dev/null; check "$?" "0" "  and still running"
 has "$T/yabai.calls" "-m window 61 --close" "a pickup session idle past the hour: its window closed"
-sleep 0.5; kill -0 $COLD 2>/dev/null; check "$?" "1" "  and its claude got SIGTERM first"
+dead_ $COLD; kill -0 $COLD 2>/dev/null; check "$?" "1" "  and its claude got SIGTERM first"
 cterm=$(grep -n "claude TERM $COLD" "$T/order" | head -1 | cut -d: -f1)
 c61=$(grep -n -- "window 61 --close" "$T/order" | head -1 | cut -d: -f1)
 check "$([ -n "$cterm" ] && [ -n "$c61" ] && [ "$cterm" -lt "$c61" ] && echo signal-first || echo close-first)" "signal-first" \
@@ -2064,7 +2068,7 @@ PY
 STUB_RETITLE="65:$HAND" env -u YABAI_OFF -u DISPATCH_IDLE python3 "$B/dispatch-rc" tidy > "$T/out" 2>&1
 has "$T/yabai.calls" "-m window 65 --close" "moved to buildbox, idle 2 min: its window closed (the owner 2026-10-08: I don't need to see it)"
 has "$T/out" "its work went to buildbox (move" "  and the log says why"
-sleep 0.5; kill -0 $HAND 2>/dev/null; check "$?" "1" "  its claude ended first"
+dead_ $HAND; kill -0 $HAND 2>/dev/null; check "$?" "1" "  its claude ended first"
 grep -q -- "-m window 66 --close" "$T/yabai.calls"; check "$?" "1" "handed off 2 h before it went idle: used since, so left for the hour"
 grep -q -- "-m window 67 --close" "$T/yabai.calls"; check "$?" "1" "typed into 2 min after the move, idle again within 10 min: used again, left for the hour (review 2026-10-10)"
 kill $REUSED $TYPED 2>/dev/null; wait $REUSED $TYPED 2>/dev/null

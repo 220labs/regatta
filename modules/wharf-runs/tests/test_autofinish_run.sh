@@ -57,7 +57,9 @@ STATE="$GD/claude/autofinish.json"; LOCK="$GD/claude/owner.json"
 next_tip() { git -C "$W" commit -q --allow-empty -m "$1"; }
 
 # claude: snapshots what it finds at its start, then plays STUB_RUN — reply with STUB_REPLY's text and
-# go idle, crash, or stay busy (and, on SIGTERM, leave its lock behind as R29 saw)
+# go idle, crash, or stay busy (and, on SIGTERM, leave its lock behind as R29 saw). The reply is compact
+# JSON, as Claude Code writes it: dispatch-rc's replied() reads `"type":"assistant"`, and a spaced dump
+# made every reply run wait out DISPATCH_START_WAIT and end "never started" (3 s a run, 27 runs)
 cat > "$T/claude" <<EOF
 #!/bin/bash
 echo "claude \$*" >> "$T/claude.calls"; env > "$T/claude.env"
@@ -71,7 +73,7 @@ rec="\$HOME/.claude/sessions/\$\$.json"; mkdir -p "\$HOME/.claude/sessions" "\$H
 old=\$(( (\$(date +%s) - 700) * 1000 ))
 trap 'rm -f "\$rec"; exit 0' TERM
 case "\${STUB_RUN:-reply}" in
-  reply) python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": open(sys.argv[1]).read()}]}}))' "\$STUB_REPLY" > "\$HOME/.claude/projects/x/\$sid.jsonl"
+  reply) python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": open(sys.argv[1]).read()}]}}, separators=(",", ":")))' "\$STUB_REPLY" > "\$HOME/.claude/projects/x/\$sid.jsonl"
          printf '{"sessionId":"%s","status":"idle","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec";;
   crash) exit 1;;
   busy)  printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
@@ -85,7 +87,7 @@ cat > "$T/screen" <<EOF
 case "\$1" in
   -U) [ "\$2" = -dmS ] || exit 1; shift 3; "\$@" >/dev/null 2>&1 & exit 0;;
   -ls) exit 1;;
-  -S) case "\$*" in *quit*) pkill -TERM -f "\${2#*.}.sh" 2>/dev/null;; esac;;
+  -S) case "\$*" in *quit*) pkill -TERM -f "run-seed/\${2#*.}.sh" 2>/dev/null;; esac;;
 esac
 exit 0
 EOF
@@ -337,7 +339,8 @@ WPID=$(pgrep -f "bin/autofinish-run $W" | head -1)
 check "$([ -f "$GD/claude/finishing" ] && echo set || echo unset)" "set" "a /finish under way (its finishing marker set)…"
 kill -TERM "$WPID"
 ended
-sleep 0.5; kill -0 "$CP" 2>/dev/null; check "$?" "1" "  …whose waiter is ended: its session is ended first"
+for _ in $(seq 1 25); do kill -0 "$CP" 2>/dev/null || break; sleep 0.1; done   # a poll, not a flat 0.5 s: the check decides
+kill -0 "$CP" 2>/dev/null; check "$?" "1" "  …whose waiter is ended: its session is ended first"
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "  then the lock released"
 check "$([ -f "$GD/claude/finishing" ] && echo kept || echo gone)" "gone" "  and the finishing marker removed"
 grep -q '"end_reason": "ended with its autofinish waiter"' "$HOME"/Library/Logs/claude-weekly/run-seed-runs/*.json; check "$?" "0" "  dispatch's record says why it ended"
