@@ -321,8 +321,154 @@ ok "a second checkpoint inside the push spacing is not pushed yet" \
 touch -t 202001010000 "$GA/pushed"; ev A Stop "" "$WA" >/dev/null
 ok "  ...and is once the spacing is up, even on a turn that committed nothing" \
   '[ "$(otip claude/test-a)" = "$(git -C "$WA" rev-parse HEAD)" ]'
+echo "a branch that already landed is never pushed again (regatta#171 after #169, 2026-10-25)"
+# Through the real hook: the suite never asks GitHub, so the answer is the state dir's cached one.
+printf '{"branch": "claude/test-a", "number": 169, "url": "https://github.com/o/r/pull/169"}\n' > "$GA/spent.json"
+before=$(otip claude/test-a); echo 5 >> "$WA/a"; summ A "Widget: after landing"; touch -t 202001010000 "$GA/pushed"
+out=$(ev A Stop "" "$WA")
+ok "  Stop in a spent worktree: committed, not pushed" \
+  '[ "$(otip claude/test-a)" = "$before" ] && msg "$WA" | grep -q "^Widget: after landing"'
+ok "  ...and the session hears it landed as #169, with the fresh-branch recipe" \
+  'echo "$out" | grep -q "already landed as #169" && echo "$out" | grep -q "worktree is spent" && echo "$out" | grep -q "worktree add /.*/\.claude/worktrees/<topic> -b claude/"'
+touch -t 202001010000 "$GA/pushed"; out=$(ev A Stop "" "$WA")
+ok "  ...once per stranded commit, not every turn" '! echo "$out" | grep -q "already landed"'
+out=$(ev A UserPromptSubmit "next?" "$WA")
+ok "  ...and the model hears it at the next prompt (a Stop note reaches the screen only)" \
+  'echo "$out" | grep -q "no longer pushes this branch" && echo "$out" | grep -q "EnterWorktree"'
+rm -f "$GA/spent.json"; touch -t 202001010000 "$GA/pushed"; ev A Stop "" "$WA" >/dev/null
+ok "  without the answer the push goes ahead, as before" '[ "$(otip claude/test-a)" = "$(git -C "$WA" rev-parse HEAD)" ]'
+# In process, against a fake GitHub (common.api), as test_repos.sh fakes it: what is asked and when.
+L="$T/landed"; git init -q --bare "$L-origin.git"
+git clone -q "$L-origin.git" "$L" 2>/dev/null && git -C "$L" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base && git -C "$L" push -q origin HEAD:main 2>/dev/null
+git -C "$L" checkout -q -B main
+cat > "$T/landed.py" <<'PY'
+import json, os, subprocess, sys, urllib.parse
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import checkpoint as cp, common, sync
+repo, origin, states = sys.argv[2], sys.argv[3], Path(sys.argv[4])
+os.environ.pop("CLAUDE_HOOK_NO_GITHUB", None); os.environ.pop("CLAUDE_HOOK_NO_PUSH", None)
+cp.ROOT, cp.MAIN = repo, "main"
+common.repo_slug = lambda url: "o/r"
+common.token = lambda: "tok"
+
+MERGED = {"number": 169, "state": "closed", "merged_at": "2026-10-25T01:00:00Z",
+          "html_url": "https://github.com/o/r/pull/169", "head": {"sha": "0" * 40}}
+OPEN = {"number": 172, "state": "open", "merged_at": None, "html_url": "https://github.com/o/r/pull/172"}
+CLOSED = {"number": 150, "state": "closed", "merged_at": None}
+
+class GH:
+    def __init__(self, prs=(), status=200):
+        self.prs, self.status, self.calls = list(prs), status, []
+        common.api = self.api
+    def api(self, method, path, body=None, tok=None, timeout=15):
+        self.calls.append((method, path))
+        if self.status != 200:
+            return self.status, None
+        if method == "GET" and "state=all" in path:  # as GitHub: each PR names its head and base
+            br = urllib.parse.unquote(path.split("head=", 1)[1].split(":", 1)[1])
+            return 200, [dict(p, head=dict({"ref": br}, **p.get("head", {})),
+                              base=p.get("base", {"ref": "main"})) for p in self.prs]
+        if method == "GET" and "state=open" in path:
+            return 200, [p for p in self.prs if p["state"] == "open"]
+        if method == "POST" and path.endswith("/pulls"):
+            return 201, {"number": 9, "html_url": "https://github.com/o/r/pull/9"}
+        return 201, {}
+    def posted(self):
+        return any(m == "POST" and p.endswith("/pulls") for m, p in self.calls)
+
+def git(*a):
+    return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", *a],
+                          capture_output=True, text=True).stdout.strip()
+def tip(b):
+    return subprocess.run(["git", "-C", origin, "rev-parse", "--verify", "-q", "refs/heads/" + b],
+                          capture_output=True, text=True).stdout.strip()
+n = [0]
+def commit():
+    n[0] += 1
+    Path(repo, "f").write_text(str(n[0]))
+    git("add", "f"); git("commit", "-q", "-m", "c%d" % n[0])
+def branch(name, upstream=False):
+    git("checkout", "-q", "-b", name, "main"); commit()
+    if upstream:
+        git("push", "-q", "-u", "origin", name); commit()
+    st = states / name.replace("/", "-"); st.mkdir(parents=True)
+    return st
+def case(name, cond):
+    print(name, "pass" if cond else "fail")
+
+b = "claude/x/2026-10-24-host-power"; st = branch(b)
+gh = GH([MERGED]); note = cp.publish(st, b, "sess")
+case("L1", note and "already landed as #169" in note and "pull/169" in note and tip(b) == "" and not gh.posted()
+     and json.loads((st / "spent.json").read_text())["number"] == 169)
+q = [p for m, p in gh.calls if m == "GET"]
+case("L2", len(q) == 1 and "state=all" in q[0] and "head=o:claude%2Fx%2F2026-10-24-host-power" in q[0])
+commit(); gh = GH([MERGED]); note = cp.publish(st, b, "sess")
+case("L3", note and "#169" in note and gh.calls == [] and tip(b) == "")
+case("L4", cp.publish(st, b, "sess") is None and gh.calls == [])
+case("L5", "#169" in (cp.publish(st, b, "sess", force=True) or ""))
+(st / sync.UNPUSHED).write_text("sess")
+pushed, ok = sync.push_left(cp, st, b, "sess")
+case("L6", ok and "#169" in (pushed or "") and "\n" not in pushed and not (st / sync.UNPUSHED).exists() and tip(b) == "")
+
+b = "claude/x/2026-10-27-reopened"; st = branch(b, upstream=True)
+gh = GH([OPEN, MERGED]); cp.publish(st, b, "sess", force=True)
+case("L7", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+b = "claude/x/2026-10-27-abandoned"; st = branch(b)
+gh = GH([CLOSED]); note = cp.publish(st, b, "sess")
+case("L8", tip(b) == git("rev-parse", "HEAD") and "is on origin" in (note or "") and gh.posted())
+b = "claude/x/2026-10-27-offline"; st = branch(b)
+gh = GH([MERGED], status=0); cp.publish(st, b, "sess")
+case("L9", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+b = "claude/x/2026-10-27-tokenless"; st = branch(b)
+gh = GH([MERGED]); common.token = lambda: None; cp.publish(st, b, "sess"); common.token = lambda: "tok"
+case("L10", tip(b) == git("rev-parse", "HEAD") and gh.calls == [])
+b = "claude/x/2026-10-27-nogithub"; st = branch(b)
+gh = GH([MERGED]); os.environ["CLAUDE_HOOK_NO_GITHUB"] = "1"; cp.publish(st, b, "sess"); os.environ.pop("CLAUDE_HOOK_NO_GITHUB")
+case("L11", tip(b) == git("rev-parse", "HEAD") and gh.calls == [])
+b = "claude/x/2026-10-27-renamed"; st = branch(b)
+(st / "spent.json").write_text(json.dumps({"branch": "claude/x/old-name", "number": 99}) + "\n")
+gh = GH([]); cp.publish(st, b, "sess")
+case("L12", tip(b) == git("rev-parse", "HEAD") and any("state=all" in p for _, p in gh.calls))
+b = "claude/x/2026-10-27-reused"; st = branch(b)
+gh = GH([dict(MERGED, merge_commit_sha=git("rev-parse", "main"))]); cp.publish(st, b, "sess")
+case("L13", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+b = "claude/x/2026-10-27-pushed-by-hand"; st = branch(b)
+gh = GH([MERGED]); cp.publish(st, b, "sess"); held = (st / "spent.json").exists()
+git("push", "-q", "-u", "origin", b); commit()
+gh = GH([OPEN, MERGED]); cp.publish(st, b, "sess", force=True)
+case("L14", held and tip(b) == git("rev-parse", "HEAD") and len(gh.calls) >= 1)
+b = "claude/x/2026-10-27-stacked"; st = branch(b)
+gh = GH([dict(MERGED, base={"ref": "claude/x/parent"})]); cp.publish(st, b, "sess")
+case("L15", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+b = "claude/x/2026-10-27-unfiltered"; st = branch(b)
+gh = GH([dict(MERGED, head={"ref": "claude/x/someone-else"})]); cp.publish(st, b, "sess")
+case("L16", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+PY
+python3 "$T/landed.py" "$MOD/hooks" "$L" "$L-origin.git" "$T/landed-states" > "$T/landed.out" 2>&1
+lcase() { lc=$1; ok "$2" 'grep -qx "$lc pass" "$T/landed.out"'; }
+lcase L1 "  first push of a landed branch (the #171 shape): not pushed, no WIP PR, the answer kept"
+lcase L2 "  ...asked once, by head branch, open and closed alike (state=all)"
+lcase L3 "  a later commit: the kept answer, no second lookup"
+lcase L4 "  the same commit again: quiet"
+lcase L5 "  ...unless the push is forced (session end, sync): said again"
+lcase L6 "  sync's push_left: no retry marker left for a landed branch"
+lcase L7 "  an open PR beside the merged one: live again, pushed"
+lcase L8 "  closed unmerged only: pushed, and its WIP PR opened, as before"
+lcase L9 "  GitHub unreachable: pushed, as before, nothing kept"
+lcase L10 "  no token: pushed, GitHub never asked"
+lcase L11 "  CLAUDE_HOOK_NO_GITHUB: pushed, GitHub never asked"
+lcase L12 "  a kept answer for another branch name: ignored, asked afresh"
+lcase L13 "  a merge commit HEAD already holds (a reused name, forked after): pushed, nothing kept"
+lcase L14 "  a kept yes whose origin ref moved since (pushed by hand, PR reopened): asked again, pushed"
+lcase L15 "  merged into another branch, not main: pushed"
+lcase L16 "  a PR from another head (GitHub ignoring the filter): pushed"
+grep -q "Traceback" "$T/landed.out" && { echo "  FAIL landed.py raised:"; sed 's/^/    /' "$T/landed.out"; fails=$((fails+1)); }
+
+echo "checkpoints (continued)"
 rm -f "$GA/pr-checked"; echo 3 >> "$WA/a"; touch -t 202001010000 "$GA/pushed"; ev A Stop "" "$WA" >/dev/null
 ok "  a branch that came with an upstream (a pickup seed) still gets its PR looked for" '[ -e "$GA/pr-checked" ]'
+
 out=$(ev A UserPromptSubmit "thoughts?" "$WA")
 ok "reminder shown next turn after a no-summary commit" 'echo "$out" | grep -q "commit-summary.md"'
 ev A Stop "" "$WA" >/dev/null

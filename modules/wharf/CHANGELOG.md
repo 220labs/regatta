@@ -10,6 +10,16 @@
   trailer names, changed by its `Routed:` line alone, besides the brief, so the reaper and the archive's
   dropped-seed road see it (routed comments S2's landing review, 2026-10-26).
 
+- checkpoint never pushes a branch that already landed: before a push, `publish()` asks GitHub
+  (`common.landed_pr`) whether a pull request from the head merged while none is open, and if so
+  keeps the commits local, opens no WIP PR, and tells the session its worktree is spent, with the
+  fresh-branch recipe by absolute path, on screen at Stop and to the model at the next prompt. The yes
+  is kept per branch in the state dir's `spent.json` with the origin ref beside it (one lookup per
+  spent worktree; asked again once that ref moves); a PR whose merge commit HEAD holds (a reused name),
+  one into another base, or one from another head is no yes; every GitHub failure pushes as before.
+  sync's `push_left` leaves no retry marker for such a branch. A session in #169's old worktree had pushed it back and opened the stale #171
+  (night-landings finding 3, 2026-10-25).
+
 - `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
   `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other
   Mac as it would have on the laptop (D2-A of the lander's move, 2026-10-23).
