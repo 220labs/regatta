@@ -25,7 +25,7 @@ the checkpoint hook commits each turn there, pushes it, and keeps the primary ch
 | `bin/fork_claude_session.py`, `skills/fork` | a session forked into another Claude Code session with its transcript |
 | `bin/session_status.py` | whether an idle session is done, waiting, blocked or running, from its transcript alone; a guarded repo's session is never read |
 | `skills/new-project` | a new repo from `templates/code/`, registered and on GitHub |
-| `agents/` | seven agents: `architect` and `sr-architect` (one body, which sextant's `sounder` shares), `worker`, `sr-worker`, `reviewer` and `reviewer-high` (one body), `code-reviewer` |
+| `agents/` | nine agents: `architect`, `sr-architect` and `principal-architect` (one body, which sextant's `sounder` shares), `worker`, `sr-worker` and `principal-worker` (one body), `reviewer` and `reviewer-high` (one body), `code-reviewer` |
 | `tests/check.sh` | the suites and the bin/ name rule; scratch repos, a scratch registry and config, a fake `gh` and `ssh`, no network |
 
 Needs the core (`regatta`) and git. `gh` for `ci-provider`, which drives GitHub through it, and for

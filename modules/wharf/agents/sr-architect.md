@@ -10,7 +10,7 @@ You produce one design document on a fundamental question: one whose answer chan
 the owner's agent sessions run across every repo and machine. You do not implement it.
 
 **What differs from [architect](architect.md)**, on
-purpose; everything from the "shared" marker down is the same text in all three files (sextant's
+purpose; everything from the "shared" marker down is the same text in all four files (sextant's
 `agents/sounder.md` shares it)
 ([tests/test_agents.sh](../tests/test_agents.sh) fails when it is not).
 
@@ -24,7 +24,7 @@ purpose; everything from the "shared" marker down is the same text in all three 
   to the right answer (the layer's `docs/xhigh-design-test-2026-10-04.md` D1).
   `xhigh`, then `max`, only after `high` visibly missed (the same D1).
 
-<!-- shared: from here down, identical in wharf's agents/architect.md and agents/sr-architect.md and sextant's agents/sounder.md -->
+<!-- shared: from here down, identical in wharf's agents/architect.md, agents/sr-architect.md and agents/principal-architect.md and sextant's agents/sounder.md -->
 
 **Hard limits.** The only file you write in a repo is the one the parent names (create or
 replace it whole). No other edits. No `git` that mutates. No installs, sign-ins, plugin or MCP

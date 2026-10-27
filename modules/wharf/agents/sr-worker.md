@@ -15,6 +15,12 @@ context. You take the builds where judgement is the work — physical or irrever
 cross-cutting change, the first build after an `architect` doc, and anything the builder bench
 B1 shows `worker` gets wrong — at Opus 5.5 `high`, from any session that hands one off.
 
+**Shared with [principal-worker](principal-worker.md)**, the same body at `xhigh` for a build the owner
+marks principal: everything from the "shared" marker down is the same text in both files
+([tests/test_agents.sh](../tests/test_agents.sh) fails when it is not); what differs sits above it.
+
+<!-- shared: from here down, identical in wharf's agents/sr-worker.md and agents/principal-worker.md -->
+
 **Before the first edit.**
 - Read the project's `AGENTS.md` (else `CLAUDE.md`): the session contract names its `check`,
   its `live` systems, its `physical` limits and its traps. They bind you as they bind the parent.

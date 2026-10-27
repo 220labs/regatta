@@ -8,6 +8,9 @@
   refusing the whole deck when a slide breaks a rule. Its rules, checker and builder are
   `bin/pitchlib.py`, stdlib Python 3.9; its config `pitch.json`, found at or above the root,
   `extends` kept. `tests/pitch.sh` builds one failing root per rule at run time and runs 170 cases.
+- `agents/sounder.md`'s shared marker and head name wharf's `principal-architect` as the body's fourth
+  head (principal tier S2, 2026-10-26); the body itself is unchanged.
+
 - The host rule is the core's (2026-10-24): `sextant-run run` asks `common.weekly_host("sextant")`,
   so its skip line says `sextant`, as weekly-run's does, where it said `/sextant`; `install.sh
   --schedule` asks `regatta weekly-host sextant` (the core found through `lib/find_core.py`) before the
