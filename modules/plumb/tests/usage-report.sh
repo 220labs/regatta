@@ -11,6 +11,7 @@ T=$(mktemp -d); trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
 # A config dir of its own, naming no overlay: the core and every peer come from this checkout
 # (the public twin runs it the same), and no private value of this Mac reaches a case.
 export REGATTA_CONFIG="$T/config"; mkdir -p "$T/config/lighthouse"
+mkdir -p "$T/config/regatta"; printf '%s\n' "$T/noproj" > "$T/config/regatta/projects"   # a scratch projects folder: a node report never lands in this Mac's real one
 printf 'data:project_data\n' > "$T/config/lighthouse/shares"   # bin/publish's data share, as the cases name it
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
@@ -658,5 +659,52 @@ check "$(fu "$T/frepos.json" numbers --json --scope s-hidden | python3 -c 'impor
   "{'s-hidden': {'sessions': 2, 'usd': 0.75}}" "  --scope names that scope's own pass (knowledge-numbers passes it)"
 check "$(fu "$T/ftorn.json" numbers --json --scope s-hidden | python3 -c 'import json,sys; print(json.load(sys.stdin)["scope_passes"])')" \
   "{'(confidential)': {'sessions': 2, 'usd': 0.75}}" "  a torn registry: no scope named, even its own"
+
+echo "the reports rule: a confidential scope's own report in its node, a count per scope in the global (confidential-reach S3)"
+# The same day's calls with a scratch projects folder (the core's regatta/projects), so the scope's
+# anchor, its first repo, is a folder here: lab/vault.
+cp -R "$T/config" "$T/fconfig"; mkdir -p "$T/fconfig/regatta" "$T/fproj/lab/vault"; printf '%s\n' "$T/fproj" > "$T/fconfig/regatta/projects"
+NODE="$T/fproj/lab/vault/reports/usage"
+fs() { REGATTA_CONFIG="$T/fconfig" fu "$@"; }
+fs "$T/frepos.json" render --day 2026-09-19 > "$T/fs.out"
+check "$(cat "$FR/2026-09-19.md" "$FR/latest.md" "$FR/latest-line.txt" "$T/fs.out" | grep -cE "$SECRETS")" "0" "the global report, the line and the log still name nothing of the scope"
+has "$FR/2026-09-19.md" "| s-open | 30 |" "  By scope: an open scope by name, its three rows' calls (the pass run from it included)"
+has "$FR/2026-09-19.md" "| (confidential scope 1) | 30 | 10k | 3k | \$7.50" "  a confidential scope counted by its place, never its name (two rows of v1, one of v2)"
+has "$FR/2026-09-19.md" "| (confidential) | 10 |" "  the group folder's row: fenced, of no known scope"
+has "$FR/2026-09-19.md" "| opus-5-5 · high |" "  cost per model stays"
+has "$FR/2026-09-19.md" "| cli · claude-code · testmac |" "  and per host"
+has "$T/fs.out" "confidential scope 1: its report written in its node" "  the log says it, by number"
+for f in 2026-09-19.md latest.md; do [ -f "$NODE/$f" ] && echo "  ok   the node holds $f" || { echo "  FAIL the node lacks $f"; fails=$((fails+1)); }; done
+has "$NODE/2026-09-19.md" "# Claude usage — 2026-09-19, scope s-hidden" "  its report is the scope's, named"
+has "$NODE/2026-09-19.md" "Secret vault tuning" "  its sessions by title"
+has "$NODE/2026-09-19.md" "| vault-deploy |" "  its own skill"
+has "$NODE/2026-09-19.md" "**\$7.50" "  its total is its own rows' (7.00 + 0.50)"
+check "$(grep -cE "Open harbor work|Group folder chat|Fix the vault deploy" "$NODE/2026-09-19.md")" "0" "  no other row: an open session, the group folder's, the pass run from an open repo"
+check "$(ls "$FR" | grep -c s-hidden)$(find "$T/fproj" -name '*.md' | grep -vc "^$NODE/")" "00" "  nothing of it outside the node"
+rm -rf "$T/fproj/lab/vault/reports"; mkdir -p "$T/outside"; ln -s "$T/outside" "$T/fproj/lab/vault/reports"
+fs "$T/frepos.json" render --day 2026-09-19 > "$T/fs.out"
+check "$(ls "$T/outside" | wc -l | tr -d ' ')" "0" "a reports folder linked out of the node: nothing written through it"
+has "$T/fs.out" "resolves outside its node — refused" "  said, by number"
+rm -f "$T/fproj/lab/vault/reports"; rm -rf "$T/fproj/lab/vault"
+fs "$T/frepos.json" render --day 2026-09-19 > "$T/fs.out"
+has "$T/fs.out" "its node is not on this Mac" "an anchor not checked out here: no report, said"
+check "$(find "$T/fproj" -type f | wc -l | tr -d ' ')" "0" "  and nothing written in its place"
+mkdir -p "$T/fproj/lab/vault"
+git -C "$T/fproj/lab/vault" init -q 2>/dev/null
+mkdir -p "$NODE"; : > "$T/outside/sink.md"; ln -s "$T/outside/sink.md" "$NODE/latest.md"
+fs "$T/frepos.json" render --day 2026-09-19 > "$T/fs.out"
+check "$(wc -c < "$T/outside/sink.md" | tr -d ' ')" "0" "a latest.md linked out of the node: replaced, never written through"
+has "$NODE/latest.md" "scope s-hidden" "  and the node's own latest.md holds the report"
+check "$(git -C "$T/fproj/lab/vault" status --porcelain | wc -l | tr -d ' ')" "0" "the node's reports are ignored in the anchor's checkout (sync.py reads untracked files as dirt)"
+rm -rf "$T/fproj/lab/vault"; mkdir -p "$T/fproj/lab/vault"
+fs "$T/ftorn.json" render --day 2026-09-19 > "$T/fs.out"
+has "$T/fs.out" "the registry cannot be read — no confidential scope's report written" "a torn registry: no node report"
+check "$(find "$T/fproj" -type f | wc -l | tr -d ' ')" "0" "  none written"
+check "$(grep -c '^| (confidential) |' "$FR/2026-09-19.md")" "4" "  the global fences every row: the project, scope, skill and agent tables one (confidential) row each"
+lacks "$FR/2026-09-19.md" "| s-open |" "  no scope named either"
+
+echo "the fence: an open-quoted row of a confidential scope's glob names nothing (cr-s3 review)"
+# lab/vault2 matches the scope's glob but is not registered, so the core quotes it
+check "$(CLAUDE_REPOS_JSON="$T/frepos.json" load "$PM/bin/usage-report" ur 'ur.fence_rows([{"project": "lab/vault2", "title": "t lab/vault2", "skill": "vault2-deploy", "agent": "vault2-agent", "session": "s1", "cost": 1}], lambda p: "quote")[0]' | grep -c 'vault2')" "0" "a glob member the registry does not list: project and title blanked, not only the scope"
 
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi

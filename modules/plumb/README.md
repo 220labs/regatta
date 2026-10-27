@@ -132,6 +132,15 @@ set in the file replaces the default whole, so `"exclude": []` removes every def
 id. The first-prompt line names slash commands, and a text opening by `(text #<digest of its first 40
 characters>)`, so a launcher's repeated preamble shows as one count without its text.
 
+**The fence** (confidential-reach S3, 2026-10-26). A project whose checkout, or a repo its entry lists,
+is a confidential scope's (the core's `gather_fence`), and one in a folder holding a confidential
+checkout, is counted in every total and named nowhere: its row, its recordings and its reading lines
+read `(confidential #n)`, numbered so each keeps its own row, and a session that opened in it counts as
+`(confidential)` among the first prompts. A registry that cannot be read fences every project; `?`
+names nothing and stays. usage-report keeps the same rule for its daily report, adds a count per scope
+(a confidential one by its place, `(confidential scope N)`), and writes each confidential scope's own,
+named report into its node, `<anchor>/reports/usage/` (usage-report's docstring).
+
 **Publishing.** `publish` is `""` (the default: the report stays on this Mac), `"vault"` or `"data"`,
 the scope of lighthouse's `publish` tool. With `--write --publish` (the weekly job's flags) and a
 scope set, `crew-report` runs that tool (found through the core's `common.tool("publish")`) on the
@@ -170,8 +179,9 @@ writes them. Each keeps the environment override it had; an override is never ex
 | `plumb/dispatch-host` | `<host>:<ssh alias>`, the Mac dispatch runs on, whose logs G3 reads | `knowledge-numbers` | — | the first line of `wharf-runs/ssh`, said on stderr; neither: G3 not measured |
 | `plumb/tier-rules` | where the tier table lives, as the tier hint names it (its words, one per line) | `tier_check.py` | — | "your model-routing rules" |
 | `regatta/log-dir` | the core's log folder: usage data, the attention log, the benches' data | every tool | `USAGE_DATA`, `ATTENTION_LOG_DIR`, `BENCH` | `~/.local/state/regatta` |
-| `regatta/projects`, `regatta/guarded` | the projects folder; the repos whose text never leaves the Mac (the core's) | `interruptions`, `knowledge-numbers`, the benches | `INTERRUPTIONS_PROJECTS`, `CORPUS_ROOT` | the home folder's `projects`; none guarded |
+| `regatta/projects`, `regatta/guarded` | the projects folder; the repos whose text never leaves the Mac (the core's) | `interruptions`, `knowledge-numbers`, the benches, `crew-report` (its fence), `usage-report` (a confidential scope's anchor, where its node report goes) | `INTERRUPTIONS_PROJECTS`, `CORPUS_ROOT` | the home folder's `projects`; none guarded |
 | `atlas/layer`, `atlas/vault` | the two knowledge repos: name, checkout, the variable that moves it (atlas's) | `knowledge-numbers`, `usage-report` (the ratio's commit), `bench/decisions` | the variable the key names | their numbers say not measured; the ratio is written, not committed |
+| the scopes registry (wharf's `repos.json`) | which scopes are confidential: both reports' fence | `crew-report`, `usage-report` | `CLAUDE_REPOS_JSON` | no scopes, nothing fenced; unreadable: everything fenced, no node report |
 | `lighthouse/accounts.json` | the login registry (lighthouse's) | `usage-report`, `interruptions`, `knowledge-numbers`, `tier_check.py` | `ACCOUNTS_FILE` | one login: the default config dir |
 
 ## How it runs weekly

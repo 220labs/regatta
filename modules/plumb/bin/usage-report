@@ -7,7 +7,8 @@
     usage-report branches [--days N]  # fill the branch column of this host's CSVs from the transcripts
                                       # still here (default: 30 days); nothing else in a row changes
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
-    usage-report render [--day D]     # the Markdown report for local day D (default: yesterday)
+    usage-report render [--day D]     # the Markdown report for local day D (default: yesterday), and
+                                      # each confidential scope's own in its node
     usage-report line [--day D]       # the one line that goes by iMessage and into the 07:30 digest
     usage-report numbers [--json] [--scope S]  # the weekly figures /sextant reads (via knowledge-numbers),
                                       # with the tier mix, the review gate's WRONG per 100 lines and
@@ -64,6 +65,16 @@ render prints; an unreadable registry fences every row. The CSVs keep what they 
 reports. `numbers` names a confidential scope's pass `(confidential)`, unless `--scope` asks for that
 scope; the review gate's rows are only counted there, never named.
 
+The reports rule (confidential-reach S3, 2026-10-26; the owner: "All the reports get sharded by
+boundary, confidential get their own, and all non-confidential bundle as one"): the global report keeps
+cost per host and model and a "By scope" table — an open scope by name, a confidential one as
+`(confidential scope N)` (N its place among the registry's confidential scopes), a fenced row of no
+known scope `(confidential)`. `render` then writes each confidential scope's full report — its own rows
+only, named — to `reports/usage/<day>.md` and `latest.md` in its node: its anchor, the scope's first
+repo, as checked out on this Mac. Never published, never in the line, and written only where the fence
+calls the folder confidential; an anchor not on this Mac, or a registry that cannot be read, writes none
+and says so without a name.
+
 Stdlib only, Python 3.9. Exits 0 unless the setup is wrong; a failed send is logged, not retried.
 """
 import argparse
@@ -77,6 +88,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -734,6 +746,7 @@ def load_rows(c, first, last):
 
 
 CONFIDENTIAL = "(confidential)"
+NO_SCOPE = "(no scope)"
 
 
 def project_path(project):
@@ -752,11 +765,12 @@ def shared_names():
             {"main", "subagent", "general-purpose", "Explore", "Plan", "claude"} | {a for _, x in TIERS for a in x})
 
 
-def confidential_names():
+def confidential_names(parsed=None):
     """(torn, scope names, member keys, roots) from one parse of the registry (so the tear and the scopes
-    are judged on the same file), casefolded: the names a title may give a confidential scope away by, and
-    the checkouts whose holding folders are fenced too."""
-    reg, torn = common.read_registry()
+    are judged on the same file; `parsed` is read_registry()'s pair when the caller has one), casefolded:
+    the names a title may give a confidential scope away by, and the checkouts whose holding folders are
+    fenced too."""
+    reg, torn = parsed or common.read_registry()
     reg = reg or {}
     repos = reg.get("repos") or {}
     scopes = {n: sc for n, sc in (reg.get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True}
@@ -770,6 +784,34 @@ def names_one(title, words):
     return any(re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(w), t) for w in words if w)
 
 
+def scope_label(project, reg):
+    """The registry's scope holding a row's project (its key, else the nearest folder above it: a
+    subfolder's row is its repo's), or "(no scope)". `reg` is read_registry()'s dict, or None."""
+    path = project_path(project)
+    if not reg or not path:
+        return NO_SCOPE
+    key = common.repo_key(path)
+    while key and not key.startswith(("/", "~")):
+        name, _ = common.scope_of_repo(key, reg=reg)
+        if name:
+            return name
+        key = key.rsplit("/", 1)[0] if "/" in key else ""
+    return NO_SCOPE
+
+
+def label_scopes(rows, reg=None):
+    """Each row's `scope` (scope_label), named: what a scope's own report shows. fence_rows renames a
+    confidential one for the global."""
+    reg = reg if reg is not None else common.read_registry()[0]
+    seen = {}
+    for r in rows:
+        p = r.get("project")
+        if p not in seen:
+            seen[p] = scope_label(p, reg)
+        r["scope"] = seen[p]
+    return rows
+
+
 def fence_rows(rows, fence=None):
     """Rows with a confidential scope's project detail blanked in place (the module's docstring, the
     fence): its numbers stay, so totals and shares hold. `fence` is the core's gather_fence(); an
@@ -779,7 +821,11 @@ def fence_rows(rows, fence=None):
     repos is blanked too: a pass started from an open repo still names its scope."""
     fence = fence or common.gather_fence()
     skills, agents = shared_names()
-    torn, hidden, keys, roots = confidential_names()
+    reg, torn = common.read_registry()
+    torn, hidden, keys, roots = confidential_names((reg, torn))
+    label_scopes(rows, reg or {})
+    # a confidential scope by its place in the registry, never its name: a count per scope, no name
+    order = [n.casefold() for n, sc in ((reg or {}).get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True]
     words = hidden | {w.casefold() for k in keys for w in (k, k.rsplit("/", 1)[-1])}
     seen, nth = {}, {}
     for r in rows:
@@ -788,10 +834,11 @@ def fence_rows(rows, fence=None):
             path = project_path(p)
             seen[p] = fence(path) != "quote" or bool(
                 path and any(x.startswith(path.rstrip("/") + "/") for x in roots))
-        if seen[p] or torn:
+        # a glob member the registry does not list is a confidential scope's row too (open-quoted by the core)
+        if seen[p] or torn or r["scope"].casefold() in hidden:
             # numbered per session, so "By session" and the line's Biggest never sum several into one
             n = nth.setdefault(r.get("session"), len(nth) + 1)
-            r.update(project=CONFIDENTIAL, title="(confidential #%d)" % n)
+            r.update(project=CONFIDENTIAL, title="(confidential #%d)" % n, scope=fenced_scope(r["scope"], order, torn))
             if r.get("skill") not in skills:
                 r["skill"] = CONFIDENTIAL
             if r.get("agent") not in agents:
@@ -800,6 +847,18 @@ def fence_rows(rows, fence=None):
         elif names_one(r.get("title"), words):
             r["title"] = CONFIDENTIAL
     return rows
+
+
+def fenced_scope(scope, order, torn):
+    """A fenced row's scope label in the global: a confidential scope by its place in `order` (the
+    registry's confidential scopes, casefolded), an open one by name (a group folder's row may sit in
+    one), anything else `(confidential)` — every row while the registry cannot be read."""
+    sc = scope.casefold()
+    if torn:
+        return CONFIDENTIAL
+    if sc in order:
+        return "(confidential scope %d)" % (order.index(sc) + 1)
+    return scope if scope != NO_SCOPE else CONFIDENTIAL
 
 
 def load_limits(c):
@@ -1003,10 +1062,17 @@ def driver(v):
     return f"heavy output, {ktok(v['output'])}"
 
 
-def summarise(c, day):
+def summarise(c, day, scope=None):
+    """The day's figures over every row, fenced (the global report); with `scope`, over that
+    confidential scope's own rows alone, named (its report in its node)."""
     d = dt.date.fromisoformat(day)
     first28 = (d - dt.timedelta(days=27)).isoformat()
-    rows28 = fence_rows(load_rows(c, first28, day))
+    rows28 = load_rows(c, first28, day)
+    if scope:
+        fence = common.gather_fence(scope)
+        rows28 = label_scopes([r for r in rows28 if fence(project_path(r.get("project"))) == "quote"])
+    else:
+        rows28 = fence_rows(rows28)
     rows = [r for r in rows28 if r["day"] == day]
     days_with = defaultdict(float)
     for r in rows28:
@@ -1050,13 +1116,17 @@ def extra_line(lc):
     return "extra usage off" + (" (you switched it off)" if xu.get("user_disabled") else "")
 
 
-def render(c, day):
-    s = summarise(c, day)
+def render(c, day, scope=None):
+    s = summarise(c, day, scope)
     rows, total = s["rows"], s["total"]
     lc = s["latest"]
     L = []
-    L.append(f"# Claude usage — {day}")
+    L.append(f"# Claude usage — {day}" + (f", scope {scope}" if scope else ""))
     L.append("")
+    if scope:
+        L.append(f"Scope {scope}'s own sessions only; this file stays in its node. The global report counts them, "
+                 "unnamed; the plan's figures below are the whole login's.")
+        L.append("")
     L.append(f"Written by `bin/usage-report` at {c['tz_now'].strftime('%Y-%m-%d %H:%M')} on {c['host']}. "
              "$ is API list price for the same tokens, a proxy, then the effective cost on the plan "
              f"({common.ratio_note()}); the plan's own percentages are the truth.")
@@ -1109,6 +1179,7 @@ def render(c, day):
     L.append("")
     L += table("By session", by_sess, total, "Session · host", 10)
     L += table("By project", group(rows, lambda r: r["project"]), total, "Project")
+    L += table("By scope", group(rows, lambda r: r.get("scope") or NO_SCOPE), total, "Scope")
     L += table("By model and effort", group(rows, lambda r: (r["model"].replace("claude-", ""), r["effort"])), total, "Model · effort")
     L += table("By skill", group(rows, lambda r: r["skill"] or "(none)"), total, "Skill")
     L += table("By agent", group(rows, lambda r: r["agent"]), total, "Agent")
@@ -1234,14 +1305,87 @@ def publish(c, day):
     return r.returncode
 
 
+def scope_reports(c, day):
+    """Write each confidential scope's report into its node (the module's docstring, the reports rule);
+    [the files written]. Its lines name no scope, path or repo: they go to the job's log."""
+    reg, torn = common.read_registry()
+    if torn:
+        print(f"render {day}: the registry cannot be read — no confidential scope's report written")
+        return []
+    repos = (reg or {}).get("repos") or {}
+    scopes = [(n, sc) for n, sc in ((reg or {}).get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True]
+    fence, out = common.gather_fence(), []
+    for i, (name, sc) in enumerate(scopes, 1):
+        try:   # one scope's failure never costs the later scopes their report; the type alone, never a path
+            out += _scope_report(c, day, i, name, sc, repos, fence)
+        except Exception as ex:
+            print(f"render {day}: confidential scope {i}: its report FAILED ({type(ex).__name__})")
+    return out
+
+
+def _scope_report(c, day, i, name, sc, repos, fence):
+    """One confidential scope's report into its node; [the files written]."""
+    keys = [k for k in common.scope_members(sc, repos) if k in repos]
+    text, s = render(c, day, name) if keys else ("", {"rows": []})
+    if not s["rows"]:
+        return []
+    anchor = common.PROJECTS / keys[0]
+    folder = anchor / "reports" / "usage"
+    real, top = os.path.realpath(folder), os.path.realpath(anchor)
+    if not anchor.is_dir():
+        print(f"render {day}: confidential scope {i}: its node is not on this Mac — its report not written")
+        return []
+    # never a non-confidential path: inside the anchor as resolved, and a path the fence calls a scope's
+    if not real.startswith(top + os.sep) or fence(real) != "fenced" or fence(str(folder)) != "fenced":
+        print(f"render {day}: confidential scope {i}: its reports folder resolves outside its node — refused")
+        return []
+    folder.mkdir(parents=True, exist_ok=True)
+    keep_untracked(anchor)
+    out = []
+    for f in (folder / f"{day}.md", folder / "latest.md"):
+        # through a fresh temp file (mkstemp: exclusive, never a link) and os.replace: a file that is a
+        # link, the target or its temp name, is replaced, never written through
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix="." + f.name + ".")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+        os.replace(tmp, f)
+        out.append(f)
+    print(f"render {day}: confidential scope {i}: its report written in its node")
+    return out
+
+
+def keep_untracked(anchor):
+    """Ignore reports/usage/ in the anchor's own checkout (info/exclude, never tracked): untracked files
+    there make sync.py read the checkout as dirty and stop fast-forwarding its main."""
+    try:
+        r = subprocess.run(["git", "-C", str(anchor), "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode:
+            return
+        gd = Path(r.stdout.strip())
+        gd = gd if gd.is_absolute() else Path(anchor) / gd
+        ex = gd / "info" / "exclude"
+        have = ex.read_text() if ex.exists() else ""
+        if "/reports/usage/" not in have.split():
+            ex.parent.mkdir(parents=True, exist_ok=True)
+            ex.write_text(have + ("" if have.endswith("\n") or not have else "\n") + "/reports/usage/\n")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def cmd_render(c, day):
     """The report always goes to local_reports, then to the shares through bin/publish (drive-share.md).
-    A failed destination is queued and retried by publish itself, never by this job."""
+    A failed destination is queued and retried by publish itself, never by this job. Each confidential
+    scope's own report goes into its node, never published."""
     text, s = render(c, day)
     ln = line(c, day, s)
     write_reports(c["local_reports"], day, text, ln)
     print(f"render {day}: {c['local_reports'] / (day + '.md')}")
     publish(c, day)
+    try:
+        scope_reports(c, day)
+    except Exception as ex:   # the global report and the line go out regardless; the type alone, never a path
+        print(f"render {day}: a confidential scope's report FAILED ({type(ex).__name__})")
     return ln
 
 
