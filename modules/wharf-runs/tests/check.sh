@@ -52,6 +52,8 @@ run_suite() {   # <suite>: its header and the suite, or the line saying why it i
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  --   skipped: not in this checkout"; return 0; fi
   if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only (runs in /finish)"; return 0; fi
+  # the PR check's macOS share (.circleci/share.sh): CircleCI's Linux job ran these already
+  if [ -n "${WHARF_RUNS_SKIP_LINUX_OK:-}" ] && [ "${LINUX_OK#* $s }" != "$LINUX_OK" ]; then echo "  --   skipped: run on Linux (the macOS share)"; return 0; fi
   t=$(date +%s); bash "$D/$s.sh"; r=$?
   echo "  ($s: $(( $(date +%s) - t )) s, exit $r)"
   return $r

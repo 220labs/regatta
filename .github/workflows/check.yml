@@ -116,6 +116,16 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
+      # CI_LINUX_ELSEWHERE `true` (a repo whose Linux-proven suites run on CircleCI's check-linux, which
+      # main's protection then requires too): on a pull request this runner takes only the rest, the
+      # macOS share (.circleci/share.sh). A push, the nightly run and a hand start run the whole line,
+      # so the suites' Darwin branches are still run on a Mac each day. Unset, as in the twin and
+      # forks, the step below runs the whole line. The step keeps its name and its one `run:` block:
+      # twin-linux.sh and ci-provider read the line from it.
+      - name: check, the macOS share
+        if: vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request'
+        run: bash .circleci/share.sh macos
       - name: check
+        if: vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request'
         run: |
           claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; }
