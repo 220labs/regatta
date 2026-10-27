@@ -131,5 +131,32 @@ check "$(python3 "$KEEL" parse "$T/shape.md" | python3 -c 'import json,sys; prin
 else echo "  --   keel not installed: the D-item shape cases skipped"; fi
 check "$(shared "$A/architect.md" | tr '\n' ' ' | grep -c '`no` for anything physical, money, a new *dependency or a deletion')" "1" "…and says what is never reversible"
 
+echo "every agent's frontmatter parses as YAML"
+# A plain `description:` holding a colon and a space ("`Tier:` line") is a mapping YAML refuses: the principal
+# heads landed so (principal tier S2), and every Mac's `bootstrap.sh --check` in the overlay failed on them,
+# which stopped every overlay landing (2026-10-27). Quote such a value; PyYAML is on CI's runners and the Macs.
+cat > "$T/fm.py" <<'PY'
+import pathlib, sys
+try:
+    import yaml
+except ImportError:
+    print("no-yaml"); sys.exit(0)
+bad = []
+for f in sorted(pathlib.Path(sys.argv[1]).glob("*.md")):
+    t = f.read_text(encoding="utf-8")
+    if not t.startswith("---\n"):
+        continue
+    try:
+        d = yaml.safe_load(t.split("---\n")[1])
+        if not isinstance(d, dict) or not isinstance(d.get("description"), str):
+            bad.append(f.name + ": no description")
+    except yaml.YAMLError as e:
+        bad.append(f.name + ": " + str(e).splitlines()[0])
+print("; ".join(bad) or "ok")
+PY
+fm=$(python3 "$T/fm.py" "$A")
+if [ "$fm" = no-yaml ]; then echo "  --   PyYAML not installed: the frontmatter parse skipped"
+else check "$fm" "ok" "each agents/*.md's frontmatter parses, with a description"; fi
+
 echo
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi
