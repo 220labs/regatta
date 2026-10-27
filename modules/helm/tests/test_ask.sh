@@ -324,6 +324,13 @@ has "$out" "backend: talk · verdict: sent · talk: 7" "Talk first when it has a
 check "$(python3 -c "import json; d=[json.loads(l) for l in open('$T/posts.jsonl')][-1]; print(d['space'], d['session_id'], d['auth'], d['ua'].split()[0], d['text'][:6])")" "space-9 mgr-1 Bearer k-test curl/8.7.1 ASK re" "the POST: uuid from the link, the manager's id, the key, a curl agent (P2)"
 has "$out" "--task demo" "the reply names the run's task (finding 2)"
 hasnt "$out" "--space" "  and no --space: the run has no page of its own, so nothing would hear a Talk answer"
+echo "  peer-manager-relay S1: a build-box run whose skipper is on a Mac with no ssh road here, its page from dispatch"
+n0=$(wc -l < "$T/posts.jsonl" | tr -d ' ')
+out=$(env SPACESHEEP_KEY=k-test "$E_SKIP"=sk-lap "$E_SKIP_HOST"=farmac DISPATCH_PLAN_SPACE=sp-new "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "backend: talk · verdict: sent · talk: 7" "  Talk carries it: the skipper is remote (no alias for its Mac), and the page dispatch published is its address"
+check "$(python3 -c "import json; d=[json.loads(l) for l in open('$T/posts.jsonl')][-1]; print(d['space'], d['session_id'])") $(( $(wc -l < "$T/posts.jsonl") - n0 ))" "sp-new sk-lap 1" \
+  "  one POST, to the skipper's session on that page"
+has "$out" "RELAYED TO" "  the run ends on the RELAYED line, not parked"
 live off ghost
 out=$(env SPACESHEEP_KEY=k-test "$E_SKIP"=off DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "talk: skipped — talk: talk_off" "K10: Talk off says so and the next backend is tried"
