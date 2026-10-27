@@ -57,6 +57,27 @@ check "$(grep -c "agents/principal-architect.md" <(shared "$A/architect.md"))" "
 check "$(shared "$A/architect.md" | grep -c "^claude -p --restricted --strict-mcp-config --settings '{\"disableAllHooks\":true}' --tools \"\" --model claude-sonnet-5-5")" "1" "the probe shape: restricted, no MCP, every hook off, no tools"
 check "$(shared "$A/architect.md" | tr '\n' ' ' | grep -c 'Forbidden: `--add-dir`, any bypass permission mode, `--dangerously-skip-permissions`')" "1" "…and names what a probe may never add"
 
+# What an architect writes (the retrospective of 2026-10-26, docs/architect-outputs-2026-10-26.md:
+# 110 docs, none with a figure file, every visual built by a later session). The doc and its own
+# folder, what each subject owes there, and the skills read, never loaded — never "exactly one file" again.
+S0="$B/../sextant/agents/sounder.md"
+SK="$B/../sextant/skills/sounding/SKILL.md"
+check "$(grep -l 'exactly one Markdown file\|The only file you write\|the one file to$' "$A/architect.md" "$A/sr-architect.md" "$A/principal-architect.md" "$S0" "$SK" 2>/dev/null | wc -l | tr -d ' ')" "0" "no architect is held to one file (principal-architect's and the sounder's heads and the /sounding brief too)"
+check "$(shared "$A/architect.md" | grep -c '^\*\*What you write\.\*\* In a repo, the doc the parent names')" "1" "the body names the doc and its folder"
+check "$(shared "$A/architect.md" | tr '\n' ' ' | tr -s ' ' | grep -c 'a clickable static prototype in `<stem>/prototype/`')" "1" "…a prototype for anything people look at"
+check "$(shared "$A/architect.md" | tr '\n' ' ' | grep -c 'never a binary')" "1" "…text only in the repo"
+body0=$(shared "$A/architect.md" | tr '\n' ' ' | tr -s ' ')
+check "$(shared "$A/architect.md" | grep -c '^\*\*Skills\.\*\* Before writing, list the installed skills')" "1" "…and reads the skills that fit"
+# A loaded skill pre-approves its allowed-tools (name's gh api, share's bulletin write), past the
+# hard limits: the architects read a SKILL.md, never load one (the landing review, 2026-10-27).
+check "$(grep -h '^tools:' "$A/architect.md" "$A/sr-architect.md" | grep -c 'Skill')" "0" "neither may call the Skill tool"
+check "$(echo "$body0" | grep -c 'A set.s component docs are not in it: they sit beside the entry')" "1" "…component docs beside the entry, where keel list finds them"
+check "$(echo "$body0" | grep -c '\*\*A claim one command could settle\*\*')" "1" "…a claim one command settles is run"
+check "$(echo "$body0" | grep -c '\*\*Copy\*\* (voice, a page.s text, a name): the words in place')" "1" "…copy delivered in place"
+check "$(echo "$body0" | grep -c 'No `git` that mutates.*no deploy or publish')" "1" "…no mutating git, no deploy or publish"
+check "$(echo "$body0" | grep -c 'A script kept in the folder runs under the probes. rules')" "1" "…a kept script runs under the probes' rules"
+check "$(echo "$body0" | grep -c 'never a private title, a session.s text or a live person.s data')" "1" "…kept output carries no private data"
+
 # The Sounding (the proposer design's S1): every idea is sounded unless `firm:`, and every doc says
 # what exists before it builds. keel lint --strict will refuse a doc without them (S2, not built yet).
 echo "agents: the stance and the Landscape (Sounding S1)"
