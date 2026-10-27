@@ -136,7 +136,7 @@ try:
     import knowledge  # noqa: E402 — the knowledge repos' names, from atlas's keys (stdlib only)
     core_path.add()
     import common  # noqa: E402 — host name and the GitHub client, shared with sync.py and bin/pr
-    common.OWNER_TTL  # an out-of-step core fails here, before a judgement, not halfway through one
+    common.OWNER_TTL, common.landed_pr  # an out-of-step core fails here, before a judgement, not halfway through one
     core_error = None
 except Exception as exc:  # not ImportError alone: a syntax error, an unreadable file or a missing
     # name in the core killed the hook the same way (exit 1, read as allow; B1 finish review)
@@ -2025,8 +2025,66 @@ def offered(state):
         return ""
 
 
+SPENT_NAME = "spent.json"  # never `landed`: the common git dir's claude/ holds branches.py's record of that name
+
+
+def landed(state, branch, ask=True):
+    """GitHub's word that this branch already launched — {"branch", "number", "url", "origin"} of a
+    pull request from it, into MAIN, that merged while none from it is open (common.landed_pr) — or
+    None. A yes is kept in the state dir's SPENT_NAME, per branch name, with the origin ref it was
+    seen beside, so a spent worktree costs one lookup, not one per turn; once that ref moves
+    (someone pushed the branch by hand, as a reopened PR would) the yes is asked again, so an open
+    PR wins here too. A no is asked again at the next push, since an open PR may merge meanwhile.
+    A PR whose merge commit HEAD already holds is no yes: the branch forked from main after that
+    landing, new work under a reused name. `ask=False` reads the kept yes only (the prompt-time
+    context, sync after publish). None on every GitHub failure: the push goes ahead, as before."""
+    marker = state / SPENT_NAME
+    remote = git("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}", check=False).stdout.strip()
+    try:
+        held = json.loads(marker.read_text())
+        if held.get("branch") == branch and held.get("number") and held.get("origin", remote) == remote:
+            return held
+    except (OSError, ValueError, AttributeError):
+        pass
+    if not ask or os.environ.get("CLAUDE_HOOK_NO_GITHUB"):
+        return None
+    slug = common.repo_slug(git("remote", "get-url", "origin", check=False).stdout.strip())
+    tok = common.token() if slug else None
+    pr = common.landed_pr(slug, branch, tok, base=MAIN) if tok else None
+    if not pr or not pr.get("number"):
+        return None
+    merged = pr.get("merge_commit_sha")
+    if merged and git("merge-base", "--is-ancestor", merged, "HEAD", check=False).returncode == 0:
+        return None
+    held = {"branch": branch, "number": pr["number"], "url": pr.get("html_url") or "", "origin": remote}
+    try:
+        marker.write_text(json.dumps(held) + "\n")
+    except OSError:
+        pass
+    return held
+
+
+def spent_note(branch, held):
+    """What a session in a landed branch's worktree hears instead of a push. The recipe names the
+    main checkout absolutely: run from inside the spent worktree, a relative path would nest the
+    new worktree in it (as worktree_required_reason's via= form says)."""
+    top = main_checkout() or Path(ROOT)
+    return (f"⛔ not pushed: {branch} already landed as #{held['number']}"
+            + (f" ({held['url']})" if held.get("url") else "")
+            + " — this worktree is spent; its new commits stay local. Start new work on a fresh branch:\n"
+            f"   git -C {top} worktree add {top}/.claude/worktrees/<topic> -b {branch_recipe()} {MAIN}")
+
+
+def spent_context(branch, held):
+    """The model's copy of spent_note: a Stop note reaches the owner's screen only."""
+    return (spent_note(branch, held).replace("⛔ not pushed: ", "The checkpoint hook no longer pushes this branch: ")
+            + ", then EnterWorktree. Tell the user; do not push this branch by hand.")
+
+
 def publish(state, branch, session, force=False):
-    """Push this claude/* branch to origin (see PUSH_EVERY). Returns a note or None."""
+    """Push this claude/* branch to origin (see PUSH_EVERY). Returns a note or None.
+    Never a branch whose PR already merged (landed()): the push would put its checkpoint history
+    back on origin and the first-push path would open a WIP PR of work main has (regatta#171)."""
     if not branch.startswith("claude/") or os.environ.get("CLAUDE_HOOK_NO_PUSH"):
         return None
     if git("remote", "get-url", "origin", check=False).returncode != 0:
@@ -2041,7 +2099,12 @@ def publish(state, branch, session, force=False):
     # Before the attempt: a failing origin is retried in PUSH_EVERY, not every turn. The marker
     # holds the HEAD it was written at, so a Stop can tell a commit no push has been offered yet
     # (offered(), below) from one a failing origin already refused.
-    marker.write_text(git("rev-parse", "HEAD", check=False).stdout.strip() + "\n")
+    head = git("rev-parse", "HEAD", check=False).stdout.strip()
+    told = offered(state) == head
+    marker.write_text(head + "\n")
+    spent = landed(state, branch)
+    if spent:  # said once per new commit it strands; a forced push (session end, sync) always hears it
+        return None if told and not force else spent_note(branch, spent)
     try:
         r = subprocess.run(["git", "push", "-q", "-u", "origin", branch], cwd=ROOT,
                            capture_output=True, text=True, timeout=PUSH_TIMEOUT)
@@ -2922,6 +2985,11 @@ def main():
             context = (f"The checked-out branch changed between turns: was {owner.get('branch')}, "
                        f"now {branch}. Something outside this session switched it. Confirm with "
                        f"the user which branch this work belongs on before writing anything.")
+        if branch.startswith("claude/") and not locked_out and not went:
+            spent = landed(state, branch, ask=False)  # the kept yes only: no lookup per prompt
+            if spent:
+                why = spent_context(branch, spent)
+                context = f"{context} {why}" if context else why
         if af_note and not (locked_out and af_running) and not went:  # the outcome, once
             notes.append(af_note)
             if af_context:

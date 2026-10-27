@@ -347,10 +347,15 @@ def recently_touched(path, rels, now, cap=500):
 
 
 def push_left(cp, state, name, sid):
-    """publish(), then whether origin has the branch's tip. A miss leaves the UNPUSHED marker,
-    so the next session start tries again — the worktree is clean by then and nothing else
-    would look at it (review, 2026-09-25)."""
+    """publish(), then whether origin has the branch's tip — or, for a branch that already landed
+    (publish refuses it, cp.landed), True with a one-line note: it is never retried. A miss leaves
+    the UNPUSHED marker, so the next session start tries again — the worktree is clean by then and
+    nothing else would look at it (review, 2026-09-25)."""
     pushed = cp.publish(state, name, sid, force=True)
+    spent = cp.landed(state, name, ask=False)  # publish already asked GitHub and kept any yes
+    if spent:
+        (state / UNPUSHED).unlink(missing_ok=True)
+        return f"kept local: {name} already landed as #{spent['number']}, its worktree is spent", True
     ahead = git(cp.ROOT, "rev-list", "--count", "@{u}..HEAD")
     if ahead.returncode == 0 and ahead.stdout.strip() == "0":
         (state / UNPUSHED).unlink(missing_ok=True)
@@ -400,6 +405,8 @@ def push_again(repo, main, path, name, gitdir):
     cp.ROOT, cp.MAIN = str(path), main
     sid = (state / UNPUSHED).read_text().strip() or "unknown"
     pushed, ok = push_left(cp, state, name, sid)
+    if cp.landed(state, name, ask=False):
+        return f"{repo.name}: what session {sid[:8]} left in {path.name} · {pushed}"
     if ok:
         return f"{repo.name}: pushed what session {sid[:8]} left in {path.name}" + (f" · {pushed}" if pushed else "")
     return f"⚠ {repo.name}: {path.name} ({name}) still not on origin" + (f" — {pushed}" if pushed else "")
