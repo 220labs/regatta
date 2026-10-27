@@ -51,6 +51,9 @@ check "$(SP 'print(common.scope_members(common.scope_registry()[1]["node"], comm
   "  scope_members(): the named keys, then a glob's"
 check "$(SP 'print(common.scope_of_key("z-1"), common.scope_of_key("o"), common.scope_of_key("nope"))')" "node half None" "  scope_of_key()"
 check "$(SP 'print(common.scope_login("node"), common.scope_login("half"), common.scope_login("nope"))')" "w None None" "  scope_login()"
+check "$(SP 'print(common.scope_marker("node"))')" "confidential:$(printf node | shasum -a 256 | cut -c1-8)" "  scope_marker(): the first 8 hex of the name's sha256, no name (S5)"
+check "$(SP 'm = common.scope_marker; print(common.scope_of_marker(m("node")), common.scope_of_marker(m("half")), common.scope_of_marker("node"), common.scope_of_marker(None))')" \
+  "node None None None" "  scope_of_marker(): a confidential scope by this registry; an open one, a bare name, none: None"
 check "$(SP 'print([str(p.relative_to(common.PROJECTS)) for p in common.confidential_roots()])')" "['k', 'z-1']" "  confidential_roots(): each repo's checkout"
 check "$(SP 'print([p.name for p in common.login_dirs()])')" "['.claude', '.claude-w']" "  login_dirs(): ~/.claude and each row's dir that exists"
 out=$(SP 'print("\n".join(str(p) for p in common.scope_paths("node")))')

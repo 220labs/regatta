@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `scope_marker(name)` and `scope_of_marker(marker)` (confidential-reach S5's landing review, 2026-10-26):
+  what text bound for an open repo says in place of a confidential scope's name, `confidential:<first 8
+  hex of sha256(name)>`, and its reading back by this host's registry (None for an open scope, an unknown
+  marker or two scopes sharing it). Unkeyed: it hides the name, not one already guessed.
 - The check lints every module's suites (`tests/home_rm.py`): a recursive `rm` (the flag anywhere in its
   flags), an `rm` of a glob or a `find -delete` of a path under `$HOME` (directly, by `~/`, or through
   variables built from it) goes through the suite's `rm_own`, which deletes only under the suite's own `$T`,

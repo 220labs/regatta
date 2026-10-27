@@ -10,6 +10,7 @@ Hooks must never cost a turn over GitHub being unreachable.
 import base64
 import fnmatch
 import glob
+import hashlib
 import json
 import os
 import re
@@ -426,6 +427,25 @@ def scope_of_key(key, path=None):
 def confidential_scopes(path=None):
     """{name: scope} for each scope flagged `"confidential": true` (only a real true counts)."""
     return {n: s for n, s in scope_registry(path)[1].items() if isinstance(s, dict) and s.get("confidential") is True}
+
+
+SCOPE_MARK = "confidential:"
+
+
+def scope_marker(name):
+    """What text bound for an open repo says in place of confidential scope `name` (confidential-reach
+    S5: a seed's Seeded-By line and its .review's origin): `confidential:<the first 8 hex of
+    sha256(name)>`. It tells a reader that the seed came out of some confidential scope and lets this
+    host's registry say which (scope_of_marker); it names nothing. Unkeyed: whoever guesses the name can
+    confirm the guess against it, so it hides the name, not a name already suspected."""
+    return SCOPE_MARK + hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+
+
+def scope_of_marker(marker, path=None):
+    """The confidential scope whose scope_marker() is `marker`, by this host's registry — or None: no
+    such scope, an open one, two that share the 8 hex (refused rather than guessed). Never raises."""
+    hits = [n for n in confidential_scopes(path) if isinstance(marker, str) and scope_marker(n) == marker]
+    return hits[0] if len(hits) == 1 else None
 
 
 def scope_login(name, path=None):
