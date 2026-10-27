@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/finish` step 5 removes a seed's `.review` with its brief (confidential-reach S5).
 - `ci-provider --runner install`: a runner whose frozen LANG is no locale on its Mac (C.UTF-8 from a
   newer Mac's ssh, on macOS 12) takes an installed UTF-8 one and restarts, so its jobs no longer run
   in C (ci-fleet follow-ups, 2026-10-27).

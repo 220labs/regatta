@@ -379,8 +379,9 @@ session's work sharing the branch — note them; they're reported separately.
 
 5. **Commit the wrap-up** as one checkpoint: write `commit-summary.md` in the scratchpad,
    then `git add -A && git commit -F <scratchpad>/commit-summary.md`. A `docs/handoff/*.md`
-   on the branch is the seed brief this session started from: `git rm` it first, or `git mv`
-   it to `docs/<topic>-<date>.md` when it became the record — `docs/handoff/` never goes to
+   on the branch is the seed brief this session started from: `git rm` it first, with the
+   `.review` a `pickup seed --from` left beside it (confidential-reach S5), or `git mv` the brief
+   to `docs/<topic>-<date>.md` when it became the record — `docs/handoff/` never goes to
    `main`, and doing it here keeps step 9's proof clean.
    Then **take in what GitHub has**: `git fetch -q origin <branch>`, and if
    `git merge-base --is-ancestor origin/<branch> HEAD` fails, someone committed on GitHub —
