@@ -48,6 +48,20 @@ registry's `tenants` and rows' `tenant` are ignored:
 {"acme": {"repos": ["acme-*"], "logins": ["acme"]}}
 ```
 
+`account tenant set acme --repos 'acme-*' --logins acme` writes one entry and `account tenant drop acme`
+removes one: through the link, read back, the hooks' copy refreshed at once. They refuse a login already
+in another tenant (each login is one tenant's), a repo another tenant holds, a label no claude row has, a
+file that does not read (writing would drop the rest), and an unattended caller (`CLAUDE_UNATTENDED`).
+
+Your own private repos can be a tenant too: name your vault and its siblings, on your own logins, and
+every other seat — an organisation's, one Orca holds that no row names — is refused them without a deny
+list. The vault's tenant is the one tenancy also binds where a session starts *above* a repo: your
+default config dir's `CLAUDE.md` imports from the vault, so a folder holding the vault's tenant's repos
+(the projects folder, the home folder) is off every login but the tenant's, as a deny list's repo makes it,
+and a row refused the vault links the work memory. `account doctor` lists each tenant, flags a deny-list
+entry a tenant already refuses (kept by hand, derived by tenancy), and flags a vault no tenant and no deny
+list holds. Write the tenant before taking the deny lists off.
+
 Each good read is copied beside the key (`.tenants.json.last`), and while the link reads nothing or
 is gone (the drive behind it away) that copy holds: tenancy never fails open onto another seat. Only
 a Mac whose link has never read has tenancy off, said on stderr and by `account doctor`, which also names a copy in force, a file that does not parse, and a tenant left with no login. To end tenancy, write `{}`.

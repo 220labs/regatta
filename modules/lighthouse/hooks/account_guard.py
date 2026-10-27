@@ -12,7 +12,7 @@ on the default login).
 
 A tenant's repo (bin/account's header, Tenants, 2026-10-20) is off every login but the tenant's,
 the default dir's included, so while the tenants file (else the registry) names a tenant the hook asks on the default dir
-too, and a tenant refusal is passed on as `allowed` words it: it names the login's own way in.
+too (bar in its own tenant's repos, which it runs: the vault's tenant, S7), and a tenant refusal is passed on as `allowed` words it: it names the login's own way in.
 A no-op without CLAUDE_CONFIG_DIR and no tenant (the default dir denies nothing) and for a dir the registry
 has no row for — bar a tenant's repo, which such a dir is refused too, and one under Orca's data, which `allowed` answers by the row of the login it is
 signed in as, else ORCA_ROW's list (2026-10-17). Fails closed when bin/account cannot run the regatta core (a
@@ -47,9 +47,10 @@ def fixture_registry(reg, live):
 
 
 def tenant_entries():
-    """The tenant repo entries: the tenants file's when written, else the registry's ([] when none, or
-    unreadable — as before tenancy). A plain read, no subprocess: the hook runs on every prompt of every
-    default-dir session."""
+    """The tenant repo entries the default dir may be refused: the tenants file's when written, else the
+    registry's ([] when none, or unreadable — as before tenancy), less its own tenant's, which it runs (the
+    vault's tenant on the default dir, S7: four repos the owner works in, which would cost each prompt there
+    a subprocess). A plain read, no subprocess: the hook runs on every prompt of every default-dir session."""
     config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
     live = config / "lighthouse" / "accounts.json"
     reg = Path(os.environ.get("ACCOUNTS_FILE") or live)
@@ -65,6 +66,10 @@ def tenant_entries():
     # the copy under claude-host (the usage tick, every 15 min), so a changed file reaches here within 15 min.
     # A plain file is read first, as before S4: an edit to it takes effect at once (S4 finish review). The
     # copy and the link are asked about before exists(), which follows the link into the drive.
+    try:
+        accounts = json.loads(reg.read_text()).get("accounts")
+    except (OSError, ValueError, AttributeError):
+        accounts = None
     if last.is_file() or tenants.is_symlink() or tenants.exists():   # written, the whole of tenancy (bin/account's header)
         t = None
         for f in ((last, tenants) if drive_backed(tenants) else (tenants, last)):
@@ -77,6 +82,13 @@ def tenant_entries():
         if not isinstance(t, dict):
             print(f"account_guard: {tenants} unreadable, and no last good copy — tenancy unchecked", file=sys.stderr)
             return []
+        label = default_row(accounts).get("label")
+        own = None
+        for n, v in t.items():   # a label in two tenants' logins is the later one's (bin/account's apply_tenants)
+            logins = v.get("logins") if isinstance(v, dict) else None
+            logins = [logins] if isinstance(logins, str) else logins if isinstance(logins, list) else []
+            if label is not None and label in logins:
+                own = n
     else:
         try:
             t = json.loads(reg.read_text()).get("tenants")
@@ -84,8 +96,20 @@ def tenant_entries():
             return []
         if not isinstance(t, dict):
             return []
-    return [e for v in t.values() if isinstance(v, dict) and isinstance(v.get("repos"), list)
+        own = default_row(accounts).get("tenant")
+    return [e for n, v in t.items() if n != own and isinstance(v, dict) and isinstance(v.get("repos"), list)
             for e in map(tenant_entry, v["repos"]) if e]
+
+
+def default_row(accounts):
+    """The registry's row for the default dir (`.claude` in the home folder, not one Orca holds), or {}: bin/account's is_default.
+    An unreadable registry has none, so no tenant is the default dir's own and every entry is asked about."""
+    default = os.path.join(str(Path.home()), ".claude")
+    for a in accounts if isinstance(accounts, list) else []:
+        if isinstance(a, dict) and a.get("via") != "orca" and a.get("provider", "claude") == "claude" \
+                and isinstance(a.get("home"), str) and os.path.abspath(os.path.expanduser(a["home"])) == default:
+            return a
+    return {}
 
 
 def drive_backed(p):

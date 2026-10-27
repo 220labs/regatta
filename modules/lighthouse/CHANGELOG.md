@@ -10,6 +10,16 @@
 - health: a free-disk line — under 50 GB free on the data volume fails and is posted once, naming the
   three biggest folders one `du -x` pass finds (Chrome's APFS clone folders left out);
   under 100 GB warns in the log. Read-only; `df` gives the free space (2026-10-25).
+- The vault as a tenant (confidential-reach S7, 2026-10-26): `account tenant set NAME --repos … --logins …`
+  and `tenant drop NAME`, the tenants file's one writer — through the link, read back, the hooks' copy
+  refreshed; refused unattended (exit 2), and refusing a login another tenant has, a repo another tenant
+  holds, an unknown label, or a file that does not read. `holds_denied` binds the vault's tenant
+  (`lighthouse/vault`): a folder holding its repos is off every row but the tenant's, the default dir's and a
+  dir no row names included; a row refused the vault by tenancy is an employer's (`employer()`). `account
+  doctor` reports each tenant, a deny-list entry a tenant already refuses (G3), and a vault refused no
+  login. `tenant_ties` counts the default profile as the default dir's login. `account_guard`'s prefilter
+  leaves out the default dir's own tenant, so its prompts in the vault's repos start no subprocess. An
+  unsynced Orca login's holds refusal is a ' holds ' line, so a `cd` into the projects folder is not refused.
 - deadman: `inbox_repo` defaults to the config dir's `helm/logbook-repo`, helm's renamed stall-road key;
   the old `helm/inbox-repo` is not read (2026-10-25).
 - `account setup` writes the first-start keys into every login dir this Mac carries, Orca's and the
