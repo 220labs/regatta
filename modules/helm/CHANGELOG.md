@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `helm page [SHIP]`: the ship's page, published once, its space printed (peer-manager-relay S1, D1-A).
+  No ship, it is made first (topic `skipper <id>`, the session as its skipper); a ship that has a page
+  publishes nothing. Exit 3, one line on stderr, when no page may go: no sheep render, no CLI, key or Talk service named, an
+  account without Talk, or helm's publish budget held; a refusal makes no ship. dispatch asks it for a typed
+  skipper's first run, so a run on a peer Mac always has a Talk address.
 - A manager on another Mac is judged by that Mac's registry (peer-manager-relay,
   `docs/peer-manager-relay-2026-10-26.md`): where the config dir's `wharf-runs/ssh` names its host, one
   ssh reads the session's record there (`asklib.peer_manager`). Live, `bin/ask relay` relays to it; with

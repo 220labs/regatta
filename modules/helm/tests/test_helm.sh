@@ -348,6 +348,57 @@ PID_=http500; check "$(st)" "False" "  any other refusal the CLI throws (HTTP 50
 PID_=offline; check "$(st)" "True" "  only a fetch that never reached the server (fetch failed) trusts the process"
 PID_=fresh2; check "$(st REGATTA_SHEEP_PLAN=free)" "False" "  no Pro, so no Max: not live, the CLI not asked"
 
+echo "helm page: a skipper's page, published once (peer-manager-relay S1, D1-A)"
+PG="$T/page"; mkdir -p "$PG/bin"
+cat > "$PG/bin/spacesheep" <<EOF
+#!/bin/sh
+echo "\$*" >> "$PG/sheep.calls"
+[ -e "$PG/sheep.fail" ] && { echo '{"error": "the service is away"}'; exit 1; }
+echo '{"uuid": "sp-page", "url": "https://example.invalid/s/sp-page"}'
+EOF
+chmod +x "$PG/bin/spacesheep"
+# a scratch store, cache and deploy log of the block's own; PLAN_NO_DEPLOY off, a Pro account with Talk
+pg() { env -u PLAN_NO_DEPLOY PLANS_DIR="$PG/plans" PLAN_CACHE_DIR="$PG/cache" REGATTA_SHEEP_DIR="$PG/sheep" \
+         MEMO_SHEEP_BIN="$PG/bin/spacesheep" SPACESHEEP_KEY=k-test SPACESHEEP_URL=https://talk.invalid REGATTA_SHEEP_PLAN=pro CLAUDE_CODE_SESSION_ID=sk-1 "$@"; }
+pgo=$(pg "$LX/helm" page sk-1 2>"$PG/err"); rc=$?
+check "$rc $pgo" "0 sp-page" "a skipper with no ship: its ship made, its page published, the space printed"
+check "$(python3 -c "import json; p=json.load(open('$PG/plans/sk-1/plan.json')); print(p['space'], p['topic'], p['manager']['session'])")" \
+  "sp-page skipper sk-1 sk-1" "  plan.json keeps the space, a topic that names the skipper, and the skipper's session"
+check "$(grep -c '^deploy ' "$PG/sheep.calls")" "1" "  one deploy"
+check "$(python3 -c "import json; print([json.loads(l)['by'] for l in open('$PG/sheep/deploys.jsonl')])")" "['helm-ship']" "  counted in this Mac's publish log, as a ship page"
+pgo=$(pg "$LX/helm" page sk-1 2>&1); rc=$?
+check "$rc $pgo" "0 sp-page" "a skipper that has a page: the same space"
+check "$(grep -c '^deploy ' "$PG/sheep.calls")" "1" "  and no second publish"
+pg "$LX/helm" ship "a ship of its own" --id sk-own >/dev/null
+check "$(pg "$LX/helm" page sk-own 2>&1 | tr '\n' '|'; python3 -c "import json; print(json.load(open('$PG/plans/sk-own/plan.json'))['topic'])")" \
+  "sp-page|a ship of its own" "a ship with no page yet: published into it, its topic kept"
+n0=$(grep -c '^deploy ' "$PG/sheep.calls")
+LIM=$(env REGATTA_SHEEP_PLAN=pro python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib._common().sheep_budget(asklib.sheep_plan())['helm_limit'])")
+mkdir -p "$PG/full"; python3 -c "import json, time; open('$PG/full/deploys.jsonl', 'w').writelines(json.dumps({'ts': time.time(), 'by': 'keel', 'ok': True}) + '\n' for _ in range($LIM))"
+pgo=$(pg env REGATTA_SHEEP_DIR="$PG/full" "$LX/helm" page sk-2 2>"$PG/err"); rc=$?
+check "$rc [$pgo] $(cut -c1-28 "$PG/err")" "3 [] helm page: redeploys paused:" "helm's publish budget held: exit 3, said in one line, nothing printed"
+check "$([ -e "$PG/plans/sk-2" ] && echo made || echo none) $(grep -c '^deploy ' "$PG/sheep.calls")" "none $n0" "  no ship made, no publish tried"
+pgo=$(pg env REGATTA_SHEEP_PLAN=free "$LX/helm" page sk-3 2>"$PG/err"); rc=$?
+check "$rc $(cat "$PG/err")" "3 helm page: Talk needs spacesheep Pro (spacesheep.dev/plans): a page would carry no ask" \
+  "an account without Talk: refused, since a page would carry no ask and cost a publish"
+pgo=$(pg env MEMO_SHEEP_BIN= "$LX/helm" page sk-3 2>"$PG/err"); rc=$?
+check "$rc $(cat "$PG/err")" "3 helm page: no spacesheep CLI on this Mac" "no CLI: refused"
+pgo=$(pg env -u SPACESHEEP_KEY ASK_NO_KEY_FILES=1 "$LX/helm" page sk-3 2>"$PG/err"); rc=$?
+check "$rc $(cat "$PG/err") $([ -e "$PG/plans/sk-3" ] && echo made || echo none)" "3 helm page: no SPACESHEEP_KEY on this Mac none" \
+  "no key: refused, so a suite's moved HOME never publishes a real page; none of the refusals made a ship"
+cp -R "$REGATTA_CONFIG" "$PG/cfg"; rm -f "$PG/cfg/helm/talk-url"   # plain -R: links stay links (AGENTS.md's Traps)
+pgo=$(pg env -u SPACESHEEP_URL REGATTA_CONFIG="$PG/cfg" "$LX/helm" page sk-3 2>"$PG/err"); rc=$?
+check "$rc $(cut -c1-32 "$PG/err") $([ -e "$PG/plans/sk-3" ] && echo made || echo none)" "3 helm page: no Talk service named none" \
+  "no Talk service named: refused, as Talk.available() refuses every relay to it (the landing review)"
+pgo=$(pg env PLAN_NO_DEPLOY=1 "$LX/helm" page sk-3 2>"$PG/err"); rc=$?
+check "$rc $(cat "$PG/err")" "3 helm page: no deploy here (PLAN_NO_DEPLOY)" "PLAN_NO_DEPLOY: refused, so no suite publishes"
+touch "$PG/sheep.fail"
+pgo=$(pg "$LX/helm" page sk-4 2>"$PG/err"); rc=$?
+check "$rc [$pgo] $(cut -c1-31 "$PG/err")" "3 [] helm page: sheep: deploy failed" "a deploy that fails: exit 3 with the CLI's line"
+check "$(python3 -c "import json; print(json.load(open('$PG/plans/sk-4/plan.json')).get('space'))")" "None" "  the ship stays, with no space: the next dispatch tries again"
+rm -f "$PG/sheep.fail"
+check "$(pg "$LX/helm" page sk-4 2>&1)" "sp-page" "  …and the next one publishes"
+
 echo "K7: two reporters at once"
 PLAN_NO_RENDER=1
 export PLAN_NO_RENDER

@@ -5,6 +5,8 @@
     helm ship <topic> [--id ID] [--space UUID] [--repo DIR] [--due DATE] [--cost LIST]
                                      # a ship; the id defaults to this session's. On a ship that exists,
                                      #   --due and --cost set its date and its cost to deliver
+    helm page [<id>] [--topic T]     # the ship's page, published once, its space printed; no ship: made
+                                     #   first (dispatch, for a typed skipper). Exit 3: no page may go
     helm task <id> <task> [--title T] [--by WHO] [--kind session|human] [--branch B] [--repo R]
                           [--owns PATH]... [--live SYSTEM]... [--milestone NAME] [--ship NAME] [--block ID]
                           [--provider orca|claude-code|shell|memo] [--agent claude|codex] [--host H]
@@ -169,6 +171,69 @@ def cmd_ship(a):
     manager = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
     helmlib.new_plan(pid, a.topic, manager=manager, space=a.space, repo=a.repo, due=due, cost=cost)
     print(pid)
+
+
+PAGE_REFUSED = 3   # a probe's refusal is never 1, which any uncaught error also exits with (AGENTS.md's Traps)
+
+
+def cmd_page(a):
+    """`helm page [SHIP]`: the ship's page, published once, its space printed (peer-manager-relay S1, D1-A).
+    A ship that has a page prints it and publishes nothing. One that has none, or no ship at all (a typed
+    skipper's first dispatch: dispatch's manager_env asks this), gets its ship made and its page deployed
+    once, under the plan's lock, so two dispatches never publish two pages. Exit 3 with one line on stderr
+    when no page may go: no sheep render on this Mac, no CLI or key, an account without Talk (a page would
+    carry no ask, and cost a publish), or helm's publish budget held (helm_render.budget_hold). A refusal
+    makes no ship; a deploy that fails leaves the ship without a space, for the next dispatch to try."""
+    import helm_render
+    pid = a.id or helmlib.env("ship") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not pid:
+        raise SystemExit("helm page: a ship id, or run inside a session")
+    p = helmlib.load_plan(pid)
+    if p and p.get("space"):
+        print(p["space"])
+        return 0
+
+    def refused(why):
+        print("helm page: %s" % why, file=sys.stderr)
+        return PAGE_REFUSED
+
+    if os.environ.get("PLAN_NO_DEPLOY"):
+        return refused("no deploy here (PLAN_NO_DEPLOY)")
+    if "sheep" not in surfaces.load()["helm"]["render"]:
+        return refused("this Mac renders no sheep page (helm.render in surfaces.json)")
+    import asklib
+    c = asklib._common()
+    if not asklib.sheep_cli():
+        return refused("no spacesheep CLI on this Mac")
+    # no key, no Talk either; and a suite's moved HOME and config dir hold none, so no suite publishes a real page
+    if not asklib.sheep_key():
+        return refused("no SPACESHEEP_KEY on this Mac")
+    # Talk.available()'s own test: with no service named, every relay to the page is refused (the S1 review)
+    if not asklib.talk_url():
+        return refused("no Talk service named (SPACESHEEP_URL, or the config dir's helm/talk-url): a page would carry no ask")
+    why = c.sheep_talk_refusal(asklib.sheep_plan()) if c and hasattr(c, "sheep_talk_refusal") else None
+    if why:
+        return refused(why.split(" — ")[0] + ": a page would carry no ask")
+    held = helm_render.budget_hold()
+    if held:
+        return refused(held)
+    # the dir first, so the lock holds from the check for a ship to its page: helmlib.locked() takes no
+    # lock without one, and new_plan overwrites plan.json, so two first dispatches would each make the
+    # ship and the slower would wipe the faster's space (the S1 landing review)
+    helmlib.plan_dir(pid).mkdir(parents=True, exist_ok=True)
+    with helmlib.locked(pid):
+        if not helmlib.load_plan(pid):
+            # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6), as cmd_ship's
+            skipper = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
+            helmlib.new_plan(pid, a.topic or "skipper %s" % pid[:8], manager=skipper)
+        p = need(pid)
+        if not p.get("space"):   # another dispatch may have published it while this one waited for the lock
+            lines = helm_render.render(pid, deploy=True)
+            p = need(pid)
+            if not p.get("space"):
+                return refused(next((l for l in lines if l.startswith("sheep")), "sheep: not deployed"))
+    print(p["space"])
+    return 0
 
 
 @plan_locked
@@ -1211,6 +1276,7 @@ def main(argv=None):
     s = sp.add_parser("ship", aliases=["new"]); s.add_argument("topic"); s.add_argument("--id"); s.add_argument("--space")
     s.add_argument("--repo"); s.add_argument("--due", help="YYYY-MM-DD, an ISO time, or 3d / 40h from now")
     s.add_argument("--cost", help="the ship's cost to deliver, list dollars")
+    s = sp.add_parser("page"); s.add_argument("id", nargs="?"); s.add_argument("--topic", help="a new ship's topic (skipper <id>)")
     s = sp.add_parser("task"); s.add_argument("id"); s.add_argument("task")
     for k in ("title", "branch", "repo", "milestone", "session"):
         s.add_argument("--" + k)
@@ -1287,6 +1353,11 @@ def main(argv=None):
             return cmd_skipper(a)
         except (ValueError, FileNotFoundError) as e:
             raise SystemExit("helm skipper: %s" % e)
+    if a.cmd == "page":   # its own exit code: 3 is a refusal
+        try:
+            return cmd_page(a)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit("helm page: %s" % e)
     if a.cmd in ("tail", "digest", "compile"):
         a.id, rest = (a.args[0], a.args[1:]) if len(a.args) > 1 else (None, a.args)
         setattr(a, {"tail": "task", "digest": "doc", "compile": "doc"}[a.cmd], rest[0])
