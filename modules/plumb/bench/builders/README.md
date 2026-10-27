@@ -25,6 +25,18 @@ method.
   `drive` starts nothing once the ledger (every row, every live run, the `--self` sessions) passes
   `--stop`, nor a run whose budget could take the ledger past `--ceiling`; a ledger it cannot
   read stops it.
+- **The stops outside the ledger.** A session's cap ends the session, not the driver it started:
+  one ran 15 h past its session, on a login past its week ceiling. So before each start `drive`
+  also stops once the Claude Code session that started it is gone (its claude process, read from
+  `CLAUDE_PID` or the walk up `ps` at start), once `--until <epoch|ISO>` has passed, or once the
+  login its runs spend (the config dir's, matched by home in lighthouse's `account limits --all
+  --parked --json --cached`) is parked, locked, past its week ceiling or otherwise not eligible
+  (paid overage on, a `same_as` twin; the 5-hour window alone is no stop). A cached reading over
+  2 h old, or one without window figures, counts as could-not-tell. An idle but open session
+  counts as alive: an attended start that may outlast its window takes `--until`. Each writes one `STOP:`
+  line naming why and exits 0; an in-flight run finishes and writes its row. Run by hand from a
+  shell with neither a session nor `--until`, the session stop is off, as before. An account tool
+  that cannot answer is logged once, and the ledger's `--stop` still decides.
 
 What it does not measure: review findings (no model grades the build), and anything a hidden test
 does not reach. A verdict inside the spread of an arm's own repeats is "no measured difference".

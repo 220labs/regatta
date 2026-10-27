@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `bench drive` is tethered (bench-tether, 2026-10-27; finding 6 of the night-landings digest): before
+  each start it stops once the session that started it is gone (its claude, from `CLAUDE_PID` or the
+  walk up `ps`), once `--until` passes, or once the runs' login is parked, locked or past its week
+  ceiling by lighthouse's `account limits --cached`, matched by home, or not eligible there (overage on,
+  `same_as`); a reading over 2 h old tells nothing; one `STOP:` line says why, exit 0.
+  Run by hand with neither a session nor `--until`, the session stop is off as before.
 - `trim collect|report|verdict` (trim S1–S2, 2026-10-26): one row per outcome joined from the usage CSVs, run
   records, dispatch logs, transcripts, review-gate rows, merged PRs and their diffs, finisher and bench rows, as
   weekly JSONL records; a scorecard; the verdict (one-sided Beta bound over precommitted looks, cost ratio, CUSUM,
