@@ -825,6 +825,27 @@ def merged_pr(slug, branch, sha, tok=None):
     return next((p for p in prs if p.get("merged_at") and (p.get("head") or {}).get("sha") == sha), None)
 
 
+def landed_pr(slug, branch, tok=None, base=None, timeout=5):
+    """The merged pull request from this head branch, at any sha, while none from it is open; else
+    None, and None on any GitHub failure. merged_pr's sibling for a branch that may have moved on
+    since: checkpoint.py's publish() asks it before pushing, because a session in a spent worktree
+    pushed a landed branch's checkpoint history back and opened a stale WIP PR (regatta#171 after
+    #169, 2026-10-25). An open PR wins: a branch someone reopened work on is live again. Only PRs
+    whose head.ref is this branch count (as read_merged_pr checks), and with `base` only those
+    into it: a PR merged into another claude/* branch never reached main. The short timeout keeps
+    the Stop and SessionEnd hooks inside their budgets."""
+    owner = slug.split("/")[0]
+    st, prs = api("GET", f"/repos/{slug}/pulls?state=all&per_page=10&head="
+                         f"{owner}:{urllib.parse.quote(branch, safe='')}", tok=tok, timeout=timeout)
+    if st != 200 or not isinstance(prs, list):
+        return None
+    prs = [p for p in prs if isinstance(p, dict) and (p.get("head") or {}).get("ref") == branch]
+    if any(p.get("state") == "open" for p in prs):
+        return None
+    return next((p for p in prs if p.get("merged_at")
+                 and (base is None or (p.get("base") or {}).get("ref") == base)), None)
+
+
 # The line open_pr puts in the body of a PR it had to open as a non-draft, and ready_pr's cue
 # that the `hold` beside it is open_pr's own and not the owner's brake. Its "land" stays through
 # the rename (the overlay's wharf-rename design): open PRs on GitHub carry this text and ready_pr
