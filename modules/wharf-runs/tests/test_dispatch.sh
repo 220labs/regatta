@@ -309,6 +309,66 @@ check "$(git -C "$T/repo/.claude/worktrees/demo" rev-parse --abbrev-ref HEAD)" "
 check "$([ -f "$P" ] && echo present || echo gone)" "gone" "one-shot plist removed"
 has "$T/calls" "bootout gui/" "job unloaded after the run"
 
+echo "a principal tier (principal tier S5): the brief's Tier: line sets model and effort, never a silent opus/high"
+for pt in architect:fable worker:opus; do
+  pn=${pt%%:*}; pm=${pt#*:}; PB=claude/laptop/2026-10-02-prin-$pn
+  # the seed by plumbing: main's tree plus the brief, never this checkout's working tree
+  pblob=$(printf 'Task: build it\nTier: principal-%s, its own model and effort\n' "$pn" | git -C "$T/repo" hash-object -w --stdin)
+  GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" read-tree main
+  GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" update-index --add --cacheinfo "100644,$pblob,docs/handoff/2026-10-02-prin-$pn.md"
+  ptree=$(GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" write-tree); rm -f "$T/prin.idx"
+  git -C "$T/repo" update-ref "refs/heads/$PB" "$(git -C "$T/repo" commit-tree "$ptree" -p main -m seed)"
+  git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$PB:refs/heads/$PB" >/dev/null 2>&1
+  out=$("$B/dispatch" $PB --repo "$T/repo" --on here --headless --dry-run 2>&1)
+  case "$out" in *"--model $pm --effort xhigh (tier principal-$pn)"*) echo "  ok   principal-$pn: the dry run names $pm xhigh and the tier";; *) echo "  FAIL principal-$pn dry run: [$out]"; fails=$((fails+1));; esac
+  "$B/dispatch" $PB --repo "$T/repo" --at "$FUT 04:10" >/dev/null
+  PP=$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.prin-$pn.[0-9]*.plist 2>/dev/null | head -1)
+  check "$([ -f "$PP" ] && grep -c '<string>--model</string>\|<string>--effort</string>' "$PP")" "0" "  its job carries no --model or --effort: the brief decides when it fires"
+  git -C "$T/repo" update-ref -d "refs/heads/$PB"   # fired as the seeded case is: the branch from origin
+  : > "$T/claude.calls"
+  DISPATCH_LOG="$HOME"/prin-$pn.log DISPATCH_LABEL=$(basename "$PP" .plist) "$B/dispatch" $PB --repo "$T/repo" --headless >/dev/null 2>&1
+  has "$T/claude.calls" "--model $pm --effort xhigh --permission-mode auto" "  principal-$pn fires at $pm xhigh"
+  check "$(grep -c -- '--model opus --effort high' "$T/claude.calls")" "0" "  …never at the default opus/high"
+  has "$HOME"/prin-$pn.log "== tier principal-$pn: $pm xhigh" "  the log names the tier"
+  : > "$T/claude.calls"
+  DISPATCH_LOG="$HOME"/prin-$pn-max.log DISPATCH_LABEL=$(basename "$PP" .plist) "$B/dispatch" $PB --repo "$T/repo" --headless --effort max >/dev/null 2>&1
+  has "$T/claude.calls" "--model $pm --effort max --permission-mode auto" "  an --effort given wins for its half (max after a named miss)"
+  : > "$T/claude.calls"
+  DISPATCH_LOG="$HOME"/prin-$pn-high.log DISPATCH_LABEL=$(basename "$PP" .plist) "$B/dispatch" $PB --repo "$T/repo" --headless --effort high > "$T/out" 2>&1
+  check "$(grep -c -- '--model' "$T/claude.calls")" "0" "  an --effort high given (/later, a stall's re-start): no run below the tier"
+  # refused at the early read (this Mac's ref, to stderr) or at fire time (FAILED, to the log): either says why
+  cat "$HOME"/prin-$pn-high.log >> "$T/out" 2>/dev/null
+  has "$T/out" "tier principal-$pn runs at xhigh (max only after a named miss); --effort high is below it" "    …refused, and said"
+  git --git-dir="$T/repo/.git" fetch -q "$T/origin.git" "$PB:refs/heads/$PB" 2>/dev/null || true   # the early read reads this Mac's refs (a worktree on it already has them)
+  "$B/dispatch" $PB --repo "$T/repo" --at "$FUT 04:20" --model sonnet > "$T/out" 2>&1; check "$?" "2" "  --model sonnet at scheduling: refused before a job is written"
+  has "$T/out" "tier principal-$pn runs on $pm; --model sonnet would run it elsewhere" "    …and said"
+  WEEKLY_RUN=sextant "$B/dispatch" $PB --repo "$T/repo" --at reset --if-room --dry-run > "$T/out" 2>&1; check "$?" "2" "  WEEKLY_RUN: a principal brief is refused, never raised to its tier"
+done
+echo "a stale early read never outlives the fire-time read"
+PB=claude/laptop/2026-10-02-prin-stale
+pblob=$(printf 'Task: build it\nTier: sr-worker\n' | git -C "$T/repo" hash-object -w --stdin)
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" read-tree main
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" update-index --add --cacheinfo "100644,$pblob,docs/handoff/2026-10-02-prin-stale.md"
+ptree=$(GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" write-tree); rm -f "$T/prin.idx"
+git -C "$T/repo" update-ref "refs/heads/$PB" "$(git -C "$T/repo" commit-tree "$ptree" -p main -m seed)"
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$PB:refs/heads/$PB" >/dev/null 2>&1
+pblob=$(printf 'Task: build it\nTier: principal-architect\n' | git -C "$T/repo" hash-object -w --stdin)   # the local ref: an older step's brief
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" read-tree main
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" update-index --add --cacheinfo "100644,$pblob,docs/handoff/2026-10-02-prin-stale.md"
+ptree=$(GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" write-tree); rm -f "$T/prin.idx"
+git -C "$T/repo" update-ref "refs/heads/$PB" "$(git -C "$T/repo" commit-tree "$ptree" -p main -m older)"
+"$B/dispatch" $PB --repo "$T/repo" --at "$FUT 04:30" >/dev/null
+PP=$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.prin-stale.[0-9]*.plist 2>/dev/null | head -1)
+git -C "$T/repo" update-ref -d "refs/heads/$PB"   # fired as the seeded case is: the branch from origin, whose brief says sr-worker
+: > "$T/claude.calls"
+DISPATCH_LOG="$HOME"/prin-stale.log DISPATCH_LABEL=$(basename "$PP" .plist) "$B/dispatch" $PB --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/claude.calls" "--model opus --effort high --permission-mode auto" "  origin's sr-worker brief fires at opus/high"
+check "$(grep -c -- '--model fable' "$T/claude.calls")" "0" "  …never at the stale principal-architect's fable xhigh"
+: > "$T/claude.calls"
+DISPATCH_LOG="$HOME"/demo-tier.log DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/claude.calls" "--model opus --effort high --permission-mode auto" "a brief with no principal tier keeps opus/high"
+check "$(grep -c '== tier' "$HOME"/demo-tier.log)" "0" "  and its log names no tier"
+
 echo "the session never sees the job's variables"
 check "$(grep -c "DISPATCH_LABEL" "$T/env.calls" 2>/dev/null)" "0" "claude's environment has no DISPATCH_*"
 grep -q "^CLAUDE_UNATTENDED=dispatch$" "$T/env.calls"; check "$?" "0" "but it has CLAUDE_UNATTENDED: checkpoint.py keeps the run read-only on live systems"

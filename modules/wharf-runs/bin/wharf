@@ -1202,7 +1202,8 @@ class Ship:
         # Orca puts a Task whose worker exited back to `ready`: a start is counted, never looped —
         # the first one and the block's own retries (0–2), then the plan says failed (spent())
         ctx = h.Ctx()
-        req = {"agent": s.get("agent") or "claude", "model": s.get("model"), "effort": s.get("effort"),
+        model, effort = blueprintlib.run_of(s)   # a principal tier's own, where the block names none
+        req = {"agent": s.get("agent") or "claude", "model": model, "effort": effort,
                "account": "auto", "ship": self.bp["name"], "repo": str(self.repo)}
         # on another host the worker runs on the login that host's Orca holds: a pick here would name
         # a login dir of this Mac, and Orca has no login per worker (orca.start(on=))

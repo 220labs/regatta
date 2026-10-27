@@ -29,6 +29,16 @@
   under the required `check`; its `automerge.yml` reads the last 20 `check.yml` runs on the head, filtered to those
   not skipped, instead of the newest alone, and reads `hold` live before arming (ci-draft-race step 2, 2026-10-27). Read back live on a draft head: a
   skipped job reports the name expression's text, never `check`.
+- `review-gate plan --principal` (principal tier S5): a principal build gets the top tier (reviewer xhigh, CR
+  xhigh) at any size, and a tight or lowest week holds it rather than lowering it, saying to review from a login
+  with room or wait; a branch whose own brief names a principal tier is found without the flag (through
+  wharf-runs' blueprintlib, a peer). `/finish`'s review step says so. A brief that says principal unclearly is
+  read as principal, and one `/finish` step 5 removed is read as it stood before.
+
+- Two principal heads (principal tier S2, docs/principal-tier-2026-10-26.md): `principal-architect`, Fable at
+  `xhigh`, a fourth head on the architects' body with no probe cap and a mandatory Receipt; `principal-worker`, Opus
+  at `xhigh`, on `sr-worker`'s body, which gains a shared marker, with a pre-mortem and a Receipt in its hand-back.
+  `test_agents.sh` holds both shared bodies and each head's model, effort and Receipt line.
 
 - `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
   `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other

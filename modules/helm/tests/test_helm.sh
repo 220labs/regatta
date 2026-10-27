@@ -2739,6 +2739,23 @@ out=$("$LX/helm" send --text "a task with nowhere to go" --repo "$HOME/projects/
 has "$out" "scope nul has no yard" "  refused"
 check "$(gt "$HOME/projects/nullrepo" branch --list 'claude/*' | wc -l | tr -d ' ')" "0" "  before pickup seeds a branch"
 check "$(calls | wc -l | tr -d ' ')" "0" "  no refusal reached the yard"
+echo "  --text with a principal tier (principal tier S5): accepted, and never below its model or effort"
+out=$("$LX/helm" send --text "a principal task" --repo "$SR" --tier principal-worker --effort high 2>&1); check "$?" "2" "--tier principal-worker --effort high: exit 2"
+has "$out" "--tier principal-worker runs at xhigh (max only after a named miss): --effort high is below it" "  says the tier's effort"
+out=$("$LX/helm" send --text "a principal task" --repo "$SR" --tier principal-architect --model opus 2>&1); check "$?" "2" "--tier principal-architect --model opus: exit 2"
+has "$out" "--tier principal-architect runs on fable: --model opus would run it elsewhere" "  says the tier's model"
+out=$("$LX/helm" send --text "a principal task" --repo "$SR" --tier principal-worker --effort max 2>&1); check "$?" "2" "--tier principal-worker --effort max on --text: exit 2"
+has "$out" "--tier principal-worker runs at opus xhigh from its brief's Tier: line: give no --model or --effort" "  a --text run never carries the flag to its run, so it is refused, not dropped"
+cat > "$S7/pickup-stub" <<'PY'
+import sys
+a = sys.argv
+open(a[0] + ".brief", "w").write(open(a[a.index("--file") + 1]).read())
+sys.exit(1)
+PY
+out=$(HELM_PICKUP="$S7/pickup-stub" "$LX/helm" send --text "a principal task" --repo "$SR" --tier principal-worker 2>&1)
+has "$out" "pickup seed a-principal-task" "--tier principal-worker passes the tier check, on to pickup seed"
+check "$(grep -c '^Tier: principal-worker$' "$S7/pickup-stub.brief")" "1" "  the brief's Tier: line names it, which dispatch reads"
+check "$(gt "$SR" branch --list '*a-principal-task*' | wc -l | tr -d ' ')" "0" "  no branch was seeded by any of the three"
 
 echo "  --text: pickup seed --no-start, the blueprint as sent, the lay over the alias"
 out=$("$LX/helm" send --text "Fix the widget's frobnicator" --repo "$SR" --tier sr-worker --model opus --effort high --detach --json 2>"$S7/err"); rc=$?

@@ -32,7 +32,9 @@ decision) with what this module computes: the order, the spec each Task carries,
                                          is (the yard has no launcher on any other);
                                          `auto` (a claude-code block's): dispatch places it by berth
                                          (skipper-modes S6b: the scope's berths, slots, load)
-        tier: worker                     worker | sr-worker | architect | sr-architect | main
+        tier: worker                     worker | sr-worker | architect | sr-architect | main |
+                                         principal-architect | principal-worker: a principal tier
+                                         runs at its own model and effort (TIER_RUN) unless named
         model: sonnet                    passed through to Orca or dispatch
         effort: high                     low … max; on an Orca block only with a model (Orca's rule)
         physical: none
@@ -116,7 +118,25 @@ def scope_yard_of(repo):
     return key, scope, common.scope_yard(scope) if scope else None
 
 
-TIERS = ("worker", "sr-worker", "architect", "sr-architect", "main")
+TIERS = ("worker", "sr-worker", "architect", "sr-architect", "main", "principal-architect", "principal-worker")
+# A principal tier carries its own model and effort (docs/principal-tier-2026-10-26.md S5, D1-A): a block,
+# a `helm send` or a dispatched brief that names the tier and no model runs at these, never at dispatch's
+# opus/high, which would be the tier in name only. The other tiers keep the block's model or the
+# launcher's default, as before. `max` only after a named miss, and never below `xhigh`.
+TIER_RUN = {"principal-architect": ("fable", "xhigh"), "principal-worker": ("opus", "xhigh")}
+PRINCIPAL_EFFORTS = ("xhigh", "max")
+# A handoff brief's `Tier:` line, and the first tier word on it (longest first: sr-worker before worker)
+# — read case-blind: `Tier: Principal-worker` is the tier, never a silent opus/high (the S5 landing review)
+TIER_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?Tier(?:\*\*)?:(.*)$", re.M | re.I)
+TIER_WORD_RE = re.compile(r"(?<![\w-])(%s)(?![\w-])" % "|".join(sorted(TIERS, key=len, reverse=True)))
+# what brief_tier returns for a Tier: line that says "principal" but names no principal tier exactly
+# ("principal worker", "Opus xhigh, principal"): a reader refuses it rather than run it at a default
+TIER_UNCLEAR = "?"
+
+
+def principal(t):
+    """True for a principal tier name; False for anything else, a YAML list or map included."""
+    return isinstance(t, str) and t in TIER_RUN
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DONE_WHEN = ("marker", "pr_merged", "check", "memo_answered", "file")
 LAUNCH = ("autofinish", "finish")
@@ -307,7 +327,7 @@ def _check_block(s, i, problems, hosts=None, yards=None, yard_problems=None):
         if p == "orca":
             if s.get("agent") not in AGENTS:
                 problems.append("%s: an orca block names its agent: %s" % (where, " or ".join(AGENTS)))
-            if "effort" in s and "model" not in s:
+            if "effort" in s and "model" not in s and not principal(s.get("tier")):   # a principal tier's is its model
                 problems.append("%s: effort needs a model on an Orca block (Orca's rule)" % where)
         if p == "claude-code" and s.get("agent", "claude") != "claude":
             problems.append("%s: a claude-code block's agent is claude" % where)
@@ -333,6 +353,22 @@ def _check_block(s, i, problems, hosts=None, yards=None, yard_problems=None):
         for k, allowed in (("tier", TIERS), ("effort", EFFORTS), ("launch", LAUNCH)):
             if k in s and s[k] not in allowed:
                 problems.append("%s: %s is one of %s" % (where, k, ", ".join(allowed)))
+        if principal(s.get("tier")):
+            # a principal tier is its model and effort: a block that names less runs the tier in name only
+            tm, te = TIER_RUN[s["tier"]]
+            if p == "claude-code" and ("model" in s or "effort" in s):
+                # dispatch runs a claude-code block at its section's Tier: line alone: a model or effort here
+                # would be shown and never run (refused, not dropped, as NOT_FOR's)
+                problems.append("%s: a claude-code block runs tier %s at %s %s from its brief; name no model or effort"
+                                % (where, s["tier"], tm, te))
+            if s.get("agent", "claude") != "claude":
+                problems.append("%s: tier %s runs on Claude; a %s block names another tier" % (where, s["tier"], s.get("agent")))
+            if isinstance(s.get("model"), str) and tm not in s["model"].lower():
+                problems.append("%s: tier %s runs on %s; model %s would run it elsewhere — name another tier"
+                                % (where, s["tier"], tm, s["model"]))
+            if "effort" in s and s["effort"] not in PRINCIPAL_EFFORTS:
+                problems.append("%s: tier %s runs at %s (max only after a named miss); effort %s is below it"
+                                % (where, s["tier"], te, s["effort"]))
         if "model" in s and not (isinstance(s["model"], str) and MODEL_RE.match(s["model"])):
             problems.append("%s: model %r is not a model name" % (where, s["model"]))
         for k in ("physical", "account", "branch", "title"):
@@ -475,6 +511,22 @@ def load(path, text=None, key=None, accepted=()):
                 missing = [x for x in BRIEF_LINES if x not in have]
                 if missing:
                     problems.append("line %d: `## %s` lacks the handoff lines %s" % (st["line"], st["id"], ", ".join(missing)))
+                # a principal tier in one place and not the other runs the tier in name only: dispatch reads a
+                # claude-code run's from the section's Tier: line, wharf an Orca block's from its tier: key
+                bt, kt = brief_tier(st["section"]), st["raw"].get("tier")
+                if bt == TIER_UNCLEAR:
+                    problems.append("line %d: `## %s` says principal on its Tier: line but names no principal tier "
+                                    "exactly (%s)" % (st["line"], st["id"], ", ".join(TIER_RUN)))
+                elif principal(bt) or principal(kt):
+                    if kt and bt and bt != kt:
+                        problems.append("line %d: `## %s` says Tier: %s, its block tier: %s — one tier, both places"
+                                        % (st["line"], st["id"], bt, kt))
+                    elif not kt and st["raw"].get("provider") == "orca":
+                        problems.append("block %s: its section says Tier: %s; an Orca block runs at its tier: key — name tier: %s there"
+                                        % (st["id"], bt, bt))
+                    elif not bt and st["raw"].get("provider") == "claude-code":
+                        problems.append("line %d: `## %s` names no tier on its Tier: line; dispatch runs a claude-code block at "
+                                        "what that line says — name %s there" % (st["line"], st["id"], kt))
     w = []
     if not problems:
         try:
@@ -642,6 +694,26 @@ def plan_fields(blueprint, st, here, repo):
     return t
 
 
+def run_of(s):
+    """(model, effort) a block runs at: its own, else its principal tier's (TIER_RUN), else None for
+    the launcher's own default."""
+    tm, te = TIER_RUN[s["tier"]] if principal(s.get("tier")) else (None, None)
+    return s.get("model") or tm, s.get("effort") or te
+
+
+def brief_tier(text):
+    """The tier a handoff brief's first `Tier:` line names (one of TIERS), TIER_UNCLEAR when the line says
+    "principal" without naming a principal tier exactly, or None: dispatch reads it to run a principal
+    tier at TIER_RUN's model and effort."""
+    m = TIER_LINE_RE.search(text or "")
+    line = m.group(1).lower() if m else ""
+    w = TIER_WORD_RE.search(line)
+    t = w.group(1) if w else None
+    if "principal" in line and not principal(t):
+        return TIER_UNCLEAR
+    return t
+
+
 def describe(st):
     s = st["raw"]
     if st["kind"] == "decision":
@@ -651,10 +723,11 @@ def describe(st):
         bits.append("on " + s["host"])
     if s.get("tier"):
         bits.append(s["tier"])
-    if s.get("model"):
-        bits.append(s["model"] + ("·" + s["effort"] if s.get("effort") else ""))
-    elif s.get("effort"):
-        bits.append("effort " + s["effort"])
+    model, effort = run_of(s) if s["provider"] != "shell" else (None, None)
+    if model:
+        bits.append(model + ("·" + effort if effort else ""))
+    elif effort:
+        bits.append("effort " + effort)
     if s["provider"] == "shell":
         bits.append("`%s`" % s["command"])
     if s.get("done_when"):
@@ -874,7 +947,8 @@ def _start_text(blueprint, st, here):
     s = st["raw"]
     br = branch_of(blueprint, st, here)
     if s["provider"] == "orca":
-        mm = (" --model %s" % s["model"] if s.get("model") else "") + (" --effort %s" % s["effort"] if s.get("effort") and s.get("model") else "")
+        model, effort = run_of(s)
+        mm = (" --model %s" % model if model else "") + (" --effort %s" % effort if effort and model else "")
         on = " --on %s" % remote_host(s, here) if remote_host(s, here) else ""
         return "worker-start --task <%s>%s --agent %s%s on %s (the worktree: B6a's pick, --base-branch main)" % (
             st["id"], on, s.get("agent", "claude"), mm, br)

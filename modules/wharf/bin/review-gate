@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """review-gate — the two halves of /finish step 1 that are code, not judgement. Stdlib, Python 3.9.
 
-    review-gate plan  [--base main] [--json]
+    review-gate plan  [--base main] [--principal] [--json]
         Which two reviews this branch gets: counts inserted lines in `git diff base...HEAD` and
         reads the week's plan usage, then names the agents and the `/code-review` level.
     review-gate merge --reviewer FILE --code-review FILE [--repo DIR] [--base main] [--no-model] [--no-shadow]
@@ -30,6 +30,11 @@ plan — the size rule (D7), counted in INSERTED lines (deletions moved C11 to t
   effort. /code-review needs no second agent: a forked skill takes its effort from the level in
   its args (Claude Code 2.1.287 source, "SkillTool executing forked skill"), so one
   `code-reviewer` passes the level and its own effort only prices its two turns.
+  The principal rule (docs/principal-tier-2026-10-26.md S5): a principal build — `--principal`, or the
+  branch's own brief (docs/handoff/<date>-<topic>.md on HEAD) naming a principal tier on its Tier: line,
+  read by wharf-runs' blueprintlib — gets the top tier at any size, and the week never lowers it: a
+  tight or lowest week holds it and says so, and the review is routed to a login with room or waits
+  for the reset. A lower tier would be the principal build reviewed as any other.
   The week reading is dropped when sampled before the current week began (a stale cache keeps
   last week's percent while the reset rolls forward).
   Each review's provider is a row in settings/models.json (review-gate.reviewer,
@@ -207,8 +212,37 @@ def review_provider(site):
     return row and row["provider"]
 
 
-def plan(repo, base):
+def principal_brief(repo, base="main"):
+    """The branch's own brief when its Tier: line names a principal tier (blueprintlib's TIER_RUN), or says
+    principal unclearly, else None: the newest docs/handoff/<date>-<topic>.md on HEAD, the topic its
+    branch's last part, as dispatch finds it — or, once /finish step 5 removed it, as it stood before
+    (a re-run of /finish must not drop back to the size rule). wharf-runs is a peer: without it no brief
+    is read, and --principal still is."""
+    br = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", br.rsplit("/", 1)[-1])
+    rx = re.compile(r"^docs/handoff/\d{4}-\d{2}-\d{2}-%s\.md$" % re.escape(topic))
+    rels = sorted(x for x in git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", "docs/handoff").splitlines() if rx.match(x))
+    at = "HEAD"
+    if topic and not rels:
+        gone = sorted({x for x in git(repo, "log", "--name-only", "--format=", "%s..HEAD" % base, "--", "docs/handoff").splitlines()
+                       if rx.match(x)})
+        if gone:
+            last = git(repo, "rev-list", "-1", "HEAD", "--", gone[-1]).strip()
+            rels, at = gone, last + "^"
+    if not topic or not rels:
+        return None
+    try:
+        bl = peer("blueprintlib.py", "blueprintlib")
+        t = bl.brief_tier(git(repo, "show", "%s:%s" % (at, rels[-1])))
+        return rels[-1] if t in bl.TIER_RUN or t == getattr(bl, "TIER_UNCLEAR", None) else None
+    except Exception as e:  # noqa: BLE001 — no peer, no principal read from the brief: --principal still is
+        print("review-gate: the brief's tier not read (%s)" % e, file=sys.stderr)
+        return None
+
+
+def plan(repo, base, principal=False):
     rp, cp = review_provider("review-gate.reviewer"), review_provider("review-gate.code-review")
+    by = "--principal" if principal else principal_brief(repo, base)
     n, warn = inserted(repo, base)
     w = week()
     budget = "normal"
@@ -227,10 +261,13 @@ def plan(repo, base):
         tier, r, c = "large", "xhigh", "xhigh"
     if gated:   # the path rule: the top tier at any size
         r, c = "xhigh", "xhigh"
-    if r == "xhigh" and budget == "tight":
-        c = "high"
-    if budget == "lowest":
-        r, c = "high", "high"
+    if by:   # the principal rule: the top tier at any size, and no week lowers it (routed or waited for)
+        r, c = "xhigh", "xhigh"
+    else:
+        if r == "xhigh" and budget == "tight":
+            c = "high"
+        if budget == "lowest":
+            r, c = "high", "high"
     rev = {"agent": "reviewer" if r == "xhigh" else "reviewer-high", "effort": r}
     if own_reviewer(repo):
         rev = {"agent": "reviewer", "effort": "the project's own"}
@@ -241,6 +278,7 @@ def plan(repo, base):
             x["agent"] = None
     return {
         "inserted": n, "tier": tier, "budget": budget, "warning": warn, "gated": gated,
+        "principal": {"by": by, "held": budget if budget != "normal" else None} if by else None,
         "week": {"percent": w[0], "pace": w[1], "age_h": round(w[4], 1)} if w else None,
         "reviewer": rev,
         "code_review": cr,
@@ -257,6 +295,13 @@ def print_plan(p):
     print("size: %d inserted lines → %s tier · %s" % (p["inserted"], p["tier"], wk))
     if p.get("gated"):
         print("path: %s is on the base's autofinish_exclude → the top tier at any size" % p["gated"])
+    pr = p.get("principal")
+    if pr:
+        print("principal: %s → the top tier at any size" % ("--principal" if pr["by"] == "--principal" else "the brief %s names a principal tier" % pr["by"]))
+        if pr["held"]:
+            print("principal: the week is %s, and the top tier holds — never lowered: run this review from a login with "
+                  "room (`account pick --repo <repo>` names one; autofinish-run starts the finish there), or wait for the "
+                  "week's reset" % pr["held"])
     off = "off in settings/models.json — not spawned"
     r, c = p["reviewer"], p["code_review"]
     print("reviewer:    " + ("subagent_type %s (effort: %s), provider %s, model opus" % (r["agent"], r["effort"], r["provider"])
@@ -780,6 +825,7 @@ def main():
     p.add_argument("--base", default="main")
     p.add_argument("--repo", default=os.getcwd())
     p.add_argument("--json", action="store_true")
+    p.add_argument("--principal", action="store_true", help="a principal build: the top tier at any size, held through a tight week")
     m = sub.add_parser("merge")
     m.add_argument("--reviewer", required=True)
     m.add_argument("--code-review", required=True)
@@ -791,7 +837,7 @@ def main():
     repo = git(a.repo, "rev-parse", "--show-toplevel").strip() or a.repo
     if a.cmd == "plan":
         try:
-            r = plan(repo, a.base)
+            r = plan(repo, a.base, a.principal)
         except gate.GateError as e:
             print("review-gate: plan refused: %s" % e, file=sys.stderr)
             return 1

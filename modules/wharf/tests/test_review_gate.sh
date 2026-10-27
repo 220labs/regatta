@@ -131,6 +131,38 @@ check "$(plan "$T/g2")" "small tight reviewer high main...HEAD"            "  a 
 week 50
 fi
 
+# the principal rule (principal tier S5): the top tier at any size, held through a tight week, never lowered
+planp() { python3 "$B/review-gate" plan --repo "$1" --json ${2:+"$2"} | python3 -c "import json,sys; p=json.load(sys.stdin); print(p['tier'], p['budget'], p['reviewer']['agent'], p['code_review']['args'], (p['principal'] or {}).get('held'), (p['principal'] or {}).get('by'))"; }
+if [ -n "$TC" ]; then
+week 50
+check "$(planp "$T/r50" --principal)"   "small normal reviewer xhigh main...HEAD None --principal"    "--principal: the top tier at 50 lines"
+week 85
+check "$(planp "$T/r50" --principal)"   "small tight reviewer xhigh main...HEAD tight --principal"    "  a tight week: the top tier held, CR xhigh kept"
+check "$(planp "$T/r1001" --principal)" "large tight reviewer xhigh main...HEAD tight --principal"    "  …at 1,001 lines too, where the size rule alone drops CR to high"
+check "$(plan "$T/r1001")"              "large tight reviewer high main...HEAD"                       "  the same branch without it: the tight rule as before"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "principal: --principal → the top tier at any size" "  plan names the rule"
+has "$T/plan6.txt" "principal: the week is tight, and the top tier holds — never lowered: run this review from a login with room" "  …and routes or waits, never downgrades"
+week 92
+check "$(planp "$T/r1001" --principal)" "large lowest reviewer xhigh main...HEAD lowest --principal"  "  a lowest week: held too"
+week 50
+fi
+check "$(planp "$T/r50" --principal | cut -d' ' -f3,4)" "reviewer xhigh"                           "--principal with no week reading: the top tier"
+mkrepo "$T/pb" 20 >/dev/null
+mkdir -p "$T/pb/docs/handoff"; printf 'Task: build\nTier: principal-worker\n' > "$T/pb/docs/handoff/2026-10-26-x.md"
+git -C "$T/pb" add -A && git -C "$T/pb" -c user.email=t@t -c user.name=t commit -q -m brief
+BL=$(core 'print(common.tool("blueprintlib.py") or "")')   # wharf-runs' (a peer): the brief's tier is read through it
+if [ -n "$BL" ]; then
+  check "$(planp "$T/pb" | cut -d' ' -f3,4,7)" "reviewer xhigh docs/handoff/2026-10-26-x.md"        "the branch's brief names principal-worker: the top tier, no flag"
+  printf 'Task: build\nTier: sr-worker\n' > "$T/pb/docs/handoff/2026-10-26-x.md"; git -C "$T/pb" -c user.email=t@t -c user.name=t commit -qam sr
+  check "$(planp "$T/pb" | cut -d' ' -f3,4,7)" "reviewer-high high None"                               "  a brief naming sr-worker: the size rule"
+  printf 'Task: build\nTier: principal worker, Opus xhigh\n' > "$T/pb/docs/handoff/2026-10-26-x.md"; git -C "$T/pb" -c user.email=t@t -c user.name=t commit -qam unclear
+  check "$(planp "$T/pb" | cut -d' ' -f3,4,7)" "reviewer xhigh docs/handoff/2026-10-26-x.md"        "  a Tier: line that says principal unclearly: the top tier, never the size rule"
+  printf 'Task: build\nTier: Principal-worker\n' > "$T/pb/docs/handoff/2026-10-26-x.md"; git -C "$T/pb" -c user.email=t@t -c user.name=t commit -qam back
+  git -C "$T/pb" rm -q docs/handoff/2026-10-26-x.md && git -C "$T/pb" -c user.email=t@t -c user.name=t commit -qm "step 5"
+  check "$(planp "$T/pb" | cut -d' ' -f3,4,7)" "reviewer xhigh docs/handoff/2026-10-26-x.md"        "  /finish step 5 removed the brief: read as it stood before, still the top tier"
+else echo "  --   wharf-runs' blueprintlib not found: the brief cases skipped"; fi
+
 # ---------- merge ----------
 cat > "$T/fake.py" <<'EOF'
 import json, sys, http.server

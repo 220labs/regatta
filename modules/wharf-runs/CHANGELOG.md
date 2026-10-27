@@ -66,6 +66,17 @@
   `--on` too. A skipper with a page reuses it; a run passing its skipper on, or a dry run, publishes nothing.
   A refusal (helm's publish budget, no Talk on the account) still starts the run, as before, and says so in
   one line. On 2026-10-26 a build-box run parked 3 h for a laptop skipper with no page.
+- Principal tiers (principal tier S5, docs/principal-tier-2026-10-26.md): blueprintlib's TIERS gains
+  `principal-architect` and `principal-worker`, with TIER_RUN (fable xhigh, opus xhigh): a block naming the tier
+  alone runs at it (`run_of`), one naming a lower effort or another model is refused, and its key and its
+  section's Tier: line must agree. `dispatch` reads the brief's Tier: line (early, and again at fire time, which
+  decides) and runs a principal tier at its model and effort; a given --model or --effort wins for its half, and
+  a job's plist or a peer's command carries only the flags given. From the landing review: a given flag below the
+  tier is refused (`--effort max` allowed), a Tier: line is read case-blind and one that says principal unclearly
+  refuses, each read starts from the given-or-default pair (a stale early read never outlives the fire-time one),
+  WEEKLY_RUN writes opus/high into its job so a principal brief refuses there, a list or map `tier:` is a problem
+  line again, and a claude-code block naming a principal tier's model or effort is refused (never shown and dropped).
+
 - `rc-hosts --tcc-survey` counts a job Orca started (orca-launcher S7): a not-allowed privacy request whose
   responsible process is Orca while a child of it asks is listed as `via Orca: <accessing path>` beside the
   versioned-claude rows (Orca's own requests, the quiet services and allowed ones are not), so the Drive

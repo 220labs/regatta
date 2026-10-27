@@ -17,6 +17,10 @@
   before. The build box has no ssh alias for the laptop yet, so board-cleanup's direction (its D2 parked
   for about 3 h) still parks without a plan page: the record's D1. `asklib.peer_runs` gives keel's listen reminder the peers' runs. `ASK_SSH` stands in
   for ssh in the suite.
+- `helm send --text --tier principal-architect|principal-worker` (principal tier S5): accepted, through
+  wharf-runs' TIERS; a lower `--effort` or another `--model` is refused before any branch is seeded, and so is any
+  `--model` or `--effort` with a principal tier, which its run would never carry. The stall tick's S2 start (the
+  next step) passes no recorded model or effort: that step's brief decides.
 
 - The stall class `start path dead` (orca-launcher S7, docs/orca-launcher-2026-10-24.md G2): `stalls.py` reads
   wharf-runs' `clock canary check --json` on this Mac (its own Orca and beat files: no peer, nothing on the laptop)
