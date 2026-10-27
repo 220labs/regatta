@@ -1,0 +1,14 @@
+{
+  "v": 4,
+  "lists": "css",
+  "title": "Evening Hours",
+  "order": ["cover", "asked", "plan", "money", "close"],
+  "sections": {
+    "why": {"description": "Why evenings, and the plan.", "start": "cover"},
+    "ask": {"description": "The money and the one decision.", "start": "money"}
+  },
+  "faces": {
+    "body": {"family": "Source Sans 3", "href": "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700;800&display=swap"}
+  },
+  "designSystems": []
+}

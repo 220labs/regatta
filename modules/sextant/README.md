@@ -18,6 +18,7 @@ Star, candidates) joins this same plugin later; there is never a separate Sparks
 | `agents/sounder.md` | the sounder: an architect for an idea outside any repo — a venture, a pitch, a tool to build or adopt — held to the ventures README's four gates, with a money flow and a smallest test |
 | `skills/sextant/` | `/sextant`: the weekly pass — research what changed, review the layer against it, adopt the small things, log the rest with verdicts, measure, and start the queued soundings (step 2c); unattended once a week |
 | `libexec/sextant-run` | `where` (the paths `/sextant` uses: the core's CLI, atlas's layer and vault, the ideas pool, plumb's usage reports, the owner's name) and `run` (the weekly job's own runner when aurora is not installed); off PATH, `regatta sextant-run …` |
+| `bin/pitch`, `bin/pitchlib.py` | a document's renders held to one method: `pitch check <root\|doc>` refuses a deck or page that breaks a rule (words, type, fit, contrast, claims the document makes), `pitch build <deck>` writes an admiral deck from its `slides.json`; config in `pitch.json` |
 | `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled, the queue's and the weekly job's suites |
 
 Install, from a clone (the shell and launchd face): `sh modules/sextant/install.sh --check` says
@@ -25,7 +26,7 @@ what is found, `--launcher` builds and schedules Sparks' job, `--remove` takes i
 `--schedule` loads the weekly `/sextant` job (`--dry-run` prints its plist first, `--unschedule`
 takes it out). As a plugin:
 `claude plugin marketplace add <this repo>`, then `claude plugin install sextant@regatta` (it
-needs the core, `regatta`); the plugin puts `sparks`, `redactions` and `soundings` on the Bash PATH.
+needs the core, `regatta`); the plugin puts `sparks`, `redactions`, `soundings` and `pitch` on the Bash PATH.
 
 ## Sparks, the ideas intake
 
