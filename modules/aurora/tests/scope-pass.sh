@@ -14,7 +14,7 @@ D="$(cd "$(dirname "$0")/.." && pwd -P)"
 S="$D/bin/scope-pass"; W="$D/bin/weekly-run"
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
 trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT; [ -n "${KEEP:-}" ] && echo "scratch $T"
-for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(ATLAS[A-Za-z0-9_]*\)=.*/\1/p; s/^\(WEEKLY[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(ATLAS[A-Za-z0-9_]*\)=.*/\1/p; s/^\(WEEKLY[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 export HOME="$T/u" REGATTA_CONFIG="$T/config" ACCOUNTS_FILE="$T/no-accounts.json" CLAUDE_REPOS_JSON="$T/repos.json" \
        WEEKLY_LOG_DIR="$T/logs" SCOPE_PASS_COMMIT="$T/kc" \
        GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -92,6 +92,62 @@ check "$(ck 'U1. x')$(printf 'U2. PLUMWORD\nU3. sec\n' >> "$f"; "$S" check node 
 printf 'sec and PLUMWORD\n' > "$f"; "$S" check pub "$f" > /dev/null; check $? 0 "an open scope: nothing to hold"
 head -c 40 "$CLAUDE_REPOS_JSON" > "$T/torn.json"
 CLAUDE_REPOS_JSON="$T/torn.json" "$S" check node "$f" > /dev/null 2>&1; check $? 2 "a torn registry: exit 2, never a pass"
+"$S" check nw "$f" > /dev/null 2> "$T/err"; check "$? $(grep -c 'no .claude/words.txt' "$T/err")" "2 1" "a confidential scope with no word list: exit 2 — a scan without its names would pass them"
+
+echo "check --judge --json — a brief leaving the node (confidential-reach S5)"
+# The judge is the gate's scope.brief row, read from a table of the suite's own; `claude` is a stand-in
+# that logs each call and answers leak when the text says Larkspur (a made-up client's city).
+cat > "$T/models.json" <<'EOF'
+{"defaults": {"claude": {"model": "opus"}},
+ "sites": {"scope.brief": {"kind": "classify", "provider": "claude", "model": "sonnet"},
+           "other.site": {"kind": "classify", "provider": "off", "when_off": "skip"}}}
+EOF
+cat > "$T/claude" <<'EOF'
+#!/bin/sh
+in=$(cat); echo call >> "$(dirname "$0")/claude.calls"
+case "$in" in *Larkspur*) v=leak;; *) v=clean;; esac
+printf '{"type": "result", "is_error": false, "total_cost_usd": 0.004, "structured_output": {"text": "%s"}}\n' "$v"
+EOF
+chmod +x "$T/claude"
+export GATE_LOG="$T/gate.jsonl"
+J() { GATE_TABLE="${TABLE:-$T/models.json}" CLAUDE_BIN="${CB:-$T/claude}" "$S" check node "$f" --judge --json 2> "$T/judge.err"; }
+key() { python3 -c 'import json, sys; d = json.loads(sys.stdin.read().strip().splitlines()[-1]); print(" ".join(str(d.get(k)) for k in sys.argv[1:]))' "$@"; }
+printf 'Task: add a retry to the uploader\nWhy: the nightly job drops a file now and then\n' > "$f"
+out=$(J); check "$? $(echo "$out" | key scan judge site provider model)" "0 clean clean scope.brief claude sonnet" "a clean brief: the scan and the judge both clean, exit 0"
+check "$(echo "$out" | key sha256)" "$(shasum -a 256 "$f" | cut -d' ' -f1)" "  the sha256 of the bytes judged"
+check "$(echo "$out" | key cost_usd) $(wc -l < "$T/claude.calls" | tr -d ' ')" "0.004 1" "  its cost, one judge call"
+check "$(grep -c '"site": "scope.brief"' "$GATE_LOG")" 1 "  logged as the gate logs every classify"
+printf 'Task: add a retry to the uploader\nWhy: the Larkspur depot drops a file now and then\n' > "$f"
+out=$(J); check "$? $(echo "$out" | key scan judge)" "1 clean leak" "a brief the scan passes and the judge calls a leak: exit 1"
+grep -q 'judge (claude, sonnet): leak' "$T/judge.err"; check $? 0 "  said on stderr"
+: > "$T/claude.calls"
+printf 'Task: retry the uploader\nWhy: PLUMWORD asked\n' > "$f"
+out=$(J); check "$? $(echo "$out" | key scan hits judge)" "1 hits 1 None" "a scan hit: exit 1, no judge"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" 0 "  the judge never sees what the scan refused"
+check "$(echo "$out" | grep -c PLUMWORD) $(grep -c PLUMWORD "$T/judge.err")" "0 1" "  the verdict names no term (it goes into an open repo); stderr does"
+printf 'Task: add a retry to the uploader\n' > "$f"
+TABLE="$T/no-row.json"; printf '{"sites": {"other.site": {"kind": "classify", "provider": "off"}}}\n' > "$TABLE"
+out=$(TABLE="$TABLE" J); check "$? $(echo "$out" | key scan judge)" "2 clean error" "no scope.brief row: exit 2, never a pass"
+grep -q 'no row for scope.brief' "$T/judge.err"; check $? 0 "  naming the missing row"
+printf '{"sites": {"scope.brief": {"kind": "classify", "provider": "off", "when_off": "skip"}}}\n' > "$TABLE"
+out=$(TABLE="$TABLE" J); check "$? $(echo "$out" | key judge)" "2 error" "a row off with when_off skip: exit 2 — no judge is no pass"
+unset TABLE   # the two cases below judge with the good table: each fails on the claude it names alone
+printf '#!/bin/sh\necho "not json"\n' > "$T/bad-claude"; chmod +x "$T/bad-claude"
+out=$(CB="$T/bad-claude" J); check "$? $(echo "$out" | key judge)" "2 error" "a judge that answers no JSON: exit 2"
+grep -q 'no row for scope.brief\|row is off' "$T/judge.err"; check $? 1 "  by the reply, not the table"
+out=$(CB="$T/no-such-claude" J); check "$? $(echo "$out" | key judge)" "2 error" "no claude at all: exit 2"
+grep -q 'no row for scope.brief\|row is off' "$T/judge.err"; check $? 1 "  by the missing claude, not the table"
+: > "$T/claude.calls"
+printf 'Task: retry the uploader\nWhy: the Node asked\n' > "$f"
+out=$(J); check "$? $(echo "$out" | key scan hits judge)" "1 hits 1 None" "a brief naming the scope itself: a scan hit under --judge (S5's landing review)"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" 0 "  no judge"
+check "$(echo "$out" | key scope)" "confidential:$(printf node | shasum -a 256 | cut -c1-8)" "  the verdict names the scope by its marker, never its name"
+check "$(echo "$out" | grep -ic node)" 0 "  nor anywhere else"
+out=$("$S" check node "$f" --json 2>/dev/null); check "$? $(echo "$out" | key scan)" "0 clean" "  without --judge (the pass's draft): the name stays exempt, its heading carries it"
+printf 'Task: x\n' > "$f"
+out=$(GATE_TABLE="$T/models.json" CLAUDE_BIN="$T/claude" "$S" check nw "$f" --judge --json 2>/dev/null); check "$? $(echo "$out" | key scan judge)" "2 error None" "  no word list: exit 2 before any judge"
+out=$("$S" check node "$f" --json 2>/dev/null); check "$? $(echo "$out" | key scan judge)" "0 clean None" "--json without --judge: the scan's verdict alone"
+unset GATE_LOG
 
 echo "record and proof"
 inbox() {  # inbox <scope> <day> <lines…> — the session's draft, in the anchor

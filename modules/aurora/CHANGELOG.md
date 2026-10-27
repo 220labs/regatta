@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `scope-pass check --json`: `file` is the base name and an `error` names the scope's repos by its marker, so
+  the object names nothing (the landing re-review, 2026-10-27). The bench rows survive a judge that does not answer.
+
+- `scope-pass check SCOPE FILE --judge --json` (confidential-reach S5): the review of a brief leaving a
+  confidential scope. A clean scan then goes to the core's gate, site `scope.brief` (classify, provider
+  claude), which judges what a word list misses; exit 1 on a hit or a `leak`, 2 when either cannot tell
+  (no row, an `off` one, a bad reply, a confidential scope with no word list — that last now for every
+  `check`). `--json` prints one verdict object, the sha256 of the bytes judged and no term.
+  `bench/brief-review/` is its measure: 20 made-up briefs, 10 with a planted leak the scan cannot see;
+  Sonnet on 2026-10-26: 0 of 10 missed, 0 of 10 clean refused, $0.24 ($0.0044 effective).
+  Since the landing review: under `--judge` the scan refuses the scope's own name too (the pass's draft
+  keeps the exemption), and the verdict names a confidential scope by the core's `scope_marker()`; the
+  bench judges the bundle `pickup seed --from` sends (the brief, its `Branch:` and `Seeded-By:` lines),
+  adds s01, a brief naming the scope (the scan's), and prints cost through the core's `cost_text`:
+  0 of 10 missed, 0 of 10 refused, s01 refused by the scan, $0.19 ($0.0035 effective). A floor test.
 - The suite deletes its config dir under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The night's `trim` section (self-tuning S5, 2026-10-27): weekly, after `branches` and before the dream, no
   session — plumb's `trim collect`, `report --write` and `verdict --write`, each `--night`, over every repo
