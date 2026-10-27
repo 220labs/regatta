@@ -35,6 +35,13 @@ candidates of each transcript file, by size and mtime, with a digest where the t
 holds a prompt's text or a doc's text or title (the transcript one holds the file's path, the
 prompt's time and working folder); `"cache": ""` turns them off.
 
+The fence (confidential-reach S3, 2026-10-26; usage-report's since the stopgap): a project whose
+checkout, or a repo its config lists, is a confidential scope's (the core's gather_fence), and one in
+a folder holding a confidential checkout, is counted in every total and named nowhere — its row,
+recordings and reading lines read `(confidential #n)`, numbered so each keeps its own row, and a
+session that opened in it is `(confidential)` among the first prompts. An unreadable registry fences
+every project. `?` (outside projects_root) names nothing and stays.
+
 The typed-prompt rule (probed on real transcripts, 2026-10-18): a `user` event, not isMeta, not
 isSidechain, content not all tool_result, and either origin.kind == "human", or no origin on a
 local slash command (`<command-name>`, which carries none) typed in VS Code or the CLI. Not
@@ -427,7 +434,7 @@ def collect(c, start, end, lead=dt.timedelta(0)):
             continue
         first = rows[0]
         if first[0] >= start and first[0] < end:
-            k = first[4]
+            k = (first[4], project_of(c, first[3]))   # the project too: the fence names no opening of a confidential one
             firsts[k] = firsts.get(k, 0) + 1
         whole = s["entry"] == "sdk-cli" or first[6]
         for t, _kind, _key, cwd, _cmd, mach, _unatt in rows:
@@ -1075,6 +1082,47 @@ def project_repos(c, name):
     return [root / Path(r).expanduser() for r in repos]   # an absolute path stays itself
 
 
+CONFIDENTIAL = "(confidential)"
+
+
+def fence_labels(c, projects, fence=None):
+    """{project: the name the report prints}, numbered in the order given (the module's docstring, the
+    fence). `fence` is the core's gather_fence(), which fences every path while the registry cannot be
+    read; a project is judged by its folder under projects_root and under the core's projects folder, and
+    by each repo its config lists, and fenced too when it holds a confidential checkout (a group folder)."""
+    fence = fence or common.gather_fence()
+    roots = [str(r) for r in common.confidential_roots()]
+    reg, _ = common.read_registry()
+    conf = {k for k, sc in ((reg or {}).get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True}
+
+    def in_glob(path):
+        """A checkout the registry does not list but a confidential scope's glob matches (the core's
+        gather_fence quotes it): its key, or the nearest folder above it, lands in that scope."""
+        key = common.repo_key(path)
+        while key and not key.startswith(("/", "~")):
+            if common.scope_of_repo(key, reg=reg)[0] in conf:
+                return True
+            key = key.rsplit("/", 1)[0] if "/" in key else ""
+        return False
+
+    root = Path(c["projects_root"]).expanduser()
+    out, n = {}, 0
+    for p in projects:
+        if p in out:
+            continue
+        if p == "?":
+            out[p] = p
+            continue
+        paths = [str(root / p), str(common.PROJECTS / p)] + [str(r) for r in project_repos(c, p)]
+        if (fence(*paths) != "quote" or any(r.startswith(x.rstrip("/") + "/") for x in paths for r in roots)
+                or (conf and any(in_glob(x) for x in paths))):
+            n += 1
+            out[p] = "(confidential #%d)" % n
+        else:
+            out[p] = p
+    return out
+
+
 # ---- the render cache (G5) -----------------------------------------------------------------------
 
 CACHE_FILE = "render-v2.json"   # the rule's version is in the name: v2, an unclosed <head>/<tr> is read
@@ -1191,11 +1239,12 @@ def plural(n, word):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
-def reading_lines(c, mr, rows, drain, now, tz):
+def reading_lines(c, mr, rows, drain, now, tz, label=None):
     """The lines under the table about measured reading: what was read and from where, the raw
     minutes and how much of them the prompts and recordings already held, other viewers, opens
     without a heartbeat, the drain, what is not measured. Counts only: no doc path, branch or
-    name. `drain` is drain_reads()'s (note, time it ran or None)."""
+    name. `drain` is drain_reads()'s (note, time it ran or None); `label` the fence's names (fence_labels)."""
+    label = label or {}
     L = []
     drain_note, drained = drain
     if drain_note:
@@ -1215,7 +1264,7 @@ def reading_lines(c, mr, rows, drain, now, tz):
         if mr["bad"]:
             L.append(f"Measured reading: {plural(mr['bad'], 'unreadable row')} skipped.")
     if mr["unread"] and mr["files"]:   # before keel files any heartbeat, every open would be listed
-        L.append("Opened without a heartbeat (docs): " + ", ".join(f"{p} {n}" for p, n in sorted(mr["unread"].items())) + ".")
+        L.append("Opened without a heartbeat (docs): " + ", ".join(f"{label.get(p, p)} {n}" for p, n in sorted(mr["unread"].items(), key=lambda x: label.get(x[0], x[0]))) + ".")
     if c.get("viewer") and mr["files"] and not mr["min"] and mr["unread"]:
         # The name a heartbeat carries may have changed: say how many names were seen, never which.
         L.append(f"`viewer` read nothing while docs were opened; {plural(mr['viewers'], 'distinct name')} in the week's rows.")
@@ -1265,6 +1314,12 @@ def report(c, week, until=None, drain=("", None), this_host=False):
         rows.append((proj, n, pmin, rmin, mins, est, mr["min"].get(proj),
                      minutes(runs(times, c["gap_minutes"]) + riv, start, stop)))
     rows.sort(key=lambda r: (-r[4][c["gap_minutes"]], r[0]))
+    # Every name below goes through the fence: the rows' order numbers them, then what only a line names.
+    label = fence_labels(c, [r[0] for r in rows] + sorted(set(rec) | set(docs) | set(mr["unread"]) | {p for _, p in firsts}))
+    opened = {}
+    for (k, p), v in firsts.items():
+        k = k if label[p] == p else CONFIDENTIAL
+        opened[k] = opened.get(k, 0) + v
     now = dt.datetime.now(tz)
     home = os.path.realpath(Path.home())
     L = [f"# crew-report — {week}",
@@ -1283,7 +1338,7 @@ def report(c, week, until=None, drain=("", None), this_host=False):
     for proj, n, pmin, rmin, mins, est, mread, _pr in rows:
         cc = common.cost_text(cost[proj]) if cost and proj in cost else EM
         r = rec.get(proj)
-        L.append(f"| {proj} | {n} · {hm(pmin)} | " + (f"{r['files']} · {hm(rmin)}" if r else EM) + f" | {hm(mread) if mread else EM} | {hm(mins[c['gap_minutes']])} | "
+        L.append(f"| {label[proj]} | {n} · {hm(pmin)} | " + (f"{r['files']} · {hm(rmin)}" if r else EM) + f" | {hm(mread) if mread else EM} | {hm(mins[c['gap_minutes']])} | "
                  + " / ".join(hm(mins[g]) for g in c["sensitivity"]) + " | " + (hm(est) if est is not None else EM) + f" | {cc} |")
     L.append(f"| **all** | {sum(r[1] for r in rows)} | "
              + (f"{sum(rec[r[0]]['files'] for r in rows if r[0] in rec)} · {hm(sum(r[3] for r in rows))}" if rec else EM) + f" | {hm(sum(r[6] for r in rows if r[6])) if mr['min'] else EM} | **{hm(tot[c['gap_minutes']])}** | "
@@ -1292,15 +1347,15 @@ def report(c, week, until=None, drain=("", None), this_host=False):
              + (common.cost_text(sum(cost.values())) if cost else EM) + " |")
     L += ["",
           "Not counted: " + ", ".join(f"{k} {v}" for k, v in skipped.items()) + ".",
-          "Sessions by first prompt: " + (", ".join(f"{k} {v}" for k, v in sorted(firsts.items(), key=lambda x: -x[1])[:5]) or "none") + "."]
+          "Sessions by first prompt: " + (", ".join(f"{k} {v}" for k, v in sorted(opened.items(), key=lambda x: -x[1])[:5]) or "none") + "."]
     if rec_note and not rec:
         L.append(f"Recordings: {rec_note}.")
     elif not rec:
         L.append("Recordings: none in the week.")
     else:
         parts = []
-        for p, v in sorted(rec.items()):
-            s = f"{p} {plural(v['files'], 'file')}"
+        for p, v in sorted(rec.items(), key=lambda x: label[x[0]]):
+            s = f"{label[p]} {plural(v['files'], 'file')}"
             if v["est"]:
                 s += f", {v['est']} est. from size"
             if v["unresolved"]:
@@ -1308,14 +1363,14 @@ def report(c, week, until=None, drain=("", None), this_host=False):
             parts.append(s)
         L.append("Recordings counted: " + "; ".join(parts) + ". Total = prompts, recordings and reading as one union, overlap counted once."
                  + (f" {rec_note[0].upper()}{rec_note[1:]}." if rec_note else ""))
-    shown = sorted((r[0], docs[r[0]]) for r in rows if r[0] in docs)
+    shown = sorted(((label[r[0]], r[0]), docs[r[0]]) for r in rows if r[0] in docs)
     if shown:
         L.append("Estimated reading is for reference, by the docs the branches added (author date), never in the total:")
-        for p, d in shown:
+        for (name, p), d in shown:
             html = d["rendered"] + d["static"]
-            L.append(f"- {p} — docs added: {d['docs']}" + (f"; html: {d['rendered']} rendered, {d['static']} static" if html else "")
+            L.append(f"- {name} — docs added: {d['docs']}" + (f"; html: {d['rendered']} rendered, {d['static']} static" if html else "")
                      + f"; with a course: {len(d['paths'] & mr['docs'].get(p, set()))}")
-    L += reading_lines(c, mr, rows, drain, now, tz)
+    L += reading_lines(c, mr, rows, drain, now, tz, label)
     # Prompts, not rows: recordings, reading and docs make rows of their own and would hide it.
     if not sum(r[1] for r in rows) and any(skipped.values()):
         L.append("Warning: no typed prompt found while others were — check the typed-prompt rule against this Claude Code version.")

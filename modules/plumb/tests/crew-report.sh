@@ -590,4 +590,66 @@ out=$(run --week 2026-W10)
 case "$out" in *"(text #"*) ok "first prompts: a text opening is counted by a digest of its first 40 characters" ;; *) bad "first prompts: text digest" "$out" ;; esac
 case "$out" in *"hello"*|*"late on"*) bad "first prompts: no prompt text" "$out" ;; *) ok "first prompts: no prompt text" ;; esac
 
+# ---- the fence (confidential-reach S3): a confidential scope's project counted, never named ------
+# A scope over one repo and one inside a group folder; a session in each, opening on a project skill,
+# and a recording whose terms name the repo. Every name here is made up.
+mkdir -p "$HOME/projects/zeta-vault/.git" "$HOME/projects/grp/inner/.git" "$HOME/.claude/projects/-zeta" "$T/znotes"
+printf '{"repos": {"zeta-vault": {}, "grp/inner": {}, "alpha": {}}, "scopes": {"s-secret": {"repos": ["zeta-vault", "grp/inner"], "confidential": true}}}\n' > "$T/zrepos.json"
+printf '{"repos": {"zeta-vault": {}}, "scopes": <<<<<<< HEAD\n' > "$T/ztorn.json"
+python3 - "$HOME" <<'PYZ'
+import json, sys
+home = sys.argv[1]
+def ev(n, sid, ts, cwd, content):
+    return {"type": "user", "uuid": "z%02d" % n, "sessionId": sid, "timestamp": ts, "cwd": cwd, "entrypoint": "claude-vscode",
+            "origin": {"kind": "human"}, "message": {"role": "user", "content": content}}
+Z, G = home + "/projects/zeta-vault", home + "/projects/grp"
+rows = [ev(1, "z1", "2026-03-03T09:00:00Z", Z, "<command-name>/zeta-deploy</command-name>\n<command-args></command-args>"),
+        ev(2, "z1", "2026-03-03T09:06:00Z", Z, "tune the zeta vault"),
+        ev(3, "z2", "2026-03-03T15:00:00Z", G, "grp folder chat"),
+        ev(4, "z2", "2026-03-03T15:04:00Z", G, "more grp chat")]
+with open(home + "/.claude/projects/-zeta/z.jsonl", "w") as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+PYZ
+printf -- '---\nrecorded: 2026-03-03 09:03\naudio: /aud/one.m4a\ntitle: Quartz plan\n---\nquartz notes\n' > "$T/znotes/q.md"
+cat > "$T/zc.json" <<EOF
+{"notes": "$T/znotes", "audio_roots": {"/aud": "$T/audio"}, "chrome": "$T/no-such-chrome", "projects": {"zeta-vault": {"terms": ["quartz"]}}}
+EOF
+ZNAMES="zeta|grp|quartz|Quartz"
+out0=$(runc "$T/zc.json" --week 2026-W10)
+case "$out0" in *"| zeta-vault |"*"/zeta-deploy"*) ok "fence: no registry — the fixture's names are in the report (the case can see them)" ;; *) bad "fence: no registry shows the names" "$out0" ;; esac
+out=$(CLAUDE_REPOS_JSON="$T/zrepos.json" runc "$T/zc.json" --week 2026-W10)
+if printf '%s\n' "$out" | grep -qE "$ZNAMES"; then bad "fence: the scope's repo, its group folder, its skill and its recording's project in no line" "$out"
+else ok "fence: the scope's repo, its group folder, its skill and its recording's project in no line"; fi
+has "fence: its row reads (confidential #n), its time its own" "$out" "| (confidential #1) | 2 · 6 min | 1 · 1 min |"
+has "fence: the group folder's row too, numbered apart" "$out" "| (confidential #2) | 2 · 4 min |"
+has "fence: an open project is named as before" "$out" "| alpha |"
+has "fence: its recording counted under the same label" "$out" "Recordings counted: (confidential #1) 1 file"
+has "fence: a session opening in it reads (confidential) among the first prompts" "$out" "(confidential) 2"
+all0=$(printf '%s\n' "$out0" | grep '^| \*\*all\*\*'); all1=$(printf '%s\n' "$out" | grep '^| \*\*all\*\*')
+[ -n "$all0" ] && [ "$all0" = "$all1" ] && ok "fence: every total is the unfenced one" || bad "fence: totals unchanged" "$all0
+$all1"
+out=$(CLAUDE_REPOS_JSON="$T/ztorn.json" runc "$T/zc.json" --week 2026-W10)
+if printf '%s\n' "$out" | grep -qE "$ZNAMES|\| alpha \|"; then bad "fence: a torn registry fences every project, the open one too" "$out"
+else ok "fence: a torn registry fences every project, the open one too"; fi
+all2=$(printf '%s\n' "$out" | grep '^| \*\*all\*\*')
+[ "$all0" = "$all2" ] && ok "fence: and still counts it all" || bad "fence: torn totals" "$all0
+$all2"
+
+# an unregistered checkout a confidential scope's glob matches is fenced too (cr-s3 review)
+mkdir -p "$HOME/projects/gl/vault2/.git" "$HOME/.claude/projects/-glv"
+printf '{"repos": {"alpha": {}}, "scopes": {"s-glob": {"repos": ["gl/*"], "confidential": true}}}\n' > "$T/glrepos.json"
+python3 - "$HOME" <<'PYG'
+import json, sys
+home = sys.argv[1]
+V = home + "/projects/gl/vault2"
+with open(home + "/.claude/projects/-glv/g.jsonl", "w") as f:
+    for i, ts in enumerate(("2026-03-03T11:00:00Z", "2026-03-03T11:05:00Z")):
+        f.write(json.dumps({"type": "user", "uuid": "g%02d" % i, "sessionId": "g1", "timestamp": ts, "cwd": V, "entrypoint": "claude-vscode",
+                            "origin": {"kind": "human"}, "message": {"role": "user", "content": "glob chat"}}) + "\n")
+PYG
+out=$(CLAUDE_REPOS_JSON="$T/glrepos.json" runc "$T/zc.json" --week 2026-W10)
+if printf '%s\n' "$out" | grep -qE "vault2|gl/"; then bad "fence: a checkout only the scope's glob matches is named nowhere" "$out"
+else ok "fence: a checkout only the scope's glob matches is named nowhere"; fi
+
 exit $rc

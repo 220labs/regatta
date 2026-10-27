@@ -21,6 +21,16 @@
   a floor breach or an unjoined ledger refuses, exit 3). Refuses to collect for a confidential scope or a torn registry.
 - usage-report's tier mix counts `principal-worker` and `principal-architect` as tiers of their own (principal
   tier S2), not "other agents".
+- The reports rule (confidential-reach S3, 2026-10-26): crew-report reads the core's `gather_fence` as
+  usage-report does — a confidential scope's project, its group folder's, their recordings and reading
+  lines read `(confidential #n)` and still count in every total, a session opening in one counts as
+  `(confidential)` among the first prompts, a torn registry fences every project. usage-report's global
+  report gains "By scope" (an open scope by name, a confidential one `(confidential scope N)`), and
+  `render` writes each confidential scope's own named report to `reports/usage/<day>.md` and `latest.md`
+  in its anchor, only where the fence calls the folder confidential; never published. Past reports stay.
+  A file there that is a link is replaced, never written through; `reports/usage/` goes into the anchor's
+  `info/exclude` (untracked files would stop sync.py fast-forwarding its main); one scope's failure no
+  longer costs the later scopes their report; an open-quoted row of a confidential glob names no project, skill or agent, and crew-report fences such an unregistered checkout too; the node report goes through a fresh `mkstemp` file, so a link at its temp name is not written through.
 
 - usage-report's fence (the confidential stopgap, 2026-10-26): a row whose project is a confidential
   scope's (the core's `gather_fence`) counts in every total and is named nowhere — its project and title
