@@ -90,6 +90,12 @@ cat > "$T/ssh/rbin/launchctl" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in list) cat "$FAKE_SSH/loaded" 2>/dev/null; echo "-	0	com.apple.other" ;; *) echo "launchctl $*" >> "$FAKE_SSH/launchctl" ;; esac
 EOF
+# the runner Mac's architecture is $FAKE_ARCH's (arm64 unless a case sets it), on any machine the suite runs on
+cat > "$T/ssh/rbin/uname" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = -m ] && { echo "${FAKE_ARCH:-arm64}"; exit 0; }
+exec /usr/bin/uname "$@"
+EOF
 cat > "$T/ssh/rbin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_SSH/curl"; exit 22
@@ -867,6 +873,72 @@ R="$T/w5"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; : > "$T/g
 check "$(grep -c 'actions/variables' "$T/gh/calls")" "0" "the literal form: no variable read or written"
 rm -rf "$T/gh/vars"
 
+echo "a fleet: another runner Mac by --host, an Intel one, a further instance (2026-10-27)"
+RH="$T/ssh/home"  # the fake runner Mac's home: one name, so no line reads as a machine path
+R="$T/w6"; newrepo "$R"; mkdir -p "$R/.helloworld"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+rm -rf "$T/ssh/home/actions-runners/acme" "$DIST"/actions-runner-osx-*; : > "$T/ssh/argv"; : > "$T/ssh/curl"
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+LAPTOP='{"id":9,"name":"laptop","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"laptop"}]}'
+OLDMAC='{"id":10,"name":"oldmac","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"X64"},{"name":"fleet"}]}'
+echo "{\"total_count\":2,\"runners\":[$LAPTOP,$OLDMAC]}" > "$T/gh/runners.json"
+FLEET="--host old-ci --name oldmac --labels self-hosted,macOS,fleet"
+FAKE_ARCH=x86_64 "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "2" "an Intel Mac, not configured, no tarball: fetched (here it fails)"
+grep -q 'on the runner Mac as the runner.s user,' "$T/out"; check "$?" "0" "…the trust warning never names the key's user for another Mac"
+"$CP" "$R" --runner install --dry-run --host ci@old-ci --name oldmac --labels self-hosted,macOS,fleet > "$T/out" 2>&1
+grep -q 'on the runner Mac as ci,' "$T/out"; check "$?" "0" "…and names the user --host logs in as"
+check "$(grep -c 'releases/download/v2.338.0/actions-runner-osx-x64-2.338.0.tar.gz' "$T/ssh/curl")" "1" "…the pinned osx-x64 build"
+check "$(grep -cx 'old-ci' "$T/ssh/argv")" "2" "…over ssh to --host, probe and install"
+check "$(grep -c "oldmac fleet\$" "$T/ssh/argv")" "2" "…each call naming --name and --labels' own"
+: > "$T/ssh/curl"; FAKE_ARCH=ppc "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "2" "an architecture with no pinned build: refused"
+grep -q "no runner build is pinned for it" "$T/out"; check "$?" "0" "…saying so"
+check "$(wc -l < "$T/ssh/curl" | tr -d ' ')" "0" "…before any download"
+fakerunner "$RH/actions-runners/acme/demo" fleet; touch "$RH/actions-runners/acme/demo/.runner"
+: > "$T/gh/calls"; FAKE_ARCH=ppc "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "configured already: no build needed, whatever the architecture"
+grep -q 'variable CI_RUNS_ON left at \["self-hosted","macOS","laptop"\]: registered runner laptop carries its labels' "$T/out"; check "$?" "0" "…the variable, served by another online runner, left as it is"
+check "$(grep -c -- '-X PATCH\|-X POST repos/acme/demo/actions/variables' "$T/gh/calls")" "0" "…nothing written"
+grep -q "value='\[\"self-hosted\",\"macOS\",\"fleet\"\]'" "$T/out"; check "$?" "0" "…and the PATCH that would route it printed"
+echo "{\"total_count\":2,\"runners\":[${LAPTOP/online/offline},$OLDMAC]}" > "$T/gh/runners.json"; : > "$T/gh/calls"
+"$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "the variable's runner registered but offline (asleep)"
+check "$(grep -c -- '-X PATCH' "$T/gh/calls")" "0" "…still the fleet: the variable left (review 2026-10-27)"
+python3 - "$CP" > "$T/out" 2>&1 <<'PY'; check "$?" "2" "the runner list unread: the variable is never written on a guess"
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+m.runners_of = lambda s: (None, "HTTP 403")
+try:
+    m.served("acme/demo", '["self-hosted","macOS","laptop"]', "oldmac")
+except m.Refusal as e:
+    print(e); sys.exit(2)
+PY
+grep -q "could not read acme/demo's runners (HTTP 403)" "$T/out"; check "$?" "0" "…and says so"
+echo "{\"total_count\":1,\"runners\":[$OLDMAC]}" > "$T/gh/runners.json"
+"$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "no other runner registered with the variable's labels"
+check "$(python3 -c "import json; print(json.load(open('$T/gh/vars/CI_RUNS_ON.json'))['value'])")" '["self-hosted","macOS","fleet"]' "…routed to this runner's labels"
+NEWMAC='{"id":11,"name":"newmac","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"newmac"},{"name":"fleet"}]}'
+echo "{\"total_count\":1,\"runners\":[$NEWMAC]}" > "$T/gh/runners.json"; : > "$T/gh/calls"
+"$CP" "$R" --runner install --host old-ci --name newmac --labels self-hosted,macOS,newmac,fleet > "$T/out" 2>&1; check "$?" "0" "a newcomer whose labels cover the variable's"
+grep -q 'variable CI_RUNS_ON already routes to \["self-hosted","macOS","fleet"\]: newmac carries its labels' "$T/out"; check "$?" "0" "…joins the fleet the variable names"
+check "$(grep -c -- '-X PATCH' "$T/gh/calls")" "0" "…never narrowed to it (review 2026-10-27)"
+R2="$T/w7"; newrepo "$R2"; git -C "$R2" remote set-url origin https://github.com/acme/demo-2.git
+fakerunner "$RH/actions-runners/acme/demo-2" second; printf '{"gitHubUrl": "https://github.com/acme/demo"}' > "$RH/actions-runners/acme/demo-2/.runner"
+"$CP" "$R2" --runner status > "$T/out" 2>&1; check "$?" "2" "acme/demo-2's own folder holding acme/demo's 2nd runner: refused"
+grep -q 'status actions.runner' "$T/out"; check "$?" "1" "…its svc.sh never run"
+rm -rf "$RH/actions-runners/acme/demo-2"
+fakerunner "$RH/actions-runners/acme/demo-2" other; printf '{"gitHubUrl": "https://github.com/acme/demo-2"}' > "$RH/actions-runners/acme/demo-2/.runner"
+"$CP" "$R" --runner status --instance 2 > "$T/out" 2>&1; check "$?" "2" "--instance 2 where acme/demo-2's own runner lives: refused"
+grep -q "holds another repo's runner" "$T/out"; check "$?" "0" "…saying whose"
+grep -q 'status actions.runner' "$T/out"; check "$?" "1" "…its svc.sh never run"
+rm -rf "$RH/actions-runners/acme/demo-2"
+"$CP" "$R" --runner status --host old-ci > /dev/null 2>&1; check "$?" "2" "--host without --name: an error (two Macs would share a name)"
+"$CP" "$R" --runner status --instance 2 > "$T/out" 2>&1; check "$?" "0" "--instance 2: status"
+grep -q 'not configured: .*actions-runners/acme/demo-2$' "$T/out"; check "$?" "0" "…in <repo>-2"
+grep -q "acme/demo's runner laptop-2 " "$T/out"; check "$?" "0" "…named <name>-2"
+"$CP" "$R" --host old-ci > /dev/null 2>&1; check "$?" "2" "--host without --runner: an error"
+"$CP" "$R" --runner status --instance 0 > /dev/null 2>&1; check "$?" "2" "--instance 0: an error"
+"$CP" "$R" --runner status --name -x > /dev/null 2>&1; check "$?" "2" "a --name starting with '-': an error"
+"$CP" "$R" --runner status --labels macOS,fleet > "$T/out" 2>&1; check "$?" "2" "--labels without self-hosted: refused"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"; rm -rf "$T/gh/vars" "$T/ssh/home/actions-runners/acme"
+
 echo "the review of 2026-10-21: what every rendered file names (1, 2)"
 # Private words through helloworld's own list and matcher, where one is installed (its own lookup,
 # under the caller's config dir): the scan prints counts, never a word. CI has none: said, skipped.
@@ -951,6 +1023,18 @@ check "$(grep -cxF "    $VARLINE" "$R/.github/workflows/check.yml")" "1" "…run
 grep -q '^next: .*only once CI_RUNS_ON is set' "$T/out"; check "$?" "0" "…the next step: the check reaches the runner Mac only once the variable is set (6)"
 "$CP" "$R" --runner install > "$T/out" 2>&1; check "$?" "0" "--runner install creates the variable"
 grep -q 'rollback: gh api -X DELETE repos/acme/demo/actions/variables/CI_RUNS_ON$' "$T/out"; check "$?" "0" "…and prints the DELETE that undoes the create (17)"
+FULLLINE="runs-on: \${{ fromJSON(github.event_name != 'pull_request' && vars.CI_RUNS_ON_FULL || vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}"
+setruns "$R" "${FULLLINE#runs-on: }"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'runs-on variable CI_RUNS_ON' "$T/out"; check "$?" "0" "the split form (whole-line runs on CI_RUNS_ON_FULL): read as the variable form (2026-10-27)"
+: > "$T/gh/calls"; "$CP" "$R" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "…--runner install reads its variable"
+grep -q 'would then route the repository variable CI_RUNS_ON that' "$T/out"; check "$?" "0" "…and would route CI_RUNS_ON, never CI_RUNS_ON_FULL"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "…a re-run of --to self-hosted"
+check "$(grep -cxF "    $FULLLINE" "$R/.github/workflows/check.yml")" "1" "…keeps the split form"
+grep -q "# A push, the nightly run and a hand start take CI_RUNS_ON_FULL's labels" "$R/.github/workflows/check.yml"; check "$?" "0" "…and says what it does"
+setruns "$R" "\${{ fromJSON(github.event_name != 'pull_request' && vars.OTHER_FULL || vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}"
+"$CP" "$R" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "a split form whose two names differ: --runner install --dry-run"
+grep -q 'route the repository variable' "$T/out"; check "$?" "1" "…the repo's own form, its variable never this tool's"
+setruns "$R" "${VARLINE#runs-on: }"
 echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 "$CP" "$R" --runner remove > "$T/out" 2>&1; check "$?" "0" "--runner remove with the variable set"
 grep -q 'repository variable CI_RUNS_ON holds \["self-hosted","macOS","laptop"\]' "$T/out"; check "$?" "0" "…says what it holds, read (9)"
