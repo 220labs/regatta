@@ -2957,7 +2957,8 @@ check "$(python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("arg
   "  …but node-local (queue-local/_spawn/), the entry carrying the scope's marker…"
 hasnt "$QSP" '"node"' "  …and never its name"
 QP=$(qplists "$HA" | head -1)
-has "$QP" "<string>--origin</string><string>$NM</string>" "  the claimed job hands the marker on"
+# the queue writes its plist with plistlib, one <string> per line: read ProgramArguments, not the text
+check "$(python3 -c 'import plistlib, sys; a = plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"]; print(a[a.index("--origin") + 1] if "--origin" in a else "none")' "$QP")" "$NM" "  the claimed job hands the marker on"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_MAX_RUNS=5 qfire "$QP"
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("origin"), d.get("origin_mark"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node $NM" \
   "  and the fired run's record reads it back here: the name and the marker"
