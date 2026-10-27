@@ -48,6 +48,9 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has() { case "$1" in *"$2"*) echo "  ok   $3";; *) echo "  FAIL $3: [$2] not in [${1:0:300}]"; fails=$((fails+1));; esac; }
 hasnt() { case "$1" in *"$2"*) echo "  FAIL $3: [$2] found"; fails=$((fails+1));; *) echo "  ok   $3";; esac; }
+# the first N characters of stdin's first line: `cut -c` counted bytes on CircleCI's ubuntu-2604
+# image (uutils 0.8.0), as GNU's does, so a `·` cost a character there (AGENTS.md's Traps)
+chars() { python3 -c 'import sys; print(sys.stdin.readline().rstrip("\n")[:int(sys.argv[1])])' "$1"; }
 
 # a blueprint's front matter is read by PyYAML, installed per user on these Macs: keep its site
 # when HOME moves below (bin/blueprintlib.py)
@@ -1937,7 +1940,7 @@ check "$(rec dock account)/$(rec dock name)/$(rec dock space)/$(rec dock gen)/$(
 SID=$(rec dock session)
 has "$(cat "$S5/sheep.calls")" "CLAUDE_CODE_SESSION_ID=$SID" "  the page deployed stamped with the new session's id"
 argv=$(cat "$S5/claude.argv")
-check "$(sed -n 1p "$S5/claude.argv" | cut -c1-40)" "You are skipper · dock, the skipper of s" "  claude's first word is the brief"
+check "$(sed -n 1p "$S5/claude.argv" | chars 40)" "You are skipper · dock, the skipper of s" "  claude's first word is the brief"
 has "$argv" "--session-id
 $SID
 --remote-control
@@ -2063,8 +2066,8 @@ has "$(cat "$S5/host.argv")" "claude
 auth
 status
 --json" "  the sign-in probe goes through it too (a bare claude is the binary TCC denied)"
-check "$(grep -A1 -x claude "$S5/host.argv" | tail -1 | cut -c1-40)" "You are skipper · dock, the skipper of s" "  the session's argv: claude first, then the brief"
-check "$(sed -n 1p "$S5/claude.argv" | cut -c1-40)" "You are skipper · dock, the skipper of s" "  and claude receives the brief first, as a bare claude does"
+check "$(grep -A1 -x claude "$S5/host.argv" | tail -1 | chars 40)" "You are skipper · dock, the skipper of s" "  the session's argv: claude first, then the brief"
+check "$(sed -n 1p "$S5/claude.argv" | chars 40)" "You are skipper · dock, the skipper of s" "  and claude receives the brief first, as a bare claude does"
 has "$(cat "$S5/run.out")" "claude through $S5/bin/claude-host" "  the runner names the launcher"
 cpid=$(sed -n 's/^pid=//p' "$S5/claude.env")
 check "$([ -n "$cpid" ] && [ "$cpid" != "$(rec dock pid)" ] && echo child || echo same)" "child" "  claude runs as the launcher's child, not as the record's pid"
