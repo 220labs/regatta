@@ -415,6 +415,21 @@
   ("the arrival" for a move's own landing) and `/pickup`.
 - `test_wharf` finds helm's console and the old `bin/plan` each where it lives: `libexec/helm` in helm's
   module (B12), the overlay's S5 shim for `plan`; without that shim the old names are skipped, said.
+- The suites wait on state, not the clock (docs/wharf-runs-suite-time-2026-10-23.md): test_autofinish_run's
+  claude stub writes its reply as compact JSON, so a reply run no longer waits out DISPATCH_START_WAIT and a
+  screen snapshot (27 runs × 3 s a pass); test_dispatch and test_autofinish_run poll for a TERM'd stub to go;
+  test_harness's hold stub steps 0.2 s. Minutes before → after, on this Mac at load 37–63 → 17–143:
+  test_dispatch 7.0 → 5.1, test_autofinish_run 4.4 → 3.0 (an A/B at one load: 4.9 → 4.2), test_harness
+  0.8 → 1.2, unchanged suites test_pickup 6.2 → 5.2, test_autofinish 9.5 → 3.9, test_wharf 10.3 → 5.4; about
+  12.9 min estimated on the quiet build Mac (was 14.4), short of 7: the rest is process work, D1 there.
+- `tests/check.sh` runs the suites in three lanes at once (D1-A of the same doc): test_dispatch alone,
+  test_harness + test_pickup + test_autofinish, every other suite (a new one lands there by itself);
+  each lane's log printed whole, in lane order, when it ends, with each suite's seconds; the exit fails
+  if a lane fails or its log shows `bad substitution` or `command not found` (AGENTS.md Traps).
+  `WHARF_RUNS_CHECK_LANES=1` (or 2: test_dispatch alone beside the rest) for fewer. On the build Mac, under
+  `bin/check`'s slot, every case kept (4493 ok lines both ways): sequential 1680 s (28.0 min, load
+  12–18) → lanes 869 s (14.5 min, load 11–12; lanes 466, 653, 868 s before test_harness moved to
+  lane 2) → 830 s (13.8 min, load 8–12; lanes 413, 669, 830 s).
 
 ## 0.2.0 — 2026-10-20
 

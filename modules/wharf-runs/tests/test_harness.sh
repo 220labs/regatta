@@ -134,7 +134,8 @@ echo "codex $*" >> "$STUB_CODEX_CALLS"
 echo "stdin: $(cat)" >> "$STUB_CODEX_CALLS"
 echo '{"type":"thread.started","thread_id":"'"${STUB_CODEX_THREAD:-th-000001}"'"}'
 echo '{"type":"turn.started"}'
-if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; while :; do sleep 1; done; fi
+# a TERM waits for the sleep in hand before its trap runs: 0.2 s steps, not 1 s, as test_dispatch's stub
+if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; while :; do sleep 0.2; done; fi
 echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"DONE"}}'
 echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 SH

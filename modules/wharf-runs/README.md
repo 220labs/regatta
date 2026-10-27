@@ -94,4 +94,6 @@ schedules the sweep itself.
 ## Check
 
 `bash modules/wharf-runs/tests/check.sh` — scratch paths only; no Orca, no network, no real launchd
-(about 15 minutes, macOS). A suite the checkout lacks is skipped with a line.
+(macOS). The suites run in three lanes at once, test_dispatch alone in one, each lane printed whole, in lane order,
+when it ends; `WHARF_RUNS_CHECK_LANES=1` runs them one after another. A suite the checkout lacks is
+skipped with a line.
