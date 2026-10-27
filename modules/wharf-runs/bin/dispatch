@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # dispatch BRANCH [--repo DIR] [--at WHEN] [--on auto|HOST|here [--fallback here]] [--note TEXT] [--model M] [--effort E]
 #                 [--account auto|bound|LABEL [--force]] [--headless] [--background allow|deny] [--yolo] [--if-room]
-#                 [--mode default|ask|dnd|yolo] [--priority low|normal|high|force] [--probe] [--dry-run]
+#                 [--mode default|ask|dnd|yolo] [--priority low|normal|high|force] [--origin SCOPE|MARKER]
+#                 [--probe] [--dry-run]
 # dispatch BRANCH --next [--repo DIR] [--on here] [--note TEXT] [--model M] [--effort E] [--headless]
-#                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo]
+#                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo] [--origin SCOPE|MARKER]
 # dispatch --status
 # dispatch --slots
 # dispatch --queue [--all] [--json]
@@ -211,6 +212,15 @@
 #            --fallback): the peer's checkout pulls main only at a session start (review 2026-10-10).
 #   --note   extra instructions appended to the brief — a build-now/measure-later split goes here,
 #            because the brief says what "done" is and a run before its inputs exist cannot meet it.
+#   --origin the confidential scope a seed came out of (`pickup seed --from`, confidential-reach S5): the
+#            core's scope_marker() `confidential:<8 hex>` as the seed commit carries it, or a scope's name.
+#            A marker is read back against this host's registry (common.scope_of_marker) and refused
+#            when no confidential scope here has it, or the registry will not read; given twice, refused.
+#            Carried as given to the dispatch host and a scheduled job, and as its marker alone in a
+#            queue entry (pushed to the queue's home, or node-local from the scope's checkout; a host
+#            whose registry lacks the scope refuses the fired job, as above); the run's record keeps the
+#            scope's name as `origin` (local state; nothing pushed names it) and the marker as
+#            `origin_mark`. Recorded only here: refusing a confidential origin without its review is S6's.
 #   --next   a finished step starts the next one itself, on the dispatch host (header, Where), in about two minutes — instead of a
 #            prompt for the owner to paste (the owner, 2026-10-04: "I don't have time to copy-paste prompts for
 #            you"). The sequence the model gate S3 proved that day, so no session re-derives it: the
@@ -456,7 +466,8 @@ roomy() {
   [ "$rc" = 0 ] || echo "dispatch: no memory reading ($why) — going ahead" >&2
   return 0
 }
-branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; model_given=0; effort_given=0; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
+origin_re='^([A-Za-z0-9][A-Za-z0-9._-]*|confidential:[0-9a-f]{8})$'
+branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; origin=""; model="opus"; effort="high"; model_given=0; effort_given=0; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
 account=""; force=0; fallback=""; on_here=0; on_typed=0; on_default=0; at_default=0; on_auto=0; ifroom=0
 start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
 prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0; qverb=""; evat=""
@@ -477,6 +488,10 @@ while [ $# -gt 0 ]; do
     # (the sounding queue's allow rules in aurora's weekly-run; the S7 /finish review's R5)
     --at) [ -z "$at" ] || { echo "dispatch: --at given twice" >&2; exit 2; }; at="$2"; shift 2;;
     --note) note="$2"; shift 2;;
+    --origin) [ -z "$origin" ] || { echo "dispatch: --origin given twice" >&2; exit 2; }; origin="${2:-}"
+      # [[ =~ ]], not grep: grep matches line by line, so a value with a newline passed (S5's landing re-review)
+      [[ $origin =~ $origin_re ]] \
+        || { echo "dispatch: --origin takes a scope's name or its confidential:<8 hex> marker" >&2; exit 2; }; shift 2;;
     --model) model="$2"; model_given=1; shift 2;;
     --effort) effort="$2"; effort_given=1; shift 2;;
     --probe) probe=1; shift;;
@@ -518,13 +533,42 @@ done
 if [ -n "${WEEKLY_RUN:-}" ]; then
   case "$at" in reset|reset+30|reset+60) slot=1;; *) slot=0;; esac
   if [ "$slot" = 0 ] || [ "$ifroom" = 0 ] || [ -z "$branch" ] \
-     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode$fromq${prio_given#0}$qverb$evat" ] || [ "$sweep" = 1 ] \
+     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode$origin$fromq${prio_given#0}$qverb$evat" ] || [ "$sweep" = 1 ] \
      || [ "$model/$effort" != opus/high ]; then
     echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
   fi
   # the job carries opus/high in so many words: the fired run reads the brief's Tier: line, and a principal
   # tier there then refuses (principal_flags) rather than raise the weekly pass's run to Fable xhigh
   model_given=1; effort_given=1
+fi
+# --origin, read back on this host (S5's landing review): a scope's name never travels in what is
+# pushed, so the seed commit carries the marker and only a registry here can say which scope. A name
+# is held to the same test, a confidential scope here: an open scope's name, or a typo, would be
+# recorded as a confidential origin S6 trusts (the re-review). A fired job refused here removes its
+# own plist first: the cleanup trap is not set yet, and a plist left behind fires again next year.
+LC="${DISPATCH_LAUNCHCTL:-launchctl}"
+LA="$HOME/Library/LaunchAgents"
+origin_refuse() {
+  echo "dispatch: --origin $origin: $1" >&2
+  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
+  exit 2
+}
+origin_scope=""; origin_marker=""
+if [ -n "$origin" ]; then
+  # two lines: the scope's name, then its marker — what the queue's entry carries (queue_args)
+  origin_read=$(python3 - "$core" "$origin" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+if common.registry_unreadable():
+    sys.exit(3)
+o = sys.argv[2]
+s = (common.scope_of_marker(o) if o.startswith(common.SCOPE_MARK) else (o if o in common.confidential_scopes() else "")) or ""
+print(s + "\n" + (common.scope_marker(s) if s else ""))
+PY
+) || origin_refuse "the registry cannot be read here, so no scope can be judged (fails closed)"
+  origin_scope=${origin_read%%$'\n'*}; origin_marker=${origin_read#*$'\n'}
+  [ -n "$origin_scope" ] || origin_refuse "names no confidential scope in this host's registry"
 fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
 [ "$sweep" = 0 ] || exec python3 "$Q" sweep "${qctx[@]}"
@@ -550,7 +594,7 @@ if [ -n "$lresume" ] && [ "$lfork" = 0 ] && [ -n "$lsid" ]; then
   echo "dispatch: --resume keeps the session's own id; --session-id goes with --fork only" >&2; exit 2
 fi
 if [ "$start" = 1 ]; then
-  [ -z "$branch$at$on$note$mode" ] && [ "$cancel$next$probe$yolo$ifroom" = 00000 ] || { echo "dispatch: --start takes no BRANCH, --at, --on, --note, --cancel, --next, --probe, --yolo, --if-room or --mode" >&2; exit 2; }
+  [ -z "$branch$at$on$note$mode$origin" ] && [ "$cancel$next$probe$yolo$ifroom" = 00000 ] || { echo "dispatch: --start takes no BRANCH, --at, --on, --note, --origin, --cancel, --next, --probe, --yolo, --if-room or --mode" >&2; exit 2; }
   [ -n "$lprompt" ] && [ -n "$lname" ] || { echo "dispatch: --start needs a PROMPT and a NAME" >&2; exit 2; }
   ldir="$(cd "$ldir" 2>/dev/null && pwd -P)" || { echo "dispatch: --start: no such directory" >&2; exit 2; }
   branch=$(git -C "$ldir" symbolic-ref --quiet --short HEAD) || { echo "dispatch: --start: $ldir is on no branch" >&2; exit 2; }
@@ -797,7 +841,6 @@ old="$lprefix.run-seed.${base#"$lprefix".dispatch.}"   # the label before 2026-1
 # default (PROJECTS): a repo is named relative to this Mac's projects folder, the primary by its
 # checkout's basename.
 rbin='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
-LA="$HOME/Library/LaunchAgents"
 # this branch's jobs here: one per fire minute, the undated label of before 2026-10-04, and both
 # under the old name, so --cancel and a reschedule still find a job run-seed scheduled
 jobs() { local b; for b in "$base" "$old"; do ls "$LA/$b.plist" "$LA/$b".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].plist 2>/dev/null; done; }
@@ -1092,6 +1135,8 @@ queue_args() {
   [ -n "$account" ] && qa+=(--arg=--account "--arg=$account")
   [ "$force" = 1 ] && qa+=(--arg=--force)
   [ "$prio" = normal ] || qa+=(--arg=--priority "--arg=$prio")
+  # the marker alone, never the name it was given: an entry is pushed to the queue's home (S5's rule)
+  [ -n "$origin_marker" ] && qa+=(--arg=--origin "--arg=$origin_marker")
   qa+=(--env "DISPATCH_DEPTH=$depth")
   [ -n "$mode" ] && qa+=(--env "DISPATCH_MODE=$mode")
   for v in $SKIPPER_ENV; do
@@ -1298,6 +1343,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     [ "$repo" != "$primary" ] && case "$repo" in "$projects/"*) cmd="$cmd --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")";; *) echo "dispatch: --on needs a repo under $projects" >&2; exit 2;; esac
     echo "scheduling on $on for epoch ${at#@} ($(date -r "${at#@}" '+%F %H:%M %Z') on this Mac)" >&2
     [ -n "$note" ] && cmd="$cmd --note $(printf '%q' "$note")"
+    [ -n "$origin" ] && cmd="$cmd --origin $(printf '%q' "$origin")"
     [ "$probe" = 1 ] && cmd="$cmd --probe"
     [ "$headless" = 1 ] && cmd="$cmd --headless"
     [ "$yolo" = 1 ] && cmd="$cmd --yolo"
@@ -1406,6 +1452,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   [ "$model_given" = 1 ] && args="$args<string>--model</string><string>$model</string>"
   [ "$effort_given" = 1 ] && args="$args<string>--effort</string><string>$effort</string>"
   [ -n "$note" ] && args="$args<string>--note</string><string>$(printf '%s' "$note" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>"
+  [ -n "$origin" ] && args="$args<string>--origin</string><string>$(printf '%s' "$origin" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>"
   [ "$probe" = 1 ] && args="$args<string>--probe</string>"
   [ "$headless" = 1 ] && args="$args<string>--headless</string>"
   [ "$yolo" = 1 ] && args="$args<string>--yolo</string>"
@@ -1637,6 +1684,8 @@ chain_record() {
   [ -n "${note:-}" ] && crec+=(note="$note")
   crec+=(prio="$prio")   # the run's rank in the queue (dispatch --priority); S4's --next inherits it
   [ -n "$fromq" ] && crec+=(queue="$fromq")
+  [ -n "${origin_scope:-}" ] && crec+=(origin="$origin_scope")
+  [ "${origin_scope:-}" != "${origin:-}" ] && crec+=(origin_mark="$origin")
   for a in ${chain[@]+"${chain[@]}"}; do
     case "$a" in
       # the run record keeps its keys (manager, plan…: read by stalls, the board, a re-dispatch);

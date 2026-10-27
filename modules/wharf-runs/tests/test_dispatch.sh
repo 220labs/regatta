@@ -49,6 +49,7 @@ FUT=$(date -v+30d +%Y-%m-%d); FY=${FUT%%-*}; FM=$((10#$(date -v+30d +%m))); FD=$
 E2=$(date -v+60d +%Y-%m-%d); EM=$((10#$(date -v+60d +%m))); ED=$((10#$(date -v+60d +%d)))
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
+hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 # a blueprint's front matter is read by PyYAML, installed per user on these Macs: keep its site when HOME
 # moves below (bin/blueprintlib.py; dispatch --next and pickup seed read blueprints, wharf-on-orca S5)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
@@ -162,6 +163,9 @@ has "$T/ssh.calls" "ssh buildbox-ssh" "goes over ssh"
 has "$T/ssh.calls" "DISPATCH_DEPTH=2 $RBIN" "  the chain's depth travels (the peer adds one), to the peer's own core"
 has "$T/ssh.calls" "--at @$EP" "epoch, not a clock time, crosses the wire"
 has "$T/ssh.calls" "note" "note quoted through"
+printf '{"repos": {"k": {}, "o": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "pub": {"repos": ["o"]}}}\n' > "$T/origin-repos.json"
+env -u DISPATCH_LABEL DISPATCH_DEPTH=2 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$HOME/projects/other" --on buildbox --at "@$EP" --origin node >/dev/null
+has "$T/ssh.calls" "--origin node" "--origin travels to the dispatch host (S5)"
 # scheduled there: the asking session is recorded as handed off, so tidy closes its window once idle
 HO="$HOME/Library/Caches/run-seed/handoffs"; rm_own "$HO"
 # the asking session sits on the branch it hands off, in the repo it names: its own repo, on $BR
@@ -529,6 +533,48 @@ grep -q "^CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=" "$T/env.calls"; check "$?" "1" 
 grep -q "^BASH_DEFAULT_TIMEOUT_MS=1800000$" "$T/env.calls"; check "$?" "0" "  the same 30-minute Bash default"
 has "$HOME/allow.log" "== background allow (--background)" "  the log says which, and that it was forced"
 check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("background"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "allow" "  so does the run's record"
+
+echo "--origin: the confidential scope a seed came out of (confidential-reach S5), carried and recorded"
+rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+has "$P" "<string>--origin</string><string>node</string>" "it travels to the scheduled job"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin node
+has "$T/origin.log" "== exit 0" "  the fired run ran"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("origin"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node" "  its record names the origin"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+DISPATCH_LOG="$T/no-origin.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("origin", "none"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "none" "  a run without it records none"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin 'a b;c' > /dev/null 2> "$T/err"; check "$?" "2" "an --origin that is no scope's name: refused"
+has "$T/err" "--origin takes a scope's name" "  saying so"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node --origin pub > /dev/null 2> "$T/err"; check "$?" "2" "--origin given twice: refused (a gated flag)"
+has "$T/err" "--origin given twice" "  saying so"
+# the seed commit's marker (S5's landing review): read back by this host's registry, never pushed as a name
+printf '{"repos": {"k": {}, "o": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "pub": {"repos": ["o"]}}}\n' > "$T/origin-repos.json"
+NM="confidential:$(printf node | shasum -a 256 | cut -c1-8)"; PM="confidential:$(printf pub | shasum -a 256 | cut -c1-8)"
+rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+has "$P" "<string>--origin</string><string>$NM</string>" "a marker travels to the scheduled job as given"
+hasnt "$P" "<string>node</string>" "  the plist carries no name it was not given"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin-mark.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("origin"), d.get("origin_mark"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node $NM" \
+  "  the fired run's record: the scope this host's registry reads it as, and the marker"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$PM" > /dev/null 2> "$T/err"; check "$?" "2" "an open scope's marker: refused"
+has "$T/err" "names no confidential scope in this host's registry" "  saying so"
+printf '{"repos": {"x": ' > "$T/origin-torn.json"
+CLAUDE_REPOS_JSON="$T/origin-torn.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" > /dev/null 2> "$T/err"; check "$?" "2" "a marker with a torn registry: refused (fails closed)"
+has "$T/err" "the registry cannot be read here" "  saying why"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "confidential:xyz" > /dev/null 2> "$T/err"; check "$?" "2" "a malformed marker: refused"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$T/repo" demo --origin node --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "--start takes no --origin"
+WEEKLY_RUN=sextant "$B/dispatch" $BR --repo "$T/repo" --at reset --if-room --origin node > /dev/null 2>&1; check "$?" "2" "  nor does the weekly Sextant's one shape"
+# S5's landing re-review: a newline, an open scope's name, an unknown name; a fired job refused here
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$(printf 'node\nx y;z')" > /dev/null 2> "$T/err"; check "$?" "2" "an --origin holding a newline: refused (grep read it line by line)"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin pub > /dev/null 2> "$T/err"; check "$?" "2" "an open scope's name: refused"
+has "$T/err" "names no confidential scope in this host's registry" "  saying so"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin nosuch > /dev/null 2> "$T/err"; check "$?" "2" "an unknown name: refused"
+rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1; check "$?" "2" "a fired job whose marker no longer reads: refused"
+check "$([ -e "$P" ] && echo left || echo gone)" "gone" "  and its plist removed (the trap is not set yet)"
 
 echo "a direct run goes through launchd (an orphaned watcher, 2026-10-05)"
 : > "$T/calls"; : > "$T/claude.calls"
@@ -2899,6 +2945,21 @@ python3 "$QB" enqueue --repo "$T/repo" --branch $BR "${QC[@]}" > /dev/null; pyth
 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
 check "$?" "0" "item 20: a dispatch of a branch whose entry is claimed here: exit 0…"
 has "$T/out" "is claimed here already (queue entry fleet:repo--demo)" "  …said as such, never 'no room … queued'"
+qreset
+# --origin through the queue (confidential-reach S5 beside dispatch-queue S1): the entry is pushed to the
+# home, so it carries the scope's marker, never the name the run was given
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --on here --headless --origin node > "$T/out" 2>&1
+check "$?" "0" "--origin through the queue: queued and claimed here…"
+"${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json > "$T/qentry.json" 2>/dev/null
+check "$(python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("args") or []; print(a[a.index("--origin") + 1] if "--origin" in a else "none")' "$T/qentry.json")" "$NM" \
+  "  …the entry carrying the scope's marker…"
+hasnt "$T/qentry.json" '"node"' "  …and never its name"
+QP=$(qplists "$HA" | head -1)
+has "$QP" "<string>--origin</string><string>$NM</string>" "  the claimed job hands the marker on"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_MAX_RUNS=5 qfire "$QP"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("origin"), d.get("origin_mark"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node $NM" \
+  "  and the fired run's record reads it back here: the name and the marker"
+check "$(qload 'q.bad_args({"args": ["--origin", "node"]})')" "--origin 'node' does not match its pattern" "  an entry naming a scope is never claimable (bad_args)"
 qreset
 
 echo "  the third landing review (docs/dispatch-queue-s1-review-3-2026-10-27.md), one case each"

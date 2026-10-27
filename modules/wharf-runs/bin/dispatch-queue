@@ -116,7 +116,9 @@ STATES = ("queued",) + LIVE
 # data written by any host with write on the home, never a command line (the claim's guard)
 FLAGS = {"--model": r"[A-Za-z0-9.\[\]_-]{1,40}", "--effort": r"low|medium|high|xhigh|max", "--note": r"(?s).{0,4000}",
          "--background": r"allow|deny", "--account": r"[A-Za-z0-9_.@-]{1,60}", "--mode": r"default|ask|dnd|yolo",
-         "--priority": r"low|normal|high|force", "--yolo": None, "--if-room": None, "--force": None, "--headless": None}
+         "--priority": r"low|normal|high|force", "--yolo": None, "--if-room": None, "--force": None, "--headless": None,
+         # a confidential origin by its marker only: the entry is pushed, and a scope's name never is (S5)
+         "--origin": r"confidential:[0-9a-f]{8}"}
 ENV_OK = re.compile(r"DISPATCH_(DEPTH|MODE|SKIPPER|MANAGER|SKIPPER_ACCOUNT|MANAGER_ACCOUNT|SHIP|PLAN|PLAN_SPACE|SKIPPER_HOST|MANAGER_HOST)")
 BRANCH_OK = re.compile(r"claude/[A-Za-z0-9._/-]{1,200}")
 

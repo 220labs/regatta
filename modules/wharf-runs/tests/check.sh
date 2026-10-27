@@ -37,7 +37,7 @@ fi
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
 LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom "
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_autofinish test_dispatch test_queue test_wharf"
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_wharf"
 # Lane 2 is named; lane 3 is every other suite, so a suite added to SUITES lands there by itself.
 # Balanced on measured passes (the build Mac, load 8–12, 2026-10-27; seconds): test_dispatch 413 alone; lane 2
 # 669 (harness 64, pickup 335, autofinish 270); lane 3 830, test_autofinish_run 335 and test_wharf 244

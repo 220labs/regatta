@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `pickup seed --from`, the landing re-review (2026-10-27): the target judged against one read of the registry,
+  an unregistered repo a confidential glob takes, a tenancy file written but unreadable, and a repo dispatch
+  does not take are refused before any write; a plain `seed` or `brief` out of a confidential scope is refused
+  (it goes by `--from`); every start path reads the origin back from the branch's `.review` and opens no tab
+  for one. `dispatch --origin` takes a name only when it is a confidential scope here, refuses a newline,
+  and a fired job it refuses removes its own plist.
+- `pickup seed TOPIC --from SCOPE --repo PATH --file BRIEF` (confidential-reach S5): the one write out of a
+  confidential scope. Refused unless the cwd is in SCOPE, SCOPE is confidential and --repo names an open
+  repo (in no confidential scope, not the vault, no tenant's); then aurora's `scope-pass check --judge`
+  reviews the brief, the branch name and the Seeded-By line before any write, and the seed commit
+  carries `docs/handoff/<date>-<topic>.review` (the brief's sha256, both verdicts, site, provider, model,
+  cost, time). Nothing pushed names the scope: Seeded-By and the `.review`'s `origin` carry the core's
+  `scope_marker()`, `confidential:<8 hex>`, and a brief or topic naming the scope is refused before the
+  bundle is built (the landing review). The run starts by `dispatch --next --origin <marker>`, never a
+  tab. A seed's brief is its `.md` alone, so `show` never names the `.review`.
+- `dispatch --origin SCOPE|MARKER`: the confidential scope a seed came out of, carried as given to the
+  dispatch host and a scheduled job (escaped into the plist); a marker is read back by this host's
+  registry and refused when no confidential scope has it or the registry is torn; the run's record keeps
+  the name as `origin` and the marker as `origin_mark`; refused given twice, with `--start` and under
+  WEEKLY_RUN. Through the queue (dispatch-queue S1) the entry carries the marker alone, never the name it
+  was given: `FLAGS` takes `--origin` only as `confidential:<8 hex>`, since an entry is pushed to the home.
 - The suites delete under HOME through `rm_own` (the core's entry, 2026-10-27).
 - `orca-host`: a named yard node's folder carries its Orca pairing, so no overlay table holds a row per node.
   `wharf-runs/nodes/<name>/orca-pair` lists the hosts whose Orca holds the node's guest (`<name>-agent`, the
