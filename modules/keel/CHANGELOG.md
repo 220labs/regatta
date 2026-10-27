@@ -38,6 +38,41 @@
   Hidden on spacesheep and the phone. The address travels in base64 past the mirror's rewrite; a page
   deployed for the first time has none yet and is redeployed once with it (PAGE_FMT 10, the pin's
   `link_shown`). Where the tab refuses the copy, the status pop-up opens with the address to copy by hand.
+- Routed comments, S2's landing review: a `stopped` mark keeps its thread owed; `keel routed check|line
+  --routing` refuses an unattended caller; `lookout_release` unroutes only a `Routed:` line its own brief
+  wrote, never an earlier routing's.
+- Routed comments, S2 (docs/routed-comments-2026-10-26.md): a doc routed for work keeps being read after
+  its run starts and after it lands. `keel routed line` (pickup's call) writes a `Routed: <ISO time> ·
+  page <space id> · <branch>` line under the doc's `Status:` in the routing commit itself, and `--drop`
+  takes it out again (`lookout_release` passes `pickup brief --unroute`). `sheep threads`, `sheep reply`
+  and `sheep pull` (`--plumb` too) read the page from the pin, else from that line, so a host that never
+  deployed the page reads it. `comment_threads` keeps `owner` (the comment's `author_email` against the
+  address of a reply this tool posted, else the overlay's new `keel/owner-email`; the address is never
+  kept), `own` (`via == "claude"` or an id in the pin's `sent`) and `shared` (more than one account on the
+  page). A mark counts only as this tool's own: one typed by anyone else counts for nothing; a pull's
+  marks now go into `sent`. `talking` is derived from the page too: our non-mark reply under an untaken
+  thread. Seven marks (ROUTED_MARKS), three of them taken (`routed into`, `closed by`, `settled by`);
+  `keel routed mark` posts one. The gate, `keel routed check <doc>` (exit 3), holds new work while an act
+  thread is unreflected, an owner thread unjudged (judged on the spot: rules first, then the
+  `keel.comment` gate row; with the row absent or off, held) or a Save the doc lacks; `pickup seed`
+  runs it. `keel settle <doc> <id|Dn> --why` (attended only, exit 3 under `CLAUDE_UNATTENDED`) posts the
+  settled mark and writes `> **Settled.**` into the doc. `keel routed status` reads this host's
+  routed.jsonl. The lookout reads every routed page for 14 days on every host (about 5 s a pass for the
+  `git log -G` over the repos), its first read counting each open thread new; a host with no key gets
+  one card. `not_owners_answer` excuses the routing commit (`Seed:`, `Brief:`, `Routed-By:`) and a
+  review stamp.
+- Routed comments, S2's finish review: the `Routed:` line's page wins over this host's pin of another
+  page (a run's first checkpoint mirrored the doc to a second, empty one): the pin is pointed at the
+  line's page and says which it left, and `sheep` deploys a routed doc to that page from the first
+  checkpoint on. A host's first read of a routed page wakes only a talking thread
+  the owner wrote in after our reply. `keel settle <doc> save:<seq>` settles a Save no pull can take,
+  with a `> **Settled.** Save <savedAt>` line the gate reads on every host; the gate's refusal names each
+  Save so. On the text form a taken mark counts by its words for taking again (never for the gate). A
+  held verb under a `would start` offer is read before go/no. `keel routed line --dry-run` logs nothing,
+  `--routing` passes the start's own threads. A line `pickup brief --unroute` took back names no page. A
+  `held` judge row is judged again; a key keeps its newest line; `routed mark routed|closed` refuses an
+  unattended caller; a brief's `.dir/` path is kept whole; the last step names keel from `~/`.
+
 - Figure palettes, beside the styles: `course` (the default) draws a figure in the course page's dark
   colours, white text and saturated orange-to-violet-to-teal fills; `deck` is white with a modern set for
   outside presentations; `excalidraw` keeps the source's pastels. A doc's `Figure palette:` line picks,
