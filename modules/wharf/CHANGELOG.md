@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `ci-provider --runner` serves a fleet of runner Macs: the osx-x64 build beside osx-arm64 by the Mac's
+  `uname -m`, `--host`/`--name`/`--labels` for a further Mac, `--instance N` for a further runner on one
+  Mac, and an install that never narrows or re-routes a variable other registered runners serve. The
+  split runs-on form (`NAME_FULL` for a push, the nightly run and a hand start) is read and kept as the
+  variable form, and status reads both (ci-fleet, 2026-10-27).
 - `bin/ci-circleci`: a repo's CircleCI runs through the API (trigger with parameters, wait, step output,
   artifacts), the token read from the main checkout's `.env` and sent to CircleCI's hosts only (circle-linux,
   2026-10-26).

@@ -19,11 +19,15 @@ self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched
                                               set GitHub main's required check to the provider's
                                               (live: the one step that changes GitHub)
     ci-provider REPO --compose                regenerate .circleci/config.yml from its parts
-    ci-provider REPO --runner install|status|remove [--dry-run]
+    ci-provider REPO --runner install|status|remove [--host ALIAS] [--labels L,…] [--name NAME]
+                     [--instance N] [--dry-run]
                                               the repo's runner on the runner Mac, over ssh
                                               (live: install downloads and registers it, and sets
-                                              the runs-on variable; remove deregisters it; status
-                                              only reads)
+                                              the runs-on variable unless other online runners
+                                              serve it; remove deregisters it; status only reads);
+                                              --host, --labels and --name for another runner Mac
+                                              than the keys', --instance N for a further runner of
+                                              the repo on one Mac
 
 The owner, 2026-10-18: "I need to be able to easily switch repos between circle ci and raw GH
 actions - add that capability (will later move to Regatta)"; moved into wharf 2026-10-20 with
@@ -89,7 +93,14 @@ What a provider is, all of it in the repo except the last line:
                         variable is unset (the twin, a fork) the job runs on ubuntu-latest, and
                         still reports `check`: set it (--runner install) before that green counts.
                         One shape for every repo: another (`github.event.repository.private &&
-                        …`) is a hand edit here.
+                        …`) is a hand edit here, bar the split below.
+              split     `${{ fromJSON(github.event_name != 'pull_request' && vars.NAME_FULL ||
+                        vars.NAME || '"ubuntu-latest"') }}`: the variable form, where a push, the
+                        nightly run and a hand start take NAME_FULL's labels when it is set (a repo
+                        whose pull requests run only a share of the line, so a slower runner Mac
+                        takes those alone; regatta since 2026-10-27). Written by hand; this tool
+                        reads it as the variable form, keeps it on a re-run, status reads NAME_FULL
+                        too, and nothing here sets NAME_FULL.
             The self-hosted file also takes a first step, `GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig`
             into $GITHUB_ENV (GUARD_STEP): the job runs as the runner's login with its real HOME,
             so a `git config --global` would rewrite that login's identity. Not a scratch HOME:
@@ -161,19 +172,23 @@ self-hosted, and what it does not cover:
     the one Actions cost left. --to self-hosted says so when the repo has it.
   - with no online runner carrying every label the job waits in the queue (GitHub drops it
     after 24 h) and `check` never reports: provision the runner, then land the switch.
-  - the runner: one per repo, never org-wide (an owner that is a GitHub User account has no org
+  - the runner: one per repo on each runner Mac (more with --instance), never org-wide (an owner that is a GitHub User account has no org
     runners), in ~/actions-runners/<owner>/<repo> under the runner's user, named after the
     labels key's first label of its own, labels self-hosted and macOS (both automatic) and its
-    own; actions/runner v2.338.0 osx-arm64,
-    pinned by URL, size and SHA-256 (the release's asset digest, read 2026-10-19), downloaded
-    once into ~/actions-runners/.dist. The service is the runner's own svc.sh: a LaunchAgent of
+    own; actions/runner v2.338.0, osx-arm64 or osx-x64 as the Mac's `uname -m` says (x64 since
+    2026-10-27), each pinned by URL, size and SHA-256 (the release's asset digest, read 2026-10-19
+    and 2026-10-27), downloaded once into ~/actions-runners/.dist. A fleet: each further runner Mac
+    by --host, --name and --labels, all of them under one shared label the runs-on variable asks
+    for; --instance N a further runner of the same repo on one Mac, in <repo>-N, named <name>-N. The service is the runner's own svc.sh: a LaunchAgent of
     the runner user's, which launchd runs only while that user has a login session on the Mac.
     Nested, owner then repo, since 2026-10-19: the flat <owner>-<repo> it replaced let `a-b/c`
     and `a/b-c` share one directory. The runners installed before that stay where they are:
     every verb uses the flat directory while its .runner names this repo's URL (config.sh writes
     it as gitHubUrl), the nested one otherwise.
-  - the variable form: --runner install sets the repository variable to the labels key's labels
-    once the runner is online (`gh api` POST repos/O/R/actions/variables, or PATCH
+  - the variable form: --runner install sets the repository variable to the runner's labels (the
+    labels key's, or --labels') once the runner is online, unless the variable already asks for
+    labels it carries or another registered runner, online or asleep, carries the variable's (a
+    fleet: never narrowed, never re-routed to the newcomer; it prints the calls that would) (`gh api` POST repos/O/R/actions/variables, or PATCH
     …/variables/NAME when it holds another value: REST "Actions variables", read 2026-10-20),
     reads it back and prints the call that undoes it; only GitHub's 404 reads as unset, any other
     failure refuses the write. --runner remove leaves it, says what it holds, read back, and prints
@@ -245,6 +260,12 @@ RUNNER_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/"
 # read 2026-10-19 from the release's asset (size, digest) and its notes' "BEGIN SHA osx-arm64"
 RUNNER_SIZE = 128562863
 RUNNER_SHA256 = "df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2"
+# the same release's Intel build, for a runner Mac whose `uname -m` is x86_64 (a 2016 laptop took the
+# macOS half of regatta's check in about 41 min, 2026-10-27); read that day from the release's asset digest
+RUNNER_X64_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/"
+                  "actions-runner-osx-x64-2.338.0.tar.gz")
+RUNNER_X64_SIZE = 132802570
+RUNNER_X64_SHA256 = "dea7a58796ce215fc424a8b27c0fdd9b813fa5fc03d109a4a1d38131d6bfa1a3"
 RUNNER_WAIT = 60  # seconds a new runner gets to show online on GitHub
 GENERATED = "# GENERATED by wharf's ci-provider"
 # Every config.yml composed before the move opens "# GENERATED by <the overlay's path to it>":
@@ -269,14 +290,14 @@ def config_key(name):
     return lines
 
 
-def runner_labels(required=True):
-    """runs-on's labels for the runner Mac, from `wharf/ci-runner-labels`: self-hosted among them
-    and at least one of the Mac's own, or a refusal naming the file to write. required=False, for
-    reading a repo's files (which kind, which labels status asks for): None instead of a refusal.
-    Read once per command and passed down (review 2026-10-21, 12)."""
+def runner_labels(required=True, given=None):
+    """runs-on's labels for the runner Mac, from `wharf/ci-runner-labels` (or `given`, --labels'
+    list): self-hosted among them and at least one of the Mac's own, or a refusal naming the file to
+    write. required=False, for reading a repo's files (which kind, which labels status asks for):
+    None instead of a refusal. Read once per command and passed down (review 2026-10-21, 12)."""
     try:
-        lines = config_key("ci-runner-labels")
-        path = common.CONFIG / "wharf" / "ci-runner-labels"
+        lines = given if given is not None else config_key("ci-runner-labels")
+        path = "--labels" if given is not None else common.CONFIG / "wharf" / "ci-runner-labels"
         if not lines:
             raise Refusal("no runner labels: write the runner Mac's runs-on labels to %s, one per "
                           "line (self-hosted, macOS and one of its own, e.g. its host name)" % path)
@@ -297,11 +318,12 @@ def own_labels(labels):
     return [l for l in labels or () if l.lower() not in AUTOMATIC_LABELS]
 
 
-def runner_host():
-    """The ssh alias of the runner Mac, from `wharf/ci-runner-ssh`, or a refusal. One starting
-    with `-` is refused: it goes to ssh as an argument, where it would be read as an option."""
-    lines = config_key("ci-runner-ssh")
-    path = common.CONFIG / "wharf" / "ci-runner-ssh"
+def runner_host(given=None):
+    """The ssh alias of the runner Mac, from `wharf/ci-runner-ssh` (or `given`, --host's), or a
+    refusal. One starting with `-` is refused: it goes to ssh as an argument, where it would be read
+    as an option."""
+    lines = [given] if given is not None else config_key("ci-runner-ssh")
+    path = "--host" if given is not None else common.CONFIG / "wharf" / "ci-runner-ssh"
     if not lines:
         raise Refusal("no runner Mac: write the ssh alias that logs in to it as the runner's user "
                       "to %s" % path)
@@ -311,8 +333,19 @@ def runner_host():
     return lines[0]
 
 
-def runner_user():
-    """How the trust warning names the runner's user: `wharf/ci-runner-user`, else unnamed."""
+def runner_user(host=None):
+    """How the trust warning names the runner's user: `wharf/ci-runner-user`, else unnamed. host,
+    --host's alias: its `user@` where it has one; another alias than the key's leaves it unnamed,
+    since the key's user is another Mac's."""
+    if host is not None:
+        if "@" in host:
+            return "as %s" % host.split("@", 1)[0]
+        try:
+            same = host == runner_host()
+        except Refusal:
+            same = False
+        if not same:
+            return "as the runner's user"
     try:
         lines = config_key("ci-runner-user")
     except Refusal:
@@ -441,14 +474,24 @@ RUNS_ON_LINE = re.compile(r"^( *)runs-on:(.*)$", re.M)
 VAR_NAME = re.compile(r"(?!GITHUB_)[A-Za-z_][A-Za-z0-9_]*", re.I)
 
 
-def var_runs_on(name):
+def var_runs_on(name, full=False):
     """The variable form's runs-on value, regatta#53's spelling: the variable's JSON list, else
-    ubuntu-latest, so a public twin or a fork, which has no such variable, runs hosted."""
+    ubuntu-latest, so a public twin or a fork, which has no such variable, runs hosted. full: the
+    split form, where a push, the nightly run and a hand start take NAME_FULL's labels when it is
+    set: a repo whose pull requests run only a share of the line (CI_LINUX_ELSEWHERE) keeps its
+    whole-line runs off a slower runner Mac that takes the share (regatta's 2016 laptop, 2026-10-27:
+    the share in 41 min, the whole line in 95, past the job's 90)."""
+    if full:
+        return ("${{ fromJSON(github.event_name != 'pull_request' && vars.%s_FULL || vars.%s || "
+                "'\"ubuntu-latest\"') }}" % (name, name))
     return "${{ fromJSON(vars.%s || '\"ubuntu-latest\"') }}" % name
 
 
-# The variable form exactly as var_runs_on writes it: only the name may vary
-VAR_FORM = re.compile(re.escape(var_runs_on("@NAME@")).replace("@NAME@", "([A-Za-z_][A-Za-z0-9_]*)"))
+# The variable form exactly as var_runs_on writes it, plain or split: only the name may vary
+_NAME = "([A-Za-z_][A-Za-z0-9_]*)"
+VAR_FORM = re.compile(re.escape(var_runs_on("@NAME@")).replace("@NAME@", _NAME))
+VAR_FORM_FULL = re.compile(re.escape(var_runs_on("@NAME@", full=True))
+                           .replace("@NAME@_FULL", _NAME + "_FULL", 1).replace("@NAME@", r"\1", 1))
 
 
 def yaml_value(raw):
@@ -491,9 +534,14 @@ def lowered(labels):
 
 
 def var_form(value):
-    """The variable's name when value is this tool's variable form, else None."""
-    m = VAR_FORM.fullmatch(value or "")
+    """The variable's name when value is this tool's variable form, plain or split, else None."""
+    m = VAR_FORM.fullmatch(value or "") or VAR_FORM_FULL.fullmatch(value or "")
     return m.group(1) if m else None
+
+
+def full_form(text):
+    """Whether a check.yml's runs-on is the split variable form (var_runs_on's full)."""
+    return any(VAR_FORM_FULL.fullmatch(v or "") for _, v in runs_on_lines(text or ""))
 
 
 def runs_on_var(text):
@@ -913,6 +961,10 @@ def render_workflow(kind, cmd, runs_on=None, guard=True):
         via = ("%s# runs-on reads the repository variable %s (a JSON list of labels), ubuntu-latest\n"
                "%s# where it is unset (a public twin, a fork): this file names no machine.\n"
                % (pad, var, pad)) if var else ""
+        if var and VAR_FORM_FULL.fullmatch(yaml_value(runs_on) or ""):
+            via += ("%s# A push, the nightly run and a hand start take %s_FULL's labels where it is set:\n"
+                    "%s# the whole line, kept off a runner that takes only a pull request's share.\n"
+                    % (pad, var, pad))
         return via + ("%s# A self-hosted runner on a Mac of the owner's (wharf's ci-provider): macOS, no\n"
                 "%s# Actions minutes. It runs as a login holding that Mac's credentials (gh, an ssh\n"
                 "%s# key, git, Claude logins). Any write collaborator on this repo can run code there\n"
@@ -970,20 +1022,20 @@ def refuse_forks(s, what):
                       "it on actions (ubuntu)" % (s, what))
 
 
-def warn_writers(s):
+def warn_writers(s, user=None):
     """The trust boundary, said at the two steps that open it: every collaborator with push or
     above can run code on the runner Mac as its user by opening a PR (the owner's D5-A accepts it;
-    nothing is refused for it)."""
+    nothing is refused for it). `user`: how to name that user, the key's unless given."""
     ok, out = gh("repos/%s/collaborators?per_page=100" % s)
     if ok and isinstance(out, list):
         names = [c.get("login") for c in out if isinstance(c, dict) and any(
             (c.get("permissions") or {}).get(k) for k in ("push", "maintain", "admin"))]
         print("  ⚠ write collaborators of %s, each able to run code on the runner Mac %s, with "
               "every credential it holds (gh, its ssh key, git, Claude logins): %s"
-              % (s, runner_user(), ", ".join(names) or "none"))
+              % (s, user or runner_user(), ", ".join(names) or "none"))
     else:
         print("  ⚠ write collaborators of %s unread (%s): each of them can run code on the runner "
-              "Mac %s" % (s, out, runner_user()))
+              "Mac %s" % (s, out, user or runner_user()))
 
 
 def holds_more(path, rendered):
@@ -1274,7 +1326,10 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
     runs_on = None
     if to == SELF:
         var = pick_runs_on_var(repo, var, labels, twin)
-        runs_on = var_runs_on(var) if var else "[%s]" % ", ".join(labels)
+        # a re-run keeps the split form where the file has it, as it keeps the variable form
+        wf = p(repo, ".github", "workflows", "check.yml")
+        full = full_form(read(wf)) if os.path.isfile(wf) else False
+        runs_on = var_runs_on(var, full) if var else "[%s]" % ", ".join(labels)
         refuse_forks(slug(repo), "a check on the runner Mac's self-hosted runner")
     was, _ = provider_on_disk(repo, labels)
     cmd = check_command(repo, check)
@@ -1610,6 +1665,28 @@ def wanted_labels(repo, s, labels):
     wf = p(repo, ".github", "workflows", "check.yml")
     text = read(wf) if os.path.isfile(wf) else None
     var = runs_on_var(text)
+    if var and full_form(text):
+        # the split form's other half: a push, the nightly run and a hand start queue for good where
+        # no online runner carries it, while the pull requests' variable looks healthy (review 2026-10-27)
+        full, err = variable(s, var + "_FULL")
+        if err:
+            print("  runs-on variable %s_FULL: (unread: %s)" % (var, err))
+        elif full is None:
+            print("  runs-on variable %s_FULL is unset: a push, the nightly run and a hand start take "
+                  "%s's labels too" % (var, var))
+        else:
+            print("  runs-on variable %s_FULL (a push, the nightly run, a hand start): %s" % (var, full))
+            try:
+                want = json.loads(full)
+            except ValueError:
+                want = None
+            runners, _ = runners_of(s)
+            if not isinstance(want, list) or not all(isinstance(l, str) for l in want):
+                print("  ⚠ runs-on variable %s_FULL is not a JSON label list: check.yml's fromJSON "
+                      "fails on a push, the nightly run and a hand start" % var)
+            elif runners is not None and not any(runs_check(r, want) for r in runners):
+                print("  ⚠ no online runner labelled %s: a push, the nightly run and a hand start queue "
+                      "until one is" % ", ".join(want))
     if var:
         value, err = variable(s, var)
         if err:
@@ -1669,16 +1746,41 @@ def show_runners(s):
     return runners
 
 
-def runner_dir(s):
+class Target:
+    """Which runner a --runner verb acts on: the runner Mac's ssh alias, the labels it registers,
+    its name on GitHub and its instance. The keys give one runner Mac; --host, --labels and --name
+    name another, so a fleet of them serves one repo, each under one shared label. --instance N
+    (2 and up) is a further runner of the same repo on the same Mac, named and kept apart with
+    `-N` (the build Mac's second regatta runner was installed by hand that way, 2026-10-23)."""
+
+    def __init__(self, host, labels, name=None, instance=1):
+        self.host, self.labels, self.instance = host, labels, instance
+        base = name or own_labels(labels)[0]
+        self.name = base if instance == 1 else "%s-%d" % (base, instance)
+
+
+def runner_asset(arch):
+    """The pinned build for the runner Mac's `uname -m`: (url, size, sha256). Read at call time,
+    so a suite's swap of the arm64 pin holds."""
+    if arch == "arm64":
+        return RUNNER_URL, RUNNER_SIZE, RUNNER_SHA256
+    if arch == "x86_64":
+        return RUNNER_X64_URL, RUNNER_X64_SIZE, RUNNER_X64_SHA256
+    raise Refusal("the runner Mac's `uname -m` is %r: no runner build is pinned for it (arm64, x86_64)"
+                  % arch)
+
+
+def runner_dir(s, instance=1):
     """Under the runner user's home: one directory per repo, as a runner serves one repo;
-    owner then repo, so `a-b/c` and `a/b-c` cannot share one."""
-    return "actions-runners/" + s
+    owner then repo, so `a-b/c` and `a/b-c` cannot share one; `<repo>-N` for instance N."""
+    return "actions-runners/" + s + ("" if instance == 1 else "-%d" % instance)
 
 
-def flat_runner_dir(s):
+def flat_runner_dir(s, instance=1):
     """Where an install before 2026-10-19 put it (two runners, <owner>-<repo>); RUNNER_SH
-    uses it while its .runner names this repo, so status and remove still find those two."""
-    return "actions-runners/" + s.replace("/", "-")
+    uses it while its .runner names this repo, so status and remove still find those two.
+    A further instance was never flat: its own directory."""
+    return "actions-runners/" + s.replace("/", "-") if instance == 1 else runner_dir(s, instance)
 
 
 # Run by bash on the runner Mac, its arguments in argv and nothing secret among them: the token, when the
@@ -1689,12 +1791,20 @@ verb=$1 slug=$2 dir=$HOME/$3 flat=$HOME/$4 url=$5 size=$6 sha=$7 name=$8 label=$
 # settings, gitHubUrl among them) names this repo, so another repo's flat directory of
 # the same spelling (a-b/c beside a/b-c) is never taken for it
 if grep -qiF "github.com/$slug\"" "$flat/.runner" 2>/dev/null; then dir=$flat; fi
+# a further instance's <repo>-N may be another repo's own directory, either way round (acme/demo's 2nd
+# beside acme/demo-2's 1st): acted on only while its .runner, where there is one, names this repo. A
+# repo renamed on GitHub after its install trips it too: reinstall under the new name
+if [ -s "$dir/.runner" ] && ! grep -qiF "github.com/$slug\"" "$dir/.runner"; then
+  echo "$dir holds another repo's runner, not $slug's: nothing done" >&2; exit 5
+fi
 dist=$HOME/actions-runners/.dist
 tgz=$dist/${url##*/}
 case $verb in
 probe)
-  # whether a token is needed: install mints one only when not configured, remove only when it is
-  if [ -f "$dir/.runner" ]; then echo "configured $dir"; else echo "absent $dir"; fi
+  # whether a token is needed: install mints one only when not configured, remove only when it is;
+  # and the Mac's architecture, which picks the build install fetches
+  if [ -f "$dir/.runner" ]; then state=configured; else state=absent; fi
+  echo "$state $(uname -m) $dir"
   ;;
 install)
   mkdir -p "$dist" "$dir"
@@ -1718,7 +1828,10 @@ install)
     tar xzf "$tgz"
     # config.sh sources env.sh, which freezes this PATH into .path for every job: ssh's bare one
     # lacks Homebrew, which hosted macOS images have (gtar for upload-pages-artifact, say)
-    if [ -d /opt/homebrew/bin ]; then PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH; fi
+    # (Apple silicon's prefix, or an Intel Mac's, which ssh's PATH lacks as well)
+    for d in /usr/local /opt/homebrew; do
+      if [ -x "$d/bin/brew" ]; then PATH=$d/bin:$d/sbin:$PATH; fi
+    done
     # the runner reads ACTIONS_RUNNER_INPUT_TOKEN and unsets it: the token stays out of ps' argv
     ACTIONS_RUNNER_INPUT_TOKEN=$token ./config.sh --unattended --replace \
       --url "https://github.com/$slug" --name "$name" --labels "$label" --work _work
@@ -1826,35 +1939,56 @@ def runner_token(s, kind):
     return tok
 
 
-def ssh_runner(verb, s, host, labels, token=None, capture=False):
-    """RUNNER_SH on the runner Mac (host, the ssh key's alias): the script and its arguments in
+def ssh_runner(verb, s, t, token=None, capture=False, asset=None):
+    """RUNNER_SH on the runner Mac (t.host: the key's ssh alias, or --host's): the script and its arguments in
     ssh's argv, the token on stdin. The return code, or with capture (probe) the code and stdout.
-    The name and the labels (the labels key's) are passed on every verb, as before; only install
-    reads them."""
-    args = (verb, s, runner_dir(s), flat_runner_dir(s), RUNNER_URL, str(RUNNER_SIZE), RUNNER_SHA256,
-            own_labels(labels)[0], ",".join(own_labels(labels)))
+    The name, the labels and the build (asset, the arm64 pin unless given) are passed on every verb,
+    as before; only install reads them."""
+    url, size, sha = asset or runner_asset("arm64")
+    args = (verb, s, runner_dir(s, t.instance), flat_runner_dir(s, t.instance), url, str(size), sha,
+            t.name, ",".join(own_labels(t.labels)))
     remote = "bash -c %s ci-provider-runner %s" % (shlex.quote(RUNNER_SH),
                                                    " ".join(shlex.quote(a) for a in args))
-    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", host, remote],
+    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", t.host, remote],
                        input=(token + "\n") if token else "", text=True,
                        stdout=subprocess.PIPE if capture else None)
     return (r.returncode, r.stdout or "") if capture else r.returncode
 
 
-def configured(s, host, labels):
-    """Whether the runner Mac reports the repo's runner configured: a token is minted only for a step
-    that will use it (an hour's life, and one less in flight)."""
-    rc, out = ssh_runner("probe", s, host, labels, capture=True)
-    state = out.strip().split(" ", 1)[0] if rc == 0 else None
-    if state not in ("configured", "absent"):
+def configured(s, t):
+    """Whether the runner Mac reports the repo's runner configured, and its `uname -m`: a token is
+    minted only for a step that will use it (an hour's life, and one less in flight)."""
+    rc, out = ssh_runner("probe", s, t, capture=True)
+    words = out.strip().split(" ", 2) if rc == 0 else []
+    if len(words) < 2 or words[0] not in ("configured", "absent"):
         raise Refusal("ssh %s exited %d (%s): could not read whether %s's runner is configured"
-                      % (host, rc, out.strip()[:200] or "no output", s))
-    return state == "configured"
+                      % (t.host, rc, out.strip()[:200] or "no output", s))
+    return words[0] == "configured", words[1]
 
 
-def wait_online(s, labels):
+def served(s, value, name):
+    """Registered runners other than `name` that carry every label the variable's value asks for,
+    online or not (a fleet Mac asleep is still the fleet): while any does, an install leaves the
+    variable. A runner list that cannot be read is a refusal, never "none serve it": a write would
+    follow (review 2026-10-27)."""
+    try:
+        want = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(want, list) or not all(isinstance(l, str) for l in want):
+        return []
+    runners, err = runners_of(s)
+    if runners is None:
+        raise Refusal("could not read %s's runners (%s), so not whether others serve the variable: "
+                      "nothing written" % (s, err))
+    want = {l.lower() for l in want}
+    return [r.get("name") for r in runners
+            if r.get("name") != name and want <= {l.lower() for l in labels_of(r)}]
+
+
+def wait_online(s, t):
     """Poll GitHub until the runner shows online (state, never a re-registration loop)."""
-    name = own_labels(labels)[0]
+    name, labels = t.name, t.labels
     deadline = time.time() + RUNNER_WAIT
     while True:
         runners, err = runners_of(s)
@@ -1891,52 +2025,88 @@ def no_variable(repo, text, labels):
             "`ci-provider %s --to %s --runs-on-var %s`" % (why, repo, SELF, RUNS_ON_VAR))
 
 
-def runner(repo, verb, dry):
+def route_variable(s, var, t, dry):
+    """The runs-on variable after an install: set to this runner's labels, unless it already asks
+    for labels this runner carries (it joins the fleet the variable names: never narrowed to it), or
+    for labels another registered runner carries. Then it routes the check somewhere that works, and
+    a further runner Mac must not re-route it (the check would wait on the newcomer alone): left as
+    it is, with the calls that would move it printed."""
+    have, err = variable(s, var)
+    if err:
+        raise Refusal("could not read %s's variable %s: %s" % (s, var, err))
+    try:
+        asked = json.loads(have) if have is not None else None
+    except ValueError:
+        asked = None
+    if (isinstance(asked, list) and asked and all(isinstance(l, str) for l in asked)
+            and lowered(asked) <= lowered(t.labels)):
+        print("  variable %s already routes to %s: %s carries its labels" % (var, have, t.name))
+        return
+    others = [] if have is None or same_labels(have, t.labels) else served(s, have, t.name)
+    if not others:
+        set_variable(s, var, t.labels, dry)
+        return
+    print("  variable %s left at %s: registered runner%s %s carr%s its labels. For %s to take the "
+          "check too, give the others a shared label of this one's (gh api -X POST repos/%s/actions/"
+          "runners/<id>/labels -f 'labels[]=<label>'), then point the variable at it: gh api -X PATCH "
+          "repos/%s/actions/variables/%s -f name=%s -f value=%s"
+          % (var, have, "" if len(others) == 1 else "s", ", ".join(others),
+             "ies" if len(others) == 1 else "y", t.name, s, s, var, var,
+             shlex.quote(variable_value(t.labels))))
+
+
+def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
     s = slug(repo)
     # the keys before anything else, GitHub and ssh included: absent, a refusal naming the file.
-    # Read once here and passed down (review 2026-10-21, 12)
-    host, labels = runner_host(), runner_labels()
-    name = own_labels(labels)[0]
+    # Read once here and passed down (review 2026-10-21, 12); --host and --labels stand in for them
+    given_host = host
+    t = Target(runner_host(host), runner_labels(given=labels), name, instance)
+    host, labels, name = t.host, t.labels, t.name
     wf = p(repo, ".github", "workflows", "check.yml")
     text = read(wf) if os.path.isfile(wf) else None
     # only the variable form this tool writes: a variable the file reads any other way is the
     # repo's own, never set here (review 2026-10-21, 3)
     var = runs_on_var(text)
-    where = "%s:~/%s (or ~/%s, installed before 2026-10-19)" % (host, runner_dir(s), flat_runner_dir(s))
+    where = ("%s:~/%s" % (host, runner_dir(s, instance)) if instance > 1 else
+             "%s:~/%s (or ~/%s, installed before 2026-10-19)" % (host, runner_dir(s), flat_runner_dir(s)))
     if verb == "status":
-        print("%s's runner on the runner Mac (%s):" % (s, where))
-        rc = ssh_runner("status", s, host, labels)
+        print("%s's runner %s on the runner Mac (%s):" % (s, name, where))
+        rc = ssh_runner("status", s, t)
         show_runners(s)
         if rc:
             raise Refusal("ssh %s exited %d" % (host, rc))
         return
     if verb == "install":
         refuse_forks(s, "a runner on the runner Mac")
-        warn_writers(s)
+        # another Mac than the keys' logs in as whoever --host says, never the key's user
+        warn_writers(s, runner_user(given_host))
         none_set = None if var else no_variable(repo, text, labels)
         if dry:
-            print("would: ask the runner Mac whether it is configured; if not, take a registration "
-                  "token (gh api -X POST repos/%s/actions/runners/registration-token), and over ssh "
-                  "into %s: fetch %s once (%d bytes, SHA-256 %s), unpack, config.sh --name %s "
-                  "--labels %s; svc.sh install and start; then wait for it online on GitHub"
-                  % (s, where, RUNNER_URL, RUNNER_SIZE, RUNNER_SHA256[:12], name,
-                     ",".join(own_labels(labels))))
+            builds = "; ".join("%s %s (%d bytes, SHA-256 %s)" % ((arch,) + (u, z, h[:12]))
+                               for arch in ("arm64", "x86_64") for u, z, h in [runner_asset(arch)])
+            print("would: ask the runner Mac whether it is configured and its `uname -m`; if not "
+                  "configured, take a registration token (gh api -X POST repos/%s/actions/runners/"
+                  "registration-token), and over ssh into %s: fetch that architecture's build once "
+                  "(%s), unpack, config.sh --name %s --labels %s; svc.sh install and start; then wait "
+                  "for it online on GitHub" % (s, where, builds, name, ",".join(own_labels(labels))))
             if var:
-                print("would then set the repository variable %s that check.yml's runs-on reads:"
+                print("would then route the repository variable %s that check.yml's runs-on reads:"
                       % var)
-                set_variable(s, var, labels, dry=True)
+                route_variable(s, var, t, dry=True)
             elif none_set:
                 print(none_set)
             return
-        print("%s: installing its runner in %s" % (s, where))
-        rc = ssh_runner("install", s, host, labels,
-                        None if configured(s, host, labels) else runner_token(s, "registration"))
+        print("%s: installing its runner %s in %s" % (s, name, where))
+        done, arch = configured(s, t)
+        # the build only for a fresh install: a configured runner fetches nothing
+        asset = None if done else runner_asset(arch)
+        rc = ssh_runner("install", s, t, None if done else runner_token(s, "registration"), asset=asset)
         if rc:
             raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
-        wait_online(s, labels)
+        wait_online(s, t)
         # only now: set before the runner is online, every job would queue on it
         if var:
-            set_variable(s, var, labels, dry=False)
+            route_variable(s, var, t, dry=False)
         elif none_set:
             print(none_set)
         return
@@ -1944,9 +2114,8 @@ def runner(repo, verb, dry):
         print("would: if the runner Mac reports it configured, take a remove token, and over ssh in "
               "%s: svc.sh uninstall, config.sh remove" % where)
         return
-    print("%s: removing its runner in %s" % (s, where))
-    rc = ssh_runner("remove", s, host, labels,
-                    runner_token(s, "remove") if configured(s, host, labels) else None)
+    print("%s: removing its runner %s in %s" % (s, name, where))
+    rc = ssh_runner("remove", s, t, runner_token(s, "remove") if configured(s, t)[0] else None)
     if rc:
         raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
     runners, _ = runners_of(s)
@@ -1994,8 +2163,23 @@ def main(argv):
                          ".helloworld/allowlist.txt lists .github/workflows/check.yml)")
     ap.add_argument("--force", action="store_true",
                     help="--protect without a green report; --to dropping what the old CI file held beyond its template")
+    ap.add_argument("--host", help="with --runner: the runner Mac's ssh alias (default: wharf/ci-runner-ssh)")
+    ap.add_argument("--labels", help="with --runner: its labels, comma-separated (default: wharf/ci-runner-labels)")
+    ap.add_argument("--name", help="with --runner: its name on GitHub (default: the first label of its own)")
+    ap.add_argument("--instance", type=int, default=1, metavar="N",
+                    help="with --runner: the repo's Nth runner on that Mac (2 and up: `<name>-N`, `<repo>-N`)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if (a.host is not None or a.labels is not None or a.name is not None or a.instance != 1) and not a.runner:
+        ap.error("--host, --labels, --name and --instance go with --runner only")
+    if a.host is not None and a.name is None:
+        # named after its first own label, every Mac of a fleet would register under the shared
+        # label's name, and config.sh --replace would take another Mac's registration (review 2026-10-27)
+        ap.error("--host needs --name: the runner's name on GitHub, its own")
+    if a.instance < 1:
+        ap.error("--instance counts from 1")
+    if a.name is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", a.name):
+        ap.error("--name: letters, digits, '.', '_' and '-', not starting with a punctuation mark")
     if (a.check or a.context) and not a.to:
         ap.error("--check and --context go with --to only")
     if a.runs_on_var is not None and a.to != SELF:
@@ -2020,7 +2204,8 @@ def main(argv):
         elif a.compose:
             compose(repo, a.dry_run)
         elif a.runner:
-            runner(repo, a.runner, a.dry_run)
+            labels = None if a.labels is None else [l.strip() for l in a.labels.split(",") if l.strip()]
+            runner(repo, a.runner, a.dry_run, a.host, labels, a.name, a.instance)
         else:
             status(repo)
     except Refusal as e:
