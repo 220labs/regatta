@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Tenancy that cannot be read fails closed (confidential-reach S7b, 2026-10-27): a tenants key that reads
+  nothing with no last good copy (a new Mac, a drive away before its first read) refuses every repo to every
+  row, the default dir's included, where it used to turn tenancy off and let the work seats into the vault
+  once their deny lists went. Each refusal, stderr, `refresh` and `account doctor` say "closed" and name the
+  read that opens it; only `{}` or no key at all turns tenancy off. `account setup` seeds the copy first.
+  `account_guard` reads it the same way (every repo asked about), and asks `allowed` for a default-dir start in
+  the home or the projects folder while the default dir is refused the vault, which its prefilter never did.
+  `tenant drop` of the vault's tenant warns; doctor names a repo two tenants' entries both take (`tenant set`
+  refuses two globs that take one cloned repo), the default dir outside the vault's tenant, and a dir signed in
+  to a seat whose tenancy refusals it lacks, where only a deny list counted. While closed, no write outlives the
+  state: claudeMdExcludes and trust's external-imports No wait until tenancy reads. `tenant set` that leaves the
+  vault out warns as `drop` does, and a key inside another's folder counts as both tenants'.
 - `account limits --orca` runs `orca open` when Orca's newest agent reading is over an hour old
   (`orca_wake`): Orca reads limits only while its window is focused and keeps the last after it closes,
   so the widget's Antigravity card went 5 days stale. Once an hour at most (Orca takes focus), never

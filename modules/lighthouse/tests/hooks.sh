@@ -436,8 +436,11 @@ check "$(agf "$GH/.claude-lab" "$GH/projects/acme-one")" "" "the login the file 
 check "$(agf "" "$GH/projects/app2")" "" "the default dir elsewhere: silent"
 ln -s "$T/nowhere.json" "$T/guard-tenants-gone.json"
 out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-gone.json" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" 2>"$T/ag-err"; echo "rc=$?")
-check "$out" "rc=0" "a tenants link that reads nothing: the default dir passes (the registry's tenants not read instead)"
-check "$(grep -c 'tenancy unchecked' "$T/ag-err")" 1 "  …saying so on stderr"
+check "$(echo "$out" | grep -c '"block"') $(echo "$out" | tail -1)" "1 rc=0" "a tenants link that reads nothing, no copy: tenancy closed, the default dir blocked (S7b; the registry's tenants not read instead)"
+check "$(echo "$out" | head -1 | grep -c 'acme-one is off main: tenancy does not read')" 1 "  …the closed line, passed on as it is"
+check "$(grep -c 'tenancy closed' "$T/ag-err")" 1 "  …saying so on stderr"
+out=$(echo "{\"cwd\":\"$GH/projects/app2\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-gone.json" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" 2>/dev/null)
+check "$(echo "$out" | grep -c '"block"')" 1 "  …in a repo no tenant named too: every repo is closed until it reads"
 cp "$T/guard-tenants-file.json" "$T/guard-drive.json"; ln -s "$T/guard-drive.json" "$T/guard-tenants-link.json"
 agl() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" TENANTS_FILE="$T/guard-tenants-link.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-link.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py"; fi; }
 check "$(agl "$GH/.claude-work" "$GH/projects/acme-one" | grep -c '"block"')" 1 "a tenants link that reads: another secondary blocked (and bin/account keeps a copy)"

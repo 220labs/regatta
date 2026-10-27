@@ -120,8 +120,12 @@ not in the repo that holds the registry) says the same in one place, `{name: {"r
 [label, …]}}`: written, it is the whole of tenancy, and the registry's `tenants` and rows' `tenant` are
 ignored. Each good read is copied beside it (`.tenants.json.last`), and a link that reads nothing (the
 drive behind it away) holds by that copy, never failing open: that would let every seat, another
-employer's included, into a tenant's repos. Only with no copy either is tenancy off, said on stderr
-(not under --json). To end tenancy, write `{}`: a deleted file or link leaves the copy holding.
+employer's included, into a tenant's repos. With no copy either, tenancy is closed (confidential-reach
+S7b, 2026-10-27): every repo is refused to every row, the default dir's included, as if one tenant with
+no login held `*`, said on stderr (not under --json), in each refusal and in doctor, until the link reads
+(the usage tick's refresh, setup, or any reader that may open it seeds the copy). Without that, a new
+host or a drive away before its first read let the work seats into the vault once their deny lists
+went. Only `{}` ends tenancy, or no key at all; a deleted file or link leaves the copy holding.
 `tenant set` and `tenant drop` are its one writer (S7): a person's, refused under CLAUDE_UNATTENDED; they write through the
 link, read the file back and refresh the copy, and refuse rather than drop what they cannot read or give a login a second tenant.
 
@@ -278,6 +282,14 @@ def employer(a):
     return bool(VAULT) and bool(denied(a, projects_dir() / VAULT))
 
 
+def closed_row(a):
+    """True when row `a` reads as an employer's only because tenancy is closed: every row does then, the
+    owner's own included, so a write that outlives the state (claudeMdExcludes, trust's external-imports No)
+    waits until it reads; the CLAUDE.md link, which the next sync puts back, still points at the work file
+    (S7b landing review)."""
+    return any(isinstance(t, dict) and t.get("tenant") == CLOSED for t in (a.get("routed") or {}).values())
+
+
 def new_orca_row(reg, label):
     """The row orca-sync builds for an Orca login no row names yet. It carries its routes like every
     registry row: employer() reads them, and without them a new employer login would link the private
@@ -349,7 +361,7 @@ def trust_argv(a, *extra):
     external-imports dialog, the one way the default dir's CLAUDE.md private imports could still
     load there (its CLAUDE.md links the work file, so that file loads as the home folder's project
     memory, its imports behind that dialog — review 2026-10-18)."""
-    return [str(BIN / "trust-projects"), *extra] + (["--no-external-imports"] if employer(a) else [])
+    return [str(BIN / "trust-projects"), *extra] + (["--no-external-imports"] if employer(a) and not closed_row(a) else [])
 
 
 def link_target(a, n):
@@ -395,7 +407,7 @@ def home_memory_excluded(a, home, fix=True):
     always-on Mac's work login by another session, through the bulletin). claudeMdExcludes in this
     dir's own settings.json, never the default dir's: the CLI applies it to user memory too. Orca
     re-copies the default dir's settings.json over a profile's at each setup, so orca-sync re-applies it."""
-    if not employer(a):
+    if not employer(a) or closed_row(a):
         return None
     p, want = Path(home) / "settings.json", str(DEFAULT_DIR / "CLAUDE.md")
     try:
@@ -635,16 +647,41 @@ def read_tenants_file(quiet=False):
     answers first and the link is not opened while it reads (header, Drive-backed reads; S4); with no copy
     the link is read there too, once, to seed it. When the link reads nothing (the drive behind it away)
     the copy holds: failing open would let every seat, another employer's included, into a tenant's repos
-    (review 2026-10-22). Neither readable: {} — tenancy off — said on stderr, except under --json, which
-    dispatch parses with stderr merged in, and for a quiet second read."""
+    (review 2026-10-22). Neither readable: tenancy is closed (header, S7b) — the CLOSED tenant, holding `*`
+    on no login — said on stderr, except under --json, which dispatch parses with stderr merged in, and for
+    a quiet second read."""
+    global CLOSED_WHY
     if local_first(TENANTS):
         got = read_copy(tenants_last())
         if got is not None:
             return got
     got, source, err = tenants_read(write=not READ_LINKS)   # doctor's read leaves the copy it judges as it was
-    if source == "none" and not quiet and "--json" not in sys.argv:
-        print(f"account: {TENANTS} unreadable ({err}), and no last good copy — tenancy is off until it reads", file=sys.stderr)
+    if source == "none":
+        CLOSED_WHY = str(err)
+        if not quiet and "--json" not in sys.argv:
+            print(f"account: {closed_text()} — {closed_fix()}", file=sys.stderr)
+        return {CLOSED: {"repos": ["*"], "logins": []}}
     return got
+
+
+# A tenants key that reads nothing, with no last good copy, stands for this one tenant: `*` on no login, so
+# every row is refused every repo (header, S7b). Not a name `tenant set` takes (TENANT_NAME), so a written
+# tenant never is it; doctor, tenant_ties and the deny-list roster skip it, the refusal lines name it.
+CLOSED = "(tenancy unread)"
+CLOSED_WHY = None   # why the tenants file did not read, once read_tenants_file closed tenancy
+
+
+def closed_text():
+    """What a closed tenancy is, for the refusal lines, stderr and doctor."""
+    return (f"tenancy does not read ({TENANTS}: {CLOSED_WHY or 'unreadable'}) and has no last good copy, "
+            "so every repo is closed to every login until it reads")
+
+
+def closed_fix():
+    """The way out of a closed tenancy: a read of the link where the drive is mounted. A person's (refresh's
+    --force refuses an unattended run); the usage tick does it unasked through claude-host."""
+    return (f"{BIN / 'account'} refresh --force once its drive is mounted (the usage tick does it within 15 min), "
+            f"or {BIN / 'account'} setup")
 
 
 def tenants_read(write=True):
@@ -694,7 +731,8 @@ def cmd_refresh(force=False):
         else:
             rc = 1
             print(f"refresh: {TENANTS.name} did not read ({err}); "
-                  + (f"{tenants_last().name} holds as it was" if source == "last" else "no copy: tenancy is off"))
+                  + (f"{tenants_last().name} holds as it was" if source == "last"
+                     else "no copy: tenancy is closed, every repo refused to every login, until it reads"))
     p = lp
     if p:
         try:
@@ -777,8 +815,12 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
                 why.append(f"{', '.join(both)} is {n}'s login already: a login is in one tenant only (take it out of {n} first)")
             theirs = [x for x in (tenant_entry(r) for r in ((t.get("repos") if isinstance(t, dict) and isinstance(t.get("repos"), list) else None) or [])
                                   if isinstance(r, str)) if x]
-            clash = [e for e in entries for x in theirs if e == x or (is_glob(x) and not is_glob(e) and fnmatch.fnmatchcase(e, x))
-                     or (is_glob(e) and not is_glob(x) and fnmatch.fnmatchcase(x, e))]
+            keys = repo_keys_here() if any(map(is_glob, entries)) and any(map(is_glob, theirs)) else ()
+            if keys is None:
+                why.append(f"the registry does not read, so whether a glob here and one of {n}'s take one repo cannot be judged: "
+                           "try again once it does")
+                keys = ()
+            clash = entries_clash(entries, theirs, keys)
             if clash:
                 why.append(f"{', '.join(dict.fromkeys(clash))} is {n}'s already: a repo in two tenants runs nowhere")
         if why:
@@ -804,6 +846,21 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
         print(f"account tenant: written, but {TENANTS} does not read through its link ({err}); {tenants_last().name} not refreshed",
               file=sys.stderr)
         return 1
+    def vault_in(t):
+        repos = t.get("repos") if isinstance(t, dict) and isinstance(t.get("repos"), list) else []
+        return [e for e in (tenant_entry(r) for r in repos if isinstance(r, str)) if e]
+
+    def holds(es):
+        return any(e == VAULT or (is_glob(e) and fnmatch.fnmatchcase(VAULT, e)) for e in es)
+
+    held = vault_in(raw.get(name))
+    if VAULT and holds(held) and not any(holds(vault_in(t)) for t in new.values()):
+        # the work seats' deny lists went when the vault became a tenant (S7): a drop, or a set that leaves it
+        # out, is what opens it (S7 review; `set` and the restore line's quoting, the S7b landing review)
+        print(f"account tenant: warning — {name} held the vault ({VAULT}): no tenant holds it now, so every login whose "
+              f"deny list does not name it may open it, the work seats' included. Set it again: "
+              f"{shlex.join([str(BIN / 'account'), 'tenant', 'set', name, '--repos', *held, '--logins', *(tenant_logins(raw.get(name)) or ['…'])])}",
+              file=sys.stderr)
     print(f"tenant {name}: " + ("dropped" if what == "drop" else
                                 f"{', '.join(new[name]['repos'])} — runs on {', '.join(new[name]['logins'])} only")
           + f" ({target})")
@@ -813,6 +870,40 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
         print(f"  refused to {', '.join(off) or 'no other row'}, the default dir unless it is one of its logins, "
               "and every Orca login no row names")
     return 0
+
+
+def entries_clash(mine, theirs, keys=()):
+    """→ the entries of `mine` that `theirs` also covers: one entry, or a key one side names and the other's
+    glob matches; for two globs, each repo key in `keys` both match (the repos cloned here or registered: two
+    globs' overlap in general is no question fnmatch answers), or a key in another's folder. A repo two tenants
+    hold runs on neither."""
+    out = []
+    for e in mine:
+        for x in theirs:
+            if e == x or (is_glob(x) and not is_glob(e) and fnmatch.fnmatchcase(e, x)) \
+                    or (is_glob(e) and not is_glob(x) and fnmatch.fnmatchcase(x, e)) \
+                    or (not is_glob(e) and not is_glob(x) and (e.startswith(x + "/") or x.startswith(e + "/"))):
+                # a key inside another's folder: denied() refuses it to both by the folder (S7b landing review)
+                out.append(e)
+            elif is_glob(e) and is_glob(x):
+                out += [k for k in keys if fnmatch.fnmatchcase(k, e) and fnmatch.fnmatchcase(k, x)]
+    return list(dict.fromkeys(out))
+
+
+def repo_keys_here():
+    """The repo keys this Mac knows: each clone under the projects folder three levels down (tenant_ties' walk)
+    and the core's repos.json keys. For the overlap of two globs, which only real keys can show."""
+    projects = projects_dir()
+    keys = {g.parent.relative_to(projects).as_posix() for pat in ("*/.git", "*/*/.git", "*/*/*/.git")
+            for g in projects.glob(pat) if ".claude" not in g.parts}
+    try:
+        c = core()
+        if getattr(c, "registry_unreadable", lambda: False)():
+            return None   # a torn repos.json reads as no keys: the caller says it cannot judge (AGENTS.md, the fence trap)
+        keys |= set(c.scope_registry()[0])
+    except Exception:
+        pass
+    return sorted(keys)
 
 
 def tenants_source():
@@ -1122,6 +1213,8 @@ def routed_off(a, path):
 
 def use_line(t):
     """How to start a tenant repo's session on its own login: what the guard and run print."""
+    if t["tenant"] == CLOSED:
+        return closed_fix()
     if not t["logins"]:
         return no_login(t["tenant"])[0]
     prefix = (config_lines("lighthouse/cc-prefix") or [""])[0]
@@ -1137,6 +1230,8 @@ def off_line(a, key):
     """The guard's line for repo `key` off row `a`: ' is off ' is what account_guard blocks on, and a
     tenant's line ends in the way to its own login, which the guard passes on as it is."""
     t = route_of(a, key)
+    if t and t["tenant"] == CLOSED:
+        return f"{key} is off {a['label']}: {closed_text()} — {closed_fix()}"
     if t:
         return (f"{key} is off {a['label']}: it is {t['tenant']}'s, which runs on "
                 f"{', '.join(t['logins']) or 'no login'} only ({tenants_source()}) — {use_line(t)}")
@@ -1146,6 +1241,8 @@ def off_line(a, key):
 def off_reason(a, key):
     """Why row `a` may not run repo `key`: its tenant's route, else its deny list (pick's skip line)."""
     t = route_of(a, key)
+    if t and t["tenant"] == CLOSED:
+        return f"{key}: tenancy does not read and has no last good copy (closed until it reads)"
     if t:
         return f"{key} is {t['tenant']}'s: it runs on {', '.join(t['logins']) or 'no login'} only (tenants)"
     return f"{key} is on its deny list"
@@ -1213,6 +1310,8 @@ def holds_line(a, path, h, whose):
     """The refusal of a start in `path`, which holds repo `h`: ' is off ' is what account_guard blocks on,
     and ' holds ' what it lets pass after a `cd`. A tenant's entry names its tenant, a deny list's `whose`."""
     t = route_of(a, h)
+    if t and t["tenant"] == CLOSED:   # `*` holds everything under the projects folder: no repo to start in either
+        return f"{path} is off {a['label']}: it holds repos, and {closed_text()} — {closed_fix()}"
     why = f"{t['tenant']}'s, {tenants_source()}" if t else whose
     return f"{path} is off {a['label']}: it holds {h} ({why}); start the session inside a repo"
 
@@ -2016,11 +2115,32 @@ def cmd_add(reg, label, login, say_login=True):
     return 1 if memory_bad else 0
 
 
+def seed_tenants():
+    """setup's first step (S7b): the tenants file read through its link, its last good copy written, so a new
+    host's hooks hold tenancy from their first prompt rather than closed (or opening the drive link
+    themselves). A person runs setup, so the link may be read here; a key that reads nothing leaves
+    tenancy closed, and says so. No key: nothing to seed."""
+    if not (TENANTS.is_symlink() or TENANTS.exists()):
+        return None
+    got, source, err = tenants_read()
+    if source == "file":
+        print(f"  ok  tenants: {TENANTS.name} → {tenants_last().name}" + ("" if got else " (tenancy off: {})"))
+    elif source == "last":
+        print(f"  --  tenants: {TENANTS.name} did not read ({err}); {tenants_last().name} holds as it was")
+    else:
+        print(f"  ⚠   tenants: {TENANTS.name} did not read ({err}), no last good copy — tenancy is closed here until it does: "
+              f"mount its drive, then {BIN / 'account'} refresh --force")
+    return source
+
+
 def cmd_setup(reg, record=True, peer=None):
     """Build this Mac from the logins file: a dir for every Claude row the file lists for this Mac,
     the login line for every dir not signed in as the file says, and the e-mail and plan of a login
     the file lacks written there. Idempotent: a second run prints `ok` per row. → exit 1 when a
     login is owed."""
+    # before the logins file: with the drive away both are, and the tenants line says what that means
+    if seed_tenants() in ("file", "last") and CLOSED in (reg.get("tenants") or {}):
+        reg = load_registry()   # main read it closed and the seed now reads: the rest of setup runs on what it read (S7b review)
     path, logins = load_logins()
     if path is None:
         print("account: no logins file on this Mac (the config dir's lighthouse/logins.json; Drive not mounted?) — nothing to build from")
@@ -2871,6 +2991,8 @@ def tenant_ties(reg):
     projects = projects_dir()
     out = []
     for name, entries in reg["tenants"].items():
+        if name == CLOSED:   # every clone would be "no login's": tenancy_state's one fix line says it
+            continue
         rows = {a["label"]: a for a in reg["accounts"] if a.get("tenant") == name and a["enabled"] and a["provider"] == "claude"}
         logins = list(rows)
         # a glob by fnmatch on the key, as denied() reads it (`*` spans `/`), never Path.glob (review 2026-10-21)
@@ -2958,7 +3080,7 @@ def stale_copies(peer=None):
 
 def tenancy_state(reg, peer=None):
     """→ [(label, level, text, fix)] on the tenants file itself, for doctor: a key that reads nothing with
-    no copy (tenancy off, every login runs every tenant's repo), tenancy held by the last good copy, a
+    no copy (tenancy closed, every repo refused to every login: S7b), tenancy held by the last good copy, a
     file that reads but does not parse, a tenant whose repos match nothing or that has no enabled login,
     a label in two tenants' `logins`, and one no enabled row has. The guard's own stderr line reaches
     nobody (a UserPromptSubmit hook, exit 0), so doctor is where these surface (2026-10-22). Which login
@@ -2976,8 +3098,9 @@ def tenancy_state(reg, peer=None):
     else:
         what, fix = f"{TENANTS} reads nothing ({err})", relink
     if source == "none":
-        out.append(("-", "fix", f"{what}, and there is no last good copy — tenancy is off: "
-                    "every login may run every tenant's repo", fix))
+        out.append(("-", "fix", f"{what}, and there is no last good copy — tenancy is closed: "
+                    "every repo is refused to every login, the default dir's included, until it reads",
+                    fix if fix != relink else relink + "; then " + wrap_peer(f"{BIN / 'account'} refresh --force", peer)))
     elif source == "last":
         try:   # the filesystem's clock, never ACCOUNT_NOW (a suite's fake time)
             old = f"{age(time.time() - tenants_last().stat().st_mtime)} old"
@@ -2997,6 +3120,15 @@ def tenancy_state(reg, peer=None):
         elif not any(r.get("tenant") == n and r.get("enabled") and r.get("provider") == "claude" for r in rows.values()):
             out.append(("-", "fix", f"{n}'s repos run nowhere: no enabled claude login is {n}'s",
                         f"name its login in {n}'s \"logins\" in {TENANTS}"))
+    keys = None
+    tenants = [(n, e) for n, e in (reg.get("tenants") or {}).items() if n != CLOSED]
+    for i, (n, mine) in enumerate(tenants):
+        for m, theirs in tenants[i + 1:]:
+            if keys is None:
+                keys = repo_keys_here() or ()   # a torn registry: the clones alone, a lint never a gate
+            for x in entries_clash(mine, theirs, keys):
+                out.append(("-", "fix", f"{x} is in both {n}'s and {m}'s \"repos\" in {TENANTS.name}: each refuses it "
+                            f"to the other's logins, so it runs on neither", f"keep it in one tenant's \"repos\" in {TENANTS}"))
     named = {}
     for n, t in raw.items():
         for l in tenant_logins(t):
@@ -3043,7 +3175,7 @@ def tenancy_roster(reg):
     for a in rows:
         for d in ((a.get("repos") or {}).get("deny")) or []:
             t = route_of(a, d)
-            if not t or (a.get("implicit") and d in implicit):
+            if not t or t["tenant"] == CLOSED or (a.get("implicit") and d in implicit):
                 continue
             if a.get("implicit"):
                 implicit.add(d)
@@ -3056,6 +3188,12 @@ def tenancy_roster(reg):
             orca = core().ORCA_ROW["repos"]["deny"]
         except Exception:
             orca = []
+        d = next((a for a in rows if is_default(a)), None)
+        t = route_of(d, VAULT) if d else None
+        if t and t["tenant"] != CLOSED:
+            # the guard asks `allowed` at the home and the projects folder for it (S7b), and both hold the vault
+            out.append((d["label"], "info", f"the default dir ({d['label']}) is not {t['tenant']}'s login, which holds the vault: "
+                        f"a session it starts in the home or the projects folder is refused, as both hold {VAULT}"))
         if VAULT not in orca and not any(denied(a, projects_dir() / VAULT) for a in rows):
             out.append(("-", "fix", f"the vault ({VAULT}) is refused no login: no tenant holds it and no deny list names it — "
                         "every seat may open it, and none links the work memory",
@@ -3243,10 +3381,14 @@ def doctor_local(reg, logins, peer=None, record=True):
             continue
         _, email = login_of(a)
         other = owner.get((email or "").lower())
-        denies = any((r.get("repos") or {}).get("deny") for r in claude_rows if r["label"] == other)
-        if email and other and other != a["label"] and denies:  # the primary's seat has no deny list to bypass
+        # what the seat is refused that this dir is not: its deny list, and since S7b its tenancy routes too
+        # (with the work seats' deny lists gone, a deny list alone never fired for them; the S7 review)
+        # The default dir's own deny list binds pick only, never allowed or run (routed_off): it covers no seat (S7b review)
+        refused = lambda r: (set() if is_default(r) else set((r.get("repos") or {}).get("deny") or [])) | set(r.get("routed") or {})
+        gap = next((refused(r) - refused(a) for r in claude_rows if r["label"] == other), set())
+        if email and other and other != a["label"] and gap:  # a dir no less refused bypasses nothing
             f(a["label"], "fix", f"{a['home']} is signed in as {email}, which the logins file gives to {other} — "
-              f"a second way into {other}'s seat that its deny list does not cover",
+              f"a second way into {other}'s seat that its deny list and tenancy do not cover ({', '.join(sorted(gap))})",
               wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} claude auth logout   (after its sessions end)", peer)
               if not is_default(a) else "sign the default dir back in as its own account")
     if profiles is not None:

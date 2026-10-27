@@ -63,8 +63,14 @@ entry a tenant already refuses (kept by hand, derived by tenancy), and flags a v
 list holds. Write the tenant before taking the deny lists off.
 
 Each good read is copied beside the key (`.tenants.json.last`), and while the link reads nothing or
-is gone (the drive behind it away) that copy holds: tenancy never fails open onto another seat. Only
-a Mac whose link has never read has tenancy off, said on stderr and by `account doctor`, which also names a copy in force, a file that does not parse, and a tenant left with no login. To end tenancy, write `{}`.
+is gone (the drive behind it away) that copy holds: tenancy never fails open onto another seat. A Mac
+whose link has never read has no copy either, and there tenancy is closed: every repo is refused to every
+login, the default dir's included, until the link reads (`account setup` seeds the copy on a new Mac, and the
+usage tick's `refresh` or any reader allowed to open the link does it unasked). That is said on stderr, in
+each refusal and by `account doctor`, which also names a copy in force, a file that does not parse, a tenant
+left with no login, and a repo two tenants both take (it runs on neither). To end tenancy, write `{}`;
+removing the key ends it only where no copy is left. `tenant drop` of the vault's tenant warns: it is
+what keeps the vault off every other seat.
 
 Where the key is a link into a cloud drive (the core's `drive_backed()`: macOS's File Provider folder, or
 `REGATTA_DRIVE_ROOTS`), a hook's reader opens it only under claude-host (the core's `claude_host()`): a hook
