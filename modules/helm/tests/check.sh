@@ -14,8 +14,18 @@ python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.p
   || { echo "FAIL: the core does not load here (its line above)"; rc=1; }
 echo "== peers"; bash "$D/peers.sh" || rc=1
 echo "== hooks"; bash "$D/hooks.sh" || rc=1
+# test_ask and test_helm share nothing (each its own mktemp dir, config dir and HOME): side by side,
+# each printed whole in this order once it ends (suite-time, 2026-10-23)
+O=$(mktemp -d); pids=()
+# cut short (Ctrl-C, check's TERM, CI's timeout): the suites are ended too — background jobs ignore
+# SIGINT — and what each printed so far is shown, not deleted unseen with $O (landing review)
+halt() { kill ${pids[@]+"${pids[@]}"} 2>/dev/null
+  for f in "$O"/*; do [ -s "$f" ] && { echo "== $(basename "$f") (cut short)"; cat "$f"; }; done; exit "$1"; }
+trap 'rm -rf "$O"' EXIT; trap 'halt 130' INT; trap 'halt 143' TERM
+for s in test_ask test_helm; do bash "$D/$s.sh" > "$O/$s" 2>&1 & pids+=($!); done
+i=0
 for s in test_ask test_helm; do
-  echo "== $s"
-  bash "$D/$s.sh" || rc=1
+  wait "${pids[$i]}" || rc=1; i=$((i+1))
+  echo "== $s"; cat "$O/$s"; rm -f "$O/$s"
 done
 exit $rc

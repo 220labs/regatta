@@ -22,9 +22,18 @@ src() { local f; f=$(peer "$1"); local rel; rel=$(sed -nE 's/^# (Source|Exec) sh
 # under the new (bin/helm, `ship`, `board`, `--by`, `wharf check|apply`, DISPATCH_SHIP and
 # DISPATCH_SKIPPER*): a run dispatched before S5 types and carries the old ones until S8, and the
 # readers take both forever. HELM_NAMES=old|new runs one of the two.
+# The two passes share nothing (each its own mktemp dir, config dir, HOME and stubs), so they run side
+# by side and print in order: about half the wall time (suite-time, 2026-10-23).
 if [ -z "${HELM_NAMES:-}" ]; then
-  HELM_NAMES=old bash "$0" "$@"; r1=$?
-  HELM_NAMES=new bash "$0" "$@"; r2=$?
+  O=$(mktemp -d); p1=; p2=
+  # cut short: both passes ended and what each printed shown, as helm's check.sh does (landing review)
+  trap 'rm -rf "$O"' EXIT
+  trap 'kill $p1 $p2 2>/dev/null; cat "$O/old" "$O/new" 2>/dev/null; exit 130' INT
+  trap 'kill $p1 $p2 2>/dev/null; cat "$O/old" "$O/new" 2>/dev/null; exit 143' TERM
+  HELM_NAMES=old bash "$0" "$@" > "$O/old" 2>&1 & p1=$!
+  HELM_NAMES=new bash "$0" "$@" > "$O/new" 2>&1 & p2=$!
+  wait $p1; r1=$?; wait $p2; r2=$?
+  cat "$O/old" "$O/new"
   [ "$r1" = 0 ] && [ "$r2" = 0 ]; exit $?
 fi
 echo "== the $HELM_NAMES names"
@@ -51,6 +60,8 @@ hasnt() { case "$1" in *"$2"*) echo "  FAIL $3: [$2] found"; fails=$((fails+1));
 # the first N characters of stdin's first line: `cut -c` counted bytes on CircleCI's ubuntu-2604
 # image (uutils 0.8.0), as GNU's does, so a `·` cost a character there (AGENTS.md's Traps)
 chars() { python3 -c 'import sys; print(sys.stdin.readline().rstrip("\n")[:int(sys.argv[1])])' "$1"; }
+# a state the code under test reaches by itself: polled every 0.1 s, up to 15 s, never a fixed sleep
+until_() { local i; for i in $(seq 1 150); do eval "$1" && return 0; sleep 0.1; done; return 1; }
 
 # a blueprint's front matter is read by PyYAML, installed per user on these Macs: keep its site
 # when HOME moves below (bin/blueprintlib.py)
@@ -1193,7 +1204,7 @@ PY
   has "$out" "S1 testhost demo gone-step: waits — no time left in this tick for redispatch (ask poll's timeout)" \
     "a tick past ask poll's deadline starts no tool call it cannot finish"
   check "$(ncalls "$X/late.calls")" "0" "  nothing started"
-  out=$(scen slow STUB_SLEEP=5 STALLS_TOOL_TIMEOUT=1)
+  out=$(scen slow STUB_SLEEP=2 STALLS_TOOL_TIMEOUT=1)   # the stub outlives the 1 s timeout by a second: enough to time out
   has "$out" "timed out after 1 s — counted as spent" "a tool call that times out is a spent retry, not a refusal (it may have started the run)"
   check "$(python3 -c "import json; L=[json.loads(l) for l in open('$X/slow.jsonl')]; g=[l for l in L if l['topic'] == 'gone-step' and l['t'] == $ta]; print([(l['action'], l['why'][:6]) for l in g])")" \
     "[('retry', 'firing'), ('retry', 'dispat')]" "  its retry was on record before the tool ran: a firing line, then the outcome"
@@ -1588,7 +1599,7 @@ check "$(lev ls1 refused)" "2" "  one 'refused' event per refusal"
 out=$("$LX/helm" skipper --renew ls1 --gen 0 2>&1); check "$?" "4" "--renew at a stale gen: exit 4"
 has "$out" "refused: lease at gen 1 held by skipper · dock — you are gen 0" "  the refusal line"
 check "$(lev ls1 'renewal refused')" "1" "  one 'renewal refused' event"
-u0=$(lf ls1 until); sleep 1
+u0=$(lf ls1 until)   # no wait: until is a float now() + TTL, and the renew below starts a process later
 out=$("$LX/helm" skipper --renew ls1); check "$?" "0" "--renew by the holder, no --gen: exit 0"
 check "$(python3 -c "import sys; print(float(sys.argv[2]) > float(sys.argv[1]))" "$u0" "$(lf ls1 until)")" "True" "  until moved"
 check "$(lev ls1 'renewal refused')" "1" "  a renewal writes no event"
@@ -1627,9 +1638,14 @@ rc=1" "--hold: a zero period refused (it would rewrite skipper.json in a loop)"
 ll yard ls4 dock > /dev/null
 a1=$(lf ls1 until)
 HELM_HOLD_EVERY=1 HELM_HOLD_PARENT=$PARENT "$LX/helm" skipper --hold --scope dock > "$T/hold.out" 2>&1 & HOLD=$!
-sleep 3
+# a pass renews ls1 and takes ls4: polled for, where a fixed 3 s once waited out two periods
+until_ "[ \"\$(lf ls4 holder)\" = 'skipper · dock' ] && python3 -c 'import sys; sys.exit(not float(sys.argv[2]) > float(sys.argv[1]))' $a1 \"\$(lf ls1 until)\""
 check "$(python3 -c "import sys; print(float(sys.argv[2]) > float(sys.argv[1]))" "$a1" "$(lf ls1 until)")" "True" "--hold (HELM_HOLD_EVERY=1): ls1 renewed in the loop"
 check "$(lf ls4 holder)/$(lf ls4 session)" "skipper · dock/mgr-1" "  ls4, laid to the yard meanwhile, taken"
+# one more pass before the left-alone checks: the fixed 3 s covered several, and a later pass that
+# takes what the first left would pass after the first alone (landing review)
+a1b=$(lf ls1 until)
+until_ "python3 -c 'import sys; sys.exit(not float(sys.argv[2]) > float(sys.argv[1]))' $a1b \"\$(lf ls1 until)\""
 check "$(lf ls2 session)/$(lf ls2 gen)" "mgr-2/3" "  another skipper's ship left alone"
 check "$(lf ls3 holder)" "yard" "  another scope's ship left alone"
 kill $PARENT; wait $PARENT 2>/dev/null
@@ -1652,8 +1668,11 @@ else printf '#!/bin/sh\ni=0\nwhile [ "$i" -lt "${1:-300}" ]; do sleep 1; i=$((i+
 # polled, not a fixed sleep: until the child execs, ps names bash (code-review, twin-ci-2's finish)
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do PCOMM=$(/bin/ps -o comm= -p $PARENT 2>/dev/null); [ "${PCOMM##*/}" = claude ] && break; sleep 0.25; done
 check "${PCOMM:+${PCOMM##*/}}" "claude" "the stand-in claude lives, and ps names it claude"
+a2=$(lf ls1 until)
 HELM_HOLD_EVERY=1 HELM_HOLD_PARENT=$PARENT "$LX/helm" skipper --hold --scope dock > "$T/hold.out" 2>&1 & HOLD=$!
-sleep 1.5; ll yard ls1 dock > /dev/null; ll yard ls5 dock > /dev/null
+# the yard takes ls1 back once the first pass has renewed it (a fixed 1.5 s before): the next pass is refused
+until_ "python3 -c 'import sys; sys.exit(not float(sys.argv[2]) > float(sys.argv[1]))' $a2 \"\$(lf ls1 until)\""
+ll yard ls1 dock > /dev/null; ll yard ls5 dock > /dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 $HOLD 2>/dev/null || break; sleep 0.25; done
 if kill -0 $HOLD 2>/dev/null; then kill $HOLD; check "alive" "4" "a sidecar whose renewal is refused ends"
 else wait $HOLD; check "$?" "4" "a sidecar whose renewal is refused ends, exit 4"; fi
@@ -2829,7 +2848,7 @@ check "$(kill -0 $LIS 2>/dev/null && echo alive || echo gone)" "gone" "  the lis
 check "$([ -e "$S7/send/send-$TP-fix-the-widget-s-frobnicator.pid" ] && echo kept || echo removed)" "removed" "  and its pid file"
 sleep 300 & LP2=$!; disown $LP2
 HELM_LISTEN_PARENT=$LP2 "$LX/helm" send --listen "$TP" --every 5 > "$S7/l2.out" 2>&1 & LIS=$!
-sleep 0.5; kill $LP2
+until_ "[ \"\$(head -1 '$S7/send/send-$TP-fix-the-widget-s-frobnicator.pid' 2>/dev/null)\" = $LIS ]"; kill $LP2   # the listener up (its pid file) before its parent ends
 for _ in $(seq 1 30); do kill -0 $LIS 2>/dev/null || break; sleep 0.1; done
 check "$(kill -0 $LIS 2>/dev/null && echo alive || echo gone)" "gone" "a listener ends with its session's claude"
 has "$(cat "$S7/l2.out")" "has ended — the listener with it" "  saying so"
