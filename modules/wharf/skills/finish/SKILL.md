@@ -289,6 +289,10 @@ session's work sharing the branch — note them; they're reported separately.
      is a guess: run it from the branch's worktree. A review its row in `settings/models.json`
      turns off prints `not spawned`: spawn only the other. `plan refused` (a bad table, a stray
      `GATE_*` variable): fix what it names, or run both as above and say so in the report.
+     A principal build (the owner marked it principal: pass `--principal`; a branch whose brief names a
+     principal tier is found without it) prints `principal:` and gets the top tier at any size; when
+     it says the week holds it, run the reviews from a login with room or wait for the reset — never
+     spawn a lower tier for it (docs/principal-tier-2026-10-26.md S5).
    - **Spawn both in one message.** The reviewer with `model: "opus"`, or `"fable"` where the
      project's own rules put an area this branch touched on Fable — never `inherit`, or a
      session that ran on Sonnet reviews its own work at Sonnet. Brief it with the branch, the
@@ -466,6 +470,11 @@ session's work sharing the branch — note them; they're reported separately.
      list. A notification, a sound or a physical movement nobody observed is always
      `inferred`, whatever the system's state says.
    - whether the `physical:` sweep is worth the owner's time (step 2)
+   - a principal build (step 1's `principal:` line): the `principal-worker`'s pre-mortem and Receipt,
+     verbatim from its hand-back, and the commit the review gate reviewed; a Receipt whose commit is
+     older than the branch's tip says so. A dispatched principal run has no hand-back: quote them from
+     its commit bodies or the bundle where the run wrote them, else say `no pre-mortem or Receipt
+     recorded` — never write one here (docs/principal-tier-2026-10-26.md S5)
    - learnings captured (file → one line each), and anything proposed via `/promote` / `/share`
    - manual steps still owed by the owner, and open items carried forward — each with where it is
      recorded **and** `checked: <how> → <result>` or `not checked: <why> — ask?` — or "No open

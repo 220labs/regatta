@@ -20,7 +20,8 @@ close`, exit 0; none in the wait is `NOT PICKED UP`, exit 3 (NOT_PICKED), the ta
 
 What a sent blueprint says: `skipper: scope` (a relay goes to the lease holder, never to the sender,
 who may be gone; a `skipper:` or `manager:` naming a session is rewritten, and the send says so) and
-`sent_by: <session>`; a --text block also its tier, model and effort. A rewrite is one commit on the
+`sent_by: <session>`; a --text block also its tier, model and effort (a principal tier, wharf-runs'
+TIER_RUN, runs at its own: a lower --effort or another --model is refused before any seed). A rewrite is one commit on the
 branch by git plumbing (pickup brief's way: no checkout), pushed; the pin is read back from origin,
 never from a working tree. On the yard, `--mark` gives each block's task `sent_by`, `sent_at` (the
 task's send is `sent`) after the lease's fence (leaselib.fence(pid, "helm send")); the skipper's take
@@ -600,6 +601,18 @@ def from_text(a, root, scope_want=None):
         raise Refused("--effort is one of %s" % ", ".join(bl.EFFORTS))
     if a.model and not bl.MODEL_RE.match(a.model):
         raise Refused("--model %r is not a model name" % a.model)
+    if isinstance(a.tier, str) and a.tier in getattr(bl, "TIER_RUN", {}):
+        # a principal tier is its model and effort (principal tier S5): refused here, before a branch is
+        # seeded, what the yard's check would refuse on the blueprint; neither flag given takes the tier's
+        tm, te = bl.TIER_RUN[a.tier]
+        if a.effort and a.effort not in bl.PRINCIPAL_EFFORTS:
+            raise Refused("--tier %s runs at %s (max only after a named miss): --effort %s is below it" % (a.tier, te, a.effort))
+        if a.model and tm not in a.model.lower():
+            raise Refused("--tier %s runs on %s: --model %s would run it elsewhere — name another tier" % (a.tier, tm, a.model))
+        if a.model or a.effort:
+            # a --text run is a claude-code block: dispatch runs it at its brief's Tier: line alone, so a
+            # flag here would be shown and never run (blueprintlib refuses the block the same way)
+            raise Refused("--tier %s runs at %s %s from its brief's Tier: line: give no --model or --effort" % (a.tier, tm, te))
     task = " ".join(a.text.split())
     pickup = os.environ.get("HELM_PICKUP") or helmlib.peer("pickup")
     if not pickup:

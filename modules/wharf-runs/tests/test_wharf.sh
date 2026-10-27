@@ -317,6 +317,45 @@ has "$(SW apply "$T/remote.md" --plan rm1 --dry-run)" "worker-start --task <prob
 out=$(PLAN_HOST=buildbox SW apply "$T/remote.md" --plan rm1 --dry-run); has "$out" "worker-start --task <probe> --agent claude" "    on buildbox itself the same block is here (review 2026-10-18)"
 check "$(printf '%s' "$out" | grep -c -- '--on buildbox')" "0" "      no --on to itself"
 
+echo "  principal tiers (principal tier S5): no silent opus/high"
+bad "a principal tier below xhigh" "block probe: tier principal-worker runs at xhigh (max only after a named miss); effort high is below it" "t = t.replace('tier: worker\n    model: sonnet\n', 'tier: principal-worker\n    model: opus\n', 1)"
+bad "a principal tier on another model" "block probe: tier principal-worker runs on opus; model sonnet would run it elsewhere" "t = t.replace('tier: worker\n    model: sonnet\n    effort: high\n', 'tier: principal-worker\n    model: sonnet\n    effort: xhigh\n', 1)"
+bad "a principal tier on Codex" "block build: tier principal-worker runs on Claude; a codex block names another tier" "t = t.replace('    agent: codex\n', '    agent: codex\n    tier: principal-worker\n')"
+bad "a principal tier the section contradicts" "\`## probe\` says Tier: principal-architect, its block tier: principal-worker" "t = t.replace('tier: worker\n    model: sonnet\n    effort: high\n', 'tier: principal-worker\n', 1).replace('Tier: Sonnet 5.5 high', 'Tier: principal-architect')"
+bad "a principal section on an Orca block with no tier: key" "block probe: its section says Tier: principal-worker; an Orca block runs at its tier: key" "t = t.replace('    tier: worker\n    model: sonnet\n    effort: high\n', '', 1).replace('Tier: Sonnet 5.5 high', 'Tier: principal-worker')"
+bad "a principal claude-code block whose section names no tier" "\`## remote\` names no tier on its Tier: line; dispatch runs a claude-code block at what that line says — name principal-worker there" "t = t.replace('    provider: claude-code\n', '    provider: claude-code\n    tier: principal-worker\n', 1)"
+python3 - "$CF" "$T/principal.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("tier: worker\n    model: sonnet\n    effort: high\n", "tier: principal-worker\n", 1)   # the tier alone: its model and effort
+t = t.replace("    provider: claude-code\n", "    provider: claude-code\n    tier: principal-architect\n", 1)
+t = t.replace("## remote\nTask: run it on the build Mac\nTier: Opus 5.5 high", "## remote\nTask: run it on the build Mac\nTier: principal-architect (Fable xhigh)")
+open(sys.argv[2], "w").write(t)
+PY
+out=$(SW check "$T/principal.md" 2>&1); check "$?" "0" "  a block that names a principal tier and nothing else passes check"
+has "$out" "probe   orca/claude principal-worker opus·xhigh done when" "    its line shows the tier's model and effort, not the default"
+has "$out" "principal-architect fable·xhigh" "    a claude-code block's too"
+P $SHIP blueprints --id pr1 > /dev/null
+out=$(SW apply "$T/principal.md" --plan pr1 --dry-run)
+has "$out" "worker-start --task <probe> --agent claude --model opus --effort xhigh" "    Orca starts it at opus/xhigh, never at its own default"
+check "$(python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1]); import blueprintlib as b
+print(b.run_of({"tier": "principal-worker"}), b.run_of({"tier": "principal-architect", "effort": "max"}),
+      b.run_of({"tier": "sr-worker"}), b.brief_tier("Task: x\n**Tier:** principal-worker, Opus\n"), b.brief_tier("Tier: sr-worker (not worker)"))
+PY
+)" "('opus', 'xhigh') ('fable', 'max') (None, None) principal-worker sr-worker" "  run_of: the tier's own; max kept; other tiers the launcher's default; brief_tier reads the Tier: line"
+check "$(python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1]); import blueprintlib as b
+print(b.brief_tier("TIER: Principal-worker"), b.brief_tier("Tier: principal worker (Opus xhigh)"), b.brief_tier("Tier: Opus xhigh, principal"),
+      b.run_of({"tier": ["worker"]}), b.principal({"a": 1}))
+PY
+)" "principal-worker ? ? (None, None) False" "  case-blind; principal said unclearly is ?, never a silent default; a YAML list or map is no tier"
+bad "a tier that is a YAML list (a problem, not a traceback)" "block probe: tier is one of worker" "t = t.replace('tier: worker\n', 'tier: [worker]\n', 1)"
+bad "a principal claude-code block naming its effort" "block remote: a claude-code block runs tier principal-worker at opus xhigh from its brief; name no model or effort" "t = t.replace('    provider: claude-code\n', '    provider: claude-code\n    tier: principal-worker\n    effort: max\n', 1).replace('Tier: Opus 5.5 high', 'Tier: principal-worker')"
+bad "a section that says principal unclearly" "\`## remote\` says principal on its Tier: line but names no principal tier exactly" "t = t.replace('Tier: Opus 5.5 high', 'Tier: principal, Opus xhigh')"
+
 echo "  accept, then a changed file is refused"
 P $SHIP blueprints --id cp > /dev/null
 check "$(SW check "$CF" --plan cp | tail -1)" "plan cp: no digest of demo recorded (wharf check --accept)" "plan chain (now wharf check's shim) with a plan: nothing accepted yet"

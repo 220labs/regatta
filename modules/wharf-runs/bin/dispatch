@@ -17,6 +17,10 @@
 # for the first case, 2026-10-03: a session that should begin on the build Mac when the weekly limit
 # resets (Sun 2026-10-04 04:00 Pacific), with nobody at a keyboard.
 #
+# The model and effort are opus/high unless given, or unless the brief's `Tier:` line names a principal
+# tier (`principal-architect` fable xhigh, `principal-worker` opus xhigh; blueprintlib's TIER_RUN), read
+# when the run fires; a given --model or --effort below that tier is refused, `--effort max` allowed.
+#
 # Named run-seed until 2026-10-05 (the owner: "isn't named right"). Its on-disk state keeps the old
 # name — ~/Library/Caches/run-seed, …/run-seed-runs — so a run live across the rename stays
 # visible to --status and the reaper; bin/run-seed is a shim for callers of the old name.
@@ -438,7 +442,7 @@ roomy() {
   [ "$rc" = 0 ] || echo "dispatch: no memory reading ($why) — going ahead" >&2
   return 0
 }
-branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
+branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; model_given=0; effort_given=0; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
 account=""; force=0; fallback=""; on_here=0; on_typed=0; on_default=0; at_default=0; on_auto=0; ifroom=0
 start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
 prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0
@@ -456,8 +460,8 @@ while [ $# -gt 0 ]; do
     # (the sounding queue's allow rules in aurora's weekly-run; the S7 /finish review's R5)
     --at) [ -z "$at" ] || { echo "dispatch: --at given twice" >&2; exit 2; }; at="$2"; shift 2;;
     --note) note="$2"; shift 2;;
-    --model) model="$2"; shift 2;;
-    --effort) effort="$2"; shift 2;;
+    --model) model="$2"; model_given=1; shift 2;;
+    --effort) effort="$2"; effort_given=1; shift 2;;
     --probe) probe=1; shift;;
     --account) account="${2:-}"; [ -n "$account" ] || { echo "dispatch: --account takes auto or a label" >&2; exit 2; }; shift 2;;
     --force) force=1; shift;;
@@ -498,6 +502,9 @@ if [ -n "${WEEKLY_RUN:-}" ]; then
      || [ "$model/$effort" != opus/high ]; then
     echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
   fi
+  # the job carries opus/high in so many words: the fired run reads the brief's Tier: line, and a principal
+  # tier there then refuses (principal_flags) rather than raise the weekly pass's run to Fable xhigh
+  model_given=1; effort_given=1
 fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
 [ "$sweep" = 0 ] || exec python3 "$Q" sweep "${qctx[@]}"
@@ -532,6 +539,54 @@ topic="${branch##*/}"; topic="$(echo "$topic" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-
 # a brief is docs/handoff/<YYYY-MM-DD>-<topic>.md exactly: `*-demo.md` also matched `…-foo-demo.md`
 topic_re="$(printf '%s' "$topic" | sed 's/[][\.*^$]/\\&/g')"
 brief_re="^docs/handoff/[0-9]{4}-[0-9]{2}-[0-9]{2}-$topic_re\.md\$"
+# A principal tier runs at its own model and effort (principal tier S5, docs/principal-tier-2026-10-26.md):
+# the brief's Tier: line names it, blueprintlib's TIER_RUN says at what, and a --model or --effort given
+# wins for its half. Without this a principal brief ran at the opus/high above, the tier in name only.
+# Read here from the branch as this Mac knows it (the dry run's, --next's and the queued line's), and
+# again at fire time from the worktree's brief, which decides; a job or a peer is handed only the flags
+# given, so the fire-time read is never overridden by a default written into its plist.
+tier=""; model0="$model"; effort0="$effort"
+tier_run() {  # tier_run < <brief text>: sets $tier, and $model and $effort where no flag named them
+  local out t m e
+  # each read starts from the given-or-default pair: a stale early read's principal tier never outlives
+  # the fire-time read that decides (the S5 landing review)
+  model="$model0"; effort="$effort0"
+  out=$(python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import blueprintlib as b
+t = b.brief_tier(sys.stdin.read())
+print(t or "-", *(b.TIER_RUN[t] if b.principal(t) else ("-", "-")))' "$here/bin") || return 1
+  read -r t m e <<<"$out"
+  [ "$t" = - ] && tier="" || tier="$t"
+  [ "$m" = - ] && return 0
+  [ "$model_given" = 1 ] || model="$m"
+  [ "$effort_given" = 1 ] || effort="$e"
+}
+# principal_flags: a --model or --effort given that would run a principal tier below itself is refused, as
+# blueprintlib and helm send refuse it: /later, /todo and a stall's re-start pass flags, and a given flag
+# wins, so a demotion would otherwise be silent. `max` stays allowed (after a named miss). Prints why.
+principal_flags() {
+  case "$tier" in
+    "?") echo "its Tier: line says principal but names no principal tier exactly (principal-architect, principal-worker)"; return 1;;
+    principal-architect) pm=fable;; principal-worker) pm=opus;; *) return 0;;
+  esac
+  if [ "$effort_given" = 1 ] && [ "$effort" != xhigh ] && [ "$effort" != max ]; then
+    echo "tier $tier runs at xhigh (max only after a named miss); --effort $effort is below it"; return 1
+  fi
+  case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
+    *"$pm"*) ;;
+    *) echo "tier $tier runs on $pm; --model $model would run it elsewhere"; return 1;;
+  esac
+}
+if [ "$start" = 0 ]; then
+  for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+    trel=$(git -C "$repo" ls-tree -r --name-only "$ref" -- docs/handoff 2>/dev/null | grep -E -- "$brief_re" | sort | tail -1)
+    [ -n "$trel" ] || continue
+    tier_run < <(git -C "$repo" show "$ref:$trel" 2>/dev/null) || true   # unread here: the fire-time read decides
+    break
+  done
+  if ! why=$(principal_flags); then echo "dispatch: $branch's brief — $why" >&2; exit 2; fi
+fi
 # The mode (header, --mode): a fired job's plist carries it as DISPATCH_MODE; a --next from a run keeps
 # its run's (the session's DISPATCH_MODE), bar yolo, which is per step as --yolo always was. --yolo is
 # mode yolo and mode yolo is --yolo: one switch under two names.
@@ -1204,7 +1259,10 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     menv=""; for v in $SKIPPER_ENV; do
       val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && menv="$menv ${v#*:}=$(printf '%q' "$val")"
     done
-    cmd="${menv# }${menv:+ }DISPATCH_DEPTH=$d0 $rbin $(printf '%q' "$branch") --at $at --model $(printf '%q' "$model") --effort $(printf '%q' "$effort")"
+    cmd="${menv# }${menv:+ }DISPATCH_DEPTH=$d0 $rbin $(printf '%q' "$branch") --at $at"
+    # only the flags given: the peer's fire-time read of the brief's Tier: line decides the rest (tier_run)
+    [ "$model_given" = 1 ] && cmd="$cmd --model $(printf '%q' "$model")"
+    [ "$effort_given" = 1 ] && cmd="$cmd --effort $(printf '%q' "$effort")"
     # another repo: its path under the projects folder, whose home differs per host (one login name each)
     [ "$repo" != "$primary" ] && case "$repo" in "$projects/"*) cmd="$cmd --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")";; *) echo "dispatch: --on needs a repo under $projects" >&2; exit 2;; esac
     echo "scheduling on $on for epoch ${at#@} ($(date -r "${at#@}" '+%F %H:%M %Z') on this Mac)" >&2
@@ -1312,7 +1370,10 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   fi
   # its own label: a job that has fired has a minute at or before now, this one's is after it
   label="$base.$(date -r "$when" +%Y%m%d%H%M)"; plist="$LA/$label.plist"
-  args="<string>$jobbin</string><string>$branch</string><string>--repo</string><string>$repo</string><string>--model</string><string>$model</string><string>--effort</string><string>$effort</string>"
+  args="<string>$jobbin</string><string>$branch</string><string>--repo</string><string>$repo</string>"
+  # only the flags given, as over ssh: the job reads the brief's Tier: line when it fires (tier_run)
+  [ "$model_given" = 1 ] && args="$args<string>--model</string><string>$model</string>"
+  [ "$effort_given" = 1 ] && args="$args<string>--effort</string><string>$effort</string>"
   [ -n "$note" ] && args="$args<string>--note</string><string>$(printf '%s' "$note" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>"
   [ "$probe" = 1 ] && args="$args<string>--probe</string>"
   [ "$headless" = 1 ] && args="$args<string>--headless</string>"
@@ -2064,7 +2125,8 @@ fi
     echo "== --if-room: the week has room"
   fi
   wt="$repo/.claude/worktrees/$topic"
-  if [ "$dry" = 1 ]; then echo "DRY RUN: would fetch $branch, use $wt, run $C $([ "$headless" = 1 ] && echo "-p <brief>" || echo "<brief> --remote-control in screen run-$rname-$topic") --model $model --effort $effort, background ${bg:-deny}, account ${acct_label:-the default login}${mode:+, mode $mode}$([ "$yolo" = 1 ] && echo ", --yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo")$([ "$mode" = dnd ] && echo ", dnd: keel yolo --dnd's gate in the prompt, then autofinish-run --by dnd")" >&3; exit 0; fi
+  tiershow=""; case "$tier" in principal-*) tiershow=" (tier $tier)";; esac   # a principal tier alone is the tier's doing
+  if [ "$dry" = 1 ]; then echo "DRY RUN: would fetch $branch, use $wt, run $C $([ "$headless" = 1 ] && echo "-p <brief>" || echo "<brief> --remote-control in screen run-$rname-$topic") --model $model --effort $effort${tiershow}, background ${bg:-deny}, account ${acct_label:-the default login}${mode:+, mode $mode}$([ "$yolo" = 1 ] && echo ", --yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo")$([ "$mode" = dnd ] && echo ", dnd: keel yolo --dnd's gate in the prompt, then autofinish-run --by dnd")" >&3; exit 0; fi
   # scheduled from inside an earlier run of this branch (--next's usual case): that run is in its
   # last turn, or idle in its screen, in this same worktree. Wait for it rather than share it.
   # a claim that waits for its branch's earlier run gives its slot back meanwhile (that run holds one)
@@ -2096,6 +2158,14 @@ fi
   rel=$(git -C "$wt" ls-tree -r --name-only HEAD -- docs/handoff | grep -E -- "$brief_re" | sort | tail -1)
   [ -n "$rel" ] || { echo "FAILED: no docs/handoff/<YYYY-MM-DD>-$topic.md on $branch"; exit 1; }
   brief="$wt/$rel"
+  # the brief as it fires decides the tier (tier_run): unread, a principal line refuses rather than run at the default
+  if ! tier_run < "$brief"; then
+    if grep -qiE '^[[:space:]*-]*tier[*]*:.*principal' "$brief"; then
+      echo "FAILED: $rel names a principal tier and blueprintlib could not read it; not running at $model $effort"; exit 1
+    fi
+  fi
+  if ! why=$(principal_flags); then echo "FAILED: $rel — $why; not running at $model $effort"; exit 1; fi
+  case "$tier" in principal-*) echo "== tier $tier: $model $effort$([ "$model_given$effort_given" != 00 ] && echo " (--model/--effort given win for their half)")";; esac
   manager_chain
   resolve_mode
   # the brief's blob: a --next from this run's session on an unchanged brief is refused

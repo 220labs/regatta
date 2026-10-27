@@ -513,9 +513,11 @@ def dispatch_cmd(s, what, attempt, t):
         note = ("stalls: started (retry %d of %d) after S2 — the previous step's --next was refused by the run cap "
                 "(%s)." % (attempt, RETRIES, s.get("run")))
     argv = [exe, s["branch"], "--repo", str(local_repo(s)), "--note", note]
-    if d.get("model"):
+    # the recorded model and effort are the stopped run's: the same step again keeps them, while S2 starts the
+    # NEXT step, whose brief's Tier: line decides (a principal tier's model and effort, principal tier S5)
+    if what == "redispatch" and d.get("model"):
         argv += ["--model", str(d["model"])]
-    if d.get("effort"):
+    if what == "redispatch" and d.get("effort"):
         argv += ["--effort", str(d["effort"])]
     if str(d.get("yolo") or "0") not in ("0", "", "False"):
         argv.append("--yolo")
