@@ -23,7 +23,8 @@ git config --global user.name t; git config --global user.email t@example.invali
 # so no rehearsal adds a worktree to this repo or deploys a page (the embark block sets its own)
 export WEEKLY_EMBARK_REPO="$T/no-embark-repo" WEEKLY_KEEL_EMBARK="$T/no-keel-embark.json" WEEKLY_KEEL_LINE=echo
 unset REGATTA_HOME REGATTA_LEGACY ATLAS_LAYER ATLAS_VAULT CLAUDE_CONFIG_DIR WEEKLY_ANY_HOST AURORA_SECTIONS \
-      WEEKLY_TEND WEEKLY_CLASSIFY WEEKLY_COMMIT WEEKLY_PR WEEKLY_CLAUDE AURORA_TODAY AURORA_HOUR CLAUDE_BULLETIN
+      WEEKLY_TEND WEEKLY_CLASSIFY WEEKLY_COMMIT WEEKLY_PR WEEKLY_CLAUDE AURORA_TODAY AURORA_HOUR CLAUDE_BULLETIN \
+      WEEKLY_TRIM TRIM_NOW CLAUDE_REPOS_JSON
 fails=0
 check() {
   if [ "$1" = "$2" ]; then echo "  ok  $3"; else echo "  FAIL $3"; echo "       got:  $1"; echo "       want: $2"; fails=$((fails + 1)); fi
@@ -155,9 +156,9 @@ check "$(REGATTA_HOME="$R" "$T/lone/bin/weekly-run" where | sed -n 's/^regatta /
 echo "tonight's plan (--dry-run)"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
 echo "$out" | head -1 | grep -q "^aurora 2026-10-18 21h — the night's order"; check $? 0 "a Sunday night: the header"
-check "$(echo "$out" | grep -cE '^  [0-9] ')" 5 "  five steps, in order"
+check "$(echo "$out" | grep -cE '^  [0-9] ')" 6 "  six steps, in order"
 echo "$out" | grep -qE '^  2 classify +due '; check $? 0 "  classify due"
-echo "$out" | grep -qE '^  5 dream +due .* must be on vlt main'; check $? 0 "  dream due, its proof named by the vault's name"
+echo "$out" | grep -qE '^  6 dream +due .* must be on vlt main'; check $? 0 "  dream due, its proof named by the vault's name"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=12 "$W" aurora "$V" --dry-run)
 echo "$out" | grep -q "nothing due tonight"; check $? 0 "a Sunday before 20:00: nothing due"
 check "$(ls "$T/logs" | grep -c tried)" 0 "  a dry run records nothing"
@@ -188,6 +189,77 @@ check "$(cat "$T/logs/aurora-dream-tried")" "$day" "  its attempt recorded"
 rm -f "$lg"
 AURORA_SECTIONS=dream WEEKLY_CLAUDE=true "$W" aurora "$V"
 check "$(grep -c '^LAUNCHED' "$lg")" 1 "  a second run that day finds the first one's dream on main"
+
+echo "the trim section (self-tuning S5): plumb's trim, zero tokens, before the dream"
+# A tuned repo of the suite's own (the key names it, so the checkout's own trim/ is never run), and a
+# stand-in trim that logs each call and exits as STUB_TRIM_<verb> says.
+# where the core puts things under the suite's config: its projects folder (the fence keys a repo by it), its log dir
+core() { python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.$1)" "$R/modules/regatta/hooks"; }
+TR="$(core PROJECTS)/harbor"; mkdir -p "$TR/trim" && git -C "$TR" init -q && echo '[]' > "$T/no-prs.json"
+printf '{"vertical": "coding", "repo": "harbor", "since": "2026-10-01", "sources": {"prs": "%s"}, "jobs": {"builder": {"incumbent": "opus:high"}}}\n' "$T/no-prs.json" > "$TR/trim/coding.json"
+echo "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
+cat > "$T/stub-trim" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$T/trim-calls"
+case "\$1" in collect) rc=\${STUB_TRIM_COLLECT:-0} ;; verdict) rc=\${STUB_TRIM_VERDICT:-0} ;; *) rc=0 ;; esac
+case "\$1" in
+  collect) [ "\$rc" = 3 ] && { echo "trim collect: refused — scope vault is confidential: its rows never leave it" >&2; exit 3; }
+           [ "\$rc" = 4 ] && { echo "trim collect: could not tell — GitHub did not answer the PR search (status 0)" >&2; exit 4; }
+           echo "trim collect: 0 rows ({})" ;;
+  verdict) if [ "\$rc" = 3 ]; then echo "trim verdict: wrote $T/verdict.json — refused — floor breached by 1 outcome(s): harbor#5"
+           else echo "trim verdict: wrote $T/verdict.json — builder sonnet:high no move"; fi ;;
+esac
+exit "\$rc"
+STUB
+chmod +x "$T/stub-trim"
+out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  3 trim +due .*in 1 repo\(s\), no session'; check $? 0 "a Sunday night: trim due, third, in the one tuned repo"
+echo "$T/elsewhere" > "$REGATTA_CONFIG/aurora/trim-repos"
+out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  3 trim +not due '; check $? 0 "  no repo with a vertical file: not due"
+echo "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
+echo "$day" > "$T/logs/aurora-trim-tried"
+out=$(AURORA_TODAY="$day" AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  3 trim +not due '; check $? 0 "  tried this week: not due again"
+rm -f "$T/logs/aurora-trim-tried"
+
+trimnight() { rm -f "$lg" "$T/trim-calls"; AURORA_SECTIONS="trim dream" WEEKLY_TRIM="$T/stub-trim" WEEKLY_CLAUDE=true "$W" aurora "$V"; }
+p0=$(posts "trim step failed")
+trimnight; check $? 0 "a night with trim: exit 0"
+check "$(cut -d' ' -f1 "$T/trim-calls" | tr '\n' ' ')" "collect report verdict " "  collect, then report, then verdict"
+check "$(grep -c -- "--repo $TR --vertical coding --night" "$T/trim-calls")" 3 "  each over the tuned repo's vertical, on the night's ledger"
+grep -q -- "^report .*--write" "$T/trim-calls" && grep -q -- "^verdict .*--write" "$T/trim-calls"; check $? 0 "  report and verdict written (--write)"
+grep -q "^TRIM harbor coding $day: builder sonnet:high no move$" "$lg"; check $? 0 "  the verdict's state in the log"
+check "$(cat "$T/logs/aurora-trim-tried")" "$day" "  its attempt recorded"
+awk '/^== trim at /{t=NR} /^LAUNCHED .*dreams/{d=NR} END{exit !(t && d && t < d)}' "$lg" < /dev/null; check $? 0 "  before the dream, which still lands"
+STUB_TRIM_COLLECT=3 trimnight; check $? 0 "a refusal (exit 3): the night still exits 0"
+check "$(cut -d' ' -f1 "$T/trim-calls" | tr '\n' ' ')" "collect " "  nothing reported or judged after it"
+grep -q "^REFUSED trim coding $day: trim's fence" "$lg"; check $? 0 "  one REFUSED line with its reason"
+check "$(grep -c '^FAILED trim' "$lg")$(posts "trim step failed")" "0$p0" "  never a FAILED line, never a bulletin post"
+grep -q "^LAUNCHED .*dreams/$day.md" "$lg"; check $? 0 "  and the dream still runs"
+STUB_TRIM_VERDICT=3 trimnight
+grep -q "^TRIM harbor coding $day: refused — floor breached" "$lg" && ! grep -q '^FAILED trim' "$lg"; check $? 0 "the verdict's own exit 3 (a floor breach) is its state, refused kept, not a failure"
+! grep -q "vault is confidential\|harbor" <(grep '^REFUSED trim' "$lg"); check $? 0 "  a REFUSED line names neither the scope nor the repo (embark-memo quotes the log)"
+STUB_TRIM_COLLECT=4 trimnight
+grep -q "^FAILED trim $day: trim collect in harbor (coding) exit 4: .*GitHub did not answer" "$lg"; check $? 0 "could not tell (exit 4): the step fails, saying why"
+check "$(posts "trim step failed")" "$((p0 + 1))" "  and posts one bulletin line (so the refusal's none above is a real none)"
+grep -q "^LAUNCHED .*dreams/$day.md" "$lg"; check $? 0 "  and the dream still runs"
+
+echo "  the real trim, through the night (no stand-in): the ledger outside the repo, the fence held"
+if [ -f "$R/modules/plumb/bin/trim" ]; then
+rm -f "$lg"; NT="$(core LOG_DIR)/$(core 'host_name()')/trim"; ND="$NT/harbor/coding"
+AURORA_SECTIONS=trim CLAUDE_REPOS_JSON="$T/no-repos.json" TRIM_NOW=2026-10-20T00:00:00Z "$W" aurora "$V"; check $? 0 "a night with trim alone: exit 0, no session"
+[ -s "$ND/verdict.json" ] && ls "$ND"/report-*.md >/dev/null 2>&1; check $? 0 "  the report and the verdict filed in the core's log dir, this host's folder"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["repo"], d["vertical"], d["refused"])' "$ND/verdict.json" 2>&1)" "$TR coding []" "  the verdict names its repo, for the reader's fence"
+check "$(ls "$TR" | tr '\n' ' ')" "trim " "  nothing written in the tuned repo"
+grep -q "^TRIM harbor coding $day: no challenger on record$" "$lg"; check $? 0 "  its state in the log"
+rm -rf "$NT"; rm -f "$lg"
+echo '{"repos": {"harbor": {}}, "scopes": {"vault": {"repos": ["harbor"], "confidential": true}}}' > "$T/conf-repos.json"
+AURORA_SECTIONS=trim CLAUDE_REPOS_JSON="$T/conf-repos.json" "$W" aurora "$V"; check $? 0 "a confidential scope's repo: the night exits 0"
+grep -q "^REFUSED trim coding $day: trim's fence" "$lg"; check $? 0 "  REFUSED by trim's own fence"
+check "$([ -e "$NT" ] && echo written || echo none)" "none" "  nothing collected, nothing written"
+else echo "  skip  plumb's trim is not in this checkout (the public twin, until trim S8)"; fi
+rm -f "$REGATTA_CONFIG/aurora/trim-repos" "$T/logs/aurora-trim-tried" "$lg"
 
 echo "the unattended skills' commands are on weekly-run's allowlist"
 # What /aurora and its sections run unattended: `<regatta> <tool>`, `<module>/bin/<tool>`, the

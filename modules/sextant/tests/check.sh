@@ -83,6 +83,14 @@ python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings -
 SX="$D/skills/sextant/SKILL.md"
 head -3 "$SX" | grep -q '^name: sextant$' && grep -q '^disable-model-invocation: true$' "$SX"; ok $? "skills/sextant: named, and never invoked by the model"
 grep -q 'libexec/sextant-run where' "$SX"; ok $? "  its paths come from sextant-run where"
+grep -q '^8\. \*\*Models, prices, published evals\*\*' "$SX"; ok $? "  step 1's item 8: models, prices, evals (self-tuning S5)"
+# its example tag line is what plumb's trim reads as intake (trimlib.sextant_lines), where plumb is installed
+TL="$D/../plumb/lib/trimlib.py"
+if [ -f "$TL" ]; then
+  ex=$(grep -o '`- trim: builder — [^`]*`' "$SX" | tr -d '`'); printf '# entry\n%s\n' "$ex" > "$T/trim-entry.md"
+  [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trimlib; print(trimlib.sextant_lines([sys.argv[2]]))' "$(dirname "$TL")" "$T/trim-entry.md")" \
+    = "['builder — cost per landed step — sonnet:high']" ]; ok $? "  its trim: tag line reads as trim's intake"
+else echo "  skipped: plumb is not installed here (the trim: tag's reader)"; fi
 python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])" "$D/libexec/sextant-run"; ok $? "libexec/sextant-run parses"
 bash "$D/tests/schedule.sh" | tail -1; ok "${PIPESTATUS[0]}" "the weekly job's suite (tests/schedule.sh)"
 # pitch (renders S1): the renders' checker and builder, stdlib Python and temp dirs, any OS

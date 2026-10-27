@@ -41,8 +41,9 @@
 # archive of superseded branches, its report kept for the branches section. 3 branches — the
 # section's judgement of what classify left — skipped on a quiet week, when the report has no
 # C3–C6 and no probably-launched line: this script writes the section's log.md line itself, and
-# no Fable session starts. 4 charts. 5 review (planned). 6 dream — each section a `claude -p` of
-# its own, so one that exits costs only itself, and one that hangs is killed at WEEKLY_CAP
+# no Fable session starts. 4 trim — plumb's `trim` collect, report and verdict over each tuned repo,
+# zero tokens and no session (trim_step below). 5 charts. 6 review (planned). 7 dream — each section
+# but trim a `claude -p` of its own, so one that exits costs only itself, and one that hangs is killed at WEEKLY_CAP
 # seconds (aurora 3600 per section, 3× the longest dream; sextant 10800, its 68 min ×2.6) —
 # macOS has no `timeout`, so `capped` is a Python process-group kill (bin/tend's way). Each step
 # that fails logs `FAILED …`, posts one bulletin line and the next still runs; a run past
@@ -189,6 +190,7 @@ fi
 # log (a `<name>-missing` command where no step checks first), and the next step still runs.
 DOCS_INDEX=$(tool docs-index); BULLETIN=$(tool bulletin.py); KC=$(tool knowledge-commit)   # atlas
 TEND=$(tool tend); REPOS=$(tool repos); PR=$(tool pr)                                      # wharf
+TRIM=$(tool trim)                                                                           # plumb
 post() {  # post <why> <text>: one bulletin line through atlas; without atlas, the log line alone says it
   # From the vault in a scope's pass: the bulletin labels a line by its cwd, and every session reads
   # it — the anchor's name is a confidential scope's repo (knowledge-layers S5).
@@ -399,6 +401,18 @@ denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Ba
   "Bash(*pickup*--start*)" "Bash(*pickup*--launch*)" "Bash(*pickup*--force*)")
 cd "$cwd" || exit 1
 
+# The repos the trim section tunes: the aurora/trim-repos key, one path a line (bootstrap's config_values
+# splits on spaces, so a path holding one cannot be named there), else the core's own checkout; only a
+# repo with a vertical file (`trim/<vertical>.json`) counts, so an install without one never has it due.
+trim_repos() {
+  local r
+  { if [ -s "$RCFG/aurora/trim-repos" ]; then tr -d '\r' < "$RCFG/aurora/trim-repos"
+    elif [ -n "$REG" ]; then echo "${REG%/modules/regatta/bin/regatta}"; fi; } | while IFS= read -r r; do
+    r=$(printf '%s' "$r" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); r=${r/#\~/$HOME}
+    [ -n "$r" ] && ls "$r"/trim/*.json >/dev/null 2>&1 && echo "$r"
+  done
+  true
+}
 # Aurora's sections and their cadence; a new section is one line here (skills/aurora/SKILL.md)
 due() {
   # dream: once a week, for the week that ends on Sunday night. Due from Sunday 20:00 until a
@@ -425,11 +439,13 @@ due() {
   # section sees its PR. Its proof is the PR (or, live, the launch), so "tried" is the whole gate.
   # branches: the same week, tried once (docs/record/branch-reaping-2026-10-04.md E10). A week
   # with nothing to judge writes no file, so its proof is the log.md line (branches_check).
-  local ctried btried
-  ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null)
+  # trim: the same week, tried once, where some repo has a vertical file (trim_repos); zero tokens.
+  local ctried btried ttried
+  ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null); ttried=$(cat "$trim_tried" 2>/dev/null)
   if [ "$dow" = 7 ] && [ "$hour" -lt 20 ]; then :
   else
     if [[ "$btried" < "$sunday" ]]; then echo branches; fi
+    if [[ "$ttried" < "$sunday" ]] && [ -n "$(trim_repos)" ]; then echo trim; fi
     if [[ "$ctried" < "$sunday" ]] && [ -n "$C" ] && [ -n "$DOCS_INDEX" ] && [ "$(python3 "$DOCS_INDEX" mode --repo "$C" 2>/dev/null)" != none ]; then echo charts; fi
     if [[ "${newest%.md}" < "$sunday" ]] && [[ "$tried" < "$sunday" ]]; then echo dream; fi
   fi
@@ -438,8 +454,9 @@ due() {
 tried_file="$(dirname "$log")/aurora-dream-tried"  # the date of the last dream attempt
 charts_tried="$(dirname "$log")/aurora-charts-tried"
 branches_tried="$(dirname "$log")/aurora-branches-tried"
+trim_tried="$(dirname "$log")/aurora-trim-tried"
 classified="$(dirname "$log")/$day-branches.txt"  # step 2's report, which the branches section reads
-ORDER="branches charts review dream"  # the night's order (skills/aurora/SKILL.md); review is planned
+ORDER="branches trim charts review dream"  # the night's order (skills/aurora/SKILL.md); review is planned
 # The night's order, whatever order the sections were named in; an unknown one runs last.
 in_order() {
   local s out=""
@@ -452,11 +469,12 @@ plan() {
   local n=0 s step what
   echo "aurora ${AURORA_TODAY:-$day} ${AURORA_HOUR:-$(date +%H)}h — the night's order (dry run: nothing runs, nothing is recorded)"
   [ -z "$sections" ] && echo "  nothing due tonight: no step runs, the tend neither"
-  for step in tend classify charts review dream; do
+  for step in tend classify trim charts review dream; do
     n=$((n + 1)); s=$step; [ "$step" = classify ] && s=branches; [ "$step" = tend ] && s=""
     case "$step" in
       tend)     what="bin/tend — sync.py's tend in every repo of repos.json cloned here ($(t=$(tool tend) || { echo "wharf not installed"; exit; }; "$t" --list 2>/dev/null | grep -c .; true))" ;;  # --list reads only
       classify) what="bin/repos --branches --fetch --classify --reap > $classified, then claude -p \"/aurora branches\" from $cwd (a quiet week: its log.md line only)" ;;
+      trim)     what="plumb's trim collect, report --write and verdict --write --night in $(trim_repos | grep -c .) repo(s), no session" ;;
       charts)   what="claude -p \"/aurora charts\" from $C, then its PR" ;;
       review)   what="not built (skills/aurora/SKILL.md: planned)" ;;
       dream)    what="claude -p \"/aurora dream\" from $cwd, then dreams/<day>.md must be on $VAULT_NAME main" ;;
@@ -490,6 +508,7 @@ elif [ "$job" = aurora ]; then
   case " $sections " in *" dream "*) echo "$day" > "$tried_file" ;; esac
   case " $sections " in *" charts "*) echo "$day" > "$charts_tried" ;; esac
   case " $sections " in *" branches "*) echo "$day" > "$branches_tried" ;; esac
+  case " $sections " in *" trim "*) echo "$day" > "$trim_tried" ;; esac
 elif [ -n "$dry" ]; then
   echo "$job: no steps but its one session (--dry-run plans Aurora's night)"; exit 0
 fi
@@ -720,6 +739,41 @@ classify_step() {
   fi
 }
 
+# Step 4: trim (the self-tuning entry's S5, docs/self-tuning-2026-10-26.md) — plumb's `trim` over each
+# repo trim_repos names, per vertical file: collect, report --write, verdict --write, all with --night
+# (the ledger in the core's log dir; trimlib.night_dir says why never the repo's). Zero tokens, no
+# session, before the dream so the week's report is there to read. A refusal (exit 3: the registry
+# torn, the repo in a confidential scope) is the fence working: one REFUSED line, nothing collected,
+# reported or posted, and the night goes on. The verdict's own exit 3 (a floor breach, too few joins)
+# is its state, filed like any other. Any other exit fails the step (exit 4: GitHub did not answer).
+# WEEKLY_TRIM replaces the command for the suite.
+trim_step() {
+  local r f vt name out rc
+  echo "== trim at $(date)"
+  if [ -z "${WEEKLY_TRIM:-}${TRIM}" ]; then step_failed trim "plumb's trim is not installed (regatta which trim)"; return; fi
+  while IFS= read -r r; do
+    name=$(basename "$r")
+    for f in "$r"/trim/*.json; do
+      vt=$(basename "$f" .json)
+      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} collect --repo "$r" --vertical "$vt" --night 2>&1); rc=$?
+      if [ $rc = 3 ]; then  # neither trim's words nor the repo's name: embark-memo quotes this log into a pushed memo
+        echo "REFUSED trim $vt $day: trim's fence (a confidential scope's repo, or the registry unreadable)"; continue
+      fi
+      printf '%s\n' "$out"
+      [ $rc = 0 ] || { step_failed trim "trim collect in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)"; continue; }
+      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} report --repo "$r" --vertical "$vt" --night --write 2>&1); rc=$?
+      printf '%s\n' "$out"
+      [ $rc = 0 ] || { step_failed trim "trim report in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)"; continue; }
+      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} verdict --repo "$r" --vertical "$vt" --night --write 2>&1); rc=$?
+      printf '%s\n' "$out"
+      case $rc in
+        0|3) echo "TRIM $name $vt $day: $(printf '%s\n' "$out" | sed -n 's/^trim verdict: wrote .*verdict\.json — //p' | tail -1)" ;;
+        *)   step_failed trim "trim verdict in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)" ;;
+      esac
+    done
+  done < <(trim_repos)
+}
+
 # A quiet week (open feedback 2026-10-05): classify's report has no C3–C6 line and no
 # probably-launched group — nothing to judge, no "B would have archived" line, so the section would
 # write no file — and this script appends the section's log.md line and commits it instead of
@@ -868,6 +922,8 @@ scope_run() {
     set -f  # a `*` in AURORA_SECTIONS must not become one session per file in the cwd
     for s in $sections; do
       if [ "$s" = branches ] && quiet_week; then continue; fi
+      # no session: nothing to snapshot, cap or retry; set +f, as its vertical files are a glob
+      if [ "$s" = trim ]; then set +f; trim_step; set -f; continue; fi
       snapshot
       if [ "$s" = charts ]; then
         echo "== charts in $C"

@@ -57,7 +57,7 @@ KEEL_OPTION = re.compile(r"^\s*(?:[-*]\s+)?\*{0,2}[A-Z]\*{0,2}\s*[—–-]\s+\S"
 SKELETON = ("Do this now", "Numbers", "Branches", "P — ", "Q — ", "Feedback from", "Ventures", "What ")
 # the module that owns each step of the night (weekly-run's header): where a FAILED line's TODO goes
 STEP_MODULE = {"tend": "wharf", "classify": "wharf", "branches": "aurora", "charts": "aurora",
-               "dream": "aurora", "scope": "aurora", "proof": "wharf", "sextant": "sextant"}
+               "dream": "aurora", "scope": "aurora", "proof": "wharf", "sextant": "sextant", "trim": "plumb"}
 REVIEW = ("What did you spend attention on this week, against what you planned?",
           "Which recurring manual thing could a session or a routine do?")
 

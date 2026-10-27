@@ -1116,6 +1116,43 @@ def extra_line(lc):
     return "extra usage off" + (" (you switched it off)" if xu.get("user_disabled") else "")
 
 
+def trim_line(c):
+    """The report's one trim line (self-tuning S5): the newest verdict Aurora's night filed for each tuned repo,
+    `<host>/trim/<repo>/<vertical>/verdict.json` under <data> (a host `pull` copied here) or the core's log dir
+    (plumb's trim --night writes the night host's own). A verdict whose repo is now in a
+    confidential scope, or any while the registry cannot be read, is fenced as trim's collect is: not named.
+    None, and no line, where plumb's trim is not installed beside this file (the public twin until trim S8)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import trimlib as tl
+    except ImportError:
+        return None
+    found = tl.night_verdicts([c["data"], common.LOG_DIR])
+    if not found:
+        return "- **Trim:** no verdict on this Mac yet — Aurora's night files one a week (`trim verdict --night --write`)."
+    parts, fenced = [], 0
+    for d, _ in found:
+        # fence on the registry key a night wrote, never its host's absolute path: on another Mac's home folder
+        # repo_key cannot relate the path to this Mac's PROJECTS, and no scope would match. No key and a
+        # path outside this Mac's PROJECTS cannot be fenced, so it is not named.
+        key = d.get("key") or d.get("repo") or "/"
+        try:
+            if os.path.isabs(key) and common.repo_key(key) == key:
+                raise tl.Refused("a path this Mac cannot relate to its registry")
+            tl.fence(Path(key), common)
+        except tl.Refused:
+            fenced += 1
+            continue
+        at = tl.parse_ts(d.get("at"))
+        age = (c["tz_now"] - at).days if at else None
+        stale = f", stale: {age} days old" if age is not None and age > 8 else ""
+        parts.append(f"{Path(key).name} {d.get('vertical') or '?'} ({at.date().isoformat()[5:] if at else '?'}{stale}): "
+                     f"{tl.state_line(d)}")
+    if fenced:
+        parts.append(f"{fenced} not named (a confidential scope's, or the registry unreadable)")
+    return "- **Trim:** " + "; ".join(parts) + "."
+
+
 def render(c, day, scope=None):
     s = summarise(c, day, scope)
     rows, total = s["rows"], s["total"]
@@ -1164,6 +1201,9 @@ def render(c, day, scope=None):
     if by_sess:
         (title, host), v = by_sess[0]
         L.append(f"- **Most expensive session:** {title} ({host}), {money(v['cost'])}, {driver(v)}.")
+    tline = trim_line(c) if not scope else None   # a scope's own report stays in its node: the fleet's verdicts are the global one's
+    if tline:
+        L.append(tline)
     L.append("")
     # last 7 days of limits
     if s["hits_7d"]:

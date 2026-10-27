@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The night's `trim` section (self-tuning S5, 2026-10-27): weekly, after `branches` and before the dream, no
+  session — plumb's `trim collect`, `report --write` and `verdict --write`, each `--night`, over every repo
+  `aurora/trim-repos` names (one path a line; absent, the core's own checkout) that holds a vertical file. A
+  refusal (exit 3: the fence) logs one `REFUSED trim` line and the night goes on; another failure is
+  `FAILED trim`, posted; each verdict's state is a `TRIM` line. `--dry-run` lists it as step 3.
 - The suite gives git an identity of its own (`GIT_CONFIG_GLOBAL`, a made-up address) after moving
   HOME: the embark cases failed on the public twin's CI, where the runner cannot guess one (twin-ci-4,
   2026-10-25).
