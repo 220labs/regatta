@@ -84,6 +84,17 @@
   from that login's own `.claude.json`, and a registry the core reads as torn (a `scopes` that is no
   object) stops every run before a host is written. Of two records for one pid, the newest is read: a
   dead session's leftover under a reused pid no longer hides a busy one from the reaper.
+- `pickup seeds` lists a routed seed again: a doc its `Routed-By:` trailer names counts as the seed's when
+  its diff is the `Routed:` line alone (`branches.seed_paths_ok`; routed comments S2's landing review).
+- `pickup seed` and `pickup brief` route the paged docs a brief names (routed comments S2): each gets its
+  `Routed:` line from keel's `routed line` in the seed's or brief's own commit, before any dispatch,
+  with a `Routed-By:` trailer, and the brief ends with the run's own check (`keel routed check`) when it
+  fits the caps. A seed runs keel's gate first and is refused while a thread on the page is unreflected,
+  or when the gate cannot run; a brief is never gated. `brief --unroute` takes the line out (the
+  lookout's released start). `PICKUP_KEEL` names keel (empty: none, the seed as before with a note).
+  `seed --routing <thread…>` passes the threads the seed routes past the gate, and `--dry-run` (seed and
+  brief) has keel log nothing (S2's finish review, findings 6 and 7).
+
 - `clock canary beat|check` and the hourly canary (S5 of docs/orca-launcher-2026-10-24.md): the system
   finds a start path that stopped working before the owner does. `canary beat PATH [--login L] [--every
   MIN]` rewrites one beat file per PATH[@login] in a `canary/` folder of the weekly-log dir

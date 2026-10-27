@@ -31,7 +31,7 @@ export ACCOUNTS_FILE="$T/no-accounts.json"   # no registry unless a case names o
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/projects"
 git config --global user.name Test; git config --global user.email t@example.com
 git config --global init.defaultBranch main; git config --global advice.detachedHead false
-unset CLAUDE_CONFIG_DIR CLAUDE_TRANSCRIPT_ARCHIVE PICKUP_NO_START PICKUP_NO_LAUNCH GH_TOKEN GITHUB_TOKEN
+unset CLAUDE_CONFIG_DIR CLAUDE_TRANSCRIPT_ARCHIVE PICKUP_NO_START PICKUP_NO_LAUNCH GH_TOKEN GITHUB_TOKEN PICKUP_KEEL
 unset CLAUDE_UNATTENDED  # a dispatch session runs this suite: open and next refuse under it
 unset VSCODE_PID PICKUP_VSCODE_WINDOW PICKUP_VSCODE_CLI  # a run inside VS Code must not probe its real windows
 # …nor find the real `code` on PATH: the caller's window is 1, no CLI, and a window `code` opens
@@ -938,6 +938,72 @@ has "$T/out" "over 60 lines or 4,000 characters" "…and says what the cap is"
 printf 'no task here\n' > "$T/notask.md"
 check "$(P seed notask --file "$T/notask.md" --no-fetch)" 1 "a brief without a Task: line: refused"
 check "$(P seed Bad_Topic --file "$SB" --no-fetch)" 1 "a topic that is no branch-name part: refused"
+echo "routed comments S2: a paged doc a brief names — keel's gate first, its Routed: line in the same commit"
+cat > "$T/keel-stub" <<'EOF'
+#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["KEELSTUB_LOG"], "a").write(" ".join(sys.argv[1:]) + "\n")
+sys.stdin.read()
+mode = os.environ.get("KEELSTUB", "ok")
+if mode == "refuse":
+    print(json.dumps({"docs": [], "refused": ["unreflected on docs/r.md's page: 1 thread, 0 Saves"], "notes": [], "last_step": ""}))
+    sys.exit(3)
+if mode == "crash":
+    print("Traceback: boom", file=sys.stderr)
+    sys.exit(1)
+drop = "--drop" in sys.argv
+text = "# R\n\nStatus: open\n" + ("" if drop else "Routed: 2026-10-26T10:00:00Z · page sp-9 · x\n")
+print(json.dumps({"docs": [{"rel": "docs/r.md", "text": text, "space": "sp-9"}], "refused": [],
+                  "notes": ["docs/r.md: 1 thread read, 0 judged here"], "last_step": "" if drop else "Last step: keel routed check docs/r.md"}))
+EOF
+chmod +x "$T/keel-stub"; export KEELSTUB_LOG="$T/keel-stub.log"; : > "$KEELSTUB_LOG"
+check "$(CLAUDE_CODE_SESSION_ID=$Q KEELSTUB=refuse PICKUP_KEEL="$T/keel-stub" PICKUP_NO_START=1 P seed routeda --file "$SB" --no-fetch)" 1 "a thread unreflected on the page: the seed refused"
+has "$T/out" "keel's gate refused: unreflected on docs/r.md's page" "…in the gate's words"
+check "$(git branch --list "*-routeda" | wc -l | tr -d ' ')" "0" "…and no branch made"
+has "$KEELSTUB_LOG" "routed line --repo $R --ref $(git rev-parse main) --branch claude/$HN/$TODAY-routeda --brief - --check" "…keel asked with --check, on main's tip, for the new branch"
+check "$(CLAUDE_CODE_SESSION_ID=$Q KEELSTUB=crash PICKUP_KEEL="$T/keel-stub" PICKUP_NO_START=1 P seed routeda --file "$SB" --no-fetch)" 1 "a gate that cannot run: refused (fails closed)"
+has "$T/out" "the gate could not run: run it again" "…as a pass-through refusal"
+check "$(CLAUDE_CODE_SESSION_ID=$Q KEELSTUB=ok PICKUP_KEEL="$T/keel-stub" PICKUP_NO_START=1 P seed routeda --file "$SB" --no-fetch --dry-run --routing t-1 t-2)" 0 "--dry-run --routing: would seed"
+has "$KEELSTUB_LOG" "--check --dry-run --routing t-1 t-2" "…keel told to log nothing, and the threads this seed routes (S2 review, findings 6 and 7)"
+has "$T/out" "docs/r.md's Routed: line" "…naming the line it would write"
+check "$(git branch --list "*-routeda" | wc -l | tr -d ' ')" "0" "…and no branch made"
+check "$(CLAUDE_CODE_SESSION_ID=$Q KEELSTUB=ok PICKUP_KEEL="$T/keel-stub" PICKUP_NO_START=1 P seed routeda --file "$SB" --no-fetch)" 0 "a clear page: seeded"
+RB=claude/$HN/$TODAY-routeda
+check "$(git show "$RB:docs/r.md" | grep -c '^Routed: ')" "1" "…the doc's Routed: line in the seed's own commit"
+check "$(git log --format=%s main..$RB)" "Seed: routeda" "…one commit"
+has "$T/out" "routed: docs/r.md carries its Routed: line in this commit" "…and says so"
+git log -1 --format=%B $RB > "$T/msg"
+has "$T/msg" "Routed-By: pickup seed (docs/r.md)" "…its trailer, which the lookout reads as no person's answer"
+check "$(git show "$RB:docs/handoff/$TODAY-routeda.md" | tail -1)" "Last step: keel routed check docs/r.md" "…and the brief's last step is the run's own check"
+: > "$KEELSTUB_LOG"
+check "$(KEELSTUB=ok PICKUP_KEEL="$T/keel-stub" P brief "$RB" --text 'Task: the step after' --dry-run --no-fetch)" 0 "pickup brief --dry-run"
+has "$KEELSTUB_LOG" "--brief - --dry-run" "…keel told to log nothing (finding 6)"
+: > "$KEELSTUB_LOG"
+check "$(KEELSTUB=ok PICKUP_KEEL="$T/keel-stub" P brief "$RB" --text 'Task: the step after' --unroute --no-fetch)" 0 "pickup brief --unroute (a released start)"
+has "$KEELSTUB_LOG" "--drop" "…asks keel to take the line out"
+check "$(git show "$RB:docs/r.md" | grep -c '^Routed: ')" "0" "…and the doc leaves the brief's commit without it"
+has "$T/out" "unrouted: docs/r.md" "…saying so"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed routedb --file "$SB" --no-fetch)" 0 "no keel here: seeded as before"
+has "$T/out" "no keel here: no \`Routed:\` line written" "…with one note"
+echo "a routed seed is still a seed: its doc's Routed: line alone, named by Routed-By: (S2 landing review)"
+SR="$T/seedrouted"; mkdir -p "$SR/docs" && git -C "$SR" init -q && mkdir -p "$SR/.claude"
+echo '{"checkpoint": true, "main": "main"}' > "$SR/.claude/workflow.json"
+printf '# D\n\nStatus: open\n' > "$SR/docs/d.md"; git -C "$SR" add -A; git -C "$SR" commit -qm doc
+seedr() {  # seedr <topic> <doc's new text>: a Seed: commit with a brief and the doc, as pickup seed writes it
+  git -C "$SR" checkout -qb "claude/x/$TODAY-$1" main; mkdir -p "$SR/docs/handoff"
+  printf 'Task: t\n' > "$SR/docs/handoff/$TODAY-$1.md"; printf "$2" > "$SR/docs/d.md"
+  git -C "$SR" add -A; git -C "$SR" commit -qm "Seed: $1" -m "Prompt:
+> t" -m "Seeded-By: r/$Q on x
+Routed-By: pickup seed (docs/d.md)"; git -C "$SR" checkout -q main; }
+seedr routedok '# D\n\nStatus: open\nRouted: 2026-10-26T10:00:00Z · page sp-9 · x\n'
+seedr routedmore '# D\n\nStatus: changed\nRouted: 2026-10-26T10:00:00Z · page sp-9 · x\n'
+st() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import branches as b
+base = b.out(sys.argv[2], "merge-base", "main", sys.argv[3]); print(b.seed_task(sys.argv[2], base, sys.argv[3]))' "$WHOOKS" "$SR" "$1"; }
+check "$(st "claude/x/$TODAY-routedok")" "t" "seed_task: a seed whose doc gains its Routed: line alone is a seed"
+check "$(st "claude/x/$TODAY-routedmore")" "None" "…one that changes more of the doc is not"
+check "$(P seeds --repo "$SR" --no-fetch)" 0 "pickup seeds over the routed seeds"
+has "$T/out" "routedok" "…lists the routed seed"
+hasnt "$T/out" "routedmore" "…never the one that wrote more than its line"
 check "$(P seed export-raw --file "$SB" --no-fetch)" 1 "a topic ending in -raw (a /finish backup name): refused"
 check "$(P seed kappa --file "$SB" --repo "$SIB" --no-fetch)" 1 "a repo not on the worktree workflow: refused"
 has "$T/out" "sib is not on the worktree workflow" "…and says where it goes instead"
