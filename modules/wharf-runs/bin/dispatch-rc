@@ -25,6 +25,9 @@
                                how many runs are busy, REPO's TOPIC and warm or waiting runs not
                                counted (dispatch's run cap; parked());
                                only the count on stdout, the reaping's lines on stderr
+    dispatch-rc unfinished REPO TOPIC
+                               how many of REPO's TOPIC runs are not yet ended (after()'s view): a run
+                               the queue claimed gives its slot back while it waits (dispatch-queue waiting)
     dispatch-rc reap           end every idle orphan (what live and status do on the way)
     dispatch-rc tidy [--dry-run]
                                close the Terminal windows nothing is behind any more: a run whose
@@ -736,6 +739,22 @@ def parked(st):
     return bool(rec) and rec.get("status") == "waiting" and not working_under(rec.get("sessionId") or "")
 
 
+def same_repo(a, b):
+    """A and B name one checkout: as written, or by their real paths. A run's record keeps the path its
+    dispatch was given, and a queue's job names the repo resolved (/private/var for /var on the Macs'
+    temp folders, a symlinked projects folder): string equality let after() and the cap miss a run."""
+    return bool(a) and bool(b) and (a == b or os.path.realpath(a) == os.path.realpath(b))
+
+
+def counted(runs):
+    """The slots RUNS ([(path, state)], live()'s) hold: every run not parked, plus the parked ones past
+    MAX_PARKED — parked runs stop counting, but not without end: were every unattended run to stop at
+    the same prompt, the sweep would start one per pass for 8 h (review 2026-10-10). The one count the
+    CLI's `live` and the queue's claim both use (queue-s1's fourth review: the claim had dropped the overflow)."""
+    n = len([1 for _, st in runs if not parked(st)])
+    return n + max(0, (len(runs) - n) - MAX_PARKED)
+
+
 def live(skip_repo=None, skip_topic=None, reap=True):
     """[(path, state)] of every run whose claude is this run's and not ended; idle orphans are
     ended on the way unless reap is False (the count under dispatch's start lock: a reap waits up
@@ -746,7 +765,7 @@ def live(skip_repo=None, skip_topic=None, reap=True):
             st = load(path)
         except (OSError, ValueError):
             continue
-        if st.get("ended") or (st.get("repo") == skip_repo and st.get("topic") == skip_topic):
+        if st.get("ended") or (st.get("topic") == skip_topic and same_repo(st.get("repo"), skip_repo)):
             continue
         if not same(st):
             continue
@@ -770,7 +789,7 @@ def unfinished(repo, topic):
             continue
         if not st.get("ended") and isinstance(st.get("watcher"), int) and not watcher_gone(st):
             out[path] = st
-    return [(p, st) for p, st in sorted(out.items()) if st.get("repo") == repo and st.get("topic") == topic]
+    return [(p, st) for p, st in sorted(out.items()) if st.get("topic") == topic and same_repo(st.get("repo"), repo)]
 
 
 def transcript(sid):
@@ -1982,11 +2001,15 @@ if __name__ == "__main__":
         repo, topic = sys.argv[-2:]
         out, sys.stdout = sys.stdout, sys.stderr   # say() from a reap must not join the count
         try:
-            runs = live(repo, topic, reap)
-            n = len([1 for _, st in runs if not parked(st)])
-            # parked runs stop counting, but not without end: were every unattended run to stop at
-            # the same prompt, the sweep would start one per pass for 8 h (review 2026-10-10)
-            n += max(0, (len(runs) - n) - MAX_PARKED)
+            n = counted(live(repo, topic, reap))
+        finally:
+            sys.stdout = out
+        print(n)
+        sys.exit(0)
+    if verb == "unfinished" and len(sys.argv) == 4:   # dispatch's question before after(): does a claim wait?
+        out, sys.stdout = sys.stdout, sys.stderr
+        try:
+            n = len(unfinished(sys.argv[2], sys.argv[3]))
         finally:
             sys.stdout = out
         print(n)

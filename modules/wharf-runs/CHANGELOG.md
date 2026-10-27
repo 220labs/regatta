@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- `tests/queue_live.sh <queue repo url>`: the queue's live case, run by hand against a real home on a scratch
+  `refs/regatta/*` ref, `dispatch-queue`'s write path re-done in shell (a hook-less bare clone, an orphan commit
+  by `commit-tree`, `push --force-with-lease`). It proves the home takes and serves the ref, a
+  stale lease loses (one after the other and racing), and the ref never grows, then deletes the ref. It is not
+  part of `check.sh`, because it writes a live repo.
+- `dispatch-queue`, and `dispatch` through it (S1 of docs/dispatch-queue-2026-10-25.md): once a queue home is
+  configured (`wharf-runs/queue-repo`, set on purpose: no `helm/logbook-repo` fallback until S2), a run now on this Mac and a `--next` are
+  enqueued on `refs/regatta/queue` and claimed by compare-and-swap (an orphan commit pushed
+  `--force-with-lease`), then started at once by a `RunAtLoad` job (`--from-queue`, its load-to-start
+  seconds logged); a full host leaves the entry queued. A fired run refused by the cap, memory or the account
+  pick goes back into the queue with the refusing host noted, which skips it an hour. One entry per branch;
+  a live run's `--next` is pinned to its host and survives that run's end; a branch live on one host is
+  refused on another. A claim reserves its slot until its record exists (`--slots` and the cap count it). A
+  write the home refuses waits in the outbox; a claim past its 15-minute lease is the claimer's to return,
+  other hosts only card it (`queue-silent`). A confidential scope's runs, and a seed carrying a `.review`,
+  queue node-local (`queue-local/<scope>/`); a torn registry refuses the enqueue. `--priority
+  low|normal|high|force` rides in the entry and the record (an unattended caller cannot raise it);
+  `dispatch --queue [--all] [--json]`, `--sweep`, `--status` rows, `--cancel` of a queued entry. Readers'
+  rule: `dispatch-queue has` exits 4 on an unreadable queue, counted as an entry (yolo's launch gate reads
+  it). `dispatch-rc unfinished`. No home: nothing changes.
+  Its landing review's fix round (docs/dispatch-queue-s1-review-2026-10-26.md): a claim counts only once the
+  home took it; the fired job checks the entry is still its claim (`dispatch-queue mine`), so a plist left by a
+  reboot never reruns a step; enqueue refuses an unattended raise itself, and a run's denied list names
+  `dispatch-queue enqueue` and `claim`; one commit per write (a nonce) and one reservation file per claim; room
+  counted per candidate; a reservation spent once its run's record exists; the node-local store writes its
+  claims; a key held by another branch is never replaced; a re-dispatch on the branch's host replaces its entry;
+  `--cancel` there clears a live entry no run is behind; an entry naming a login is pinned to its host; a
+  `--next` replaces the branch's pending one-shot; a one-shot refused at fire time queues by its caller's cwd
+  (`DISPATCH_ORIGIN`); what only the queue refuses falls back to the one-shot (exit 1). `dispatch-rc live` and
+  `unfinished` match a run's repo by its real path too, so the cap and after() see a run whatever spelling named it.
+  Its second landing review's fix round (docs/dispatch-queue-s1-review-2-2026-10-26.md): every step of a write is
+  checked and an empty commit never pushed (it was git's delete refspec), a tree that does not list is torn, never
+  empty; fetches into the cache clone hold its lock (two at once read as the home being down) and a push moves the
+  local ref; offline, the fired job's check accepts its own put and claim still in the outbox, so the offline claim
+  runs; a dead claim here (no job, run or reservation) is replaced by a re-dispatch, `--cancel` sends the outbox
+  first, a refusal keeps a live one-shot's mark, a reused pid or a live watcher is read as dispatch-rc reads it; a
+  queue that does not read refuses `dispatch` (exit 2) rather than scheduling a one-shot; an unattended enqueue
+  carries its chain depth and a `DISPATCH_LABEL` counts only for a running job; a run's end claims; a stale job's
+  `failed` cards nothing and a card's reason comes from the job's own log bytes; a full host's pass logs one
+  `no-room` line; "claimed here" has its own message; a run's denied list names `dispatch-queue sweep`.
+  Its third landing review's fix round (docs/dispatch-queue-s1-review-3-2026-10-27.md): a gated flag given twice
+  is refused and every mode on the line judged; no unattended caller is exempt by its `DISPATCH_LABEL`; one slot
+  accounting (`held()`, the ref doc's Slots), counted under dispatch's start lock: a waiting `--next` keeps its
+  reservation, counted once its predecessor's slot is free, and a pinned entry's refusal skips no hour on its
+  only host; a home that refuses this host's push sends the run to the one-shot (exit 1), never "queued"; any
+  crash exits 5, read by dispatch as "could not tell"; a `mine` that could not read hands the claim back;
+  `--cancel` boots a claimed or waiting entry's job out; a torn store fails only its own part; git under
+  `LC_ALL=C`; the clone's lock bounded and an offline home remembered per process; a scope's queue has one
+  name; the landing peer is autofinish-run's `peer_of()`; a typed `--on here` pins; a one-shot refuses when
+  its branch runs on another host through the queue; the claim at a run's end waits for its landing, and a
+  `--start`'s end claims.
+  Its fourth landing review (docs/dispatch-queue-s1-review-4-2026-10-27.md), fixed at `/finish`: the claim
+  counts parked runs past `DISPATCH_MAX_PARKED` as the fire path does (`dispatch-rc counted()`, one function);
+  a live run's `--next` is reserved as waiting from its claim; `enqueue --refused` of an entry pinned here
+  skips no hour; a disarmed host never claims a yolo or dnd entry, landing peer or not; a `--next` the queue
+  cannot take meets the cap and memory before its one-shot; a never-started retry that cannot relock ends
+  its entry; `has` answers 4 for any torn scope store; a landed push waits a second, not 75, for the lock.
 - `rc-hosts --tcc-survey` counts a job Orca started (orca-launcher S7): a not-allowed privacy request whose
   responsible process is Orca while a child of it asks is listed as `via Orca: <accessing path>` beside the
   versioned-claude rows (Orca's own requests, the quiet services and allowed ones are not), so the Drive
