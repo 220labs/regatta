@@ -15,6 +15,12 @@ REAL_RC="${REGATTA_CONFIG:-}" REAL_HOME="$HOME"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset GATE_TABLE JEV_ENV_FILE JEV_LOG TYPESAFE_API_KEY TYPESAFE_BASE_URL COST_RATIO SECRETS_DIR SECRETS_REPOS SECRETS_PROJECTS SECRETS_HOST
+# The interpreter itself, for the two cases that must not start any other process: python3 may be a
+# shim script (pyenv's is bash), and bash started in a removed cwd prints "shell-init: error retrieving
+# current directory" and, under an unavailable LC_ALL, "setlocale: LC_ALL: cannot change locale" on
+# Linux, into the output the case compares (CircleCI's Ubuntu VM, 2026-10-26). Resolved before HOME moves,
+# which a shim reads its versions from.
+PYBIN="$(python3 -c 'import sys; print(sys.executable)')"
 export HOME="$T/home" REGATTA_CONFIG="$T/config"; mkdir -p "$HOME" "$REGATTA_CONFIG"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
@@ -251,7 +257,7 @@ check "$(cpy "$T/proj/sub" 'print(common.tool("finish-x"))')" "$T/cache/wharf/1/
 check "$(cpy "$T" 'print(common.tool("finish-x"))')" "None" "  cwd outside the project: not found"
 check "$(cpy "$T/proj" 'print(common.module_path("wharf"))')" "$T/cache/wharf/1" "  module_path() reads the same row"
 mkdir "$T/gonecwd"
-check "$(cd "$T/gonecwd" && rmdir "$T/gonecwd" && CLAUDE_CONFIG_DIR="$CC" python3 -I -c "import sys; sys.path.insert(0, '$T/cache-core/hooks'); import common; print(common.tool('nope'))" 2>&1)" "None" "  a removed cwd: None, no traceback"
+check "$(cd "$T/gonecwd" && rmdir "$T/gonecwd" && CLAUDE_CONFIG_DIR="$CC" "$PYBIN" -I -c "import sys; sys.path.insert(0, '$T/cache-core/hooks'); import common; print(common.tool('nope'))" 2>&1)" "None" "  a removed cwd: None, no traceback"
 
 echo "the rename's readers (both words count)"
 old='2026-10-18T10:00:00-07:00 run r claude/x landed pr=#3 session=s tip=t rule=C by=sweep — ok'  # the old word, kept beside launched: the map keeps a line holding both
@@ -474,8 +480,14 @@ mkdir -p "$T/eh"; : > "$T/eh/home"
 out=$(REGATTA_CONFIG="$T/eh" python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common" 2>&1 | tail -1)
 check "$out" "ImportError: regatta: core not found: $T/eh/home is empty" "  an empty home file: one ImportError line saying so"
 printf 'Kapitän\n' > "$T/config/regatta/owner"   # its own owner, a non-ASCII one, put back empty after
-out=$(LC_ALL=en_US.ISO8859-1 LANG=en_US.ISO8859-1 python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(ascii(common.DECLARED_LINE))" 2>&1)
+out=$(LC_ALL=en_US.ISO8859-1 LANG=en_US.ISO8859-1 "$PYBIN" -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(ascii(common.DECLARED_LINE))" 2>&1)
 check "$out" "'KAPIT\\xc4N, THIS SESSION IS DONE \\u2014 IT LAUNCHES BY ITSELF.'" "  a non-UTF-8 locale: the core and its config decode as an import would"
+# The same under an ASCII locale with Python's UTF-8 mode off (-X utf8=0, which -I leaves in force): a Linux
+# image has no en_US.ISO8859-1 (no locale-gen), and an absent locale falls back to C, where Python
+# enters UTF-8 mode, so the case above then proves nothing about decoding; here open() with no encoding
+# would raise on the owner's "ä", on any OS.
+out=$(LC_ALL=C LANG=C "$PYBIN" -I -X utf8=0 -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(ascii(common.DECLARED_LINE))" 2>&1)
+check "$out" "'KAPIT\\xc4N, THIS SESSION IS DONE \\u2014 IT LAUNCHES BY ITSELF.'" "  an ASCII locale, UTF-8 mode off: the same line, decoded as UTF-8 by the core"
 : > "$T/config/regatta/owner"
 mkdir -p "$T/root/.claude-plugin" "$T/root/modules"; : > "$T/root/.claude-plugin/marketplace.json"; cp -R "$M" "$T/root/modules/regatta"
 printf '#!/usr/bin/env bash\necho "bash $*"\n' > "$T/root/modules/regatta/bin/.probe-sh"; chmod +x "$T/root/modules/regatta/bin/.probe-sh"
