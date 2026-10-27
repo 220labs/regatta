@@ -15,6 +15,13 @@
   (`.branches-filled`). `trim collect` joins a session by it between the run record and the transcript
   (join `usage`), so a typed session whose transcript Claude Code pruned still finds its landing. `usage` ranks under
   `transcript` when a re-collect merges, and the verdict counts a landing with no readable arm with the unjoined.
+
+- The week (trim S5, 2026-10-27): `trim … --night` keeps the ledger in the core's log dir,
+  `<log dir>/<host>/trim/<repo>/<vertical>`, so Aurora's night never dirties a primary checkout and the host's
+  folder `pull` copies carries it to the Mac that renders; `verdict --write` files the verdict as `verdict.json`
+  beside it (refused or not) and prints its state in one line. usage-report's daily report carries one `Trim:`
+  line in its headline from those files, every host's (`<data>/*/trim/`) and the log dir's: each verdict's state, marked stale
+  past 8 days, a confidential scope's (or every one, the registry torn) counted and not named.
 - `trim collect|report|verdict` (trim S1–S2, 2026-10-26): one row per outcome joined from the usage CSVs, run
   records, dispatch logs, transcripts, review-gate rows, merged PRs and their diffs, finisher and bench rows, as
   weekly JSONL records; a scorecard; the verdict (one-sided Beta bound over precommitted looks, cost ratio, CUSUM,

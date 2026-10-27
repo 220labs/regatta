@@ -77,6 +77,14 @@ new and say so in one line, so the reader knows they were checked.
    practitioner reports, not listicles.
 6. **Side income**: validation practice, and traction in the niches the layer's DESIGN.md names.
 7. **Free slot**: one thing the checklist would never find. Say why it matters or drop it.
+8. **Models, prices, published evals**: a new Claude model or effort level, a price change (the
+   pricing page), a published eval or method that bears on a pin plumb's `trim` judges — a job in the
+   tuned repo's vertical file (`trim/<vertical>.json`, its `jobs`: coding's are `builder` and
+   `finisher`). Under that finding, one line of its own carrying the tag, which `trim report` and
+   `trim verdict` read from the entry as their intake:
+   `- trim: <job> — <the metric it would move> — <the arm to bench, model:effort>`, for example
+   `- trim: builder — cost per landed step — sonnet:high`. The tag names a bench; it is not a
+   verdict (the finding keeps its own), and the bench runs on trim's cap, never in this pass.
 
 ## 2. Review — the design against the findings
 

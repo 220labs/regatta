@@ -11,6 +11,10 @@
 - `agents/sounder.md`'s shared marker and head name wharf's `principal-architect` as the body's fourth
   head (principal tier S2, 2026-10-26); the body itself is unchanged.
 
+
+- `/sextant` step 1, item 8 (self-tuning S5, 2026-10-27): models, prices and published evals bearing on a
+  pin plumb's `trim` judges, each with a `- trim: <job> — <metric> — <arm>` line, the tag `trim` reads as
+  its intake; the check proves the skill's example parses as that intake.
 - The host rule is the core's (2026-10-24): `sextant-run run` asks `common.weekly_host("sextant")`,
   so its skip line says `sextant`, as weekly-run's does, where it said `/sextant`; `install.sh
   --schedule` asks `regatta weekly-host sextant` (the core found through `lib/find_core.py`) before the

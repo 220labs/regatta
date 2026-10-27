@@ -40,16 +40,18 @@ goes on without it (charts is never due without one).
 | Section | Cadence | File | Writes |
 | --- | --- | --- | --- |
 | branches | weekly, Sunday night, first (`bin/weekly-run`'s `due`); `bin/weekly-run` runs the classifier and its `--reap` before any session | `sections/branches.md` | `<vault>/dreams/<date>-branches.md` when a branch waits — one verdict per C3–C6 branch and "B would have archived"; always its `log.md` line |
+| trim | weekly, Sunday night, after branches; only where a repo holds a vertical file (`bin/weekly-run`'s `trim_repos`) | none: `bin/weekly-run` runs plumb's `trim` itself, zero tokens, no session | the night's trim ledger, report and `verdict.json` in the core's log dir (`<log dir>/<host>/trim/<repo>/<vertical>/`), outside every checkout |
 | charts | weekly, Sunday night, before dream; only in a repo whose `docs/README.md` holds the map (`bin/weekly-run`'s `due`) | `sections/charts.md` | the layer's `docs/` in its own worktree — a dry-run PR `/embark` merges or closes; in mode live also its `log.md` line, launched reviewed |
 | dream | weekly, Sunday night; a missed one runs at the next wake (`bin/weekly-run`'s `due` is the one home for when) | `sections/dream.md` | `<vault>/dreams/<date>.md` — the proposal `/embark` reviews |
 | dream `--scope <scope>` | weekly per scope, by whatever schedules it (`bin/weekly-run aurora --scope <scope>`); by hand any time | `sections/dream-scope.md` | `<anchor>/dreams/<date>.md` in the scope's knowledge repo, and `<vault>/inbox/upstream/<scope>.md` — the generalised lines the global dream reads as inbox |
 
-**The order of a night is fixed: tend, classify, `branches`, `charts`, review, `dream`** —
+**The order of a night is fixed: tend, classify, `branches`, `trim`, `charts`, review, `dream`** —
 mechanical and cheap first, the Fable judgement last, so the dream reads what the others left
 (the layer's docs/record/aurora-sequence-2026-10-04.md). The tend (wharf's `tend`: every repo's
 dead worktrees committed and pushed, launched and empty ones removed) and the classify (wharf's
 `repos --branches --classify --reap`: superseded branches archived) are `bin/weekly-run`'s own
-zero-token steps before any session; `charts` then reads the unmerged set that is left, and
+zero-token steps before any session, and `trim` its zero-token section (the week's trim report is
+there for the dream to read); `charts` then reads the unmerged set that is left, and
 `dream` lists what truly waits, the charts PR and the branches file among it. `bin/weekly-run
 aurora <cwd> --dry-run` prints tonight's order. Planned (not built): a review of changes that
 launched under-reviewed, between charts and dream, and the dailies. A new section is one file

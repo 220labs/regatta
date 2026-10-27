@@ -13,6 +13,8 @@ T=$(mktemp -d); trap 'chmod -R u+w "$T" 2>/dev/null; rm -rf "$T"' EXIT
 export REGATTA_CONFIG="$T/config"; mkdir -p "$T/config/lighthouse"
 mkdir -p "$T/config/regatta"; printf '%s\n' "$T/noproj" > "$T/config/regatta/projects"   # a scratch projects folder: a node report never lands in this Mac's real one
 printf 'data:project_data\n' > "$T/config/lighthouse/shares"   # bin/publish's data share, as the cases name it
+# the core's log dir, where the trim line reads the night's verdicts: a scratch one, never this Mac's
+mkdir -p "$T/config/regatta" && echo "$T/logdir" > "$T/config/regatta/log-dir"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; fails=$((fails+1)); fi; }
@@ -182,6 +184,8 @@ has "$R" "+0.0%" "calibration line"
 check "$(wc -l < "$RP/latest-line.txt" | tr -d ' ')" "1" "one line"
 has "$RP/latest-line.txt" "Hit: extra-usage cap, weekly." "the line names the hits"
 has "$RP/latest-line.txt" "weekly Fable 80%" "the line carries the Fable limit"
+if [ -f "$B/../lib/trimlib.py" ]; then has "$R" "- **Trim:** no verdict on this Mac yet" "no trim verdict filed: the trim line says so"
+else lacks "$R" "**Trim:**" "no plumb trim here (the public twin): no trim line"; fi
 cmp -s "$R" "$RP/latest.md" && echo "  ok   latest.md is the same report" || { echo "  FAIL latest.md"; fails=$((fails+1)); }
 
 echo "render — published through bin/publish, to Drive only (TODO 1 (2), 2026-10-19)"
@@ -706,5 +710,36 @@ lacks "$FR/2026-09-19.md" "| s-open |" "  no scope named either"
 echo "the fence: an open-quoted row of a confidential scope's glob names nothing (cr-s3 review)"
 # lab/vault2 matches the scope's glob but is not registered, so the core quotes it
 check "$(CLAUDE_REPOS_JSON="$T/frepos.json" load "$PM/bin/usage-report" ur 'ur.fence_rows([{"project": "lab/vault2", "title": "t lab/vault2", "skill": "vault2-deploy", "agent": "vault2-agent", "session": "s1", "cost": 1}], lambda p: "quote")[0]' | grep -c 'vault2')" "0" "a glob member the registry does not list: project and title blanked, not only the scope"
+
+echo "render — the trim line (self-tuning S5): the night's verdict, one line, fenced as trim's collect is"
+if [ -f "$B/../lib/trimlib.py" ]; then
+PJ=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common; print(common.PROJECTS)' "$B/../lib")
+verdict() {  # verdict <root/host> <repo> <at> <refused, a JSON list>: the file `trim verdict --night --write` leaves
+  mkdir -p "$1/trim/$(basename "$2")/coding"
+  printf '{"at": "%s", "refused": %s, "jobs": [{"job": "finisher", "arm": "sonnet:medium", "call": "no move"}], "alarms": [], "repo": "%s", "vertical": "coding"}\n' \
+    "$3" "$4" "$PJ/$2" > "$1/trim/$(basename "$2")/coding/verdict.json"
+}
+# the night ran on another Mac: its folder, as `pull` copies it into <data>
+verdict "$FD/nighthost" harbor 2026-09-19T06:00+00:00 '["floor breached by 1 outcome(s): harbor#5"]'
+fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null
+check "$(grep -c '^- \*\*Trim:\*\*' "$FR/2026-09-19.md")" "1" "one trim line in the headline"
+has "$FR/2026-09-19.md" "- **Trim:** harbor coding (09-19): refused — floor breached by 1 outcome(s): harbor#5." "  a refused verdict from the host pull copied here: its first reason"
+verdict "$FD/nighthost" harbor 2026-09-01T06:00+00:00 '[]'
+fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null
+has "$FR/2026-09-19.md" "- **Trim:** harbor coding (09-01, stale: 19 days old): finisher sonnet:medium no move." "  a verdict the night has not renewed: its calls, marked stale"
+verdict "$T/logdir/testmac" lab/vault 2026-09-19T06:00+00:00 '[]'   # this Mac's own night, in the core's log dir
+fu "$T/frepos.json" render --day 2026-09-19 > /dev/null
+has "$FR/2026-09-19.md" "; 1 not named (a confidential scope's, or the registry unreadable)." "  a confidential scope's verdict: counted, not named"
+check "$(grep '^- \*\*Trim' "$FR/2026-09-19.md" | grep -c 'vault')" "0" "    its repo nowhere in the line"
+fu "$T/ftorn.json" render --day 2026-09-19 > /dev/null
+has "$FR/2026-09-19.md" "- **Trim:** 2 not named (a confidential scope's, or the registry unreadable)." "  a torn registry: none named (fails closed)"
+# a verdict from a Mac whose home folder is not this one's, no key: a path no scope can match is not named
+rm -rf "$T/logdir/testmac"; mkdir -p "$FD/nighthost/trim/vault/coding"
+printf '{"at": "2026-09-19T06:00+00:00", "refused": [], "jobs": [], "alarms": [], "repo": "/elsewhere/projects/lab/vault", "vertical": "coding"}\n' > "$FD/nighthost/trim/vault/coding/verdict.json"
+fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null
+has "$FR/2026-09-19.md" "; 1 not named (a confidential scope's, or the registry unreadable)." "  another Mac's absolute path, no key: counted, not named"
+check "$(grep '^- \*\*Trim' "$FR/2026-09-19.md" | grep -c 'vault')" "0" "    its repo nowhere in the line"
+rm -rf "$FD/nighthost" "$T/logdir/testmac"
+else echo "  skip  plumb's trim is not here (the public twin, until trim S8)"; fi
 
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi
