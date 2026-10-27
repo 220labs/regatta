@@ -71,7 +71,11 @@ jobs:
     # so this file, which the public twin publishes too, names no machine. A self-hosted runner
     # runs every pull request's code as its login, with that machine's credentials in reach: set
     # the variable only on a repo whose every writer you trust, never on one that takes forks' PRs.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # A push, the nightly run and a hand start take CI_RUNS_ON_FULL's labels where it is set: they
+    # run the whole line (below), which a slower runner taking only a pull request's macOS share
+    # cannot (a 2016 laptop: the share in 41 min, the whole line in 95, 2026-10-27). wharf's
+    # ci-provider reads and keeps this form as its own; CI_RUNS_ON_FULL is set by hand.
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && vars.CI_RUNS_ON_FULL || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # The job ran 40.45 min on the idle build Mac (run 40012393574, 2026-10-23: keel 8.2, wharf-runs
     # 13.5) and 51.5 min beside its sessions (runs 40121322251 and 40121340160, 2026-10-24), so 60
     # was about 1.2 times the slowest job, no longer twice it (docs/check-load-2026-10-23.md's Evidence,
@@ -90,9 +94,11 @@ jobs:
       # past the free quota (another private repo's hosted jobs were refused for billing from 2026-10-19). There the
       # job fails here, at once, saying why: never an `if:` on the job, which GitHub reports as a passed
       # check (costs S1, docs/host-power-costs-2026-10-24.md). This step's one minute is all it bills.
-      # The twin is public and keeps ubuntu-latest, which is free there.
+      # The twin is public and keeps ubuntu-latest, which is free there. Judged by where the job
+      # landed, not by CI_RUNS_ON alone: with the split runs-on, a push may take CI_RUNS_ON_FULL's
+      # runner while CI_RUNS_ON is unset (review 2026-10-27).
       - name: a private repo names its runner
-        if: vars.CI_RUNS_ON == ''
+        if: runner.environment != 'self-hosted'
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE: ${{ github.event.repository.private }}
