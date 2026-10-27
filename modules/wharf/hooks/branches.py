@@ -826,6 +826,31 @@ def carried(repo, name, tip, tgt, late=lambda: False):
 
 # ---- reaping: empty branches, and what code can prove superseded (docs/record/branch-reaping-2026-10-04.md)
 
+ROUTED_BY_RE = re.compile(r"^Routed-By:[^(\n]*\(([^)\n]*)\)[ \t]*$", re.M)
+
+
+def seed_paths_ok(repo, base, tip, paths, bodies):
+    """Whether a seed's changed paths are a seed's: each under docs/handoff/ or docs/blueprints/,
+    one brief under docs/handoff/ at least — or a doc a `Routed-By: pickup seed (<doc>, …)` trailer
+    names whose diff base..tip is its `Routed:` line alone (keel's routed comments, S2: the seed
+    commit writes that line into the doc it routes; the S2 landing review, 2026-10-26)."""
+    if not paths or not any(p.startswith(HANDOFF_DIR + "/") for p in paths):
+        return False
+    routed = {d.strip() for b in bodies for m in ROUTED_BY_RE.finditer(b or "") for d in m.group(1).split(",")}
+    for p in paths:
+        if p.startswith((HANDOFF_DIR + "/", BLUEPRINT_DIR + "/")):
+            continue
+        if p not in routed:
+            return False
+        r = git(repo, "diff", *DIFF_FLAGS, "--no-renames", "-U0", base, tip, "--", p)
+        if r.returncode:
+            return False
+        body = [l for l in r.stdout.splitlines() if l[:1] in "+-" and not l.startswith(("+++", "---"))]
+        if not body or any(not l[1:].startswith("Routed:") for l in body):
+            return False
+    return True
+
+
 def seed_task(repo, base, tip):
     """The task of a branch that is nothing but a seed — every commit base..tip a `Seed:` commit
     with a `Seeded-By:` trailer, every changed path under docs/handoff/ (or the seed's blueprint
@@ -845,8 +870,7 @@ def seed_task(repo, base, tip):
         if not subject.startswith(SEED_SUBJECT) or not SEEDED_BY_RE.search(body):
             return None
     paths = changed_paths(repo, base, tip)
-    if not paths or any(not p.startswith((HANDOFF_DIR + "/", BLUEPRINT_DIR + "/")) for p in paths) \
-            or not any(p.startswith(HANDOFF_DIR + "/") for p in paths):
+    if not seed_paths_ok(repo, base, tip, paths, [rec.partition("\x1f")[2] for rec in records]):
         return None
     body = records[0].partition("\x1f")[2]
     return next((l[2:].strip() for l in body.splitlines() if l.startswith("> ")), "")

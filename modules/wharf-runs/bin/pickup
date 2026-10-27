@@ -32,14 +32,18 @@ part — matching the owner's vague description to one branch, and asking when i
         A seed no session has started is accepted too, with SEED_DROPPED as its reason.
         --confirmed records the owner's confirmation, so the checkpoint hook refuses it to agents.
   pickup seed TOPIC --file BRIEF [--repo PATH] [--start | --no-start] [--account auto|LABEL]
-                  [--no-blueprint] [--dry-run] [--no-fetch]
-        a follow-up for a session that does not exist yet (see "Seeds" below)
-  pickup brief BRANCH --text T|- [--repo PATH] [--dry-run] [--no-fetch]
+                  [--no-blueprint] [--routing THREAD…] [--dry-run] [--no-fetch]
+        a follow-up for a session that does not exist yet (see "Seeds" below). A doc the brief names
+        that has a spacesheep page gets its `Routed:` line in the seed's commit, after keel's gate
+        (`keel routed check`) passes on its page — refused while a thread there is unreflected, bar
+        the threads --routing names (a seed started from a comment routes its own thread).
+  pickup brief BRANCH --text T|- [--repo PATH] [--dry-run] [--no-fetch] [--unroute]
         a handoff brief committed onto an EXISTING claude/* branch that no session is writing in, by
         git plumbing — no checkout, so a launchd job with no worktree can hand `dispatch` a run
         (the Lookout and Hail design, S4). Fast-forwards the local branch from origin first; refuses
         a diverged one, a dirty worktree and one `held_by_other` (owner.json under 2 h, not handed
-        over); then pushes (the comment above cmd_brief says why)
+        over); then pushes (the comment above cmd_brief says why). A paged doc the brief names gets
+        its `Routed:` line in the same commit, ungated; --unroute takes it out (a released start)
   pickup seeds [--mine] [--open] [--all | --repo PATH] [--dry-run] [--no-fetch]
         the seeds no session has started; --mine: this session's; --open: a tab for each
   pickup next PROMPT|- [--tab] [--dry-run]
@@ -271,7 +275,7 @@ HOOK_PR = re.compile(r"Agent work in progress on \*\*(?P<host>[^*]+)\*\*, sessio
 # design belongs in docs/ with a two-line brief pointing at it.
 # What a seed commit is lives in hooks/branches.py, which reaps the empty ones (R7 of
 # docs/record/branch-reaping-2026-10-04.md: one definition, so the list and the reaper never disagree).
-from branches import BLUEPRINT_DIR, HANDOFF_DIR, SEED_SUBJECT, SEEDED_BY_RE as SEEDED_BY  # noqa: E402
+from branches import BLUEPRINT_DIR, HANDOFF_DIR, SEED_SUBJECT, SEEDED_BY_RE as SEEDED_BY, seed_paths_ok  # noqa: E402
 BRIEF_LINES, BRIEF_CHARS = 60, 4000
 TOPIC_RE = re.compile(r"^(?!.*-raw$)[a-z0-9][a-z0-9-]{2,39}$")  # -raw: /finish's backups, skipped everywhere
 # machine → the ssh alias this one reads it with: the lines of `wharf-runs/ssh` (`<peer>:<alias>`, the
@@ -1033,7 +1037,8 @@ def branch_info(root, main, name, loc, rem, wt, pr, transcripts, live, me, verdi
         by = SEEDED_BY.search(parts[4])
         commits.append({"sha": parts[0], "time": int(parts[1] or 0), "subject": parts[2],
                         "sessions": [t.strip() for t in parts[3].split(",") if t.strip()],
-                        "prompts": prompts_from_body(parts[4]), "seeded_by": by.group(1) if by else None})
+                        "prompts": prompts_from_body(parts[4]), "seeded_by": by.group(1) if by else None,
+                        "body": parts[4]})
     b["commits"] = commits
     # A seed (`pickup seed`): every commit is a `Seed:` one — the first checkpoint of the
     # session that picks it up makes it an ordinary branch.
@@ -1043,9 +1048,9 @@ def branch_info(root, main, name, loc, rem, wt, pr, transcripts, live, me, verdi
     # (the diff only for a branch whose commits are all Seed: ones — one git call per branch otherwise)
     seed_paths = out(root, "diff", "--name-only", f"{main}...{tip}").splitlines() if commits and all(
         c["subject"].startswith(SEED_SUBJECT) and c["seeded_by"] for c in commits) else []
-    if seed_paths and all(
-            p.startswith((HANDOFF_DIR + "/", BLUEPRINT_DIR + "/")) for p in seed_paths) and any(
-            p.startswith(HANDOFF_DIR + "/") for p in seed_paths):
+    # a routed doc whose diff is its `Routed:` line alone counts too (branches.seed_paths_ok)
+    if seed_paths and seed_paths_ok(root, out(root, "merge-base", main, tip), tip, seed_paths,
+                                    [c["body"] for c in commits]):
         files = out(root, "diff-tree", "--no-commit-id", "--name-only", "-r", commits[-1]["sha"]).splitlines()
         b["seed"] = {"brief": next((f for f in files if f.startswith(HANDOFF_DIR + "/")), None),
                      "by": commits[-1]["seeded_by"]}
@@ -3997,6 +4002,50 @@ def handoff_blueprint(root, topic, today, brief):
         return None, short(str(e), 200)
 
 
+def route_docs(root, base, name, brief, check=False, drop=False, routing=(), dry=False):
+    """The docs `brief` names that have a spacesheep page, each with its `Routed:` line written (or, `drop`,
+    taken out) by keel's `routed line`, for this seed's or brief's own commit — before any dispatch, so the
+    run and the line never diverge (routed comments S2, finding D). `check` (a seed: new work) runs keel's
+    gate on each first and refuses on its exit 3, less the threads `routing` names (the ones this start
+    routes). `dry` (--dry-run): keel logs nothing. Returns ([(rel, text)], the brief's last step, notes).
+    No keel here (PICKUP_KEEL empty, or none found): no line, one note; a keel that fails fails a check
+    closed and a plain brief open."""
+    keel = os.environ.get("PICKUP_KEEL")
+    if keel is None:
+        keel = str(common.tool("keel") or "")
+    if not keel:
+        return [], "", ["no keel here: no `Routed:` line written"]
+    r = run([keel, "routed", "line", "--repo", str(root), "--ref", base, "--branch", name, "--brief", "-"]
+            + (["--check"] if check else []) + (["--drop"] if drop else []) + (["--dry-run"] if dry else [])
+            + (["--routing", *routing] if routing else []), timeout=180, input=brief)
+    try:
+        res = json.loads((r.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        res = None
+    if r.returncode == 3 and res:
+        raise Stop("keel's gate refused: " + " | ".join(res.get("refused") or ["(no reason given)"]))
+    if r.returncode or not isinstance(res, dict):
+        why = short((r.stderr or r.stdout or "").strip().splitlines()[-1] if (r.stderr or r.stdout or "").strip() else f"exit {r.returncode}", 160)
+        if check:
+            raise Stop(f"keel routed line failed ({why}) — the gate could not run: run it again")
+        return [], "", [f"keel routed line failed ({why}): no `Routed:` line written"]
+    return ([(d["rel"], d["text"]) for d in res.get("docs") or []], res.get("last_step") or "",
+            list(res.get("notes") or []))
+
+
+def with_last_step(text, last, notes):
+    """The brief with keel's last step under it, when it fits the caps; else as it was, with a note."""
+    if not last:
+        return text
+    new = text.rstrip("\n") + "\n\n" + last + "\n"
+    try:
+        brief_caps(new)
+    except Stop:
+        notes.append("the brief is at its caps: the routed check's last step is not in it")
+        return text
+    return new
+
+
 def cmd_seed(data, me, args):
     """One commit on a new claude/<host>/<date>-<topic> branch, made from local main by git
     plumbing — no worktree, no checkout, so it works from any session — holding the brief at
@@ -4028,9 +4077,14 @@ def cmd_seed(data, me, args):
     if not base:
         raise Stop(f"no local {main} in {root} to seed from")
     path = f"{HANDOFF_DIR}/{today}-{topic}.md"
+    # the docs the brief names that have a page: the gate first (new work), then their `Routed:` line
+    # in this commit (routed comments S2); the brief's last step is the run's own check
+    routed, last, rnotes = route_docs(root, base, name, text, check=True, routing=args.routing, dry=args.dry_run)
+    text = with_last_step(text, last, rnotes)
     by = f"{me['repo'].name if me.get('repo') else '?'}/{me['id'][:8] or 'shell'} on {data['host']}"
     msg = (f"{SEED_SUBJECT}{topic}\n\nPrompt:\n> {task}\n\n"
-           f"Seeded-By: {by}\nCo-Authored-By: Claude <noreply@anthropic.com>\n")
+           f"Seeded-By: {by}\n" + (f"Routed-By: pickup seed ({', '.join(r for r, _ in routed)})\n" if routed else "")
+           + "Co-Authored-By: Claude <noreply@anthropic.com>\n")
     behind = out(root, "rev-list", "--count", f"{main}..origin/{main}") if out(
         root, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}") else "0"
     bpath, bnote = (None, None) if args.no_blueprint else handoff_blueprint(root, topic, today, text)   # bnote: the text, or why none
@@ -4039,7 +4093,8 @@ def cmd_seed(data, me, args):
         bpath, bnote = None, f"{bpath} is already on {main}"
     if args.dry_run:
         print(f"would seed {name} in {root}: commit {path} ({len(text.splitlines())} lines)"
-              + (f" and {bpath}" if bpath else "") + f" on local {main} ({base[:7]}), then push it")
+              + (f" and {bpath}" if bpath else "") + "".join(f", {r}'s Routed: line" for r, _ in routed)
+              + f" on local {main} ({base[:7]}), then push it" + "".join(f"\n  {n}" for n in rnotes))
         return
 
     def g(*a, **kw):
@@ -4055,6 +4110,8 @@ def cmd_seed(data, me, args):
         g("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=env)
         if bpath:
             g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=bnote)},{bpath}", env=env)
+        for rel, doc in routed:
+            g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=doc)},{rel}", env=env)
         tree = g("write-tree", env=env)
     if tree == out(root, "rev-parse", f"{base}^{{tree}}"):
         raise Stop(f"{path} is already on {main} as written — nothing to seed")
@@ -4067,6 +4124,10 @@ def cmd_seed(data, me, args):
     else:
         state = "pushed"
     print(f"seeded {name} in {root.name} — {path}, {len(text.splitlines())} lines; {state}")
+    for rel, _ in routed:
+        print(f"  routed: {rel} carries its Routed: line in this commit")
+    for n in rnotes:
+        print(f"  {n}")
     if bpath:
         print(f"  and its one-block blueprint {bpath} (wharf check <it> to see the ship)")
     elif bnote:
@@ -4202,13 +4263,19 @@ def cmd_brief(root, me, args):
             raise Stop(f"{name} is held by session {str(lock.get('session'))[:8]} at {wt['path']} "
                        f"(seen {ago(int(lock.get('seen', 0)))}): it must end, or idle 2 h, before a brief goes there")
 
+    # the docs the brief names that have a page get their `Routed:` line in this commit, before dispatch
+    # (routed comments S2, finding D); --unroute (a released start) takes it out. Never gated: answer and
+    # talk runs pass through here with talking threads (cutover's table)
+    routed, last, rnotes = route_docs(root, base, name, text, drop=args.unroute, dry=args.dry_run)
+    text = with_last_step(text, last, rnotes)
     by = f"{me['repo'].name if me.get('repo') else '?'}/{me['id'][:8] or 'shell'} on {common.host_name()}"
     first = next((l for l in text.splitlines() if l.strip()), "")
     task = next((l[len("Task:"):].strip() for l in text.splitlines() if l.startswith("Task:")), first.lstrip("# "))
     msg = (f"Brief: the next step of {topic} (pickup brief)\n\nPrompt:\n> {task}\n\n"
-           f"Briefed-By: {by}\nCo-Authored-By: Claude <noreply@anthropic.com>\n")
+           f"Briefed-By: {by}\n" + (f"Routed-By: pickup brief ({', '.join(r for r, _ in routed)})\n" if routed else "")
+           + "Co-Authored-By: Claude <noreply@anthropic.com>\n")
     # the same brief already there: hashed without -w, so --dry-run says it too and writes nothing
-    if g("hash-object", "--stdin", input=text) == out(root, "rev-parse", "--verify", "--quiet", f"{base}:{path}"):
+    if not routed and g("hash-object", "--stdin", input=text) == out(root, "rev-parse", "--verify", "--quiet", f"{base}:{path}"):
         if local != base and not args.dry_run:   # still bring this machine's branch up to it, or dispatch reads a stale tip
             if wt:
                 git(wt["path"], "merge", "-q", "--ff-only", base)
@@ -4225,6 +4292,8 @@ def cmd_brief(root, me, args):
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
         g("read-tree", base, env=env)
         g("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=env)
+        for rel, doc in routed:
+            g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=doc)},{rel}", env=env)
         tree = g("write-tree", env=env)
     commit = g("commit-tree", tree, "-p", base, "-F", "-", input=msg)
     if wt:
@@ -4252,7 +4321,9 @@ def cmd_brief(root, me, args):
     else:
         state = "pushed"
     print(f"briefed {name} in {root.name} — {path}, {len(text.splitlines())} lines; {state}"
-          + "".join(f"\n  {n}" for n in notes))
+          + "".join(f"\n  {n}" for n in notes)
+          + "".join(f"\n  {'unrouted' if args.unroute else 'routed'}: {r}" for r, _ in routed)
+          + "".join(f"\n  {n}" for n in rnotes))
 
 
 def cmd_seeds(roots, me, args):
@@ -4484,6 +4555,7 @@ def main(argv):
         ap.add_argument("--file", required=True)
         ap.add_argument("--dry-run", action="store_true")
         ap.add_argument("--no-blueprint", action="store_true")
+        ap.add_argument("--routing", nargs="+", default=[])   # the page threads this seed routes: keel's gate passes them
         when = ap.add_mutually_exclusive_group()
         # --launch / --no-launch: the old names, aliases for a week (S8 of docs/wharf-rename-2026-10-16.md)
         when.add_argument("--start", "--launch", dest="start", action="store_true")
@@ -4491,6 +4563,7 @@ def main(argv):
     if cmd == "brief":
         ap.add_argument("--text", required=True)   # `-`: from stdin, so a heredoc carries `$` and backticks untouched
         ap.add_argument("--dry-run", action="store_true")
+        ap.add_argument("--unroute", action="store_true")   # a released start: the docs' Routed: line comes out
     if cmd == "seeds":
         ap.add_argument("--mine", action="store_true")
         ap.add_argument("--open", action="store_true")

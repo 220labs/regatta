@@ -6,6 +6,9 @@
   artifacts), the token read from the main checkout's `.env` and sent to CircleCI's hosts only (circle-linux,
   2026-10-26).
 - checkpoint's 🐑 failure hint names `keel sheep <doc>`, not `memo sheep` (peer-manager-relay, 2026-10-26).
+- `branches.seed_task` takes a routed seed for a seed (`seed_paths_ok`): a doc the commit's `Routed-By:`
+  trailer names, changed by its `Routed:` line alone, besides the brief, so the reaper and the archive's
+  dropped-seed road see it (routed comments S2's landing review, 2026-10-26).
 
 - `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
   `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other
