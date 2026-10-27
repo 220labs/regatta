@@ -172,6 +172,16 @@ print(json.dumps({"result": "```json\n%s\n```" % json.dumps({"severity": sev, "s
 EOF
 chmod +x "$T/bin/claude"
 export PATH="$T/bin:$PATH" FAKE_CLAUDE_SEEN="$T/seen.txt"
+# The stand-in by path as well as by PATH: where an exec of it fails, a real `claude` further down
+# PATH (a CI VM's npm global) would answer instead, "Not logged in", and every merge case after
+# fails with that and no hint why. The check below says the stand-in is the one that runs.
+export CLAUDE_BIN="$T/bin/claude"
+if echo '{}' | "$CLAUDE_BIN" >/dev/null 2>&1 && [ -s "$T/seen.txt" ] && [ "$(command -v claude)" = "$T/bin/claude" ]; then
+  echo "  ok   the stand-in claude runs and is first on PATH"
+else
+  echo "  FAIL the stand-in claude does not run from $T/bin, or is not first on PATH ($(command -v claude))"; fails=$((fails+1))
+fi
+rm -f "$T/seen.txt"
 
 R="$T/r1000"
 cat > "$T/rev.txt" <<'EOF'
