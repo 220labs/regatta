@@ -824,9 +824,10 @@ def refresh_mirror(mirror):
     return True
 
 
-def scan_repo(repo, m, dry=False):
+def scan_repo(repo, m, dry=False, ended=None):
     """New-or-open asks on the repo's claude/* branches, read from a bare mirror under the cache —
-    never the primary checkout live sessions share."""
+    never the primary checkout live sessions share. A branch skipped for its merged or closed PR goes
+    into `ended` ({repo, branch}) when a list is given."""
     name = repo.name
     if helmlib.guarded(name):
         return []  # nothing of a guarded repo leaves in a banner (K6); its asks show on the local board
@@ -856,14 +857,25 @@ def scan_repo(repo, m, dry=False):
     # across 100-odd stale branches (2026-10-11), and every statusline said so. A rule, not a
     # snapshot: the same answer on both Macs and after the cache is cleared.
     cutoff = time.time() - float(os.environ.get("ASK_POLL_DAYS") or 7) * 86400
-    refs = git(mirror, "for-each-ref", "--format=%(committerdate:unix) %(refname:short)", "refs/heads/claude/", check=False)
+    # A branch whose pull request is merged or closed asks nothing more (board-cleanup S1: /finish rewrites
+    # a branch before it lands, so a landed one still reads as unmerged against main). Matched in this
+    # repo's own PRs: branch names repeat across repos. GitHub unread: every branch is scanned, as before.
+    prs = helmlib.repo_prs(repo)
+    refs = git(mirror, "for-each-ref", "--format=%(committerdate:unix) %(objectname) %(refname:short)", "refs/heads/claude/", check=False)
     for row in refs.splitlines():
-        ts, _, ref = row.partition(" ")
+        ts, _, rest = row.partition(" ")
+        sha, _, ref = rest.partition(" ")
         if not ref or (ts.isdigit() and int(ts) < cutoff):
             continue
+        if helmlib.pr_state(prs, ref, sha, int(ts) if ts.isdigit() else None)[0] in ("merged", "closed"):
+            if ended is not None:
+                ended.append({"repo": name, "src": str(repo), "branch": ref})
+            continue
+        t = int(ts) if ts.isdigit() else 0
         files = git(mirror, "diff", "--name-only", "--diff-filter=AM", "%s...%s" % (base, ref), "--", "*.md", check=False).splitlines()
         for f in files:
-            if f.startswith("docs/handoff/"):
+            # a template's D-items and a test's fixture ask nobody
+            if f.startswith("docs/handoff/") or helmlib.not_an_ask(f):
                 continue
             text = git(mirror, "show", "%s:%s" % (ref, f), check=False)
             if "➤ Answer" not in text:
@@ -871,23 +883,25 @@ def scan_repo(repo, m, dry=False):
             for it in open_items(m, text, "%s %s:%s" % (name, ref, f)):
                 out.append({"repo": name, "src": str(repo), "branch": ref, "rel": f, "item": it["id"], "title": it["title"][:100],
                             "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
-                            "key": "%s:%s:%s#%s" % (name, ref, f, it["id"])})
+                            "key": "%s:%s:%s#%s" % (name, ref, f, it["id"]), "t": t, "sha": sha})
         # `Ask: <doc>#Dn` trailers: a cloud brief's commit (bin/ask is not there). A trailer counts
         # only while its item is open in the doc at the branch's tip (finding 16): an answered one,
         # or one the doc does not hold, would ring every five minutes for as long as the branch lives.
         for line in git(mirror, "log", "--format=%H %(trailers:key=Ask,valueonly,separator=;)", "%s..%s" % (base, ref), check=False).splitlines():
-            sha, _, val = line.partition(" ")
+            _, _, val = line.partition(" ")
             for v in [x.strip() for x in val.split(";") if x.strip()]:
                 key = "%s:%s:%s" % (name, ref, v)
                 if any(o["key"] == key for o in out):
                     continue
                 rel, _, did = v.partition("#")
+                if helmlib.not_an_ask(rel):
+                    continue
                 it = next((i for i in open_items(m, git(mirror, "show", "%s:%s" % (ref, rel), check=False), "%s %s:%s" % (name, ref, rel))
                            if i["id"] == did), None)
                 if it:
                     out.append({"repo": name, "src": str(repo), "branch": ref, "rel": rel, "item": did, "title": it["title"][:100],
                                 "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
-                                "key": key, "via": "Ask: trailer on %s" % sha[:7]})
+                                "key": key, "via": "Ask: trailer on %s" % line.partition(" ")[0][:7], "t": t, "sha": sha})
     return out
 
 
@@ -1058,16 +1072,22 @@ def cmd_poll(a):
         seen = set(json.loads(seen_p.read_text()))
     except (OSError, ValueError):
         seen = set()
-    found, failed = [], []
-    for repo in poll_repos(a.repos):
+    found, failed, ended = [], [], []
+    repos = poll_repos(a.repos)
+    helmlib.prefetch_prs(repos)   # every repo's PRs read in parallel: each scan below then reads the cache
+    for repo in repos:
         try:
-            found += scan_repo(repo, m, dry=a.dry_run)
+            found += scan_repo(repo, m, dry=a.dry_run, ended=ended)
         except Exception as e:  # a malformed doc (keel.parse's Stop) killed every tick for 54 h, sweeps included (2026-10-19)
             print("ask poll: %s skipped (%s: %s)" % (repo.name, type(e).__name__, e), file=sys.stderr)
             failed.append(repo)
     carried = carry_forward(failed)
     found = list({f["key"]: f for f in carried + found}.values())  # one row per key, whatever scanned it twice; a fresh row wins
-    new = [f for f in found if f["key"] not in seen]
+    # one banner per doc item (board-cleanup S1): the newest branch's row, and none for an item a seen key
+    # already names on another branch. seen.json keeps every row's key, as it always has.
+    seen_items = {(k.split(":", 2)[0], k.split(":", 2)[-1]) for k in seen if k.count(":") >= 2}
+    new = [f for f in helmlib.newest_per_item(found)
+           if f["key"] not in seen and (f["repo"], "%s#%s" % (f["rel"], f["item"])) not in seen_items]
     if first_run and not a.dry_run:
         # finding 16: the first run finds every open item on every branch at once — a banner each
         # would be a wall of them. It seeds silently and says how many (a dry run still lists them).
@@ -1082,7 +1102,9 @@ def cmd_poll(a):
     if not a.dry_run:
         cache_dir().mkdir(parents=True, exist_ok=True)
         seen_p.write_text(json.dumps(sorted(seen | {f["key"] for f in found})))
-        d = {"t": int(time.time()), "asks": found}
+        # stalls.poll_asks reads a WAITING run on these branches as asked, as it did while their rows were
+        # here: dropping the rows alone raised a new S6 for each dead run the board now hides (S1 review)
+        d = {"t": int(time.time()), "asks": found, "ended": ended + carry_forward(failed, "ended")}
         if failed:
             d["partial"] = sorted({r.name for r in failed})
         (cache_dir() / "asks.json").write_text(json.dumps(d, indent=1, ensure_ascii=False))
@@ -1095,7 +1117,7 @@ def cmd_poll(a):
     return 0
 
 
-def carry_forward(failed):
+def carry_forward(failed, field="asks"):
     """The last poll's rows of each repo whose scan failed this time (S6 landing review, 20): a
     repo missing from asks.json reads to the lookout as a repo with nothing open, and it drops the
     keys it watched, so an answer pushed during the outage was never an event. The rows go forward
@@ -1106,11 +1128,11 @@ def carry_forward(failed):
     if not failed:
         return []
     try:
-        rows = json.loads((cache_dir() / "asks.json").read_text()).get("asks") or []
+        rows = json.loads((cache_dir() / "asks.json").read_text()).get(field) or []
     except (OSError, ValueError, AttributeError):
         return []
     srcs, names = {str(r) for r in failed}, {r.name for r in failed}
-    return [dict(r, carried=True) for r in rows if isinstance(r, dict) and r.get("key")
+    return [dict(r, carried=True) for r in rows if isinstance(r, dict) and (r.get("key") or field != "asks")
             and (r["src"] in srcs if r.get("src") else r.get("repo") in names)]
 
 

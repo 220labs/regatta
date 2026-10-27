@@ -54,7 +54,10 @@ classify(): items in, a label per item out. `labels` is {label: description}, 2-
   and nobody applies a threshold to it. Every id must carry a listed label; one retry, then
   GateError — a missing id is never read as "no".
 - Guarded sources (bin/jev's GUARDED, one home): `approved` is a dict keyed by vendor
-  (typesafe, anthropic, openai); the resolved vendor's quote is required and logged.
+  (typesafe, anthropic, openai); the resolved vendor's quote is required and logged. A repo of a
+  confidential scope (the registry's `scopes`) is guarded the same way for every vendor but
+  Anthropic, and so is an unknown source while a scope is confidential, and every source while the
+  registry cannot be read (bin/jev's confidential()).
 Log: one JSON line per classify call to $GATE_LOG, default gate.jsonl in bin/jev's log_dir():
 site, provider, model, source, items, cost, ms, approval, status. Never the items. Jev calls
 also land in jev.jsonl, as before.
@@ -352,8 +355,8 @@ def classify(site, items, ask, labels, context=None, source=None, approved=None,
         source = jev.repo_of(os.getcwd())
         print("gate: no source given; assuming the cwd's repo, %s" % source, file=sys.stderr)
     quote = None
-    if source in jev.GUARDED:
-        vendor = VENDOR.get(prov, prov)
+    vendor = VENDOR.get(prov, prov)
+    if source in jev.GUARDED or (vendor != "anthropic" and jev.confidential(source)):
         if not isinstance(approved, dict):
             raise GateError("%s: refused: data from %s needs %s's quote per vendor — "
                             "approved={\"%s\": \"%s, <date>: <what>\"}, not %s"
@@ -628,10 +631,14 @@ def main(argv=None):
             if row.get("bench"):
                 print("bench: %s — a flip changes the classifier; rerun it before trusting the new row"
                       % row["bench"])
-            if (row.get("provider") != before.get("provider") and row.get("provider") in VENDOR
-                    and _jev_module().GUARDED):   # nothing guarded, nothing to say
+            jm = _jev_module()
+            guarded = list(jm.GUARDED)
+            if VENDOR.get(row.get("provider")) != "anthropic" and jm.common.confidential_scopes():
+                guarded.append("every confidential scope's repo")
+            if row.get("provider") != before.get("provider") and row.get("provider") in VENDOR and guarded:
+                # nothing guarded, nothing to say
                 print("a caller with guarded data (%s) now needs approved[\"%s\"]"
-                      % (", ".join(_jev_module().GUARDED), VENDOR[row["provider"]]))
+                      % (", ".join(guarded), VENDOR[row["provider"]]))
             return 0
         print(__doc__.split("\n\n")[1])
         return 2

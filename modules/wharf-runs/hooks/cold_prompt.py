@@ -19,6 +19,15 @@ run reads the branch and the runner's bundle (the old session's prompts and repl
   runner command, run by the session itself; a runner that refuses leaves the `/finish` to run here.
   The summary goes first because the runner takes the lock, after which this panel writes nothing.
 
+On the laptop (`common.LAPTOP`) the runner gets `--merge` too, on both roads: there the owner's typed
+`/finish` is the yes to merge (the finish skill's step 11.4), and the run may land on the peer (D3-A,
+the night-landings digest of 2026-10-25: "your typed word stays the yes, wherever the run lands"). The
+peer's `--from=<laptop>` (D2-A) already takes the laptop's path for every landing the laptop sends;
+`--merge` is the typed word's own, so it holds where `--from` is not honoured (a peer whose
+`regatta/laptop` names another host) and the run's state says `merge`. On any other Mac a typed `/finish` merges only on the owner's explicit yes, which a
+hand-off cannot ask: no `--merge` there. autofinish-run still refuses `--merge` to an unattended caller
+and to any `--by` but a person's.
+
 The runner pre-writes the worktree lock in its own session's name, so this panel is locked out from
 then on and checkpoint.py says why at its next prompt. `/finish` with any other argument (`--here`,
 `--local`, another branch, a PR) passes untouched: the runner always runs `/finish <branch>
@@ -41,7 +50,8 @@ stops at its first gate with nothing written: a wasted run, never two writers (r
 Never exits non-zero (exit 2 on UserPromptSubmit erases the prompt), stdlib, Python 3.9.
 Tests: modules/wharf-runs/tests/cold_prompt.sh (moved from the overlay's hooks/test_hooks.sh with
 S7). Seams: COLD_PROMPT_NOW, CLAUDE_AUTOFINISH_RUN,
-COLD_PROMPT_TIMEOUT (seconds, in place of RUN_TIMEOUT_S).
+COLD_PROMPT_TIMEOUT (seconds, in place of RUN_TIMEOUT_S), COLD_PROMPT_HOST (this Mac, in place of
+common.host_name(); REGATTA_LAPTOP names the laptop).
 """
 import json
 import os
@@ -115,6 +125,17 @@ def age(s):
     return f"{int(s // 3600)} h" if s >= 3600 else f"{int(s // 60)} min"
 
 
+def on_laptop():
+    """True on the laptop, where a typed /finish is the owner's yes to merge (the header)."""
+    here = os.environ.get("COLD_PROMPT_HOST") or common.host_name()
+    return bool(here) and here.lower() == str(common.LAPTOP).lower()
+
+
+def runner_args():
+    """What follows the worktree on the runner's line: a typed hand-off, with the yes on the laptop."""
+    return ["--rule", "C", "--by", "typed"] + (["--merge"] if on_laptop() else [])
+
+
 def handover_context(ctx, model, top, sid):
     """The context line for a warm session's /finish: summary first, then the runner, run here."""
     session = f" --session {shlex.quote(sid)}" if sid else ""
@@ -126,7 +147,7 @@ def handover_context(ctx, model, top, sid):
             f"lines for the whole branch, what is still open and why, and `Deployed: <what> | no` — then commit "
             f"it: `git -C {top} add -A && git -C {top} commit -q --allow-empty -F <that file>`. The fresh run "
             f"reads the branch's log; this summary is the one thing only this session knows.\n"
-            f"2. Hand the branch over: `{runner} {top} --rule C --by typed{session}`, and tell the owner the "
+            f"2. Hand the branch over: `{runner} {top} {' '.join(runner_args())}{session}`, and tell the owner the "
             f"window its output names; its PR carries the report.\n"
             f"If step 2 is denied or exits non-zero (that tip already tried, a run going, a lock another session's), run "
             f"/finish here as the skill says. The owner's `/finish --here` always runs it in this tab.")
@@ -182,7 +203,7 @@ def decide(data):
         return "context", handover_context(ctx, model, top, data.get("session_id"))
     # priced before the runner starts: nothing may raise once it has detached
     price = common.cost_text(ctx * WRITE_PER_M[family(model)] / 1e6)
-    cmd = [RUNNER, top, "--rule", "C", "--by", "typed"]
+    cmd = [RUNNER, top] + runner_args()
     if data.get("session_id"):
         cmd += ["--session", data["session_id"]]  # this panel's own lock is no refusal
     try:

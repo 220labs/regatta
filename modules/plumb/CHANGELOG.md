@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `trim collect|report|verdict` (trim S1–S2, 2026-10-26): one row per outcome joined from the usage CSVs, run
+  records, dispatch logs, transcripts, review-gate rows, merged PRs and their diffs, finisher and bench rows, as
+  weekly JSONL records; a scorecard; the verdict (one-sided Beta bound over precommitted looks, cost ratio, CUSUM,
+  a floor breach or an unjoined ledger refuses, exit 3). Refuses to collect for a confidential scope or a torn registry.
+- usage-report's fence (the confidential stopgap, 2026-10-26): a row whose project is a confidential
+  scope's (the core's `gather_fence`) counts in every total and is named nowhere — its project and title
+  read `(confidential)` (a title numbered per session, `(confidential #1)`), a project's own skill or agent name too — in the report, the line and the log;
+  a torn registry fences every row, and so does a session in a folder holding a confidential checkout;
+  an open row's title that names a confidential scope or repo reads `(confidential)`. `numbers` keys a confidential scope's pass `(confidential)` unless
+  `--scope` names it, which knowledge-numbers now passes. The CSVs and past reports are unchanged.
 - usage-report's `extra_usage` sample is the core's `extra_usage()` parse, the one lighthouse's
   `account` reads its probe with (costs S8, 2026-10-24); the sample is unchanged.
 

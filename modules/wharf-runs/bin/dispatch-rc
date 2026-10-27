@@ -13,7 +13,9 @@
                                — no prompt in its transcript within
                                DISPATCH_START_WAIT, though it may read busy (a seeded dispatch
                                retries once, visible; --start and --probe do not), 4: ended at the
-                               maximum lifetime.
+                               maximum lifetime. A run not busy yet has its screen read every
+                               DISPATCH_SNAP_EVERY (60 s; `hardcopy -h`), so the log of a run that
+                               never started shows the last screen it had, even if its window closed.
     dispatch-rc end TOPIC [REPO]
                                end the live run of TOPIC now, busy or not (`dispatch --end`)
     dispatch-rc end-warm BRANCH REPO [--dry-run]
@@ -128,6 +130,7 @@ POLL = float(os.environ.get("DISPATCH_POLL", "15"))
 # or cold one is swept (the owner, same day, D2).
 IDLE = float(os.environ.get("DISPATCH_IDLE", "3600"))
 START_WAIT = float(os.environ.get("DISPATCH_START_WAIT", "300"))  # no prompt in its transcript by then: it is stuck
+SNAP_EVERY = float(os.environ.get("DISPATCH_SNAP_EVERY", "60"))  # a run not busy yet: its screen is read this often
 CLOSE_WAIT = float(os.environ.get("DISPATCH_CLOSE_WAIT", "12"))  # for a window to close itself (CLOSER polls 5 s)
 FIND_WAIT = float(os.environ.get("DISPATCH_FIND_WAIT", "20"))  # for a new window to show in yabai
 NEXT_IDLE = float(os.environ.get("DISPATCH_NEXT_IDLE", "60"))  # idle, and the next run waits for it
@@ -846,6 +849,64 @@ def screen_target(st):
     return "%s.%s" % (sp, st["screen"]) if sp else st["screen"]
 
 
+def screen_text(st, snap):
+    """([non-blank lines of the run's window], None), or ([], why) — why is one short line.
+
+    `hardcopy -h` first: a plain `hardcopy` of a detached screen holding claude's full-screen UI wrote
+    an empty file on the build Mac (probed 2026-10-26), while `-h` (window plus scrollback) returned
+    the screen; a plain one still follows, for a window `-h` does not read. The screen server writes
+    the file after the call returns, so it is polled until two reads agree (a half-flushed `-h` file
+    holds old scrollback, not the window). The capture goes to a scratch file renamed onto `snap` only
+    when it read, so a failed read never deletes the last good screen there. A window that is gone writes
+    nothing and the call says so: that is the why, never a silent blank (every never-started log of
+    the build Mac read "(no screen contents)" until then)."""
+    why = ""
+    tmp = snap + ".tmp"
+    for flags in (["-h"], []):
+        try:
+            os.unlink(tmp)   # a file of an earlier capture must not read as this one
+        except OSError:
+            pass
+        try:
+            r = subprocess.run([SCREEN, "-S", screen_target(st), "-p", "0", "-X", "hardcopy", *flags, tmp],
+                               env=screen_env(st), capture_output=True, text=True, errors="replace", timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            why = "screen: %s" % e.__class__.__name__
+            continue
+        msg = " ".join(((r.stderr or "") + " " + (r.stdout or "")).split())[:100]
+        if r.returncode != 0 or msg:
+            why = "screen exited %d%s" % (r.returncode, ": " + msg if msg else "")
+        if r.returncode != 0:
+            continue   # no such window: nothing will be written
+        prev = None
+        for _ in range(10):
+            try:
+                with open(tmp, errors="replace") as f:
+                    lines = [l.rstrip() for l in f if l.strip().strip("\0")]
+            except OSError:
+                lines = []
+            if lines and lines == prev:
+                try:
+                    os.replace(tmp, snap)
+                except OSError:
+                    pass
+                return lines, None
+            prev = lines or None
+            time.sleep(0.2)
+        if prev:   # still growing after 2 s: the last read is the best there is
+            try:
+                os.replace(tmp, snap)
+            except OSError:
+                pass
+            return prev, None
+        why = why or "the window read blank"
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return [], why
+
+
 def yabai_windows():
     """yabai's raw window list, or None when it did not answer — never [] for a failure: a query
     that failed must not read as "the window is gone" (review of 2026-10-08)."""
@@ -1371,8 +1432,13 @@ def watch_loop(path, st, start, busy, started):
     # mach_absolute_time on macOS, which stands still while the Mac sleeps (Python and Apple docs;
     # not probed). Before the watcher started, wall time — a few seconds.
     awake0, before = time.monotonic(), max(0.0, start - started)
+    seen = {"t": time.time(), "lines": [], "at": 0.0}   # the last screen a not-busy run showed (SNAP_EVERY)
     while True:
         if not same(st):
+            if not busy and seen["lines"]:
+                # a claude that died with its window before it started: its last screen is the evidence
+                say("claude ended before it was busy; its last screen, %d s ago:\n  %s"
+                    % (time.time() - seen["at"], "\n  ".join(seen["lines"][-15:])))
             # `dispatch --end` marks the record `ending` before its SIGTERM: its reason, not ours
             return finish(path, st, load(path).get("ending") or "claude exited by itself") or 0
         if before + time.monotonic() - awake0 >= MAX_S:
@@ -1390,6 +1456,10 @@ def watch_loop(path, st, start, busy, started):
         if not busy and (replied(st["session"]) or (status == "busy" and last_prompt(st["session"]))):
             busy = True
             say("session %s busy" % st["session"])
+            try:
+                os.unlink(path + ".screen.txt")   # the rolling snapshot below is for a run that never starts
+            except OSError:
+                pass
         idle_s = RC.idle_hours(rec) * 3600 if rec else 0
         # idle: let the Mac sleep through the warm hour; busy again: hold it off again. A run with
         # background tasks allowed reads idle while a background job still runs, and that job would
@@ -1416,17 +1486,27 @@ def watch_loop(path, st, start, busy, started):
                 close_window(st)   # before the process: see close_window
                 end_session(st)
                 return finish(path, st, "idle %d min%s%s" % (idle_s // 60, ", the next run waiting" if waited else "", errored)) or 0
+        # a run not busy yet is snapshotted as it goes (the file keeps the last screen it showed): a
+        # window that closes before START_WAIT takes its screen along, and the end below would read nothing
+        if not busy and time.time() - start < START_WAIT and time.time() - seen["t"] >= SNAP_EVERY:
+            seen["t"] = time.time()
+            lines, _ = screen_text(st, path + ".screen.txt")
+            if lines:
+                seen["lines"], seen["at"] = lines, time.time()
         if not busy and time.time() - start >= START_WAIT:
             # a dialog, a login prompt, a crash loop: what the screen shows goes to the log
-            snap = path + ".screen.txt"
-            subprocess.run([SCREEN, "-S", screen_target(st), "-p", "0", "-X", "hardcopy", snap],
-                           env=screen_env(st), capture_output=True)
-            time.sleep(1)
-            try:
-                with open(snap, errors="replace") as f:
-                    shown = [l.rstrip() for l in f if l.strip().strip("\0")]
-            except OSError:
-                shown = ["(no screen contents)"]
+            lines, why = screen_text(st, path + ".screen.txt")
+            if lines:
+                shown = lines
+            elif seen["lines"]:
+                shown = ["(no screen now — %s; its last screen, %d s ago:)" % (why or "the window read blank", time.time() - seen["at"])] + seen["lines"]
+                try:
+                    with open(path + ".screen.txt", "w") as f:
+                        f.write("\n".join(seen["lines"]) + "\n")
+                except OSError:
+                    pass
+            else:
+                shown = ["(no screen contents: %s)" % (why or "the window read blank")]
             tree = descendants(st.get("pid")) if isinstance(st.get("pid"), int) else []
             say("FAILED: never busy in %d s (no prompt in its transcript; registry: %s); the screen showed:"
                 "\n  %s\n  processes under claude:\n  %s"

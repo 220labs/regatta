@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The gate's confidential stopgap (2026-10-26): `classify` treats a repo of any confidential scope as
+  a guarded source for every vendor but Anthropic, so Jev (review-gate's same-shadow) or Codex gets its
+  text only on the owner's per-vendor quote; a torn registry guards every source. The rule is
+  `jev.confidential()`, and `jev.ask` applies it too, so a bench's direct call is refused alike; it also
+  guards an unknown source (none, `?`) while a scope is confidential, a folder holding a confidential
+  checkout (the projects folder, a group folder), any case of a name, and reads the registry once.
+
 - `claude_host()` (orca-launcher S4, 2026-10-25): whether this process's responsible process, the one tccd
   charges, is claude-host — read from the kernel, 0.4 ms; `REGATTA_CLAUDE_HOST=0|1` pins it. The core's check
   gains G4: each hook reader runs under an `open` audit against a stand-in drive and fails naming the line

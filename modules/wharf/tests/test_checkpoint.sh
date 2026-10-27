@@ -991,8 +991,8 @@ ok "  a reply carrying the whole line (the page as form) passes, and the pinned 
 mkdir -p "$SPACESHEEP_CONFIG_DIR"; sleep 120 > /dev/null 2>&1 & SSPID=$!
 printf '{"pid": %s, "port": 4999, "site": "https://spacesheep.dev"}\n' "$SSPID" > "$SPACESHEEP_CONFIG_DIR/mirror.json"
 printf -- '- **D2b — Mirrored?**\n  ➤ Answer: yes.\n' >> "$WD/docs/s.md"
-out=$(sfev "D2b. [course](http://localhost:4999/@sam/sheep-memo) | [github]($SBLOB) — [s.md]($WD/docs/s.md#L1)")
-ok "  with a mirror running, the note names the page at the mirror, and the line's local form link passes" \
+out=$(sfev "D2b. [course](http://localhost:4999/@sam/sheep-memo) | [github]($SBLOB) | [space](https://spacesheep.dev/@sam/sheep-memo) — [s.md]($WD/docs/s.md#L1)")
+ok "  with a mirror running, the note names the page at the mirror, and the line's local form link passes, space last" \
   'echo "$out" | jq -r .systemMessage | grep -qF "docs/s.md → http://localhost:4999/@sam/sheep-memo" && ! echo "$out" | grep -q "\"decision\""'
 kill "$SSPID" 2>/dev/null; rm -f "$SPACESHEEP_CONFIG_DIR/mirror.json"
 printf -- '- **D3 — Off?**\n  ➤ Answer: yes.\n' >> "$WD/docs/s.md"

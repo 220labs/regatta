@@ -52,6 +52,7 @@ import subprocess
 import sys
 import time
 import uuid
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -362,12 +363,32 @@ def launcher():
     is not an executable file is no launcher: a bare claude then, never a start that fails at exec.
     HELM_RC_HOSTS stands in for rc-hosts (the suite's stub; HELM_CLAUDE never turns claude-host off,
     so an overlay that pins claude's path keeps the grant)."""
-    rc = os.environ.get("HELM_RC_HOSTS") or helmlib.peer("rc-hosts")
-    if not rc:
-        return None
-    code, out, _ = _run(_py(rc) + ["--launcher", "claude"], timeout=30)
-    path = (out or "").strip().splitlines()[-1] if code == 0 and (out or "").strip() else ""
-    return path if path and Path(path).is_file() and os.access(path, os.X_OK) else None
+    lib = _launcherlib()
+    return lib.ask(os.environ.get("HELM_RC_HOSTS") or helmlib.peer("rc-hosts"), "claude") if lib else None
+
+
+_LAUNCHERLIB = []
+
+
+def _launcherlib():
+    """wharf-runs' launcherlib.py, the launcher rule's one home (clock and rc-hosts use it too), found
+    through the core's tool lookup like every peer; None when wharf-runs is not installed."""
+    if not _LAUNCHERLIB:
+        path = helmlib.peer("launcherlib.py")
+        lib = None
+        try:
+            if path:
+                lib = SourceFileLoader("launcherlib_for_helm", str(path)).load_module()
+        except Exception:   # a torn checkout is no launcher: the skipper starts a bare claude, as before
+            lib = None
+        _LAUNCHERLIB.append(lib)
+    return _LAUNCHERLIB[0]
+
+
+def claude_argv(host_bin, *rest):
+    """[claude, *rest] as the runner starts it: through claude-host where launcher() named one (it takes
+    the word `claude` and starts the current one), else the bare claude."""
+    return _launcherlib().through(["claude", *rest], host_bin) if host_bin else [claude_cmd(), *rest]
 
 
 def logged_in(env, host_bin=None):
@@ -377,7 +398,7 @@ def logged_in(env, host_bin=None):
     limits, never the credential, so a login that answers "Not logged in" passes it."""
     # through claude-host where the runner found one: under launchd a bare claude is the binary TCC
     # denied (skipper-ears S1)
-    cmd = [host_bin, "claude"] if host_bin else [claude_cmd()]
+    cmd = claude_argv(host_bin)
     rc, out, err = _run(cmd + ["auth", "status", "--json"], env=login_env(env), timeout=30)
     try:
         v = json.loads(out or "").get("loggedIn")
@@ -658,8 +679,8 @@ def run_body(scope, start_id, say):
     e.update(SKIPPER_SCOPE=scope, SKIPPER_ACCOUNT=label, HELM_HOLD_PARENT=str(os.getpid()), CLAUDE_UNATTENDED="skipper")
     # the prompt first: --disallowedTools takes every word after it; through claude-host where this
     # Mac's grant allows it (launcher()), which takes the word `claude` and starts the current one
-    argv = ([host_bin, "claude"] if host_bin else [claude_cmd()]) + [brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
-            "--permission-mode", "auto", "--model", MODEL, "--effort", EFFORT, "--disallowedTools", "AskUserQuestion"]
+    argv = claude_argv(host_bin, brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
+                       "--permission-mode", "auto", "--model", MODEL, "--effort", EFFORT, "--disallowedTools", "AskUserQuestion")
     os.chdir(str(cwd))
     sys.stdout.flush()
     try:

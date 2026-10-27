@@ -7,7 +7,7 @@
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
     usage-report render [--day D]     # the Markdown report for local day D (default: yesterday)
     usage-report line [--day D]       # the one line that goes by iMessage and into the 07:30 digest
-    usage-report numbers [--json]     # the weekly figures /sextant reads (via knowledge-numbers),
+    usage-report numbers [--json] [--scope S]  # the weekly figures /sextant reads (via knowledge-numbers),
                                       # with the tier mix, the review gate's WRONG per 100 lines and
                                       # each scope pass's cost (`/aurora dream --scope`)
     usage-report ratio [--write]      # the list→effective cost ratio; the tick writes and commits it weekly
@@ -53,6 +53,14 @@ one Mac renders. <data> is the NAS share (config "nas") when it is mounted, else
 (`regatta/log-dir`; outside every repo). Per-host settings — which Mac renders, what it pulls, how
 the line is sent — come from `plumb/usage.json` in the config dir ($USAGE_CONFIG wins), so nothing
 personal lives here (the sparks pattern).
+
+The fence (the confidential stopgap, 2026-10-26; the full design is the confidential-reach set): a
+row whose project is a confidential scope's (the core's gather_fence, judged by the project's
+checkout) is counted in every total and named nowhere — its project and title read `(confidential)`,
+and a skill or agent name that is not a shared one too — in the report, the line and anything else
+render prints; an unreadable registry fences every row. The CSVs keep what they held, and so do past
+reports. `numbers` names a confidential scope's pass `(confidential)`, unless `--scope` asks for that
+scope; the review gate's rows are only counted there, never named.
 
 Stdlib only, Python 3.9. Exits 0 unless the setup is wrong; a failed send is logged, not retried.
 """
@@ -664,6 +672,74 @@ def load_rows(c, first, last):
     return rows
 
 
+CONFIDENTIAL = "(confidential)"
+
+
+def project_path(project):
+    """The folder a row's project label names (project_of's inverse, on this Mac), or None for none."""
+    if not project or project == "?":
+        return None
+    if project.startswith("~"):
+        return os.path.expanduser(project)
+    return project if project.startswith("/") else str(common.PROJECTS / project)
+
+
+def shared_names():
+    """The skill and agent names a fenced row keeps: the ones every project shares and the passes below
+    read (tier_of, tier_mix, the /finish lever). Any other may be a project's own, so it is fenced."""
+    return ({"", "finish", "code-review"} | WEEKLY_SKILLS,
+            {"main", "subagent", "general-purpose", "Explore", "Plan", "claude"} | {a for _, x in TIERS for a in x})
+
+
+def confidential_names():
+    """(torn, scope names, member keys, roots) from one parse of the registry (so the tear and the scopes
+    are judged on the same file), casefolded: the names a title may give a confidential scope away by, and
+    the checkouts whose holding folders are fenced too."""
+    reg, torn = common.read_registry()
+    reg = reg or {}
+    repos = reg.get("repos") or {}
+    scopes = {n: sc for n, sc in (reg.get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True}
+    keys = [k for sc in scopes.values() for k in common.scope_members(sc, repos)]
+    return torn, {n.casefold() for n in scopes}, keys, [str(common.PROJECTS / k) for k in keys]
+
+
+def names_one(title, words):
+    """True when `title` holds any of `words` (casefolded) as a whole word or path part."""
+    t = (title or "").casefold()
+    return any(re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(w), t) for w in words if w)
+
+
+def fence_rows(rows, fence=None):
+    """Rows with a confidential scope's project detail blanked in place (the module's docstring, the
+    fence): its numbers stay, so totals and shares hold. `fence` is the core's gather_fence(); an
+    unreadable registry fences every row, and so is a row with no project while a scope is
+    confidential (unknown is never quoted), and one in a folder that holds a confidential checkout (the
+    projects folder, a group folder). An open row's title that names a confidential scope or one of its
+    repos is blanked too: a pass started from an open repo still names its scope."""
+    fence = fence or common.gather_fence()
+    skills, agents = shared_names()
+    torn, hidden, keys, roots = confidential_names()
+    words = hidden | {w.casefold() for k in keys for w in (k, k.rsplit("/", 1)[-1])}
+    seen, nth = {}, {}
+    for r in rows:
+        p = r.get("project")
+        if p not in seen:
+            path = project_path(p)
+            seen[p] = fence(path) != "quote" or bool(
+                path and any(x.startswith(path.rstrip("/") + "/") for x in roots))
+        if seen[p] or torn:
+            # numbered per session, so "By session" and the line's Biggest never sum several into one
+            n = nth.setdefault(r.get("session"), len(nth) + 1)
+            r.update(project=CONFIDENTIAL, title="(confidential #%d)" % n)
+            if r.get("skill") not in skills:
+                r["skill"] = CONFIDENTIAL
+            if r.get("agent") not in agents:
+                r["agent"] = CONFIDENTIAL
+        elif names_one(r.get("title"), words):
+            r["title"] = CONFIDENTIAL
+    return rows
+
+
 def load_limits(c):
     out = []
     for f in glob.glob(str(c["data"] / "*/limits.jsonl")):
@@ -868,7 +944,7 @@ def driver(v):
 def summarise(c, day):
     d = dt.date.fromisoformat(day)
     first28 = (d - dt.timedelta(days=27)).isoformat()
-    rows28 = load_rows(c, first28, day)
+    rows28 = fence_rows(load_rows(c, first28, day))
     rows = [r for r in rows28 if r["day"] == day]
     days_with = defaultdict(float)
     for r in rows28:
@@ -1219,19 +1295,26 @@ def tier_lines(mix, q=None):
 SCOPE_PASS = re.compile(r"/aurora dream\b[^\n”]*?--scope[ =]([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 
-def scope_passes(rows):
-    """{scope: {"sessions": n, "usd": list $}} for the rows of scope passes, by the title."""
+def scope_passes(rows, scope=None):
+    """{scope: {"sessions": n, "usd": list $}} for the rows of scope passes, by the title (rows not
+    fenced: the title names the scope). A confidential scope's pass is keyed `(confidential)`, unless it
+    is `scope`'s own; every one is while the registry cannot be read (the fence fails closed)."""
+    torn, hidden, _, _ = confidential_names()
+    hidden -= {(scope or "").casefold()}
     out = {}
     for r in rows:
         m = SCOPE_PASS.search(r.get("title") or "")
         if m:
-            p = out.setdefault(m.group(1), {"sessions": set(), "usd": 0.0})
+            name = CONFIDENTIAL if torn or m.group(1).casefold() in hidden else m.group(1)
+            p = out.setdefault(name, {"sessions": set(), "usd": 0.0})
             p["sessions"].add(r.get("session"))
             p["usd"] += r["cost"]
     return {k: {"sessions": len(v["sessions"]), "usd": round(v["usd"], 2)} for k, v in sorted(out.items())}
 
 
-def numbers(c):
+def numbers(c, scope=None):
+    """The weekly figures. They name no project or session: the rows are read unfenced for the scope
+    passes' titles, which scope_passes fences itself."""
     today = c["tz_now"].date()
     first = (today - dt.timedelta(days=7)).isoformat()
     last = (today - dt.timedelta(days=1)).isoformat()
@@ -1244,7 +1327,7 @@ def numbers(c):
     for n, _, _ in eps:
         hits[n] += 1
     return {"window": [first, last], "proxy_usd": round(sum(r["cost"] for r in rows), 2),
-            "tier_mix": tier_mix(rows), "branch_quality": branch_quality(c), "scope_passes": scope_passes(rows),
+            "tier_mix": tier_mix(rows), "branch_quality": branch_quality(c), "scope_passes": scope_passes(rows, scope),
             "by_host": {h: round(sum(r["cost"] for r in rows if r["host"] == h), 2) for h in sorted({r["host"] for r in rows})},
             "limit_hits": dict(hits), "extra_usage": extra_line(lc) if lc else None,
             "breakdown": (lc or {}).get("breakdown"),
@@ -1481,6 +1564,7 @@ def main(argv=None):
         p.add_argument("--day")
     p = sub.add_parser("numbers")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--scope", help="name this scope's own pass even when it is confidential (knowledge-numbers --scope)")
     p = sub.add_parser("ratio")
     p.add_argument("--write", action="store_true", help="write the ratio file; the next tick commits it")
     a = ap.parse_args(argv)
@@ -1501,7 +1585,7 @@ def main(argv=None):
     elif a.cmd == "ratio":
         cmd_ratio(c, write=a.write)
     elif a.cmd == "numbers":
-        n = numbers(c)
+        n = numbers(c, a.scope)
         if a.json:
             print(json.dumps(n, indent=1))
         else:

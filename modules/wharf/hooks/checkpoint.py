@@ -2272,7 +2272,7 @@ def answer_link_block(branch, docs, data):
     """The block reason when this turn's commit asks the owner D-items (a D-item line added), the doc
     is on GitHub, and the reply lacks the doc's hand-over line — or None.
 
-    The line is the one `keel line <doc>` prints, `[course](…) | [github](…) | [space](…) —
+    The line is the one `keel line <doc>` prints, `[course or local](…) | [github](…) | [space](…) —
     [<file>](<absolute path>#L1)` (the owner, 2026-10-04/05; enforced 2026-10-07), read by bin/keel's
     line_findings, the same reader bin/paste-paths' Stop hook uses. A reply that itself asks
     (common.asks_answers) is paste-paths' to judge, so this stands back: one Stop, one block, one
@@ -2307,7 +2307,7 @@ def answer_link_block(branch, docs, data):
         return None
     return ("This turn's commit asks the owner D-items, and the doc is on GitHub now. End your reply "
             "with the doc's hand-over line, exactly as `keel line <doc>` prints it — "
-            "[course](…) | [github](…) | [space](…) — [<file>](<absolute path>#L1); a part it leaves "
+            "[course or local](…) | [github](…) | [space](…) — [<file>](<absolute path>#L1); a part it leaves "
             "out comes with its reason on stderr: say that, never build the link (skill /keel). The course link "
             "is the doc's mirrored page — run `keel sheep wait <doc>` as a background shell when the "
             "session should go on after the owner's Save or comments there — or keel serve's where the doc has "

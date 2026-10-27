@@ -266,7 +266,7 @@ def owed_unchecked(text: str) -> list[str]:
 # The hand-over line (the owner, 2026-10-07: "It should apply to every single message that asks for Dx
 # to be answered … in every repo I work on"). A reply that asks the owner D-items (common.asks_answers:
 # `➤ Answer:` in its prose, or a WAITING line naming a D-item) carries the doc's one line,
-#   [course](…) | [github](…) | [space](…) — [<file name>](<absolute path>#L1)
+#   [course or local](…) | [github](…) | [space](…) — [<file name>](<absolute path>#L1)
 # exactly as `keel line <doc>` prints it; bin/keel's line_findings is the one reader, so this
 # hook demands only what `keel line` can print. Which doc: the branch doc the reply's items come
 # from when there is one (the same id with a mostly shared title or answer — same id alone is too
@@ -506,7 +506,7 @@ def handover_findings(reply: str, cwd: str, root: str = "") -> list[str]:
     where = f"{', '.join(hits)} come from {shown}" if hits else f"the reply hands {shown}"
     return [f"{where}, but its hand-over line is not right: " + "; ".join(probs[:4])
             + f" — run python3 {_cmd('keel')} line {shlex.quote(path)} and put the one line "
-            "it prints in the reply as it is (course | github | space — file; stderr says why a part is "
+            "it prints in the reply as it is (course or local | github | space — file; stderr says why a part is "
             "missing — say that in the reply instead of inventing the link; the course link is the doc's spacesheep "
             "page — run `keel sheep wait <doc>` as a background shell when the session should go on after "
             "the owner's Save or comments there, its exit wakes the session — or keel serve's where the doc has no "

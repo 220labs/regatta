@@ -4,6 +4,8 @@ Plumb measures: model usage and cost, interruptions, the tier hint, and the owne
 project. crew-report and its weekly job are below; usage-report, interruptions, knowledge-numbers,
 the statusline, the tier hint (`hooks/tier_check.py`), the attention log (`hooks/attention.py`), the
 limits widget and the benches (`bench/`) read their private values as the next section says.
+`trim collect|report|verdict` reads whether each pin still earns its place: one row per outcome from the
+ledgers above, a scorecard per job and arm, and a verdict against a floor that never trades (`bin/trim`'s header).
 
 ## crew-report
 

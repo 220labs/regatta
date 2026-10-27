@@ -43,6 +43,17 @@
 # host once no session is busy; this says it where a busy one holds it, or where the reaper is not
 # scheduled. Posted like a failing check, under its own state file. Read-only: lsof per host.
 #
+# Then the start-path canary (orca-launcher S7, 2026-10-26): wharf-runs' `clock canary check --json` on
+# this Mac says whether the hourly canary's beat (a launchd one-shot fired by Orca's precheck, and a
+# session's first turn where a run started one) is inside its window: a start path that stopped
+# reaching its first turn — the Orca automation whose job never started, 2026-10-24 — fails there
+# before the owner finds out from a missed night. A failing beat is posted like a failing check,
+# under its own state file, naming the beats (the minutes move daily; post_once compares text). The
+# helm tick raises the same failure as a stall (`start path dead`); this is the line for a Mac whose
+# tick is not running. A Mac with no canary installed passes (a note), and one whose Orca does not
+# answer says so in the check's own notes. Read-only: the check reads Orca's automations and the
+# beat files. HEALTH_CANARY (on|off) and HEALTH_CANARY_CMD do for it what the others do.
+#
 # Then the serve agent (skipper-resilience, the watch, 2026-10-22): on a Mac whose Orca runs as a
 # headless server under wharf-runs' LaunchAgent (`orca-serve-agent`; its label the config dir's
 # `wharf-runs/serve-label`, else org.regatta.orca-serve), one line a day says whether it serves:
@@ -53,6 +64,11 @@
 # posted like a failing check, under its own state file. Read-only: run-list creates nothing, and
 # it is asked only while the agent has a pid (with no server up, an `orca` call may start the app's
 # runtime; not probed).
+#
+# Then free disk (2026-10-25): under 50 GB free on the data volume FAILS, naming the three biggest
+# folders `du -x` finds; under 100 GB warns in the log. The always-on Mac stood at 16 GB of 2 TB that day while
+# the night's pass ended ok. Posted like a failing check, under its own state file. Read-only: df,
+# and du only on a fail; the space is the owner's content, so nothing is ever deleted.
 #
 # Where things are (regatta-modules B9): the core through lib/find_core.py; every peer through
 # `common.tool()` — wharf's `tend` and `sync.py`, wharf-runs' `rc-hosts`, atlas's `bulletin.py` and
@@ -66,7 +82,8 @@
 # HEALTH_TEND (on|off) overrides TEND for the suite; HEALTH_TEND_CMD replaces bin/tend there.
 # HEALTH_TCC (on|off) and HEALTH_TCC_CMD do the same for the privacy survey (`log show` is slow and
 # reads the real Mac), HEALTH_RCB (on|off) and HEALTH_RCB_CMD for the Remote Control hosts' line. HEALTH_ORCA (on|off), HEALTH_LAUNCHCTL_CMD and HEALTH_ORCA_CMD do the same
-# for the serve agent. HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
+# for the serve agent. HEALTH_DISK (on|off), HEALTH_DF_CMD, HEALTH_DU_CMD and HEALTH_DISK_VOL do the
+# same for the free-disk line. HEALTH_CHECK_CMD replaces the check, HEALTH_BULLETIN_CMD bulletin.py.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # A fetch or push stalled on a half-open connection would hold the job, and launchd skips a
@@ -95,8 +112,10 @@ BULLETIN="${HEALTH_BULLETIN_CMD:-$(peer bulletin.py)}"
 SYNC=$(peer sync.py)
 TEND="${HEALTH_TEND:-on}"  # on since R5 printed clean on the always-on Mac, 2026-10-05 (header)
 TCC="${HEALTH_TCC:-on}"    # the privacy survey (header)
+CANARY="${HEALTH_CANARY:-on}"  # the start-path canary's line (header)
 ORCA="${HEALTH_ORCA:-on}"  # the serve agent's line (header)
 RCB="${HEALTH_RCB:-on}"    # the Remote Control hosts' line (header)
+DISK="${HEALTH_DISK:-on}"  # the free-disk line (header)
 state="$LOGDIR/health.last"   # the failure last posted; a repeat posts nothing
 
 # ff <repo>: fast-forward main to origin/main when it is checked out and clean; say why not.
@@ -184,7 +203,9 @@ elif [ "$TCC" = on ]; then
   else
     # the services only, no counts: the same recurrence tomorrow is the same line, posted once a week
     svcs=$(printf '%s\n' "$sv" | sed -n 's/^ *[0-9][0-9]* \([A-Za-z]*\) .*/\1/p' | sort -u | paste -sd ',' - | sed 's/,/, /g')
-    post_once "$state.tcc" "a claude without claude-host" "privacy requests refused to a versioned claude: ${svcs:-exit $svrc} — rc-hosts --tcc-survey says which; rc-hosts --agents which job"
+    # a row `via Orca:` is a job Orca started, whose responsible process is the app (orca-launcher S7)
+    printf '%s\n' "$sv" | grep -qF 'via Orca:' && via=" (some charged to Orca: a job it started without claude-host)" || via=""
+    post_once "$state.tcc" "a claude without claude-host" "privacy requests refused to a versioned claude: ${svcs:-exit $svrc}$via — rc-hosts --tcc-survey says which; rc-hosts --agents which job"
   fi
 else
   echo "privacy: off (TCC in bin/health)"
@@ -208,6 +229,46 @@ elif [ "$RCB" = on ]; then
   fi
 else
   echo "rc hosts: off (RCB in bin/health)"
+fi
+
+# The start-path canary (header): clock canary check --json. Exit 1 is the failing verdict, with a FAIL
+# finding per beat ("canary <key>: …"); any other non-zero is "could not tell", like the hosts' line.
+CLK=$(peer clock)
+if [ "$CANARY" != on ]; then
+  echo "canary: off (CANARY in bin/health)"
+elif [ -z "${HEALTH_CANARY_CMD:-}" ] && [ -z "$CLK" ]; then
+  echo "canary: wharf-runs' clock not installed — skipped"
+elif [ -e "$HOME/.studio-brake" ]; then
+  # the brake freezes Orca serve, so no beat fires under it: a stale beat then is the owner's hold, not a dead path
+  echo "canary: not read — the studio brake holds ($HOME/.studio-brake)"
+else
+  echo "canary:"
+  cfile="$LOGDIR/health.canary.out"
+  if [ -n "${HEALTH_CANARY_CMD:-}" ]; then "$HEALTH_CANARY_CMD" > "$cfile" 2> "$cfile.err"; else python3 "$CLK" canary check --json > "$cfile" 2> "$cfile.err"; fi
+  crc=$?
+  sed 's/^/  /' "$cfile.err"
+  cread=$(python3 -I -c 'import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    found = d.get("findings") or []
+except Exception as e:
+    print("bad\t%s" % e.__class__.__name__); sys.exit(0)
+for f in found:
+    t = str(f.get("text", ""))
+    print("log\t%s %s" % (f.get("level"), t))
+    if f.get("level") == "FAIL":
+        m = re.match(r"canary ([^:\s]+):", t)
+        print("key\t%s" % (m.group(1) if m else "?"))' "$cfile" 2>/dev/null)
+  printf '%s\n' "$cread" | awk -F'\t' '$1 == "log" {print "  " $2}'
+  ckeys=$(printf '%s\n' "$cread" | awk -F'\t' '$1 == "key" {print $2}' | sort -u | paste -sd ',' - | sed 's/,/, /g')
+  cbad=$(printf '%s\n' "$cread" | awk -F'\t' '$1 == "bad" {print "bad"}')
+  if [ "$crc" = 0 ] && [ -z "$cbad" ]; then rm -f "$state.canary"
+  elif [ "$crc" = 1 ] && [ -n "$ckeys" ]; then
+    # beats named, no minutes: the same dead beat tomorrow is the same line, posted once a week
+    post_once "$state.canary" "a start path's canary" "no beat inside its window, so a start may reach no first turn: $ckeys — clock canary check says which, and the helm board's card"
+  else
+    post_once "$state.canary" "a start path's canary" "clock canary check could not tell (exit $crc) — run it by hand to see why"
+  fi
 fi
 
 # orca_answers <cli>: run-list answers with ok JSON within 60 s. Python for the timeout (macOS has
@@ -238,6 +299,84 @@ else
   # the pid stays out of ofail: post_once compares its text, and a restarting agent's pid changes
   if [ -z "$ofail" ]; then echo "orca: $label pid $pid, run-list answers"; rm -f "$state.orca"
   else echo "orca: $ofail${pid:+ (pid $pid)}"; post_once "$state.orca" "Orca's serve agent" "$ofail"; fi
+fi
+
+# disk_rank <volume>: the three biggest folders on it, "<GB>\t<path>", from one `du -x -d 6` pass
+# (HEALTH_DU_CMD replaces du; it prints du's "<KiB>\t<path>" lines). Best-first: a folder whose
+# biggest child holds half of it or more gives way to its children, so the line names where the
+# space sits (a sample library, a Drive cache), not /Users. /private/var/folders/*/*/X is dropped
+# and taken out of its parents' totals: Chrome's code_sign_clone folders there are APFS clones du
+# counts in full (1.4 TB over 1,049 folders on the always-on Mac, 2026-10-25) and deleting them frees nothing.
+# Under 15 min, else one line saying so; it runs only on a fail. Folders du could not read are
+# counted and named in one line: launchd runs the pass without Full Disk Access, so the Drive cache
+# (the second-biggest on the always-on Mac) may be missing from a night's list (landing review).
+disk_rank() { python3 -I -c 'import fnmatch, heapq, os, subprocess, sys
+vol, du = sys.argv[1].rstrip("/") or "/", sys.argv[2]
+cmd = [du] if du else ["du", "-x", "-k", "-d", "6"]
+try:
+    r = subprocess.run(cmd + [vol], capture_output=True, text=True, timeout=900)
+except subprocess.TimeoutExpired:
+    print("du -x did not finish in 15 min"); sys.exit(0)
+except OSError as e:
+    print("du could not run: %s" % e); sys.exit(0)
+out = r.stdout
+size = {}
+for ln in out.split("\n"):
+    k, _, p = ln.partition("\t")
+    if k.isdigit() and p:
+        size[p.rstrip("/") or "/"] = int(k)
+rel = lambda p: os.path.relpath(p, vol)
+for p in [p for p in size if fnmatch.fnmatch(rel(p), "private/var/folders/*/*/X")]:
+    if p not in size:
+        continue
+    k, a = size[p], os.path.dirname(p)
+    while a in size:
+        size[a] -= k
+        if a == vol: break
+        a = os.path.dirname(a)
+    for q in [q for q in size if q == p or q.startswith(p + "/")]:
+        del size[q]
+kids = {}
+for p in size:
+    if p != vol:
+        kids.setdefault(os.path.dirname(p), []).append(p)
+heap = [(-size[p], p) for p in kids.get(vol, [])]
+heapq.heapify(heap)
+found = []
+while heap and len(found) < 3:
+    k, p = heapq.heappop(heap)
+    c = kids.get(p, [])
+    if c and 2 * max(size[q] for q in c) >= -k:
+        for q in c: heapq.heappush(heap, (-size[q], q))
+    else:
+        found.append((-k, p))
+for k, p in found:
+    print("%d\t%s" % (round(k / 1048576), p))
+denied = [ln for ln in r.stderr.split("\n") if "Operation not permitted" in ln or "Permission denied" in ln or "deadlock avoided" in ln]
+if denied:
+    print("du could not read %d folders (first: %s) - the list is of what it could read" % (len(denied), denied[0].split(": ")[1] if ": " in denied[0] else denied[0]))' "$1" "${HEALTH_DU_CMD:-}"; }
+# Free space (since 2026-10-25: the always-on Mac stood at 16 GB of 2 TB and the night's pass said ok). Flat
+# numbers, not a share: the laptop's disk is smaller. A fail is posted like a failing check, under
+# its own state file, naming the folders sorted by name, no sizes (they move daily; post_once
+# compares text); a warn is logged only and keeps what was posted, so a disk hovering at 50 GB
+# posts once, not at every crossing; only room again (over the warn line) clears it. Free comes from df, never from du (clones). Read-only: nothing is deleted.
+DISK_FAIL=50 DISK_WARN=100   # GB free
+vol="${HEALTH_DISK_VOL:-/System/Volumes/Data}"; [ -d "$vol" ] || [ -n "${HEALTH_DF_CMD:-}" ] || vol=/
+if [ "$DISK" != on ]; then
+  echo "disk: off (DISK in bin/health)"
+else
+  free=$(${HEALTH_DF_CMD:-df} -Pk "$vol" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ {print int($4/1048576)}')
+  if [ -z "$free" ]; then echo "disk: df -Pk $vol could not tell — skipped"
+  elif [ "$free" -lt "$DISK_FAIL" ]; then
+    echo "disk: FAIL $free GB free on $vol (fail under $DISK_FAIL GB, warn under $DISK_WARN)"
+    echo "  biggest folders, du -x (/private/var/folders/*/*/X left out: APFS clones it over-counts):"
+    big=$(disk_rank "$vol")
+    printf '%s\n' "$big" | awk -F'\t' 'NF == 2 {print "  " $1 " GB  " $2; next} {print "  " $0}'
+    names=$(printf '%s\n' "$big" | awk -F'\t' 'NF == 2 {print $2}' | sed 's/·/-/g' | sort | paste -sd ';' - | sed 's/;/; /g')
+    case "$big" in *"du could not read"*) names="${names:-du named none} (du could not read some folders)";; esac
+    post_once "$state.disk" "free disk" "under $DISK_FAIL GB free on $vol; biggest folders: ${names:-du named none} — the owner's to clear"
+  elif [ "$free" -lt "$DISK_WARN" ]; then echo "disk: warn $free GB free on $vol (warn under $DISK_WARN GB)"
+  else echo "disk: $free GB free on $vol"; rm -f "$state.disk"; fi
 fi
 
 # hookwatch's pin (autofinish-exclude S4), read from its state as text, whichever check runs below:

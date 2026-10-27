@@ -121,13 +121,19 @@ with gate `held` and the class (`stopped <branch> held held (<why>): …`), whic
 calling it by hand is closest to `/autofinish`). --merge: the owner's `--merge` (/finish's: their explicit
 yes to merge this branch's PR, given up front), carried into the run: the prompt becomes
 `/finish <branch> --unattended --merge`, and on the build Mac step 11.4 then merges without asking. It
-covers that one branch's PR only, and only a person gives it: `--by override` or `--by typed`; with
+covers that one branch's PR only, and only a person gives it: `--by override` or `--by typed` (cold_prompt
+passes `--by typed --merge` on the laptop, where a typed /finish is that yes, so a run sent to the peer
+carries it into the peer's prompt; the night-landings digest's D3-A, 2026-10-25); with
 `--by sweep`, `chain` or `yolo` it is refused at once (exit 2) — the sweep and the chain have no
 person's yes, and a yolo launch outside a `"merge": "auto"` repo stops at a held PR on purpose (E12).
 So is any caller with CLAUDE_UNATTENDED set (exit 2): every dispatched run has it, and its allow rules
-pass `bin/*` unseen, so a run the sweep started could otherwise launch another that merges. The label
+pass `bin/*` unseen, so a run the sweep started could otherwise launch another that merges. So is
+AUTOFINISH_CALLER_UNATTENDED (the peer's job of an unattended sender), and peer-start refuses --merge
+beside --unattended-caller; the sender's refusal is the one that counts, since start_on_peer reads the
+peer's exit 2 as "cannot take it" and starts the run here, flag and all. The label
 is all that is checked otherwise, the caller's word that a person said yes. A chain relaunch of a
-`--merge` run does not carry it, nor a sweep retry of one that died: either stops at the PR. --session: the caller's own session (E7's hook
+`--merge` run does not carry it, nor a sweep retry of one that died: either stops at the PR on the
+other Mac, while a retry from the laptop merges by the laptop's path (here, or through `--from` on the peer). --session: the caller's own session (E7's hook
 passes the panel's), never a lock holder it is refused for. A skipper (SKIPPER_SCOPE set) is refused
 --merge as an unattended run is: its yes is the keel's, carried as `--by ship`, never its own word.
 
@@ -329,7 +335,9 @@ account may run it now), 4 the ship's lease refuses the caller's generation (DIS
 Tests (bin/test_autofinish_run.sh) replace dispatch's commands with DISPATCH_CLAUDE, _SCREEN and the
 rest; AUTOFINISH_HOST names this Mac, AUTOFINISH_ON its peer ("" none), AUTOFINISH_SSH ssh and
 AUTOFINISH_LAUNCHCTL launchctl, AUTOFINISH_END_WARM `dispatch-rc end-warm`, AUTOFINISH_PEER_WAIT and
-AUTOFINISH_SEND_BUDGET their constants; AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
+AUTOFINISH_SEND_BUDGET their constants, AUTOFINISH_DAY (YYYY-MM-DD) the day Tree.runlog and log() take (log_day();
+runlog_of keeps the run's start day, and bin/autofinish's sweep lines the real clock), so a case run across local
+midnight reads the file it wrote (the night-landings digest's finding 7: a CI run at 00:00, 2026-10-26); AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
 DISPATCH_ACCOUNT; the tests mostly run the real one on a fixture registry), AUTOFINISH_API_STUB names a Python file whose
 `api()` stands in for common.api. Python 3.9, stdlib only.
 """
@@ -484,6 +492,11 @@ def now_iso():
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def log_day():
+    """The day a day-named log takes: AUTOFINISH_DAY (the tests' seam), else the local date."""
+    return os.environ.get("AUTOFINISH_DAY") or datetime.date.today().isoformat()
+
+
 def git(where, *args):
     r = subprocess.run(["git", "-C", where, *args], capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else ""
@@ -506,7 +519,7 @@ class Tree:
         self.state_dir = os.path.join(self.gitdir, "claude")
         self.window = "finish · %s" % self.topic   # dispatch adds " · <machine>" for Remote Control
         # fixed at the start: a run that crosses midnight keeps one file
-        self.runlog = os.path.join(LOGS, "%s-dispatch-finish-%s.log" % (datetime.date.today().isoformat(), self.topic))
+        self.runlog = os.path.join(LOGS, "%s-dispatch-finish-%s.log" % (log_day(), self.topic))
 
     def problem(self):
         if not self.path or not self.gitdir:
@@ -546,7 +559,7 @@ def write_state(t, st):
 def log(line):
     """One line in the day's autofinish log — the dry run's file and shape."""
     os.makedirs(LOGS, exist_ok=True)
-    with open(os.path.join(LOGS, "autofinish-%s.log" % datetime.date.today().isoformat()), "a") as f:
+    with open(os.path.join(LOGS, "autofinish-%s.log" % log_day()), "a") as f:
         f.write(line.rstrip("\n") + "\n")
 
 
@@ -1710,7 +1723,7 @@ def record(t, st, log_from, rc, why, notes):
 
 def runlog_of(t, st):
     """The dispatch log a run wrote to: named for the day it started (Tree's is today's)."""
-    day = str(st.get("started") or "")[:10] or datetime.date.today().isoformat()
+    day = str(st.get("started") or "")[:10] or log_day()
     return os.path.join(LOGS, "%s-dispatch-finish-%s.log" % (day, t.topic))
 
 
@@ -2585,8 +2598,10 @@ def peer_start(argv):
         print("autofinish-run peer-start: --from takes a host name, and never from an unattended caller", file=sys.stderr)
         return 2
     # The job's env holds only AUTOFINISH_JOB and PATH, so run_main's refusal never sees the caller:
-    # refuse here, before anything is written (AGENTS.md trap: a person's-yes flag).
-    if args.merge and (args.by not in MERGE_BY or unattended):
+    # refuse here, before anything is written (AGENTS.md trap: a person's-yes flag). The sender's
+    # unattended caller too. Not a backstop: start_on_peer reads this exit 2 as "cannot take it" and
+    # starts the run on the sender, flag and all, so run_main's refusal there is the one that counts
+    if args.merge and (args.by not in MERGE_BY or unattended or args.unattended_caller):
         print("autofinish-run peer-start: --merge needs a person's yes (--by %s, not an unattended caller)"
               % " or ".join(MERGE_BY), file=sys.stderr)
         return 2
@@ -2975,7 +2990,9 @@ def run_main(args):
         print("autofinish-run: --merge needs a person's yes, so --by %s (not %s) only" % (" or ".join(MERGE_BY), args.by),
               file=sys.stderr)
         return 2
-    for n in ("CLAUDE_UNATTENDED", "SKIPPER_SCOPE"):
+    # AUTOFINISH_CALLER_UNATTENDED too: unattended_caller() counts it, and a peer that refuses --merge
+    # exits 2, which start_on_peer reads as "cannot take it" and starts here (relay-merge review)
+    for n in ("CLAUDE_UNATTENDED", "SKIPPER_SCOPE", "AUTOFINISH_CALLER_UNATTENDED"):
         if args.merge and os.environ.get(n):
             print("autofinish-run: --merge needs a person's yes, and this caller is an unattended run (%s=%s)"
                   % (n, os.environ[n]), file=sys.stderr)

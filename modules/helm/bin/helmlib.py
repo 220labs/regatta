@@ -1143,3 +1143,167 @@ def ssh_peers():
     except Exception:
         return {}
     return dict(l.split(":", 1) for l in lines if ":" in l)
+
+
+# ---------------------------------------------------------------------------- pull requests (board-cleanup S1)
+
+# One read of a repo's pull requests serves every board reader that asks "is this branch's work
+# landed?" — the stall cards, the ask poll, the PR cards and Done today (docs/helm-board-noise-2026-10-25.md):
+# every open PR (no cap: one repo had 102 open where the board showed 10) and the newest PR_RECENT of any
+# state, which is where a branch the board still sees has its merged or closed PR. Cached per repo for
+# PR_TTL, so the ask poll and the board's build share one read. 10 minutes, not the poll's 5: two reads a
+# repo (more pages for the big ones: 300 of any state is 3) over ~36 repos on both Macs is ~1,000 GraphQL
+# points an hour of the 5,000 GitHub allows, which the checkpoint hook and bin/pr share. A card is at most
+# 10 minutes late to drop off.
+PR_TTL = 600
+PR_RECENT = 300
+PR_STALE = 86400   # a cache this old is no answer when GitHub cannot be read
+PR_FIELDS = "number,state,headRefName,headRefOid,title,url,isDraft,updatedAt,mergedAt,closedAt"
+
+
+def pr_cache_dir():
+    return Path(os.environ.get("PLAN_CACHE_DIR") or Path(os.environ.get("HOME") or Path.home()) / "Library/Caches/plan") / "prs"
+
+
+def _gh_prs(top, state, limit):
+    import subprocess
+    r = subprocess.run([os.environ.get("HELM_GH") or "gh", "pr", "list", "--state", state, "--limit", str(limit),
+                        "--json", PR_FIELDS], cwd=str(top), capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160])
+    rows = json.loads(r.stdout or "[]")
+    if not isinstance(rows, list):
+        raise ValueError("gh pr list: no list")
+    return [p for p in rows if isinstance(p, dict) and p.get("number")]
+
+
+def repo_prs(top):
+    """A repo's pull requests, newest first: every open one and the newest PR_RECENT of any state; None
+    when they cannot be told (PLAN_NO_GH, an origin that is not GitHub's, gh failing with no cache younger
+    than PR_STALE). HELM_GH names the gh to run (the suites' stand-in), for any origin."""
+    top = Path(top)
+    if os.environ.get("PLAN_NO_GH"):
+        return None
+    import hashlib
+    import subprocess
+    cache = pr_cache_dir() / ("%s-%s.json" % (top.name, hashlib.sha1(str(top).encode()).hexdigest()[:8]))
+    try:
+        ttl = float(os.environ.get("HELM_PR_TTL") or PR_TTL)
+    except ValueError:
+        ttl = PR_TTL
+    try:
+        d = json.loads(cache.read_text())
+        age = time.time() - float(d["t"])
+        if age < ttl:
+            return d["prs"]
+    except (OSError, ValueError, KeyError, TypeError):
+        d, age = None, None
+    if not os.environ.get("HELM_GH"):
+        try:
+            url = subprocess.run(["git", "-C", str(top), "config", "--get", "remote.origin.url"],
+                                 capture_output=True, text=True, timeout=15).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            url = ""
+        if "github.com" not in url:
+            return None
+    try:
+        rows = {p["number"]: p for p in _gh_prs(top, "all", PR_RECENT)}
+        rows.update({p["number"]: p for p in _gh_prs(top, "open", 1000)})
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+        return d["prs"] if d and age is not None and age < PR_STALE else None
+    prs = sorted(rows.values(), key=lambda p: -int(p["number"]))
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(cache.name + ".%d.tmp" % os.getpid())
+        tmp.write_text(json.dumps({"t": time.time(), "prs": prs}))
+        tmp.replace(cache)
+    except OSError:
+        pass
+    return prs
+
+
+def prefetch_prs(tops, workers=8):
+    """repo_prs() over many repos at once: one gh call each, in parallel, so a board over 30-odd repos
+    costs the slowest repo's read, not their sum. {str(top): prs or None}. A guarded repo is never read:
+    nothing of it leaves (K6), its PR titles included, as pr_cards skipped it before gh (S1 review)."""
+    from concurrent.futures import ThreadPoolExecutor
+    tops = [t for t in dict.fromkeys(str(t) for t in tops) if not guarded(Path(t).name)]
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(tops) or 1))) as ex:
+        return dict(zip(tops, ex.map(lambda t: repo_prs(t), tops)))
+
+
+def _iso_ts(s):
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def pr_state(prs, branch, tip=None, tip_time=None):
+    """(state, pr) of `branch`'s newest pull request in `prs` (one repo's: branch names repeat across
+    repos, so the caller picks the repo first): "open", "merged" or "closed", or (None, None) with no PR.
+    A merged or closed PR does not end a branch that moved on after it — a tip that is not the PR's head,
+    committed after the PR ended (the trap of a PR matched by branch name alone, AGENTS.md): that reads
+    (None, pr)."""
+    for p in prs or ():
+        if p.get("headRefName") != branch:
+            continue
+        s = str(p.get("state") or "").lower()
+        if s in ("merged", "closed") and tip and p.get("headRefOid") and tip != p["headRefOid"] and tip_time:
+            ended = _iso_ts(p.get("mergedAt") or p.get("closedAt"))
+            if ended is not None and float(tip_time) > ended:
+                return None, p
+        return (s if s in ("open", "merged", "closed") else None), p
+    return None, None
+
+
+def repo_tops():
+    """{repo name: [checkout]} of the repos this Mac has cloned (the core's cloned_repos, the projects folder
+    with no core). A name can name two checkouts (a private repo and its public twin share a folder
+    name): every reader asks each of them."""
+    try:
+        tops = [Path(p) for p in _common().cloned_repos()]
+    except Exception:
+        root = Path(os.environ.get("HOME") or Path.home()) / "projects"
+        tops = [p for p in root.iterdir() if (p / ".git").exists()] if root.is_dir() else []
+    out = {}
+    for t in tops:
+        out.setdefault(t.name, []).append(t)
+    return out
+
+
+def branch_ended(states, repo, branch, tip=None, tip_time=None):
+    """"merged" or "closed" when `(repo, branch)`'s newest PR ended it, else None. `states` is
+    {str(top): prs} (prefetch_prs) and a repo name's checkouts are looked up in repo_tops(): an open PR
+    in any of them keeps the branch live."""
+    if not (repo and branch):
+        return None
+    ended = None
+    for top in repo_tops().get(repo, []):
+        s, _ = pr_state(states.get(str(top)), branch, tip, tip_time)
+        if s == "open":
+            return None
+        ended = ended or (s if s in ("merged", "closed") else None)
+    return ended
+
+
+ASK_SKIP_NAMES = ("TEMPLATE.md",)
+
+
+def not_an_ask(rel):
+    """A doc whose D-items ask nobody: a template's and a test's fixture (the board's 2026-10-25 count
+    held one of each)."""
+    p = Path(str(rel or ""))
+    return p.name in ASK_SKIP_NAMES or "tests" in p.parts
+
+
+def newest_per_item(rows):
+    """One ask row per (repo, rel, item): the newest branch's (its `t`, the branch's last commit; the
+    later row on a tie). The same doc item on two branches is one ask for the owner (7 of 58 on 2026-10-25)."""
+    best = {}
+    for r in rows:
+        k = (r.get("repo"), r.get("rel"), r.get("item"))
+        if k not in best or float(r.get("t") or 0) >= float(best[k].get("t") or 0):
+            best[k] = r
+    keep = {id(r) for r in best.values()}
+    return [r for r in rows if id(r) in keep]

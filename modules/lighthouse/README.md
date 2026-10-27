@@ -7,7 +7,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 
 | Piece | What it does |
 | --- | --- |
-| `bin/health` | the unattended daily pass: fast-forward the checkouts `lighthouse/ff` names, wharf's tend, the privacy survey, the Orca serve agent's process and answer, the overlay's check (else `regatta check`); a failure posted once to the bulletin |
+| `bin/health` | the unattended daily pass: fast-forward the checkouts `lighthouse/ff` names, wharf's tend, the privacy survey, the Orca serve agent's process and answer, free disk (fail under 50 GB, naming the three biggest folders; warn under 100), the overlay's check (else `regatta check`); a failure posted once to the bulletin |
 | `bin/claude-settings` | the declared settings (`check`, `apply`, `declare`): one declaration in git, applied to each config dir, drift reported |
 | `bin/account` | several Claude Code (and Codex) logins on one Mac: the registry, `pick`, `limits`, `run`, `setup`, `check` |
 | `shell/cc.zsh` | `cc <label> [claude args]`: start Claude Code on a chosen login |

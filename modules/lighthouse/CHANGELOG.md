@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `account limits --orca` runs `orca open` when Orca's newest agent reading is over an hour old
+  (`orca_wake`): Orca reads limits only while its window is focused and keeps the last after it closes,
+  so the widget's Antigravity card went 5 days stale. Once an hour at most (Orca takes focus), never
+  under `CLAUDE_UNATTENDED`, waiting 30 s at most. An answer with no agent's reading keeps every last
+  reading, where one agent left `unavailable` used to wipe the rest (2026-10-26).
+- health: a free-disk line — under 50 GB free on the data volume fails and is posted once, naming the
+  three biggest folders one `du -x` pass finds (Chrome's APFS clone folders left out);
+  under 100 GB warns in the log. Read-only; `df` gives the free space (2026-10-25).
 - deadman: `inbox_repo` defaults to the config dir's `helm/logbook-repo`, helm's renamed stall-road key;
   the old `helm/inbox-repo` is not read (2026-10-25).
 - `account setup` writes the first-start keys into every login dir this Mac carries, Orca's and the
@@ -179,6 +187,12 @@
   reads its own `<it>.tenants`, never the live key.
 - Carried from the overlay (the wharf rename's S5, 2026-10-20): the launch word in `claude-settings`
   and `tiling`'s prose and messages.
+- health: a start-path canary line (orca-launcher S7, docs/orca-launcher-2026-10-24.md): `clock canary check
+  --json` on this Mac, and a failing beat is posted like a failing check, under its own state file, naming
+  the beats without their minutes (`HEALTH_CANARY`, `HEALTH_CANARY_CMD`). A Mac without wharf-runs' clock skips
+  in one line; an exit that is not the failing verdict, or output that is not findings (exit 0 included), posts
+  "could not tell". Under the studio brake (`~/.studio-brake`) it is not read: no beat fires while Orca is frozen.
+  The privacy line names a refusal charged to Orca for a job it started (`rc-hosts --tcc-survey` counts them).
 
 ## 0.1.0 — 2026-10-19
 

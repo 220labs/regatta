@@ -56,10 +56,13 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # The job ran 40.45 min on the idle build Mac (run 40012393574, 2026-10-23: keel 8.2, wharf-runs
     # 13.5) and 51.5 min beside its sessions (runs 40121322251 and 40121340160, 2026-10-24), so 60
-    # is about 1.2 times the slowest job, no longer twice it (docs/check-load-2026-10-23.md's Evidence,
-    # docs/host-power-costs-2026-10-24.md finding 8; re-read from the records, 2026-10-24). A run
-    # over it is a suite gone slow, or the runner under more load than on 2026-10-24.
-    timeout-minutes: 60
+    # was about 1.2 times the slowest job, no longer twice it (docs/check-load-2026-10-23.md's Evidence,
+    # docs/host-power-costs-2026-10-24.md finding 8; re-read from the records, 2026-10-24).
+    # 90 since 2026-10-26: the merged runs that evening took 54 and 55 min (40429766668, 40414482058),
+    # and a run beside 6 to 7 busy dispatch runs (load 8 to 11) was cut at 60 twice in helm's suite,
+    # with every case before the cut passing (40435572133, attempts 1 and 2). A run over 90 is
+    # a suite gone slow, or the runner under more load than on 2026-10-26.
+    timeout-minutes: 90
     # keel's step runs where its session gate is: without hooks/sheep_gate.py keel's sheep fails
     # closed and its suite with it (178 cases on the twin's files, 2026-10-22). helm's step needs that
     # gate too (talk_nudge's cases). sheep_gate.py is public since keel-held (2026-10-23); the guard

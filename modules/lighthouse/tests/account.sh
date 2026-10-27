@@ -1036,19 +1036,21 @@ cat > "$T/orca-r.json" <<EOF
   "flaky": {"provider": "flaky", "status": "error", "error": "token expired", "weekly": null},
   "claudeTarget": {"runtime": "host"}, "nologinConfigured": false, "inactiveClaudeAccounts": []}}}
 EOF
-# the stub logs each call; -down plays an app not running, -empty one not ready (no agent listed),
-# -bad an answer whose shape changed (a buckets list that is a number)
+# the stub logs each call; -down plays an app not running, -empty one headless from a cold start (each
+# entry null, one left unavailable, as seen 2026-10-26), -bad an answer whose shape changed (a buckets
+# list that is a number); `open` logs itself and ends -empty, as a focused window ends the null readings
 cat > "$T/orca-r" <<EOF
 #!/bin/sh
+[ "\$1" = open ] && { echo open >> "$T/orca-r-opens"; rm -f "$T/orca-r-empty"; echo '{"ok": true}'; exit 0; }
 [ "\$1 \$2" = "account list" ] || exit 9
 echo call >> "$T/orca-r-calls"
 [ -f "$T/orca-r-down" ] && { echo "connect ECONNREFUSED" >&2; exit 1; }
-[ -f "$T/orca-r-empty" ] && { echo '{"ok": true, "result": {"rateLimits": {}}}'; exit 0; }
+[ -f "$T/orca-r-empty" ] && { echo '{"ok": true, "result": {"rateLimits": {"claude": null, "agy": null, "mon": null, "gone": {"provider": "gone", "status": "unavailable", "usageMetadata": {"failureKind": "missing-credentials"}}, "claudeTarget": {"runtime": "host"}}}}'; exit 0; }
 [ -f "$T/orca-r-bad" ] && { sed 's/"buckets": \[/"buckets": 5, "x": [/' "$T/orca-r.json"; exit 0; }
 cat "$T/orca-r.json"
 EOF
 chmod +x "$T/orca-r"
-AR() { ACCOUNTS_FILE="$ACCOUNTS_FILE.c" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=${NOW_AT:-$WED} python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
+AR() { CLAUDE_UNATTENDED=${CLAUDE_UNATTENDED-1} ACCOUNTS_FILE="$ACCOUNTS_FILE.c" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=${NOW_AT:-$WED} python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
 reset; rm -f "$P1/account-orca.json" "$P1/account-orca-limits.json" "$T/orca-r-calls"; use "$P1" "10 10"
 rows() { python3 -c "import json;print([$1 for r in json.load(open('$T/out')) if ${2:-True}])"; }
 check "$(AR limits --all --orca --json; rows "r['label']")" "0
@@ -1080,11 +1082,33 @@ check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:16])" "r.ge
 check "$(NOW_AT=$(python3 -c "print($WED + 6 * 86400)") AR limits --all --orca --json; rows "[b['percent'] for b in r['limits']['buckets']]" "r['label'] == 'agy'")" \
   "0
 [[0, 0]]" "…a bucket past its reset reads 0, as a window does"
-rm -f "$T/orca-r-down"; touch "$T/orca-r-empty"
-check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:20])" "r.get('via')"; python3 -c "import json;print(sorted(json.load(open('$P1/account-orca-limits.json'))))")" \
-  "0
+rm -f "$T/orca-r-down" "$P1/account-orca-wake" "$T/orca-r-opens"
+# AR's runs are unattended, so no case wakes Orca unless it asks; OW asks. The stub's newest reading is
+# $WED - 60, so it is over an hour old from $WED + 3540 on.
+OW() { CLAUDE_UNATTENDED= ACCOUNT_ORCA_WAKE_WAIT=6 AR "$@"; }
+opens() { cat "$T/orca-r-opens" 2>/dev/null | wc -l | tr -d ' '; }
+check "$(OW limits --all --orca --json; rows "r['why'][:16]" "r.get('via')"; opens)" "0
+['reported by Orca', 'reported by Orca', 'Orca: token expi']
+0" "Orca's newest reading under an hour old: Orca not opened"
+touch "$T/orca-r-empty"
+check "$(OW limits --all --orca --json; rows "(r['label'], r['why'][:16])" "r.get('via')"; opens)" "0
+[('agy', 'reported by Orca'), ('mon', 'reported by Orca'), ('flaky', 'Orca: token expi')]
+1" "…headless from a cold start (each entry null, one left unavailable): Orca opened, then a fresh reading (2026-10-26: 5 days stale)"
+check "$(NOW_AT=$(python3 -c "print($WED + 3590)") OW limits --all --orca --json; rows "r['why'][:16]" "r.get('via')"; opens)" "0
+['reported by Orca', 'reported by Orca', 'Orca: token expi']
+1" "…a reading over an hour old within an hour of the last open: not opened again (Orca takes focus)"
+check "$(NOW_AT=$(python3 -c "print($WED + 7200)") OW limits --all --orca --json; rows "r['why'][:16]" "r.get('via')"; opens)" "0
+['reported by Orca', 'reported by Orca', 'Orca: token expi']
+2" "…an hour on: opened again, as Orca keeps its last reading after its window closes; a reading not renewed is served as it is"
+python3 -c "print($WED + 86400)" > "$P1/account-orca-wake"; touch "$T/orca-r-empty"
+check "$(OW limits --all --orca --json; rows "r['why'][:16]" "r.get('via')"; opens)" "0
+['reported by Orca', 'reported by Orca', 'Orca: token expi']
+3" "…a stamp from the future (a clock set back) is stale, not too soon: opened"
+python3 -c "print($WED - 7200)" > "$P1/account-orca-wake"; touch "$T/orca-r-empty"
+check "$(CLAUDE_UNATTENDED=dispatch AR limits --all --orca --json; rows "(r['label'], r['why'][:20])" "r.get('via')"; python3 -c "import json;print(sorted(json.load(open('$P1/account-orca-limits.json'))))"; opens)" "0
 [('agy', 'Orca listed no agent'), ('mon', 'Orca listed no agent')]
-['agy', 'flaky', 'mon']" "Orca listing no agent is Orca not ready: the last readings, none wiped (review 2026-10-21)"
+['agy', 'flaky', 'mon']
+3" "…never under CLAUDE_UNATTENDED; an answer with no agent's reading keeps every last one, none wiped by the one left unavailable (review 2026-10-21, 2026-10-26)"
 rm -f "$T/orca-r-empty"; touch "$T/orca-r-bad"
 check "$(AR limits --all --orca --json; rows "(r['label'], r['why'][:40])" "r.get('via')")" \
   "0
@@ -1150,7 +1174,7 @@ EOF
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.o" ACCOUNT_ORCA="$T/orca-r" ACCOUNT_NOW=$WED python3 "$B/account" limits --all --orca --json 2>/dev/null | python3 -c "import json,sys;print([(r['label'], r['provider']) for r in json.load(sys.stdin)])")" \
   "[('main', 'claude'), ('orca-mon-2', 'mon'), ('flaky', 'flaky')]" \
   "an agent named as a row, and its orca- name taken too, gets a unique label, never a shadow; its provider stays Orca's"
-rm -f "$P1/account-orca-limits.json" "$T/orca-r-calls"; reset
+rm -f "$P1/account-orca-limits.json" "$P1/account-orca-wake" "$T/orca-r-calls" "$T/orca-r-opens"; reset
 
 echo "peers absent: wharf's window and worktree hook, plumb's usage column (G16, G18)"
 peer() { python3 -c 'import sys, importlib.machinery as m, importlib.util as u

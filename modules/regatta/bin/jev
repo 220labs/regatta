@@ -53,7 +53,9 @@ Policy (the owner, 2026-10-02; E5 of the record above):
 - Data from a guarded source (GUARDED: the config dir's regatta/guarded, one repo per line; none
   without it) goes only with the owner's say-so for that use: ask() refuses unless `approved`
   quotes it ("<owner>, <date>: send the inbox subjects"); the quote is logged. The owner is the
-  one regatta/owner names, as for the core's closing lines.
+  one regatta/owner names, as for the core's closing lines. A confidential scope's repo is guarded
+  the same way, and so is an unknown source while a scope is confidential (confidential(), the
+  stopgap of 2026-10-26).
   The source is the `source` argument, else the git repo the caller runs in; the CLI also checks
   the --state file's path (symlinks resolved). A caller sending data gathered across repos (a
   corpus, a session sweep) passes source=<that item's repo> on every call: the cwd default only
@@ -101,6 +103,40 @@ def _core_common():
 
 
 common = _core_common()
+
+
+def confidential(source):
+    """True when `source` — a repo as repo_of and review-gate name it (the checkout's basename), a
+    registry key or a path — may hold a confidential scope's text: a member of one, a folder that holds
+    one (the projects folder, a group folder), or unknown (none, '?') while any scope is confidential
+    (the core's gather_fence: unknown is never quoted); and every source while the registry cannot be
+    read (a fence fails closed: regatta AGENTS.md's Traps). One parse of the registry, so the tear and
+    the scopes are judged on the same file. A key matches by itself or its last part, so two repos
+    sharing a basename both count, and case is folded (the Macs' disks ignore it): the safe side for a
+    fence. The confidential stopgap of 2026-10-26: until the confidential-reach design's gate work, such
+    text reaches TypeSafe (here) or another vendor but Anthropic (bin/gate) only on the owner's quote,
+    as a guarded source's does."""
+    reg, torn = common.read_registry()
+    if torn:
+        return True
+    reg = reg or {}
+    repos = reg.get("repos") or {}
+    keys = [k.casefold() for sc in (reg.get("scopes") or {}).values()
+            if isinstance(sc, dict) and sc.get("confidential") is True for k in common.scope_members(sc, repos)]
+    if not keys:
+        return False
+    s = str(source or "").rstrip("/")
+    if s in ("", "?"):
+        return True
+    names = {s.casefold(), os.path.basename(s).casefold()}
+    under = (common.repo_key(s) or "").casefold() if s.startswith("/") else None   # a path inside a checkout
+    if under in ("", "."):   # the projects folder itself
+        return True
+    return any(k in names or k.rsplit("/", 1)[-1] in names
+               or (under and (under == k or under.startswith(k + "/") or k.startswith(under + "/")))
+               or (not under and k.startswith(s.casefold() + "/"))
+               for k in keys)
+
 
 # Which repos' data may go to a model vendor only on the owner's quote, decided per vendor in
 # bin/gate's `approved` (the owner, 2026-10-02): the overlay's list, none without it. Not the list
@@ -275,7 +311,7 @@ def ask(state, questions, model="jev-latest", key=None, timeout=60, attempts=5,
         if caller != "jev-cli":
             print("jev: no source given; assuming the cwd's repo, %s — pass source= when the "
                   "data comes from elsewhere" % source, file=sys.stderr)
-    if source in GUARDED and not (approved or "").strip():
+    if (source in GUARDED or confidential(source)) and not (approved or "").strip():
         raise JevError("refused: data from %s goes to TypeSafe only with %s's say-so — ask, "
                        "then pass approved=\"%s, <date>: <what>\"" % (source, WHO, QUOTE_BY))
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname().split(".")[0],
@@ -355,7 +391,7 @@ def main(argv=None):
         if state is None:
             raise JevError("ask needs --state")
         source = a.source or repo_of(os.getcwd())
-        if repo_of(a.state) in GUARDED and a.state != "-":
+        if a.state != "-" and (repo_of(a.state) in GUARDED or confidential(os.path.abspath(a.state))):
             source = repo_of(a.state)
         if a.dry_run:
             print(json.dumps({"model": a.model, "state": state, "questions": questions},

@@ -150,6 +150,8 @@ from orca … automate this"), so one signed in there reaches the widget with no
 rows are no registry rows: never walked, picked or probed, and gone when Orca says the agent is
 signed out; Orca's other `unavailable` (a CLI too old, a provider switched off) and its errors keep
 the last reading (ORCA_SEEN) with its age and Orca's word, as does an Orca that cannot be read.
+Orca reads those limits only while its window is focused, and keeps the last after it closes: when
+its newest reading is over an hour old, `--orca` runs `orca open` once an hour at most (orca_wake).
 Stdlib only, Python 3.9.
 
 A row may say `"via": "orca"` (docs/orca-accounts-2026-10-16.md; the owner, 2026-10-16: "add one
@@ -233,6 +235,7 @@ SHIPS = DEFAULT_DIR / "account-ships.json"        # {ship key: {label, at}}: the
 PIN_DAYS = 14         # a pin older than this is no ship any more and goes at the next write
 ORCA_FILE = Path(os.environ.get("ACCOUNT_ORCA_FILE") or DEFAULT_DIR / "account-orca.json")   # orca-sync's read-back, this Mac's: {label: {home, orca_id, email, enabled?}, _default?}; hooks/common.py orca_file()
 ORCA_SEEN = Path(os.environ.get("ACCOUNT_ORCA_SEEN") or DEFAULT_DIR / "account-orca-limits.json")   # limits --orca's last reading per agent, this Mac's: {label: {at, limits, enabled?}}
+ORCA_WAKE = Path(os.environ.get("ACCOUNT_ORCA_WAKE") or DEFAULT_DIR / "account-orca-wake")   # when orca_wake last opened a window, an epoch
 ORCA_DATA = Path(os.environ.get("ACCOUNT_ORCA_DATA") or HOME / "Library/Application Support/orca")
 ORCA_APP_CLI = "/Applications/Orca.app/Contents/Resources/bin/orca"
 # What a secondary dir shares with the default dir by link (D3, section 2e). Never .claude.json, the
@@ -1940,22 +1943,86 @@ def orca_claude_accounts():
     return [x for x in accts if isinstance(x, dict)]
 
 
-def orca_read():
-    """→ (the `result` of `orca account list --json`, None), or (None, why there is none).
-    ELECTRON_RUN_AS_NODE is cleared: VS Code's terminals set it and the app's CLI then runs as
-    bare node (lessons/claude-code.md)."""
+def orca_env():
+    """The environment Orca's CLI runs in. ELECTRON_RUN_AS_NODE is cleared: VS Code's terminals set
+    it and the app's CLI then runs as bare node (lessons/claude-code.md)."""
+    return {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
+
+
+def orca_read(timeout=30):
+    """→ (the `result` of `orca account list --json`, None), or (None, why there is none)."""
     o = orca_bin()
     if not o:
         return None, "no orca CLI here (install the Orca app)"
-    env = {k: v for k, v in os.environ.items() if k != "ELECTRON_RUN_AS_NODE"}
     try:
-        r = subprocess.run([o, "account", "list", "--json"], capture_output=True, text=True, timeout=30, env=env)
+        r = subprocess.run([o, "account", "list", "--json"], capture_output=True, text=True, timeout=timeout, env=orca_env())
         d = json.loads(r.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         return None, f"`orca account list` gave nothing readable ({e}) — is the app running?"
     if not isinstance(d, dict) or not d.get("ok"):
         return None, f"`orca account list` refused: {json.dumps(d.get('error') if isinstance(d, dict) else d)[:300]}"
     return d.get("result") or {}, None
+
+
+def orca_agents(res):
+    """→ the agents in Orca's answer whose limits are reported from Orca alone (bar ORCA_PROBED);
+    none while Orca is not ready, or headless, where it lists each as null."""
+    rl = res.get("rateLimits") if isinstance(res, dict) else None
+    return [x for x in (rl.values() if isinstance(rl, dict) else [])
+            if isinstance(x, dict) and isinstance(x.get("provider"), str) and x["provider"] not in ORCA_PROBED]
+
+
+def orca_read_any(res):
+    """Whether Orca's answer holds a reading of any agent it reports (status ok): headless from a
+    cold start it lists them as null, or keeps one left `unavailable`."""
+    return any(x.get("status") == "ok" for x in orca_agents(res))
+
+
+def orca_newest(res):
+    """→ when Orca last read any agent it reports (the newest `updatedAt` of one with status ok), or None."""
+    ts = [x["updatedAt"] / 1000 for x in orca_agents(res)
+          if x.get("status") == "ok" and isinstance(x.get("updatedAt"), (int, float)) and x["updatedAt"] > 0]
+    return max(ts) if ts else None
+
+
+def orca_wake(before):
+    """→ Orca's answer once it reads an agent anew after `orca open`, or None. Orca polls usage only
+    while its window is focused, and keeps its last readings once the window closes (its source,
+    1.4.230: `shouldBackgroundPoll` asks `isFocused()`; the window's focus, show and restore refresh a
+    reading over 5 min old). Headless under `--serve` from 2026-10-22 to 26 the widget's Antigravity
+    card went 5 days stale; `orca open` filled every agent within one poll (the owner, 2026-10-26:
+    "build it"). The caller wakes it when its newest reading is over an hour old, so `before` is that
+    reading's time (None: none). Once an hour at most (ORCA_WAKE): the cost is Orca taking focus,
+    hourly while nobody focuses it. Never under CLAUDE_UNATTENDED: a run opens no window on a Mac
+    someone is using. Two runs at one moment may both open (no lock); the second only takes focus.
+    Quiet on stderr: the widget's reply rides on it (review 2026-10-26)."""
+    if os.environ.get("CLAUDE_UNATTENDED"):
+        return None
+    try:
+        wait = float(os.environ.get("ACCOUNT_ORCA_WAKE_WAIT") or 30)
+    except ValueError:
+        wait = 30
+    try:
+        # a stamp from the future (a clock set back, a test's ACCOUNT_NOW) is stale, not "too soon"
+        if 0 <= now() - float(ORCA_WAKE.read_text().strip()) < 3600:
+            return None
+    except (OSError, ValueError):
+        pass
+    try:
+        ORCA_WAKE.parent.mkdir(parents=True, exist_ok=True)
+        ORCA_WAKE.write_text(f"{now():.0f}\n")   # before the open: a failing one still waits an hour
+        if subprocess.run([orca_bin(), "open", "--json"], capture_output=True, timeout=30, env=orca_env()).returncode:
+            return None
+    except (OSError, TypeError, subprocess.TimeoutExpired):
+        return None
+    end = time.time() + wait   # each read gets only what is left, so a refresh waits `wait` s at most
+    while time.time() + 2 < end:
+        time.sleep(2)
+        res, err = orca_read(timeout=max(1, end - time.time()))
+        n = None if err else orca_newest(res)
+        if n is not None and (before is None or n > before):
+            return res
+    return None
 
 
 @functools.lru_cache(maxsize=1)  # orca-sync's two halves read one snapshot, one Electron start (review 2026-10-16)
@@ -2052,11 +2119,14 @@ def orca_reported(taken=(), cached=False):
     if err:
         return last(f"Orca unreadable ({err}); its last reading")
     try:
-        rl = res.get("rateLimits") if isinstance(res, dict) else None
-        agents = [x for x in (rl.values() if isinstance(rl, dict) else [])
-                  if isinstance(x, dict) and isinstance(x.get("provider"), str) and x["provider"] not in ORCA_PROBED]
-        if not agents:
-            return last("Orca listed no agent (not ready yet); its last reading")
+        newest = orca_newest(res)
+        if newest is None or now() - newest > 3600:
+            res = orca_wake(newest) or res
+        agents = orca_agents(res)
+        # no reading of any agent is Orca not ready, or headless (every entry null, or one left as
+        # `unavailable`): rebuilding from it would wipe each card (review 2026-10-26)
+        if not orca_read_any(res):
+            return last("Orca listed no agent's reading (not ready yet, or no window); its last reading")
         keep, rows = {p: {"enabled": False} for p in off}, []
         for x in agents:
             p = x["provider"]

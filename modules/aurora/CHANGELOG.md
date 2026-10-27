@@ -5,6 +5,8 @@
 - The suite gives git an identity of its own (`GIT_CONFIG_GLOBAL`, a made-up address) after moving
   HOME: the embark cases failed on the public twin's CI, where the runner cannot guess one (twin-ci-4,
   2026-10-25).
+- `/embark`: a `keel sheep wait` woken by comments prints them and takes nothing in (keel's part D,
+  2026-10-25); the skill says to answer with `keel sheep reply` or take them in with `sheep pull --write`.
 - The host rule is the core's (2026-10-24): weekly-run asks `common.weekly_host` in the same python
   that checks the core loads (one start, not two), and `install.sh --schedule` asks `regatta
   weekly-host aurora` before its dry run, and quotes the rule's line rather than the dry run's; the dry

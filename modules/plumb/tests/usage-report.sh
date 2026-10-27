@@ -19,6 +19,7 @@ lacks() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; fails=$((
 
 export TZ=America/Los_Angeles
 export USAGE_HOST=testmac USAGE_DATA="$T/data" USAGE_RENDER=1
+export CLAUDE_REPOS_JSON="$T/no-repos.json"   # no scopes unless a case names a registry: a session's own never reaches the suite
 export ACCOUNTS_FILE="$T/no-registry.json"   # the readers default to the live config dir's registry since 2026-10-22: never read it here
 # the weekly ratio: a scratch file, committed by a stub that records its argv
 export COST_RATIO="$T/cost-ratio.json" USAGE_KNOWLEDGE_COMMIT="$T/kc.sh"
@@ -548,5 +549,61 @@ echo "numbers: each scope pass's cost (knowledge-layers S5)"
 check "$(load "$B/usage-report" u 'u.scope_passes([{"title": "“/aurora dream --scope pub”", "session": "a", "cost": 1.5}, {"title": "“/aurora dream --scope pub”", "session": "a", "cost": 0.5}, {"title": "“/aurora dream --days 7 --scope node”", "session": "b", "cost": 2.0}, {"title": "“/aurora dream”", "session": "c", "cost": 9.0}, {"title": "Kids wake tuning", "session": "d", "cost": 1.0}])')" \
   "{'node': {'sessions': 1, 'usd': 2.0}, 'pub': {'sessions': 1, 'usd': 2.0}}" "by the session's prompt: one per scope, the night's own dream and other sessions left out"
 check "$(nj 'print(d["scope_passes"])')" "{}" "  numbers --json carries them (none in the fixture week)"
+
+echo "the fence: a confidential scope's project detail in no report (the confidential stopgap, 2026-10-26)"
+# A day's calls as collect writes them, in a data dir of their own: an open session, a confidential
+# one (the day's most expensive, with a project skill and agent) and its scope's weekly pass; the
+# review gate's line for a confidential branch beside them.
+FD="$T/fdata"; FR="$T/fence/reports"; mkdir -p "$FD/testmac/calls"
+printf '{"repos": {"lab/vault": {}, "harbor": {}}, "scopes": {"s-hidden": {"repos": ["lab/*"], "confidential": true}, "s-open": {"repos": ["harbor"]}}}\n' > "$T/frepos.json"
+printf '{"repos": {"lab/vault": {}}, "scopes": <<<<<<< HEAD\n' > "$T/ftorn.json"
+cat > "$T/fdata.py" <<'PY'
+import csv, json, sys
+D = sys.argv[1]
+F = ["day", "host", "source", "session", "title", "project", "model", "effort", "skill", "agent", "entry", "calls", "input", "output",
+     "cache_read", "cache_write_5m", "cache_write_1h", "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account"]
+def row(session, title, project, skill, agent, cost):
+    return {"day": "2026-09-19", "host": "testmac", "source": "claude-code", "session": session, "title": title, "project": project,
+            "model": "claude-opus-5-5", "effort": "high", "skill": skill, "agent": agent, "entry": "cli", "calls": 10, "input": 0,
+            "output": 1000, "cache_read": 100000, "cache_write_5m": 0, "cache_write_1h": 0, "calls_over_200k": 0, "calls_over_400k": 0,
+            "cost": cost, "first": "2026-09-19T17:00:00Z", "last": "2026-09-19T18:00:00Z", "account": ""}
+with open(f"{D}/testmac/calls/2026-09-19.csv", "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=F)
+    w.writeheader()
+    w.writerow(row("o1", "Open harbor work", "harbor", "finish", "main", 1.0))
+    w.writerow(row("v1", "Secret vault tuning", "lab/vault", "vault-deploy", "main", 5.0))
+    w.writerow(row("v1", "Secret vault tuning", "lab/vault", "", "vault-agent", 2.0))
+    w.writerow(row("v2", "“/aurora dream --scope s-hidden”", "lab/vault", "", "main", 0.5))
+    w.writerow(row("v3", "“/aurora dream --scope s-hidden”", "harbor", "", "main", 0.25))  # a pass run from an open repo
+    w.writerow(row("g1", "Group folder chat", "lab", "", "main", 0.1))       # the folder that holds the checkout
+    w.writerow(row("o2", "Fix the vault deploy", "harbor", "finish", "main", 0.1))  # an open row whose title names the repo
+json.dump({"ts": "2026-09-19T10:00:00-0700", "repo": "/r/lab/vault", "project": "lab/vault", "branch": "claude/x/2026-09-19-vault-secret-branch",
+           "diff": {"added": 10, "removed": 0}, "wrong": {"S1": 1}, "models": {"main": {"claude-opus-5-5": 9}, "agents": []}},
+          open(f"{D}/review-gate.jsonl", "w"))
+PY
+python3 "$T/fdata.py" "$FD"
+fu() { CLAUDE_REPOS_JSON="$1" USAGE_DATA="$FD" USAGE_LOCAL_REPORTS="$FR" USAGE_PUBLISH= USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" "${@:2}"; }
+SECRETS="Secret vault tuning|lab/vault|vault-deploy|vault-agent|vault-secret-branch|s-hidden|Group folder chat|Fix the vault deploy"
+fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null; cp "$FR/2026-09-19.md" "$T/f-open.md"
+check "$(grep -oE "$SECRETS" "$T/f-open.md" | LC_ALL=C sort -u | tr '\n' ' ')" "Fix the vault deploy Group folder chat Secret vault tuning lab/vault s-hidden vault-agent vault-deploy " "no registry: the fixture's names are in the report (the case can see them)"
+fu "$T/frepos.json" render --day 2026-09-19 > "$T/f.out"
+check "$(cat "$FR/2026-09-19.md" "$FR/latest.md" "$FR/latest-line.txt" "$T/f.out" | grep -cE "$SECRETS")" "0" \
+  "a confidential scope's title, project, skill and agent, its pass run from an open repo, a session in its group folder and an open title naming its repo: in no report file, the line or the log"
+has "$FR/2026-09-19.md" "| (confidential) |" "  its project reads (confidential) in the tables"
+has "$FR/latest-line.txt" "Biggest: (confidential #1), \$7.00" "  and in the line's Biggest, one session's cost (numbered: two fenced sessions never sum)"
+has "$FR/2026-09-19.md" "Open harbor work" "  an open scope's session is named as before"
+check "$(grep -m1 'in Claude Code and local Cowork' "$FR/2026-09-19.md")" "$(grep -m1 'in Claude Code and local Cowork' "$T/f-open.md")" \
+  "  its cost still counts: the headline's total is the unfenced one"
+check "$(grep -c '^| finish |' "$FR/2026-09-19.md")" "1" "  a shared skill name stays (the /finish lever reads it)"
+fu "$T/ftorn.json" render --day 2026-09-19 > /dev/null
+check "$(cat "$FR/2026-09-19.md" "$FR/latest-line.txt" | grep -cE "$SECRETS|Open harbor work")" "0" "a torn registry: every row fenced, the open one too (fails closed)"
+fu "$T/frepos.json" numbers --json > "$T/fn.json"; fu "$T/frepos.json" numbers > "$T/fn.txt"
+check "$(cat "$T/fn.json" "$T/fn.txt" | grep -cE "$SECRETS")" "0" "numbers: no confidential name, the review gate's branch included"
+check "$(python3 -c "import json; d=json.load(open('$T/fn.json')); print(d['scope_passes'], d['branch_quality']['without_worker']['n'])")" \
+  "{'(confidential)': {'sessions': 2, 'usd': 0.75}} 1" "  the scope's pass counted as (confidential), the branch counted"
+check "$(fu "$T/frepos.json" numbers --json --scope s-hidden | python3 -c 'import json,sys; print(json.load(sys.stdin)["scope_passes"])')" \
+  "{'s-hidden': {'sessions': 2, 'usd': 0.75}}" "  --scope names that scope's own pass (knowledge-numbers passes it)"
+check "$(fu "$T/ftorn.json" numbers --json --scope s-hidden | python3 -c 'import json,sys; print(json.load(sys.stdin)["scope_passes"])')" \
+  "{'(confidential)': {'sessions': 2, 'usd': 0.75}}" "  a torn registry: no scope named, even its own"
 
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi

@@ -188,6 +188,33 @@ check "$(py 'print(common.ORCA_ROW["repos"]["deny"], common.orca_row("x")["repos
 check "$(jp 'print(j.GUARDED, j.WHO)')" "('notes', 'logbook') Kapitän" "regatta/guarded: jev's guarded sources, blank lines skipped"
 check "$(jref)" 'refused: data from notes goes to TypeSafe only with Kapitän'"'"'s say-so — ask, then pass approved="Kapitän, <date>: <what>"' "  jev refuses one without a quote, naming the owner"
 check "$(gref)" "example.classify: refused: data from notes goes to typesafe only with Kapitän's say-so — approved has no 'typesafe' quote (it has: anthropic)" "  and so does the gate"
+# The confidential stopgap (2026-10-26): a confidential scope's repo is guarded as `notes` is, for every
+# vendor but Anthropic; a torn registry guards every source. Nothing here reaches a vendor: no
+# TypeSafe key is set, and claude is /usr/bin/false — an error that is no refusal is the call going ahead.
+printf '{"repos": {"lab/vault": {}, "lab/site": {}, "open": {}}, "scopes": {"s1": {"repos": ["lab/*"], "confidential": true}, "s2": {"repos": ["open"]}}}\n' > "$T/conf.json"
+cref() { CLAUDE_REPOS_JSON="${3:-$T/conf.json}" GATE_LOG="$T/conf-gate.jsonl" JEV_LOG="$T/conf-jev.jsonl" GATE_EXAMPLE_CLASSIFY_PROVIDER="${2:-jev}" CLAUDE_BIN=/usr/bin/false gp 'try: g.classify("example.classify", {"s1": "a"}, "Q?", {"yes": "y", "no": "n"}, source="'"$1"'", approved={"anthropic": "x"}, timeout=5, attempts=1)
+except g.GateError as e: print(e)'; }
+check "$(cref vault)" "example.classify: refused: data from vault goes to typesafe only with Kapitän's say-so — approved has no 'typesafe' quote (it has: anthropic)" \
+  "the gate: a confidential scope's repo (by its basename, as review-gate names it) goes to Jev only on a quote"
+check "$(cref lab/site codex)" "example.classify: refused: data from lab/site goes to openai only with Kapitän's say-so — approved has no 'openai' quote (it has: anthropic)" \
+  "  by its registry key, and to any other vendor but Anthropic"
+check "$(test -e "$T/conf-gate.jsonl"; echo $?)" "1" "  refused before a line is logged: nothing was sent"
+check "$(cref "$H/work/lab/vault/docs")" "example.classify: refused: data from $H/work/lab/vault/docs goes to typesafe only with Kapitän's say-so — approved has no 'typesafe' quote (it has: anthropic)" \
+  "  by a path inside its checkout"
+check "$(cref "$H/work/lab/vaulted" | grep -c ': refused: ')" "0" "    and not by one beside it"
+check "$(cref vault claude | grep -c ': refused: ')" "0" "  Claude needs no quote for it"
+check "$(cref open | grep -c ': refused: ')$(cref open | grep -c 'TYPESAFE_API_KEY')" "01" "an open scope's repo goes ahead as before (to the key's read)"
+CLAUDE_REPOS_JSON="$T/conf.json" jp 'print(*(j.confidential(x) for x in ("vault", "Vault", "open", None, "?", "lab", "'"$H/work"'", "'"$H/work/lab"'", "'"$H/work/open"'")))' > "$T/conf.out"
+check "$(cat "$T/conf.out")" "True True False True True True True True False" \
+  "  jev.confidential: the scope's repo in any case, not an open one; no source or '?' (unknown is never sent), its group folder and the projects folder are"
+check "$(CLAUDE_REPOS_JSON="$T/no-conf.json" jp 'print(j.confidential(None), j.confidential("?"))')" "False False" "    unknown goes ahead where no scope is confidential"
+check "$(CLAUDE_REPOS_JSON="$T/conf.json" jp 'try: j.ask("s", {"q": {"type": "noul", "instructions": "x"}}, source="vault")
+except j.JevError as e: print(e)')" 'refused: data from vault goes to TypeSafe only with Kapitän'"'"'s say-so — ask, then pass approved="Kapitän, <date>: <what>"' \
+  "  jev.ask itself refuses a confidential repo's data without a quote (a bench's direct call)"
+printf '{"repos": {"open": {}}, "scopes": <<<<<<< HEAD\n' > "$T/torn.json"
+check "$(cref open jev "$T/torn.json")" "example.classify: refused: data from open goes to typesafe only with Kapitän's say-so — approved has no 'typesafe' quote (it has: anthropic)" \
+  "  a torn registry: every source is guarded (fails closed)"
+check "$(cref open claude "$T/torn.json" | grep -c ': refused: ')" "0" "    bar Anthropic's"
 check "$(jp 'print(j.log_dir())')" "$H/logs" "regatta/log-dir: the logs' folder, ~ the home folder"
 JEV_LOG= jp 'j._log({"t": "jev"})'; GATE_LOG= gp 'g._log({"t": "gate"})'
 check "$(cat "$H/logs/jev.jsonl" "$H/logs/gate.jsonl" 2>&1 | tr '\n' ' ')" '{"t": "jev"} {"t": "gate"} ' "  jev's and the gate's lines land there, an empty JEV_LOG or GATE_LOG no override"
