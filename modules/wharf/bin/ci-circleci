@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""ci-circleci — a repo's CircleCI runs through the API, without the web app: trigger a pipeline
+on a branch with parameters, wait for it, and fetch a job's step output and artifacts.
+
+    REPO: any path in the checkout, `.` by default.
+
+    ci-circleci [REPO] trigger [--branch B] [--param K=V]...
+                                    start a pipeline (B: the checkout's branch, as GitHub holds
+                                    it: push first); prints `pipeline <number> <id>`
+    ci-circleci [REPO] jobs PIPELINE    each workflow and job of a pipeline (its number or id), once
+    ci-circleci [REPO] wait PIPELINE [--timeout S] [--every S]
+                                    the same, polled until every workflow ends: exit 0 when all
+                                    succeeded, 1 when one did not, 3 on the timeout (default 3600 s;
+                                    polled every 60 s)
+    ci-circleci [REPO] steps JOB --out DIR
+                                    each step's output into DIR, one file per step, and one line
+                                    per step: status, exit code, lines, whole or tail, file
+    ci-circleci [REPO] artifacts JOB --out DIR
+                                    the job's artifacts into DIR at their paths
+    ci-circleci [REPO] run [--branch B] [--param K=V]... --out DIR [--timeout S]
+                                    trigger, wait, then every job's steps and artifacts into
+                                    DIR/<job number>/; exit as wait
+
+K=V: `true`/`false` are booleans, digits an integer, the rest a string (CircleCI refuses a
+parameter whose type differs from the config's).
+
+The project: `--slug`, else $CIRCLECI_PROJECT_SLUG, else the first line of the repo's
+`.circleci/project-slug` that is not a comment. A project set up through CircleCI's GitHub App
+has a slug of the form `circleci/<org id>/<project id>` (the project's settings page shows it);
+an OAuth one `gh/<owner>/<repo>`. $CIRCLECI_DEFINITION_ID picks a pipeline definition (Project
+Settings > Pipelines) where the project has more than one; unset, CircleCI picks.
+
+The token: $CIRCLECI_TOKEN, else the `CIRCLECI_TOKEN=` line of the main checkout's `.env` (the
+checkout of `git rev-parse --git-common-dir`, so a worktree finds it without a link of its own).
+It is a personal API token; it is never printed, and is sent only to CircleCI's own hosts (the
+API, the step-output and artifact hosts, which want it for a private project), as a header urllib
+drops on a redirect, so storage a URL redirects to never gets it.
+
+A step's output, whole: v1.1's (each action's output_url) holds about 390 KB, the tail only (a
+10,971-line step came back as 6,611 lines, 2026-10-26). The web app reads the whole text from
+`/api/private/output/raw/<slug>/<job>/output/<index>/<step>`, which takes the same token (read back
+2026-10-26: job 1's step whole, 10,970 lines); it is not in CircleCI's API docs, so `steps` asks it
+first and falls back to output_url, saying `tail` beside a step read that way. A job's artifacts
+(regatta's Linux job keeps each suite's log) are the documented road to the same text. The rest
+is from the API docs (v2: pipeline, workflow, job, artifacts; v1.1: a job's steps), shapes read
+back on the first live call (2026-10-26).
+
+A transient failure (a 5xx, a dropped connection) is retried twice per call, 10 s apart; a
+trigger is never retried (a second POST would start a second pipeline, which costs credits).
+Stdlib only. Tests: wharf's tests/test_ci_circleci.sh, against a local stand-in of the API
+($CIRCLECI_API, $CIRCLECI_API_V1).
+"""
+import argparse
+import gzip
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API = os.environ.get("CIRCLECI_API", "https://circleci.com/api/v2").rstrip("/")
+API_V1 = os.environ.get("CIRCLECI_API_V1", "https://circleci.com/api/v1.1").rstrip("/")
+API_RAW = os.environ.get("CIRCLECI_API_RAW", "https://circleci.com/api/private/output/raw").rstrip("/")
+# hosts the token may go to: CircleCI's own (the API, the artifact host), and a stand-in's
+TOKEN_HOSTS = ("circleci.com", "circle-artifacts.com")
+DONE = {"success", "failed", "error", "canceled", "unauthorized", "not_run"}
+RETRIES, RETRY_WAIT = 2, 10
+VERBS = ("trigger", "jobs", "wait", "steps", "artifacts", "run")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class Refusal(Exception):
+    pass
+
+
+def git(repo, *args):
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    if p.returncode:
+        raise Refusal("git %s: %s" % (" ".join(args), p.stderr.strip()))
+    return p.stdout.strip()
+
+
+def top(repo):
+    return git(repo, "rev-parse", "--show-toplevel")
+
+
+def main_checkout(repo):
+    common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return os.path.dirname(common)
+
+
+def project_slug(repo, given):
+    if given:
+        return given
+    if os.environ.get("CIRCLECI_PROJECT_SLUG"):
+        return os.environ["CIRCLECI_PROJECT_SLUG"]
+    path = os.path.join(top(repo), ".circleci", "project-slug")
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    except OSError:
+        pass
+    raise Refusal("no project slug: pass --slug, or write it into %s "
+                  "(the project's settings page in CircleCI shows it)" % path)
+
+
+def token(repo):
+    if os.environ.get("CIRCLECI_TOKEN"):
+        return os.environ["CIRCLECI_TOKEN"]
+    env = os.path.join(main_checkout(repo), ".env")
+    try:
+        lines = open(env).read().splitlines()
+    except OSError as e:
+        raise Refusal("no CIRCLECI_TOKEN: none in the environment, and %s does not read (%s); "
+                      "link it to the repo's vault file (the core's `secrets check <repo>`)"
+                      % (env, e.strerror))
+    for line in lines:
+        m = re.match(r"^\s*(?:export\s+)?CIRCLECI_TOKEN\s*=\s*(.*)$", line)
+        if m:
+            v = m.group(1).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            else:
+                v = re.sub(r"\s+#.*$", "", v)  # a trailing comment, as the shell drops it
+            if v:
+                return v
+    raise Refusal("no CIRCLECI_TOKEN in %s (or it is empty)" % env)
+
+
+def token_host(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    own = {(urllib.parse.urlsplit(u).hostname or "").lower() for u in (API, API_V1, API_RAW)}
+    return host in own or any(host == h or host.endswith("." + h) for h in TOKEN_HOSTS)
+
+
+class Client:
+    def __init__(self, tok):
+        self.tok = tok
+
+    def request(self, url, data=None, method=None, retry=True, sniff=True):
+        """(status, bytes): the body, gunzipped (by its magic bytes too unless sniff is off: an
+        artifact keeps its own bytes). Errors name the URL's path and the status only."""
+        body = json.dumps(data).encode() if data is not None else None
+        req = urllib.request.Request(url, data=body, method=method)
+        req.add_header("Accept", "application/json")
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        if token_host(url):
+            # unredirected: urllib copies ordinary headers onto a redirect, to whatever host
+            req.add_unredirected_header("Circle-Token", self.tok)
+        where = urllib.parse.urlsplit(url).path
+        for attempt in range(RETRIES + 1 if retry else 1):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    raw = r.read()
+                    if r.headers.get("Content-Encoding") == "gzip" or (sniff and raw[:2] == b"\x1f\x8b"):
+                        raw = gzip.decompress(raw)
+                    return r.status, raw
+            except urllib.error.HTTPError as e:
+                msg = ""
+                try:
+                    msg = json.loads(e.read() or b"{}").get("message", "")
+                except (ValueError, AttributeError):
+                    pass
+                if e.code >= 500 and retry and attempt < RETRIES:
+                    time.sleep(RETRY_WAIT)
+                    continue
+                raise Refusal("%s %s: HTTP %d%s" % (method or ("POST" if body else "GET"), where,
+                                                     e.code, ": " + msg if msg else ""))
+            except (urllib.error.URLError, OSError) as e:
+                if retry and attempt < RETRIES:
+                    time.sleep(RETRY_WAIT)
+                    continue
+                raise Refusal("%s: %s" % (where, getattr(e, "reason", e)))
+
+    def json(self, url, data=None, retry=True):
+        _, raw = self.request(url, data=data, retry=retry)
+        return json.loads(raw or b"{}")
+
+    def pages(self, url):
+        """Every item of a paged v2 list."""
+        items, token_ = [], None
+        while True:
+            u = url + ("?page-token=" + urllib.parse.quote(token_) if token_ else "")
+            res = self.json(u)
+            items += res.get("items", [])
+            token_ = res.get("next_page_token")
+            if not token_:
+                return items
+
+
+def q(slug):
+    return urllib.parse.quote(slug, safe="/")
+
+
+def param_value(text):
+    if "=" not in text:
+        raise Refusal("--param %r: K=V" % text)
+    k, v = text.split("=", 1)
+    if v in ("true", "false"):
+        return k, v == "true"
+    if re.fullmatch(r"-?\d+", v):
+        return k, int(v)
+    return k, v
+
+
+def trigger(c, repo, slug, branch, params):
+    branch = branch or git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        raise Refusal("a detached HEAD: pass --branch")
+    # CircleCI runs the branch as GitHub holds it: say so when this checkout's tip is not that
+    # (as last fetched), never refuse — the caller may mean the remote tip
+    here = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+    there = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", "refs/remotes/origin/" + branch],
+                           capture_output=True, text=True).stdout.strip()
+    if not there:
+        print("ci-circleci: warning: no origin/%s here: push the branch first" % branch, file=sys.stderr)
+    elif here and here != there and branch == git(repo, "rev-parse", "--abbrev-ref", "HEAD"):
+        print("ci-circleci: warning: HEAD %s is not origin/%s %s: CircleCI runs origin's"
+              % (here[:8], branch, there[:8]), file=sys.stderr)
+    # v2's Trigger Pipeline API: the older POST .../pipeline refuses a GitHub App project (the
+    # spec's own words, read 2026-10-27); this one takes App and OAuth projects alike
+    body = {"config": {"branch": branch}, "checkout": {"branch": branch}}
+    if os.environ.get("CIRCLECI_DEFINITION_ID"):
+        body["definition_id"] = os.environ["CIRCLECI_DEFINITION_ID"]
+    if params:
+        body["parameters"] = dict(param_value(x) for x in params)
+    res = c.json("%s/project/%s/pipeline/run" % (API, q(slug)), data=body, retry=False)
+    if not res.get("id"):
+        raise Refusal("the trigger answered without a pipeline id: %s" % json.dumps(res)[:300])
+    print("pipeline %s %s (branch %s%s)" % (res.get("number"), res["id"], branch,
+                                            "; " + ", ".join("%s=%s" % kv for kv in body["parameters"].items())
+                                            if params else ""))
+    return res["id"]
+
+
+def pipeline_id(c, slug, ref):
+    if UUID.match(ref):
+        return ref
+    if not ref.isdigit():
+        raise Refusal("PIPELINE %r: its number or its id" % ref)
+    return c.json("%s/project/%s/pipeline/%s" % (API, q(slug), ref))["id"]
+
+
+def state(c, pid):
+    """[(workflow, [jobs])], each as the API gives it."""
+    return [(w, c.pages("%s/workflow/%s/job" % (API, w["id"])))
+            for w in c.pages("%s/pipeline/%s/workflow" % (API, pid))]
+
+
+def show(flows, out=sys.stdout):
+    if not flows:
+        print("  no workflow yet (or none matched the config's `when`)", file=out)
+    for w, jobs in flows:
+        print("  workflow %s: %s" % (w["name"], w["status"]), file=out)
+        for j in jobs:
+            print("    job %s %s: %s" % (j.get("job_number", "-"), j["name"], j["status"]), file=out)
+    out.flush()
+
+
+def wait(c, pid, timeout, every):
+    t0, last, empty_since = time.time(), None, None
+    while True:
+        flows = state(c, pid)
+        now = [(w["status"], tuple(j["status"] for j in jobs)) for w, jobs in flows]
+        if now != last:
+            print("%s" % time.strftime("%H:%M:%S"))
+            show(flows)
+            last = now
+        if flows and all(w["status"] in DONE for w, _ in flows):
+            return flows, (0 if all(w["status"] == "success" for w, _ in flows) else 1)
+        if not flows:
+            # a pipeline whose config ran no workflow ends with none: give it 3 polls, then say so
+            empty_since = empty_since or time.time()
+            if time.time() - empty_since > 3 * every:
+                print("no workflow after %d s: the config's `when` ran none" % (time.time() - empty_since))
+                return flows, 1
+        if time.time() - t0 > timeout:
+            print("still running after %d s" % timeout)
+            return flows, 3
+        time.sleep(every)
+
+
+def safe_name(text):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")[:80] or "step"
+
+
+def steps(c, slug, job, out):
+    res = c.json("%s/project/%s/%s" % (API_V1, q(slug), job))
+    os.makedirs(out, exist_ok=True)
+    n = 0
+    for s in res.get("steps", []):
+        for a in s.get("actions", []):
+            n += 1
+            name = a.get("name") or s.get("name") or "step"
+            path = os.path.join(out, "%02d-%s.log" % (n, safe_name(name)))
+            lines, how = 0, ""
+            if a.get("output_url"):
+                text, how = None, "whole"
+                if a.get("step") is not None:
+                    try:
+                        _, raw = c.request("%s/%s/%s/output/%s/%s" % (API_RAW, q(slug), job, a.get("index", 0), a["step"]),
+                                           retry=False)
+                        text = raw.decode("utf-8", "replace")
+                    except Refusal:
+                        pass
+                if text is None:
+                    how = "tail"
+                    _, raw = c.request(a["output_url"])
+                    try:
+                        msgs = json.loads(raw)
+                    except ValueError:
+                        msgs = [{"message": raw.decode("utf-8", "replace")}]
+                    text = "".join(m.get("message", "") for m in msgs)
+                with open(path, "w") as f:
+                    f.write(text)
+                lines = text.count("\n")
+            print("  %-9s exit %-4s %7d lines %-5s  %s%s" % (
+                a.get("status") or "-", "-" if a.get("exit_code") is None else a["exit_code"], lines, how,
+                name, "  → " + path if a.get("output_url") else ""))
+    if not n:
+        print("  job %s: no steps (not started?)" % job)
+
+
+def artifacts(c, slug, job, out):
+    items = c.pages("%s/project/%s/%s/artifacts" % (API, q(slug), job))
+    if not items:
+        print("  job %s: no artifacts" % job)
+    for a in items:
+        rel = os.path.normpath(a["path"]).lstrip("/")
+        if rel.startswith(".."):
+            raise Refusal("artifact path %r leaves the folder" % a["path"])
+        dest = os.path.join(out, rel)
+        os.makedirs(os.path.dirname(dest) or out, exist_ok=True)
+        _, raw = c.request(a["url"], sniff=False)
+        with open(dest, "wb") as f:
+            f.write(raw)
+        print("  %8d bytes  %s" % (len(raw), dest))
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="ci-circleci", description=__doc__.split("\n\n")[0])
+    ap.add_argument("repo", nargs="?", default=".")
+    ap.add_argument("verb", choices=VERBS)
+    ap.add_argument("what", nargs="?", help="PIPELINE (jobs, wait) or JOB (steps, artifacts)")
+    ap.add_argument("--slug")
+    ap.add_argument("--branch")
+    ap.add_argument("--param", action="append", default=[])
+    ap.add_argument("--out")
+    ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--every", type=int, default=60)
+    # `ci-circleci trigger` with no REPO: argparse reads the verb into repo
+    if argv and argv[0] in VERBS:
+        argv = ["."] + argv
+    a = ap.parse_args(argv)
+    try:
+        repo = top(a.repo)
+        slug = project_slug(repo, a.slug)
+        c = Client(token(repo))
+        if a.verb in ("jobs", "wait", "steps", "artifacts") and not a.what:
+            raise Refusal("%s needs %s" % (a.verb, "a JOB number" if a.verb in ("steps", "artifacts") else "a PIPELINE"))
+        if a.verb in ("steps", "artifacts", "run") and not a.out:
+            raise Refusal("%s needs --out DIR" % a.verb)
+        if a.verb in ("steps", "artifacts") and not a.what.isdigit():
+            raise Refusal("JOB %r: its number" % a.what)
+        if a.verb == "trigger":
+            trigger(c, repo, slug, a.branch, a.param)
+        elif a.verb == "jobs":
+            show(state(c, pipeline_id(c, slug, a.what)))
+        elif a.verb == "wait":
+            return wait(c, pipeline_id(c, slug, a.what), a.timeout, a.every)[1]
+        elif a.verb == "steps":
+            steps(c, slug, a.what, a.out)
+        elif a.verb == "artifacts":
+            artifacts(c, slug, a.what, a.out)
+        else:
+            pid = trigger(c, repo, slug, a.branch, a.param)
+            flows, rc = wait(c, pid, a.timeout, a.every)
+            for _, jobs in flows:
+                for j in jobs:
+                    if j.get("job_number") is None:
+                        continue
+                    d = os.path.join(a.out, str(j["job_number"]))
+                    print("job %s %s: %s" % (j["job_number"], j["name"], j["status"]))
+                    steps(c, slug, str(j["job_number"]), os.path.join(d, "steps"))
+                    artifacts(c, slug, str(j["job_number"]), os.path.join(d, "artifacts"))
+            return rc
+    except Refusal as e:
+        print("ci-circleci: %s" % e, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
