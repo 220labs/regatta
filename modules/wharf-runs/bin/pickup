@@ -37,6 +37,10 @@ part — matching the owner's vague description to one branch, and asking when i
         that has a spacesheep page gets its `Routed:` line in the seed's commit, after keel's gate
         (`keel routed check`) passes on its page — refused while a thread there is unreflected, bar
         the threads --routing names (a seed started from a comment routes its own thread).
+  pickup seed TOPIC --from SCOPE --repo PATH --file BRIEF [--no-start] [--account auto|LABEL]
+                  [--no-blueprint] [--dry-run] [--no-fetch]
+        the one write out of a confidential scope: the brief reviewed first (see "Out of a
+        confidential scope" below)
   pickup brief BRANCH --text T|- [--repo PATH] [--dry-run] [--no-fetch] [--unroute]
         a handoff brief committed onto an EXISTING claude/* branch that no session is writing in, by
         git plumbing — no checkout, so a launchd job with no worktree can hand `dispatch` a run
@@ -141,6 +145,25 @@ anything that would need a Terminal window — another repo, a shell — prints 
 opens only with --start. `seeds --mine --open` is /finish's second chance, one tab per seed
 this session made that no session has started.
 
+Out of a confidential scope (confidential-reach S5; the owner's D4 B, 2026-10-26: the scan and a Claude
+judge, no person's yes). A session inside a confidential scope writes nothing outside it but this:
+`seed --from SCOPE` refuses unless the cwd is one of SCOPE's paths (the core's scope_match) and SCOPE is
+confidential, and unless --repo is given and names an open repo — in no confidential scope, not the
+owner's vault (`lighthouse/vault`), no tenant's (lighthouse's `account`, which fails closed here when it
+cannot be read; absent, there is no tenancy to ask). Then, before any write — no object, no ref, no
+push — aurora's `scope-pass check SCOPE <file> --judge --json` reads what leaves: the brief, the branch
+name and the Seeded-By line (a topic names the node as well as a brief can). Its scan and the gate's
+`scope.brief` judge must both say clean, of the very bytes pickup hashed; anything else stops, the
+verdict's lines on stderr, inside the node. The seed commit then carries docs/handoff/<date>-<topic>.review
+beside the brief: JSON with the brief's sha256, both verdicts, the site, provider, model, cost and time —
+what dispatch will ask before it runs a seed of confidential origin (S6). Nothing pushed names the scope
+(the manager's rule from the owner's words, 2026-10-26: a confidential scope's name never reaches an open
+repo): Seeded-By and the .review's origin carry the core's scope_marker(), `confidential:<8 hex>`, which
+only a host's registry reads back (scope_of_marker), never the cwd's repo; a brief or topic naming the
+scope is refused before the bundle is built. The run starts by `dispatch --next --origin <marker>` where
+dispatch takes the repo, never a tab or a window; elsewhere, and under --no-start, the dispatch line is
+printed with its --origin.
+
 Next (docs/subagent-cache-2026-10-04.md D6–D7). Run by a session as its last act of a stage,
 after a memo Save: under STAGE_TOKENS (120k, PICKUP_STAGE_TOKENS) of context it prints
 `continue` and the session goes on itself; at or above (or with --tab), on a claude/* branch in
@@ -187,6 +210,8 @@ Python 3.9.
 """
 import argparse
 import datetime
+import fnmatch
+import hashlib
 import inspect
 import json
 import os
@@ -1052,7 +1077,7 @@ def branch_info(root, main, name, loc, rem, wt, pr, transcripts, live, me, verdi
     if seed_paths and seed_paths_ok(root, out(root, "merge-base", main, tip), tip, seed_paths,
                                     [c["body"] for c in commits]):
         files = out(root, "diff-tree", "--no-commit-id", "--name-only", "-r", commits[-1]["sha"]).splitlines()
-        b["seed"] = {"brief": next((f for f in files if f.startswith(HANDOFF_DIR + "/")), None),
+        b["seed"] = {"brief": next((f for f in files if f.startswith(HANDOFF_DIR + "/") and f.endswith(".md")), None),
                      "by": commits[-1]["seeded_by"]}
     if wt and not wt["missing"]:
         b["dirty"] = len([l for l in out(wt["path"], "status", "--porcelain").splitlines() if l.strip()])
@@ -2578,27 +2603,59 @@ def dispatched(root, b):
     return f"{ago(int(when))} to {host}" if branch == b["name"] and when.isdigit() else None
 
 
-def dispatch_fresh(root, b, args):
+def branch_origin(root, b):
+    """The scope marker a `seed --from` left on branch B (its docs/handoff/*.review's `origin`), or None —
+    so every start path (`seeds --open`, `open`, a retry) carries --origin and opens no tab, not only
+    cmd_seed's (S5's landing re-review)."""
+    ref = b["name"] if b.get("local") else f"origin/{b['name']}"
+    for p in sorted(out(root, "ls-tree", "-r", "--name-only", ref, "--", "docs/handoff").splitlines(), reverse=True):
+        if p.endswith(REVIEW_SUFFIX):
+            try:
+                o = json.loads(out(root, "show", f"{ref}:{p}") or "null")
+            except ValueError:
+                continue
+            o = o.get("origin") if isinstance(o, dict) else None
+            if isinstance(o, str) and o.startswith(common.SCOPE_MARK):
+                return o
+    return None
+
+
+def dispatch_fresh(root, b, args, origin=None):
     """A fresh session for a branch, started by dispatch — on the build Mac by default, the laptop when it
     does not answer (dispatch's header, Where) — instead of a pre-filled VS Code tab or a Terminal
     window (the owner, 2026-10-13: "pickup that needs to start a new session should also use dispatch").
     Only where dispatch takes the repo and the branch carries its brief (docs/handoff/<date>-<topic>.md,
     what the run reads; a seed always does); False otherwise, and the caller opens the tab or window
     as before. A local branch goes by `--next`, which pushes it and confirms the start from the run's
-    log. Explicit --new-tab, --vscode or --terminal keep theirs; a refusal (exit 2) falls back to them."""
+    log. Explicit --new-tab, --vscode or --terminal keep theirs; a refusal (exit 2) falls back to them.
+    ORIGIN: the confidential scope a `seed --from` came out of, passed on as `--origin` (S5); its caller
+    opens no tab or window, so a refusal here only says why."""
+    derived = origin is None and branch_origin(root, b)
+    origin = origin or derived or None
     took = dispatchable(root, b)
     if not took:
+        if derived:   # a seed of confidential origin starts by dispatch or not at all: never the tab
+            raise Stop(f"{b['name']} came out of a confidential scope and dispatch cannot start it from here "
+                       f"(not local, or the repo not dispatch's) — no tab:\n{from_start_line(root, b['name'], origin)}")
         return False
     primary, local = took
     rs = os.environ.get("PICKUP_DISPATCH") or str(BIN / "dispatch")   # tests: a stand-in
     cmd = [rs, b["name"], "--repo", str(primary), "--next"] \
         + (["--note", args.note] if getattr(args, "note", None) else []) \
-        + (["--account", args.account] if getattr(args, "account", "auto") not in (None, "auto") else [])
+        + (["--account", args.account] if getattr(args, "account", "auto") not in (None, "auto") else []) \
+        + (["--origin", origin] if origin else [])
     if args.dry_run:
         print(f"  would dispatch it: {' '.join(shlex.quote(c) for c in cmd)}")
         return True
     r = run(cmd, timeout=330, env={**os.environ})   # --next blocks up to about 3 min
     said = "\n".join(l for l in (r.stdout + r.stderr).splitlines() if l.strip())
+    if r.returncode == 2 and origin:
+        print(f"  dispatch refused it (exit 2), so it is not started:\n" + "\n".join(f"    {l}" for l in said.splitlines()))
+        if derived:
+            raise Stop(f"{b['name']} came out of a confidential scope: no tab\n{from_start_line(root, b['name'], origin)}")
+        return False
+    if r.returncode and origin:   # the seed is pushed: the line that keeps its --origin, not a bare retry
+        raise Stop(f"dispatch failed (exit {r.returncode}) — nothing confirmed started:\n{said}\n{from_start_line(root, b['name'], origin)}")
     if r.returncode == 2:
         # a refusal checked before anything was scheduled (work after the brief, a lock another
         # session holds, the run cap): the tab or window as before, with dispatch's reason (review 2026-10-13)
@@ -4046,6 +4103,161 @@ def with_last_step(text, last, notes):
     return new
 
 
+# ---- seed --from: the one write out of a confidential scope (confidential-reach S5) -------------
+
+REVIEW_SUFFIX = ".review"   # docs/handoff/<date>-<topic>.review, beside the brief it vouches for
+
+
+def registry_snapshot(tmp):
+    """One parse of the registry, written to a file under TMP for every later read — or None when it is torn.
+    A fence that asked registry_unreadable() once and then let each scope_match() read the file again
+    judged a target against whatever a concurrent `scopes set` left mid-loop (S5's landing re-review)."""
+    d, torn = common.read_registry()
+    if torn:
+        return None
+    f = Path(tmp) / "repos.json"
+    f.write_text(json.dumps(d or {}), encoding="utf-8")
+    return str(f)
+
+
+def confidential_target(root, path):
+    """The confidential scope (by the registry snapshot PATH) that ROOT belongs to, or None: by its paths,
+    and by its key against each scope's own entries and globs, so a clone not yet registered that a
+    confidential glob would take reads as that scope's (S5's landing re-review)."""
+    key = common.repo_key(str(root))
+    for n, sc in common.confidential_scopes(path).items():
+        if common.scope_match(n, path)(str(root)):
+            return n
+        ms = sc.get("repos") if isinstance(sc.get("repos"), list) else []
+        if any(isinstance(m, str) and (fnmatch.fnmatchcase(key or "", m) if common.is_glob(m) else m == key) for m in ms):
+            return n
+    return None
+
+
+def from_scope_refusal(root, scope, repo_given, cwd=None):
+    """Why `seed --from SCOPE` may not go to ROOT from CWD, or None. Reads only: the registry (once), the
+    vault key, tenancy and the target's contract. Every doubt refuses (an unreadable registry, a tenancy
+    that will not read)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        reg = registry_snapshot(tmp)
+        if reg is None:
+            return f"the registry {common.repos_json()} cannot be read, so no scope can be judged (fails closed)"
+        why = from_scope_judge(root, scope, repo_given, cwd, reg)
+    return why
+
+
+def from_scope_judge(root, scope, repo_given, cwd, reg):
+    scopes = common.confidential_scopes(reg)
+    if scope not in common.scope_registry(reg)[1]:
+        return f"no scope {scope!r} in the registry"
+    if scope not in scopes:
+        return (f"scope {scope} is not confidential: --from is the way out of a confidential scope, "
+                f"and an open one's seed needs none")
+    here = str(Path(cwd or os.getcwd()))
+    if not common.scope_match(scope, reg)(here):
+        return f"this session's directory ({here}) is not in scope {scope}: --from names the scope it runs in"
+    if not repo_given:
+        return "--from takes --repo: the open repo the seed goes to, named, never the cwd's"
+    n = confidential_target(root, reg)
+    if n:
+        return f"{root.name} is in confidential scope {n}: a seed out of {scope} goes to an open repo"
+    key = common.repo_key(str(root))
+    vault = common.config_line("lighthouse/vault")
+    if vault and key == vault:
+        return f"{key} is the owner's vault, a private repo: a seed out of {scope} goes to an open repo"
+    acct = common.tool("account")
+    if acct:
+        try:
+            from importlib.machinery import SourceFileLoader
+            m = SourceFileLoader("pickup_account", str(acct)).load_module()
+            areg = m.load_registry()
+            tenants = areg.get("tenants") or {}
+            # read_tenants_file() gives {} ("tenancy is off") when the file is written but reads nothing and
+            # no last good copy holds: that is no answer, so it refuses (S5's landing re-review)
+            if not tenants and m.tenants_file() and m.tenants_read(write=False)[1] == "none":
+                return f"lighthouse's tenancy file is written but does not read, so {key} may be a tenant's — fails closed"
+            for name, entries in tenants.items():
+                if entries and m.denied({"routed": dict.fromkeys(entries)}, str(root)):
+                    return f"{key} is tenant {name}'s repo, a private one: a seed out of {scope} goes to an open repo"
+        except (Exception, SystemExit) as e:   # account exits on a torn registry; a crash is no answer either
+            return f"lighthouse's account could not say whether {key} is a tenant's ({short(str(e), 120)}) — fails closed"
+    if not dispatch_takes(root):
+        # its run starts by dispatch or not at all (never a tab), so a repo dispatch refuses would hold a
+        # pushed seed nothing may start (S5's landing re-review)
+        return f"dispatch does not take {key} (not on the worktree workflow, or no `physical: none`): its seed could never start"
+    return None
+
+
+def confined_refusal(root, cwd=None):
+    """Why a plain `seed` or `brief` (no --from) may not write ROOT from CWD, or None: out of a confidential
+    scope the only way is `seed --from`, reviewed, whose Seeded-By names a marker, never the repo
+    (S5's landing re-review: a plain seed wrote the node's repo name into an open repo). A torn
+    registry refuses only a session that may be confined: one whose cwd no scope can be judged for."""
+    here = str(Path(cwd or os.getcwd()))
+    with tempfile.TemporaryDirectory() as tmp:
+        reg = registry_snapshot(tmp)
+        if reg is None:
+            return (f"the registry {common.repos_json()} cannot be read, so whether this session is in a "
+                    f"confidential scope cannot be told (fails closed)")
+        for n in common.confidential_scopes(reg):
+            if common.scope_match(n, reg)(here) and not common.scope_match(n, reg)(str(root)):
+                return f"this session runs in a confidential scope: a seed out of it goes by --from, reviewed"
+    return None
+
+
+def outbound_tail(name, by):
+    """What leaves with a seed's brief besides it, as scope-pass judges it: the branch name and the
+    Seeded-By line. aurora's bench/brief-review builds the same two lines (keep them in step)."""
+    return f"\nBranch: {name}\nSeeded-By: {by}\n"
+
+
+def review_brief(scope, text, extra):
+    """The .review's JSON text for TEXT leaving SCOPE, or Stop. aurora's scope-pass reads the brief and
+    EXTRA (what else leaves with it: the branch name, the Seeded-By line) as one file — its scan, then
+    the gate's scope.brief judge — and both must say clean of the bytes hashed here. A bundle that
+    names SCOPE itself is refused before it is built: the name never reaches an open repo, nor the
+    judge's prompt (S5's landing review; scope-pass's --judge scan refuses it too)."""
+    own = re.compile(r"(?<![A-Za-z0-9])" + re.escape(scope) + r"(?![A-Za-z0-9])", re.I)
+    if own.search(text + extra):
+        raise Stop(f"the brief names confidential scope {scope} (its own name, in the brief or the topic) — nothing seeded")
+    sp = common.tool("scope-pass")
+    if not sp:
+        raise Stop(f"aurora's scope-pass is not installed: a brief leaving confidential scope {scope} is reviewed "
+                   f"by it, so nothing is seeded")
+    bundle = (text + extra).encode("utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "outbound.md"
+        f.write_bytes(bundle)
+        try:
+            r = subprocess.run([str(sp), "check", scope, str(f), "--judge", "--json"],
+                               capture_output=True, text=True, timeout=1300)   # the gate: 600 s an attempt, one retry
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise Stop(f"scope-pass check did not answer ({e}): no review, no seed")
+    try:
+        v = json.loads((r.stdout.strip().splitlines() or ["null"])[-1])
+    except ValueError:
+        v = None
+    said = "\n".join(f"    {l}" for l in r.stderr.splitlines() if l.strip())
+    if not isinstance(v, dict):
+        raise Stop(f"scope-pass check gave no verdict (exit {r.returncode}): no review, no seed\n{said}")
+    if v.get("sha256") != hashlib.sha256(bundle).hexdigest():
+        raise Stop("scope-pass judged other bytes than the seed would send: no seed")
+    if v.get("scan") != "clean":
+        raise Stop(f"the brief names confidential scope {scope} (scope-pass check: {v.get('scan')}) — nothing seeded:\n{said}")
+    if v.get("judge") != "clean" or r.returncode != 0:
+        why = "judged a leak" if v.get("judge") == "leak" else f"could not be judged ({v.get('error') or v.get('judge')})"
+        raise Stop(f"the brief {why} by the gate's {v.get('site') or 'scope.brief'} judge — nothing seeded:\n{said}")
+    rec = {"review": "confidential-reach S5", "origin": common.scope_marker(scope), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+           "scan": "clean", "judge": "clean", "judged_sha256": v["sha256"]}
+    rec.update({k: v.get(k) for k in ("site", "provider", "model", "cost_usd", "time")})
+    return json.dumps(rec, indent=1) + "\n"
+
+
+def from_start_line(root, name, scope):
+    return (f"  start it: bash {BIN / 'dispatch'} '{name}' --next --repo {shlex.quote(str(root))} --origin {shlex.quote(scope)}"
+            f" ({dispatch_where()}; Bash timeout 300000)")
+
+
 def cmd_seed(data, me, args):
     """One commit on a new claude/<host>/<date>-<topic> branch, made from local main by git
     plumbing — no worktree, no checkout, so it works from any session — holding the brief at
@@ -4077,11 +4289,19 @@ def cmd_seed(data, me, args):
     if not base:
         raise Stop(f"no local {main} in {root} to seed from")
     path = f"{HANDOFF_DIR}/{today}-{topic}.md"
+    scope = getattr(args, "from_scope", None)
     # the docs the brief names that have a page: the gate first (new work), then their `Routed:` line
-    # in this commit (routed comments S2); the brief's last step is the run's own check
-    routed, last, rnotes = route_docs(root, base, name, text, check=True, routing=args.routing, dry=args.dry_run)
-    text = with_last_step(text, last, rnotes)
-    by = f"{me['repo'].name if me.get('repo') else '?'}/{me['id'][:8] or 'shell'} on {data['host']}"
+    # in this commit (routed comments S2); the brief's last step is the run's own check. A seed out of a
+    # confidential scope routes nothing: keel would read its brief before the review below (S5)
+    if scope:
+        routed, rnotes = [], ["a seed out of a confidential scope routes nothing: keel would read the brief before its review"]
+    else:
+        routed, last, rnotes = route_docs(root, base, name, text, check=True, routing=args.routing, dry=args.dry_run)
+        text = with_last_step(text, last, rnotes)
+    # out of a confidential scope the cwd's repo and the scope's name are both the node's: Seeded-By
+    # carries the scope's marker, which only this host's registry reads back (S5's landing review)
+    mark = common.scope_marker(scope) if scope else None
+    by = f"{mark or (me['repo'].name if me.get('repo') else '?')}/{me['id'][:8] or 'shell'} on {data['host']}"
     msg = (f"{SEED_SUBJECT}{topic}\n\nPrompt:\n> {task}\n\n"
            f"Seeded-By: {by}\n" + (f"Routed-By: pickup seed ({', '.join(r for r, _ in routed)})\n" if routed else "")
            + "Co-Authored-By: Claude <noreply@anthropic.com>\n")
@@ -4091,9 +4311,15 @@ def cmd_seed(data, me, args):
     if bpath and git(root, "cat-file", "-e", f"{base}:{bpath}").returncode == 0:
         # a ship's blueprint of the same name is on main: never overwrite it with a one-block one
         bpath, bnote = None, f"{bpath} is already on {main}"
+    rpath = review = None
+    if scope:   # reviewed before any write: the scan and the judge both, or nothing (S5)
+        rpath = path[:-len(".md")] + REVIEW_SUFFIX
+        review = review_brief(scope, text, outbound_tail(name, by))
+        print(f"reviewed: the brief leaving {scope} is clean by its scan and the gate's judge")
     if args.dry_run:
         print(f"would seed {name} in {root}: commit {path} ({len(text.splitlines())} lines)"
-              + (f" and {bpath}" if bpath else "") + "".join(f", {r}'s Routed: line" for r, _ in routed)
+              + (f" and {bpath}" if bpath else "") + (f" and {rpath}" if rpath else "")
+              + "".join(f", {r}'s Routed: line" for r, _ in routed)
               + f" on local {main} ({base[:7]}), then push it" + "".join(f"\n  {n}" for n in rnotes))
         return
 
@@ -4110,6 +4336,8 @@ def cmd_seed(data, me, args):
         g("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=env)
         if bpath:
             g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=bnote)},{bpath}", env=env)
+        if rpath:
+            g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=review)},{rpath}", env=env)
         for rel, doc in routed:
             g("update-index", "--add", "--cacheinfo", f"100644,{g('hash-object', '-w', '--stdin', input=doc)},{rel}", env=env)
         tree = g("write-tree", env=env)
@@ -4124,6 +4352,8 @@ def cmd_seed(data, me, args):
     else:
         state = "pushed"
     print(f"seeded {name} in {root.name} — {path}, {len(text.splitlines())} lines; {state}")
+    if rpath:
+        print(f"  and its review {rpath} (origin {mark}, which is {scope} here: the brief's sha256, both verdicts)")
     for rel, _ in routed:
         print(f"  routed: {rel} carries its Routed: line in this commit")
     for n in rnotes:
@@ -4136,6 +4366,10 @@ def cmd_seed(data, me, args):
         print(f"  ⚠ local {main} is {behind} behind origin — the follow-up rebases at its /finish")
     fresh = collect(root, fetch=False)
     b = resolve(name, fresh["branches"])
+    if scope:   # dispatched with its origin, or the line to: never a tab or a window here
+        if args.no_start or not dispatch_fresh(root, b, args, origin=mark):
+            print(from_start_line(root, name, mark))
+        return
     if args.no_start:
         # the default since 2026-10-04 (skills/todo, "Handing off"): the seeding session starts it.
         # --repo always: dispatch's default is the launcher repo, not the seeding session's repo (review 2026-10-05)
@@ -4525,6 +4759,7 @@ def main(argv):
         return 0
     cmd = argv.pop(0) if argv and argv[0] in ("list", "show", "open", "review", "archive", "seed", "seeds", "move",
                                               "next", "brief") else "list"
+    repo_given = any(a == "--repo" or a.startswith("--repo=") for a in argv)
     ap = argparse.ArgumentParser(prog=f"pickup {cmd}")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--json", action="store_true")
@@ -4560,6 +4795,7 @@ def main(argv):
         # --launch / --no-launch: the old names, aliases for a week (S8 of docs/wharf-rename-2026-10-16.md)
         when.add_argument("--start", "--launch", dest="start", action="store_true")
         when.add_argument("--no-start", "--no-launch", dest="no_start", action="store_true")
+        ap.add_argument("--from", dest="from_scope")   # out of a confidential scope, reviewed (S5)
     if cmd == "brief":
         ap.add_argument("--text", required=True)   # `-`: from stdin, so a heredoc carries `$` and backticks untouched
         ap.add_argument("--dry-run", action="store_true")
@@ -4595,9 +4831,22 @@ def main(argv):
         cmd_seeds(all_roots(root) if args.all else [root], me, args)
         return 0
     if cmd == "brief":
+        why = confined_refusal(root)
+        if why:
+            raise Stop(f"brief: {why}")
         cmd_brief(root, me, args)
         return 0
     if cmd == "seed":
+        if args.from_scope:   # judged before anything reads the target's origin, let alone writes
+            if args.start:
+                raise Stop("--from takes no --start: the run goes by dispatch, with its --origin, or not at all")
+            why = from_scope_refusal(root, args.from_scope, repo_given)
+            if why:
+                raise Stop(f"seed --from {args.from_scope}: {why}")
+        else:
+            why = confined_refusal(root)
+            if why:
+                raise Stop(f"seed: {why}")
         cmd_seed(collect(root, fetch=not args.no_fetch), me, args)
         return 0
     if cmd == "list":
