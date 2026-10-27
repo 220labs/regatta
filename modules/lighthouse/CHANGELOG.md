@@ -14,6 +14,10 @@
   to a seat whose tenancy refusals it lacks, where only a deny list counted. While closed, no write outlives the
   state: claudeMdExcludes and trust's external-imports No wait until tenancy reads. `tenant set` that leaves the
   vault out warns as `drop` does, and a key inside another's folder counts as both tenants'.
+- `ops usage` and `ops pick` (lighthouse-ops S1): CI minutes and credits per budgeted account from GitHub's
+  billing usage endpoint and CircleCI's insights, with the owner's token read from `lighthouse/secrets/ops.env`
+  (0700, 0600, no link) in the desk's own job only; `pick` runs wharf's `ci-provider --pick` per repo.
+- `secrets_guard` closes the folders `lighthouse/guarded-dirs` lists, Drive mounted or not (the desk's token dir).
 - `account limits --orca` runs `orca open` when Orca's newest agent reading is over an hour old
   (`orca_wake`): Orca reads limits only while its window is focused and keeps the last after it closes,
   so the widget's Antigravity card went 5 days stale. Once an hour at most (Orca takes focus), never

@@ -93,6 +93,40 @@ check "$(sg_bash 'grep -r TODO . && git status 2>&1 > /tmp/x')" 0 "  grep -r ove
 check "$(sg_bash 'ls -p ~ | grep -v /') $(sg_bash 'grep -n x /dev/null')" "0 0" "  a grep's pattern is no folder, and a grep without -r walks none (review S2, 2026-10-22)"
 check "$(echo 'not json' | python3 "$SG"; echo $?)" 0 "garbage stdin: silent, exit 0 (fails open)"
 
+echo "the guarded dirs of secrets_guard (lighthouse/guarded-dirs), with no Drive mounted (lighthouse-ops S1)"
+# The suite's HOME mounts no shared drive and SECRETS_GUARD_DIR is unset: before S1 the guard let
+# everything through here. The desk's token dir, a ~ line and a relative line (dropped).
+GD="$REGATTA_CONFIG/lighthouse/secrets"; mkdir -p "$GD" "$SGR/rel/dir"; echo T=1 > "$GD/ops.env"
+printf '%s\n~/kept\nrel/dir\n' "$GD" > "$REGATTA_CONFIG/lighthouse/guarded-dirs"
+gd() { python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","cwd":sys.argv[1],"tool_name":sys.argv[2],"tool_input":json.loads(sys.argv[3])}))' "$SGR" "$1" "$2" \
+  | python3 "$SG" | python3 -c 'import json,sys; t=sys.stdin.read(); r=json.loads(t)["hookSpecificOutput"] if t.strip() else {}
+print("guarded" if "guarded-dirs" in r.get("permissionDecisionReason", "") else r.get("permissionDecision", "pass"))'; }
+gd_path() { gd "$1" "$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "$2" "$3")"; }
+gd_bash() { gd Bash "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$1")"; }
+check "$(python3 -c 'import importlib.util as u,sys; s=u.spec_from_file_location("sg",sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); print(len(m.mounted()))' "$SG")" "0" "  the case's HOME mounts no shared drive"
+check "$(gd_path Read file_path "$GD/ops.env")" guarded "  Read of the token file: refused, with the guarded-dirs refusal"
+check "$(gd_path Write file_path "$GD/new.env") $(gd_path Edit file_path "$GD/ops.env")" "guarded guarded" "  Write and Edit too"
+check "$(gd_path Grep path "$REGATTA_CONFIG/lighthouse")" guarded "  Grep over the folder that holds it"
+check "$(gd_bash "cat '$GD/ops.env'") $(gd_bash "grep -r T '$REGATTA_CONFIG'")" "guarded guarded" "  Bash: cat, and grep -r over its parent"
+check "$(gd_bash 'cat "$CFG/lighthouse/secrets/ops.env"')" guarded "  a path behind a variable, by its tail below the config dir"
+check "$(gd_bash "python3 -c \"print(open('$GD/ops.env').read())\"")" guarded "  python -c naming it"
+check "$(gd_bash "ls -l '$GD'") $(gd_bash "stat '$GD/ops.env'")" "pass pass" "  ls and stat pass"
+check "$(HOME="$T/hh" gd_path Read file_path "$T/hh/kept/x")" guarded "  a ~ line: the home folder's"
+check "$(gd_path Read file_path "$SGR/rel/dir/x")" pass "  a relative line is dropped, never resolved against a cwd"
+check "$(gd_path Read file_path "$REGATTA_CONFIG/lighthouse/ci-lanes.json")" pass "  the rest of the config dir is open"
+check "$(gd_bash 'python3 modules/regatta/bin/secrets check app')" pass "  a word that only shares the folder's name passes"
+check "$(gd_bash 'grep -rn "lighthouse/secrets" docs') $(gd_bash 'rg lighthouse/secrets/ops.env')" "pass pass" \
+  "  the key's name as a grep pattern passes: only a path behind a variable is matched by its tail (landing review)"
+check "$(gd_bash 'cat "${CFG}/lighthouse/secrets/ops.env"')" guarded "  \${CFG}/… is behind a variable too"
+check "$(gd_bash 'cat ${REGATTA_CONFIG:-/nowhere}/lighthouse/secrets/ops.env')" guarded "  \${X:-default}/… too (the second landing review)"
+check "$(gd_bash 'cat "$(regatta config-dir)/lighthouse/secrets/ops.env"')" guarded "  \$(…)/… too"
+check "$(gd_bash 'cat `regatta config-dir`/lighthouse/secrets/ops.env')" guarded "  a backtick body/… too"
+check "$(gd_bash 'cat $(regatta config-dir)/lighthouse/secrets/ops.env')" guarded "  an unquoted \$(…) with a space too"
+check "$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","cwd":sys.argv[1],"tool_name":"Read","tool_input":{"file_path":sys.argv[2]}}))' "$SGR" "$SGV/_secrets/app.env" \
+  | SECRETS_GUARD_DIR="$SGV/_secrets" python3 "$SG" | grep -c "Drive's _secrets folder is closed")" 1 "  the Drive wall beside it keeps its own refusal"
+rm -f "$REGATTA_CONFIG/lighthouse/guarded-dirs"
+check "$(gd_path Read file_path "$GD/ops.env")" pass "  no key: the dir is not guarded (the desk is off)"
+
 echo "the fence: a confidential scope's paths, closed to a session outside it (knowledge-layers S2)"
 FH="$T/home"; FP="$FH/projects"; FL="$T/fence-logs"; FD="$T/fence"
 mkdir -p "$FP/node-knowledge/memory" "$FP/node-app/src" "$FP/open/docs" "$FP/dream" "$FP/two-knowledge" "$FP/transcripts/node-app" \

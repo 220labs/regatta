@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""ops — the operations desk's own verbs (docs/lighthouse-ops-2026-10-26.md; S1 builds these two).
+
+    ops usage [--write] [--json]     CI minutes and credits used this month, per account in the config
+                                     dir's `lighthouse/ci-budgets.json`: GitHub's billing usage endpoint
+                                     (a user's or an organization's) and CircleCI's insights summary
+                                     (--write: the log dir's ci-usage.json, which `ci-provider --pick`
+                                     reads; only in the desk's own job)
+    ops pick [--apply] [REPO…]       `ops usage --write`, then `ci-provider REPO --pick [--apply]` for
+                                     each REPO (default: every registry repo cloned on this host);
+                                     a repo the pick refuses or does not handle is counted, exit 3
+                                     when one sits on a lane its pick refused, 1 on anything else
+
+The owner's token (D5-A, answered 2026-10-26): a fine-grained token with `Plan: read`, no repository
+access, made in GitHub's UI and written by the owner over ssh into one file on the yard node — the
+config dir's `lighthouse/secrets/ops.env`, its dir 0700 and the file 0600, both this user's and
+neither a link: on the Macs `regatta/secrets` is a link into Drive, so it is not reused. Lines are
+`KEY=value`; `GITHUB_TOKEN` (the billing read) and `CIRCLECI_TOKEN` (the insights read) unless a
+budget row names its own `token_key`. It is read here and nowhere else, only in the desk's own job:
+`LIGHTHOUSE_DESK=1` set and no `CLAUDE_CODE_SESSION_ID` or `CLAUDE_UNATTENDED` (a session, attended
+or dispatched, is refused it, and so is a shell that never said it is the desk). That marker is an
+accident guard, not a wall: any process of the node's agent user can read the file by intent, and
+the wall would be an OS user of the desk's own (not built). `secrets_guard` refuses a session's tool
+call that names the dir when `lighthouse/guarded-dirs` lists it; `ops usage` says so when it does not.
+The token goes into one request header and nowhere else: never an argv, a log, a row or the output.
+Without it (absent, refused, unreadable) every account reads `absent` or `refused`, and the pick
+treats every hosted lane of a private repo as over budget.
+
+ci-budgets.json, one row an account (lighthouse's README, "Private values"):
+  {"reserve": 0.2, "accounts": {
+     "<key>": {"provider": "github", "user": "<login>" | "org": "<org>", "month_minutes": 3000,
+               "week_share": 0.35, "reserve": 0.2},
+     "<key>": {"provider": "circleci", "org_slug": "gh/<org>", "month_credits": 30000, "margin": 0.1}}}
+GitHub's answer is `usageItems` (`date`, `product`, `sku`, `quantity`, `unitType`, `netAmount`;
+the enhanced billing platform only): the Actions minutes of the month, a macOS minute weighed 10 and
+a Windows one 2 as the included minutes are spent (GitHub's billing page; the weights not probed),
+the last seven days' items as the week. CircleCI's is `org_data.metrics.total_credits_used` over its
+last 30 days (and 7 for a week share): "not a financial reporting tool", so the pick adds a margin.
+LIGHTHOUSE_OPS_GITHUB_API and LIGHTHOUSE_OPS_CIRCLECI_API replace the two base URLs (a suite's stub).
+
+Tests: tests/ops.sh; the pick's own cases are wharf's tests/test_ci_provider.sh.
+"""
+import argparse
+import datetime
+import json
+import os
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+GITHUB_API = os.environ.get("LIGHTHOUSE_OPS_GITHUB_API") or "https://api.github.com"
+CIRCLECI_API = os.environ.get("LIGHTHOUSE_OPS_CIRCLECI_API") or "https://circleci.com/api/v2"
+# an override carries the token too: https, or plain http to this host only (a suite's stub)
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+PICK_TIMEOUT = 600   # one repo's pick; a hung gh call never holds the 15-minute job past the next tick
+DESK_DIR = common.CONFIG / "lighthouse" / "secrets"
+DESK_FILE = DESK_DIR / "ops.env"
+DEFAULT_KEY = {"github": "GITHUB_TOKEN", "circleci": "CIRCLECI_TOKEN"}
+WEIGHT = (("macos", 10.0), ("windows", 2.0))   # included minutes spent per minute, by sku
+TIMEOUT = 10                                    # s a read; the metrics doc's bound
+
+
+class Refused(Exception):
+    pass
+
+
+def desk_refusal():
+    """Why this process is not the desk's own job, or None (the header: an accident guard)."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("CLAUDECODE"):
+        return "a Claude Code session is never handed the desk's token: it is read in the desk's own job only"
+    if os.environ.get("LIGHTHOUSE_DESK") != "1":
+        return "not the desk's job (LIGHTHOUSE_DESK=1 unset): the token is read there only"
+    return None
+
+
+def read_tokens():
+    """{KEY: value} from the token file, or Refused naming why — never the file's text."""
+    why = desk_refusal()
+    if why:
+        raise Refused(why)
+    uid = os.getuid()
+    cfg = os.path.realpath(common.CONFIG)
+    if os.path.realpath(DESK_DIR) != os.path.join(cfg, "lighthouse", "secrets") \
+            or cfg != os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(common.CONFIG))),
+                                   os.path.basename(os.path.abspath(common.CONFIG))):
+        # the config dir or its lighthouse/ a link would put the token in a drive (a system link
+        # higher up, macOS's /var, is no drive)
+        raise Refused("%s resolves to %s: a folder above it is a link; the token's dir is a local one of "
+                      "its own, never in a drive" % (DESK_DIR, os.path.realpath(DESK_DIR)))
+    for path, mode, what in ((DESK_DIR, 0o700, "dir"), (DESK_FILE, 0o600, "file")):
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            raise Refused("absent: no %s at %s (the owner writes it over ssh, D5-A)" % (what, path))
+        except OSError as e:
+            raise Refused("%s unreadable (%s)" % (path, e.strerror))
+        if stat.S_ISLNK(st.st_mode):
+            raise Refused("%s is a link: the token's %s is a local one of its own, never into a drive" % (path, what))
+        if (what == "dir") != stat.S_ISDIR(st.st_mode) or (what == "file" and not stat.S_ISREG(st.st_mode)):
+            raise Refused("%s is not a %s" % (path, what))
+        if st.st_uid != uid or stat.S_IMODE(st.st_mode) != mode:
+            raise Refused("%s must be this user's and %o, not %o" % (path, mode, stat.S_IMODE(st.st_mode)))
+    try:   # opened without following a link, and judged again by the descriptor: no swap after lstat
+        fd = os.open(DESK_FILE, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o600 or not stat.S_ISREG(st.st_mode):
+                raise Refused("%s changed while it was read" % DESK_FILE)
+            text = fh.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refused("%s unreadable (%s)" % (DESK_FILE, type(e).__name__))
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            k = k.strip()
+            k = k[len("export "):].strip() if k.startswith("export ") else k
+            v = v.strip().strip("'\"")
+            if v:
+                out[k] = v
+    return out
+
+
+def http_get(url, headers):
+    """(status, decoded JSON or None); status 0 when no answer came. The suite replaces it. The
+    headers are unredirected: urllib copies a request's headers onto a redirect to any host, and
+    these carry the token (the landing review)."""
+    u = urllib.parse.urlsplit(url)
+    try:
+        host = u.hostname
+    except ValueError:
+        host = None
+    # plain http to this host only, by the parsed host: a prefix let `localhost.example` and
+    # `localhost@example` through (the second landing review)
+    if not (u.scheme == "https" or (u.scheme == "http" and host in LOOPBACK and not u.username)):
+        return 0, None
+    req = urllib.request.Request(url, headers={"User-Agent": "lighthouse-ops"})
+    for k, v in headers.items():
+        req.add_unredirected_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception:
+        return 0, None
+
+
+def answer_state(code):
+    return "refused" if code in (401, 403, 404) else "unread"
+
+
+def github_usage(b, tok, now):
+    who = b.get("user") or b.get("org")
+    if not isinstance(who, str) or not who:
+        return {"state": "unread", "why": "the budget names no `user` or `org`"}
+    d = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+    base = ("/users/%s" % who) if b.get("user") else ("/organizations/%s" % who)
+    start = d - datetime.timedelta(days=6)   # the week: today and the six days before it
+    week_from, this_month = start.date().isoformat(), (d.year, d.month)
+    months = [this_month] + ([(start.year, start.month)] if (start.year, start.month) != this_month else [])
+    items = []
+    for y, m in months:   # a week across the month's start reads last month's items too
+        code, out = http_get("%s%s/settings/billing/usage?year=%d&month=%d" % (GITHUB_API, base, y, m),
+                             {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json",
+                              "X-GitHub-Api-Version": "2022-11-28"})
+        got = out.get("usageItems") if code == 200 and isinstance(out, dict) else None
+        if not isinstance(got, list):
+            return {"state": answer_state(code) if code != 200 else "unread",
+                    "why": "GitHub's billing usage answered %s" % (code or "nothing")}
+        items += [(it, (y, m) == this_month) for it in got]
+    month = week = net = 0.0
+    for it, current in items:
+        if not isinstance(it, dict) or str(it.get("product", "")).lower() != "actions" \
+                or str(it.get("unitType", "")).lower() != "minutes":
+            continue
+        try:
+            q, n = float(it.get("quantity") or 0), float(it.get("netAmount") or 0)
+        except (TypeError, ValueError):
+            return {"state": "unread", "why": "a usage item is not a number"}
+        sku = str(it.get("sku", "")).lower()
+        q *= next((w for k, w in WEIGHT if k in sku), 1.0)
+        if current:
+            month, net = month + q, net + n
+        if str(it.get("date", ""))[:10] >= week_from:
+            week += q
+    return {"state": "ok", "month_used": round(month, 1), "week_used": round(week, 1),
+            "net_amount": round(net, 2), "unit": "minutes"}
+
+
+def circleci_credits(slug, tok, window):
+    code, out = http_get("%s/insights/%s/summary?reporting-window=%s" % (CIRCLECI_API, slug, window),
+                         {"Circle-Token": tok, "Accept": "application/json"})
+    try:
+        return code, float(out["org_data"]["metrics"]["total_credits_used"])
+    except (TypeError, KeyError, ValueError):
+        return code, None
+
+
+def circleci_usage(b, tok):
+    slug = b.get("org_slug")
+    if not isinstance(slug, str) or not slug:
+        return {"state": "unread", "why": "the budget names no `org_slug`"}
+    code, month = circleci_credits(slug, tok, "last-30-days")
+    if month is None:
+        return {"state": answer_state(code), "why": "CircleCI's insights answered %s" % (code or "nothing")}
+    week = 0.0
+    if b.get("week_share"):
+        code, week = circleci_credits(slug, tok, "last-7-days")
+        if week is None:
+            return {"state": answer_state(code), "why": "CircleCI's insights answered %s for the week" % (code or "nothing")}
+    return {"state": "ok", "month_used": month, "week_used": week, "net_amount": 0, "unit": "credits"}
+
+
+def budgets_file():
+    path = common.CONFIG / "lighthouse" / "ci-budgets.json"
+    try:
+        d = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}, "no budgets at %s" % path
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return {}, "%s unreadable (%s)" % (path, type(e).__name__)
+    acc = d.get("accounts") if isinstance(d, dict) else None
+    return (acc if isinstance(acc, dict) else {}), None
+
+
+def usage(now=None):
+    """The usage row: {as_of, host, token: {github, circleci}, accounts: {key: row}}."""
+    now = time.time() if now is None else now
+    accounts, why = budgets_file()
+    try:
+        toks, tok_why = read_tokens(), None
+    except Refused as e:
+        toks, tok_why = {}, str(e)
+    row = {"as_of": int(now), "host": common.host_name(), "token": {}, "accounts": {}}
+    if why:
+        row["why"] = why
+    for key, b in sorted(accounts.items()):
+        provider = b.get("provider") if isinstance(b, dict) else None
+        if provider not in DEFAULT_KEY:
+            row["accounts"][key] = {"state": "unread", "why": "provider %r is neither github nor circleci" % (provider,)}
+            continue
+        name = b.get("token_key") or DEFAULT_KEY[provider]
+        tok = toks.get(name)
+        if not tok:
+            state = "refused" if tok_why and not tok_why.startswith("absent") else "absent"
+            r = {"state": state, "why": tok_why or "no %s in %s" % (name, DESK_FILE)}
+        else:
+            r = github_usage(b, tok, now) if provider == "github" else circleci_usage(b, tok)
+        row["accounts"][key] = r
+        # the token's standing by provider, one word (the metrics doc's `token.plan`): ok wins
+        prev = row["token"].get(provider)
+        row["token"][provider] = "ok" if "ok" in (prev, r["state"]) else (prev or r["state"])
+    return row
+
+
+def write_usage(row):
+    path = common.LOG_DIR / "ci-usage.json"
+    os.makedirs(path.parent, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(row, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def say_usage(row):
+    for key, r in sorted(row["accounts"].items()):
+        if r.get("state") == "ok":
+            print("%s: %s %s this month, %s this week, netAmount %s" % (key, r["month_used"], r["unit"],
+                                                                        r["week_used"], r["net_amount"]))
+        else:
+            print("%s: %s (%s)" % (key, r.get("state"), r.get("why")))
+    if not row["accounts"]:
+        print("no accounts: %s" % row.get("why", "ci-budgets.json lists none"))
+    guarded = [os.path.realpath(os.path.expanduser(x)) for x in common.config_lines("lighthouse/guarded-dirs") or []]
+    if os.path.realpath(DESK_DIR) not in guarded:
+        print("⚠ lighthouse/guarded-dirs does not list %s: secrets_guard lets a session's tool call name it" % DESK_DIR)
+
+
+def cmd_usage(a):
+    row = usage()
+    if a.write:
+        why = desk_refusal()
+        if why:
+            # a session's all-unread row would overwrite the job's good one
+            print("ops usage --write: %s" % why, file=sys.stderr)
+            return 2
+        print("wrote %s" % write_usage(row), file=sys.stderr if a.json else sys.stdout)
+    if a.json:
+        print(json.dumps(row, indent=1, sort_keys=True))
+    else:
+        say_usage(row)
+    return 0
+
+
+def cmd_pick(a):
+    why = desk_refusal()
+    if why:
+        print("ops pick: %s" % why, file=sys.stderr)
+        return 2
+    path = write_usage(usage())
+    cp = common.tool("ci-provider")
+    if not cp:
+        print("ops pick: wharf's ci-provider is not installed", file=sys.stderr)
+        return 2
+    repos = a.repo or [str(r) for r in common.cloned_repos()]
+    # the desk's marker never reaches a child (the sense component's "The marker")
+    env = {k: v for k, v in os.environ.items() if k != "LIGHTHOUSE_DESK"}
+    # 2 is a repo the pick does not handle or refused (no check.yml, CircleCI, not migrated, off the
+    # ops host): reported, never the job's failure, or the normal fleet would fail every pass; 3 is a
+    # repo whose current lane this pick refused (trust, money), the one the desk must card
+    seen = {}
+    for r in repos:
+        cmd = [str(cp), r, "--pick", "--usage", str(path)] + (["--apply"] if a.apply else [])
+        try:
+            rc = subprocess.run(cmd, env=env, timeout=PICK_TIMEOUT).returncode
+        except subprocess.TimeoutExpired:
+            print("ops pick: %s took over %d s, stopped" % (r, PICK_TIMEOUT), file=sys.stderr)
+            rc = 124
+        seen.setdefault(rc, []).append(r)
+    print("ops pick: %d repos — %d picked or unchanged, %d refused or not handled, %d on a failing lane%s"
+          % (len(repos), len(seen.get(0, [])), len(seen.get(2, [])), len(seen.get(3, [])),
+             "".join("; exit %d: %s" % (k, ", ".join(v)) for k, v in sorted(seen.items()) if k not in (0, 2))))
+    if any(k not in (0, 2, 3) for k in seen):
+        return 1
+    return 3 if seen.get(3) else 0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="ops", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="verb", required=True)
+    u = sub.add_parser("usage")
+    u.add_argument("--write", action="store_true")
+    u.add_argument("--json", action="store_true")
+    k = sub.add_parser("pick")
+    k.add_argument("--apply", action="store_true")
+    k.add_argument("repo", nargs="*")
+    a = ap.parse_args(argv)
+    return cmd_usage(a) if a.verb == "usage" else cmd_pick(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
