@@ -28,6 +28,11 @@ self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched
                                               --host, --labels and --name for another runner Mac
                                               than the keys', --instance N for a further runner of
                                               the repo on one Mac
+    ci-provider REPO --pick [--apply] [--usage FILE] [--dry-run]
+                                              the lane the check takes, by lighthouse's lanes,
+                                              budgets and queue (live with --apply: the runs-on
+                                              variable, one PATCH logged with its undo, on the ops
+                                              host only); "The pick", below the runner's notes
 
 The owner, 2026-10-18: "I need to be able to easily switch repos between circle ci and raw GH
 actions - add that capability (will later move to Regatta)"; moved into wharf 2026-10-20 with
@@ -208,8 +213,28 @@ self-hosted, and what it does not cover:
     --protect, and says so; a ci.json `context` that is such a name is not carried into the
     one-job file. --protect and status drop them only when the check.yml on disk has no
     `strategy:`/`matrix:`: a hand-written matrix still reports them.
+
+The pick (lighthouse-ops S1, docs/lighthouse-ops-broker-2026-10-26.md; the owner's D2-A: picked, every
+15 minutes on every eligible repo): which lane a repo's check takes, the required check staying `check`.
+A lane is a row of the config dir's `lighthouse/ci-lanes.json` (`name`, `provider` actions|circleci,
+`runs_on` a hosted image or a label list, `runs` some of macos/linux/public, `account` for a hosted
+lane); a repo is eligible for one that runs all its ci.json `needs` (absent: macos), and `public`
+too when GitHub says the repo is. In order: a self-hosted lane whose queued p50 (the sampler's
+ops.jsonl row) is under `lighthouse/ci-queue-max` or unmeasured; a hosted lane for a public repo;
+the hosted lane whose account has the most month left above its reserve in `lighthouse/ci-budgets.json`;
+else the self-hosted lane with the shortest queue. A label list is a self-hosted lane, a hosted one
+is one image's name. A self-hosted lane needs the trust refusals above passed, --to self-hosted's
+guard step and host-write refusals, and an online runner with its labels; the repo's current lane
+is skipped while a check created since the pick's last flip of it sits queued past 30 minutes.
+No lane, and the current one refused (trust, money, no runner): exit 3, for the desk to card. Usage is the desk's file (`lighthouse ops usage --write`, the log dir's
+ci-usage.json): the owner's billing token is read there, in the desk's own job, never here, so
+without fresh usage every hosted lane of a private repo is over budget. --apply writes only from the desk's job (refused under a Claude Code session), on
+`lighthouse/ops-host`, only to a check.yml in the variable form (another is reported, never
+written), only when the pick changed, and logs the old value and the call that restores it to
+the log dir's ci-pick.jsonl. CircleCI lanes are reported only: a variable moves no check there.
 """
 import argparse
+import calendar
 import hashlib
 import json
 import os
@@ -237,6 +262,7 @@ CONTEXT = {"actions": "check", "circleci": "ci/circleci: check", SELF: "check"}
 ACTIONS_KINDS = ("actions", SELF)  # one check.yml on GitHub Actions; self-hosted: runs-on and GUARD_STEP
 # The labels a self-hosted runner gets by itself (config.sh adds the OS and the architecture):
 # the rest of the labels key are the Mac's own, passed to config.sh --labels
+HOSTED_IMAGE = re.compile(r"^(ubuntu|macos|windows)-[\w.-]+$", re.I)
 AUTOMATIC_LABELS = ("self-hosted", "macos", "linux", "windows", "x64", "arm64", "arm")
 RUNS_ON_VAR = "CI_RUNS_ON"   # the variable form's name when none is given (regatta#53's)
 # the self-hosted kind's first step, before the checkout, at the steps' indent (render_workflow). What a job on
@@ -1868,7 +1894,10 @@ esac
 
 
 def variable_value(labels):
-    """The variable's value for these labels: a compact JSON list, as GitHub's UI shows one."""
+    """The variable's value for these labels: a compact JSON list, as GitHub's UI shows one; a
+    hosted image's one name (the pick's hosted lane) is a JSON string, as the default is."""
+    if isinstance(labels, str):
+        return json.dumps(labels)
     return json.dumps(list(labels), separators=(",", ":"))
 
 
@@ -1888,25 +1917,26 @@ def variable(s, name):
 
 def same_labels(value, labels):
     try:
-        return json.loads(value) == list(labels)
+        return json.loads(value) == (labels if isinstance(labels, str) else list(labels))
     except (TypeError, ValueError):
         return False
 
 
 def set_variable(s, name, labels, dry):
     """The runs-on variable set to labels and read back: POST when GitHub has none of that name,
-    PATCH when it holds another value (REST "Actions variables", read 2026-10-20)."""
+    PATCH when it holds another value (REST "Actions variables", read 2026-10-20). Returns the
+    call that undoes the write, None when nothing was written."""
     want = variable_value(labels)
     have, err = variable(s, name)
     if err:
         raise Refusal("could not read %s's variable %s: %s" % (s, name, err))
     if have is not None and same_labels(have, labels):
         print("  variable %s already %s" % (name, have))
-        return
+        return None
     if dry:
         print("  would %s variable %s: %s → %s" % ("create" if have is None else "update", name,
                                                    have, want))
-        return
+        return None
     body = {"name": name, "value": want}
     if have is None:
         ok, out = gh("-X", "POST", "repos/%s/actions/variables" % s, data=body)
@@ -1919,12 +1949,14 @@ def set_variable(s, name, labels, dry):
         raise Refusal("variable %s read back %s, not %s" % (name, back if back is not None else err, want))
     print("  variable %s: %s (read back)" % (name, back))
     if have is not None:
-        print("  rollback: gh api -X PATCH repos/%s/actions/variables/%s -f name=%s -f value=%s"
-              % (s, name, name, shlex.quote(have)))
+        undo = ("gh api -X PATCH repos/%s/actions/variables/%s -f name=%s -f value=%s"
+                % (s, name, name, shlex.quote(have)))
     else:
         # created: undone by removing it, which sends the check back to ubuntu-latest (review
         # 2026-10-21, 17)
-        print("  rollback: gh api -X DELETE repos/%s/actions/variables/%s" % (s, name))
+        undo = "gh api -X DELETE repos/%s/actions/variables/%s" % (s, name)
+    print("  rollback: " + undo)
+    return undo
 
 
 def runner_token(s, kind):
@@ -2144,6 +2176,423 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
                   "labels is back; %s sends the check to ubuntu-latest" % (var, value, delete))
 
 
+# --- the pick: which lane a repo's check takes, by budget and queue (lighthouse-ops S1) ----------
+#
+# The broker's design (docs/lighthouse-ops-broker-2026-10-26.md, D2-A answered): the required check
+# stays `check` on Actions; what moves is the runs-on variable the variable form reads, one PATCH, no
+# commit. A lane is one row of lighthouse's `ci-lanes.json`; a repo is eligible for it when the lane
+# runs everything the repo's ci.json `needs` (absent reads as macOS: never guessed onto Linux) and,
+# for a public repo, `public`. Hosted minutes are spent only under `ci-budgets.json`'s caps, read
+# against the usage `lighthouse ops usage` writes from the desk's own job, which alone holds the
+# owner's token: this tool never reads it, so with no fresh usage every hosted lane of a private repo
+# is over budget (fail closed). Every self-hosted candidate runs --runner install's trust refusals.
+
+PICK_STALE = 30 * 60   # s: a check queued this long on the repo's lane skips that lane this pick (D2-A)
+USAGE_MAX_AGE = 3600   # s: older usage reads as unread; the desk's job writes it every 15 minutes
+QUEUE_MAX = 600        # s: `lighthouse/ci-queue-max`'s default, a self-hosted lane's queued p50
+RESERVE = 0.2          # the share of a month cap the pick never spends below, unless a budget says
+LANE_RUNS = ("macos", "linux", "public")
+STATE_OK = "ok"
+
+
+def lighthouse_json(name):
+    """`lighthouse/<name>` from the config dir, parsed; None when there is no such file. Unreadable,
+    not JSON or not an object is a refusal, never taken for absent."""
+    path = common.CONFIG / "lighthouse" / name
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refusal("%s is unreadable (%s)" % (path, getattr(e, "strerror", None) or e))
+    try:
+        d = json.loads(text)
+    except ValueError as e:
+        raise Refusal("%s is not JSON (%s)" % (path, e))
+    if not isinstance(d, dict):
+        raise Refusal("%s is not a JSON object" % path)
+    return d
+
+
+def load_lanes():
+    """The lanes, in the file's order: [{name, provider, runs, runs_on, self_hosted, account}]."""
+    path = common.CONFIG / "lighthouse" / "ci-lanes.json"
+    d = lighthouse_json("ci-lanes.json")
+    if d is None:
+        raise Refusal("no lanes: write %s, {\"lanes\": [...]} (lighthouse's README, \"Private values\")" % path)
+    rows = d.get("lanes")
+    if not isinstance(rows, list) or not rows:
+        raise Refusal("%s holds no `lanes` list" % path)
+    lanes, seen = [], set()
+    for i, r in enumerate(rows):
+        name = r.get("name") if isinstance(r, dict) else None
+        if not isinstance(name, str) or not name or name in seen:
+            raise Refusal("%s: lane %d has no name of its own" % (path, i + 1))
+        seen.add(name)
+        runs = r.get("runs")
+        if not isinstance(runs, list) or not runs or not all(x in LANE_RUNS for x in runs):
+            raise Refusal("%s: lane %s's `runs` must list some of %s" % (path, name, ", ".join(LANE_RUNS)))
+        provider = r.get("provider", "actions")
+        lane = {"name": name, "provider": provider, "runs": set(runs), "account": r.get("account"),
+                "runs_on": None, "self_hosted": False}
+        if provider == "circleci":
+            lanes.append(lane)
+            continue
+        if provider != "actions":
+            raise Refusal("%s: lane %s's provider is %r, not actions or circleci" % (path, name, provider))
+        ro = r.get("runs_on")
+        if isinstance(ro, str) and ro.strip():
+            lane["runs_on"] = ro.strip()
+        elif isinstance(ro, list) and ro and all(isinstance(l, str) and l.strip() for l in ro):
+            # a label list is a self-hosted runner's, `self-hosted` named or not: the header reads
+            # `[macOS, <label>]` as the runner Mac's too, and a hosted lane is one image's name
+            lane["runs_on"] = tuple(l.strip() for l in ro)
+            lane["self_hosted"] = True
+        else:
+            raise Refusal("%s: lane %s needs `runs_on`, a hosted image's name or a label list" % (path, name))
+        if isinstance(lane["runs_on"], str) and not HOSTED_IMAGE.match(lane["runs_on"]):
+            # a hosted lane is one image's name; any other string is a label (`macOS`, a runner's
+            # own), which GitHub routes to a self-hosted runner holding it, read with or without
+            # wharf/ci-runner-labels on this host (the second landing review)
+            raise Refusal("%s: lane %s's runs_on %r is no hosted image's name (ubuntu-*, macos-*, "
+                          "windows-*): a self-hosted lane is written as a label list" % (path, name, lane["runs_on"]))
+        if lane["self_hosted"] and "public" in lane["runs"]:
+            # the trust boundary (the header): a fork's PR would run its code on the runner's host
+            raise Refusal("%s: lane %s is self-hosted and lists `public`: a self-hosted lane never runs "
+                          "a public repo" % (path, name))
+        lanes.append(lane)
+    return lanes
+
+
+def load_budgets():
+    """{account: {provider, cap, unit, reserve, week_share, margin}} from `lighthouse/ci-budgets.json`;
+    {} when there is none (every hosted lane of a private repo is then over budget)."""
+    path = common.CONFIG / "lighthouse" / "ci-budgets.json"
+    d = lighthouse_json("ci-budgets.json") or {}
+    reserve = d.get("reserve", RESERVE)
+    accounts = d.get("accounts") or {}
+    if not isinstance(accounts, dict):
+        raise Refusal("%s: `accounts` is not an object" % path)
+    out = {}
+    for key, b in accounts.items():
+        if not isinstance(b, dict):
+            raise Refusal("%s: account %s is not an object" % (path, key))
+        cap, unit = (b.get("month_minutes"), "minutes") if "month_minutes" in b else (b.get("month_credits"), "credits")
+        r, w, m = b.get("reserve", reserve), b.get("week_share"), b.get("margin", 0.1 if unit == "credits" else 0)
+        if not isinstance(cap, (int, float)) or isinstance(cap, bool) or cap <= 0:
+            raise Refusal("%s: account %s needs a positive month_minutes or month_credits" % (path, key))
+        if not isinstance(r, (int, float)) or not 0 <= r < 1 or (w is not None and not (isinstance(w, (int, float)) and 0 < w <= 1)) \
+                or not isinstance(m, (int, float)) or m < 0:
+            raise Refusal("%s: account %s's reserve is a share in [0, 1), week_share in (0, 1], margin ≥ 0" % (path, key))
+        out[key] = {"cap": float(cap), "unit": unit, "reserve": float(r), "week_share": w, "margin": float(m)}
+    return out
+
+
+def usage_file():
+    return common.LOG_DIR / "ci-usage.json"
+
+
+def load_usage(path, now):
+    """({account: row}, None) from the desk's usage file, or ({}, why) when it is absent, torn or
+    older than USAGE_MAX_AGE: unread usage is never a zero."""
+    try:
+        d = json.loads(open(path, encoding="utf-8").read())
+    except FileNotFoundError:
+        return {}, "no usage at %s (`lighthouse ops usage --write` writes it, in the desk's own job)" % path
+    except (OSError, ValueError) as e:
+        return {}, "usage at %s unreadable (%s)" % (path, e)
+    at = d.get("as_of") if isinstance(d, dict) else None
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return {}, "usage at %s carries no as_of" % path
+    if now - at > USAGE_MAX_AGE:
+        return {}, "usage at %s is %d min old" % (path, (now - at) // 60)
+    if at - now > 300:
+        return {}, "usage at %s is dated in the future" % path
+    acc = d.get("accounts")
+    return (acc if isinstance(acc, dict) else {}), None
+
+
+def budget_left(key, budgets, usage, usage_why):
+    """(what is left above the reserve, why) for one account; (None, why) when it is over, unread or
+    paying: netAmount above zero is money beyond the plan, the one thing G4 forbids."""
+    if not key:
+        return None, "no account: its minutes are unbudgeted"
+    b = budgets.get(key)
+    if not b:
+        return None, "no budget for account %s in ci-budgets.json" % key
+    if usage_why:
+        return None, usage_why
+    u = usage.get(key)
+    if not isinstance(u, dict) or u.get("state") != STATE_OK:
+        return None, "usage of %s unread (%s)" % (key, (u or {}).get("why") or (u or {}).get("state") or "absent")
+    try:   # a row marked ok but missing a field is unread, never a zero
+        used = float(u["month_used"]) * (1 + b["margin"])
+        week = float(u["week_used"]) * (1 + b["margin"])
+        net = float(u["net_amount"])
+    except (KeyError, TypeError, ValueError):
+        return None, "usage of %s is incomplete or not a number" % key
+    if net > 0:
+        return None, "%s pays beyond its plan this month (netAmount %.2f)" % (key, net)
+    left = b["cap"] * (1 - b["reserve"]) - used
+    if left <= 0:
+        return None, "%s used %.0f of %.0f %s, the reserve %.0f%% kept" % (key, used, b["cap"], b["unit"], b["reserve"] * 100)
+    if b["week_share"] and week >= b["cap"] * b["week_share"]:
+        return None, "%s used %.0f %s this week, its share %.0f" % (key, week, b["unit"], b["cap"] * b["week_share"])
+    return left, "%.0f of %.0f %s left above the reserve" % (left, b["cap"], b["unit"])
+
+
+def queue_max():
+    try:
+        return float(common.config_line("lighthouse/ci-queue-max") or QUEUE_MAX)
+    except ValueError:
+        return QUEUE_MAX
+
+
+def lane_queues(now):
+    """{lane: queued-seconds p50} from the sampler's last ops.jsonl row (lighthouse-ops S2,
+    `ci.lanes.<name>.queued_s_p50`), {} when there is none or it is over an hour old. A lane with no
+    number reads as under the max: hosted minutes are spent on a measured queue only."""
+    try:
+        with open(common.LOG_DIR / "ops.jsonl", encoding="utf-8") as fh:
+            last = [l for l in fh if l.strip()][-1:]
+        row = json.loads(last[0]) if last else {}
+        if not isinstance(row, dict) or now - float(row.get("as_of") or 0) > USAGE_MAX_AGE:
+            return {}
+        lanes = (row.get("ci") or {}).get("lanes") or {}
+        return {k: float(v["queued_s_p50"]) for k, v in lanes.items()
+                if isinstance(v, dict) and isinstance(v.get("queued_s_p50"), (int, float))}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def repo_needs(ci):
+    needs = ci.get("needs", ["macos"])
+    if not isinstance(needs, list) or not all(isinstance(x, str) and x in LANE_RUNS for x in needs):
+        raise Refusal(".github/ci.json's `needs` must list some of %s" % ", ".join(LANE_RUNS))
+    return set(needs)
+
+
+def lane_of(value, lanes):
+    """The lane a runs-on value names (a variable's JSON, a literal's labels), or None."""
+    if value is None:
+        value = "ubuntu-latest"   # the variable form's own default
+    for lane in lanes:
+        ro = lane["runs_on"]
+        if ro is None:
+            continue
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            value = value[0]   # a literal `runs-on: ubuntu-latest` reads as one label
+        if isinstance(ro, str) and value == ro:
+            return lane["name"]
+        if not isinstance(ro, str) and isinstance(value, (list, tuple)) and lowered(value) == lowered(ro):
+            return lane["name"]
+    return None
+
+
+def last_flip(s):
+    """When the pick last flipped this repo (ci-pick.jsonl), 0 when never."""
+    at = 0
+    try:
+        with open(common.LOG_DIR / "ci-pick.jsonl", encoding="utf-8") as fh:
+            for l in fh:
+                # a torn line costs that line only, never every repo's last flip (the second review)
+                try:
+                    r = json.loads(l)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("repo") == s and isinstance(r.get("at"), (int, float)):
+                    at = max(at, r["at"])
+    except OSError:
+        return 0
+    return at
+
+
+def stale_lane(s, now):
+    """Minutes a check.yml run has sat queued past PICK_STALE on the repo's current lane, or None:
+    that lane reported nothing, so the pick skips it (D2-A). A run created before the pick's last
+    flip of this repo waits on the lane before it, so it never counts (the landing review: it made
+    the new lane look stuck and flipped the repo back). Unread: None, it never blocks a lane."""
+    since = last_flip(s)
+    ok, out = gh("repos/%s/actions/workflows/check.yml/runs?status=queued&per_page=20" % s)
+    runs = out.get("workflow_runs") if ok and isinstance(out, dict) else None
+    for r in runs or []:
+        try:
+            t = calendar.timegm(time.strptime(r.get("created_at", ""), "%Y-%m-%dT%H:%M:%SZ"))
+        except (TypeError, ValueError):
+            continue
+        if t >= since and now - t > PICK_STALE:
+            return int((now - t) // 60)
+    return None
+
+
+def pick_log(row):
+    path = common.LOG_DIR / "ci-pick.jsonl"
+    os.makedirs(path.parent, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def ops_host_refusal():
+    """--apply writes only on the one host that brokers (`lighthouse/ops-host`): two hosts picking
+    at once would flip a repo back and forth."""
+    want = common.config_line("lighthouse/ops-host")
+    if not want:
+        return "lighthouse/ops-host names no host: the desk is off, and --apply writes nothing"
+    if want.lower() != common.host_name():
+        return "this host is %s, not lighthouse/ops-host's %s: the pick writes on that host only" % (common.host_name(), want)
+    return None
+
+
+def pick(repo, apply, dry, usage_path=None):
+    lanes, budgets = load_lanes(), load_budgets()
+    now = time.time()
+    usage, usage_why = load_usage(usage_path or usage_file(), now)
+    qmax, queues = queue_max(), lane_queues(now)
+    ci = load_ci(repo)
+    if ci.get("provider") == "circleci":
+        raise Refusal("%s is on circleci: the pick moves an Actions check's runs-on only" % repo)
+    needs = repo_needs(ci)
+    wf = p(repo, ".github", "workflows", "check.yml")
+    text = read(wf) if os.path.isfile(wf) else None
+    if text is None:
+        raise Refusal("%s has no .github/workflows/check.yml: nothing for a lane to run" % repo)
+    var = runs_on_var(text)
+    s = slug(repo)
+    private = is_private(s)
+    need = needs | ({"public"} if not private else set())
+    if var:
+        have, err = variable(s, var)
+        if err:
+            raise Refusal("could not read %s's variable %s: %s" % (s, var, err))
+        try:
+            current = json.loads(have) if have is not None else None
+        except ValueError:
+            current = have
+    else:
+        # the literal form: what its runs-on names (labels or one image); ubuntu-latest is the
+        # variable form's default only
+        vals = [v for _, v in runs_on_lines(text)]
+        current = (literal_labels(text) or flow_labels(vals[0]) or yaml_value(vals[0]) or "?") if vals else "?"
+    cur_lane = lane_of(current, lanes)
+    print("%s (%s, %s; needs %s): lane %s" % (repo, s, "private" if private else "public",
+                                              ", ".join(sorted(needs)) or "nothing", cur_lane or "(none of the lanes: %s)" % (current,)))
+    stale = stale_lane(s, now) if cur_lane else None
+    trust = runners = None
+    host = {}
+    failed = {}
+    hosted, selfh = [], []
+    for lane in lanes:
+        n = lane["name"]
+        if lane["provider"] != "actions":
+            print("  lane %s: CircleCI, advisory: a variable moves no check there" % n)
+            continue
+        if not need <= lane["runs"]:
+            print("  lane %s: not eligible, the repo needs %s, the lane runs %s"
+                  % (n, ", ".join(sorted(need - lane["runs"])), ", ".join(sorted(lane["runs"]))))
+            if n == cur_lane:
+                # the repo sits on a lane it no longer fits (a public repo on the runner Mac): a
+                # failing lane, carded when nothing else takes it (the second landing review)
+                failed[n] = "the repo needs %s, the lane runs %s" % (", ".join(sorted(need - lane["runs"])),
+                                                                    ", ".join(sorted(lane["runs"])))
+            continue
+        if n == cur_lane and stale:
+            failed[n] = "a check sat queued %d min on it" % stale
+            print("  lane %s: skipped, %s" % (n, failed[n]))
+            continue
+        if lane["self_hosted"]:
+            if trust is None:
+                try:
+                    refuse_forks(s, "a flip to a self-hosted lane")
+                    trust = ""
+                except Refusal as e:
+                    trust = str(e)
+            if trust:
+                failed[n] = trust
+                print("  lane %s: refused, %s" % (n, trust))
+                continue
+            if lane["runs_on"] not in host:
+                # --to self-hosted's other refusals (a narrower probe keeps the old one's): the guard
+                # step, and a check that writes the runner login's own (npm -g, sudo, apt-get)
+                try:
+                    hits = ["%s:%d %s" % (h[0], h[1], h[3]) for h in
+                            host_writes(repo, check_command(repo, None), lane["runs_on"])]
+                except Refusal as e:
+                    hits = [str(e)]
+                host[lane["runs_on"]] = ("check.yml lacks the GIT_CONFIG_GLOBAL step (`ci-provider %s --to %s` adds it)" % (repo, SELF)
+                        if not GIT_GUARD.search(text) else
+                        "the check writes the runner login's own: %s" % "; ".join(hits[:3]) if hits else "")
+            if host[lane["runs_on"]]:
+                failed[n] = host[lane["runs_on"]]
+                print("  lane %s: refused, %s" % (n, failed[n]))
+                continue
+            if runners is None:
+                runners, rerr = runners_of(s)
+                runners = runners if runners is not None else ("unread", rerr)
+            if isinstance(runners, tuple):
+                failed[n] = "the repo's runners are unread (%s)" % runners[1]
+                print("  lane %s: refused, %s" % (n, failed[n]))
+                continue
+            if not any(runs_check(r, lane["runs_on"]) for r in runners):
+                failed[n] = "no online runner labelled %s" % ", ".join(lane["runs_on"])
+                print("  lane %s: refused, %s" % (n, failed[n]))
+                continue
+            q = queues.get(n)
+            print("  lane %s: eligible, queue %s" % (n, "%ds" % q if q is not None else "unmeasured"))
+            selfh.append((lane, q))
+        elif not private:
+            print("  lane %s: eligible, a public repo's hosted minutes are free" % n)
+            hosted.append((lane, float("inf")))
+        else:
+            left, why = budget_left(lane["account"], budgets, usage, usage_why)
+            print("  lane %s: %s, %s" % (n, "eligible" if left is not None else "over budget", why))
+            if left is None:
+                failed[n] = why
+            if left is not None:
+                hosted.append((lane, left))
+    choice = (next((l for l, q in selfh if q is None or q < qmax), None)
+              or (max(hosted, key=lambda x: x[1])[0] if hosted else None)
+              or (min(selfh, key=lambda x: x[1])[0] if selfh else None))
+    if choice is None:
+        print("  no lane: every eligible lane is refused or over budget; runs-on stays %s" % (current,))
+        if cur_lane in failed:
+            # the repo sits on a lane this pick refused (trust, money): exit 3 so the desk cards it
+            print("  ⚠ current lane %s fails: %s" % (cur_lane, failed[cur_lane]))
+            return 3
+        return 0
+    want = choice["runs_on"]
+    if choice["name"] == cur_lane:
+        print("  pick: %s, unchanged" % choice["name"])
+        return 0
+    print("  pick: %s (%s)" % (choice["name"], variable_value(want)))
+    if not var:
+        why = ("check.yml reads no runs-on variable: `ci-provider %s --to %s --runs-on-var %s` migrates it; "
+               "until then the pick only reports it" % (repo, SELF, RUNS_ON_VAR))
+        if apply and cur_lane in failed:
+            # a literal-form repo on a failing lane is the desk's card, not a routine refusal
+            print("  " + why)
+            print("  ⚠ current lane %s fails: %s" % (cur_lane, failed[cur_lane]))
+            return 3
+        if apply:
+            raise Refusal(why)
+        print("  " + why)
+        return 0
+    if not apply:
+        print("  --apply sets %s to it" % var)
+        return 0
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED"):
+        # an accident guard, as yard-node's write verbs: the desk's job applies, a session reports
+        raise Refusal("--apply runs in the desk's own job (`lighthouse ops pick --apply`), never in a "
+                      "Claude Code session: --pick alone reports")
+    host_why = None if dry else ops_host_refusal()
+    if host_why:
+        raise Refusal(host_why)
+    undo = set_variable(s, var, want, dry)
+    if undo:
+        pick_log({"at": int(now), "repo": s, "variable": var, "from": cur_lane, "to": choice["name"],
+                  "old": current, "new": want, "undo": undo})
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="ci-provider", description=__doc__.split("\n\n")[0])
     ap.add_argument("repo", nargs="?", default=".")
@@ -2152,6 +2601,8 @@ def main(argv):
     g.add_argument("--protect", action="store_true")
     g.add_argument("--compose", action="store_true")
     g.add_argument("--runner", choices=["install", "status", "remove"])
+    g.add_argument("--pick", action="store_true",
+                   help="the lane the repo's check takes, by lighthouse's lanes and budgets (--apply writes it)")
     ap.add_argument("--check", help="the check command (default: ci.json, check.yml, the part, AGENTS.md)")
     ap.add_argument("--context", help="with --to: main's required check name, when not the provider's default")
     ap.add_argument("--runs-on-var", metavar="NAME",
@@ -2168,8 +2619,12 @@ def main(argv):
     ap.add_argument("--name", help="with --runner: its name on GitHub (default: the first label of its own)")
     ap.add_argument("--instance", type=int, default=1, metavar="N",
                     help="with --runner: the repo's Nth runner on that Mac (2 and up: `<name>-N`, `<repo>-N`)")
+    ap.add_argument("--apply", action="store_true", help="with --pick: set the runs-on variable to the pick")
+    ap.add_argument("--usage", metavar="FILE", help="with --pick: the desk's usage file (default: the log dir's ci-usage.json)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if (a.apply or a.usage) and not a.pick:
+        ap.error("--apply and --usage go with --pick only")
     if (a.host is not None or a.labels is not None or a.name is not None or a.instance != 1) and not a.runner:
         ap.error("--host, --labels, --name and --instance go with --runner only")
     if a.host is not None and a.name is None:
@@ -2206,6 +2661,8 @@ def main(argv):
         elif a.runner:
             labels = None if a.labels is None else [l.strip() for l in a.labels.split(",") if l.strip()]
             runner(repo, a.runner, a.dry_run, a.host, labels, a.name, a.instance)
+        elif a.pick:
+            return pick(repo, a.apply, a.dry_run, a.usage)
         else:
             status(repo)
     except Refusal as e:
