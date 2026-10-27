@@ -31,7 +31,8 @@ printf 'ci\n' > "$REGATTA_CONFIG/wharf/ci-runner-user"
 # body is kept in $T/gh/patch.json and becomes the new required checks. Every call is logged in
 # $T/gh/calls; the repo's privacy is $T/gh/private (`fail`: unreadable), whether it runs fork PRs'
 # workflows $T/gh/forkpr (true, false or `fail`; false by default), its collaborators
-# $T/gh/collabs.json, its runners $T/gh/runners.json, and both runner tokens are $TOKEN. Its
+# $T/gh/collabs.json, its runners $T/gh/runners.json ($T/gh/runners.fail: unread), its queued check
+# runs $T/gh/queued.json, and both runner tokens are $TOKEN. Its
 # repository variables are $T/gh/vars/<NAME>.json: a POST or PATCH body becomes one, a GET of
 # none is GitHub's 404; with $T/gh/vars/fail a GET fails with no output at all (gh's own failure).
 mkdir -p "$T/bin" "$T/gh"
@@ -42,7 +43,9 @@ args="$*"
 echo "$args" >> "$D/calls"
 case "$args" in
   *"/actions/runners/registration-token --jq .token"|*"/actions/runners/remove-token --jq .token") echo "$FAKE_TOKEN" ;;
-  *"/actions/runners") cat "$D/runners.json" 2>/dev/null || echo '{"total_count":0,"runners":[]}' ;;
+  *"/actions/runners") [ -e "$D/runners.fail" ] && { echo "HTTP 403" >&2; exit 1; }
+    cat "$D/runners.json" 2>/dev/null || echo '{"total_count":0,"runners":[]}' ;;
+  *"/actions/workflows/check.yml/runs?status=queued&per_page=20") cat "$D/queued.json" 2>/dev/null || echo '{"workflow_runs":[]}' ;;
   *" --jq .private") p=$(cat "$D/private" 2>/dev/null || echo true); [ "$p" = fail ] && { echo "HTTP 404" >&2; exit 1; }; echo "$p" ;;
   *"/actions/permissions/fork-pr-workflows-private-repos") f=$(cat "$D/forkpr" 2>/dev/null || echo false)
     [ "$f" = fail ] && { echo "HTTP 403" >&2; exit 1; }
@@ -1299,6 +1302,168 @@ check "$(python3 -c "import json; print(json.load(open('$R/.github/ci.json'))['p
 "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "2" "…and the default name is no kind beside it"
 rm -f "$REGATTA_CONFIG/wharf/ci-runner-kind" "$R/.github/ci.json"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "key and ci.json gone: the same check.yml reads as self-hosted, inferred from runs-on"
+
+echo "the pick: lanes, budgets, the trust refusals (lighthouse-ops S1)"
+# lighthouse's keys in the suite's config dir: four lanes (the runner Mac, a Linux guest, hosted ubuntu
+# on one account, a CircleCI org), one budget, the log dir, and this host as the ops host. Usage is
+# the desk's file, written here by hand as `lighthouse ops usage --write` would.
+mkdir -p "$REGATTA_CONFIG/lighthouse" "$REGATTA_CONFIG/regatta" "$T/logs"
+printf '%s\n' "$T/logs" > "$REGATTA_CONFIG/regatta/log-dir"
+# --apply refuses inside a Claude Code session: the suite stands in for the desk's job
+unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED
+LANES="$REGATTA_CONFIG/lighthouse/ci-lanes.json"; BUDGETS="$REGATTA_CONFIG/lighthouse/ci-budgets.json"
+USAGE="$T/logs/ci-usage.json"; PLOG="$T/logs/ci-pick.jsonl"
+"$CP" "$T/a" --pick > "$T/out" 2>&1; check "$?" "2" "no lanes file: refused"
+grep -q "no lanes: write $LANES" "$T/out"; check "$?" "0" "…naming the file to write"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop"], "runs": ["macos"]},
+ {"name": "guest", "runs_on": ["self-hosted", "linux", "guest"], "runs": ["linux"]},
+ {"name": "hosted", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-main"},
+ {"name": "circle", "provider": "circleci", "runs": ["linux"], "account": "cci"}]}
+EOF
+cat > "$BUDGETS" <<'EOF'
+{"reserve": 0.2, "accounts": {"gh-main": {"provider": "github", "user": "acme", "month_minutes": 3000, "week_share": 0.5},
+ "cci": {"provider": "circleci", "org_slug": "gh/acme", "month_credits": 30000}}}
+EOF
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$M/../regatta/hooks" \
+  > "$REGATTA_CONFIG/lighthouse/ops-host"
+usage() { # usage <state> [month] [net] [age-s]: the desk's file for gh-main
+  python3 -c 'import json,sys,time; s,m,n,age=sys.argv[2],float(sys.argv[3]),float(sys.argv[4]),int(sys.argv[5])
+row={"state":s,"month_used":m,"week_used":m/2,"net_amount":n,"unit":"minutes"} if s=="ok" else {"state":s,"why":"no GITHUB_TOKEN"}
+json.dump({"as_of":int(time.time())-age,"accounts":{"gh-main":row}},open(sys.argv[1],"w"))' "$USAGE" "$1" "${2:-100}" "${3:-0}" "${4:-0}"; }
+MACRUN='{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"ARM64"},{"name":"laptop"}]}]}'
+pickrepo() { # pickrepo <dir> [needs-json]: a repo in the variable form, its variable unset, private, no fork PRs
+  newrepo "$1"; "$CP" "$1" --to self-hosted --runs-on-var CI_RUNS_ON > /dev/null 2>&1
+  [ -n "${2:-}" ] && printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": %s}\n' "$2" > "$1/.github/ci.json"
+  rm -rf "$T/gh/vars" "$T/gh/runners.fail" "$T/gh/queued.json" "$PLOG" "$T/logs/ops.jsonl"
+  echo true > "$T/gh/private"; echo false > "$T/gh/forkpr"; echo "$MACRUN" > "$T/gh/runners.json"; }
+varval() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_RUNS_ON.json" 2>/dev/null || echo unset; }
+
+R="$T/pk1"; pickrepo "$R"; rm -f "$USAGE"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a private repo, needs absent, the runner Mac online: picked"
+grep -q '  pick: mac (\["self-hosted","macOS","laptop"\])' "$T/out"; check "$?" "0" "…the Mac lane: needs absent reads as macOS"
+grep -q 'lane guest: not eligible, the repo needs macos' "$T/out"; check "$?" "0" "…never guessed onto Linux: the guest is not eligible (flipping regatta whole is refused)"
+check "$(varval)" "unset" "…without --apply nothing is written"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "--apply on the ops host"
+check "$(varval)" '["self-hosted","macOS","laptop"]' "…the variable holds the lane's labels"
+check "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(r["from"], r["to"], r["old"], r["undo"])' "$PLOG")" \
+  "hosted mac None gh api -X DELETE repos/acme/demo/actions/variables/CI_RUNS_ON" "…the flip logged: from, to, the old value, the call that undoes it"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "a second pick: unchanged"
+check "$(wc -l < "$PLOG" | tr -d ' ')" "1" "…and nothing more logged: --apply writes only when the pick changed"
+
+echo "the pick with no token: every hosted lane over budget"
+R="$T/pk2"; pickrepo "$R" '["linux"]'; rm -f "$USAGE"
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"linux\",\"guest\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "a Linux repo, no usage file, the guest offline: exit 3, its current lane fails"
+grep -q 'lane hosted: over budget, no usage at' "$T/out"; check "$?" "0" "…the hosted lane is over budget: unread usage is never a zero"
+grep -q 'lane guest: refused, no online runner labelled self-hosted, linux, guest' "$T/out"; check "$?" "0" "…a lane with no online runner is refused"
+grep -q 'no lane: every eligible lane is refused or over budget' "$T/out"; check "$?" "0" "…no lane: the pick fails closed"
+check "$(varval)" '["self-hosted","linux","guest"]' "…and writes nothing: the variable keeps the guest's labels"
+usage absent; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane hosted: over budget, usage of gh-main unread (no GITHUB_TOKEN)' "$T/out"; check "$?" "0" "the desk's row with the token absent: over budget, said"
+usage ok 100 0 7200; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'over budget, usage at .* is 120 min old' "$T/out"; check "$?" "0" "usage two hours old: over budget"
+usage ok 100; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'lane hosted: eligible, 2300 of 3000 minutes left above the reserve' "$T/out"; check "$?" "0" "fresh usage under the cap: eligible, what is left said"
+check "$(varval)" '"ubuntu-latest"' "…--apply sets the hosted image's name"
+usage ok 2500; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'over budget, gh-main used 2500 of 3000 minutes, the reserve 20% kept' "$T/out"; check "$?" "0" "the reserve is never spent"
+usage ok 100 0.5; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'over budget, gh-main pays beyond its plan this month (netAmount 0.50)' "$T/out"; check "$?" "0" "netAmount above zero: over budget"
+python3 -c 'import json,sys,time; json.dump({"as_of":int(time.time()),"accounts":{"gh-main":{"state":"ok","month_used":100,"week_used":1600,"net_amount":0}}},open(sys.argv[1],"w"))' "$USAGE"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'gh-main used 1600 minutes this week, its share 1500' "$T/out"; check "$?" "0" "over the week share: over budget"
+grep -q 'lane circle: CircleCI, advisory' "$T/out"; check "$?" "0" "a CircleCI lane is reported, never picked"
+
+echo "the pick's trust refusals: every flip to a self-hosted lane"
+R="$T/pk3"; pickrepo "$R"; usage ok 100
+echo true > "$T/gh/forkpr"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'lane mac: refused, acme/demo runs fork pull requests' "$T/out"; check "$?" "0" "a private repo running fork PRs' workflows: the Mac lane refused"
+check "$(varval)" "unset" "…a macOS repo then has no lane, and nothing is written"
+echo fail > "$T/gh/forkpr"; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: refused, could not read whether acme/demo runs fork' "$T/out"; check "$?" "0" "fork PRs' setting unread: refused"
+echo false > "$T/gh/forkpr"; echo fail > "$T/gh/private"; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "privacy unread: the whole pick refused"
+grep -q 'could not read whether acme/demo is private' "$T/out"; check "$?" "0" "…saying so"
+echo false > "$T/gh/private"; printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": []}\n' > "$R/.github/ci.json"
+rm -f "$USAGE"; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: not eligible, the repo needs public' "$T/out"; check "$?" "0" "a public repo: no self-hosted lane is eligible"
+grep -q 'lane hosted: eligible, a public repo.s hosted minutes are free' "$T/out"; check "$?" "0" "…the hosted lane is, free, with no usage at all"
+echo true > "$T/gh/private"; touch "$T/gh/runners.fail"; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "lane mac: refused, the repo's runners are unread" "$T/out"; check "$?" "0" "runners unread: refused"
+rm -f "$T/gh/runners.fail"; echo '{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"offline","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"laptop"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: refused, no online runner labelled' "$T/out"; check "$?" "0" "the runner offline: refused"
+cp "$LANES" "$T/lanes.keep"
+sed 's/"runs": \["macos"\]}/"runs": ["macos", "public"]}/' "$T/lanes.keep" > "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a self-hosted lane listing public: the lanes file refused"
+grep -q 'lane mac is self-hosted and lists `public`' "$T/out"; check "$?" "0" "…saying why"
+cp "$T/lanes.keep" "$LANES"
+
+echo "the pick: queue, staleness, the ops host, a repo not migrated"
+R="$T/pk4"; pickrepo "$R" '[]'; usage ok 100
+python3 -c 'import json,sys,time; print(json.dumps({"as_of":int(time.time()),"ci":{"lanes":{"mac":{"queued_s_p50":900}}}}))' > "$T/logs/ops.jsonl"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: eligible, queue 900s' "$T/out" && grep -q '  pick: hosted' "$T/out"; check "$?" "0" "the Mac's queue over the max: the hosted lane, under budget"
+rm -f "$USAGE"; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q '  pick: mac' "$T/out"; check "$?" "0" "…over budget: back to the shortest self-hosted queue"
+rm -f "$T/logs/ops.jsonl"; usage ok 100
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":1,"created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: skipped, a check sat queued 40 min on it' "$T/out" && grep -q '  pick: hosted' "$T/out"; check "$?" "0" "a check queued 40 min on its lane: that lane skipped (D2-A)"
+printf '{"at":%d,"repo":"acme/demo"}\n' "$(($(date +%s) - 1200))" > "$PLOG"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q '  pick: mac, unchanged' "$T/out"; check "$?" "0" "…but a run queued before the pick's last flip never makes the new lane stale (landing review)"
+rm -f "$PLOG"
+CLAUDE_CODE_SESSION_ID=s-1 "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "--apply inside a Claude Code session: refused, the desk's job applies"
+echo other-host > "$REGATTA_CONFIG/lighthouse/ops-host"
+"$CP" "$R" --pick --apply --dry-run > "$T/out" 2>&1; check "$?" "0" "--apply --dry-run off the ops host: runs, writes nothing"
+grep -q 'would update variable CI_RUNS_ON' "$T/out"; check "$?" "0" "…saying what it would write"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "--apply off the ops host: refused"
+grep -q "not lighthouse/ops-host's other-host" "$T/out"; check "$?" "0" "…naming the host it writes on"
+rm -f "$REGATTA_CONFIG/lighthouse/ops-host"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "…no ops host at all: refused, the desk is off"
+check "$(varval)" '["self-hosted","macOS","laptop"]' "…and the variable untouched"
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$M/../regatta/hooks" \
+  > "$REGATTA_CONFIG/lighthouse/ops-host"
+R="$T/pk5"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; usage ok 100
+printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": []}\n' > "$R/.github/ci.json"
+python3 -c 'import json,sys,time; print(json.dumps({"as_of":int(time.time()),"ci":{"lanes":{"mac":{"queued_s_p50":900}}}}))' > "$T/logs/ops.jsonl"
+rm -f "$T/gh/queued.json"; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a literal runs-on: the pick reports"
+grep -q 'check.yml reads no runs-on variable' "$T/out"; check "$?" "0" "…says it is not migrated"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "…and --apply is refused: never written"
+rm -f "$T/logs/ops.jsonl"
+echo "the pick: the landing review's cases"
+R="$T/pk7"; pickrepo "$R"; usage ok 100; echo true > "$T/gh/forkpr"
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "the repo's current lane refused (fork PRs on) and no other: exit 3, for the desk to card"
+grep -q '⚠ current lane mac fails: acme/demo runs fork pull requests' "$T/out"; check "$?" "0" "…naming why"
+echo false > "$T/gh/forkpr"; grep -v 'GIT_CONFIG_GLOBAL=' "$R/.github/workflows/check.yml" > "$T/wf" && cp "$T/wf" "$R/.github/workflows/check.yml"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: refused, check.yml lacks the GIT_CONFIG_GLOBAL step' "$T/out"; check "$?" "0" "a check.yml without the guard step: the self-hosted lane refused, as --to self-hosted would"
+sed 's/"runs_on": \["self-hosted", "macOS", "laptop"\]/"runs_on": ["macOS", "laptop"]/' "$T/lanes.keep" > "$LANES"
+R="$T/pk8"; pickrepo "$R"; usage ok 100; echo true > "$T/gh/forkpr"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: refused, acme/demo runs fork pull requests' "$T/out"; check "$?" "0" "a label list without self-hosted is a runner's lane: the trust refusals run (landing review)"
+sed 's/"runs_on": \["self-hosted", "macOS", "laptop"\]/"runs_on": "self-hosted"/' "$T/lanes.keep" > "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a string runs_on naming a self-hosted runner: the lanes file refused"
+sed 's/"runs_on": \["self-hosted", "macOS", "laptop"\]/"runs_on": "macOS"/' "$T/lanes.keep" > "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a string runs_on that is an automatic label (macOS): refused, no hosted image's name (the second landing review)"
+cp "$T/lanes.keep" "$LANES"
+echo "the pick: the second landing review's cases"
+setmac() { mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"; }
+echo false > "$T/gh/forkpr"   # pickrepo's --to reads the last case's fork PRs
+R="$T/pk9"; pickrepo "$R"; usage ok 100; setmac; echo false > "$T/gh/private"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "a public repo still on the runner Mac, no lane takes it: exit 3, not 0"
+grep -q '⚠ current lane mac fails: the repo needs public' "$T/out"; check "$?" "0" "…naming why"
+R="$T/pk10"; pickrepo "$R"; usage ok 100; setmac; touch "$T/gh/runners.fail"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "the current lane's runners unread and no other lane: exit 3"
+R="$T/pk11"; pickrepo "$R"; usage ok 100; printf '{"at": 1, "repo": "acme/de\n' > "$PLOG"; echo '{"at": 5, "repo": "acme/demo"}' >> "$PLOG"
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); o=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(o); print(o.last_flip("acme/demo"))' "$CP")" "5" "a torn line in ci-pick.jsonl costs that line only"
+cp "$T/lanes.keep" "$LANES"
+R="$T/pk6"; newrepo "$R"; "$CP" "$R" --to circleci > /dev/null 2>&1
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a repo on circleci: refused, the pick moves an Actions check only"
+"$CP" "$R" --apply > /dev/null 2>&1; check "$?" "2" "--apply without --pick: a usage error"
 
 echo "the review of 2026-10-21: the suite's own git config (15)"
 check "$(git config --global --list 2>/dev/null | wc -l | tr -d ' ')" "0" "git reads the suite's global config, not the caller's (15)"

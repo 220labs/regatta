@@ -14,6 +14,14 @@
 - `branches.seed_task` takes a routed seed for a seed (`seed_paths_ok`): a doc the commit's `Routed-By:`
   trailer names, changed by its `Routed:` line alone, besides the brief, so the reaper and the archive's
   dropped-seed road see it (routed comments S2's landing review, 2026-10-26).
+- `ci-provider REPO --pick [--apply] [--usage FILE]` (lighthouse-ops S1, the owner's D2-A): the lane a repo's
+  check takes, from lighthouse's `ci-lanes.json` and `ci-budgets.json`, its ci.json `needs` (absent: macOS),
+  the trust refusals on every self-hosted lane and an online runner, the sampler's queue; hosted minutes only
+  on the desk's fresh usage, else over budget. `--apply` writes the runs-on variable on `lighthouse/ops-host`
+  only, only in the variable form and only on a change, logging the old value and its undo to `ci-pick.jsonl`.
+  A hosted lane's `runs_on` is a hosted image's name (`ubuntu-*`, `macos-*`, `windows-*`); a repo whose
+  current lane it no longer fits, whose runners are unread or whose check sat queued exits 3 when no other
+  lane takes it.
 
 - checkpoint never pushes a branch that already landed: before a push, `publish()` asks GitHub
   (`common.landed_pr`) whether a pull request from the head merged while none is open, and if so
