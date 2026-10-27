@@ -59,6 +59,13 @@
   skips no hour; a disarmed host never claims a yolo or dnd entry, landing peer or not; a `--next` the queue
   cannot take meets the cap and memory before its one-shot; a never-started retry that cannot relock ends
   its entry; `has` answers 4 for any torn scope store; a landed push waits a second, not 75, for the lock.
+- dispatch gives a typed skipper with no plan page one at its first run (peer-manager-relay S1, D1-A): its
+  `skipper_page` asks helm's `helm page` for the ship's space once every refusal has run (a refused dispatch
+  publishes nothing) and carries it as `DISPATCH_PLAN_SPACE`, so the
+  run record's `plan_space`, the relay's Talk road and keel's listen reminder have it, on the peer Mac with
+  `--on` too. A skipper with a page reuses it; a run passing its skipper on, or a dry run, publishes nothing.
+  A refusal (helm's publish budget, no Talk on the account) still starts the run, as before, and says so in
+  one line. On 2026-10-26 a build-box run parked 3 h for a laptop skipper with no page.
 - `rc-hosts --tcc-survey` counts a job Orca started (orca-launcher S7): a not-allowed privacy request whose
   responsible process is Orca while a child of it asks is listed as `via Orca: <accessing path>` beside the
   versioned-claude rows (Orca's own requests, the quiet services and allowed ones are not), so the Drive

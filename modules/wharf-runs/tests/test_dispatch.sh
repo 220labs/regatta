@@ -339,6 +339,52 @@ has "$(pl)" "<key>DISPATCH_PLAN</key><string>mgr-x</string>" "  and its plan, on
 mkdir -p "$HOME/Library/Logs/claude-weekly/plans/mgr-x"; echo '{"space": "sp-1"}' > "$HOME/Library/Logs/claude-weekly/plans/mgr-x/plan.json"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=mgr-x DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
 has "$(pl)" "<key>DISPATCH_PLAN_SPACE</key><string>sp-1</string>" "  and the plan's page, the Talk address"
+
+echo "peer-manager-relay S1: a typed skipper with no page gets one at its first dispatch (helm page)"
+# a stand-in helm for this block alone: it logs each call and prints a space, or refuses as helm page does
+mkdir -p "$T/peer/bin"
+cat > "$T/peer/bin/helm" <<EOF
+#!/bin/sh
+echo "\$* SESSION=\$CLAUDE_CODE_SESSION_ID" >> "$T/helm.calls"
+[ -e "$T/helm.refuse" ] && { echo "helm page: redeploys paused: 150 of this Mac's 150 publishes in 24 h" >&2; exit 3; }
+echo sp-new
+EOF
+chmod +x "$T/peer/bin/helm"; : > "$T/helm.calls"
+# the skipper family the plist hands launchd, as the job's environment
+penv() { python3 -c '
+import plistlib, sys
+e = plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]
+print(" ".join("%s=%s" % kv for kv in sorted(e.items()) if kv[0].startswith(("DISPATCH_SKIPPER", "DISPATCH_MANAGER", "DISPATCH_SHIP", "DISPATCH_PLAN"))))' "$1"; }
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-new DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>"$T/page.err"
+check "$(cat "$T/helm.calls")" "page sk-new SESSION=sk-new" "a typed skipper with no page: dispatch asks helm page for its ship's"
+has "$(pl)" "<key>DISPATCH_PLAN_SPACE</key><string>sp-new</string>" "  and the run carries the space, the Talk address"
+check "$(cat "$T/page.err")" "" "  said nothing more"
+P=$(pl); PL=$(basename "$P" .plist); : > "$T/env.calls"
+env $(penv "$P") DISPATCH_LOG="$HOME/mgr.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" \
+  "sk-new sk-new sp-new" "  fired: the run's record carries plan_space, so the relay's Talk road and keel's listen reminder have it"
+grep -q "^DISPATCH_PLAN_SPACE=sp-new$" "$T/env.calls"; check "$?" "0" "  and the run's session has it"
+: > "$T/helm.calls"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=mgr-x DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>&1
+has "$(pl)" "<key>DISPATCH_PLAN_SPACE</key><string>sp-1</string>" "a skipper that has a page (mgr-x's plan.json, above) keeps it"
+check "$(wc -l < "$T/helm.calls" | tr -d ' ')" "0" "  and helm is not asked: no second publish"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=run-y CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=sk-far DISPATCH_SHIP=sk-far "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>&1
+check "$(wc -l < "$T/helm.calls" | tr -d ' ')" "0" "a run passing its skipper on publishes nothing: the ship lives on the skipper's Mac"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-dry DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run >/dev/null 2>&1
+check "$(wc -l < "$T/helm.calls" | tr -d ' ')" "0" "  nor does a dry run"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-past DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "2020-01-01 04:10" >/dev/null 2>&1; rc=$?
+check "$rc $(wc -l < "$T/helm.calls" | tr -d ' ')" "2 0" "  nor a dispatch refused (a past --at): the page goes after every refusal (the landing review)"
+touch "$T/helm.refuse"; rm -f "$(pl)"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-ref DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>"$T/page.err"; rc=$?
+check "$rc $(cat "$T/helm.calls")" "0 page sk-ref SESSION=sk-ref" "helm's publish budget refuses: dispatch still schedules the run"
+has "$(pl)" "<key>DISPATCH_SKIPPER</key><string>sk-ref</string>" "  under its skipper"
+grep -q DISPATCH_PLAN_SPACE "$(pl)"; check "$?" "1" "  with no space"
+check "$(cat "$T/page.err")" "dispatch: no plan page for the skipper, so the run has no Talk road to it — helm page: redeploys paused: 150 of this Mac's 150 publishes in 24 h" \
+  "  and says so in one line"
+: > "$T/helm.calls"; rm -f "$T/helm.refuse"
+env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-on DISPATCH_HOST=laptop "$B/dispatch" $BR --repo "$HOME/projects/other" --on buildbox --at "@$EP" >/dev/null 2>&1
+has "$T/ssh.calls" "DISPATCH_PLAN_SPACE=sp-new" "--on a peer: the page published here crosses with the run, so the peer's run has the address"
+rm -f "$T/peer/bin/helm" "$T/helm.calls"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=run-y CLAUDE_UNATTENDED=dispatch "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
 grep -q DISPATCH_MANAGER "$(pl)"; check "$?" "1" "an unattended caller with no manager (autofinish) names none"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=run-y CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
@@ -2260,6 +2306,13 @@ print("env %s %s %s" % (env, shlex.quote(sys.argv[2]), " ".join(shlex.quote(x) f
 PY
 qfire() { python3 "$T/qfire.py" "$1" "$B/dispatch" > "$T/qfire.sh"; bash "$T/qfire.sh"; }
 qenv() { python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"][sys.argv[2]])' "$@"; }
+qreset
+
+# peer-manager-relay S1 on the queue road: a typed skipper's queued run carries the page in its entry
+printf '#!/bin/sh\necho sp-q\n' > "$T/qhelm"; chmod +x "$T/qhelm"
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_HELM="$T/qhelm" CLAUDE_CODE_SESSION_ID=sk-q "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$? $("${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json 2>/dev/null | grep -c 'DISPATCH_PLAN_SPACE.*sp-q')" "0 1" \
+  "a typed skipper's run through the queue: its entry carries the page dispatch published (the S1 landing)"
 qreset
 
 # a run now, here: enqueued, claimed with room, started by a job that runs at load
