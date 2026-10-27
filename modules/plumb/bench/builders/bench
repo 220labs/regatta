@@ -4,6 +4,7 @@
     bench prepare TASK --work DIR                  the bundle, the hidden tests, the baseline
     bench run TASK --arm MODEL:EFFORT --rep N --work DIR --out FILE [--budget 25] [--timeout 90]
     bench drive PLAN --work DIR --out FILE [--parallel 3] [--stop 450] [--ceiling 515] [--self T]
+                [--until EPOCH|ISO]
     bench ledger FILE [--self T]                   list cost so far: rows, live runs, the caller
     bench rescan FILE --tasks DIR                  judge every row's isolation again, today's rule
     bench table FILE [--ratio R]                   the results as a Markdown table
@@ -12,6 +13,14 @@
 calls it for each [task, arm, rep] of a plan, in the plan's order, at most --parallel at once, and
 starts nothing once the ledger passes --stop or the next run's --budget could take it past
 --ceiling; a ledger it cannot read stops it. A continuous bench calls `run` the same way.
+
+`drive` is tethered: before each start it stops once the Claude Code session that started it is
+gone (the claude process above it, recorded at start), once `--until` has passed, or once the
+login its runs spend (the config dir's) is parked, locked or past its week ceiling by lighthouse's
+`account limits --cached`. A session's cap ends the session, not what it started: a driver ran on
+15 h past one, on a login past its ceiling (2026-10-25). An in-flight run is left to finish and
+write its row. Run by hand from a shell, with no session above it and no `--until`, the first stop
+is off, as before; an account tool that cannot answer is logged and leaves the ledger to stop it.
 
 A TASK is a JSON file:
     {"id", "repo": the source checkout, "seed": the brief's commit, "tip": the landed branch's tip,
@@ -43,6 +52,7 @@ import glob
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -663,6 +673,182 @@ def cmd_ledger(a):
     return 0
 
 
+# --- the tether: the session above the driver, its deadline, the login's ceiling -----------------
+
+def ps_row(pid):
+    """(parent pid, start time, command) of a live process, or None. The start time tells a pid
+    reused since from the process that held it. TZ and locale pinned, as pickup's and dispatch's
+    readers do: a zone change mid-run would read as a new process, and ja_JP's lstart is four words."""
+    try:
+        r = sh(["ps", "-o", "ppid=,lstart=,comm=", "-p", str(int(pid))],
+               env=dict(os.environ, TZ="UTC", LC_ALL="C"))
+    except (OSError, ValueError):
+        return None
+    x = r.stdout.split(None, 6) if r.returncode == 0 else []
+    if len(x) < 7:
+        return None
+    try:
+        return int(x[0]), " ".join(x[1:6]), x[6].strip()
+    except ValueError:
+        return None
+
+
+def is_claude(comm):
+    return os.path.basename(comm or "") == "claude"
+
+
+def claude_above(pid):
+    """The claude process at or above `pid`, as (pid, start time), or (None, None)."""
+    seen = set()
+    while pid and pid > 1 and pid not in seen:
+        seen.add(pid)
+        row = ps_row(pid)
+        if not row:
+            break
+        if is_claude(row[2]):
+            return pid, row[1]
+        pid = row[0]
+    return None, None
+
+
+def tether(until=None):
+    """Who owns this driver, read once at start: the session id, its claude process, the deadline.
+    CLAUDE_PID first: a driver started with `nohup … &` from a Bash call is reparented to pid 1 as
+    soon as that call's shell exits, often before it could walk up (a second, measured 2026-10-27)."""
+    pid, start = None, None
+    env_pid = os.environ.get("CLAUDE_PID", "")
+    if env_pid.isdigit():
+        row = ps_row(int(env_pid))
+        if row and is_claude(row[2]):
+            pid, start = int(env_pid), row[1]
+    if not pid:
+        pid, start = claude_above(os.getpid())
+    return {"session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None, "pid": pid, "start": start,
+            "until": until}
+
+
+def tether_stop(t, now=None):
+    """Why the session's stop ends the driver, or None."""
+    now = time.time() if now is None else now
+    if t.get("until") is not None and now >= t["until"]:
+        return "the deadline %s has passed" % time.strftime("%Y-%m-%d %H:%M", time.localtime(t["until"]))
+    if t.get("pid"):
+        row = ps_row(t["pid"])
+        if not row or row[1] != t["start"] or not is_claude(row[2]):
+            return "session %s is gone (its claude, pid %d, ended)" % (t.get("session") or "?", t["pid"])
+    return None
+
+
+def until_arg(s):
+    """--until as an epoch in seconds or an ISO time (a naive one is local). nan, inf and a
+    millisecond epoch are refused: the first never fires, the others crash time.localtime."""
+    try:
+        v = float(s)
+    except ValueError:
+        try:
+            import datetime as dt
+            v = dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            raise argparse.ArgumentTypeError("not an epoch or an ISO time: %r" % s)
+    if not math.isfinite(v) or not 0 <= v <= 253402300799:   # 9999-12-31
+        raise argparse.ArgumentTypeError("not an epoch in seconds: %r" % s)
+    return v
+
+
+_ACCOUNT = []
+
+
+def account_tool():
+    """lighthouse's `account` through bench/_regatta.py (the core's tool()), or None when either is
+    absent; resolved once, since the driver asks before every start."""
+    if not _ACCOUNT:
+        try:
+            p = os.path.dirname(HERE)
+            if p not in sys.path:
+                sys.path.insert(0, p)
+            import _regatta
+            _ACCOUNT.append(_regatta.find("account"))
+        except (Exception, SystemExit):
+            _ACCOUNT.append(None)
+    return _ACCOUNT[0]
+
+
+def account_rows():
+    """(every login's row from `account limits --all --parked --json --cached`, None), or
+    (None, why it could not tell)."""
+    tool = account_tool()
+    if not tool:
+        return None, "lighthouse's account tool is absent"
+    try:
+        r = sh([str(tool), "limits", "--all", "--parked", "--json", "--cached"], timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "account limits did not answer: %s" % e
+    if r.returncode:
+        return None, "account limits exited %d: %s" % (r.returncode, (r.stderr.strip().splitlines() or [""])[-1])
+    try:
+        rows = json.loads(r.stdout)
+        if not isinstance(rows, list):
+            raise ValueError("not a list")
+    except ValueError as e:
+        return None, "account limits printed no JSON list: %s" % e
+    return rows, None
+
+
+def same_dir(a, b):
+    return os.path.realpath(os.path.expanduser(a)) == os.path.realpath(os.path.expanduser(b))
+
+
+STALE_S = 2 * 3600   # `--cached` returns a reading of any age; older than this tells nothing
+
+
+def row_verdict(x, now):
+    """One row's (stop, could-not-tell). lighthouse's `eligible` decides where it is given: its
+    judge() returns early for same_as and paid overage, so the week ceiling never shows in `why`
+    there. Only the 5-hour window is no stop: it resets within hours."""
+    name, why = x.get("label") or "?", x.get("why") or ""
+    lim = x.get("limits") or {}
+    if x.get("enabled") is False:
+        return "login %s is parked" % name, None
+    if lim.get("locked") or why.startswith("cooling down"):
+        return "login %s is locked (%s)" % (name, ", ".join(lim.get("locked") or []) or why), None
+    if re.match(r"week \d+(\.\d+)?% ≥", why):
+        return "login %s is past its week ceiling: %s" % (name, why), None
+    if not lim:
+        return None, "login %s has no cached limits" % name
+    if why.startswith("limits unknown"):
+        return None, "login %s: %s" % (name, why)
+    if x.get("eligible") is False and not why.startswith("5h "):
+        return "login %s may not run: %s" % (name, why), None
+    if isinstance(x.get("sampled"), (int, float)) and now - x["sampled"] > STALE_S:
+        return None, "login %s: its reading is %d h old" % (name, (now - x["sampled"]) // 3600)
+    return None, None
+
+
+def login_verdict(rows, home, now=None):
+    """(why the login at `home` must stop, None), (None, why it could not tell), or (None, None).
+    Matched by home, every matching row judged: a stop in any of them stops."""
+    now = time.time() if now is None else now
+    mine = [x for x in rows if isinstance(x, dict) and x.get("home") and same_dir(x["home"], home)]
+    if not mine:
+        return None, "no account row has the home %s" % home
+    verdicts = [row_verdict(x, now) for x in mine]
+    for stop, _ in verdicts:
+        if stop:
+            return stop, None
+    for _, unsure in verdicts:
+        if unsure:
+            return None, unsure
+    return None, None
+
+
+def login_stop():
+    """The login's stop: (why, None), (None, could-not-tell), or (None, None)."""
+    rows, why = account_rows()
+    if rows is None:
+        return None, why
+    return login_verdict(rows, config_dir())
+
+
 def cmd_drive(a):
     plan = json.load(open(a.plan))
     done = {(r["task"], r["arm"], r["rep"]) for r in rows_of(a.out)}
@@ -676,6 +862,15 @@ def cmd_drive(a):
         log.write(line + "\n")
         log.flush()
 
+    t = tether(a.until)
+    who = ("session %s, claude pid %d" % (t["session"] or "?", t["pid"]) if t["pid"] else
+           "session %s, but no claude process found" % t["session"] if t["session"] else "no session")
+    if t["pid"] or t["until"] is not None:
+        say("tethered: %s%s" % (who, time.strftime(", until %Y-%m-%d %H:%M", time.localtime(t["until"]))
+                                if t["until"] is not None else ""))
+    else:
+        say("untethered: %s and no --until; only the ledger and the login stop it" % who)
+    told = set()   # each could-not-tell said once, not every pass
     stopped = None
     while todo or running:
         for pid, (item, p, _) in list(running.items()):
@@ -684,12 +879,21 @@ def cmd_drive(a):
                 del running[pid]
         if not stopped and os.path.exists(os.path.join(a.work, "STOP")):
             stopped = "the file STOP exists in the work folder"   # a stop is a file write, not a kill
+            say("STOP: " + stopped + "; %d not started" % len(todo))
         if todo and not stopped and len(running) < a.parallel:
+            # before each start: the session's stop, the login's, then the ledger's
+            stopped = tether_stop(t)
+            if not stopped:
+                stopped, unsure = login_stop()
+                if unsure and unsure not in told:
+                    told.add(unsure)
+                    say("login: could not tell (%s); the ledger's --stop still holds" % unsure)
+            led = None
             try:
-                led = ledger(a.out, a.self or [], [x[2] for x in running.values()])
+                led = None if stopped else ledger(a.out, a.self or [], [x[2] for x in running.values()])
             except (RuntimeError, OSError, ValueError) as e:
                 stopped = "the ledger cannot be read: %s" % e
-            else:
+            if led:
                 # a live run may still spend up to its budget: count each at its cap
                 worst = led["rows"] + led["self"] + led["dead"] + a.budget * (len(running) + 1)
                 if led["total"] >= a.stop:
@@ -762,6 +966,9 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, default=90)
     p.add_argument("--stagger", type=int, default=60, help="seconds between starts")
     p.add_argument("--self", action="append", help="a caller's session id or transcript, counted in the ledger")
+    p.add_argument("--until", type=until_arg, help="start nothing past this time (an epoch or ISO). Started from a "
+                   "Claude Code session, the driver also stops once that session's claude is gone; run by hand "
+                   "with neither, only the ledger and the login's ceiling stop it, as before")
     p = sub.add_parser("ledger")
     p.add_argument("file")
     p.add_argument("--self", action="append")
