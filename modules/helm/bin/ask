@@ -266,7 +266,11 @@ def cmd_relay(a):
     listens = bool(space) and "talk" in order and surfaces.row("ask.listen") == "talk" and background_ok()
     # A manager on another Mac cannot open this path: its reply sends without reading the doc
     # (second review, finding 6). With no page here there is no road back at all; R5 says so.
-    remote = mstate[0] == "remote"
+    # A live manager on a peer (read over ssh, peer-manager-relay) cannot open it either, and its
+    # `answer --send-only` needs this run's page to send to: with none, the manager could hear the ask
+    # and never answer it, so the run parks for the owner as before (finish review).
+    peer_live = mstate[0] == "live" and asklib.elsewhere(ctx) and not asklib.registry(ctx["manager"])
+    remote = mstate[0] == "remote" or peer_live
     # a leased ship's answer names it, so the skipper's `answer` is fenced by that ship's lease (S4);
     # a ship with no lease keeps the reply it always had
     plan_flag = (" --plan " + ctx["plan"]) if leased(ctx.get("plan")) else ""
@@ -283,7 +287,11 @@ def cmd_relay(a):
         tctx = dict(ctx, manager=ctx.get("manager") or "$DISPATCH_SKIPPER", space=ctx.get("space") or "$DISPATCH_PLAN_SPACE")
         print(asklib.BACKENDS["talk"].curl(tctx, text))
         return 0
-    name, verdict, detail, tried = asklib.relay(ctx, text, order, dry=a.dry_run, resolved=resolved)
+    if peer_live and not listens:
+        name, verdict, tried = None, "unreachable", []
+        detail = "the manager is live on %s, but this run has no page of its own to hear its answer on" % ctx.get("manager_host")
+    else:
+        name, verdict, detail, tried = asklib.relay(ctx, text, order, dry=a.dry_run, resolved=resolved)
     for b, why in tried:
         print("  %s: skipped — %s" % (b, why))
     print("message: %s" % text)

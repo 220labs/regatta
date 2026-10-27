@@ -1085,7 +1085,7 @@ def _rc():
 
 
 def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str = "", alive=None,
-                     listen_row=None) -> list:
+                     listen_row=None, peer_runs=None) -> list:
     """A watched session with a live dispatched run that can reach it over Talk, and no listener:
     start one — a process a hook spawns wakes nobody; only the model's own background shell does
     (B4). Only runs that can use one (finding 8): the record has a plan_space (the Talk address),
@@ -1094,7 +1094,12 @@ def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str
     Once per listener gap, not per turn: a marker (in the git dir, else under the asks queue dir)
     says the reminder was given; a listener seen running clears it. So when a listener exits on a
     wake and the turn ends with none restarted while a run is still live, the manager is told once
-    more (second review, 2026-10-11) — and a manager that never starts one hears it once."""
+    more (second review, 2026-10-11) — and a manager that never starts one hears it once.
+
+    A run on a peer Mac counts too (peer-manager-relay, 2026-10-26: a laptop manager of a build-box run
+    was never told to listen): asklib.peer_runs() reads every peer `wharf-runs/ssh` names, one ssh a
+    peer, cached 10 minutes, its liveness judged there. Only on the hook's own read (no `runs` given)
+    or when PEER_RUNS is handed in (tests)."""
     import glob, os
     env = os.environ if env is None else env
     if env.get("CLAUDE_UNATTENDED") or not session:
@@ -1112,6 +1117,11 @@ def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str
         listen_row = surfaces.row("ask.listen")
     if listen_row != "talk":
         return []
+    qdir = env.get("ASK_QUEUE_DIR") or os.path.join(os.path.expanduser("~"), "Library/Logs/claude-weekly/asks")
+    if peer_runs is None and runs is None:
+        lib = _asklib()
+        peer_runs = lib.peer_runs(qdir) if lib is not None and hasattr(lib, "peer_runs") else []
+    far = [r for r in (peer_runs or []) if isinstance(r, dict) and r.get("manager") in ids]
     runs = runs or os.path.join(os.path.expanduser("~"), "Library/Logs/claude-weekly/run-seed-runs")
     cand = []
     for f in glob.glob(os.path.join(runs, "*.json")):
@@ -1121,19 +1131,19 @@ def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str
             continue
         if isinstance(st, dict) and st.get("manager") in ids and st.get("plan_space") and not st.get("ended"):
             cand.append(st)
-    if not cand:
+    if not cand and not far:
         return []
-    if alive is None:
+    if cand and alive is None:
         rc = _rc()
-        if rc is None:  # no wharf-runs: no run can be told alive (G9)
-            return []
-        alive = rc.same
-        cand = [rc.typed(st) for st in cand]   # a pid written as a string (records before 2026-10-11) still reads as live
-    kids = [st.get("topic") or "?" for st in cand if alive(st)]
+        if rc is None:  # no wharf-runs: no run here can be told alive (G9); a peer's was judged there
+            cand = []
+        else:
+            alive = rc.same
+            cand = [rc.typed(st) for st in cand]   # a pid written as a string (records before 2026-10-11) still reads as live
+    kids = [st.get("topic") or "?" for st in cand if alive(st)] + [r.get("topic") or "?" for r in far]
     if not kids:
         return []
     gd = _git(cwd, "rev-parse", "--absolute-git-dir").strip() if cwd else ""
-    qdir = env.get("ASK_QUEUE_DIR") or os.path.join(os.path.expanduser("~"), "Library/Logs/claude-weekly/asks")
     marker = os.path.join(gd, "claude", "ask-listen-nagged.%s" % session) if gd else \
         os.path.join(qdir, "listen-nagged.%s" % session)
     if listening is None:

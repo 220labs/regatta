@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A manager on another Mac is judged by that Mac's registry (peer-manager-relay,
+  `docs/peer-manager-relay-2026-10-26.md`): where the config dir's `wharf-runs/ssh` names its host, one
+  ssh reads the session's record there (`asklib.peer_manager`). Live, `bin/ask relay` relays to it; with
+  no plan page, the file road writes its own queue on that Mac, which its prompt hook prints, when the run
+  has a page of its own to hear the answer on (else it parks, as before). A dead pid is gone, and the ask
+  goes to the Mac's standing manager, else waits for the owner. A host with no alias, one that does not
+  answer, or no record there (the probe reads the login's registry and every Orca profile's) stays `remote` as
+  before. The build box has no ssh alias for the laptop yet, so board-cleanup's direction (its D2 parked
+  for about 3 h) still parks without a plan page: the record's D1. `asklib.peer_runs` gives keel's listen reminder the peers' runs. `ASK_SSH` stands in
+  for ssh in the suite.
+
 - The stall class `start path dead` (orca-launcher S7, docs/orca-launcher-2026-10-24.md G2): `stalls.py` reads
   wharf-runs' `clock canary check --json` on this Mac (its own Orca and beat files: no peer, nothing on the laptop)
   and raises one stall per failing canary beat, keyed `[host, "canary", beat]`, titled `canary orca · start path

@@ -81,6 +81,18 @@ printf '{"accounts": [{"label": "claude-a", "provider": "claude", "home": "%s/ho
 # a live record: this shell's pid; a dead one: a pid that has exited
 live() { printf '{"pid": %d, "sessionId": "%s", "name": "%s", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "%s", "updatedAt": %s}' $$ "$1" "$2" "${3:-/a}" "${4:-2}" > "$T/sess/$1.json"; }
 sleep 0 & DEAD=$!; wait $DEAD
+# ssh's stand-in for every case (peer-manager-relay): a peer is a folder, $T/peers/<alias>, which is its
+# HOME; an alias with no folder is unreachable. The fixture names buildbox:buildbox-ssh, so no case may
+# reach a real Mac.
+mkdir -p "$T/peers"
+cat > "$T/ssh" <<EOF
+#!/bin/sh
+while [ "\$1" = "-o" ]; do shift 2; done
+a=\$1; shift
+[ -d "$T/peers/\$a" ] || { echo "ssh: connect to host \$a port 22: Operation timed out" >&2; exit 255; }
+exec env -u ASK_SESSIONS_DIR -u ASK_QUEUE_DIR HOME="$T/peers/\$a" sh -c "\$*"
+EOF
+chmod +x "$T/ssh"; export ASK_SSH="$T/ssh"
 
 # a repo with one open D-item, committed
 R="$T/repo"; mkdir -p "$R/docs"; git -C "$R" init -q -b claude/laptop/2026-10-10-demo
@@ -224,6 +236,67 @@ has "$out" "talk: skipped — no SPACESHEEP_KEY" "no key: Talk skips and says wh
 has "$out" "verdict: unreachable" "nothing delivered is said"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "…and the run falls to the WAITING path"
 has "$out" " --send-only" "a manager on another Mac: the reply sends without reading the doc (second review, finding 6)"
+has "$out" "file: skipped — the manager is not on this Mac (ssh buildbox-ssh: ssh: connect to host" \
+  "  a peer that does not answer over ssh: remote, as before, and the file road says why"
+
+echo "peer-manager-relay: a manager live on a peer is judged by its registry there, over the ssh wharf-runs/ssh names"
+PH="$T/peers/buildbox-ssh"; mkdir -p "$PH/.claude/sessions"
+printf '{"pid": %d, "sessionId": "far-1", "name": "coding-far", "status": "idle", "cwd": "/a", "updatedAt": 2}' $$ > "$PH/.claude/sessions/far-1.json"
+echo "  …a run with no page of its own: the manager could hear it and never answer, so it parks (finish review)"
+out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "verdict: unreachable · the manager is live on buildbox, but this run has no page of its own" "  unreachable, said why"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
+check "$(ls "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …nothing queued there"
+echo "  …a run with its own page (a keel pin): relayed, and the answer comes back over Talk"
+mkdir -p "$T/ms"; printf '{"repo@claude/laptop/2026-10-10-demo:docs/demo-2026-10-10.md": {"space": "space-own"}}' > "$T/ms/sheep.json"
+out=$(env MEMO_SHEEP_STATE="$T/ms" "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "talk: skipped — no plan space" "no plan page: Talk has no address (board-cleanup's D2, 2026-10-26)"
+has "$out" " --space space-own" "  the reply sends to the run's own page"
+has "$out" "backend: file · verdict: queued · file: $PH/Library/Logs/claude-weekly/asks/far-1.jsonl on buildbox" \
+  "  relayed, not parked: the file road writes the manager's own queue on its Mac"
+has "$out" "RELAYED TO coding-far — D1" "  the RELAYED line names it by its registry name there"
+has "$out" " --send-only" "  its reply sends without reading the doc, which is not on its Mac"
+check "$(grep -c 'ASK repo D1 ' "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "1" "  the queue there holds the ASK line"
+check "$(ls "$T/q"/far-1.jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and nothing waits in this Mac's queue"
+check "$(python3 -c "import json; print(json.load(open('.git/claude/ask.json'))['verdict'])")" "queued" "  ask.json says queued, which the Stop hook reads as relayed"
+echo "  the same manager gone there: parked for the owner, as a gone manager here is"
+printf '{"pid": %d, "sessionId": "far-1", "name": "coding-far", "status": "idle", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$PH/.claude/sessions/far-1.json"
+out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "verdict: none · no live manager: the manager's session has ended (pid $DEAD on buildbox is gone)" "  a dead pid on the peer: none"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
+rm -f "$PH/.claude/sessions/far-1.json"
+out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "verdict: unreachable" "  no record on the peer: remote, as before (a registry the probe cannot see is no end), and Talk has no address"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
+echo "  …live under an Orca profile's own registry there: found"
+OP="$PH/Library/Application Support/orca/claude-profiles/p1/home"; OP="$OP/sessions"; mkdir -p "$OP"
+printf '{"pid": %d, "sessionId": "far-1", "name": "coding-orca", "status": "idle", "cwd": "/a", "updatedAt": 2}' $$ > "$OP/far-1.json"
+out=$(env MEMO_SHEEP_STATE="$T/ms" "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "RELAYED TO coding-orca — D1" "  the Orca profile's record names it"
+rm -rf "$PH/Library/Application Support" "$T/ms"
+check "$(grep -c . "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "2" "  …the dead and missing cases queued nothing more there (the two lines are the two live relays)"
+echo "  the listen reminder's read: a peer's live runs that relay over Talk (asklib.peer_runs, keel's Stop hook)"
+PR="$PH/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$PR"
+printf '{"manager": "far-1", "topic": "build", "plan_space": "sp", "pid": %d}' $$ > "$PR/a.json"
+printf '{"manager": "far-1", "topic": "ended", "plan_space": "sp", "pid": %d, "ended": 1}' $$ > "$PR/b.json"
+printf '{"manager": "far-1", "topic": "dead", "plan_space": "sp", "pid": %d}' "$DEAD" > "$PR/c.json"
+printf '{"manager": "far-1", "topic": "nopage", "pid": %d}' $$ > "$PR/d.json"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.peer_runs('$T/prc'))")" \
+  "[{'manager': 'far-1', 'topic': 'build', 'host': 'buildbox'}]" "  only the live run with a page, named by its host"
+rm -rf "$PR"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(len(asklib.peer_runs('$T/prc')))")" "1" \
+  "  cached: the next Stop within the TTL reads no peer"
+rm -f "$T/prc/peer-runs.json"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.peer_runs('$T/prc'))")" "[]" "  read again once the cache goes: none now"
+touch "$T/prc/peer-runs.refreshing"; rm -f "$T/prc/peer-runs.json"; mkdir -p "$PR"; printf '{"manager": "far-1", "topic": "build", "plan_space": "sp", "pid": %d}' $$ > "$PR/a.json"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.peer_runs('$T/prc'))")" "[]" "  another session refreshing: none now, no second ssh (finish review)"
+touch -t 202001010000 "$T/prc/peer-runs.refreshing"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(len(asklib.peer_runs('$T/prc')))")" "1" "  …a stale marker a killed refresher left is taken over"
+check "$(ls "$T/prc/peer-runs.refreshing" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and removed after"
+rm -rf "$PR"
+check "$(PLAN_HOST=buildbox python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.peer_hosts(), asklib.peer_alias('buildbox'))")" "{} None" \
+  "  this Mac is never its own peer"
+rm -rf "$PH" "$T/prc"
 
 echo "Talk: a recorded exchange on a local stand-in"
 cat > "$T/srv.py" <<'EOF'

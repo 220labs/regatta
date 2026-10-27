@@ -699,6 +699,18 @@ PY
 check "$(mf_ mgr-1 no yes talk)" 1 "manager: a live run with a plan page and no listener — start one"
 check "$(mf_ mgr-1 yes yes talk)" 0 "  a listener runs: nothing"
 check "$(mf_ mgr-2 no yes talk)" 0 "  a session that manages nothing: nothing"
+check "$(python3 - "$B/paste-paths" "$T/runs-empty" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("pp", sys.argv[1]).load_module()
+far = [{"manager": "mgr-9", "topic": "build", "host": "buildbox"}, {"manager": "other", "topic": "x", "host": "buildbox"}]
+f = m.manager_findings("mgr-9", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
+                       alive=lambda st: True, listen_row="talk", peer_runs=far)
+g = m.manager_findings("mgr-8", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
+                       alive=lambda st: True, listen_row="talk", peer_runs=far)
+print(len(f), "(build)" in f[0] if f else "-", len(g))
+PY
+)" "1 True 0" "  peer-manager-relay: a live run on a peer (asklib.peer_runs) is told to listen too; another manager's is not"
 echo "  finding 8: only runs that can use a listener, once a session"
 check "$(mf_ mgr-3 no yes talk)" 0 "  a run with no plan_space (no Talk address): nothing"
 check "$(mf_ mgr-1 no yes none)" 0 "  ask.listen is not talk: nothing"
