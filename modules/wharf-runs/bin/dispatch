@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # dispatch BRANCH [--repo DIR] [--at WHEN] [--on auto|HOST|here [--fallback here]] [--note TEXT] [--model M] [--effort E]
 #                 [--account auto|bound|LABEL [--force]] [--headless] [--background allow|deny] [--yolo] [--if-room]
-#                 [--mode default|ask|dnd|yolo] [--probe] [--dry-run]
+#                 [--mode default|ask|dnd|yolo] [--priority low|normal|high|force] [--probe] [--dry-run]
 # dispatch BRANCH --next [--repo DIR] [--on here] [--note TEXT] [--model M] [--effort E] [--headless]
 #                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo]
 # dispatch --status
 # dispatch --slots
+# dispatch --queue [--all] [--json]
+# dispatch --sweep
 # dispatch --end TOPIC [--repo DIR]
 # dispatch --start PROMPT DIR NAME [--session-id ID] [--resume ID [--fork]] [--allow TOOL]... [--undeny TOOL]...
 #                   [--model M] [--effort E] [--headless] [--dry-run]
@@ -131,6 +133,26 @@
 # and the screen running unwatched — `--status` said running, the topic's next run waited 2 h and
 # failed (two runs on 2026-10-05). macOS has no setsid(1) to detach it otherwise; launchd is the
 # path every scheduled run already takes. --dry-run still runs here.
+#
+# The queue (S1 of docs/dispatch-queue-2026-10-25.md; bin/dispatch-queue's header has the mechanics): once a
+# home is configured (`wharf-runs/queue-repo`, set on purpose: no fallback until S2), a run now on this Mac — a direct
+# run, a --next — is an entry on the fleet's queue ref, one per branch, and this Mac claims what it has room
+# for, best first (force, high, normal, low, then age), starting each at once through a RunAtLoad job that
+# runs `dispatch BRANCH … --from-queue STORE:KEY`. A full Mac leaves the entry queued: a direct run says so
+# and exits 0; a --next keeps its exit 2 and the cap's waiting words, queued rather than refused (S3 makes
+# both the one closing line, with the readers that read the queue first). A fired run refused by the cap,
+# memory or the account pick goes back into the queue, the host noted (it skips the entry an hour, bar one pinned to it), never
+# lost; any other end before its record removes a claimed entry with a card. A run's end removes its entry
+# only while the entry is still its own, so a live run's --next — pinned to that run's host, which after()
+# needs — survives it. A branch live on another host is refused here (one branch, one host). Each claim
+# holds a slot until its record exists; the cap and --slots count it. A confidential scope's runs queue
+# node-local (the confidential note); a torn registry refuses. No home: every path is as before the queue.
+#   --priority  low|normal|high|force, default normal: the entry's rank, and `prio` in the record. An
+#               unattended caller is refused high and force (S4 adds the force's floor and a --next's inheritance).
+#   --queue     the entries this Mac could run, or every one (--all); --json for a reader, whose rule is that
+#               an unreadable queue counts as an entry (dispatch-queue has: exit 4).
+#   --sweep     the outbox, this Mac's own entries reconciled with its records, cards, then a claim — what the
+#               10-minute job S2 installs runs; by hand meanwhile.
 #
 # Limits (review of 2026-10-05: nothing bounded an unattended chain):
 #   - a run is ended at DISPATCH_MAX_H hours (default 8) even if never idle, and caffeinate ends with it;
@@ -266,7 +288,7 @@ core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
 # (`wharf-runs/label-prefix`), the laptop and the owner (the core's), the projects folder. Read
 # through the core; where it cannot load (a config the overlay left incomplete), the files
 # themselves, so a missing key is a default and never a broken run.
-peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; handover=""; projects="$HOME/projects"
+peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; handover=""; projects="$HOME/projects"; qkeys=""
 eval "$(python3 - "$here" <<'CORE'
 import os, shlex, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
@@ -295,6 +317,9 @@ out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") o
 out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
 out["handover"] = common.HANDOVER_LINE if common else ""
 out["projects"] = str(common.PROJECTS) if common else os.path.expanduser("~/projects")
+# whether a queue home may be configured (queue_on asks bin/dispatch-queue only then): its key's file —
+# `wharf-runs/queue-repo` alone until S2 (dispatch-queue's header: no helm/logbook-repo fallback yet)
+out["qkeys"] = "1" if os.path.exists(os.path.join(cfg, "wharf-runs/queue-repo")) else ""
 if common:
     old = common.overlay_root()
     if old and (old / "bin").is_dir():
@@ -332,6 +357,7 @@ primary="${overlay:-$mainco}"
 jobbin="$mainco/modules/wharf-runs/bin/dispatch"
 [ -n "$overlay" ] && [ -f "$overlay/bin/dispatch" ] && jobbin="$overlay/bin/dispatch"
 RCH="${DISPATCH_RCHOSTS:-$here/bin/rc-hosts}"
+LC="${DISPATCH_LAUNCHCTL:-launchctl}"
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }   # host names compare lower-case (bash 3.2 has no ${x,,})
 # --on NAME: a host `wharf-runs/ssh` names, case-blind -> $pname (as the key spells it) and $peer (its
 # ssh alias); 1 when the key names no such host
@@ -371,6 +397,24 @@ if [ -n "$dispatch_host" ] && [ "$(lc "$self_host")" = "$(lc "$dispatch_host")" 
 else
   max_runs="${DISPATCH_MAX_RUNS:-3}"
 fi
+# The queue (header, The queue): bin/dispatch-queue, handed the facts this file holds the one home of.
+# queue_on asks once whether a home is configured; without one, every path below is as before it.
+Q="$here/bin/dispatch-queue"
+qctx=(--host "$self_host" --cap "$max_runs" --jobbin "$jobbin" --prefix "$lprefix" --launchctl "$LC" --rch "$RCH")
+queue_on() {
+  if [ -z "${qhome+x}" ]; then
+    # no queue-repo key in the config dir (qkeys, read with the core above): no home, without one more python start
+    if [ -n "$qkeys" ]; then qhome=$(python3 "$Q" home 2>/dev/null); else qhome=""; fi
+  fi
+  [ -n "$qhome" ]
+}
+# the slots this host reserved for claims whose run has no record yet, bar this run's own (dispatch-queue reserved)
+qreserved() {
+  local r
+  queue_on || { echo 0; return; }
+  r=$(python3 "$Q" reserved "${qctx[@]}" ${fromq:+--except "$fromq"} 2>/dev/null)
+  case "$r" in ''|*[!0-9]*) echo 0;; *) echo "$r";; esac
+}
 who="${owner:-the owner}"   # text addressed to the owner (common.OWNER_NAME)
 # The line a yolo or dnd run ends on to hand its landing to yolo_launch (yolo-launch, 2026-10-25): the
 # core's HANDOVER_LINE, a WAITING FOR SOMETHING line of its own closing kind, `handed`. Until then the
@@ -395,8 +439,9 @@ roomy() {
   return 0
 }
 branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
-account=""; force=0; fallback=""; on_here=0; on_default=0; at_default=0; on_auto=0; ifroom=0
+account=""; force=0; fallback=""; on_here=0; on_typed=0; on_default=0; at_default=0; on_auto=0; ifroom=0
 start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
+prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --start|--launch) [ $# -ge 4 ] || { echo "dispatch: --start PROMPT DIR NAME" >&2; exit 2; }
@@ -417,7 +462,7 @@ while [ $# -gt 0 ]; do
     --account) account="${2:-}"; [ -n "$account" ] || { echo "dispatch: --account takes auto or a label" >&2; exit 2; }; shift 2;;
     --force) force=1; shift;;
     --dry-run) dry=1; shift;;
-    --on) on="${2:-}"; [ "$(lc "$on")" = here ] && { on=""; on_here=1; }; [ "$(lc "$on")" = auto ] && { on=""; on_auto=1; }; shift 2;;
+    --on) on="${2:-}"; [ "$(lc "$on")" = here ] && { on=""; on_here=1; on_typed=1; }; [ "$(lc "$on")" = auto ] && { on=""; on_auto=1; }; shift 2;;
     --fallback) fallback="${2:-}"; [ "$fallback" = here ] || { echo "dispatch: --fallback takes here" >&2; exit 2; }; shift 2;;
     --cancel) cancel=1; shift;;
     --next) next=1; shift;;
@@ -426,9 +471,16 @@ while [ $# -gt 0 ]; do
     --if-room) ifroom=1; shift;;
     --mode) mode="${2:-}"; case "$mode" in default|ask|dnd|yolo) mode_given=1;; *) echo "dispatch: --mode takes default, ask, dnd or yolo" >&2; exit 2;; esac; shift 2;;
     --background) bg="${2:-}"; case "$bg" in allow|deny) ;; *) echo "dispatch: --background takes allow or deny" >&2; exit 2;; esac; shift 2;;
-    --status) exec python3 "$here/bin/dispatch-rc" status;;
+    --priority) prio="${2:-}"; case "$prio" in low|normal|high|force) prio_given=1;; *) echo "dispatch: --priority takes low, normal, high or force" >&2; exit 2;; esac; shift 2;;
+    --from-queue) fromq="${2:-}"; [ -n "$fromq" ] || { echo "dispatch: --from-queue takes a queue id" >&2; exit 2; }; shift 2;;
+    --queue) shift; exec python3 "$Q" list "$@" --host "$self_host";;
+    --sweep) sweep=1; shift;;
+    --status) python3 "$here/bin/dispatch-rc" status; rc=$?
+              python3 "$Q" list --status --host "$self_host" 2>/dev/null; exit "$rc";;
     --cap) echo "$max_runs"; exit 0;;
-    --slots) n=$(python3 "$here/bin/dispatch-rc" live --no-reap "" "" 2>/dev/null) || n="?"; echo "${n:-?} $max_runs"; exit 0;;
+    # the reservations count beside the records: a claimed run holds its slot before its record exists
+    --slots) n=$(python3 "$here/bin/dispatch-rc" live --no-reap "" "" 2>/dev/null) || n="?"
+             [ -n "$n" ] && [ "$n" != "?" ] && n=$((n + $(qreserved))); echo "${n:-?} $max_runs"; exit 0;;
     --end) end="$2"; shift 2;;
     -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d'; exit 0;;   # the whole header, however long
     -*) echo "dispatch: unknown option $1" >&2; exit 2;;
@@ -442,12 +494,17 @@ done
 if [ -n "${WEEKLY_RUN:-}" ]; then
   case "$at" in reset|reset+30|reset+60) slot=1;; *) slot=0;; esac
   if [ "$slot" = 0 ] || [ "$ifroom" = 0 ] || [ -z "$branch" ] \
-     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode" ] \
+     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode$fromq${prio_given#0}" ] || [ "$sweep" = 1 ] \
      || [ "$model/$effort" != opus/high ]; then
     echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
   fi
 fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
+[ "$sweep" = 0 ] || exec python3 "$Q" sweep "${qctx[@]}"
+# --from-queue is the queue's own job (dispatch-queue's start_job), nobody's flag to type
+if [ -n "$fromq" ] && { [ -z "${DISPATCH_LABEL:-}" ] || [ -n "$at$end" ] || [ "$cancel$next$start$probe" != 0000 ]; }; then
+  echo "dispatch: --from-queue is the queue's launchd job's flag (dispatch-queue start_job), with no --at, --next, --start, --probe or --cancel" >&2; exit 2
+fi
 if [ -n "$end" ]; then
   if [ -n "$repo_given" ]; then exec python3 "$here/bin/dispatch-rc" end "$end" "$repo"; fi
   exec python3 "$here/bin/dispatch-rc" end "$end"
@@ -514,6 +571,12 @@ except Exception:
 PY
 ) || why="the mode's raise check failed"
   [ -z "$why" ] || { echo "dispatch: $why" >&2; exit 2; }
+fi
+# A priority above normal is a raise, and an unattended caller never raises one (the trap: a flag that
+# stands for a person's yes refuses an unattended caller; D3-A of docs/dispatch-queue-2026-10-25.md). S1
+# carries the rank only; S4 adds the force's floor and cap and a --next's inheritance from its record.
+if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -z "${DISPATCH_LABEL:-}" ] && [ "$prio_given" = 1 ]; then
+  case "$prio" in high|force) echo "dispatch: --priority $prio is a raise, and an unattended caller never raises a run's priority" >&2; exit 2;; esac
 fi
 # Where a run goes when nobody names a host (the owner, 2026-10-13: "dispatch to [the build Mac] by
 # default, not the laptop"): berth's pick (`--on auto`, skipper-modes S6b), and this Mac only when the
@@ -653,7 +716,6 @@ old="$lprefix.run-seed.${base#"$lprefix".dispatch.}"   # the label before 2026-1
 # default (PROJECTS): a repo is named relative to this Mac's projects folder, the primary by its
 # checkout's basename.
 rbin='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
-LC="${DISPATCH_LAUNCHCTL:-launchctl}"
 LA="$HOME/Library/LaunchAgents"
 # this branch's jobs here: one per fire minute, the undated label of before 2026-10-04, and both
 # under the old name, so --cancel and a reschedule still find a job run-seed scheduled
@@ -680,6 +742,8 @@ if [ "$cancel" = 1 ]; then
     exec ${DISPATCH_SSH:-ssh} "$peer" "$rbin $(printf '%q' "$branch") --cancel$rel"
   fi
   out=$(clear_jobs "" cancelled); echo "${out:-nothing scheduled for $branch here}"
+  # its queue entry, wherever it is queued (the fleet ref is every host's): a live one is ended, not unqueued
+  queue_on && python3 "$Q" cancel --repo "$repo" --branch "$branch" "${qctx[@]}"
   if [ "$on_default" = 1 ] && [ -n "$dpeer" ]; then   # a default run may sit on the peer: look there too, unreachable or not
     rel=""; [ "$repo" != "$primary" ] && rel=" --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")"
     ${DISPATCH_SSH:-ssh} -o ConnectTimeout=10 -o BatchMode=yes "$dpeer" "$rbin $(printf '%q' "$branch") --cancel$rel"
@@ -769,9 +833,12 @@ if [ "$next" = 1 ]; then
     echo "dispatch: $brief is the brief this run started from, unchanged — a --next would run the same step again. Write the next step's brief (a new docs/handoff/<date>-$topic.md), or end with what is left for $who" >&2; exit 2
   fi
   # the cap is the host's that runs it: the peer applies its own at fire time (its own max_runs)
-  n=0; [ -n "$on" ] || n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
-  [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already (dispatch --status; warm or waiting ones not counted) — refused, not queued: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
-  [ -n "$on" ] || why=$(roomy) || { echo "dispatch: $why — refused, not queued: end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
+  # with the queue on, the claim judges room after the push (queue_dispatch), and a full host queues the step
+  if [ -n "$on" ] || ! queue_on; then
+    n=0; [ -n "$on" ] || n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
+    [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already (dispatch --status; warm or waiting ones not counted) — refused, not queued: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
+    [ -n "$on" ] || why=$(roomy) || { echo "dispatch: $why — refused, not queued: end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
+  fi
   since=$(git -C "$repo" diff --name-only "$(git -C "$repo" log -1 --format=%H "refs/heads/$branch" -- "$brief")" "refs/heads/$branch" -- . ':!docs/handoff' | head -3)
   [ -z "$since" ] || { echo "dispatch: work was committed after $brief (${since//$'\n'/, }) — it is the brief this step started from; write the next step's brief there last and commit it" >&2; exit 2; }
   # the run reuses .claude/worktrees/<topic> when it is on the branch; git refuses a second checkout of it elsewhere
@@ -848,7 +915,7 @@ confirm() {
 direct=0
 if [ -z "$at" ] && [ "$cancel" = 0 ] && [ -z "${DISPATCH_LABEL:-}" ] && [ "$dry" = 0 ] && [ "$start" = 0 ]; then
   at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} ))"; direct=1
-  echo "dispatch: through launchd, in about $(( ${DISPATCH_NEXT_DELAY:-90} / 60 + 1 )) min — run here, it would die with this shell" >&2
+  [ "$probe" = 0 ] && queue_on || echo "dispatch: through launchd, in about $(( ${DISPATCH_NEXT_DELAY:-90} / 60 + 1 )) min — run here, it would die with this shell" >&2
 fi
 
 # skipper-modes S1: `dispatch --mode` into the ship's plan.json task (helm mode's write), when the ship is
@@ -906,6 +973,155 @@ if p:
               % (sys.argv[2], was.get("mode"), sys.argv[4]))
 PY
   return 0
+}
+# The queue's verbs (header, The queue). queue_args: the run's flags and environment as its entry carries
+# them into $qa — what the one-shot plist would carry; dispatch-queue's FLAGS and ENV_OK name all a claimed
+# entry may hand the fired dispatch.
+queue_args() {
+  local v val
+  qa=(--arg=--model "--arg=$model" --arg=--effort "--arg=$effort")
+  [ -n "$note" ] && qa+=(--arg=--note "--arg=$note")
+  [ "$headless" = 1 ] && qa+=(--arg=--headless)
+  [ "$yolo" = 1 ] && qa+=(--arg=--yolo)
+  [ "$ifroom" = 1 ] && qa+=(--arg=--if-room)
+  [ -n "$mode" ] && [ "$mode" != yolo ] && qa+=(--arg=--mode "--arg=$mode")
+  [ -n "$bg" ] && qa+=(--arg=--background "--arg=$bg")
+  [ -n "$account" ] && qa+=(--arg=--account "--arg=$account")
+  [ "$force" = 1 ] && qa+=(--arg=--force)
+  [ "$prio" = normal ] || qa+=(--arg=--priority "--arg=$prio")
+  qa+=(--env "DISPATCH_DEPTH=$depth")
+  [ -n "$mode" ] && qa+=(--env "DISPATCH_MODE=$mode")
+  for v in $SKIPPER_ENV; do
+    val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && qa+=(--env "${v#*:}=$val")
+  done
+}
+qparse() {   # dispatch-queue enqueue's JSON line -> q_res q_qid q_ours q_rank q_off q_why, as shell words
+  printf '%s\n' "$1" | tail -1 | python3 -c 'import json, shlex, sys
+try:
+    d = json.loads(sys.stdin.read())
+except ValueError:
+    d = {}
+q = d.get("qid") or ""
+v = dict(q_res=d.get("result") or "", q_qid=q, q_ours="1" if q and q in (d.get("claimed") or []) else "0",
+         q_rank=str(d.get("rank") or "?"), q_off="1" if d.get("offline") else "0", q_why=d.get("no_room") or "")
+print(" ".join("%s=%s" % (k, shlex.quote(x)) for k, x in v.items()))'
+}
+# A run now on this Mac, through the queue: enqueued and, with room here, claimed and started at once.
+# Exits on every answer the queue gave; returns 1 when it could not take the run (the one-shot then).
+# The pin from a live run's --next (the ref component's "The pin"): onto this run's own host, so after()
+# still serialises the chain, with the run's session as `by`, which lets it replace that run's entry and
+# survive its end. Queued with no room: a --next keeps its exit 2 and the cap's waiting words (CAP_RE and
+# ASK_EXEMPT_RE key on them), a direct run says so and exits 0 — S3 turns both into the one closing line.
+queue_dispatch() {
+  local out rc pin="" by="${CLAUDE_CODE_SESSION_ID:-}" qerr q_res="" q_qid="" q_ours=0 q_rank="" q_off="" q_err="" q_why="" qhow=""
+  queue_args
+  [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ] && pin="$self_host"
+  # a typed --on here keeps it here (the header's promise): unpinned, another host's claim took it (the third
+  # review's item 21). berth's pick of this host stays unpinned: a load pick, which any host with room serves
+  [ "$on_typed" = 1 ] && pin="$self_host"
+  qerr=$(mktemp)
+  out=$(python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" ${pin:+--pin "$pin"} ${by:+--by "$by"} \
+        --cwd "${DISPATCH_ORIGIN:-$PWD}" --log "$log" "${qa[@]}" --claim "${qctx[@]}" 2>"$qerr"); rc=$?
+  eval "$(qparse "$out")"
+  # an exit that still printed its entry's id put the entry: it is queued, whatever failed after (the
+  # one-shot beside it would run the step twice; the review's items 9 and 13)
+  case "$rc" in 0|1|2|3) ;; *) [ -n "$q_qid" ] && rc=0;; esac
+  case "$rc" in
+    0|3) cat "$qerr" >&2; rm -f "$qerr";;
+    2) cat "$qerr" >&2; rm -f "$qerr"; exit 2;;   # refused: a torn registry, a raise by an unattended caller
+    1) cat "$qerr" >&2; rm -f "$qerr"; return 1;;   # what the queue alone refuses (its Refused, code 1): the one-shot
+    # a queue that does not read counts as an entry of this branch (the readers' rule): a one-shot beside it
+    # could run the step on a second Mac (the second review's item 5). Any other exit is a crash (5, or a
+    # signal) that could not tell whether the put landed: the same (the third review's item 9)
+    *) cat "$qerr" >&2; rm -f "$qerr"
+       echo "dispatch: the queue does not read (dispatch-queue exit $rc) — refused, not scheduled: a one-shot beside an entry it cannot see could run $branch twice. End with the WAITING line — the next step waits for a run to end and for the queue to read (dispatch --queue says why; dispatch again once it reads)" >&2; exit 2;;
+  esac
+  if [ "$q_res" = "claimed here" ]; then
+    # this Mac's job of the branch has fired and holds the step (dispatch-queue's put): nothing was queued
+    [ "$next" = 1 ] && { echo "dispatch: $branch is claimed here already (queue entry $q_qid): its job runs the step — end with the WAITING line — the next step waits for a run to end (that job's; dispatch --queue)" >&2; exit 2; }
+    echo "$branch is claimed here already (queue entry $q_qid): its job runs the step, nothing queued again (dispatch --queue)"; exit 0
+  fi
+  if [ "$rc" = 3 ]; then
+    # the cap's waiting words (CAP_RE, ASK_EXEMPT_RE): this too is a wait for a run to end, elsewhere
+    # --end names a run: only a running entry has one; a claimed or waiting one is its job's, and --end there
+    # would end the run a waiting step waits for (the third review's item 2)
+    case "$q_res" in
+      "busy running"*) qhow="dispatch --end it there to start it here, or dispatch $branch --cancel there once its run is gone";;
+      *) qhow="dispatch $branch --cancel there boots its job out";;
+    esac
+    echo "dispatch: $branch is ${q_res#busy } (queue entry $q_qid) — one branch, one host: end with the WAITING line — the next step waits for a run to end (that one; $qhow)" >&2; exit 2
+  fi
+  [ "$q_off" = 1 ] && echo "dispatch: the queue's home did not answer — the entry waits in this Mac's outbox, which every queue call retries" >&2
+  q_err=$(printf '%s\n' "$out" | tail -1 | python3 -c 'import json, sys
+try:
+    print(json.loads(sys.stdin.read()).get("error") or "")
+except ValueError:
+    pass' 2>/dev/null)
+  [ -z "$q_err" ] || echo "dispatch: queued as $q_qid, but its claim here failed ($q_err) — a later claim starts it (dispatch --queue)" >&2
+  # one pending run per branch, as the one-shot's --next kept it: the queued step replaces a pending one
+  [ "$next" = 1 ] && clear_jobs "" "replaced the pending" >&2
+  branch_entry_yield >&2
+  mark_dispatched "$self_host"
+  if [ "$q_ours" = 1 ]; then
+    [ "$next" = 1 ] && { confirm; exit $?; }
+    echo "started from the queue: $q_qid ($prio) on this Mac, at once; log $log"; exit 0
+  fi
+  if [ "$next" = 1 ]; then
+    echo "dispatch: no room on this Mac now${q_why:+ ($q_why)} — queued as $q_qid ($prio), rank $q_rank: end with the WAITING line — the next step waits for a run to end (the queue starts it once one has and a claim here takes it; dispatch --queue)" >&2; exit 2
+  fi
+  echo "queued as $q_qid ($prio), rank $q_rank: no room on this Mac now${q_why:+ ($q_why)} — it starts once a slot frees and a claim takes it (dispatch --queue; dispatch $branch --cancel takes it off)"; exit 0
+}
+# A fire-time refusal — the cap, memory, no account may run it — back into the queue (G1: no run lost at
+# fire time): a claimed entry returns to queued with this host's refusal (it skips it an hour), a one-shot's
+# run is enqueued with it. Never a --start (autofinish-run re-runs itself) or a probe.
+queue_refused() {   # WHY
+  [ "$dry" = 0 ] && [ "$start$probe" = 00 ] || return 0
+  if [ -n "$fromq" ]; then
+    python3 "$Q" refused "$fromq" --label "${DISPATCH_LABEL:-}" --why "$1" "${qctx[@]}"; qdone=1
+    echo "== queued again: a host with room claims it — this Mac skips it for an hour, unless it is pinned here (dispatch --queue)"
+    return 0
+  fi
+  [ -n "${DISPATCH_LABEL:-}" ] && queue_on || return 0
+  manager_env; queue_args
+  # the caller's cwd as its one-shot recorded it (DISPATCH_ORIGIN): launchd starts the job in /, and a run
+  # sent from a confidential scope's checkout must queue in that scope, never the fleet ref (item 4)
+  if python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" --cwd "${DISPATCH_ORIGIN:-$repo}" "${qa[@]}" --refused "$1" "${qctx[@]}" >/dev/null; then
+    echo "== queued: this Mac skips it for an hour; a host with room claims it (dispatch --queue)"
+  else
+    echo "== not queued (dispatch-queue exit $?): this run is lost, as before the queue"
+  fi
+}
+# `mine` could not tell (4 unreadable, or a crash): the claim goes back to queued, conditional on still being
+# this job's — the refusal waits in the outbox while the home is away. Exiting as "stale" left the entry
+# claimed or waiting here with no job, and S1 has no sweep to return it (the third review's item 10). 3 is
+# the one "not mine": never this job's to move.
+queue_unsure() {   # MRC WHY
+  case "$1" in 0|3) return 0;; esac
+  echo "FAILED: the queue did not say whether $fromq is still this job's claim (exit $1: ${2:-no answer}); not running"
+  queue_refused "the queue did not read at fire time on $self_host (mine exit $1)"; exit 1
+}
+# The record exists: a claimed entry is running; a run not from the queue marks a queued entry of its
+# branch as live here (one branch, one host).
+queue_started() {
+  [ "$start$probe" = 00 ] || return 0
+  if [ -n "$fromq" ]; then python3 "$Q" started "$fromq" --label "${DISPATCH_LABEL:-}" --session "$sid" "${qctx[@]}"; qdone=1
+  elif queue_on; then python3 "$Q" started --repo "$repo" --branch "$branch" --session "$sid" "${qctx[@]}"; fi
+}
+# The run's end: its entry goes, by CAS, only while its session is this run's — a pinned --next that
+# replaced it stays (the ref component's "The end")
+queue_ended() {
+  [ "$start$probe" = 00 ] && [ -n "${sid:-}" ] || return 0
+  [ -n "$fromq" ] || queue_on || return 0
+  python3 "$Q" ended --repo "$repo" --branch "$branch" --session "$sid" "${qctx[@]}"
+}
+# This run's slot is free: a claim takes what waits for one, or a --next queued on a full host sat until
+# some unrelated dispatch (the second review's item 6). After yolo_launch, and not at all when it started
+# a landing: the landing (autofinish-run, its dispatch --start a few seconds on) takes this slot, and its
+# own end claims — a claim first took the slot and refused the landing at its cap, at every run end (the
+# third review's item 11). S2's watcher claim takes this over for every run.
+queue_claim() {
+  [ "$probe" = 0 ] && [ "${launched:-0}" = 0 ] || return 0
+  queue_on && python3 "$Q" claim "${qctx[@]}"
 }
 if [ -n "$at" ]; then
   [ "$probe" = 1 ] || manager_env
@@ -978,6 +1194,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     [ -n "$bg" ] && cmd="$cmd --background $bg"
     [ -n "$account" ] && cmd="$cmd --account $(printf '%q' "$account")"
     [ "$force" = 1 ] && cmd="$cmd --force"
+    [ "$prio" = normal ] || cmd="$cmd --priority $prio"
     [ "$dry" = 1 ] && cmd="$cmd --dry-run"
     # --next: its log named here, so the start can be confirmed from it (confirm, over ssh)
     if [ "$next" = 1 ]; then
@@ -1027,14 +1244,31 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     # here, by this Mac's rules: the check the peer would have made, and a fire minute not yet begun
     physical_ok >&2 || exit 2
     rlog=""; on=""; direct=$at_default   # a defaulted "now" is a direct run: it replaces no /later job here
-    if [ "$next" = 1 ]; then   # the cap and the account --next would have taken here
-      n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
-      [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
-      why=$(roomy) || { echo "dispatch: $why here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
+    if [ "$next" = 1 ]; then   # the cap and the account --next would have taken here (with the queue, the claim's)
+      if ! queue_on; then
+        n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
+        [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
+        why=$(roomy) || { echo "dispatch: $why here, and the peer is unreachable — refused, not queued: end with the WAITING line" >&2; exit 2; }
+      fi
       [ -n "$account" ] || account=$("$ACCT" which 2>/dev/null) || account=""
       size0=0; [ -f "$log" ] && size0=$(wc -c < "$log")
     fi
     soon=$(( $(date +%s) + 90 )); [ "${at#@}" -ge "$soon" ] || at="@$soon"
+  fi
+  # a run now on this Mac (a direct run, a --next) goes through the queue once it has a home: enqueued,
+  # then claimed here if this host has room — started at once by a RunAtLoad job — else left queued for
+  # the next claim (header, The queue). A queue that cannot take it leaves the one-shot below.
+  if [ "$probe$dry" = 00 ] && { [ "$direct" = 1 ] || [ "$next" = 1 ]; } && queue_on; then
+    if ! queue_dispatch; then
+      # a --next skipped the up-front cap for the claim's; with no claim it meets the cap here, or a full
+      # host would schedule a one-shot the fire time refuses and loses (the fourth landing review)
+      if [ "$next" = 1 ] && [ -z "$on" ]; then
+        n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
+        [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already, and the queue could not take it — refused, not queued: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
+        why=$(roomy) || { echo "dispatch: $why, and the queue could not take it — refused, not queued: end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
+      fi
+      echo "dispatch: the queue could not take it — scheduling it as before, a one-shot" >&2
+    fi
   fi
   case "$at" in @*) at="$(date -r "${at#@}" '+%Y-%m-%d %H:%M')";; esac
   # "YYYY-MM-DD HH:MM" -> the four keys launchd matches on
@@ -1055,10 +1289,14 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   [ -n "$bg" ] && args="$args<string>--background</string><string>$bg</string>"
   [ -n "$account" ] && args="$args<string>--account</string><string>$account</string>"
   [ "$force" = 1 ] && args="$args<string>--force</string>"
+  [ "$prio" = normal ] || args="$args<string>--priority</string><string>$prio</string>"
   # behind claude-host once this Mac's sitting is done (docs/tcc-one-identity-2026-10-18.md): a job
   # that starts bash is charged to bash, and every third-party program it starts — the run's claude
   # among them — to its own path, which for claude every update replaces
   launch=$("$RCH" --launcher "$jobbin" 2>/dev/null) && args="<string>$launch</string>$args"
+  # the caller's cwd, for the queue's route should the run be refused at fire time (queue_refused): a
+  # fired job starts in /, and a run sent from a confidential scope's checkout stays in that scope
+  origin="${DISPATCH_ORIGIN:-$PWD}"
   mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
     local k v
     for k in $SKIPPER_ENV; do
@@ -1070,7 +1308,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
 <plist version=\"1.0\"><dict>
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key><array>$args</array>
-  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string>${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
+  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$origin" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
   <key>StartCalendarInterval</key><dict><key>Month</key><integer>$((10#$mo))</integer><key>Day</key><integer>$((10#$dy))</integer><key>Hour</key><integer>$((10#$hr))</integer><key>Minute</key><integer>$((10#$mi))</integer></dict>
   <key>StandardOutPath</key><string>$log</string>
   <key>StandardErrorPath</key><string>$log</string>
@@ -1101,8 +1339,19 @@ cache="$HOME/Library/Caches/run-seed"; lockd="$cache/start.lock"; held=""
 # Its own label only, never the branch's: a successor this run scheduled is another job.
 cleanup() {
   drop_lock 2>/dev/null
-  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
+  # the plist before the queue's network call below: a shutdown's timeout cut short here would leave a
+  # RunAtLoad job that fires again at the next login (the review's item 3)
+  [ -n "${DISPATCH_LABEL:-}" ] && rm -f "$LA/$DISPATCH_LABEL.plist"
+  # a claim whose run ended before its record (no brief, not on origin, the depth…): the entry goes with
+  # a card, never back to queued, where every claim would fail the same way
+  if [ -n "$fromq" ] && [ "$qdone" = 0 ] && [ "$dry" = 0 ]; then
+    # its reason from the bytes this job wrote: the log is the day's for the topic, and an earlier run's
+    # FAILED line is not this one's (the second review's item 7)
+    python3 "$Q" failed "$fromq" --label "${DISPATCH_LABEL:-}" --why "$(tail -c +$((qlog0 + 1)) "$log" 2>/dev/null | grep '^FAILED' | tail -1 | cut -c1-200)" "${qctx[@]}" >> "$log" 2>&1
+  fi
+  [ -n "${DISPATCH_LABEL:-}" ] && "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null
 }
+qlog0=0; [ -f "$log" ] && qlog0=$(wc -c < "$log" | tr -d ' ')
 trap cleanup EXIT
 # a job that survived a crash or reboot fires a year late: refuse it
 if [ -n "${DISPATCH_YEAR:-}" ] && [ "$DISPATCH_YEAR" != "$(date +%Y)" ]; then echo "dispatch: scheduled for $DISPATCH_YEAR, it is $(date +%Y); not running" >&2; exit 0; fi
@@ -1119,7 +1368,9 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
 # bin/pr (and wharf's libexec/pr, the no-overlay path /finish names, and the core's `regatta pr`, its C1 way in) by its launch verbs only: `*bin/pr*` would also refuse /usr/bin/printf and `git log -- bin/pr`
 # AskUserQuestion: nobody watches a run, and in auto mode the classifier would answer it (R2 of
 # docs/session-asks-2026-10-09.md); the PreToolUse hook (hooks/ask_guard.py) is the guard, this the belt
-denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" AskUserQuestion)
+# dispatch-queue's enqueue and claim: a run reaches the queue through dispatch, whose raise checks run
+# first; enqueue repeats them (its raise_refusal), and this is the habit guard (queue-s1 review, item 1)
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" AskUserQuestion)
 # --start's changes to both lists (bash 3.2: an empty array under set -u needs the ${a[@]+…} form)
 for t in ${extra_allow[@]+"${extra_allow[@]}"}; do
   case " ${tools[*]} " in *" $t "*) ;; *) tools+=("$t");; esac
@@ -1255,6 +1506,8 @@ chain_record() {
   fi
   [ -n "${brief:-}" ] && crec+=(brief="${brief#"$wt"/}")
   [ -n "${note:-}" ] && crec+=(note="$note")
+  crec+=(prio="$prio")   # the run's rank in the queue (dispatch --priority); S4's --next inherits it
+  [ -n "$fromq" ] && crec+=(queue="$fromq")
   for a in ${chain[@]+"${chain[@]}"}; do
     case "$a" in
       # the run record keeps its keys (manager, plan…: read by stalls, the board, a re-dispatch);
@@ -1280,11 +1533,12 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   # the plist's variables must not reach the session: its own dispatch calls would delete this job.
   # CLAUDE_UNATTENDED reaches its hooks: checkpoint.py keeps the run read-only on live systems.
   local hpf="$state.claude-pid" hw; rm -f "$hpf"; hw=($(hpf_env "$hpf"))
-  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
+  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
   kpid=$!; cpid=$(pid_of_claude "$kpid" "$hpf"); chain_record
   record mode=headless background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" started="$(date +%s)" log="$log" wt="$wt" \
     watcher="$$" watcher_start="$(pstart $$)" "${crec[@]}"
   drop_lock
+  queue_started
   # the maximum lifetime: a -p session has no idle to wait for, only an end
   # (its sleep dies with it, and neither leaves a "Terminated" line in the log)
   ( trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$max_s" & wait $!
@@ -1318,7 +1572,7 @@ runner_text() {   # PROMPT DIR REMOTE-CONTROL-NAME PIDFILE — with $sid set; cl
   echo '#!/bin/bash'
   printf 'echo $$ $PPID > %q\n' "$4"   # claude (exec'd below) and its SCREEN master
   echo 'for v in $(env | sed -n "s/^\(CLAUDE[A-Z_]*\)=.*/\1/p"); do case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN) ;; *) unset "$v";; esac; done'
-  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
+  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_LOADED_AT DISPATCH_ORIGIN DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
   printf 'cd %q || exit 1\n' "$2"
   printf 'exec env'
   local hw; hw=($(hpf_env "$4.claude"))
@@ -1368,6 +1622,7 @@ run_rc() {   # PROMPT DIR SCREEN [probe] — with the start lock held; drops it 
     title="$title" wt="$2" screen_pid="$spid" ${4:+probe=1} ${idle_for:+idle="$idle_for"} "${crec[@]}" \
     ${CLAUDE_CONFIG_DIR:+config_dir="$CLAUDE_CONFIG_DIR"}   # the run's registry: dispatch-rc's registry_dirs
   drop_lock
+  queue_started
   echo "== claude $cpid, session $sid, screen $scr, Remote Control \"$name · $shown\"; state $state"
   # the window: the laptop only (regatta/laptop; the build Mac has nobody at its screen); a failure
   # here never stops the run
@@ -1457,14 +1712,18 @@ print("%s\x1f%s\x1f%s" % (want, (a.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""
 ' "$want" "$rc" "$force" "$err"); rm -f "$err"
   local label dir why
   IFS=$'\x1f' read -r label dir why <<<"$line"   # not a tab: a whitespace IFS collapses an empty dir
-  if [ "$label" = FAILED ]; then echo "FAILED: $why; not running"; return 1; fi
+  if [ "$label" = FAILED ]; then
+    echo "FAILED: $why; not running"
+    case "$why" in "no account may run"*) acct_short="$why";; esac   # exit 3 of the pick: a refusal the queue keeps
+    return 1
+  fi
   if [ "$label" = - ]; then echo "== account: $why"; return 0; fi   # no registry, or no answer: as before E5
   if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
   acct_label="$label"
   [ "$want" = bound ] && chain+=(DISPATCH_PIN=bound)   # its --next stays bound (header, --account)
   echo "== account $label${dir:+ ($dir)}: $why"
 }
-acct_label=""
+acct_label=""; acct_short=""
 
 # --if-room (header): why this run may not spend the week now, or nothing. autofinish's week_tight is
 # the one reader the sweep and yolo_launch use; fresh, except a dry run's (cached, as pick_account's).
@@ -1536,6 +1795,12 @@ yolo_launch() {   # RC — the build run's exit
   esac
   nxt=$(jobs | grep -v "/${DISPATCH_LABEL:-/}\.plist\$" | head -1)
   if [ -n "$nxt" ]; then declined "a next step is scheduled on this branch ($(basename "$nxt"))"; return 0; fi
+  # …or queued (a --next goes through the queue): an entry of the branch other than this run's, or a
+  # queue that does not read — the readers' rule counts that as an entry
+  if queue_on; then
+    python3 "$Q" has --repo "$repo" --branch "$branch" --state queued --state claimed --state waiting --except-session "${sid:-}" "${qctx[@]}" >/dev/null 2>&1
+    case $? in 0) ;; *) declined "a next step is queued on this branch, or the queue does not read (dispatch --queue)"; return 0;; esac
+  fi
   why=$(python3 - "$state" "$here" "$branch" "$repo" "$core" <<'PY'
 import glob, json, os, sys
 state, here, branch, repo, core = sys.argv[1:6]
@@ -1656,12 +1921,13 @@ PY
   # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
   # without the build's login (pick_account exported it): autofinish-run picks its own, fresh, as
   # the sweep's start_runner does — a build on a second login must not run on it past its ceiling (review, 2026-10-08)
-  env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
+  env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
     "$AFRUN" "$wt" --rule "$rule" --by "$by" 2>&1
   arc=$?
   echo "== $m: autofinish-run exit $arc"
   # a refusal (same tip, a lock, no account) wrote no run state, so "started" would hide the hand-over from helm
   [ "$arc" = 0 ] || note_launch "no launch — autofinish-run exit $arc"
+  [ "$arc" = 0 ] && launched=1   # queue_claim leaves this slot to the landing
 }
 
 # --start --dry-run: what would run, printed and nothing written — not even the log's header
@@ -1670,7 +1936,7 @@ if [ "$start" = 1 ] && [ "$dry" = 1 ]; then
   untrusted && echo "# not trusted: $repo — the run would trust it first (bin/trust-projects)"
   if [ "$headless" = 1 ]; then
     run_env headless >&2
-    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
+    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
     printf ' %q' "${renv[@]}" "${chain[@]}" "${CL[@]}" -p "$lprompt" "${sargs[@]}" --model "$model" --effort "$effort" \
       --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text
     echo
@@ -1687,7 +1953,23 @@ fi
   # an installed tidier on an older plist (its interval) is brought up to this code: from here, a
   # job of its own, never from the tidier itself (dispatch-rc refresh_tidy)
   [ "$dry" = 1 ] || python3 "$here/bin/dispatch-rc" refresh-tidy
-  pick_account || exit 1
+  # a claimed entry's job (dispatch-queue start_job): its load-to-start seconds, the RunAtLoad latency
+  if [ -n "$fromq" ]; then
+    case "${DISPATCH_LOADED_AT:-}" in ''|*[!0-9]*) lat="";; *) lat=", $(( $(date +%s) - DISPATCH_LOADED_AT )) s from its job's load";; esac
+    echo "== from the queue: $fromq ($prio)$lat"
+    # still this job's claim? A RunAtLoad plist a kill or a power loss left behind fires again at the next
+    # login, and the entry may have been requeued, replaced or claimed elsewhere since: then it is not
+    # this job's to run, and not its to fail either (the review's item 3). Unreadable: not run; the
+    # claimer's sweep returns the claim past its lease
+    if [ "$dry" = 0 ]; then
+      mine=$(python3 "$Q" mine "$fromq" --label "${DISPATCH_LABEL:-}" "${qctx[@]}" 2>&1); mrc=$?
+      queue_unsure "$mrc" "$mine"
+      if [ "$mrc" != 0 ]; then
+        qdone=1; echo "== a stale queue job: $fromq is not this job's claim now (${mine:-exit $mrc}); not running"; exit 0
+      fi
+    fi
+  fi
+  pick_account || { [ -z "$acct_short" ] || queue_refused "$acct_short"; exit 1; }
   if [ "$start" = 1 ]; then
     # the caller's run: its prompt, its worktree, its name; the start lock, the cap and the watcher as any run's
     wt="$ldir"; prompt="$lprompt"
@@ -1697,15 +1979,19 @@ fi
     room=0; why=$(roomy) || room=1   # before the lock: the sample sleeps 2 s
     take_lock || exit 1
     n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
+    n=$((n + $(qreserved)))   # the queue's claims hold their slots before their records exist
     if [ "$n" -ge "$max_runs" ]; then
       drop_lock; echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"; exit 1
     fi
     if [ "$room" = 1 ]; then
       drop_lock; echo "FAILED: $why; not starting another (wharf-runs/headroom)"; exit 1
     fi
-    if [ "$headless" = 1 ]; then run_headless; exit 0; fi
+    # its end frees a slot like any run's: a claim takes what waits (a slot a --start held had no end that
+    # claimed, and an entry queued meanwhile waited for an unrelated run; the third review's items 11, 17)
+    if [ "$headless" = 1 ]; then run_headless; queue_claim; exit 0; fi
     run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
     echo "== exit $rc at $(date)"
+    queue_claim
     exit "$rc"
   fi
   if [ "$probe" = 1 ]; then
@@ -1714,7 +2000,7 @@ fi
     ensure_trusted || exit 1
     if [ "$headless" = 1 ]; then
       run_env headless
-      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
+      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
       echo "== probe exit $? at $(date)"; exit 0
     fi
     # the visible path, as a run takes it: no worktree, its own screen; no run cap, no after()
@@ -1723,6 +2009,18 @@ fi
     echo "== probe exit $rc at $(date)"; exit 0
   fi
   [ "$depth" -le "$maxdepth" ] || { echo "FAILED: $(deep)"; exit 1; }
+  # one branch, one host, for a run the queue did not start (a one-shot, an --on's --at on a peer): its
+  # entry live on another host refuses it; enqueue alone enforced that, and a one-shot fired beside a
+  # queued run elsewhere (the third review's item 22). A queue that does not read lets it go ahead, as
+  # before the queue: refusing every one-shot whenever the home is away would stop an offline Mac
+  if [ -z "$fromq" ] && [ "$dry" = 0 ] && queue_on; then
+    qel=$(python3 "$Q" has --repo "$repo" --branch "$branch" --elsewhere "${qctx[@]}" 2>&1); qrc=$?
+    case "$qrc" in
+      0) ;;
+      3) echo "FAILED: $branch is live on another host through the queue (${qel}) — one branch, one host; not running"; exit 1;;
+      *) echo "== the queue did not say whether $branch runs elsewhere (exit $qrc: ${qel:-no answer}); going ahead, as before the queue";;
+    esac
+  fi
   # a dry run's refusal is said where the dry run prints (fd 3), not only in the log
   physical_ok || { [ "$dry" = 1 ] && { echo -n "DRY RUN: refused — "; physical_ok; } >&3; echo "FAILED: not running"; exit 1; }
   if [ "$ifroom" = 1 ]; then
@@ -1737,7 +2035,20 @@ fi
   if [ "$dry" = 1 ]; then echo "DRY RUN: would fetch $branch, use $wt, run $C $([ "$headless" = 1 ] && echo "-p <brief>" || echo "<brief> --remote-control in screen run-$rname-$topic") --model $model --effort $effort, background ${bg:-deny}, account ${acct_label:-the default login}${mode:+, mode $mode}$([ "$yolo" = 1 ] && echo ", --yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo")$([ "$mode" = dnd ] && echo ", dnd: keel yolo --dnd's gate in the prompt, then autofinish-run --by dnd")" >&3; exit 0; fi
   # scheduled from inside an earlier run of this branch (--next's usual case): that run is in its
   # last turn, or idle in its screen, in this same worktree. Wait for it rather than share it.
+  # a claim that waits for its branch's earlier run gives its slot back meanwhile (that run holds one)
+  if [ -n "$fromq" ] && [ "$(python3 "$here/bin/dispatch-rc" unfinished "$repo" "$topic" 2>/dev/null)" != 0 ]; then
+    python3 "$Q" waiting "$fromq" --label "${DISPATCH_LABEL:-}" "${qctx[@]}"
+  fi
   python3 "$here/bin/dispatch-rc" after "$repo" "$topic" || exit 1
+  # after() may have held it for hours: still this job's claim? (the second review: a check before the
+  # wait alone let a job whose entry was replaced or returned meanwhile run beside its successor)
+  if [ -n "$fromq" ] && [ "$dry" = 0 ]; then
+    mine=$(python3 "$Q" mine "$fromq" --label "${DISPATCH_LABEL:-}" "${qctx[@]}" 2>&1); mrc=$?
+    queue_unsure "$mrc" "$mine"
+    if [ "$mrc" != 0 ]; then
+      qdone=1; echo "== a stale queue job: $fromq is not this job's claim after its wait (${mine:-exit $mrc}); not running"; exit 0
+    fi
+  fi
   git -C "$repo" fetch origin "$branch" 2>&1 || { echo "FAILED: $branch is not on origin"; exit 1; }
   if [ -d "$wt" ]; then
     # a leftover directory is no worktree (git would walk up to the primary on main), and one on another branch is not ours
@@ -1804,22 +2115,28 @@ The owner's ask mode (mode ask, skipper-modes S1): nothing answers this run's qu
   room=0; why=$(roomy) || room=1   # before the lock: the sample sleeps 2 s
   take_lock || exit 1
   n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
+  n=$((n + $(qreserved)))   # the queue's claims hold their slots before their records exist
   if [ "$n" -ge "$max_runs" ]; then
-    drop_lock; echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"; exit 1
+    drop_lock; echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"
+    queue_refused "the run cap ($n of $max_runs busy on $self_host)"; exit 1
   fi
   if [ "$room" = 1 ]; then
-    drop_lock; echo "FAILED: $why; not starting another (wharf-runs/headroom)"; exit 1
+    drop_lock; echo "FAILED: $why; not starting another (wharf-runs/headroom)"
+    queue_refused "memory on $self_host: $why"; exit 1
   fi
-  if [ "$headless" = 1 ]; then run_headless; yolo_launch "$rc"; exit 0; fi
+  if [ "$headless" = 1 ]; then run_headless; queue_ended; yolo_launch "$rc"; queue_claim; exit 0; fi
   run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
   if [ "$rc" = 3 ]; then
     # never busy (dispatch-rc NEVER_STARTED): a dialog or a login prompt, the screen's contents above.
     # Once more the same way, then FAILED — never -p (the owner, 2026-10-13: "never headless")
     echo "never started interactively — retrying once, visible again"
-    take_lock || exit 1
+    # the first try may have marked its entry running: end it, or it reads "running here" for good (S1 has no sweep)
+    take_lock || { queue_ended; exit 1; }
     run_rc "$prompt" "$wt" "run-$rname-$topic"; rc=$?
     [ "$rc" = 3 ] && echo "FAILED: never started interactively, twice — the screens' contents above; not run headless"
   fi
   echo "== exit $rc at $(date)"
+  queue_ended
   yolo_launch "$rc"
+  queue_claim
 } >> "$log" 2>&1
