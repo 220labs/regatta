@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `common.landed_pr(slug, branch, base=, timeout=5)`: the merged pull request from a head branch at
+  any sha (into `base` when given, head.ref checked), while none from it is open (`merged_pr` matches
+  one sha); wharf's checkpoint asks it before every push.
+
 - The gate's confidential stopgap (2026-10-26): `classify` treats a repo of any confidential scope as
   a guarded source for every vendor but Anthropic, so Jev (review-gate's same-shadow) or Codex gets its
   text only on the owner's per-vendor quote; a torn registry guards every source. The rule is
