@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `bin/ci-circleci`: a repo's CircleCI runs through the API (trigger with parameters, wait, step output,
+  artifacts), the token read from the main checkout's `.env` and sent to CircleCI's hosts only (circle-linux,
+  2026-10-26).
+
 - `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
   `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other
   Mac as it would have on the laptop (D2-A of the lander's move, 2026-10-23).
