@@ -9,6 +9,8 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"
 export HOME="$T/home"; mkdir -p "$HOME"
 unset DISPATCH_HOST CLAUDE_UNATTENDED DISPATCH_LABEL DISPATCH_MODE
+# the running session's id would make each case a typed skipper, whose dispatch runs the real `helm page` (S1)
+unset CLAUDE_CODE_SESSION_ID
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # hosts are fixture names (h1 the Mac under test, h2 its peer): no real host in the suite (the design's S6b)

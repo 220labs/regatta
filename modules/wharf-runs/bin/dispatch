@@ -786,7 +786,7 @@ manager_env() {
   mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
   mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
   if [ -z "$mgr" ] && [ -z "${CLAUDE_UNATTENDED:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir)
+    mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir); mtyped=1
     # where the manager runs: bin/ask reads "no record here" as an ended manager only on its own Mac
     mhost="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
   fi
@@ -795,8 +795,28 @@ manager_env() {
   # the plan's page, when the manager published one: the Talk address (R4)
   [ -n "$mspace" ] || mspace=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("space") or "")' \
     "${PLANS_DIR:-$HOME/Library/Logs/claude-weekly/plans}/$mplan/plan.json" 2>/dev/null) || mspace=""
+  return 0
 }
-mgr=""; macct=""; mplan=""; mspace=""; mhost=""
+# peer-manager-relay S1 (D1-A): a typed skipper with no page gets one at its first dispatch, so a run on a
+# peer Mac always has a Talk address — on 2026-10-26 a build-box run parked 3 h, every road refused, for a
+# laptop skipper that had published none. `helm page` makes the ship and publishes once, under helm's
+# publish budget; later dispatches read the space in manager_env and publish nothing. A refusal (exit 3,
+# its line on stderr) or a failure still starts the run, as before, and says so in one line. Only the
+# skipper's own dispatch publishes (manager_env's mtyped): a run passing its skipper on has the page in
+# DISPATCH_PLAN_SPACE, or never will here (the ship lives on the skipper's Mac). A dry run publishes
+# nothing. Called once the refusals have run, never from manager_env: a publish and a ship are a write
+# that goes after every refusal (AGENTS.md's Traps; the S1 landing review).
+skipper_page() {
+  local perr
+  if [ -z "$mspace" ] && [ "$mtyped" = 1 ] && [ "$dry" = 0 ] && [ -x "$p_helm" ]; then   # no helm here: no page, as before
+    perr=$(mktemp)
+    mspace=$("$p_helm" page "$mplan" 2>"$perr" | tail -n 1) || mspace=""
+    [ -n "$mspace" ] || echo "dispatch: no plan page for the skipper, so the run has no Talk road to it — $(tail -n 1 "$perr" 2>/dev/null | cut -c1-200)" >&2
+    rm -f "$perr"
+  fi
+  return 0
+}
+mgr=""; macct=""; mplan=""; mspace=""; mhost=""; mtyped=0
 # what pickup reads to tell a seed already sent off from one never started (`seeds --open` at /finish
 # would dispatch it a second time: a run on the peer opens its WIP PR only at its first push — review
 # 2026-10-13): <common git dir>/claude/dispatched/<topic>, "<epoch> <host> <branch>"
@@ -1173,6 +1193,9 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   esac
   if [ -n "$on" ]; then
     case "$at" in @*) ;; *) echo "dispatch: --on needs reset or @EPOCH (a bare clock time is ambiguous across hosts)" >&2; exit 2;; esac
+    [ "$repo" = "$primary" ] || case "$repo" in "$projects/"*) ;; *) echo "dispatch: --on needs a repo under $projects" >&2; exit 2;; esac
+    # the skipper's page before the defaulted now is taken again below, so its publish eats no margin
+    [ "$probe" = 1 ] || skipper_page
     # a defaulted "now": taken again here, after the push and the checks, so the peer's fire minute
     # has not begun by the time it schedules (review 2026-10-13); a little more margin for the ssh
     [ "$at_default" = 1 ] || [ "$next" = 1 ] && at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} + 15 ))"
@@ -1259,6 +1282,9 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   # then claimed here if this host has room — started at once by a RunAtLoad job — else left queued for
   # the next claim (header, The queue). A queue that cannot take it leaves the one-shot below.
   if [ "$probe$dry" = 00 ] && { [ "$direct" = 1 ] || [ "$next" = 1 ]; } && queue_on; then
+    # the entry carries the skipper's env (queue_args), so the page goes first; only the queue's own
+    # refusals follow it (peer-manager-relay S1, on main's queue road)
+    skipper_page
     if ! queue_dispatch; then
       # a --next skipped the up-front cap for the claim's; with no claim it meets the cap here, or a full
       # host would schedule a one-shot the fire time refuses and loses (the fourth landing review)
@@ -1278,6 +1304,12 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   when=$(date -j -f '%Y-%m-%d %H:%M' "$at" +%s 2>/dev/null) && [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at is not in the future" >&2; exit 2; }
   # …and one a year or more ahead would fire at the first match, meet the year guard and vanish
   [ $((when - $(date +%s))) -lt 31536000 ] || { echo "dispatch: $at is a year or more ahead; launchd's calendar has no year" >&2; exit 2; }
+  # here, the page after every refusal; a publish that outlasted the margin to the fire minute is refused
+  # as any past time is, and the page stays for the next dispatch, which publishes nothing (the S1 review)
+  if [ "$probe" = 0 ] && [ -z "$mspace" ] && [ "$mtyped" = 1 ]; then
+    skipper_page
+    [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at passed while the skipper's page published; dispatch again — the page is kept" >&2; exit 2; }
+  fi
   # its own label: a job that has fired has a minute at or before now, this one's is after it
   label="$base.$(date -r "$when" +%Y%m%d%H%M)"; plist="$LA/$label.plist"
   args="<string>$jobbin</string><string>$branch</string><string>--repo</string><string>$repo</string><string>--model</string><string>$model</string><string>--effort</string><string>$effort</string>"
