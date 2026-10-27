@@ -104,6 +104,13 @@ path on a case-insensitive disk; a glob's matches past the first 2000; chained `
 (`fd`, `mdfind`); a session folder of a subfolder of a checkout (`<slug>-<sub>`, which a sibling
 repo's name would also match).
 
+Also, since 2026-10-26 (lighthouse-ops S1; the sense component's D5-A): the config dir's
+`lighthouse/guarded-dirs`, absolute local folders (a leading `~` the home folder) closed the way
+`_secrets` is, on every platform and whether or not a Drive is mounted — the desk's token dir on the
+yard node first among them. The same tools and shapes as above, with its own refusal; a path behind a
+variable (any expansion: `$X`, `${X:-…}`, `$(…)`, a backtick body) is caught when it spells the folder's tail after it (the part below the config dir,
+else its last two names); the tail alone, a grep pattern or a doc's mention, passes. An accident guard like the rest: the file stays readable by any process of its user.
+
 Fails open: an error in here lets the call through rather than blocking every tool in every
 session. Tests: tests/hooks.sh, "secrets_guard" and "the fence".
 """
@@ -250,6 +257,42 @@ SESSIONPIPE_REASON = ("⛔ `{what}` takes the private-repo gate off sessionpipe'
 def secrets_dirs():
     override = os.environ.get("SECRETS_GUARD_DIR")   # the tests
     return [os.path.realpath(d) for d in ([override] if override else mounted())]
+
+
+# `lighthouse/guarded-dirs` (the docstring): absolute after `~`; a relative line would name a different
+# folder from every cwd, so it is dropped rather than guessed
+GUARDED = [os.path.realpath(p) for p in (os.path.expanduser(l) for l in config_lines("lighthouse/guarded-dirs"))
+           if os.path.isabs(p)]
+GUARDED_REASON = ("⛔ {what}: that folder is closed to agents (the config dir's `lighthouse/guarded-dirs`) — a "
+                  "credential only its own job reads, the operations desk's token among them ({owner}'s D5-A, "
+                  "2026-10-26). Run the job that reads it; a value goes in by {owner}'s hand, over ssh. "
+                  "`ls`, `stat` and `test` are fine. Don't retry in another shape.")
+
+
+def _tail(d):
+    """The part of a guarded folder a command behind a variable still spells: below the config dir
+    (`lighthouse/secrets`), else its last two names."""
+    cfg = os.path.realpath(CONFIG)
+    if d.startswith(cfg + os.sep):
+        return d[len(cfg) + 1:]
+    return os.sep.join(d.split(os.sep)[-2:])
+
+
+def guarded_rules():
+    if not GUARDED:
+        return None
+    tails = sorted({_tail(d) for d in GUARDED})
+    # behind a variable only (`$X/lighthouse/secrets/…`): a bare `lighthouse/secrets` is the key's name
+    # in a grep pattern or a doc, which the landing review found refused (a path that resolves is
+    # judged by inside() as it is). Any expansion counts as the variable: `${X:-~/…}`, `$(…)` and a
+    # backtick body read the file too (the second landing review); the word is judged alone, so an
+    # unquoted body with a space reaches here as its last part (`config-dir`/…`), and shlex splits an
+    # unquoted `$(…)` at its parentheses, leaving `/lighthouse/secrets/…`: a word that starts with the tail
+    literal = re.compile(r"(?:(?:\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)|[^\s`]*`|[^\s()]*\))/(?:[^\s'\"]*/)?|^/)(%s)(/|$)"
+                         % "|".join(map(re.escape, tails)))
+    names = sorted({os.path.basename(d) for d in GUARDED})
+    candidate = re.compile(r"[^\s'\"()\[\]{},;=<>|&`]*(?:%s)[^\s'\"()\[\]{},;=<>|&`]*" % "|".join(map(re.escape, names)))
+    return Rules(GUARDED, literal, candidate, HARMLESS)
 
 
 class Rules:
@@ -1154,23 +1197,30 @@ def main():
             "permissionDecisionReason": why}}, ensure_ascii=False))
         return
     dirs = secrets_dirs()
-    if not dirs:
-        return
-    r, what = Rules(dirs, LITERAL, CANDIDATE, HARMLESS), None
+    walls = ([(Rules(dirs, LITERAL, CANDIDATE, HARMLESS), REASON)] if dirs else []) \
+        + [(r, GUARDED_REASON) for r in (guarded_rules(),) if r]   # guarded dirs: with or without Drive
+    for r, reason in walls:
+        what = touches(tool, inp, cwd, r)
+        if what:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason.format(what=what, owner=OWNER)}}, ensure_ascii=False))
+            return
+
+
+def touches(tool, inp, cwd, r):
+    """What the call would read or write in the rules' folders, or None."""
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
         path = inp.get("file_path") or inp.get("notebook_path") or ""
         if inside(path, cwd, r):
-            what = f"{tool} of {path}"
+            return f"{tool} of {path}"
     elif tool == "Grep":
         path = inp.get("path") or cwd
         if inside(path, cwd, r) or holds(path, cwd, r):
-            what = f"Grep over {path}"
+            return f"Grep over {path}"
     elif tool == "Bash":
-        what = bash_hit(inp.get("command") or "", cwd, r)
-    if what:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": REASON.format(what=what, owner=OWNER)}}, ensure_ascii=False))
+        return bash_hit(inp.get("command") or "", cwd, r)
+    return None
 
 
 if __name__ == "__main__":

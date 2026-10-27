@@ -14,6 +14,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `bin/publish` | copy a file from a project to a shared drive (and a NAS), queued when a destination is away |
 | `bin/trust-projects` | accept Claude Code's folder-trust dialog for every repo under the projects folder |
 | `bin/tiling` | yabai's window layout, applied at every yabai start |
+| `bin/ops` | the operations desk's own verbs: `usage` reads CI minutes and credits per budgeted account with the owner's token, in the desk's job only; `pick` runs wharf's `ci-provider --pick` over the repos (lighthouse-ops S1) |
 | `hooks/account_guard.py` | refuses a prompt in a repo the session's login may not open |
 | `hooks/secrets_guard.py` | closes the secrets folders and the live settings file to agents, and a confidential scope's paths to a session outside it (the fence) |
 | `hooks/design_route.py` | a new design artifact is made on the primary login, and shared as it is made |
@@ -103,6 +104,12 @@ an override is never exported.
 | `lighthouse/env-keys.json` | the install's own declarable `env` names: `{name: [values]}` | `claude-settings` | — | only CLAUDE_CODE_SUBAGENT_MODEL |
 | `lighthouse/hosts` | the Macs' host names, one per line, for a declaration's `hosts` sections | `claude-settings` | `CLAUDE_SETTINGS_HOST` (this host) | any lowercase name |
 | `lighthouse/vaults` | the shared drives whose `_secrets`/`_contacts` are closed, by name, for a path behind a variable | `secrets_guard` | `SECRETS_GUARD_DIR` (the folder) | the mounted shared drives that hold one |
+| `lighthouse/guarded-dirs` | absolute local folders closed to agents like `_secrets`, one per line (`~` the home folder; a relative line is dropped), on every platform, Drive or none: the desk's token dir first | `secrets_guard`; `ops usage` warns when the token dir is not listed | — | none guarded |
+| `lighthouse/secrets/ops.env` | the owner's token for the billing read (`GITHUB_TOKEN`, `CIRCLECI_TOKEN`): on the ops host only, its dir 0700 and the file 0600, neither a link, written by the owner over ssh | `ops`, in the desk's own job only (`LIGHTHOUSE_DESK=1`, no session) | — | every account `absent`: the pick holds every hosted lane of a private repo over budget |
+| `lighthouse/ci-lanes.json` | the runner lanes: `{"lanes": [{name, provider, runs_on, runs, account}]}` | wharf's `ci-provider --pick` | — | `--pick` refuses, naming the file |
+| `lighthouse/ci-budgets.json` | per account a month cap (`month_minutes` or `month_credits`), `week_share`, `reserve` (default 0.2), `margin`; `user`, `org` or `org_slug` to read it by | `ops usage`, `ci-provider --pick` | — | every hosted lane of a private repo over budget |
+| `lighthouse/ci-queue-max` | a self-hosted lane's queued-seconds p50 the pick still sends work to | `ci-provider --pick` | — | 600 |
+| `lighthouse/ops-host` | the one host the desk runs on and the pick writes from | `ci-provider --pick --apply` | — | the desk is off: `--apply` refuses |
 | `lighthouse/gated-tools` | the session-sync tool, then its front end, one per line: the tools whose ungating verbs are refused | `secrets_guard` | — | `sessionpipe`, no front end |
 | `lighthouse/ff` | the checkouts health fast-forwards, one path per line | `health` | — | none, and the log says so |
 | `lighthouse/design-host` | where a design start is dispatched | `design_route` | — | the hand-off stays on this Mac |
