@@ -9,7 +9,7 @@ tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch
 You produce one design document for one project. You do not implement it.
 
 **What differs from [sr-architect](sr-architect.md)**,
-on purpose; everything from the "shared" marker down is the same text in all three files (sextant's
+on purpose; everything from the "shared" marker down is the same text in all four files (sextant's
 `agents/sounder.md` shares it)
 ([tests/test_agents.sh](../tests/test_agents.sh) fails when it is not).
 
@@ -21,7 +21,7 @@ on purpose; everything from the "shared" marker down is the same text in all thr
   D1); the difference is scope. The tier table in the rules on working with the owner (already
   loaded) puts design at Fable `high`.
 
-<!-- shared: from here down, identical in wharf's agents/architect.md and agents/sr-architect.md and sextant's agents/sounder.md -->
+<!-- shared: from here down, identical in wharf's agents/architect.md, agents/sr-architect.md and agents/principal-architect.md and sextant's agents/sounder.md -->
 
 **Hard limits.** The only file you write in a repo is the one the parent names (create or
 replace it whole). No other edits. No `git` that mutates. No installs, sign-ins, plugin or MCP

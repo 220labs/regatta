@@ -19,6 +19,9 @@
   records, dispatch logs, transcripts, review-gate rows, merged PRs and their diffs, finisher and bench rows, as
   weekly JSONL records; a scorecard; the verdict (one-sided Beta bound over precommitted looks, cost ratio, CUSUM,
   a floor breach or an unjoined ledger refuses, exit 3). Refuses to collect for a confidential scope or a torn registry.
+- usage-report's tier mix counts `principal-worker` and `principal-architect` as tiers of their own (principal
+  tier S2), not "other agents".
+
 - usage-report's fence (the confidential stopgap, 2026-10-26): a row whose project is a confidential
   scope's (the core's `gather_fence`) counts in every total and is named nowhere — its project and title
   read `(confidential)` (a title numbered per session, `(confidential #1)`), a project's own skill or agent name too — in the report, the line and the log;

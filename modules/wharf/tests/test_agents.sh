@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# The architect pair, and sextant's sounder on the same body: one method and output spec, three scopes, one effort since 2026-10-04 (xhigh-design-test D1) (the owner, 2026-10-04: "I want
+# The architect pair, and sextant's sounder on the same body: one method and output spec, four heads — three at `high` since 2026-10-04, `principal-architect` at `xhigh` since 2026-10-26 — (xhigh-design-test D1) (the owner, 2026-10-04: "I want
 # to make sure architect and sr-architect are mostly the same, and any differences are
-# intentional"). Everything from the `<!-- shared:` marker down must be byte-identical in all three (the pair and sextant's sounder);
+# intentional"). Everything from the `<!-- shared:` marker down must be byte-identical in all four (the pair, principal-architect and sextant's sounder);
 # what differs sits above it, each difference with its reason. The same idea as the reviewer pair
 # below (from bin/test_review_gate.sh until B5). And the D-item shape the shared body teaches is the one bin/keel
-# reads and lints clean. No network, no model.
+# reads and lints clean. The principal heads (docs/principal-tier-2026-10-26.md S2):
+# principal-architect is a fourth head on the architects' body, principal-worker a second on sr-worker's, both at
+# xhigh (D1-A), each with the Receipt its hand-back owes. No network, no model.
 #   bash modules/wharf/tests/test_agents.sh
 set -u
 B="$(cd "$(dirname "$0")/.." && pwd)"   # the module (B6)
@@ -30,6 +32,23 @@ done
 check "$(grep -h '^model:' "$A/architect.md" "$A/sr-architect.md" | sort -u)" "model: fable" "both on Fable"
 check "$(grep -h '^tools:' "$A/architect.md" "$A/sr-architect.md" | sort -u | wc -l | tr -d ' ')" "1" "the same tools"
 check "$(grep -c 'sr-architect' "$A/architect.md" | awk '{print ($1 > 0)}') $(grep -c '\[architect\](architect.md)' "$A/sr-architect.md")" "1 1" "each names the other where it says what differs"
+
+echo "agents: principal-architect is a fourth head on the architects' body (principal tier S2)"
+P="$A/principal-architect.md"
+check "$(grep -c '^<!-- shared:' "$P")" "1" "one shared marker"
+if shared "$A/architect.md" | diff -q - <(shared "$P") > /dev/null; then echo "  ok   its shared part is the architects'"
+else echo "  FAIL principal-architect's shared part differs — copy architect.md's shared part to it:"; shared "$A/architect.md" | diff - <(shared "$P") | head -20; fails=$((fails+1)); fi
+check "$(grep -c '^name: principal-architect$' "$P") $(sed -n 's/^model: //p' "$P") $(sed -n 's/^effort: //p' "$P")" "1 fable xhigh" "named principal-architect, on Fable at xhigh (D1-A)"
+check "$(sed -n 's/^effort: //p' "$P") $(grep -o '^- \*\*Effort `[a-z]*`' "$P" | grep -o '`[a-z]*`' | tr -d '`')" "xhigh xhigh" "  …and its head says the effort its frontmatter sets"
+check "$(grep -h '^tools:' "$A/architect.md" "$P" | sort -u | wc -l | tr -d ' ')" "1" "  …with the architects' tools"
+phead=$(awk '/^<!-- shared:/{exit} {print}' "$P" | tr '\n' ' ' | tr -s ' ')
+check "$(echo "$phead" | grep -c '`max` only after a named miss.*Receipt row names that miss')" "1" "  …max only after a named miss, which its Receipt row names"
+check "$(echo "$phead" | grep -c 'At most 10 model invocations per doc" does not bind you')" "1" "  …no probe cap"
+check "$(echo "$phead" | grep -c 'The Receipt is mandatory.*`## Receipt — who ran, at what, for how much`.*\*\*requested / observed\*\*.*`unknown`; never taken from the arm.s own word')" "1" "  …the Receipt line: requested / observed / unknown, read from ground truth"
+check "$(echo "$phead" | grep -c '`complete`, `incomplete` (an arm failed, refused or hit a limit) or `complete with limitation`')" "1" "  …and its completion state"
+check "$(echo "$phead" | grep -c "stays \`sounder\`'s, run at \`effort: xhigh\` beside the council")" "1" "  …a venture stays sounder's"
+check "$(grep -c 'principal' <(sed -n 's/^description: //p' "$P") | awk '{print ($1 > 0)}') $(awk '/^<!-- shared:/{exit} {print}' "$P" | grep -c '/Users/')" "1 0" "  …its description says principal, its head names no absolute home path"
+check "$(grep -c "agents/principal-architect.md" <(shared "$A/architect.md"))" "1" "the shared marker names the fourth file"
 
 # A probe without these runs every user hook against the real repos (sync, the vault commit and
 # push, the transcript archive) in auto mode, with Bash and the claude.ai connectors (Gmail send,
@@ -82,6 +101,21 @@ check "$(grep -c '^effort: high$' "$A/reviewer-high.md")" "1" "reviewer-high run
 check "$(grep -c '^effort: xhigh$' "$A/reviewer.md")" "1" "reviewer runs at xhigh"
 check "$(grep -c '^model: opus$' "$A/code-reviewer.md")" "1" "code-reviewer pinned to Opus"
 check "$(ls "$A" | grep -c code-reviewer-high)" "0" "no code-reviewer-high: the level in args sets the effort"
+
+echo "agents: the worker pair has one body, two efforts (principal tier S2)"
+W="$A/principal-worker.md"
+check "$(grep -c '^<!-- shared:' "$A/sr-worker.md") $(grep -c '^<!-- shared:' "$W")" "1 1" "one shared marker in each"
+if shared "$A/sr-worker.md" | diff -q - <(shared "$W") > /dev/null; then echo "  ok   the shared parts are identical"
+else echo "  FAIL the worker pair's shared parts differ — edit sr-worker.md, copy its shared part to principal-worker.md:"; shared "$A/sr-worker.md" | diff - <(shared "$W") | head -20; fails=$((fails+1)); fi
+check "$(shared "$A/sr-worker.md" | grep -c '^\*\*Never\*\*, whatever the brief says') $(shared "$A/sr-worker.md" | grep -c '^\*\*Return\*\*, in this order')" "1 1" "the shared part holds the limits and the Return"
+check "$(sed -n 's/^model: //p' "$A/sr-worker.md") $(sed -n 's/^effort: //p' "$A/sr-worker.md")" "opus high" "sr-worker runs on Opus at high"
+check "$(grep -c '^name: principal-worker$' "$W") $(sed -n 's/^model: //p' "$W") $(sed -n 's/^effort: //p' "$W")" "1 opus xhigh" "principal-worker runs on Opus at xhigh (D1-A)"
+check "$(grep -h '^disallowedTools:' "$A/sr-worker.md" "$W" | sort -u)" "disallowedTools: EnterWorktree, ExitWorktree" "  …with sr-worker's tool limits"
+whead=$(awk '/^<!-- shared:/{exit} {print}' "$W" | tr '\n' ' ' | tr -s ' ')
+check "$(echo "$whead" | grep -c 'Effort grants no authority.*the Never list below binds you word for word')" "1" "  …effort grants no authority"
+check "$(echo "$whead" | grep -c '6\. A pre-mortem: .* 7\. A Receipt: the model and effort requested and observed .*else `unknown`, never assumed')" "1" "  …a pre-mortem and a Receipt in the hand-back"
+check "$(grep -c '\[principal-worker\](principal-worker.md)' "$A/sr-worker.md") $(grep -c '\[sr-worker\](sr-worker.md)' "$W")" "1 1" "  …each names the other"
+check "$(awk '/^<!-- shared:/{exit} {print}' "$W" | grep -c '/Users/')" "0" "  …its head names no absolute home path"
 
 if [ -n "$KEEL" ]; then
 echo "agents: the D-item shape they teach is the one memo reads"

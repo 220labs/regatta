@@ -1252,6 +1252,7 @@ def cmd_render(c, day):
 
 WEEKLY_SKILLS = {"sextant", "aurora", "horizon", "dream"}  # the weekly passes keep their Fable pin (D4); old names too
 TIERS = (("worker", {"worker"}), ("sr-worker", {"sr-worker"}), ("architect", {"architect", "sr-architect"}),
+         ("principal-worker", {"principal-worker"}), ("principal-architect", {"principal-architect"}),
          ("reviewer", {"reviewer", "reviewer-high", "code-reviewer"}))
 
 
