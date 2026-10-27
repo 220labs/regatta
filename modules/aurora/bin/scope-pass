@@ -3,8 +3,12 @@
 
     scope-pass where SCOPE [--day D]    what the pass reads and writes, one `<name> <value>` line each,
                                         and `ready yes|no — why`; exit 1 when not ready, 2 no such scope
-    scope-pass check SCOPE [FILE]       exit 1, naming each line, where FILE (default: the pass's draft)
-                                        names a confidential scope's repos, paths or words
+    scope-pass check SCOPE [FILE] [--judge] [--json]
+                                        exit 1, naming each line, where FILE (default: the pass's draft)
+                                        names a confidential scope's repos, paths or words; --judge: a
+                                        clean scan then goes to the gate's `scope.brief` judge, exit 1
+                                        on its `leak`; 2 when either cannot tell; --json: one verdict
+                                        object on stdout, the lines on stderr
     scope-pass record SCOPE [--day D]   land the pass: the dream on the anchor's main, in place; the
                                         draft, checked, as the vault's inbox file with one log.md line,
                                         by knowledge-commit
@@ -36,6 +40,21 @@ confidential scope with no word list is not ready: an empty file (comments only)
 deliberate "none". An open scope is read whole by the global dream anyway, so check passes it. An
 unreadable registry fails closed (exit 2).
 
+**check on a brief** (confidential-reach S5, outward D4 B: the scan and a Claude judge, no person's
+yes): FILE is any text about to leave the node, a seed's brief above all (`pickup seed --from`, its one
+caller). The scan is the one above; a confidential scope with no word list exits 2 here too, as
+`where` calls it not ready, since a scan without the node's names passes them. `--judge` then asks the
+core's gate, site `scope.brief` (kind classify, provider `claude`: any other vendor needs the owner's
+quote, bin/jev's confidential()), whether the text carries anything of the node the names miss — a
+client's city, a domain, a figure; probe 4 of the design caught one Sonnet the scan passed. Only a
+clean scan reaches it: a hit is a refusal already, and the judge never sees what the scan refused.
+A missing row, an `off` one, a refused vendor or a bad reply is exit 2, never a pass. `--json`
+prints {file (its base name), sha256, scope, scan, hits, judge, site, provider, model, cost_usd, time, error} — the
+sha256 of the bytes judged, so a caller proves it recorded the text it sends. The object names no
+term, the scope's own name included (`scope` is the core's scope_marker() of a confidential one): the
+caller writes it into an open repo; the lines naming each hit go to stderr. Under --judge the scan
+refuses the scope's own name too, which the pass's draft may carry (its heading does).
+
 **record** runs check on the draft first. A hit holds the whole draft back: its text moves to
 `<anchor>/dreams/<day>-upstream-held.md`, the vault is not touched but for a log line that says
 `held` with a count and nothing else, and exit 1. A clean draft becomes the inbox file (the draft is
@@ -51,6 +70,7 @@ Read-only but for record. Nothing here names a scope, path or word of the owner'
 read through the core (`common`), the vault through `weekly-run where`.
 """
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -65,6 +85,25 @@ sys.path.insert(0, find_core.hooks())
 import common  # noqa: E402  scope_registry, scope_members, scope_match, PROJECTS, tool
 
 PROG = "scope-pass"
+SITE = "scope.brief"   # the gate's row for the judge (check --judge)
+# The judge's question. Generic on purpose: the node's own names are the scan's (words.txt), and this
+# text is public. What it must catch is what a word list cannot hold — a detail that identifies, data.
+JUDGE_CONTEXT = (
+    "A confidential project's session is about to send this text out: it becomes a brief committed to "
+    "an open repository, read by a session that must learn nothing about the confidential project. A "
+    "scan has already found none of the project's own names (its repositories, paths, clients, people "
+    "and products as the project lists them). Judge what such a list misses.")
+JUDGE_ASK = (
+    "Does this text carry anything specific to the confidential project it comes from: a detail that "
+    "identifies a client, a person or an organisation (a city, an address, a domain, an email, a company "
+    "or account name, a contract, a unique description), their data or figures (revenue, prices, user "
+    "counts, dates of their events, their system's internals), or a business fact about them? A generic "
+    "engineering task, a tool's name, a public library or standard, a file path in the open repository "
+    "and made-up example values are clean.")
+JUDGE_LABELS = {
+    "clean": "nothing in it identifies or describes the confidential project, its clients, people or data",
+    "leak": "it carries something specific to the confidential project, its clients, people or data",
+}
 HELD = "-upstream-held"
 PATHLIKE = re.compile(r"(?:~|/)[^\s`'\"()<>\[\]{},;|]+")
 
@@ -152,8 +191,10 @@ def resolve(scope, day):
     return info, why
 
 
-def terms(info):
-    """[(kind, term, regex)] that check refuses for a confidential scope."""
+def terms(info, own_name=False):
+    """[(kind, term, regex)] that check refuses for a confidential scope. OWN_NAME: the scope's own name
+    is one (check --judge: a brief bound for an open repo); without it the name is exempt, for the
+    pass's draft, whose file the vault names by it and whose heading carries it."""
     out, seen = [], set()
 
     def add(kind, t):
@@ -162,7 +203,10 @@ def terms(info):
             return
         seen.add(t.lower())
         out.append((kind, t, re.compile(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", re.I)))
-    seen.add(info["scope"].lower())   # the file is named by it and its heading carries it
+    if own_name:
+        add("scope", info["scope"])
+    else:
+        seen.add(info["scope"].lower())   # the file is named by it and its heading carries it
     for k in info["members"] + ([info["anchor-name"]] if info["anchor-name"] else []):
         add("repo", k)
         add("repo", k.rsplit("/", 1)[-1])
@@ -174,11 +218,12 @@ def terms(info):
     return out
 
 
-def hits_in(info, text):
-    """[(line number, kind, term)] — what a confidential scope's inbox file may not say."""
+def hits_in(info, text, own_name=False):
+    """[(line number, kind, term)] — what a confidential scope's inbox file may not say (and, with
+    OWN_NAME, what a brief leaving it may not: the scope's own name too, terms())."""
     if not info["confidential"]:
         return []
-    ts, match = terms(info), common.scope_match(info["scope"])
+    ts, match = terms(info, own_name), common.scope_match(info["scope"])
     out = []
     for n, line in enumerate(text.splitlines(), 1):
         for kind, t, rx in ts:
@@ -203,22 +248,76 @@ def cmd_where(info, why):
     return 1 if why else 0
 
 
-def cmd_check(info, path):
+def judge(info, text):
+    """(verdict, details) from the gate's scope.brief row: "clean" | "leak" | "error" (with its reason).
+    Loaded from the core's bin/gate (one reader of the table); any failure is "error", never a pass."""
+    gate_bin = Path(find_core.hooks()).parent / "bin" / "gate"
+    d = {"site": SITE, "provider": None, "model": None, "cost_usd": None}
+    try:
+        from importlib.machinery import SourceFileLoader
+        gate = SourceFileLoader("gate", str(gate_bin)).load_module()
+        r = gate.classify(SITE, {"text": text}, JUDGE_ASK, JUDGE_LABELS, context=JUDGE_CONTEXT,
+                          source=info["anchor-name"] or (info["members"] or ["?"])[0], caller=PROG)
+    except Exception as e:   # GateError (a missing or off row, a refused vendor, a bad reply), or a missing core
+        return "error", {**d, "error": str(e)[:300]}
+    if r is None:   # off + skip: no judgment is no pass
+        return "error", {**d, "error": f"the gate's {SITE} row is off (when_off: skip) — no judge, no pass"}
+    d.update(provider=r.get("provider"), model=r.get("model"), cost_usd=r.get("cost_usd"))
+    label = ((r.get("items") or {}).get("text") or {}).get("label")
+    if label not in JUDGE_LABELS:
+        return "error", {**d, "error": f"the judge gave no listed label ({label!r})"}
+    return label, d
+
+
+def cmd_check(info, path, judged=False, as_json=False):
     p = Path(path) if path else info["draft"]
     if not p or not p.is_file():
         die(f"no file to check ({p})")
+    raw = p.read_bytes()
+    text = raw.decode("utf-8", errors="replace")
+    say = (lambda m: print(m, file=sys.stderr)) if as_json else print
+    v = {"file": p.name, "sha256": hashlib.sha256(raw).hexdigest(),
+         "scope": common.scope_marker(info["scope"]) if info["confidential"] else info["scope"], "scan": None,
+         "hits": 0, "judge": None, "site": None, "provider": None, "model": None, "cost_usd": None,
+         "time": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "error": None}
+
+    def done(rc):
+        if as_json:
+            # the object names no term: an error's text (a GateError names its source, the anchor) has
+            # each of the scope's names put as its marker before it is printed (S5's landing re-review)
+            if v["error"] and info["confidential"]:
+                for t in sorted({info["scope"], info["anchor-name"] or "", *info["members"]} - {""}, key=len, reverse=True):
+                    v["error"] = re.sub(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", v["scope"], v["error"], flags=re.I)
+            print(json.dumps(v))
+        return rc
     if not info["confidential"]:
-        print(f"open scope {info['scope']}: the global dream reads it whole — nothing to hold ({p})")
-        return 0
-    hits = hits_in(info, p.read_text(encoding="utf-8", errors="replace"))
+        say(f"open scope {info['scope']}: the global dream reads it whole — nothing to hold ({p})")
+        v["scan"] = "open"
+        return done(0)
+    if not info["words"]:   # a scan without the node's own names would pass them (resolve(): not ready)
+        v.update(scan="error", error="confidential, and no .claude/words.txt in its anchor")
+        print(f"{PROG} check: scope {info['scope']} is {v['error']} {info['anchor-name']} — the scan would miss its names; an empty "
+              f"file (comments only) says there are none", file=sys.stderr)
+        return done(2)
+    hits = hits_in(info, text, own_name=judged)
     for n, kind, t in hits:
-        print(f"{p}:{n}: names {kind} {t}")
+        say(f"{p}:{n}: names {kind} {t}")
     if hits:
-        print(f"{len({n for n, _, _ in hits})} line(s) of {p} name confidential scope {info['scope']} — none of it may go upstream")
-        return 1
+        v.update(scan="hits", hits=len({n for n, _, _ in hits}))
+        say(f"{v['hits']} line(s) of {p} name confidential scope {info['scope']} — none of it may go upstream")
+        return done(1)
+    v["scan"] = "clean"
     words = sum(1 for kind, _, _ in terms(info) if kind == "word")
-    print(f"clean: {p} names none of {info['scope']}'s {len(info['members'])} repo(s), its paths or its {words} word(s)")
-    return 0
+    say(f"clean: {p} names none of {info['scope']}'s {len(info['members'])} repo(s), its paths or its {words} word(s)")
+    if not judged:
+        return done(0)
+    verdict, d = judge(info, text)
+    v.update(judge=verdict, **d)
+    if verdict == "error":
+        say(f"{PROG} check: the judge could not tell ({d['error']}) — no pass")
+        return done(2)
+    say(f"judge ({d['provider']}, {d['model'] or 'its default model'}): {verdict}")
+    return done(0 if verdict == "clean" else 1)
 
 
 def count(path, rx):
@@ -370,7 +469,7 @@ def main():
         return cmd_where(info, why)
     if cmd == "check":
         rest = [a for a in sys.argv[3:] if not a.startswith("--") and a != arg("--day")]
-        return cmd_check(info, rest[0] if rest else None)
+        return cmd_check(info, rest[0] if rest else None, "--judge" in sys.argv, "--json" in sys.argv)
     if cmd == "record":
         return cmd_record(info, why, day)
     return cmd_proof(info, day)
