@@ -656,7 +656,7 @@ def cmd_pull(a):
     live = surfaces.row("helm.state")
     if live != "records":
         print("helm pull: the records backend is off (helm.state = %s): phone ticks need B0b's probe to pass. "
-              "Comments on a page come back through memo sheep pull." % live)
+              "Comments on a page come back through python3 %s sheep pull." % (live, helmlib.peer("keel") or "keel"))
         return
     raise SystemExit("helm pull: the records backend is not built (B0b)")
 

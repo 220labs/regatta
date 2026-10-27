@@ -73,7 +73,7 @@ Events:
                     any line to a doc that has them, is pushed at once; one that asks (adds
                     a D-item) blocks the reply once until it carries the doc's hand-over
                     line (`keel line`) — see answer_docs(), answer_link_block(). Each pushed
-                    D-list doc is then mirrored as a page (keel's mirror) (`memo sheep`), the
+                    D-list doc is then mirrored as a page (keel's mirror) (`keel sheep`), the
                     line's `space` part — see sheep_pages(). On a claude/* branch it
                     writes claude/last-reply (autofinish's idle clock), and a reply ending
                     in the declared line, or a turn under `/autofinish now`, hands the
@@ -2225,7 +2225,7 @@ def sheep_pages(branch, docs):
     r = subprocess.CompletedProcess(proc.args, -9 if timed_out else proc.returncode, out, err)
     pages, failed, warned = {}, [], []
     if timed_out:
-        failed.append(f"timed out after {SHEEP_TIMEOUT}s — `memo sheep <doc>` by hand")
+        failed.append(f"timed out after {SHEEP_TIMEOUT}s — `python3 {shown_tool('keel')} sheep <doc>` by hand")
     for line in r.stdout.splitlines():
         try:
             row = json.loads(line)
@@ -2239,7 +2239,7 @@ def sheep_pages(branch, docs):
         if row.get("note"):   # keel's own word on a page that deployed: the publish budget's warning
             warned.append(str(row["note"])[:240])
     if r.returncode and not timed_out and not failed:
-        failed.append((r.stderr.strip().splitlines() or ["memo sheep failed"])[-1][:160])
+        failed.append((r.stderr.strip().splitlines() or ["keel sheep failed"])[-1][:160])
     shown = pages
     if pages:
         try:  # the mirror's address while one runs (memo's chat_page); the plain URL on any failure
@@ -2309,9 +2309,9 @@ def answer_link_block(branch, docs, data):
             "with the doc's hand-over line, exactly as `keel line <doc>` prints it — "
             "[course or local](…) | [github](…) | [space](…) — [<file>](<absolute path>#L1); a part it leaves "
             "out comes with its reason on stderr: say that, never build the link (skill /keel). The course link "
-            "is the doc's mirrored page — run `keel sheep wait <doc>` as a background shell when the "
+            f"is the doc's mirrored page — run `python3 {shown_tool('keel')} sheep wait <doc>` as a background shell when the "
             "session should go on after the owner's Save or comments there — or keel serve's where the doc has "
-            "no page (start `keel serve <doc>` in the background first; `keel line` reuses it): "
+            f"no page (start `python3 {shown_tool('keel')} serve <doc>` in the background first; `keel line` reuses it): "
             + "; ".join(missing))
 
 

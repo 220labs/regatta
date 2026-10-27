@@ -508,9 +508,9 @@ def handover_findings(reply: str, cwd: str, root: str = "") -> list[str]:
             + f" — run python3 {_cmd('keel')} line {shlex.quote(path)} and put the one line "
             "it prints in the reply as it is (course or local | github | space — file; stderr says why a part is "
             "missing — say that in the reply instead of inventing the link; the course link is the doc's spacesheep "
-            "page — run `keel sheep wait <doc>` as a background shell when the session should go on after "
+            f"page — run `python3 {_cmd('keel')} sheep wait <doc>` as a background shell when the session should go on after "
             "the owner's Save or comments there, its exit wakes the session — or keel serve's where the doc has no "
-            "page: start `keel serve <doc>` in the background first and `keel line` reuses it; skill /keel)"]
+            f"page: start `python3 {_cmd('keel')} serve <doc>` in the background first and `keel line` reuses it; skill /keel)"]
 
 
 def _read(path: str) -> str:
