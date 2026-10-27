@@ -175,6 +175,17 @@ check(not gh.writes(), f"  a step's `name:` is not [{text}]")
 gh = GitHub(OFF, None)
 run(gh, apply=True, files=files(prot=json.dumps(dict(PROT, required_status_checks={"contexts": ["check (3.9)"]}))))
 check([m for m, _ in gh.writes()] == ["PUT", "PATCH"], "  a matrix leg `check (3.9)` of job `check` is")
+CL2 = json.dumps(dict(PROT, required_status_checks={"strict": False, "contexts": ["check", "ci/circleci: check-linux"]}))
+CIRCLE = "version: 2.1\njobs:\n  suite:\n    machine: true\n  check-linux:\n    docker: []\nworkflows:\n  w:\n    jobs: []\n"
+f = files(prot=CL2); f[common.CIRCLECI_CONFIG] = CIRCLE
+gh = GitHub(OFF, None)
+bad, text = run(gh, apply=True, files=f)
+check(bad == 0 and [m for m, _ in gh.writes()] == ["PUT", "PATCH"],
+      f"  `ci/circleci: <job>` for a job in .circleci/config.yml is a context (the CI split) [{text}]")
+gh = GitHub(OFF, None)
+bad, text = run(gh, apply=True, files=files(prot=CL2))
+check(not gh.writes() and "a name no job in check.yml has" in text,
+      f"  …and refused with no such CircleCI job: a required check nothing reports holds every PR [{text}]")
 gh = GitHub({"allow_auto_merge": True}, None, labels=())
 bad, text = run(gh, apply=True, knowledge=True)
 check(bad == 1 and "knowledge repo" in text and "automerge.yml on main" in text and not gh.writes(),
@@ -361,6 +372,28 @@ p = PR([True], [BARE], [FAILED])
 check(wait(p, head="abc12345", contexts=[]) == (True, "merged") and p.n == 1, "no required context: merged as before")
 check(common.check_state("o/r", "abc12345", ["check"]) == ("failure", "the required check `check` ended failure on abc12345"),
       "check_state reads the newest non-skipped run")
+class Statuses:
+    """No check runs; the combined status lists `statuses`; every path asked is kept."""
+    def __init__(self, statuses): self.statuses, self.paths = statuses, []
+    def api(self, method, path, body=None, tok=None, timeout=15):
+        self.paths.append(path)
+        if "/check-runs" in path:
+            return 200, {"check_runs": []}
+        if path.endswith("/status?per_page=100") or "/status?" in path:
+            return 200, {"statuses": self.statuses}
+        return 404, None
+CL = "ci/circleci: check-linux"
+s = Statuses([{"context": CL, "state": "success"}]); common.api = s.api
+check(common.check_state("o/r", "abc12345", [CL]) == ("success", ""),
+      "a commit status (CircleCI's) passes a required context that has no check run")
+check(any("check_name=ci%2Fcircleci%3A%20check-linux" in p for p in s.paths) and not any(" " in p for p in s.paths),
+      f"the context is URL-encoded: its space made the request invalid, read as pending forever [{s.paths[0]}]")
+s = Statuses([{"context": CL, "state": "failure"}]); common.api = s.api
+check(common.check_state("o/r", "abc12345", [CL])[0] == "failure", "…a failed status refuses")
+s = Statuses([{"context": CL, "state": "pending"}, {"context": "other", "state": "success"}]); common.api = s.api
+check(common.check_state("o/r", "abc12345", [CL])[0] == "pending", "…a pending one waits; another context's success answers nothing")
+s = Statuses([]); common.api = s.api
+check(common.check_state("o/r", "abc12345", [CL])[0] == "pending", "…and nothing reported yet is pending")
 class Prot:
     def __init__(self, st, body): self.st, self.body = st, body
     def api(self, method, path, body=None, tok=None, timeout=15): return self.st, self.body

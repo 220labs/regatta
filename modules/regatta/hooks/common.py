@@ -921,16 +921,36 @@ def required_contexts(slug, base, tok=None):
 def check_state(slug, sha, contexts, tok=None):
     """("success" | "failure" | "pending", why) for the newest non-skipped check run of each required
     context on sha. A skipped run is a draft's (check.yml skips drafts, and GitHub counts it as passed:
-    automerge.yml's comment); it answers nothing. No run yet is pending: it starts seconds after a push."""
+    automerge.yml's comment); it answers nothing. No run yet is pending: it starts seconds after a push.
+    A context with no check run is read from the commit's statuses: CircleCI reports `ci/circleci: <job>`
+    through the Statuses API, never as a check run (the CI split, 2026-10-27). The name is URL-encoded:
+    the space in it made the request invalid, and an unreadable answer reads as pending forever."""
     for ctx in contexts:
-        st, body = api("GET", f"/repos/{slug}/commits/{sha}/check-runs?check_name={ctx}&per_page=20", tok=tok)
+        q = urllib.parse.quote(ctx, safe="")
+        st, body = api("GET", f"/repos/{slug}/commits/{sha}/check-runs?check_name={q}&per_page=20", tok=tok)
         runs = (body.get("check_runs") if st == 200 and isinstance(body, dict) else None) or []
         run = next((r for r in runs if isinstance(r, dict) and r.get("conclusion") != "skipped"), None)
-        if run is None or run.get("status") != "completed":
+        if run is None:
+            state = commit_status(slug, sha, ctx, tok)
+            if state == "success":
+                continue
+            if state in ("failure", "error"):
+                return "failure", f"the required check `{ctx}` ended {state} on {sha[:8]}"
+            return "pending", f"the required check `{ctx}` is still running on {sha[:8]}"
+        if run.get("status") != "completed":
             return "pending", f"the required check `{ctx}` is still running on {sha[:8]}"
         if run.get("conclusion") not in ("success", "neutral"):
             return "failure", f"the required check `{ctx}` ended {run.get('conclusion')} on {sha[:8]}"
     return "success", ""
+
+
+def commit_status(slug, sha, ctx, tok=None):
+    """The newest state ("success" | "failure" | "error" | "pending") of status context `ctx` on sha, or
+    None when it has reported nothing (or the answer is unreadable). The combined status lists the
+    newest status per context."""
+    st, body = api("GET", f"/repos/{slug}/commits/{sha}/status?per_page=100", tok=tok)
+    statuses = (body.get("statuses") if st == 200 and isinstance(body, dict) else None) or []
+    return next((s.get("state") for s in statuses if isinstance(s, dict) and s.get("context") == ctx), None)
 
 
 def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAIT, poll=10, sleep=None,
@@ -1018,6 +1038,8 @@ def merge_pr_waiting(slug, number, tok=None, automerge=False, wait=AUTOMERGE_WAI
 # brake. One helper, so bin/repos --github and bin/github-repo cannot drift apart.
 CHECK_YML = ".github/workflows/check.yml"
 AUTOMERGE_YML = ".github/workflows/automerge.yml"
+CIRCLECI_CONFIG = ".circleci/config.yml"
+CIRCLECI_PREFIX = "ci/circleci: "
 REPO_SETTINGS = ".github/repo-settings.json"
 MAIN_PROTECTION = ".github/main-protection.json"
 HOLD = {"name": "hold", "color": "B60205", "description": "automerge stays off while set"}
@@ -1102,7 +1124,9 @@ def ci_settings(slug, read, tok=None, apply=False, knowledge=False, repo=None):
         have_ctx = []
     want_ctx = _contexts(want_prot)
     jobs = _job_names(read(CHECK_YML)) if has_check else set()
-    unknown = [c for c in want_ctx if not _is_job(c, jobs)]
+    # CircleCI reports a job as `ci/circleci: <job>` (the CI split's check-linux, 2026-10-27)
+    circle = {f"{CIRCLECI_PREFIX}{j}" for j in _job_names(read(CIRCLECI_CONFIG))}
+    unknown = [c for c in want_ctx if not _is_job(c, jobs) and c not in circle]
     prot_ok = bool(want_ctx) and have_ctx == want_ctx
     repo_off = {k: v for k, v in (want_repo or {}).items() if repo.get(k) != v}
     # Anything that makes the protection in the file unsafe to apply. Each would leave main
