@@ -4,6 +4,8 @@
     usage-report tick                 # launchd, every 15 min: the hooks' local copies (account refresh), sample limits; once a day, the report
     usage-report sample               # record the plan's own percentages (5-hour, weekly, Fable, extra usage)
     usage-report collect [--days N]   # per-call usage → this host's daily CSVs (default: the last 3 days)
+    usage-report branches [--days N]  # fill the branch column of this host's CSVs from the transcripts
+                                      # still here (default: 30 days); nothing else in a row changes
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
     usage-report render [--day D]     # the Markdown report for local day D (default: yesterday)
     usage-report line [--day D]       # the one line that goes by iMessage and into the 07:30 digest
@@ -130,9 +132,13 @@ DAYS_PER_MONTH = 365.25 / 12
 
 FIELDS = ["day", "host", "source", "session", "title", "project", "model", "effort", "skill", "agent",
           "entry", "calls", "input", "output", "cache_read", "cache_write_5m", "cache_write_1h",
-          "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account"]
+          "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account", "branch"]
 # account: the registry label hooks/sync.py recorded for the session at its start
 # (<data>/<host>/accounts.jsonl, work-account E6); empty = before that existed = the primary.
+# branch: the claude/* branch the session's main-chain calls name most that day (its agents' only where
+# the main chain names none; session_branches); empty for none, and absent from a file written before 2026-10-27. It is how plumb's trim joins a typed session
+# to its landing once Claude Code has pruned the session's transcript; appended last, so a reader by
+# position keeps its columns.
 
 
 # ----------------------------------------------------------------------------- config
@@ -349,7 +355,7 @@ def read_claude_code(c, since):
                     cw5 = u.get("cache_creation_input_tokens") or 0
                 found[(key, d.get("sessionId"))] = ({
                     "day": day, "ts": d["timestamp"], "source": "claude-code", "session": d.get("sessionId") or "?",
-                    "cwd": d.get("cwd"), "model": model, "effort": d.get("effort") or "",
+                    "cwd": d.get("cwd"), "branch": d.get("gitBranch") or "", "model": model, "effort": d.get("effort") or "",
                     "skill": d.get("attributionSkill") or "", "agent_id": d.get("agentId") or "",
                     "entry": d.get("entrypoint") or "", "inp": u.get("input_tokens") or 0, "out": out,
                     "cr": u.get("cache_read_input_tokens") or 0, "cw5": cw5, "cw1": cw1,
@@ -413,7 +419,7 @@ def read_cowork_local(c, since):
             cc = u.get("cache_creation") or {}
             seen[key] = {
                 "day": day, "ts": d["timestamp"], "source": "cowork-local", "session": Path(meta).stem,
-                "cwd": (m.get("userSelectedFolders") or [""])[0] if m.get("userSelectedFolders") else "",
+                "cwd": (m.get("userSelectedFolders") or [""])[0] if m.get("userSelectedFolders") else "", "branch": "",
                 "model": d["message"].get("model"), "effort": "", "skill": "", "agent_id": "",
                 "entry": "cowork", "inp": u.get("input_tokens") or 0, "out": o,
                 "cr": u.get("cache_read_input_tokens") or 0,
@@ -424,8 +430,22 @@ def read_cowork_local(c, since):
     return out
 
 
+def session_branches(records):
+    """{(day, session): branch}: the claude/* branch a session's main-chain calls name most that day;
+    its agents' only when the main chain names none, since a worker in its own worktree names its own
+    branch. A tie goes to the later name, so the pick never depends on read order."""
+    main, agents = defaultdict(Counter), defaultdict(Counter)
+    for r in records:
+        b = r.get("branch") or ""
+        if b.startswith("claude/"):
+            (agents if r["agent_id"] else main)[(r["day"], r["session"])][b] += 1
+    return {k: max((main.get(k) or agents[k]).items(), key=lambda kv: (kv[1], kv[0]))[0]
+            for k in set(main) | set(agents)}
+
+
 def aggregate(c, records, titles, agent_types):
     rows = {}
+    branches = session_branches(records)
     for r in records:
         agent = "main"
         if r["agent_id"]:
@@ -439,7 +459,8 @@ def aggregate(c, records, titles, agent_types):
                              "title": title, "project": project_of(r["cwd"]), "model": r["model"], "effort": r["effort"],
                              "skill": r["skill"], "agent": agent, "entry": r["entry"], "calls": 0, "input": 0,
                              "output": 0, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0,
-                             "calls_over_200k": 0, "calls_over_400k": 0, "cost": 0.0, "first": r["ts"], "last": r["ts"]}
+                             "calls_over_200k": 0, "calls_over_400k": 0, "cost": 0.0, "first": r["ts"], "last": r["ts"],
+                             "branch": branches.get((r["day"], r["session"]), "")}
         ctx = r["inp"] + r["cr"] + r["cw5"] + r["cw1"]
         row["calls"] += 1
         row["input"] += r["inp"]
@@ -534,6 +555,46 @@ def cmd_collect(c, days=3):
     print(f"collect {c['host']}: {len(cc)} Claude Code + {len(cw)} local Cowork calls since {since} → "
           f"{len(by_day)} day file(s) in {out}")
     return rows
+
+
+def cmd_branches(c, days=30):
+    """Fill an empty branch cell in this host's day files from the transcripts and the archive still
+    here; every other cell, and every row, stays as written. Not `collect --days N`: collect rewrites a
+    day from what it reads, so a day whose transcripts Claude Code has pruned would lose those rows."""
+    since = (c["tz_now"].date() - dt.timedelta(days=days)).isoformat()
+    cc, _, _, _ = read_claude_code(c, since)
+    branches = session_branches(cc)
+    files = filled = 0
+    for f in sorted((c["data"] / c["host"] / "calls").glob("*.csv")):
+        if f.stem < since:
+            continue
+        with f.open(newline="") as fh:
+            rd = csv.DictReader(fh)
+            rows, head = list(rd), rd.fieldnames or []
+        if set(head) - set(FIELDS):          # a column this script does not know: never drop it
+            print(f"branches: {f.name} has columns {sorted(set(head) - set(FIELDS))}; left as it is", file=sys.stderr)
+            continue
+        if any(None in r for r in rows):     # a row longer than its header: DictWriter would raise on it
+            print(f"branches: {f.name} has a row longer than its header; left as it is", file=sys.stderr)
+            continue
+        n = 0
+        for r in rows:
+            b = branches.get((f.stem, r.get("session")))
+            if not r.get("branch") and b:
+                r["branch"] = b
+                n += 1
+        if not n and "branch" in head:
+            continue
+        tmp = f.with_name(f".{f.name}.branches.tmp")
+        with tmp.open("w", newline="") as fh:
+            w = csv.DictWriter(fh, FIELDS, restval="")
+            w.writeheader()
+            w.writerows(rows)
+        tmp.replace(f)
+        files += 1
+        filled += n
+    print(f"branches {c['host']}: {filled} row(s) given a branch in {files} day file(s) since {since}")
+    return filled
 
 
 # ----------------------------------------------------------------------------- sample
@@ -735,6 +796,7 @@ def fence_rows(rows, fence=None):
                 r["skill"] = CONFIDENTIAL
             if r.get("agent") not in agents:
                 r["agent"] = CONFIDENTIAL
+            r["branch"] = ""
         elif names_one(r.get("title"), words):
             r["title"] = CONFIDENTIAL
     return rows
@@ -1525,6 +1587,15 @@ def cmd_tick(c):
     if not marker.exists():
         cmd_collect(c)
         marker.touch()
+    # once per host: the branch column for the days collected before it existed (2026-10-27), so each
+    # Mac fills its own past with no one's hands; collect writes it from then on
+    filled = c["data"] / c["host"] / ".branches-filled"
+    if not filled.exists():
+        try:
+            cmd_branches(c)
+            filled.touch()
+        except Exception as ex:  # the daily report goes out regardless; the next tick tries again
+            print(f"branches: FAILED {ex}")
     if not c["render"]:
         print(f"tick {c['host']}: {n} new sample(s); this host does not render")
         return
@@ -1558,6 +1629,8 @@ def main(argv=None):
     sub.add_parser("sample")
     p = sub.add_parser("collect")
     p.add_argument("--days", type=int, default=3)
+    p = sub.add_parser("branches")
+    p.add_argument("--days", type=int, default=30)
     sub.add_parser("pull")
     for name in ("render", "line"):
         p = sub.add_parser(name)
@@ -1576,6 +1649,8 @@ def main(argv=None):
         print(f"sample {c['host']}: {cmd_sample(c)} new → {c['data'] / c['host'] / 'limits.jsonl'}")
     elif a.cmd == "collect":
         cmd_collect(c, a.days)
+    elif a.cmd == "branches":
+        cmd_branches(c, a.days)
     elif a.cmd == "pull":
         return 0 if cmd_pull(c) else 1
     elif a.cmd == "render":

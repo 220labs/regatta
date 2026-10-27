@@ -108,6 +108,56 @@ check "$(py 'print(round(sum(float(r["cost"]) for r in rows if r["model"]=="clau
 check "$(py 'print(sum(int(r["calls_over_400k"]) for r in rows))')" "1" "context above 400k counted"
 check "$(test -f "$T/data/testmac/calls/2026-09-20.csv" && echo yes)" "yes" "today's calls land in today's file"
 check "$(python3 -c "import json;d=json.load(open('$T/data/testmac/calibration.json'));print(d['table'],d['claude_code'],d['unknown_models'])")" "10.0 10.0 ['claude-mystery-9']" "calibration prices Claude Code's own tokens; unknown model named"
+check "$(py 'print(sorted({r["branch"] for r in rows}))')" "['']" "a session whose calls name no branch: the branch column is empty"
+
+echo "branch — the column trim joins a typed session by (2026-10-27)"
+BR="$T/br"; mkdir -p "$BR/cc/-proj/sb/subagents" "$BR/data/testmac/calls"
+cat > "$BR/fx.py" <<'PY'
+import json, sys
+BR = sys.argv[1]
+def a(ts, req, sid, branch, **kw):
+    d = {"type": "assistant", "timestamp": ts, "requestId": req, "sessionId": sid, "cwd": "/Users/x/projects/harbor",
+         "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}
+    if branch:
+        d["gitBranch"] = branch
+    d.update(kw); return json.dumps(d) + "\n"
+w = "claude/x/2026-09-19-main-work"
+open(f"{BR}/cc/-proj/sb.jsonl", "w").write(a("2026-09-19T17:00:00Z", "b1", "sb", w) + a("2026-09-19T17:01:00Z", "b2", "sb", w)
+    + a("2026-09-19T17:02:00Z", "b3", "sb", "main"))
+# a worker in its own worktree names its own branch, three times: the main chain's still wins
+open(f"{BR}/cc/-proj/sb/subagents/agent-w1.jsonl", "w").write("".join(
+    a(f"2026-09-19T17:1{i}:00Z", f"w{i}", "sb", "claude/x/2026-09-19-worker", agentId="w1") for i in range(3)))
+open(f"{BR}/cc/-proj/sa.jsonl", "w").write(a("2026-09-19T18:00:00Z", "a1", "sa", "claude/x/2026-09-19-agent-only", agentId="w2"))
+open(f"{BR}/cc/-proj/sn.jsonl", "w").write(a("2026-09-19T19:00:00Z", "n1", "sn", None))
+PY
+python3 "$BR/fx.py" "$BR"
+bu() { USAGE_CC="$BR/cc" USAGE_ARCHIVE="$BR/none" USAGE_DATA="$BR/data" "$B/usage-report" "$@"; }
+bu collect --days 3 > /dev/null
+BF="$BR/data/testmac/calls/2026-09-19.csv"
+bpy() { python3 -c "import csv,sys; rows=list(csv.DictReader(open('$BF'))); $1"; }
+check "$(bpy 'print(sorted({(r["session"], r["branch"]) for r in rows}))')" \
+  "[('sa', 'claude/x/2026-09-19-agent-only'), ('sb', 'claude/x/2026-09-19-main-work'), ('sn', '')]" \
+  "collect: the claude/* branch the main chain names most, an agent's only where the main chain names none"
+check "$(python3 -c "import csv; print(next(csv.reader(open('$BF')))[-2:])")" "['account', 'branch']" "  appended last: a reader by position keeps its columns"
+# an old day file (no branch column) holding a session whose transcript is gone: backfill fills what it can
+printf '%s\n' "day,host,source,session,title,project,model,effort,skill,agent,entry,calls,input,output,cache_read,cache_write_5m,cache_write_1h,calls_over_200k,calls_over_400k,cost,first,last,account" \
+  "2026-09-19,testmac,claude-code,sb,t,harbor,claude-opus-5-5,high,,main,cli,7,0,0,0,0,0,0,0,42.0000,2026-09-19T17:00:00Z,2026-09-19T17:02:00Z,acct-a" \
+  "2026-09-19,testmac,claude-code,gone,t,harbor,claude-opus-5-5,high,,main,cli,3,0,0,0,0,0,0,0,9.0000,2026-09-19T10:00:00Z,2026-09-19T11:00:00Z," > "$BF"
+bu branches --days 3 > "$BR/b.out"
+check "$(bpy 'print([(r["session"], r["calls"], r["cost"], r["account"], r["branch"]) for r in rows])')" \
+  "[('sb', '7', '42.0000', 'acct-a', 'claude/x/2026-09-19-main-work'), ('gone', '3', '9.0000', '', '')]" \
+  "branches: an old file gains the column, a known session its branch; every other cell and the pruned session's row stay"
+check "$(cat "$BR/b.out")" "branches testmac: 1 row(s) given a branch in 1 day file(s) since 2026-09-17" "  …and says what it filled"
+cp "$BF" "$BR/before.csv"; bu branches --days 3 > /dev/null
+check "$(cmp -s "$BF" "$BR/before.csv" && echo same)" "same" "  a second run changes nothing"
+check "$(USAGE_DATA="$BR/data" USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" line --day 2026-09-19 | grep -c 'Claude')" "1" \
+  "  the report still reads the file"
+# a row longer than its header: the file is left alone, and the backfill goes on past it
+cp "$BF" "$BR/good.csv"; printf '%s\r\n' "$(sed -n 2p "$BF" | tr -d '\r'),extra,extra" >> "$BF"; cp "$BF" "$BR/bad.csv"
+bu branches --days 3 > "$BR/b2.out" 2> "$BR/b2.err"
+check "$(cmp -s "$BF" "$BR/bad.csv" && echo same; grep -c 'longer than its header' "$BR/b2.err")" "same
+1" "branches: a file with a row longer than its header is left as it is, said on stderr, and the run still ends"
+cp "$BR/good.csv" "$BF"
 
 echo "sample"
 "$B/usage-report" sample > /dev/null
@@ -174,12 +224,15 @@ printf '{"hosts": {"testmac": {"render": true, "notify": ["%s"]}}}' "$T/notify.s
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T06:50:00-07:00" "$B/usage-report" tick > "$T/tick1.out"
 check "$(ls "$RP" 2>/dev/null | wc -l | tr -d ' ')" "0" "before 07:05 the tick only samples"
 has "$T/tick1.out" "refresh: stub ['refresh']" "every tick first refreshes the hooks' local copies of the Drive-backed files (account refresh, S4)"
+has "$T/tick1.out" "branches testmac:" "the first tick fills the branch column of the host's past days, once"
+check "$(test -f "$T/data/testmac/.branches-filled" && echo yes)" "yes" "  …and marks it done"
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T07:10:00-07:00" "$B/usage-report" tick > "$T/tick2.out"
 has "$T/tick2.out" "notify: sent" "after 07:05 it renders and sends"
 has "$T/tick2.out" "published project_data/$SH/2026-09-19.md → drive" "the log says where the report went"
 has "$T/sent.txt" "Claude 09-19:" "the line is what gets sent"
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T07:25:00-07:00" "$B/usage-report" tick > "$T/tick3.out"
 lacks "$T/tick3.out" "notify" "once a day, not every tick"
+lacks "$T/tick3.out" "branches" "the backfill runs once per host, not every tick"
 USAGE_RENDER=0 USAGE_NOW="2026-09-21T09:00:00-07:00" "$B/usage-report" tick > "$T/tick4.out"
 has "$T/tick4.out" "does not render" "a collector-only host never renders"
 # two failed days in a row post one bulletin line (dream 2026-09-27 P5)
