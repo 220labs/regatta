@@ -9,7 +9,8 @@ Sound it: $ARGUMENTS
 If this project has its own `/sounding` (`.claude/skills/sounding`), run that instead and stop here.
 
 A sounding measures the depth before the ship commits: it writes **one doc** that tests the idea
-against what already exists, and builds nothing. The doc is the record whichever path answers it.
+against what already exists, and builds nothing but what tests it (a prototype, a probe, a
+measuring script, kept in the doc's folder). The doc is the record whichever path answers it.
 The method is the agent's (the architects' shared body: the stance, the Landscape, the options on
 fixed axes); this skill picks the agent, writes its brief, checks the doc and hands it over.
 
@@ -63,8 +64,9 @@ public or open-source work.
 
 The brief holds, in this order: the stance (`firm:` or nothing); the idea quoted verbatim, with
 where it came from (the chat line, the note's path, the proposal's path and its `## Launch test`
-quoted); the kind (`proposal` unless the request names research or design); the one file to
-write, as an absolute path; the path flag (full, light or yolo) and what it asks of the D-items;
+quoted); the kind (`proposal` unless the request names research or design); the doc to write, as
+an absolute path, and its folder beside it (`<stem>/`, for what the subject owes: a prototype, the
+scripts behind each number, each probe's output — never "one file only"); the path flag (full, light or yolo) and what it asks of the D-items;
 the peers' two lines; any constraint the request names.
 
 - **The file.** An idea in a repo: `docs/<slug>-<date>.md` in that repo's worktree on this
@@ -91,7 +93,7 @@ Spawn the head with the brief, in the foreground: the next step reads its doc.
    premise goes to a fresh head with the doc and the finding. Ask it, too, for one verdict on the
    light path: `light-ok`, `redesign` (back to the head, then these checks again) or `promote`
    (the full path).
-3. Commit the doc on its branch (in the vault, atlas's `knowledge-commit … --in`); so too every
+3. Commit the doc and its folder on its branch (in the vault, atlas's `knowledge-commit … --in`, naming both paths); so too every
    answer a path below writes into it. A `disproved` doc is still handed over: it is the record of why.
 
 ## 6. The three paths
