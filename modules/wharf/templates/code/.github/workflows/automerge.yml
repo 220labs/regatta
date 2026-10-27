@@ -25,7 +25,8 @@ permissions:
   pull-requests: write
   actions: read
 concurrency:
-  group: automerge-${{ github.event.pull_request.number }}
+  # Keyed on draft as check.yml's is: a skipped draft run must not cancel the ready_for_review run (2026-10-25).
+  group: automerge-${{ github.event.pull_request.number }}-${{ github.event.pull_request.draft && 'draft' || 'live' }}
   cancel-in-progress: true
 jobs:
   automerge:
@@ -52,20 +53,30 @@ jobs:
             # check.yml skips drafts, and GitHub counts a skipped job as a passed check: armed while
             # this head's newest check.yml run is the draft's skip, a PR just out of draft would
             # merge unchecked. Wait (2 min at most) for one that is not skipped (a run whose jobs
-            # all skipped concludes `skipped`, whatever the jobs are called); none, no arming.
+            # all skipped concludes `skipped`, whatever the jobs are called); none, no arming. A failed
+            # or cancelled run counts: armed, the merge waits for its re-run, which triggers nothing here,
+            # so excluding it would leave a flaked PR unarmed for good (a sibling repo's landing review,
+            # 2026-10-27; with one runner this job often starts after the check ended).
+            # The last 20 runs, filtered: the draft's skipped run can be the newest, and a page of one
+            # would show only it.
             # A PR already closed has nothing to arm: check.yml runs on `closed`, so a `/finish`
             # merging first leaves that skipped run newest on this head.
             n=0
             for _ in $(seq 24); do
               state=$(gh pr view "$PR" --json state -q .state)
               if [ "$state" != OPEN ]; then echo "nothing to arm: $PR is $state"; exit 0; fi
-              n=$(gh api "repos/$REPO/actions/workflows/check.yml/runs?head_sha=$SHA&per_page=1" \
+              n=$(gh api "repos/$REPO/actions/workflows/check.yml/runs?head_sha=$SHA&per_page=20" \
                 -q '[.workflow_runs[] | select(.conclusion != "skipped")] | length')
               [ "${n:-0}" -gt 0 ] && break
               sleep 5
             done
             if [ "${n:-0}" -eq 0 ]; then
               echo "not armed: $SHA has no check.yml run that is not skipped"; exit 1
+            fi
+            # `hold` read live, not from this run's payload: a `labeled` run whose payload still says draft
+            # lands in the draft group and skips, so it no longer cancels this run (2026-10-27)
+            if gh pr view "$PR" --json labels -q '.labels[].name' | grep -qx hold; then
+              echo "not armed: $PR carries hold (read live)"; exit 0
             fi
             # a /finish that merged first leaves nothing to arm: that is a launch, not a failure
             gh pr merge --auto --rebase "$PR" || gh pr view "$PR" --json state -q .state | grep -qx MERGED
