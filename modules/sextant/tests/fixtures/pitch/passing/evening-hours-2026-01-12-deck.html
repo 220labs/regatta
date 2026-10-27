@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evening Hours Deck</title>
+<style>
+body { margin: 0; background: #FFFFFF; color: #1F2430; font-family: Arial, sans-serif; }
+.slide { box-sizing: border-box; min-height: 100vh; padding: 64px; font-size: 32px; }
+.slide h2 { font-size: 56px; margin: 0 0 32px; }
+.slide .small { font-size: 20px; color: #5A6170; }
+</style>
+</head>
+<body>
+<div id="deck"></div>
+<script>
+// The older single-file route: slides are template literals, the facts are data strings.
+const facts = [
+  {label: "Budget", value: "$18K for the pilot, over 12 weeks"},
+  {label: "Demand", value: "140 of 420 members asked for evenings"},
+  {label: "Staff", value: "one coordinator at 20 hours a week"},
+];
+const slides = [
+  `<h2>Evening hours, three evenings a week</h2>
+   <!-- the cover: the answer first -->
+   <p>Open three evenings a week for 12 weeks, and hire one coordinator.</p>`,
+  `<h2>What it takes</h2>
+   <ul>${facts.map(f => `<li><b>${f.label}:</b> ${f.value}</li>`).join("")}</ul>
+   <p class="small">Weeks 1–4 open two evenings; weeks 5–12 open three.</p>`,
+];
+document.getElementById("deck").innerHTML =
+  slides.map(s => `<section class="slide">${s}</section>`).join("");
+</script>
+</body>
+</html>

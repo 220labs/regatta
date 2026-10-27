@@ -1,0 +1,19 @@
+[
+  {"id": "cover", "headline": "Evening hours, twelve weeks",
+   "statements": ["Three evenings a week. One budget. One hire to decide."],
+   "note": "Detail: the document and its memo page, handed to everyone in the room."},
+  {"id": "asked", "headline": "Members asked for evenings",
+   "statements": ["140 of 420 members asked", "0 evening visits today"],
+   "note": "From the autumn survey. The library closes at 17:00 today.",
+   "graphic": {"kind": "track", "values": [140, 0], "of": 420}},
+  {"id": "plan", "headline": "The pilot runs for 12 weeks",
+   "statements": ["Weeks 1–4: two evenings", "Weeks 5–12: three evenings"],
+   "note": "Weeks 1 to 4 test the rota on two evenings before the third is added.",
+   "graphic": {"kind": "weeks", "values": [[1, 4], [5, 12]], "of": 12}},
+  {"id": "money", "headline": "The budget is enough",
+   "statements": ["$18K for the pilot", "Most of it pays the coordinator"],
+   "note": "20 hours a week for 12 weeks is 240 hours, about $14K. About $4K covers lighting, a key-safe and the rota."},
+  {"id": "close", "headline": "Hire the coordinator this week",
+   "statements": ["Volunteers cover 9 of 12 shifts"],
+   "note": "Recommended: hire. A volunteer-only rota leaves one evening in four unstaffed."}
+]

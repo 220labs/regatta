@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""pitch: hold a document's renders to the method, and build its admiral deck.
+
+    pitch check <docs-root|document.md> [--config pitch.json] [--json]
+    pitch build <stem>-admiral-deck|<document.md> [--config pitch.json] [--check]
+
+`check` holds every render of every document under a root to the method: the admiral deck to its
+rules, every folder deck to the furniture rules, the captain renders to their floor and their
+allowlist, and every render to the claims its document makes. Given one document, it checks that
+document and its renders only. Exit 0 clean, 1 on any finding, each finding a rule id and a message;
+2 when the check could not run (no config, no such path, a render it cannot parse), so a caller never
+reads a crash as a finding (AGENTS.md's trap: a probe's "refuse" exit must not be 1).
+
+`build` writes an admiral deck's slides from its content file (`slides.json`), refusing the whole
+deck, nothing written, when any slide breaks a rule; `--check` compares only, exit 1 on drift (a
+slide edited by hand, which the next build would silently revert). Given a document, it builds the
+document's admiral deck. Exit 1 on a refusal or drift, 2 when it could not run.
+
+The config is `pitch.json`, found at or above the root (or the deck) unless --config names one; a
+config may start with "extends": "<another config>", relative to itself. Anything left out takes
+the default in pitchlib.py (DEFAULTS).
+
+Pairing is by file name beside the document `<root>/<stem>.md` (every suffix is a parameter):
+  <stem>-admiral-deck/project/   the admiral render: deck.json + slides/<id>.html, and the builder's
+                                 content file in <stem>-admiral-deck/
+  <stem>-deck/project/           a folder deck that is not admiral (Slides-type, captain density)
+  <stem>-memo.html               the captain render, a plain page
+  <stem>-deck.html               a single-file deck, slides as JavaScript template literals
+
+Why every check refuses to be vacuous: the first version of the pairing suite this comes from was
+mutation-tested and found to skip everything, green, the moment a deck was renamed.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True          # no __pycache__ beside the module's tools
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # this file's own folder, never the shell's
+import pitchlib as pl  # noqa: E402
+
+
+class CouldNotRun(Exception):
+    """The verb could not do its job: exit 2, never the 1 a finding or a refusal exits."""
+
+
+def cmd_check(a):
+    target = Path(a.target).resolve()
+    only = None
+    if target.is_file():
+        cfg = pl.find_config(target.parent, a.config)
+        if target not in pl.documents(target.parent, cfg):
+            sys.exit(f"pitch check: {target.name} is not a document here ({cfg.naming['documents_glob']})")
+        root, only = target.parent, target.stem
+    elif target.is_dir():
+        root, cfg = target, pl.find_config(target, a.config)
+    else:
+        sys.exit(f"pitch check: no such file or folder: {a.target}")
+    findings = pl.check_root(root, cfg, only)
+    if a.json:
+        print(json.dumps([{"rule": r, "message": m} for r, m in findings], indent=1, ensure_ascii=False))
+    else:
+        for r, m in findings:
+            print(f"{r:28} {m}")
+        print(f"{len(findings)} finding(s)")
+    return 1 if findings else 0
+
+
+def cmd_build(a):
+    deck_dir = Path(a.deck).resolve()
+    cfg = pl.find_config(deck_dir.parent if deck_dir.is_file() else deck_dir, a.config)
+    if deck_dir.is_file():
+        deck_dir = deck_dir.with_name(deck_dir.stem + cfg.naming["admiral_suffix"])
+    if not deck_dir.is_dir():
+        raise CouldNotRun(f"pitch build: no admiral deck folder at {deck_dir}")
+    if not deck_dir.name.endswith(cfg.naming["admiral_suffix"]) or deck_dir.name == cfg.naming["admiral_suffix"]:
+        # stem_of() cuts the suffix by length: any other folder would yield a wrong stem and keys
+        raise CouldNotRun(f"pitch build: {deck_dir.name} is not an admiral deck (<stem>{cfg.naming['admiral_suffix']})")
+    slide_dir = deck_dir / "project" / "slides"
+    built = pl.build_all(deck_dir, cfg)
+    if a.check:
+        drifted = [sid for sid, html, _ in built
+                   if not (slide_dir / f"{sid}.html").exists()
+                   or (slide_dir / f"{sid}.html").read_text(encoding="utf-8") != html]
+        if drifted:
+            sys.exit(f"slides on disk differ from what {cfg.naming['content_file']} says: {drifted} — a render "
+                     "was edited by hand, which the next build would silently revert")
+        print(f"{len(built)} slides match the generator")
+        return 0
+    slide_dir.mkdir(parents=True, exist_ok=True)
+    for sid, html, _ in built:
+        (slide_dir / f"{sid}.html").write_text(html, encoding="utf-8")
+    print(f"{len(built)} slides written:\n  " + "\n  ".join(b[2] for b in built))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="pitch", description=__doc__.split("\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog="\n".join(__doc__.split("\n")[2:5]))
+    sub = ap.add_subparsers(dest="verb", metavar="check|build")
+    sub.required = True
+    c = sub.add_parser("check", help="hold a docs root, or one document, to the method; exit 1 on a finding")
+    c.add_argument("target", metavar="root|doc")
+    c.add_argument("--config")
+    c.add_argument("--json", action="store_true")
+    b = sub.add_parser("build", help="write an admiral deck's slides from its content file")
+    b.add_argument("deck", metavar="deck|doc", help="the <stem>-admiral-deck folder, or its document")
+    b.add_argument("--config")
+    b.add_argument("--check", action="store_true", help="compare only; exit 1 on drift")
+    a = ap.parse_args(argv)
+    try:
+        if a.verb == "check":
+            try:
+                return cmd_check(a)
+            except SystemExit as e:     # check's own refusals (no config, no such path): could not run
+                if isinstance(e.code, int):
+                    raise
+                raise CouldNotRun(e.code)
+        return cmd_build(a)             # build's sys.exit(message) is a refusal or drift: exit 1
+    except CouldNotRun as e:
+        print(e, file=sys.stderr)
+        return 2
+    except Exception:                   # a crash is "could not tell", never a finding
+        import traceback
+        traceback.print_exc()
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

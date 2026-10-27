@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- New tool: `bin/pitch` (renders S1) — `check <root|doc> [--json]` holds a document's renders to
+  the method (the captain page, the admiral deck, every folder and single-file deck; 29 rule ids,
+  exit 1 on a finding, 2 when it could not run), `build <deck|doc> [--check]` writes an admiral deck from its `slides.json`,
+  refusing the whole deck when a slide breaks a rule. Its rules, checker and builder are
+  `bin/pitchlib.py`, stdlib Python 3.9; its config `pitch.json`, found at or above the root,
+  `extends` kept. `tests/pitch.sh` builds one failing root per rule at run time and runs 170 cases.
 - The host rule is the core's (2026-10-24): `sextant-run run` asks `common.weekly_host("sextant")`,
   so its skip line says `sextant`, as weekly-run's does, where it said `/sextant`; `install.sh
   --schedule` asks `regatta weekly-host sextant` (the core found through `lib/find_core.py`) before the

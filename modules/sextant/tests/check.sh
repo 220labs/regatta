@@ -5,7 +5,8 @@
 # install.sh's syntax. The suite needs macOS (`say`, `afconvert`): elsewhere it is skipped with one
 # printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish). The
 # sounding queue's suite (tests/soundings.sh) and the weekly job's (tests/schedule.sh: install.sh's
-# plist with and without aurora, the module's own runner) run everywhere.
+# plist with and without aurora, the module's own runner) run everywhere, and so does pitch's
+# (tests/pitch.sh: the renders' checker and builder against their fixtures).
 # `sparks --help` prints its usage and an unknown argument exits 2 before anything runs (both
 # checked below); a bare `sparks` is still a live pass on the Mac's own config.
 #   bash modules/sextant/tests/check.sh            SPARKS_SUITE=0 skips the suite (about 6 min)
@@ -84,6 +85,8 @@ head -3 "$SX" | grep -q '^name: sextant$' && grep -q '^disable-model-invocation:
 grep -q 'libexec/sextant-run where' "$SX"; ok $? "  its paths come from sextant-run where"
 python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])" "$D/libexec/sextant-run"; ok $? "libexec/sextant-run parses"
 bash "$D/tests/schedule.sh" | tail -1; ok "${PIPESTATUS[0]}" "the weekly job's suite (tests/schedule.sh)"
+# pitch (renders S1): the renders' checker and builder, stdlib Python and temp dirs, any OS
+bash "$D/tests/pitch.sh" >"$T/pitch.log" 2>&1; pr=$?; grep -E '^  FAIL|passed in|failed in' "$T/pitch.log"; [ "$pr" = 0 ] || tail -n 30 "$T/pitch.log"; ok "$pr" "pitch's suite (tests/pitch.sh)"
 sh -n "$D/install.sh"; ok $? "install.sh parses"
 sh "$D/install.sh" --bogus >/dev/null 2>&1; [ $? = 2 ]; ok $? "install.sh refuses an unknown verb"
 exit $rc

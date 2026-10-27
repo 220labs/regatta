@@ -1,0 +1,55 @@
+{
+  "palette": {
+    "allowed": [
+      "#1F2430",
+      "#5A6170",
+      "#2F6FDB",
+      "#FFFFFF",
+      "#F6F7F9",
+      "#C9CED8"
+    ]
+  },
+  "face": {
+    "family": "Source Sans 3",
+    "stack": "Arial, sans-serif",
+    "href": "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700;800&display=swap",
+    "glyphs": ""
+  },
+  "layout": {
+    "ink": "#1F2430",
+    "muted": "#5A6170",
+    "accent": "#2F6FDB",
+    "paper": "#FFFFFF",
+    "raised": "#F6F7F9"
+  },
+  "admiral": {
+    "headline_exempt": {
+      "evening-hours-2026-01-12/cover": "a cover names the deck; the message rule binds the slides that argue"
+    },
+    "extra_verbs": [
+      "hire"
+    ]
+  },
+  "claims": {
+    "must_appear": {
+      "evening-hours-2026-01-12": [
+        "$18K",
+        "140 of 420",
+        "12 weeks",
+        "20 hours a week"
+      ]
+    },
+    "admiral_must_appear": {
+      "evening-hours-2026-01-12": [
+        "$18K",
+        "140 of 420"
+      ]
+    },
+    "retired": [
+      [
+        "opens every evening",
+        "the pilot opens three evenings a week, not every evening"
+      ]
+    ]
+  }
+}
