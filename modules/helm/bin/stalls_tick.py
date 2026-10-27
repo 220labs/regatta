@@ -901,7 +901,8 @@ CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SIT
 #            naming what cleared it, then the issue closed; a failed close tried once more)
 # One issue per key at a time. Three kinds are wanted, on this host's own store only:
 #     stall  a decision whose verdict is raise (dry or not), first seen ESCALATE_AFTER ago — S3, S5, S6, S7,
-#            `skipper won't start`, a spent or refused retry, an unsure one the classifier refused — but
+#            `skipper won't start`, `start path dead` (a canary beat that fails, orca-launcher S7: G2's
+#            raise is the hourly beat's window plus the tick plus these 10 minutes), a spent or refused retry, an unsure one the classifier refused — but
 #            never one raised to a live skipper (it hears it), nor a class in NEVER
 #     block  a block of a ship the yard holds (a lease here) that waits on the owner as a whole — gated on
 #            a decision doc (skipperlib.OWNER_PROGRESS) or a person's task whose deps are done — quiet
@@ -998,7 +999,7 @@ def wanted(res, decisions, mem, t):
             body += ["- evidence: %s" % " · ".join(ev)] if ev else []
             body += ["- why raised: %s" % line.get("why")] if line.get("why") else []
             body += ["- board: %s — `helm board` on %s" % (s.get("column") or stalls.column(s), me)]
-        src = "orca" if s.get("harness") == "orca" else {"landing": "launches", "skipper": "skippers"}.get(s.get("key_kind"), "runs")
+        src = "orca" if s.get("harness") == "orca" else {"landing": "launches", "skipper": "skippers", "canary": "canary"}.get(s.get("key_kind"), "runs")
         ek = _k(["stall", s.get("key_kind"), s.get("key")])
         out[ek] = {"kind": "stall", "key": s.get("key"), "key_kind": s.get("key_kind"), "src": src, "class": cls,
                    "rule": s.get("rule"), "plan": s.get("plan"), "block": s.get("task") or s.get("topic"), "since": since,
@@ -1345,7 +1346,8 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
     # a key's absence counts only where its source was read this pass
     unread = res.get("unread") or {}
     gaps = {"runs": not res.get("hosts") or bool(unread.get("hosts")), "launches": bool(unread.get("launches")),
-            "orca": bool(unread.get("orca")), "skippers": bool(unread.get("skippers")), "ships": not ships_unread["ships"]}
+            "orca": bool(unread.get("orca")), "skippers": bool(unread.get("skippers")), "canary": bool(unread.get("canary")),
+            "ships": not ships_unread["ships"]}
     for ek, prev in sorted(last.items()):
         if prev.get("state") not in OPEN_STATES + ("unrouted",) or ek in want or prev.get("yard") not in (None, me):
             continue

@@ -16,6 +16,10 @@ unset DISPATCH_SHIP DISPATCH_PLAN   # a ship's block running this suite: --by sh
 # registry a caller points at (the rotation's fence reads it)
 for v in $(env | sed -nE 's/^((DISPATCH|RUN_SEED|SKIPPER|HELM|AUTOFINISH)_[A-Za-z0-9_]*)=.*/\1/p'); do unset "$v"; done
 unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_REPOS_JSON
+# One day for every day-named log, the script's and the suite's alike (autofinish-run's AUTOFINISH_DAY):
+# a case that crossed local midnight read the new day's empty file (a CI run at 00:00 PDT, 2026-10-26, the
+# night-landings digest's finding 7). Set after the reset above, which unsets AUTOFINISH_*.
+export AUTOFINISH_DAY="$(date +%Y-%m-%d)"
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 # the regatta core's hooks/ (common.py), found as the tools find it (lib/core_path.py); wharf's peers by its tool()
 CORE="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; print(core_path.hooks() or "")' "$B/../lib")"
@@ -103,7 +107,7 @@ echo '[]' > "$T/prs.json"
 chmod +x "$T/claude" "$T/screen"
 export DISPATCH_CLAUDE="$T/claude" DISPATCH_SCREEN="$T/screen" DISPATCH_HOST=buildbox DISPATCH_POLL=0.2 DISPATCH_START_WAIT=2 \
        AUTOFINISH_API_STUB="$T/api_stub.py" STUB_API_LOG="$T/api.log" PICKUP_PRS="$T/prs.json"
-LOGS="$HOME/Library/Logs/claude-weekly"; AFLOG="$LOGS/autofinish-$(date +%Y-%m-%d).log"
+LOGS="$HOME/Library/Logs/claude-weekly"; AFLOG="$LOGS/autofinish-$AUTOFINISH_DAY.log"
 field() { python3 -c 'import json, sys; v = json.load(open(sys.argv[1])).get(sys.argv[2]); print("null" if v is None else v)' "$STATE" "$1"; }
 # the runner returns at once; its child records the end: wait for it (up to ~30 s)
 ended() { for _ in $(seq 1 150); do [ "$(field ended 2>/dev/null)" != null ] && [ -n "$(field ended 2>/dev/null)" ] && return 0; sleep 0.2; done; echo "  (no end recorded in 30 s)"; return 1; }
@@ -308,7 +312,7 @@ sleep 1; kill -TERM "$CP"
 ended
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "the lock the dead session left is gone after the end"
 check "$(field outcome)" "never-started" "  no reply: never-started"
-has "$HOME/Library/Logs/claude-weekly/$(date +%Y-%m-%d)-dispatch-finish-demo.log" "claude exited by itself" "  the watcher saw claude go"
+has "$HOME/Library/Logs/claude-weekly/$AUTOFINISH_DAY-dispatch-finish-demo.log" "claude exited by itself" "  the watcher saw claude go"
 
 echo "the waiter itself ended by SIGTERM: finally still runs"
 next_tip "waiter"
@@ -876,6 +880,8 @@ has "$T/out" "ask opposite things" "  saying why"
 af --dry --digest "$(printf '%064d' 0)" > "$T/out" 2>&1; check "$?" "2" "--digest without --by ship: refused"
 SKIPPER_SCOPE=dock af --dry --merge > "$T/out" 2>&1; check "$?" "2" "--merge from a skipper (SKIPPER_SCOPE): refused as an unattended run is"
 has "$T/out" "SKIPPER_SCOPE=dock" "  naming it"
+AUTOFINISH_CALLER_UNATTENDED=1 af --dry --merge > "$T/out" 2>&1; check "$?" "2" "--merge under AUTOFINISH_CALLER_UNATTENDED: refused, never sent to fall back here"
+has "$T/out" "AUTOFINISH_CALLER_UNATTENDED=1" "  naming it"
 
 echo "--by ship: the keel's yes, read again from the plan store (S6)"
 if [ -z "$LB" ]; then echo "  --   skipped: helm's helmlib.py is not installed here"; else
@@ -1266,7 +1272,7 @@ has "$L/.git/claude/autofinished" "launched $LB #42" "the peer's autofinished li
 has "$AFLOG" " run land $LB started session=${LSID:0:8} tip=${LTIP:0:7} rule=A by=sweep account=- window=\"finish · land\" — on buildbox" "the log here: the send"
 has "$AFLOG" " run land $LB launched pr=#42 session=${LSID:0:8}" "  and the end"
 has "$AFLOG" "; on buildbox" "  saying where it ran"
-has "$PLOGS/autofinish-$(date +%Y-%m-%d).log" " run land $LB launched pr=#42 session=${LSID:0:8}" "the peer's own log has the run"
+has "$PLOGS/autofinish-$AUTOFINISH_DAY.log" " run land $LB launched pr=#42 session=${LSID:0:8}" "the peer's own log has the run"
 python3 "$B/dispatch-rc" status > "$T/out" 2>&1
 has "$T/out" "finish-land" "dispatch --status here lists it…"
 has "$T/out" "on buildbox · ended" "  …on the peer, ended"
@@ -1289,6 +1295,20 @@ STUB_REPLY="$T/launch.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
 check "$(git -C "$T/land.git" rev-parse "refs/heads/$LB")" "$LTIP" "  origin has the tip"
 has "$T/out" "started on buildbox" "  and the run went to the peer"
 lended; check "$(lfield outcome)" "launched" "  launched there"
+
+echo "Where: a typed /finish's --merge travels with the send (D3-A: the typed word stays the yes, wherever it lands)"
+lnext "typed, with the yes"; : > "$T/ssh.calls"
+AUTOFINISH_SEND_BUDGET=110 STUB_REPLY="$T/launch.txt" laf --by typed --merge > "$T/out" 2>&1; check "$?" "0" "sent: exit 0 (the untyped budget: a loaded runner outlasts the typed 40 s)"
+has "$T/out" "started on buildbox: /finish $LB --unattended --merge --from=laptop in $PW" "  said so: --merge beside --from"
+has "$T/ssh.calls" "--by typed --merge --from laptop" "  peer-start is given --by typed --merge"
+lended; LSID=$(lfield session)
+has "$T/claude.calls" "claude /finish $LB --unattended --merge --from=laptop --session-id $LSID" "  the peer's /finish carries --merge"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("merge"))' "$PGD/claude/autofinish.json")/$(lfield merge)" \
+  "True/True" "  \"merge\" in the state there and here"
+lnext "typed, kept here"
+STUB_REPLY="$T/stop.txt" laf --on here --by typed --merge > "$T/out" 2>&1; check "$?" "0" "kept on the laptop (--on here): started"
+has "$T/out" "started: /finish $LB --unattended --merge — window" "  here, with --merge, as before the peer"
+lended; check "$(lfield host)/$(lfield merge)" "null/True" "  a run here that carries the yes"
 
 echo "Where: what keeps a run here says why"
 lnext "dirty"; echo scratch > "$LW/untracked.txt"
@@ -1328,6 +1348,17 @@ has "$T/out" "needs a person's yes" "  saying why"
 "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
   --run-session 00000000-0000-4000-8000-000000000000 --by sweep --merge > "$T/out" 2>&1
 check "$?" "2" "a --by outside the person's yes is refused too"
+for by in chain yolo; do
+  "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+    --run-session 00000000-0000-4000-8000-000000000000 --by $by --merge > "$T/out" 2>&1
+  check "$?" "2" "  --by $by --merge: refused"
+done
+"$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
+  --run-session 00000000-0000-4000-8000-000000000000 --by typed --merge --unattended-caller > "$T/out" 2>&1
+check "$?" "2" "--by typed --merge from the sender's unattended caller (--unattended-caller): refused"
+has "$T/out" "needs a person's yes" "  saying why"
+CLAUDE_UNATTENDED=dispatch laf --by typed --merge --dry > "$T/out" 2>&1; check "$?" "2" "a typed --merge from an unattended caller is refused before any send"
+has "$T/out" "unattended run" "  saying why"
 SKIPPER_SCOPE=s "$B/autofinish-run" peer-start --repo "$HOME/projects/land" --branch "$LB" --tip "$LTIP" \
   --run-session 00000000-0000-4000-8000-000000000000 --by override --merge > "$T/out" 2>&1
 check "$?" "2" "--merge from a skipper (SKIPPER_SCOPE): refused, as run_main refuses it (CR 1)"

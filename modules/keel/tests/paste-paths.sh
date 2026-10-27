@@ -9,8 +9,10 @@ T=$(cd "$T" && pwd -P)  # /var is /private/var: the hand-over line's file link i
 . "$(dirname "$0")/config.sh"; keel_config "$T/config"
 fails=0
 # The hand-over line (bin/keel line_findings): what this Mac knows, pinned to the suite. A stub CLI
-# makes the page owed (the hook never runs it): with D-items it goes as form, else as space (2026-10-14).
-export MEMO_STATE_DIR="$T/state" MEMO_SHEEP_STATE="$T/sheep" MEMO_SHEEP_BIN="$T/spacesheep" SPACESHEEP_KEY=ss_test
+# makes the page owed (the hook never runs it): as course with D-items, else as local, and as space
+# (2026-10-14, 2026-10-26). SPACESHEEP_CONFIG_DIR: never the Mac's own mirror.json, so a running mirror
+# changes no case's line
+export MEMO_STATE_DIR="$T/state" MEMO_SHEEP_STATE="$T/sheep" MEMO_SHEEP_BIN="$T/spacesheep" SPACESHEEP_KEY=ss_test SPACESHEEP_CONFIG_DIR="$T/ss-config"
 unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT  # each drops a part of the line; the cases that want one set it
 printf '#!/bin/sh\nexit 9\n' > "$T/spacesheep"; chmod +x "$T/spacesheep"
 unset CLAUDE_UNATTENDED CLAUDE_HOOK_NO_SHEEP

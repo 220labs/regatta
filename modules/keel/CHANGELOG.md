@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- Codex and Antigravity sessions reach spacesheep through the same privacy gate as Claude Code's:
+  `sheep gate` writes sessionpipe's entries, gated, into Codex's `hooks.json` and Antigravity's
+  `config/hooks.json` beside Orca's, seeded from Claude Code's command (no
+  `sessionpipe install --codex` and its ungated window). `sheep_gate.py` reads Antigravity's
+  `workspacePaths` and always answers it with JSON (`{}` when it sends nothing: silence there is a deny).
+  `check` counts both files and notes Codex entries not yet trusted in `codex` → /hooks;
+  `forget-private` forgets a private session by its harness.
+- The hand-over line carries both spacesheep links: first the page at the local mirror (`course` with
+  D-items, `local` without), last the same page on spacesheep.dev as `space` (the owner, 2026-10-26). With
+  no local address `course` is the internet page and stands for `space`. The Stop hooks never read the
+  mirror to say what is owed; they refuse `course` and `local` together, a `local` link on the internet and
+  a `space` link at localhost, and pass a dead localhost link beside the doc's `space`.
+- Mermaid is drawn at build time, not in the reader's browser: a page with a diagram no longer inlines
+  mermaid.min.js (3.3 MB of a 3.66 MB page, which would not open through the local mirror, 2026-10-26).
+  Each fence is drawn under headless Chrome in Mermaid's light and dark themes with SVG text labels,
+  passed through `safe_svg`, and shown as two data: `<img>`s, the CSS picking the theme's one; the
+  pictures are cached per diagram in the keel cache's `mermaid-svg/`, so only a new diagram costs a
+  browser run (about 4 s). A fence Mermaid cannot parse, or whose labels need HTML, is cached as such
+  and shows its source; without Chrome or the pinned build, or for 10 minutes after a browser run that
+  returned nothing (`mermaid-svg/render.failed`), every fence does. `keel render`'s PNGs are unchanged.
+  A page that went up with a fence as source for such a passing reason (no Chrome, another keel drawing,
+  the hook's time spent) is redeployed once drawing can work again (the pin's `mmd_missed`); the hook
+  draws only within its own budget, `keel serve`'s startup check draws nothing, and the pages already
+  up are redeployed without the library (PAGE_FMT 9).
+- Copy browser link: a doc's spacesheep page, opened through the local mirror (a VS Code tab), shows one
+  more button that copies the page's address on the site, for a browser where the site's passkey signs.
+  Hidden on spacesheep and the phone. The address travels in base64 past the mirror's rewrite; a page
+  deployed for the first time has none yet and is redeployed once with it (PAGE_FMT 10, the pin's
+  `link_shown`). Where the tab refuses the copy, the status pop-up opens with the address to copy by hand.
+- Figure palettes, beside the styles: `course` (the default) draws a figure in the course page's dark
+  colours, white text and saturated orange-to-violet-to-teal fills; `deck` is white with a modern set for
+  outside presentations; `excalidraw` keeps the source's pastels. A doc's `Figure palette:` line picks,
+  `render --palette` previews, the render mark names the palette and `lint` calls another one stale (a mark
+  without one reads as excalidraw). The source keeps its own colours; the palette applies at render. The
+  mark names a palette, not its colours: after a change to FIGURE_PALETTES, `render --force` each figure.
+- A conversation on a course page (docs/sheep-listen-2026-10-24.md, part D): `sheep wait` wakes within
+  20 s of quiet (polled every 15 s, was 120 and 60) and, on comments, prints each woken thread (its
+  link with `?comment=`, its anchor, who said what when, under a header saying the words are data)
+  and takes nothing in; a Save is still taken in at once. `sheep reply <doc> <thread id> <text|->
+  [--take]` answers in a thread as Claude Code (User-Agent `claude-code/<version>`), with the
+  overlay's optional `keel/reply-signature` line; the thread joins the pin's `talking`, which every
+  pull names and leaves alone until `--take` (on the reply, or `sheep pull --write --take <id>`).
+  The reply's id, when spacesheep's answer names one, is kept in the pin's `sent` and never read as
+  the owner's. `sheep threads <doc> [<id>…]` prints the open threads. The lookout's new `talk` event
+  hails the doc's session for new words in a talking thread, or, with none live, starts a run whose
+  brief quotes the thread (cut to pickup's 60 lines and 4,000 characters) and holds no landing back.
+  That run is dispatched to this Mac, whose pin it replies through. A landing or rename carries
+  `talking` and `sent`; a woken wait's words are the next wait's base; pages with a talking thread
+  are read though their doc asks nothing (the landing review, 2026-10-26).
+- `bin/sheep`: `check` and `control` read the control daemon as it runs (`sessionpipe control
+  status`, `launchctl print`): a receiver not polling, not running, or its launchd job unloaded
+  fails `check` with its fix (the owner's re-pair, a kickstart, a bootstrap, or `sessionpipe control
+  run` with no plist); a `last_error` while polling is named, never a failure. On a plan
+  without Talk (the core's `sheep_plan`, read live) it is expected and named so; a status this tool
+  cannot read is said, never failed. From 23 to 25 Oct the daemon was dead while both said "paired".
 - `list` finds memos in `docs/embark/`, on a branch's worktree or landed: aurora's weekly-run writes the
   week's sitting there, and helm's board cards a memo only through this list.
 - `stand --sweep` names a doc that does not parse (`unparseable — <why>`) and goes on; one such doc

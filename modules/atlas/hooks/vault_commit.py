@@ -93,29 +93,43 @@ def commit_vault():
 
 
 def push_main(repo):
-    """pull --rebase then push, for a clean main with an origin. Returns a note or None."""
+    """pull --rebase then push, for a clean main with an origin. Returns a note or None.
+
+    A refused push is tried once more from the fetch, but only if origin moved meanwhile: SessionEnds
+    on two Macs push the same main, and one that lands between this fetch and this push makes it a
+    non-fast-forward. Before 2026-10-26 that was the end of it: a bulletin line, whose own commit put
+    main further from origin, with nothing left to retry. A refusal with origin unmoved is lasting
+    (a guard, a credential) and a second push would fail the same way."""
     name = repo.name
-    if os.environ.get("CLAUDE_HOOK_NO_PUSH") or not usable(repo):
+    if os.environ.get("CLAUDE_HOOK_NO_PUSH"):
         return None
-    if git(repo, "remote", "get-url", "origin").returncode or git(repo, "status", "--porcelain").stdout.strip():
-        return None
+    refused = f"{name}: push of main refused — see the repo's pre-push"
     try:
-        if git(repo, "fetch", "-q", "origin", timeout=40).returncode:
-            return None  # offline
-        if git(repo, "rev-parse", "--verify", "-q", "origin/main").returncode:
-            ahead, behind = 1, 0  # origin has no main yet: the first push creates it
-        else:
-            counts = git(repo, "rev-list", "--left-right", "--count", "main...origin/main").stdout.split()
-            ahead, behind = (int(x) for x in counts) if len(counts) == 2 else (0, 0)
-        if behind:
-            if git(repo, "rebase", "-q", "origin/main", timeout=60).returncode:
-                git(repo, "rebase", "--abort")
-                return f"{name}: main diverged from origin and the rebase conflicts — resolve by hand"
-        if ahead and git(repo, "push", "-q", "origin", "main", timeout=60).returncode:
-            return f"{name}: push of main refused — see the repo's pre-push"
+        for attempt in (0, 1):
+            # Rechecked per attempt: a parallel session may have dirtied the tree or started a rebase
+            # while the first push ran, and a rebase then fails for a reason that is not a conflict.
+            if not usable(repo):
+                return None
+            if git(repo, "remote", "get-url", "origin").returncode or git(repo, "status", "--porcelain").stdout.strip():
+                return None
+            if git(repo, "fetch", "-q", "origin", timeout=40).returncode:
+                return refused if attempt else None  # offline
+            if git(repo, "rev-parse", "--verify", "-q", "origin/main").returncode:
+                ahead, behind = 1, 0  # origin has no main yet: the first push creates it
+            else:
+                counts = git(repo, "rev-list", "--left-right", "--count", "main...origin/main").stdout.split()
+                ahead, behind = (int(x) for x in counts) if len(counts) == 2 else (0, 0)
+            if attempt and not behind:
+                return refused
+            if behind:
+                if git(repo, "rebase", "-q", "origin/main", timeout=60).returncode:
+                    git(repo, "rebase", "--abort")
+                    return f"{name}: main diverged from origin and the rebase conflicts — resolve by hand"
+            if not ahead or not git(repo, "push", "-q", "origin", "main", timeout=60).returncode:
+                return None
+        return f"{name}: push of main refused twice — see the repo's pre-push"
     except subprocess.TimeoutExpired:
         return None
-    return None
 
 
 def post(note, why="a knowledge repo needs a hand"):

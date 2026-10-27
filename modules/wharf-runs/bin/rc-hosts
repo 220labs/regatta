@@ -14,6 +14,14 @@ An `"rc": {…}` object overrides label, name, capacity, spawn or permission_mod
 2026-10-07: every repo, and every new one from /new-project). Before this, the build Mac's
 first host was a hand-made plist.
 
+A repo in a confidential scope (the registry's `"confidential": true`) gets a host only when its entry
+says `"rc": {…}` and the scope's `login` has a home of its own on this Mac; the plist then carries
+that login's CLAUDE_CONFIG_DIR, so the host and every session it spawns run on the scope's login
+(confidential-reach S10, 2026-10-26: the node's host had run on the primary, its plist naming no
+config dir). Anything else holds the host and says why; an Orca-held login (`via: orca`) holds it
+until a launchd host is known to keep Remote Control's sign-in under Orca's dir. `"rc": false`
+still wins. --check FAILs a host whose plist names another login, and a held one still loaded.
+
 No host pre-creates a session (`--no-create-session-in-dir`, rc-slots D3): the default put one
 idle session in every host's directory at start — the constant "1/8" in every log, about 100 MB
 and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Mac, 2026-10-13).
@@ -22,7 +30,8 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
                             whose repo is no longer wanted here
   rc-hosts --check          report only: in sync / missing / differs / not cloned, and every
                             repo under ~/projects that is not in repos.json (no host until it is);
-                            FAIL (exit 1) on a host whose claude version was deleted under it
+                            FAIL (exit 1) on a host whose claude version was deleted under it,
+                            a confidential scope's host on another login, or one held but loaded
   rc-hosts --broken         only that FAIL, for every host, exit 3 on one: what bin/health asks daily
   rc-hosts --restart NAME   restart a running host, applying a changed plist; it ends the
                             host's sessions, so it refuses while one of them is busy
@@ -59,8 +68,9 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
   rc-hosts --launcher [PATH] claude-host's path when it may start PATH (an overlay script, claude),
                             else nothing and exit 1 — what every plist writer asks
   rc-hosts --tcc-survey [--host PEER] [--hours N] [--health]
-                            not-allowed privacy requests charged to a versioned claude in the last
-                            N hours (24), from the unified log; read-only. bin/health runs --health
+                            not-allowed privacy requests charged to a versioned claude, or to Orca
+                            while a job it started asks (`via Orca: <path>`), in the last N hours
+                            (24), from the unified log; read-only. bin/health runs --health
   rc-hosts --orphans [--end] `claude remote-control` processes no launchd job owns (a host whose
                             claude-host was killed before 2026-10-18), and --end to end them
 
@@ -95,7 +105,7 @@ Nothing in Claude Code ends an idle Remote Control session — 2.1.282's `remote
 --help` has no idle option — and a full host refuses new sessions from the phone: the build Mac's
 first host sat at 4/4 for two days on sessions idle 9 to 42 hours (2026-09-25). Each session is
 a child process of its host, and Claude Code keeps a record of it in
-~/.claude/sessions/<pid>.json (`status` idle|busy, `statusUpdatedAt`). --reap sends SIGTERM
+<its login dir>/sessions/<pid>.json (`status` idle|busy, `statusUpdatedAt`; every login dir is read, S10). --reap sends SIGTERM
 to a child whose record has said idle for N hours, re-reading it just before, and never
 touches a busy one or a session outside a host (VS Code, a terminal). Before each SIGTERM it
 writes a line into the host's own log (note_close()): the host then logs the exit as "Session
@@ -135,6 +145,8 @@ from pathlib import Path
 
 BIN = Path(__file__).resolve().parent
 sys.path.insert(0, str(BIN.parent / "lib"))
+sys.path.insert(0, str(BIN))
+import launcherlib  # noqa: E402 — the launcher rule's one home, beside this file (clock and helm ask through it)
 import core_path  # noqa: E402 — the regatta core (C2); add() only: dispatch-rc loads this file at its import
 core_path.add()
 try:
@@ -296,14 +308,70 @@ def _active(repo):
     return fresh(last_commit(repo))
 
 
-def registry():
-    """repos.json's `repos`, read through the core's one reader (C3: CLAUDE_REPOS_JSON, else the
-    config dir's wharf/repos.json); exits naming both when there is none."""
+def registry_doc():
+    """repos.json as a dict, read through the core's one reader (C3: CLAUDE_REPOS_JSON, else the
+    config dir's wharf/repos.json); exits naming both when there is none. A torn file exits too, by
+    the core's registry_unreadable() verdict (a `scopes` that is no object included): no host is
+    written from a registry that cannot say which repos are confidential (S10 landing review)."""
     f = common.repos_json() if common else None
     if not f or not f.is_file():
         sys.exit("rc-hosts: no registry — set CLAUDE_REPOS_JSON, or link wharf/repos.json in the regatta config dir"
                  + ("" if common else " (and the regatta core is missing)"))
-    return json.loads(f.read_text())["repos"]
+    doc, torn = common.read_registry(f)
+    if torn or doc is None:
+        sys.exit(f"rc-hosts: the registry does not read ({f}) — no host is written until it does")
+    return doc
+
+
+def registry():
+    """repos.json's `repos`."""
+    return registry_doc()["repos"]
+
+
+def confidential_of(doc):
+    """{repo key: (scope, login)} for each repo of a confidential scope, from the one parse wanted()
+    reads: the core's flag (only a real true) and its member rule (keys and globs)."""
+    repos, scopes = doc.get("repos") or {}, doc.get("scopes") or {}
+    out = {}
+    for name, s in scopes.items() if isinstance(scopes, dict) else ():
+        if isinstance(s, dict) and s.get("confidential") is True:
+            login = s.get("login") if isinstance(s.get("login"), str) and s.get("login") else None
+            for k in common.scope_members(s, repos):
+                out.setdefault(k, (name, login))
+    return out
+
+
+DEFAULT_DIR = HOME / ".claude"
+
+
+def login_home(label):
+    """(config dir, None) for the account LABEL when it has a home of its own on this Mac, else
+    (None, why). lighthouse's registry (ACCOUNTS_FILE in tests), Orca's logins as rows too. A
+    `via: orca` row is refused even where its dir is read back: whether a launchd host keeps Remote
+    Control's sign-in under Orca's profile dir is not known (confidential-reach, Not verified)."""
+    f = Path(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json")
+    try:
+        rows = json.loads(f.read_text(encoding="utf-8")).get("accounts") or []
+    except (OSError, ValueError, AttributeError):
+        return None, f"the account registry does not read ({f})"
+    row = next((a for a in common.account_rows(rows) if a.get("label") == label
+                and (a.get("provider") or "claude") == "claude"), None)
+    if row is None:
+        return None, f"login {label} is no Claude row of the account registry"
+    if row.get("via") == "orca":
+        return None, (f"login {label} is Orca's, with no home of its own here: a launchd host is not known"
+                      " to keep Remote Control's sign-in under Orca's dir")
+    d = common.account_home(row)
+    if not d or not d.is_dir():
+        return None, f"login {label} has no home on this Mac ({row.get('home') or 'none'})"
+    return d, None
+
+
+def config_dir_of(plist):
+    """The config dir a host's plist runs claude under: its CLAUDE_CONFIG_DIR, real path, else the
+    default dir (unset is the home folder's .claude)."""
+    v = ((plist or {}).get("EnvironmentVariables") or {}).get("CLAUDE_CONFIG_DIR")
+    return os.path.realpath(os.path.expanduser(v)) if isinstance(v, str) and v else os.path.realpath(DEFAULT_DIR)
 
 
 def source():
@@ -321,22 +389,55 @@ def source():
     return common.tool("claude-host.c")
 
 
+def ident(path, rc, host):
+    """(slug, label, name) of repo PATH's host here."""
+    rc = rc if isinstance(rc, dict) else {}
+    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
+    return slug, rc.get("label") or f"{HOST_LABEL}.{slug}", f"{rc.get('name') or path.split('/')[-1]} · {MACHINES[host]}"
+
+
 def wanted(host):
-    """(label, plist dict, repo dir) for every repo this host clones and someone worked on in
-    the last ACTIVE_DAYS, bar a public twin and "rc": false."""
-    repos = registry()
+    """(label, name, plist dict, repo dir) for every repo this host clones and someone worked on in
+    the last ACTIVE_DAYS, bar a public twin, "rc": false and a held confidential one."""
+    return hosts_here(host)[0]
+
+
+def hosts_here(host):
+    """(wanted, held): wanted() as above, and (label, name, why) for every confidential repo this
+    host clones whose host is held — no `"rc": {…}`, a scope with no login, a login with no home of
+    its own here (login_home). `"rc": false` is held too, with why None: main() says nothing of it
+    unless its host is still loaded."""
+    doc = registry_doc()
+    repos = doc["repos"]
+    conf = confidential_of(doc)
     program = str(LAUNCHER if through_launcher() else CLAUDE)
-    out = []
+    out, holds = [], []
     for path, r in repos.items():
         rc = r.get("rc", True)
-        if rc is False or r.get("twin_of") or host not in r.get("hosts", []):
+        if r.get("twin_of") or host not in r.get("hosts", []):
+            continue
+        slug, label, name = ident(path, rc, host)
+        cdir = None
+        if path in conf:
+            scope, login = conf[path]
+            why = None
+            if rc is False:
+                pass
+            elif not isinstance(rc, dict):
+                why = f"confidential scope {scope}: its entry says no \"rc\": {{…}}"
+            elif not login:
+                why = f"confidential scope {scope} names no login"
+            else:
+                cdir, why = login_home(login)
+                why = why and f"confidential scope {scope}: {why}"
+            if rc is False or why:
+                holds.append((label, name, why))
+                continue
+        if rc is False:
             continue
         if not active(PROJECTS / path):
             continue
         rc = rc if isinstance(rc, dict) else {}
-        slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
-        label = rc.get("label") or f"{HOST_LABEL}.{slug}"
-        name = f"{rc.get('name') or path.split('/')[-1]} · {MACHINES[host]}"
         repo = PROJECTS / path
         plist = {
             "Label": label,
@@ -365,8 +466,12 @@ def wanted(host):
             "StandardOutPath": str(LOGS / f"{slug}.log"),
             "StandardErrorPath": str(LOGS / f"{slug}.log"),
         }
+        # A confidential scope's login, unless it is the default dir: set to that, Claude Code would
+        # read the .claude.json inside it, not the home folder's, and lose that login's sign-in.
+        if cdir is not None and os.path.realpath(cdir) != os.path.realpath(DEFAULT_DIR):
+            plist["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"] = str(cdir)
         out.append((label, name, plist, repo))
-    return out
+    return out, holds
 
 
 def loaded(label):
@@ -388,6 +493,13 @@ def trusted(repo, claude_json=None):
     except (OSError, ValueError):
         return True   # can't tell; the host's log will
     return bool(projects.get(str(repo), {}).get("hasTrustDialogAccepted"))
+
+
+def claude_json_of(plist):
+    """The .claude.json a host's plist reads its workspace trust from: the default one, or its login
+    dir's own when the plist names another config dir (trust is per config dir; S10 landing review)."""
+    d = config_dir_of(plist)
+    return CLAUDE_JSON if d == os.path.realpath(DEFAULT_DIR) else Path(d) / ".claude.json"
 
 
 def untrusted_note(name, repo):
@@ -422,11 +534,35 @@ def host_pid(label):
     return pid
 
 
+_SESSION_DIRS = []
+
+
+def session_dirs():
+    """Where a session's record may be: the default dir's sessions/, then every other login dir's
+    (the core's login_dirs) — a confidential scope's host runs on its own login (S10), and a child
+    with no record reads as busy, so --restart and the reaper would never touch it. One entry per
+    real sessions/ folder: a login dir's often links to the default one's."""
+    if not _SESSION_DIRS:
+        seen = set()
+        for d in [SESSIONS] + [d / "sessions" for d in (common.login_dirs() if common else [])]:
+            if (r := os.path.realpath(d)) not in seen:
+                seen.add(r)
+                _SESSION_DIRS.append(d)
+    return _SESSION_DIRS
+
+
 def record(pid):
-    try:
-        return json.loads((SESSIONS / f"{pid}.json").read_text())
-    except (OSError, ValueError):
-        return None
+    """The newest record of pid across the login dirs: a dead session's leftover under a reused pid
+    is older than the live one's, which its session wrote at its start (S10 landing review)."""
+    recs = []
+    for d in session_dirs():
+        try:
+            recs.append(json.loads((d / f"{pid}.json").read_text()))
+        except (OSError, ValueError):
+            continue
+    recs = [r for r in recs if isinstance(r, dict)]
+    return max(recs, key=lambda r: r.get("statusUpdatedAt") if isinstance(r.get("statusUpdatedAt"), (int, float)) else 0,
+               default=None)
 
 
 def sessions_of(pid):
@@ -1037,7 +1173,7 @@ def converge(host, only, dry):
     hosts = wanted(host)
     stamp = time.strftime("%Y-%m-%d %H:%M")
     for label, name, plist, repo in hosts:
-        if (only and name.split(" · ")[0] not in only) or not repo.is_dir() or not trusted(repo):
+        if (only and name.split(" · ")[0] not in only) or not repo.is_dir() or not trusted(repo, claude_json_of(plist)):
             continue
         dest = AGENTS / f"{label}.plist"
         have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
@@ -1259,12 +1395,19 @@ def allowed(argv):
     return argv[i] in {str(PRIMARY / "bin" / s) for s in SCRIPTS}
 
 
-def through(argv):
-    """argv as a launchd job or a script should start it: through claude-host once ready() and
-    when claude-host would run it; else argv as it is. `claude …` becomes `claude-host claude …`."""
+def startable(argv):
+    """True when claude-host would start argv now: ready() and allowed(argv), and for `claude …` the
+    file claude-host always starts (CLAUDE) is an executable: with it missing the spawn fails where
+    only the screen shows it, so a missing claude is no launcher and the caller keeps its bare start."""
     if not (argv and ready() and allowed(argv)):
-        return list(argv)
-    return [str(LAUNCHER), "claude", *argv[1:]] if argv[0] in ("claude", str(CLAUDE)) else [str(LAUNCHER), *argv]
+        return False
+    return launcherlib.executable(CLAUDE) if argv[0] in ("claude", str(CLAUDE)) else True
+
+
+def through(argv):
+    """argv as a launchd job or a script should start it: through claude-host once startable(); else
+    argv as it is. `claude …` becomes `claude-host claude …` (launcherlib.through: the one rule)."""
+    return launcherlib.through(argv, str(LAUNCHER) if startable(argv) else None, ("claude", str(CLAUDE)))
 
 
 # --- the LaunchAgents check (--agents): nothing that starts claude may skip claude-host ---------
@@ -1370,6 +1513,15 @@ def automations(on):
             print(f"  note     automation {name}: its precheck fires the job through launchd (seam P); only a manual run starts a claude in Orca")
         else:
             print(f"  note     automation {name}: Orca starts a claude for each run — {why}")
+        if parsed[1] == "canary":   # clock's own beat: the line writes a file and starts no claude (S5)
+            cl = shlex.split(line)[0]
+            if outside(cl):
+                tag = "OUTSIDE " if on else "note    "
+                counted += on
+                print(f"  {tag} automation {name}: beats through {cl}, not the primary checkout's clock")
+                continue
+            print(f"  ok       automation {name}: a canary beat; its launcher line starts no claude of its own")
+            continue
         if parsed[1] == "fired":
             cl = shlex.split(line)[0]
             if outside(cl):
@@ -1802,14 +1954,24 @@ REASON = {"0": "none", "2": "user-consent", "3": "user-set", "4": "system-set", 
 # Requests that never stopped a session: preflights the tools make on their own (`say`, Chrome's
 # helpers, DeveloperTool's exec checks), answered "unknown" with no prompt (the 30-day survey).
 QUIET = ("DeveloperTool", "ListenEvent", "AudioCapture", "Microphone", "Camera", "ScreenCapture")
+# Orca's bundle id: a request charged to it (the responsible process) while a child of it asks is a job
+# Orca started without claude-host — the app holds no Drive grant, and tonight's session never started
+# (docs/orca-launcher-2026-10-24.md: 34 Drive requests, accessors claude, python3 and bun). Orca's own
+# requests (it is the accessing one, no responsible beside it) are the app's, never listed.
+ORCA_ID = "com.stablyai.orca"
+
+
+def is_orca(ident, path=""):
+    return ident == ORCA_ID or ident.startswith(ORCA_ID + ".") or "/Orca.app/" in path
 
 
 def survey(lines, since="", skip=frozenset()):
     """Group not-allowed TCC requests whose responsible process — or, with none, the accessing one —
     is a versioned claude (~/.local/share/claude/versions/<v>): {(service, result, accessing): [n,
-    last, versions]}. since ("YYYY-MM-DD HH:MM"): only requests from then on; skip: pids whose
-    requests do not count (the responsible one, or with none the accessing one). Pure, for the
-    suite; tcc_survey() feeds it `log show` output."""
+    last, versions]}, and those charged to Orca while something else asks (a job Orca started): an
+    Orca row's accessing reads `via Orca: <path>` and its version is `Orca`. since ("YYYY-MM-DD HH:MM"): only requests from
+    then on; skip: pids whose requests do not count (the responsible one, or with none the accessing
+    one). Pure, for the suite; tcc_survey() feeds it `log show` output."""
     req = {}
     for line in lines:
         m = re.search(r"AUTHREQ_CTX: msgID=([^,]+), function=[^,]*, service=kTCCService(\w+), preflight=(\w+)", line)
@@ -1820,7 +1982,14 @@ def survey(lines, since="", skip=frozenset()):
         if m:
             r = re.search(r"responsible=\{[^}]*?pid=(\d+)[^}]*?binary_path=([^},]*)", line)
             a = re.search(r"accessing=\{[^}]*?pid=(\d+)[^}]*?binary_path=([^},]*)", line)
+            rid = re.search(r"responsible=\{[^}]*?identifier=([^,}]*)", line)
+            aid = re.search(r"accessing=\{[^}]*?identifier=([^,}]*)", line)
+            # a line with no accessing block names the asker as `requesting`: Orca's child, read for Orca's case only
+            q = re.search(r"requesting=\{[^}]*?binary_path=([^},]*)", line)
+            qid = re.search(r"requesting=\{[^}]*?identifier=([^,}]*)", line)
             req.setdefault(m.group(1), {}).update(resp=r.group(2) if r else "", acc=a.group(2) if a else "",
+                                                  rid=rid.group(1) if rid else "", aid=aid.group(1) if aid else "",
+                                                  req=q.group(1) if q else "", qid=qid.group(1) if qid else "",
                                                   pid=int((r or a).group(1)) if (r or a) else 0)
             continue
         m = re.search(r"AUTHREQ_RESULT: msgID=([^,]+), authValue=(\d+), authReason=(\d+)", line)
@@ -1834,15 +2003,21 @@ def survey(lines, since="", skip=frozenset()):
             continue
         charged = d.get("resp") or d.get("acc") or ""
         v = re.search(r"/\.local/share/claude/versions/([\d.]+)$", charged)
-        if not v:
+        # Orca charged for a child's request: its responsible process is the app, the one that asked (accessing,
+        # else requesting) is named and is not; a request with no asker named is not counted as a job it started
+        kid, kpath = (d.get("aid", ""), d.get("acc", "")) if d.get("aid") or d.get("acc") else (d.get("qid", ""), d.get("req", ""))
+        orca = not v and is_orca(d.get("rid", ""), d.get("resp", "")) and bool(kid or kpath) and not is_orca(kid, kpath)
+        if not v and not orca:
             continue
         result = AUTH.get(d["val"], d["val"]) + "/" + REASON.get(d.get("why", ""), d.get("why", "?")) + \
             ("" if d.get("pre") == "yes" else " REAL")
         acc = re.sub(r"^/Users/[^/]+", "~", d.get("acc") or charged)
         acc = re.sub(r"claude/versions/[\d.]+", "claude/versions/<v>", acc)
+        if orca:
+            acc = "via Orca: " + (re.sub(r"claude/versions/[\d.]+", "claude/versions/<v>", re.sub(r"^/Users/[^/]+", "~", kpath)) or kid)
         k = (d["svc"], result, acc)
         n, last, vs = out.get(k, (0, "", set()))
-        out[k] = (n + 1, max(last, d["t"]), vs | {v.group(1)})
+        out[k] = (n + 1, max(last, d["t"]), vs | {"Orca" if orca else v.group(1)})
     return out
 
 
@@ -1877,10 +2052,10 @@ def tcc_survey(host, hours, health):
     found = survey(r.stdout.splitlines(), since, skip)
     where = host or "here"
     if not found:
-        print(f"  ok       privacy: nothing refused to a versioned claude in {hours:g} h ({where})")
+        print(f"  ok       privacy: nothing refused to a versioned claude or a job Orca started in {hours:g} h ({where})")
         return 0
-    print(f"  {'REFUSED ' if not health or ready() else '--      '} privacy: refused to a versioned claude"
-          f" in {hours:g} h ({where}) — a claude started without claude-host:")
+    print(f"  {'REFUSED ' if not health or ready() else '--      '} privacy: refused to a versioned claude or a job Orca"
+          f" started in {hours:g} h ({where}) — a claude started without claude-host:")
     for (svc, result, acc), (n, last, vs) in sorted(found.items()):
         print(f"           {n:5d} {svc} {result}  {acc}  last {last}  {','.join(sorted(vs))}")
     if health and not ready():
@@ -1978,7 +2153,7 @@ def main():
     if "--launcher" in args:   # a plist writer's question: `rc-hosts --launcher <script>`
         what = opt("--launcher")
         argv = [what] if what and not what.startswith("-") else ["claude"]
-        if ready() and allowed(argv):
+        if startable(argv):
             print(LAUNCHER)
             return 0
         return 1
@@ -2052,7 +2227,7 @@ def main():
     print(f"  {'ok      ' if reaper.exists() else '--      '} reaper: "
           + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else "not scheduled (--schedule-reap)"))
     print(f"  {launcher_report()}")
-    hosts = wanted(host)
+    hosts, holds = hosts_here(host)
     failed = 0
     refused = restart - {n.split(" · ")[0] for _, n, _, _ in hosts} - {l for l, _, _, _ in hosts}
     for r in refused:
@@ -2074,10 +2249,18 @@ def main():
             if not restart_one(label, name, plist):   # in sync or not (2026-09-30: it used to say "in sync")
                 refused.add(label)
             continue
+        # The wrong login is a FAIL, not "differs": every session such a host spawns runs there (S10).
+        # A plain run rewrites one that is not running, as for any changed plist.
+        if have is not None and config_dir_of(have) != config_dir_of(plist) and (check or running(label)):
+            print(f"  FAIL     {name}: runs on {config_dir_of(have)}, not {config_dir_of(plist)} — "
+                  + ("rc-hosts writes it" if not running(label) else
+                     f"rc-hosts --restart {name.split(' · ')[0]} moves it (ends its sessions)"))
+            failed += 1
+            continue
         if have == plist:
             state = "running" if running(label) else "NOT RUNNING"
             print(f"  ok       {name}: in sync, {state}")
-            if state != "running" and not trusted(repo):
+            if state != "running" and not trusted(repo, claude_json_of(plist)):
                 print(untrusted_note(name, repo))
             elif not check and state != "running":
                 load(label, plist)
@@ -2091,11 +2274,22 @@ def main():
               + ("" if check else " → writing and loading"))
         if not check:
             load(label, plist)
-        if not trusted(repo):
+        if not trusted(repo, claude_json_of(plist)):
             print(untrusted_note(name, repo))
         elif not check:
             print(f"           {name}: {'running' if settled(label) else 'NOT RUNNING — see the log'}"
                   f" ({plist['StandardOutPath']})")
+    for label, name, why in holds:
+        if (only and name.split(" · ")[0] not in only) or label in {l for l, _, _, _ in hosts}:
+            continue
+        on = (AGENTS / f"{label}.plist").exists() and loaded(label)
+        reason = why or '"rc": false'
+        if on and check:   # a plain run retires it below, once it holds no session
+            print(f"  FAIL     {name}: a confidential scope's host is loaded, held: {reason}"
+                  f" — retires once it holds no session (rc-hosts)")
+            failed += 1
+        elif why:
+            print(f"  held     {name}: {why}")
     if check:
         for label in unwanted(hosts):
             print(f"  unwanted {label}: " + ("holds a session — retires once empty" if kids(label)

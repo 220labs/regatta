@@ -15,9 +15,10 @@ cp "$ROOT/.claude-plugin/marketplace.json" "$T/rg/.claude-plugin/"
 cp -R "$ROOT/modules/regatta" "$ROOT/modules/lighthouse" "$T/rg/modules/"
 HB="$T/rg/modules/lighthouse/bin/health"
 unset REGATTA_HOME REGATTA_LEGACY CLAUDE_CONFIG_DIR
-export HOME="$T/home" REGATTA_CONFIG="$T/config" HEALTH_LOG_DIR="$T/logs" HEALTH_TCC=off HEALTH_RCB=off
+export HOME="$T/home" REGATTA_CONFIG="$T/config" HEALTH_LOG_DIR="$T/logs" HEALTH_TCC=off HEALTH_RCB=off HEALTH_DISK=off
 mkdir -p "$HOME" "$REGATTA_CONFIG/lighthouse" "$T/logs"
 export GIT_CONFIG_GLOBAL="$T/gitconfig"
+export HEALTH_CANARY=off   # the real clock would read this Mac's Orca: the cases below name a stand-in
 git config --global user.name t; git config --global user.email t@example.invalid; git config --global init.defaultBranch main
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
@@ -85,7 +86,7 @@ export CLAUDE_BULLETIN="$HT/bulletin.md"
 printf 'import os, sys\nline = "- " + " · ".join(sys.argv[2:])\nopen(os.environ["CLAUDE_BULLETIN"], "a").write(line + "\\n")\nprint(line)\n' > "$HT/bulletin.py"
 HTC="$T/hconfig"; cp -R "$REGATTA_CONFIG" "$HTC"; mkdir -p "$HTC/regatta"; echo "$HT/c" > "$HTC/regatta/overlay"
 echo Owner > "$HTC/regatta/owner"; : > "$HTC/regatta/guarded"; : > "$HTC/regatta/orca-deny"; echo "$T/usage" > "$HTC/regatta/log-dir"; echo "$HOME/projects" > "$HTC/regatta/projects"
-hrun() { HEALTH_RCB="${HRUN_RCB:-off}" HEALTH_TCC="${HRUN_TCC:-off}" HEALTH_TEND="${HRUN_TEND:-off}" REGATTA_CONFIG="$HTC" HEALTH_BULLETIN_CMD="$HT/bulletin.py" HEALTH_LOG_DIR="$HT/log" HEALTH_COMMIT="$HT/commit" "$HB"; }
+hrun() { HEALTH_CANARY="${HRUN_CANARY:-off}" HEALTH_RCB="${HRUN_RCB:-off}" HEALTH_TCC="${HRUN_TCC:-off}" HEALTH_TEND="${HRUN_TEND:-off}" REGATTA_CONFIG="$HTC" HEALTH_BULLETIN_CMD="$HT/bulletin.py" HEALTH_LOG_DIR="$HT/log" HEALTH_COMMIT="$HT/commit" "$HB"; }
 printf '#!/bin/sh\necho "$*" >> "%s/commits"\n' "$HT" > "$HT/commit"; chmod +x "$HT/commit"
 lastrun() { awk '/^== /{b=""} {b=b $0 "\n"} END{printf "%s", b}' "$HT/log/health.log"; }   # the last pass's lines, however many steps it logs
 nb=$(grep -c '^- ' "$CLAUDE_BULLETIN" 2>/dev/null || echo 0)
@@ -131,6 +132,13 @@ grep -q 'refused to a versioned claude: FileProviderDomain, SystemPolicyAllFiles
 HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-bad" hrun
 check "$(grep -c 'a claude without claude-host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "  the same services the next day post nothing"
 HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-ok" hrun; [ -f "$HT/log/health.last.tcc" ]; check $? 1 "  a clean survey clears it"
+printf '#!/bin/sh\necho "  REFUSED  privacy: refused to a versioned claude or a job Orca started in 24 h (here):"\necho "               9 FileProviderDomain denied/no-record REAL  via Orca: <home>/.local/share/claude/versions/<v>  last x  Orca"\nexit 1\n' > "$HT/tcc-orca"; chmod +x "$HT/tcc-orca"
+HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-ok" hrun
+nb=$(grep -c 'a claude without claude-host fails' "$CLAUDE_BULLETIN" 2>/dev/null); nb=${nb:-0}
+HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-orca" hrun
+check "$(grep -c 'a claude without claude-host fails' "$CLAUDE_BULLETIN")" "$((nb + 1))" "a refusal charged to Orca for a job it started is posted"
+grep -q 'refused to a versioned claude: FileProviderDomain (some charged to Orca: a job it started without claude-host)' "$CLAUDE_BULLETIN"; check $? 0 "  saying it was Orca's, so the fix is the Orca road (S3), not claude-host"
+HRUN_TCC=on HEALTH_TCC_CMD="$HT/tcc-ok" hrun
 # the Remote Control hosts (2026-10-23): HEALTH_RCB_CMD stands in for `rc-hosts --broken` (the real one reads this Mac's hosts)
 grep -qF 'RCB="${HEALTH_RCB:-on}"' "$HB"; check $? 0 "the Remote Control hosts' line is on by default"
 printf '#!/bin/sh\necho "  FAIL     film · buildbox: broken: its claude 2.1.304 was removed; new sessions fail — the hourly --reap restarts it once no session is busy; now: rc-hosts --reap --only film"\nexit 3\n' > "$HT/rcb-bad"; chmod +x "$HT/rcb-bad"
@@ -151,6 +159,39 @@ nd=$(grep -c 'deleted under it' "$CLAUDE_BULLETIN")
 HRUN_RCB=on HEALTH_RCB_CMD="$HT/rcb-crash" hrun
 grep -q 'rc-hosts --broken could not tell (exit 1)' "$CLAUDE_BULLETIN"; check $? 0 "a crash (exit 1) is posted as could not tell"
 check "$(grep -c 'deleted under it' "$CLAUDE_BULLETIN")" "$nd" "  never as a deleted claude"
+
+echo "the start-path canary's line (orca-launcher S7, 2026-10-26)"
+# HEALTH_CANARY_CMD stands in for `clock canary check --json` (the real one reads this Mac's Orca and its beat files)
+grep -qF 'CANARY="${HEALTH_CANARY:-on}"' "$HB"; check $? 0 "the canary's line is on by default"
+printf '%s' '{"fails": 2, "host": "h", "findings": [{"level": "FAIL", "text": "canary orca: no beat in its window \u2014 the last was 2026-10-26 01:00, 130 min ago (window 90 min)"}, {"level": "FAIL", "text": "canary orca@acct-a: its beat file cannot be read (boom)"}, {"level": "ok", "text": "canary other: last beat 2026-10-26 02:00, 10 min ago (window 90 min)"}, {"level": "NOTE", "text": "canary: no more"}]}' > "$HT/canary-bad.json"
+printf '#!/bin/sh\ncat "%s"\nexit 1\n' "$HT/canary-bad.json" > "$HT/canary-bad"; chmod +x "$HT/canary-bad"
+printf '#!/bin/sh\necho %s\nexit 0\n' "'"'{"fails": 0, "host": "h", "findings": [{"level": "ok", "text": "canary orca: last beat now"}]}'"'" > "$HT/canary-ok"; chmod +x "$HT/canary-ok"
+printf '#!/bin/sh\necho "clock: boom" >&2\nexit 2\n' > "$HT/canary-crash"; chmod +x "$HT/canary-crash"
+printf '#!/bin/sh\necho "not json"\nexit 1\n' > "$HT/canary-garbled"; chmod +x "$HT/canary-garbled"
+nb=$(grep -c "canary fails on" "$CLAUDE_BULLETIN" 2>/dev/null); nb=${nb:-0}; : > "$HT/commits"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-bad" hrun
+check "$(grep -c "canary fails on" "$CLAUDE_BULLETIN")" "$((nb + 1))" "a canary beat outside its window is posted"
+grep -q 'first turn: orca, orca@acct-a ' "$CLAUDE_BULLETIN"; check $? 0 "  naming the beats"
+grep -q '130 min' "$CLAUDE_BULLETIN"; check $? 1 "  without the minutes, which move daily"
+lastrun | grep -q '^  FAIL canary orca: no beat in its window'; check $? 0 "  and the check's own lines are in the log"
+check "$(wc -l < "$HT/commits" | tr -d ' ')" 1 "  the bulletin committed once"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-bad" hrun
+check "$(grep -c "canary fails on" "$CLAUDE_BULLETIN")" "$((nb + 1))" "  the same beats the next day post nothing"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-ok" hrun; [ -f "$HT/log/health.last.canary" ]; check $? 1 "  every beat inside its window clears it"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-crash" hrun
+grep -q 'clock canary check could not tell (exit 2)' "$CLAUDE_BULLETIN"; check $? 0 "a crash (exit 2) is posted as could not tell"
+lastrun | grep -q '^  clock: boom'; check $? 0 "  its stderr in the log"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-garbled" hrun
+grep -q 'clock canary check could not tell (exit 1)' "$CLAUDE_BULLETIN"; check $? 0 "a failing exit with no readable finding is could not tell, never a silent pass"
+printf '#!/bin/sh\necho "a banner"\nexit 0\n' > "$HT/canary-garbled0"; chmod +x "$HT/canary-garbled0"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-garbled0" hrun
+grep -q 'clock canary check could not tell (exit 0)' "$CLAUDE_BULLETIN"; check $? 0 "  so is exit 0 with no findings: it clears nothing"
+[ -f "$HT/log/health.last.canary" ]; check $? 0 "  the posted state kept"
+touch "$HOME/.studio-brake"
+HRUN_CANARY=on HEALTH_CANARY_CMD="$HT/canary-bad" hrun; lastrun | grep -q '^canary: not read — the studio brake holds'; check $? 0 "the studio brake: the canary is not read (no beat fires under it)"
+rm -f "$HOME/.studio-brake"
+HRUN_CANARY=on hrun; lastrun | grep -q "^canary: wharf-runs' clock not installed"; check $? 0 "a Mac without wharf-runs' clock: one line, skipped"
+hrun; lastrun | grep -q '^canary: off'; check $? 0 "HEALTH_CANARY=off switches it off"
 
 echo "the serve agent's line (skipper-resilience, the watch, 2026-10-22)"
 HEALTH_CHECK_CMD=true run
@@ -206,6 +247,64 @@ HEALTH_ORCA=off HEALTH_CHECK_CMD=true run
 check "$(log | grep -c '^orca: off')" 1 "HEALTH_ORCA=off switches it off"
 grep -qF 'ORCA="${HEALTH_ORCA:-on}"' "$HB"; check $? 0 "  it is on by default"
 rm -f "$REGATTA_CONFIG/wharf-runs/serve-label" "$LA/serve.example.plist"
+
+echo "free disk (2026-10-25): df stubbed at 200, 80 and 30 GB free; du at a tree holding Chrome's clones"
+# df -Pk's two lines with DF_FREE GB available; du's "<KiB>\t<path>" lines for a volume /V shaped as
+# the always-on Mac's was: the sample library, the Drive cache and Movies, beside 1.4 TB of clones that free nothing.
+printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/disk9 2000000000 1 $((DF_FREE * 1048576)) 99%% /V"\n' > "$T/df"
+printf '#!/bin/sh\necho "Filesystem Size Used Avail"\necho "/dev/disk9 2T 2T -"\n' > "$T/df-odd"
+cat > "$T/du" <<'SH'
+#!/bin/sh
+G=1048576
+for e in "576 /V/Library/Application Support/Superior Drummer" "580 /V/Library/Application Support" "600 /V/Library" \
+         "417 /V/people/u/Movies" "500 /V/people/u/Library/SyncCache" "520 /V/people/u/Library" "950 /V/people/u" "960 /V/people" \
+         "1400 /V/private/var/folders/ab/cd/X" "1401 /V/private/var/folders/ab/cd" "1401 /V/private/var/folders/ab" \
+         "1402 /V/private/var/folders" "1405 /V/private/var" "1406 /V/private" "2966 /V"; do
+  printf '%s\t%s\n' "$(( ${e%% *} * G ))" "${e#* }"
+done
+[ -z "${DU_DENY:-}" ] || { echo "du: /V/people/u/Library/Sealed: Operation not permitted" >&2; exit 1; }
+SH
+chmod +x "$T/df" "$T/df-odd" "$T/du"
+drun() { DF_FREE=$1 HEALTH_DISK=on HEALTH_DISK_VOL=/V HEALTH_DF_CMD="${DRUN_DF:-$T/df}" HEALTH_DU_CMD="$T/du" HEALTH_ORCA=off \
+  HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run; }
+grep -qF 'DISK="${HEALTH_DISK:-on}"' "$HB"; check $? 0 "the free-disk line is on by default"
+rm -f "$T/logs/health.last.disk"; : > "$T/commits"
+drun 200
+check "$(log | grep '^disk:')" "disk: 200 GB free on /V" "200 GB free: ok"
+drun 80
+check "$(log | grep '^disk:')" "disk: warn 80 GB free on /V (warn under 100 GB)" "80 GB free: a warn"
+check "$(log | grep -c '^- posted:')" 0 "  logged, not posted"
+drun 30
+check "$(log | grep '^disk:')" "disk: FAIL 30 GB free on /V (fail under 50 GB, warn under 100)" "30 GB free: a fail"
+check "$(log | grep '^  [0-9]* GB  ' | tr '\n' '|')" "  576 GB  /V/Library/Application Support/Superior Drummer|  500 GB  /V/people/u/Library/SyncCache|  417 GB  /V/people/u/Movies|" \
+  "  the three biggest folders, drilled past /people and /Library"
+check "$(log | grep -c '/V/private')" 0 "  the clones left out, and taken out of their parents' totals"
+check "$(log | grep -c '^- posted: --post free disk fails on .* under 50 GB free on /V; biggest folders: /V/Library/Application Support/Superior Drummer; /V/people/u/Library/SyncCache; /V/people/u/Movies')" 1 \
+  "  posted to the bulletin, naming them"
+check "$(grep -c . "$T/commits")" 1 "  and committed"
+check "$(log | tail -2 | tr '\n' ' ')" "ok rc=0 " "  the disk never changes the pass's exit"
+drun 29
+check "$(log | grep -c 'free disk: failing, already posted')" 1 "a day later at 29 GB: the same post, not repeated"
+drun 80
+check "$(log | grep -c '^- posted:')" 0 "back over 50 GB, a warn keeps what was posted"
+drun 30
+check "$(log | grep -c 'free disk: failing, already posted')" 1 "  so a disk hovering at 50 GB posts once"
+drun 200
+[ -f "$T/logs/health.last.disk" ]; check $? 1 "room again clears what was posted"
+DU_DENY=1 drun 30
+check "$(log | grep -c '^  du could not read 1 folders (first: /V/people/u/Library/Sealed)')" 1 "du denied a folder (launchd, no Full Disk Access): said in one line"
+check "$(log | grep -c '^- posted: .*(du could not read some folders)')" 1 "  and in the post"
+rm -f "$T/logs/health.last.disk"
+grep -qF '["du", "-x", "-k", "-d", "6"]' "$HB"; check $? 0 "the real du: -x (one volume), -k (KiB), -d 6 (reaches the clones' X folders)"
+HEALTH_DU_CMD=/nonexistent/du DF_FREE=30 HEALTH_DISK=on HEALTH_DISK_VOL=/V HEALTH_DF_CMD="$T/df" HEALTH_ORCA=off \
+  HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^  du could not run:')" 1 "a du that cannot run: one line, no traceback"
+check "$(log | grep -c Traceback)" 0 "  none"
+rm -f "$T/logs/health.last.disk"
+DRUN_DF="$T/df-odd" drun 0
+check "$(log | grep '^disk:')" "disk: df -Pk /V could not tell — skipped" "a df line it cannot read: skipped in one line"
+HEALTH_CHECK_CMD=true run
+check "$(log | grep '^disk:')" "disk: off (DISK in bin/health)" "HEALTH_DISK=off switches it off"
 
 echo "hookwatch's pin (autofinish-exclude landing review, finding 14): printed and posted, whichever check runs"
 printf '{"pinned": {"root": "/x/regatta", "to": "0123456789abcdef", "from": "f", "why": "crash: h.py (x)", "pr": "https://github.invalid/p/1"}}\n' > "$REGATTA_CONFIG/lighthouse/hookwatch.json"

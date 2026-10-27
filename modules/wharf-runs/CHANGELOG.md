@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+- `rc-hosts --tcc-survey` counts a job Orca started (orca-launcher S7): a not-allowed privacy request whose
+  responsible process is Orca while a child of it asks is listed as `via Orca: <accessing path>` beside the
+  versioned-claude rows (Orca's own requests, the quiet services and allowed ones are not), so the Drive
+  requests that stopped tonight's session name their accessor. dispatch-rc's screen capture reads a
+  never-busy run's window with `hardcopy -h` (a plain `hardcopy` of a detached screen holding claude's UI wrote an
+  empty file on the build Mac), takes the window's screen as it goes (`DISPATCH_SNAP_EVERY`, 60 s) so a window
+  that closes before the end still leaves its last screen, and says why a read failed instead of
+  `(no screen contents)`. A capture is read once two polls agree and renamed onto `<record>.screen.txt` only when it read, so a
+  failed read keeps the last good file; a claude that ends before it is busy logs its last screen too. The survey
+  takes the `requesting` process as the asker when a line has no `accessing` one, and counts none that names no
+  asker. `clock canary check` says when Orca's run history did not read (`Orca not read (its run history: …)`),
+  so helm's stall road closes no run-only failure on that pass.
+- `rc-hosts`: a confidential scope's Remote Control host runs on its own login (confidential-reach
+  S10). A repo of a `"confidential": true` scope gets a host only when its entry says `"rc": {…}` and
+  the scope's `login` has a home of its own on this Mac; its plist then sets that login's
+  `CLAUDE_CONFIG_DIR` (none for the default dir, where it would move `.claude.json`). Otherwise the
+  host is held and `held  <name>: <why>` says why: no `rc` object, no login, a login the account
+  registry lacks, one with no home here, or an Orca-held one (`via: orca`, until a launchd host is
+  known to keep its sign-in). `"rc": false` still wins. `--check` FAILs a host whose plist names
+  another login than its wanted one, and a held confidential host still loaded; a plain run leaves a
+  running wrong-login host for `--restart`. A session's record is read from every login dir, so a
+  host on another login has sessions the reaper and `--restart` can see. Its workspace trust is read
+  from that login's own `.claude.json`, and a registry the core reads as torn (a `scopes` that is no
+  object) stops every run before a host is written. Of two records for one pid, the newest is read: a
+  dead session's leftover under a reused pid no longer hides a busy one from the reaper.
+- `clock canary beat|check` and the hourly canary (S5 of docs/orca-launcher-2026-10-24.md): the system
+  finds a start path that stopped working before the owner does. `canary beat PATH [--login L] [--every
+  MIN]` rewrites one beat file per PATH[@login] in a `canary/` folder of the weekly-log dir
+  (`CLOCK_CANARY_DIR` names another; `CLOCK_LOG_DIR` does not move it): {at, path, login, host, via, fired, every} for the newest beat and
+  `last`, the newest of each via. A beat under `clock fire`'s one-shot, whose plist names its fire in
+  `CLOCK_FIRED` (for a `canary beat` alone: other jobs' children would inherit it), is via `launchd`;
+  any other is via `session`. The canary automation's precheck is seam
+  P's, `CLOCK fire canary --precheck -- CLOCK canary beat PATH`, so a scheduled run walks the road
+  aurora's does and launchd's one-shot beats; a manual "Run now" beats at its session's first turn.
+  `canary check` (and `clock check`, which carries the same lines) fails a beat older than its window
+  (the cadence it declared, 60 min, plus the hourly grace; counted from this Mac's last wake when it woke
+  since, so a laptop asleep is a note), one from the future, an unreadable or malformed file (a NaN,
+  Infinity or overflowing time included), an enabled canary automation with no beat once it has run for
+  over a window or is that overdue, the newest scheduled run whose fire the fire log lacks or whose
+  one-shot never beat under that fire's name, and the newest session run with no session beat since it
+  began, past the window, until a Run now reaches its first turn. A disabled canary's runs are not judged either. A beat no enabled canary automation on
+  this Mac beats (a hand-run one, a disabled canary's) is a note while that Orca is read. `schedule`
+  takes the canary line on `--trigger hourly` only, never `--launchd`, and asks the clock both the
+  fire's and `canary beat`'s dry run; `rc-hosts --agents` reads the line as one that starts no claude,
+  and names a canary beating through another checkout's clock OUTSIDE. The hourly automation is
+  installed after this lands (`docs/orca-launcher-s5-2026-10-25.md`).
+
+- `cold_prompt` hands a typed `/finish` to the runner with `--by typed --merge` on the laptop
+  (`common.LAPTOP`), on the cold road and in the warm road's runner line: the owner's typed word is the
+  yes there, and a run `autofinish-run` sends to the peer now carries it into that Mac's `/finish`
+  (the night-landings digest's D3-A, 2026-10-25). On any other Mac no `--merge`. `peer-start` also
+  refuses `--merge` beside `--unattended-caller`. Seam: `COLD_PROMPT_HOST`.
+- `autofinish-run`'s day-named logs take `AUTOFINISH_DAY` when set (`log_day()`), and
+  `test_autofinish_run.sh` pins it: five day-log cases failed when a CI run crossed local midnight (2026-10-26 00:00 PDT).
+  `cold_prompt.sh` resets the run's inputs by pattern (`CLAUDE_UNATTENDED`, the background switch,
+  every `DISPATCH_*`).
 - `test_wharf.sh` gives git an identity of its own (`GIT_CONFIG_GLOBAL`, a made-up address) after
   moving HOME: its pinned-doc block committed without one, which only a Mac's hostname supplied
   (twin-ci-4, 2026-10-25; the suite is macOS-only on the twin, so the twin never saw it).
@@ -81,6 +137,15 @@
   at nothing, and a dnd step with a next one scheduled ends on WAITING FOR SOMETHING naming that step
   (D4). The gate's transcript reader skips Claude Code's `<synthetic>` entries. `autofinish`'s sweep
   vetoes a hand-over while its session is live, as it does a pending line.
+- One home for the claude-host launcher rule (2026-10-25): `bin/launcherlib.py` holds it (ask
+  `rc-hosts --launcher <prog>`; an executable file means `[claude-host, prog, …argv]`, a non-zero or
+  empty answer, a path that is no executable or no answer in 30 s means bare). `rc-hosts`' `through`,
+  `clock`'s plist writer and helm's skipper runner each wrote it; they load it now (helm through the
+  core's tool lookup). `rc-hosts --launcher claude` also exits 1 when the claude binary claude-host starts is missing
+  or not executable: claude-host always starts that file, and its spawn failure reached only the screen.
+- `clock check` (and `schedule`) judges a scope pass's host: `weekly-run aurora --scope S` on a host
+  that is neither the scope's yard nor, with no yard, the one `aurora/host` names is a FAIL, as
+  weekly-run would skip it every night. A peer's yardless pass is that Mac's own check's to judge.
 - `check` is scoped and remembers (2026-10-23). A module's suite runs only when the checkout changed
   that module, or one it uses (its plugin.json `dependencies`, or a module its code names by path),
   since the fork from origin/main; every other command runs each time, and the whole line runs on a

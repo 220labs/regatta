@@ -5,6 +5,14 @@
 # overlay's hooks/test_hooks.sh with S7 (2026-10-24). Scratch paths only; the runner is a stand-in.
 #   bash modules/wharf-runs/tests/cold_prompt.sh
 set -u
+# The run's own inputs, unset by pattern (AGENTS.md's attended-behaviour trap: a fixed list goes stale):
+# a dispatched run carries CLAUDE_UNATTENDED, the background switch and DISPATCH_*, and the hook passes
+# every prompt of an unattended session untouched.
+unset CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_HOOK_NO_AUTOFINISH
+for v in $(env | sed -nE 's/^((DISPATCH|RUN_SEED|SKIPPER|HELM|AUTOFINISH|COLD_PROMPT)_[A-Za-z0-9_]*)=.*/\1/p'); do unset "$v"; done
+# Not the laptop unless a case says so: there the hand-off carries --merge (the hook's header), and the
+# Mac that runs the suite must not decide what the cases expect.
+export REGATTA_LAPTOP=laptop COLD_PROMPT_HOST=buildbox
 M="$(cd "$(dirname "$0")/.." && pwd)"
 H="$M/hooks"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -98,6 +106,24 @@ out=$(cpr /finish "$SYN")
 check "$(echo "$out" | field 'd["decision"]')" "block" "Fable with a <synthetic> entry after its call: still Fable, blocked"
 has "$(echo "$out" | field 'd["reason"]')" "on Fable, 312k" "  its context the real call's, not 0k"
 : > "$CP/calls"
+
+echo "on the laptop: the typed /finish is the yes, so the hand-off carries --merge (D3-A)"
+out=$(COLD_PROMPT_HOST=laptop cpr /finish "$COLD")
+check "$(echo "$out" | field 'd["decision"]')" "block" "cold on the laptop: blocked, the runner started"
+check "$(cat "$CP/calls")" "$TOP --rule C --by typed --merge --session $CPSID" "  by typed, with --merge"
+: > "$CP/calls"
+ctx=$(COLD_PROMPT_HOST=laptop cpr /finish "$SMALL" | field 'd["hookSpecificOutput"]["additionalContext"]')
+has "$ctx" "2. Hand the branch over: \`$CP/runner $TOP --rule C --by typed --merge --session $CPSID\`" "warm on the laptop: the session's runner line carries --merge too"
+out=$(COLD_PROMPT_HOST=LAPTOP cpr /finish "$COLD")
+check "$(cat "$CP/calls")" "$TOP --rule C --by typed --merge --session $CPSID" "the host's case does not matter"
+: > "$CP/calls"
+cpr /finish "$COLD" > /dev/null
+check "$(cat "$CP/calls")" "$TOP --rule C --by typed --session $CPSID" "the other Mac: no --merge (there a typed /finish merges only on an explicit yes)"
+: > "$CP/calls"
+check "$(python3 -c 'import json,sys; print(json.dumps({"prompt": "/finish", "cwd": sys.argv[1], "transcript_path": sys.argv[2]}))' "$CP/repo" "$COLD" \
+  | env COLD_PROMPT_HOST=laptop CLAUDE_UNATTENDED=dispatch COLD_PROMPT_NOW=$CPNOW AUTOFINISH_STATE_DIR="$CP/state" \
+    CLAUDE_AUTOFINISH_RUN="$CP/runner" python3 "$H/cold_prompt.py")" "" "an unattended session on the laptop: passes, so nothing carries --merge for it"
+check "$(wc -c < "$CP/calls" | tr -d ' ')" "0" "  and no runner"
 
 echo "what passes untouched"
 check "$(cpr '/finish --here' "$COLD")" "" "/finish --here passes, cold"

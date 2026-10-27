@@ -56,7 +56,7 @@ export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" PLAN_CACHE_DIR="$T/cache" HOME="$T/home" \
        SURFACES_FILE="$T/surfaces.json" PLAN_NO_DEPLOY=1 ASK_SESSIONS_DIR="$T/sess" ASK_CACHE_DIR="$T/askcache" \
        COST_RATIO="$T/ratio.json" PLAN_NO_MEMO=1 PLAN_NO_GH=1 PLAN_PROJECTS_ROOT="$T/projects-root" \
-       STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 PLAN_NO_WHARF=1   # no wharf pass in a tick outside B7's own block, whose stub it reaches; the stall cards: no ssh to buildbox, no real repo's autofinished, no Orca app (B8's block turns its stub on)
+       STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 STALLS_CANARY=0 PLAN_NO_WHARF=1   # no wharf pass in a tick outside B7's own block, whose stub it reaches; the stall cards: no ssh to buildbox, no real repo's autofinished, no Orca app (B8's block turns its stub on)
 unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_TASK DISPATCH_MODE DISPATCH_BRIEF \
       SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT \
@@ -377,6 +377,10 @@ check "$(python3 -c "
 import sys; sys.path.insert(0, '$B'); import helmlib
 print('transcripts' in helmlib.GUARDED, helmlib.guarded('Transcripts'), helmlib.guarded('/x/transcripts/.claude/worktrees/y'), helmlib.guarded('garden'))")" \
   "True True True False" "guarded: the gate's list, case-folded, any path part"
+check "$(PLAN_NO_GH=1 python3 -c "
+import sys; sys.path.insert(0, '$B'); import helmlib
+print(sorted(helmlib.prefetch_prs(['/x/transcripts', '/x/garden'])))")" \
+  "['/x/garden']" "  prefetch_prs never reads a guarded repo's PRs (K6)"
 # a scratch checkout: the core, helm's helmlib, and a keel whose gate raises (tool() finds it first)
 BG="$T/brokengate"; mkdir -p "$BG/.claude-plugin" "$BG/modules/helm/bin" "$BG/modules/helm/lib" "$BG/modules/keel/hooks"
 cp "$REGATTA_HOME/.claude-plugin/marketplace.json" "$BG/.claude-plugin/"; cp -R "$REGATTA_HOME/modules/regatta" "$BG/modules/"
@@ -750,8 +754,8 @@ print(cs[2].get("guarded"), cs[3]["kind"], cs[3]["title"], cs[3].get("by"))
 print(r.ask_links("regatta", "claude/t", "docs/d.md"), r.ask_links("regatta", None, "docs/d.md"))
 PY
 )
-  check "$(echo "$s5" | sed -n 1p)" "[('waiting', 'waiting on Sam', 'regatta', 'testhost', 'vscode://anthropic.claude-code/open?session=s1', 'Needs Sam'), ('waiting', 'waiting on Sam', 'regatta', 'buildbox', 'https://github.com/o/regatta/tree/claude/u', 'Needs Sam')]" \
-    "a WAITING card is the repo, 'waiting on Sam' and a link: this Mac's session opens in VS Code, a peer's branch on GitHub"
+  check "$(echo "$s5" | sed -n 1p)" "[('waiting', 't · waiting on Sam', 'regatta', 'testhost', 'vscode://anthropic.claude-code/open?session=s1', 'Needs Sam'), ('waiting', 'u · waiting on Sam', 'regatta', 'buildbox', 'https://github.com/o/regatta/tree/claude/u', 'Needs Sam')]" \
+    "a WAITING card is its topic, 'waiting on Sam', the repo and a link: this Mac's session opens in VS Code, a peer's branch on GitHub"
   check "$(echo "$s5" | sed -n 2p)" "True permission waits at a prompt buildbox" "  a guarded session's card is guarded; a peer's permission prompt is a card"
   check "$(echo "$s5" | sed -n 3p)" "('https://spacesheep.dev/s/abc', 'https://github.com/o/regatta/blob/claude/t/docs/d.md') (None, None)" \
     "an ask card's links: the course page its pin holds, GitHub's read view; none guessed without a branch"
@@ -1009,9 +1013,13 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run
   check "$(python3 "$B/stalls.py" --json | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['class']=='S7'][0]; print(s['raise_to'], s['column'])")" \
     "skipper Blocked" "  S7 goes to its skipper (raise_to, rename S5) while that session is live"
   rm "$T/sess/mgr.json"
+  # the fixture's autofinish stops are dated 2026-10-14: past the board's 7 days, they are a count (board-cleanup S1)
   ov=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" "$HM" $BOARD --json)
+  check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); h=d['header']; print(h['stalled'], sum(c['kind']=='stall' for col in d['columns'] for c in col['cards']), h['stalls_old'], h['stalls_oldest'] < __import__('time').time() - 7 * 86400)")" "9 9 4 True" \
+    "overview: the four stops past 7 days are a header count with the oldest's start, the rest a card each"
+  ov=$(HELM_STALL_DAYS=36500 STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" "$HM" $BOARD --json)
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['header']['stalled'], sum(c['kind']=='stall' for col in d['columns'] for c in col['cards']))")" "13 13" \
-    "overview: one card per stall, the count in its header"
+    "overview: one card per stall, the count in its header (HELM_STALL_DAYS past the fixture's dates)"
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted((c['stall'], col['name']) for col in d['columns'] for c in col['cards'] if c['kind']=='stall' and c['stall'] in ('S1','S4','S5')))")" \
     "[('S1', 'Blocked'), ('S1', 'Blocked'), ('S1', 'Blocked'), ('S4', 'Blocked'), ('S5', 'Needs Sam'), ('S5', 'Needs Sam'), ('S5', 'Needs Sam')]" "  Blocked for what the tick acts on, Needs Sam for a raise"
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print([c['kind'] for col in d['columns'] for c in col['cards'] if c.get('session')=='sid-live-wait'])")" \
@@ -1467,7 +1475,7 @@ PY
   check "$(echo "$oj" | python3 -c "import json,sys; print([s['topic'] for s in json.load(sys.stdin)['stalls'] if s.get('plan') == 'b8p' and not s.get('harness')])")" "[]" \
     "  an Orca-backed plan's own planned tasks are not judged twice (judge_plans leaves them to task-list)"
   hasnt "$(cat "$X8/orca.calls")" "worker-start" "  the judge starts nothing"
-  ovo=$("$HM" $BOARD --json)
+  ovo=$(HELM_STALL_DAYS=36500 "$HM" $BOARD --json)
   check "$(echo "$ovo" | python3 -c "import json,sys; d=json.load(sys.stdin); c=[c for col in d['columns'] for c in col['cards']]; print([x.get('next_action') for x in c if x.get('orca_dispatch') == 'ctx_gone'], sum(1 for x in c if x['kind']=='permission' and 'orca-unv' in (x.get('session') or '')))")" \
     "['orchestration worker-start --task t_gone'] 0" "  overview: the card carries Orca's nextAction; no second card for the waiting worker"
 
@@ -1702,6 +1710,10 @@ import os, sys
 open("$S5/rch.calls", "a").write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1:] != ["--launcher", "claude"] or not os.path.exists("$S5/rch.on"):
     sys.exit(1)
+if os.path.exists("$S5/rch.empty"):   # exit 0 and nothing printed: launcherlib reads it as bare
+    sys.exit(0)
+if os.path.exists("$S5/rch.banner"):   # a line before the path: the last line is the answer
+    print("rc-hosts: a note")
 print("$S5/bin/claude-host")
 EOF
 cat > "$S5/bin/claude-host" <<EOF
@@ -2067,6 +2079,14 @@ touch "$S5/rch.on"; chmod -x "$S5/bin/claude-host"; rm -f "$S5/host.argv"
 check "$(run5 dock 20260103-000000-0010)" "0" "a claude-host that is not executable: a bare claude"
 check "$([ -e "$S5/host.argv" ] && echo launcher || echo bare)" "bare" "  claude-host never run"
 chmod +x "$S5/bin/claude-host"; rm -f "$S5/rch.on"
+# the rule is wharf-runs' launcherlib (clock and rc-hosts use it too): an empty answer is bare, the last line the path
+touch "$S5/rch.on" "$S5/rch.empty"; rm -f "$S5/host.argv"
+check "$(run5 dock 20260103-000000-0021)" "0" "rc-hosts exits 0 and prints nothing: a bare claude"
+check "$([ -e "$S5/host.argv" ] && echo launcher || echo bare)" "bare" "  claude-host never run"
+rm -f "$S5/rch.empty"; touch "$S5/rch.banner"
+check "$(run5 dock 20260103-000000-0022)" "0" "rc-hosts prints a note, then the path: the path is the answer"
+has "$(cat "$S5/run.out")" "claude through $S5/bin/claude-host" "  the runner names the launcher"
+rm -f "$S5/rch.on" "$S5/rch.banner" "$S5/host.argv"
 # stop() through claude-host: the registry names claude, the launcher's child; the record names the
 # launcher. The child is signalled (it is the registry's pid and the record's pid is its parent)
 cat > "$S5/fakehost" <<'EOF'
@@ -3218,7 +3238,7 @@ stalls._load_bin = real_lb
 print(" ".join(out))
 PY
 check "$(env -u CLAUDE_CODE_SESSION_ID HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" STALLS_ESCALATIONS="$S8/unit.jsonl" STALLS_STATE_DIR="$S8/unit-st" PLANS_DIR="$S8/empty" python3 "$S8/unit.py" "$B"
-)" "from:True was:2 card:True late:0:True unrouted:0 routed:5:True unread:1 moved-clear:True guarded-since:cleared older:True:True faults:['c1'] absent:0:1 partial:1:2 back-partial:True:True:True back-carded:True:True ship:False half:False:{}:['KeyError'] yard:['laptop-x'] banner:banner failed: FileNotFoundError noruns:['launches', 'orca', 'skippers']" \
+)" "from:True was:2 card:True late:0:True unrouted:0 routed:5:True unread:1 moved-clear:True guarded-since:cleared older:True:True faults:['c1'] absent:0:1 partial:1:2 back-partial:True:True:True back-carded:True:True ship:False half:False:{}:['KeyError'] yard:['laptop-x'] banner:banner failed: FileNotFoundError noruns:['canary', 'launches', 'orca', 'skippers']" \
   "a second move's from-class; a followed issue closed once more then carded; no call near the kill time; unrouted calls nothing, then 5 a pass; an unread source keeps its keys; a move whose new issue never opened closes the first at its clear; a block guarded since says nothing; a second move carries the older open issue and its clear closes it; a banner retry is no card, a closed card names the issue left open and ages out; refused passes keep the absence clock; a close retry closes only what failed; back before that retry reopens its own and closes the followed; back after a carded close carries it; a ship that raises costs its keys, all of them, and names its error's class; a yard acts on its own store; no osascript fails the banner; no wharf-runs reads as nothing read"
 
 echo "  a ship the yard could not read keeps its keys"
@@ -3723,5 +3743,234 @@ check "$(C13 before)" "True s13c docs/q.md#D1 unanswered 40m, the session idle" 
 check "$(C13 lapse)" "True s13c docs/q.md#D1 unanswered 32m, the session idle" "a sidecar 50 minutes quiet, 18 of them braked: lapsed on the 32 that were its own"
 unset STALLS_DEADLINE DM_SLEEP HELM_DEADMAN HELM_LAUNCHCTL WHARF_LAUNCHCTL STALLS_HARNESS HARNESS_ORCA SURFACES_HOST CLAUDE_REPOS_JSON STALLS_LOG STALLS_STATE_DIR PLAN_NO_SKIPPERS
 export PLANS_DIR="$T/plans" SURFACES_FILE="$T/surfaces.json" STALLS_ORCA=0 PLAN_NO_WHARF=1 STALLS_PEERS= STALLS_REPOS= ASK_SESSIONS_DIR="$T/sess"
+echo "board-cleanup S1: dead cards drop off, every open PR, Done today, by (repo, branch)"
+BC="$T/bc"; mkdir -p "$BC/projects"
+for r in alpha beta gamma; do git init -q -b main "$BC/projects/$r"; git -C "$BC/projects/$r" commit -q --allow-empty -m init; done
+# gamma: one branch whose change landed through another commit (no PR), one with nothing of its own, one live
+G="$BC/projects/gamma"; echo v1 > "$G/f.txt"; git -C "$G" add f.txt; git -C "$G" commit -qm v1
+git -C "$G" branch claude/g/empty
+git -C "$G" checkout -q -b claude/g/landed; echo v2 > "$G/f.txt"; git -C "$G" commit -qam "v2 on the branch"
+git -C "$G" checkout -q -b claude/g/live main; echo mine > "$G/g.txt"; git -C "$G" add g.txt; git -C "$G" commit -qm live
+git -C "$G" checkout -q main; echo v2 > "$G/f.txt"; git -C "$G" commit -qam "v2 landed by another branch"
+mkdir -p "$BC/projects/alpha/.git/claude"
+NOWISO=$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))')
+OLDISO=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)).isoformat(timespec="seconds"))')
+printf '%s launched claude/a/t #6\n%s launched claude/a/l #9\n%s launched claude/a/m #11\n%s launched claude/a/y #4\n%s stopped claude/a/s held held (x): y\n' \
+  "$NOWISO" "$NOWISO" "$NOWISO" "$OLDISO" "$NOWISO" > "$BC/projects/alpha/.git/claude/autofinished"
+printf '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"armed": True, "cards": [{"doc": "alpha@claude/x:docs/a.md", "items": ["D1"], "card": "merged one"}, {"doc": "beta@claude/x:docs/b.md", "items": ["D1"], "card": "live one"}]}))\n' > "$BC/keel"
+chmod +x "$BC/keel"
+cat > "$BC/bc.py" <<'PY'
+import datetime as dt, json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r, stalls
+root = sys.argv[2]
+top = lambda n: os.path.join(root, n)
+helmlib.repo_tops = lambda: {n: [helmlib.Path(top(n))] for n in ("alpha", "beta", "gamma")}
+now = time.time()
+iso = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+states = {top("alpha"): [
+    {"number": 9, "state": "OPEN", "headRefName": "claude/w2", "title": "WIP: idle", "url": "u/a9"},
+    {"number": 8, "state": "OPEN", "headRefName": "claude/w1", "title": "held by a session", "isDraft": True, "url": "u/a8"},
+    {"number": 7, "state": "OPEN", "headRefName": "claude/o", "title": "ready", "url": "u/a7", "updatedAt": iso(now)},
+    {"number": 6, "state": "MERGED", "headRefName": "claude/a/t", "title": "landed today", "url": "u/a6", "mergedAt": iso(now - 60)},
+    {"number": 5, "state": "MERGED", "headRefName": "claude/a/y", "title": "landed before", "url": "u/a5", "mergedAt": iso(now - 3 * 86400)},
+    {"number": 3, "state": "CLOSED", "headRefName": "claude/c", "title": "closed", "url": "u/a3", "closedAt": iso(now - 86400)},
+    {"number": 2, "state": "MERGED", "headRefName": "claude/x", "title": "merged", "url": "u/a2", "headRefOid": "a" * 40,
+     "mergedAt": "2026-01-01T00:00:00Z"}],
+    top("beta"): [{"number": 4, "state": "OPEN", "headRefName": "claude/x", "title": "same name, open", "url": "u/b4"}],
+    top("gamma"): []}
+case = sys.argv[3]
+if case == "state":
+    print(helmlib.branch_ended(states, "alpha", "claude/x"), helmlib.branch_ended(states, "beta", "claude/x"),
+          helmlib.branch_ended(states, "alpha", "claude/c"), helmlib.branch_ended(states, "alpha", "claude/o"),
+          helmlib.branch_ended(states, "gamma", "claude/x"),
+          helmlib.pr_state(states[top("alpha")], "claude/x", "b" * 40, now)[0],
+          helmlib.pr_state(states[top("alpha")], "claude/x", "a" * 40, now)[0])
+elif case == "stalls":
+    def rec(repo, branch, since=None):
+        return {"class": "S5", "title": "%s %s" % (repo, branch), "column": helmlib.columns()[0], "repo": repo, "branch": branch,
+                "action": "raise", "rule": "r", "evidence": [], "since": since or now - 3600, "host": "testhost"}
+    recs = [rec("alpha", "claude/x"), rec("beta", "claude/x"), rec("alpha", "claude/c"), rec("alpha", "claude/o"),
+            rec("gamma", "claude/g/landed"), rec("gamma", "claude/g/empty"), rec("gamma", "claude/g/live"),
+            rec("beta", "claude/old", now - 8 * 86400), rec("beta", "claude/older", now - 10 * 86400)]
+    stalls.judge = lambda **k: {"stalls": recs, "notes": []}
+    cards, judged = r.stall_cards(states)
+    h = judged["hidden"]
+    print([c["title"] for c in cards], h["landed"], h["old"], round((now - h["oldest"]) / 86400), len(judged["stalls"]))
+elif case == "asks":
+    rows = [{"repo": "alpha", "branch": "claude/x", "rel": "docs/a.md", "item": "D1", "title": "merged"},
+            {"repo": "beta", "branch": "claude/x", "rel": "docs/b.md", "item": "D1", "title": "same name, open"},
+            {"repo": "alpha", "branch": "claude/c", "rel": "docs/c.md", "item": "D1", "title": "closed"},
+            {"repo": "alpha", "branch": "claude/o", "rel": "docs/o.md", "item": "D1", "title": "open"},
+            {"repo": "alpha", "branch": "claude/o", "rel": "modules/s/tests/fixtures/p.md", "item": "D1", "title": "fixture"},
+            {"repo": "alpha", "branch": "claude/o", "rel": "modules/s/skills/c/TEMPLATE.md", "item": "D1", "title": "template"},
+            {"repo": "alpha", "branch": "claude/o", "rel": "docs/shared.md", "item": "D2", "title": "shared, older", "t": 100},
+            {"repo": "alpha", "branch": "claude/w1", "rel": "docs/shared.md", "item": "D2", "title": "shared, newer", "t": 200}]
+    os.makedirs(os.environ["ASK_CACHE_DIR"], exist_ok=True)
+    open(os.path.join(os.environ["ASK_CACHE_DIR"], "asks.json"), "w").write(json.dumps({"asks": rows}))
+    print([(c["repo"], c["title"]) for c in r.poll_cards(states)])
+elif case == "prs":
+    cards, idle = r.pr_cards(states, {("alpha", "claude/w1"), ("beta", "claude/w2")})
+    print([(c["repo"], c["title"], c["column"]) for c in cards], idle)
+elif case == "done":
+    print([(c["repo"], c["title"], c["column"]) for c in r.done_cards(states, root)])
+elif case == "lookout":
+    print([(c["repo"], c["ref"]) for c in r.lookout_cards(states)])
+elif case == "topic":
+    print(r.session_topic({"branch": "claude/laptop/2026-10-25-board-cleanup"}), r.session_topic({"cwd": "/p/r/.claude/worktrees/tidy"}),
+          r.session_topic({"session_id": "0123456789"}))
+PY
+BCP() { PLAN_NO_MEMO=1 PLAN_NO_PEER=1 ASK_CACHE_DIR="$BC/askcache" PLAN_KEEL="$BC/keel" python3 "$BC/bc.py" "$B" "$BC/projects" "$1" 2>&1; }
+check "$(BCP state)" "merged None closed None None None merged" \
+  "(repo, branch): alpha's claude/x merged, beta's open of the same name live; closed; open; no PR; a tip that moved past a merged PR is live, the PR's own head is not"
+check "$(BCP stalls)" "['beta claude/x', 'alpha claude/o', 'gamma claude/g/empty', 'gamma claude/g/live'] 3 2 10 9" \
+  "stall cards: a merged, a closed and a landed-without-PR branch drop off; the open one, the same name in another repo, a branch with nothing of its own and live work stay; two over 7 days are a count with the oldest's age; judged keeps all 9"
+check "$(BCP asks)" "[('beta', 'same name, open'), ('alpha', 'open'), ('alpha', 'shared, newer')]" \
+  "ask cards: no merged or closed branch (beta's same name stays), no fixture or template, one card per doc item — the newest branch's"
+check "$(BCP prs)" "[('alpha', '#8 held by a session', 'Running'), ('alpha', '#7 ready', 'Needs Sam'), ('beta', '#4 same name, open', 'Needs Sam')] 1" \
+  "PR cards: every open PR; a WIP one held by a session (alpha's, not beta's of another branch) Running, the idle one a count; none merged or closed"
+check "$(BCP done)" "[('alpha', '#6 landed today', 'Done today'), ('alpha', 'claude/a/m launched as #11', 'Done today')]" \
+  "Done today: today's merge, and a launched line of today whose PR is not carded; neither an older merge or launch, a stop, nor a launch whose PR is still open (#9, readied for a tap)"
+check "$(BCP lookout)" "[('beta', 'claude/x')]" "lookout cards: one on a merged branch drops off; the same branch name in another repo stays"
+hdr=$("$HM" $BOARD --json | python3 -c 'import json,sys; h=json.load(sys.stdin)["header"]; print(sorted(k for k in h if k.startswith(("stalls_", "wip"))))')
+check "$hdr" "['stalls_landed', 'stalls_note', 'stalls_old', 'stalls_oldest', 'wip_idle']" "the header counts what the board leaves off"
+check "$(BCP topic)" "board-cleanup tidy 01234567" "a waiting card names its topic: the branch's, else the worktree's, else the session"
+
+echo "the canary class (orca-launcher S7): a failing canary beat is the stall \`start path dead\`"
+# STALLS_CANARY stands in for `clock canary check --json` (the real one reads this Mac's Orca): its mode file picks the answer
+SC="$T/s7c"; mkdir -p "$SC/home" "$SC/st" "$SC/plans"
+echo '{"by": "suite", "ts": "x", "t": 0}' > "$SC/st/armed"
+cat > "$SC/canary" <<'CANARY_STUB'
+#!/bin/sh
+d=$(dirname "$0"); echo x >> "$d/calls"
+case "$(cat "$d/mode")" in
+  bad) cat "$d/bad.json"; exit 1;;
+  badexit2) cat "$d/bad.json"; exit 2;;
+  ok) echo '{"fails": 0, "host": "testhost", "findings": [{"level": "ok", "text": "canary orca: last beat now"}]}'; exit 0;;
+  unread) echo '{"fails": 0, "host": "testhost", "findings": [{"level": "NOTE", "text": "canary: testhost Orca not read (boom): every beat is judged, no automation is"}]}'; exit 0;;
+  unreadfail) echo '{"fails": 1, "host": "testhost", "findings": [{"level": "NOTE", "text": "canary: testhost Orca not read (boom): every beat is judged, no automation is"}, {"level": "FAIL", "text": "canary orca: its beat file cannot be read (x)"}]}'; exit 1;;
+  garbled) echo "not json"; exit 1;;
+  hang) exec sleep 5;;
+esac
+CANARY_STUB
+chmod +x "$SC/canary"
+printf '%s' '{"fails": 2, "host": "testhost", "findings": [{"level": "FAIL", "text": "canary orca: no beat in its window — the last was 2026-10-26 01:00, 130 min ago (window 90 min)"}, {"level": "FAIL", "text": "canary orca@acct-a: no beat at all in /x, and its automation canary has run"}, {"level": "ok", "text": "canary other: fine"}]}' > "$SC/bad.json"
+echo bad > "$SC/mode"
+TKC() { local at=$1; shift; env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_UNATTENDED HOME="$SC/home" REGATTA_CONFIG="$S8/cfg" PLANS_DIR="$SC/plans" STALLS_LOG="$SC/stalls.jsonl" STALLS_STATE_DIR="$SC/st" CLAUDE_REPOS_JSON="$S8/repos.json" ASK_GH_API="$S8/gh" GH_CALLS="$SC/gh.calls" SURFACES_FILE="$S8/surfaces.json" SURFACES_HOST=testhost PLAN_HOST=testhost STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 PLAN_NO_SKIPPERS=1 PLAN_NO_WHARF=1 STALLS_CANARY="$SC/canary" STALLS_NOW="$at" "$LX/helm" tick "$@" 2>&1; }
+cgh() { [ -e "$SC/gh.calls" ] && wc -l < "$SC/gh.calls" | tr -d ' ' || echo 0; }
+ccall() { python3 - "$SC/gh.calls" "$1" "$2" <<'PY'
+import json, sys
+c = [json.loads(x) for x in open(sys.argv[1])][int(sys.argv[2])]
+print(eval(sys.argv[3], {"c": c, "b": c["body"]}))
+PY
+}
+N0=$(now)
+out=$(TKC "$N0")
+has "$out" "start path dead testhost  canary orca: raised" "a failing canary beat is a raised stall of the class, one per beat"
+has "$out" 'key ["testhost", "canary", "orca"]' "  keyed by host and beat"
+has "$out" "2 stalls, 0 unsure — 2 raise" "  the ok finding is none"
+check "$(cgh)" "0" "  first seen now: no issue yet"
+out=$(TKC $((N0 + 700)))
+has "$out" "escalated stall on testhost: canary orca · start path dead (the canary fails): github-issue #100" "11 minutes: one issue per beat, through the stall road"
+check "$(cgh)" "2" "  two beats, two issues"
+check "$(ccall 0 'b["body"].split(chr(10))[0]')" "@someone-x" "  the body starts with the config's mention (a stall alert mentions the owner)"
+has "$(ccall 0 'b["body"]')" '- key: `["testhost", "canary", "orca"]`' "  and names the beat's key"
+has "$(ccall 0 'b["body"]')" "- class: start path dead" "  its class"
+out=$(TKC $((N0 + 1000))); check "$(cgh)" "2" "  the next tick: no second issue"
+echo unread > "$SC/mode"
+out=$(TKC $((N0 + 1500))); out=$(TKC $((N0 + 2100)))
+check "$(cgh)" "2" "an Orca the check could not read, two passes: no issue closed on an absence it cannot vouch for"
+echo ok > "$SC/mode"
+out=$(TKC $((N0 + 2700))); check "$(cgh)" "2" "every beat inside its window, read: gone one pass is no clear"
+out=$(TKC $((N0 + 3400)))
+has "$out" "escalation closed (#100): stall on testhost: canary orca · start path dead (the canary fails) — no longer judged a stall here" "  gone 10 minutes, read: closed"
+check "$(cgh)" "6" "  a comment and a close for each of the two"
+echo bad > "$SC/mode"
+check "$(env HOME="$SC/home" REGATTA_CONFIG="$S8/cfg" PLANS_DIR="$SC/plans" STALLS_LOG="$SC/stalls.jsonl" STALLS_STATE_DIR="$SC/st" PLAN_HOST=testhost STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 PLAN_NO_WHARF=1 PLAN_NO_PEER=1 STALLS_CANARY="$SC/canary" "$HM" $BOARD --json | python3 -c '
+import json, sys
+found = []
+def walk(x):
+    if isinstance(x, dict):
+        if x.get("stall") == "start path dead": found.append((x["title"], x["column"], x["action"], x["by"]))
+        for v in x.values(): walk(v)
+    elif isinstance(x, list):
+        for v in x: walk(v)
+walk(json.load(sys.stdin)); print(sorted(found))')" \
+  "[('canary orca · start path dead (the canary fails)', 'Needs Sam', 'raise', 'testhost'), ('canary orca@acct-a · start path dead (the canary fails)', 'Needs Sam', 'raise', 'testhost')]" \
+  "the board: a card per beat, in the owner's column, raised"
+cat > "$SC/unit.py" <<'PY'
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import stalls
+sc = sys.argv[2]
+def mode(m): open(sc + "/mode", "w").write(m)
+def calls(): return len(open(sc + "/calls").read().split()) if os.path.exists(sc + "/calls") else 0
+out = []
+def case(name, held=None, dead=None):
+    notes = []
+    before = calls()
+    s, read = stalls.judge_canary("testhost", time.time(), notes, held, dead)
+    out.append("%s:%d:%s:%d:%s" % (name, len(s), read, calls() - before, "|".join(n[:48] for n in notes)))
+    return s
+mode("ok"); case("ok")
+mode("bad"); s = case("bad")
+m = [(x["class"], x["action"], x["raise_to"], x["key"], x["key_kind"], x["guarded"], x["column"] if "column" in x else None) for x in s]
+out.append(str(m[0]))
+mode("badexit2"); case("exit2")
+mode("unreadfail"); case("unreadfail")
+mode("garbled"); case("garbled")
+mode("bad"); case("brake", held="the brake file")
+os.environ["STALLS_CANARY"] = "0"; case("off")
+del os.environ["STALLS_CANARY"]; os.environ["STALLS_ORCA"] = "0"; case("orca-off")
+os.environ["STALLS_CANARY"] = sc + "/canary"; stalls.CANARY_TIMEOUT = 1; mode("hang"); case("hang")
+print(" ".join(out))
+PY
+cat > "$SC/unit2.py" <<'PY'
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import stalls
+sc = sys.argv[2]
+def mode(m): open(sc + "/mode", "w").write(m)
+def calls(): return len(open(sc + "/calls").read().split()) if os.path.exists(sc + "/calls") else 0
+out = []
+def case(name, dead=None):
+    notes = []
+    before = calls()
+    s, read = stalls.judge_canary("testhost", time.time(), notes, None, dead)
+    out.append("%s:%d:%s:%d:%s" % (name, len(s), read, calls() - before, "|".join(n[:44] for n in notes)))
+    return s
+mode("bad")
+case("dead", dead="Orca did not answer")
+real = stalls.helmlib.brake_windows
+stalls.helmlib.brake_windows = lambda t=None: [(time.time() - 3600, time.time() - 600)]
+case("brake-ended")
+stalls.helmlib.brake_windows = lambda t=None: [(time.time() - 3 * 3600, time.time() - 2 * 3600)]
+case("brake-long-ago")
+stalls.helmlib.brake_windows = real
+class Conf:
+    def registry_unreadable(self): return False
+    def confidential_scopes(self): return {"work": {"login": "acct-a", "confidential": True}}
+stalls.helmlib._common = lambda: Conf()
+s = case("guarded")
+out.append(",".join("%s=%s" % (x["beat"], x["guarded"]) for x in s))
+class Torn(Conf):
+    def registry_unreadable(self): return True
+stalls.helmlib._common = lambda: Torn()
+out.append(",".join("%s=%s" % (x["beat"], x["guarded"]) for x in case("torn")))
+# the episode: the same stale beat a pass later is the same instance, a new last beat a new one
+a = stalls.CANARY_AGO_RE.sub("", "canary orca: no beat in its window, the last was 2026-10-26 01:00, 130 min ago")
+b = stalls.CANARY_AGO_RE.sub("", "canary orca: no beat in its window, the last was 2026-10-26 01:00, 135 min ago")
+c = stalls.CANARY_AGO_RE.sub("", "canary orca: no beat in its window, the last was 2026-10-26 04:00, 95 min ago")
+out.append("episode:%s:%s:%s" % (s[0]["run"].startswith("episode "), a == b, a != c))
+os.environ["STALLS_CANARY"] = "1"; os.environ["STALLS_ORCA"] = "0"; case("one")
+print(" ".join(out))
+PY
+check "$(env HOME="$SC/home" STALLS_CANARY="$SC/canary" python3 "$SC/unit2.py" "$B" "$SC")" \
+  "dead:0:False:0:canary: not read — Orca did not answer this  brake-ended:0:False:0:canary: not judged — the studio brake ended  brake-long-ago:2:True:1: guarded:2:True:1: orca=False,orca@acct-a=True torn:2:True:1: orca=False,orca@acct-a=True episode:True:True:True one:0:False:0:" \
+  "judge_canary: an Orca dead this pass, or a brake ended under a beat's window ago, reads nothing and calls nothing; a confidential scope's login, or a torn registry, guards its beat; the run is the episode, its minutes aside; STALLS_CANARY=1 is the default read, never a command"
+check "$(env HOME="$SC/home" STALLS_CANARY="$SC/canary" python3 "$SC/unit.py" "$B" "$SC")" \
+  "ok:0:True:1: bad:2:True:1: ('start path dead', 'raise', 'owner', ['testhost', 'canary', 'orca'], 'canary', False, None) exit2:2:False:1:canary: clock canary check exit 2 — its failures unreadfail:1:False:1: garbled:0:False:1:canary: the \`start path dead\` class not judged ( brake:0:False:0:canary: not read — the studio brake holds (the b off:0:False:0: orca-off:0:False:0: hang:0:False:1:canary: the \`start path dead\` class not judged (" \
+  "judge_canary: a pass is read with no stall; a failing beat raised to the owner; a check that exits 2 still raises but reads nothing; an Orca it could not read raises what it did read and closes nothing; unreadable or hung output costs the class, said in a note; the brake, STALLS_CANARY=0 and the Orca read off call nothing"
+
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

@@ -13,7 +13,8 @@
 # Unattended, in `auto` mode, as dispatch (docs/record/run-seed-permissions-2026-10-04.md says why):
 # the classifier and checkpoint.py decide; the allowlist names the scripts the skills
 # call so the classifier is not asked about them, and test_hooks.sh pins the mode. No push by the
-# run (this script pushes the charts dry run's branch afterwards, charts_launch below), no
+# run (this script pushes the charts dry run's branch afterwards, charts_launch below, and after
+# sextant the embark memo's branch in regatta, whose `keel line` deploys its page: embark_step), no
 # deploy, nothing outside the two knowledge repos written by intent (a scope's pass: its anchor too,
 # the dream on the anchor's main) — Aurora's dream section only writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
 # then EnterWorktree: the same way every session reaches one — coding-on-workflow 3c, probed
@@ -21,10 +22,15 @@
 #
 # Then this script checks the launch itself (DESIGN D19 (a)): the entry must be on main.
 # Sextant's backstop: a run that wrote its entry but never launched it (killed, slept, out of
-# turns) leaves the worktree sextant-<date>; it is launched here with --in. The log ends in
-# `LAUNCHED <sha>` or `FAILED <why>`, and a failure posts one bulletin line, so a Monday with no
-# entry is said rather than discovered. Then, for sextant, `UNLAUNCHED <worktree>` when what it
-# adopted (the -changes worktree, launched only reviewed) is still not on main. `caffeinate -i` keeps idle sleep from pausing a run
+# turns) leaves the worktree sextant-<date>; it is launched here with --in. The entry
+# (sextant/<day>.md, or the dream's dreams/<day>.md) gets one verdict line, `LAUNCHED <sha> <entry>`
+# or `FAILED <entry> …`, the last line naming the entry, not the log's last line: a night with no
+# dream due writes none, and charts' and branches' own LAUNCHED/FAILED lines name their section. A
+# failure posts one bulletin line, so a Monday with no entry is said rather than discovered. After
+# the verdict, sextant logs `UNLAUNCHED <worktree>` when what it adopted (the -changes worktree,
+# launched only reviewed) is still not on main (`FAILED proof of <worktree>` instead, unposted, when
+# wharf's branches.py is missing), then the embark step's lines (`EMBARK …` or `FAILED embark …`).
+# `caffeinate -i` keeps idle sleep from pausing a run
 # (it cannot stop a closed lid on battery — a physical limit). WEEKLY_CLAUDE replaces the
 # `claude` command for the suite's rehearsals.
 #

@@ -152,6 +152,38 @@ echo '{}' | python3 "$A/hooks/vault_commit.py" 2>"$T/vc.err"; check $? 0 "no vau
 check "$(git -C "$V" status --porcelain | wc -l | tr -d ' ')|$(grep -c 'atlas/vault' "$T/vc.err")" "1|1" "  nothing committed, one line saying why"
 mv "$T/vault-key" "$REGATTA_CONFIG/atlas/vault"
 
+echo "the vault's push when another Mac lands first (push_main)"
+# X is this Mac's vault, Y the other Mac's. X's pre-push lands Y's commit on origin and refuses, as
+# the vault's guard refuses a push that is no longer a fast-forward; the retry must rebase and land.
+PO="$T/push-origin.git"; git init -q --bare -b main "$PO"
+X="$T/push-x"; Y="$T/push-y"; git clone -q "$PO" "$X" 2>/dev/null
+echo a > "$X/a.md"; git -C "$X" add a.md; git -C "$X" commit -q -m a; git -C "$X" push -q origin main
+git clone -q "$PO" "$Y"; echo x > "$X/x.md"; git -C "$X" add x.md; git -C "$X" commit -q -m x
+cat > "$X/.git/hooks/pre-push" <<SH
+#!/bin/sh
+echo x >> "$T/push-tries"
+[ -n "\$PUSH_ALWAYS_REFUSE" ] && exit 1
+[ -e "$T/push-raced" ] && exit 0
+: > "$T/push-raced"
+cd "$Y" && unset GIT_DIR GIT_WORK_TREE && echo y > y.md && git add y.md && git commit -q -m y && git push -q origin main
+exit 1
+SH
+chmod +x "$X/.git/hooks/pre-push"
+pm() { python3 - "$A/hooks" "$X" <<'PY'
+import sys, pathlib
+sys.path.insert(0, sys.argv[1]); import vault_commit
+print(vault_commit.push_main(pathlib.Path(sys.argv[2])))
+PY
+}
+check "$(pm)" "None" "refused once while the other Mac landed: retried, no note"
+check "$(wc -l < "$T/push-tries" | tr -d ' ')" 2 "  two pushes tried"
+check "$(git -C "$PO" log --format=%s main | tr '\n' ' ')" "x y a " "  origin holds both Macs' commits, this one rebased on top"
+check "$(git -C "$X" status -sb | head -1)" "## main...origin/main" "  and this main is level with origin"
+echo z > "$X/z.md"; git -C "$X" add z.md; git -C "$X" commit -q -m z
+rm -f "$T/push-tries"
+check "$(PUSH_ALWAYS_REFUSE=1 pm)" "push-x: push of main refused — see the repo's pre-push" "refused with origin unmoved: one push, one note, no retry"
+check "$(wc -l < "$T/push-tries" | tr -d ' ')" 1 "  one push tried"
+
 echo "the skills' frontmatter"
 out=$(HOME="$RHOME" python3 "$A/bin/skill-frontmatter" "$A"/skills/*/SKILL.md 2>&1); rc=$?
 if [ $rc = 3 ]; then echo "  skip PyYAML is not installed for this python3 — nothing checked"

@@ -51,8 +51,9 @@ is a D-item in the memo, answered on its course (the 10-24 memo's D2-A, 2026-10-
   own course (`keel line <doc>`), never here. A doc in a physical repo stands on the owner's one word:
   `keel stand <doc>` writes its `Stands:` line, and the sweep takes its `Reversible: yes` picks 24 h later.
 - Then wait for the answers: `<regatta> keel sheep wait <doc>` as the session's background shell. It
-  exits on a Save or new comments; take them in as the keel skill says (`keel pull`), and go on to
-  section 3. The owner may answer later, from the board or GitHub: a later `/embark` finds the memo
+  exits on a Save, taken in, or on new comments, printed and not taken in: answer a question with
+  `keel sheep reply`, take answers in with `keel sheep pull <doc> --write`, as the keel skill says
+  (`keel pull`), and go on to section 3. The owner may answer later, from the board or GitHub: a later `/embark` finds the memo
   answered and starts at section 3.
 
 ## 3. Read the answers

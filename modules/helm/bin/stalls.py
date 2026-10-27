@@ -26,6 +26,8 @@ What is read:
                      is already an ask (`asks N`), never also a stall (launch review, S6)
     Orca             `bin/harness list --harness orca --unsettled`, and the orca adapter's task-list,
                      run-show and `check --peek` (this Mac only; the Orca section below, B8)
+    the canary       wharf-runs' `clock canary check --json` (this Mac only; the class `start path dead`,
+                     orca-launcher S7): one stall per canary beat that fails, raised
 
 A stall record — the shape B3 acts on and its classifier (D4 = C, `bin/gate classify`) reads:
     class      S1…S7, or None in `unsure` (the rules could not tell; B3's classifier's input)
@@ -51,11 +53,13 @@ or branch, on either Mac (a step run again, by hand or by the chain, or a launch
 
 Stdlib only, Python 3.9. STALLS_PEERS (`buildbox=buildbox-ssh`; empty: none;
 unset: the config dir's `wharf-runs/ssh`), STALLS_SSH,
-STALLS_REPOS (colon-separated repo paths), STALLS_ORCA (0: no Orca read), STALLS_HARNESS (bin/harness
-stands in) and the HOME the tests move are the knobs.
+STALLS_REPOS (colon-separated repo paths), STALLS_ORCA (0: no Orca read, and so no canary read unless
+STALLS_CANARY names a stand-in), STALLS_CANARY (0: no canary read; a command: stands in for `clock
+canary check --json`), STALLS_HARNESS (bin/harness stands in) and the HOME the tests move are the knobs.
 """
 import argparse
 import glob
+import hashlib
 import inspect
 import json
 import os
@@ -101,6 +105,11 @@ GONE_ENDS = re.compile(r"^(?:tidied: its claude was gone|claude exited by itself
 
 ACTIONS = {"S1": "retry", "S2": "start", "S4": "relaunch"}
 WONT_START = "skipper won't start"   # skipper-resilience S5's class: a scope's skipper failed three starts (raised)
+CANARY_DEAD = "start path dead"      # orca-launcher S7's class: a canary beat is outside its window, or its run reached no first turn (raised)
+CANARY_TIMEOUT = 135                 # `clock canary check`: two Orca CLI reads of 60 s each and two 5 s sysctl
+CANARY_BRAKE_GRACE = 90 * 60         # an hourly beat's window (60 + clock's CANARY_GRACE 30): what a brake's end owes it
+CANARY_AGO_RE = re.compile(r"\d+ min ago")
+CANARY_KEY_RE = re.compile(r"^canary ([^:\s]+):\s*(.*)$", re.S)
 # a raise to the ship's live skipper: written `skipper` since rename S5, `manager` read forever (stalls.jsonl)
 RAISE_TO_SKIPPER = ("skipper", "manager")
 DISPATCH_KEYS = ("repo", "wt", "model", "effort", "yolo", "pin", "manager", "manager_host", "manager_account",
@@ -386,13 +395,15 @@ def _num(x):
 
 
 def poll_asks():
-    """{(repo name, branch)} with an open D-item in ask poll's cache (they are asks already)."""
+    """{(repo name, branch)} with an open D-item in ask poll's cache (they are asks already), and each
+    branch the poll skipped for its merged or closed PR (`ended`, board-cleanup S1): a WAITING run there
+    was asked before the poll dropped its rows, and is no new stall now."""
     p = Path(os.environ.get("ASK_CACHE_DIR") or Path(os.environ.get("HOME") or Path.home()) / "Library/Caches/ask") / "asks.json"
     try:
         d = json.loads(p.read_text())
     except (OSError, ValueError):
         return set()
-    return {(a.get("repo"), a.get("branch")) for a in (d.get("asks") or []) if isinstance(a, dict)}
+    return {(a.get("repo"), a.get("branch")) for a in (d.get("asks") or []) + (d.get("ended") or []) if isinstance(a, dict)}
 
 
 WAITING_ON_OWNER = "waiting on the owner"
@@ -995,7 +1006,7 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
 
 TITLES = {"S1": "gone %s", "S2": "next step refused by the run cap", "S3": "ended at max lifetime",
           "S4": "launch stopped by the network", "S5": "launch stopped", "S6": "waiting on the owner",
-          "S7": "ready, nobody started it", WONT_START: "(%d failed starts in a row)"}
+          "S7": "ready, nobody started it", WONT_START: "(%d failed starts in a row)", CANARY_DEAD: "(the canary fails)"}
 
 
 def judge_skippers(host, now, notes=None):
@@ -1026,6 +1037,112 @@ def judge_skippers(host, now, notes=None):
         s["guarded"] = bool(s.get("guarded") or info.get("guarded"))
         out.append(s)
     return out
+
+
+def canary_argv():
+    """argv of `clock canary check --json`, or None when it is not read: STALLS_CANARY=0 (or off), the Orca read
+    off with no stand-in named (the tests that are not about it: never the real app), or wharf-runs' clock not
+    installed. STALLS_CANARY=<command> stands in for it."""
+    v = os.environ.get("STALLS_CANARY")
+    if v is not None and v.strip() not in ("1", "on"):   # 1 or on: the default read, never a command named `1`
+        return None if v.strip() in ("", "0", "off") else shlex.split(v)
+    if not orca_on():
+        return None
+    clock = helmlib.peer("clock")
+    return [str(clock), "canary", "check", "--json"] if clock else None
+
+
+def canary_guarded(key):
+    """True when a canary beat's key names a login (`path@login`) that a confidential scope runs on, or the
+    registry cannot say: its card and issue then carry the class and host alone (K6), as a skipper's do."""
+    login = key.split("@", 1)[1] if "@" in key else None
+    if not login:
+        return False
+    try:
+        c = helmlib._common()
+        if c.registry_unreadable():
+            return True
+        return any(isinstance(s, dict) and s.get("login") == login for s in c.confidential_scopes().values())
+    except Exception:   # noqa: BLE001 — cannot tell: guarded
+        return True
+
+
+def brake_ended_within(now, span):
+    """The end of the studio brake's last window when it is under `span` seconds before now, else None
+    (helmlib.brake_windows: written where the tick records the brake; no record, no grace)."""
+    try:
+        ends = [float(e) for _, e in helmlib.brake_windows(now)]
+    except Exception:   # noqa: BLE001 — an unreadable record is no brake, as everywhere else
+        return None
+    end = max(ends) if ends else None
+    return end if end is not None and 0 <= now - end < span else None
+
+
+def judge_canary(host, now, notes=None, held=None, dead=None):
+    """(stalls, read): the class `start path dead` (orca-launcher S7, docs/orca-launcher-2026-10-24.md G2): one
+    raised stall per canary beat `clock canary check` fails — a beat outside its window, an automation that
+    never beat, a fired one-shot that beat nothing, a run that reached no first turn — keyed [host, "canary", key].
+    This Mac's own check only: the canary reads this Mac's Orca and beat files, so no peer is asked and the
+    laptop is no dependency. `read` is False when the check was not read this pass (off, not installed, the
+    studio brake, no answer, no JSON, or an Orca it could not read itself): the stall road then closes no
+    issue on an absence, and a failure that did read still raises. A read that fails costs this class
+    only and says so in NOTES, never silently."""
+    argv = canary_argv()
+    if not argv:
+        return [], False
+    if held:
+        if notes is not None:
+            notes.append("canary: not read — the studio brake holds (%s)" % held)
+        return [], False
+    if dead:   # Orca did not answer this pass: the check would spend CANARY_TIMEOUT on the same dead app
+        if notes is not None:
+            notes.append("canary: not read — Orca did not answer this pass (%s)" % dead)
+        return [], False
+    # the brake froze Orca serve, so no beat fired under it: a beat's window starts again at its end
+    braked = brake_ended_within(now, CANARY_BRAKE_GRACE)
+    if braked is not None:
+        if notes is not None:
+            notes.append("canary: not judged — the studio brake ended %d min ago, under a beat's window" % ((now - braked) // 60))
+        return [], False
+
+    def failed(why):
+        if notes is not None:
+            notes.append("canary: the `%s` class not judged (%s)" % (CANARY_DEAD, why))
+        return [], False
+
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=CANARY_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return failed("clock canary check did not answer: %s" % e.__class__.__name__)
+    try:
+        d = json.loads(r.stdout or "")
+        found = [f for f in d["findings"] if isinstance(f, dict)]
+    except (ValueError, KeyError, TypeError):
+        return failed("clock canary check printed no findings (exit %d)" % r.returncode)
+    read = r.returncode in (0, 1)
+    if not read and notes is not None:
+        notes.append("canary: clock canary check exit %d — its failures are raised, an absence is not read" % r.returncode)
+    # its own note when it could not read this Mac's Orca: the beats were judged, the automations were not
+    if any(str(f.get("level")) == "NOTE" and "Orca not read" in str(f.get("text")) for f in found):
+        read = False
+    keys = {}
+    for f in found:
+        if str(f.get("level")) != "FAIL":
+            continue
+        m = CANARY_KEY_RE.match(str(f.get("text") or ""))
+        keys.setdefault(m.group(1) if m else "?", []).append((m.group(2) if m else str(f.get("text")))[:240])
+    out = []
+    for key, whys in sorted(keys.items()):
+        # the rule is fixed words (the minutes in a finding move every pass); the card's evidence carries the finding.
+        # `run` is the episode: a hash of the finding less its moving minutes (a stale beat's names its last beat), so a beat
+        # that fails again after it cleared is a new instance and waits ESCALATE_AFTER again, as its first did
+        s = _stall(CANARY_DEAD, host, {"topic": "canary %s" % key}, "episode " + hashlib.sha1(CANARY_AGO_RE.sub("", whys[0]).encode()).hexdigest()[:10],
+                   "its canary check fails, so a start on that path may reach no first turn (`clock canary check` on %s says why)" % host,
+                   [w[:TEXT_LINE] for w in whys[:2]], now, None,
+                   key=[host, "canary", key], key_kind="canary", beat=key)
+        s["guarded"] = bool(s.get("guarded") or canary_guarded(key))
+        out.append(s)
+    return out, read
 
 
 def title(s, now):
@@ -1069,7 +1186,7 @@ def judge(peer=True, live_call=True, orca_held=None):
         return {"as_of": now, "host": me, "hosts": [], "stalls": [], "unsure": [],
                 "notes": ["stalls: wharf-runs not installed (dispatch-rc, its harness adapter) — no runs to judge"], "runs": [],
                 # nothing was read: the stall road closes no issue on this pass's absences
-                "unread": {"hosts": [], "launches": True, "orca": True, "skippers": True},
+                "unread": {"hosts": [], "launches": True, "orca": True, "skippers": True, "canary": True},
                 # counted only while the Orca read is on: STALLS_ORCA=0 reads no Orca, so none went unread
                 "orca_dead": orca_dead(["orca: no reader"]) if orca_on() else None}
     views, notes = {me: local_view(rc, ad)}, []
@@ -1108,7 +1225,7 @@ def judge(peer=True, live_call=True, orca_held=None):
         unsure += u
     # what this pass could not read, by source: the stall road closes no issue on an absence it cannot vouch for
     unread = {"hosts": sorted(set(peers()) - set(views)) if peer else [], "launches": False, "orca": False,
-              "skippers": False}
+              "skippers": False, "canary": False}
     s, n = judge_launches(me, live_branches, now)
     stalls += s
     notes += n
@@ -1133,12 +1250,15 @@ def judge(peer=True, live_call=True, orca_held=None):
     k = len(notes)
     stalls += judge_skippers(me, now, notes)
     unread["skippers"] = len(notes) > k
+    s, canary_read = judge_canary(me, now, notes, orca_held, dead)
+    stalls += s
+    unread["canary"] = not canary_read
     for x in stalls:
         x["title"] = title(x, now)
         x["column"] = column(x)
     for x in unsure:
         x["title"] = "%s · unsure: %s" % (x.get("topic") or "?", x["rule"])
-    order = {c: i for i, c in enumerate(("S1", "S2", "S4", "S3", "S5", "S6", "S7", WONT_START))}
+    order = {c: i for i, c in enumerate(("S1", "S2", "S4", "S3", "S5", "S6", "S7", WONT_START, CANARY_DEAD))}
     stalls.sort(key=lambda x: (order[x["class"]], -(x.get("since") or 0)))
     # every record, light: B3 matches a retry to the run it started by (repo, topic, brief blob,
     # started after the retry) — the launch review's "the retry died", which `run:` cannot carry
@@ -1150,9 +1270,12 @@ def judge(peer=True, live_call=True, orca_held=None):
     waiting = [dict(w, host=h) for h, v in views.items() for w in v.get("waiting") or []]
     prompts = [dict(x, host=h) for h, v in views.items() if h != me for x in v.get("live") or []
                if x.get("state") == "input-required"]
+    # every live session on either Mac with its branch: the board's WIP PR held by a session is a Running
+    # card, an idle one a count (board-cleanup S1)
+    live = [dict(x, host=h) for h, v in views.items() for x in v.get("live") or []]
     own, torn = self_judging()
     return {"as_of": now, "host": me, "hosts": sorted(views), "stalls": stalls, "unsure": unsure, "notes": notes,
-            "runs": runs, "waiting": waiting, "prompts": prompts, "unread": unread, "orca_dead": dead,
+            "runs": runs, "waiting": waiting, "prompts": prompts, "live": live, "unread": unread, "orca_dead": dead,
             "self_judging": sorted(own), "registry_torn": torn}
 
 

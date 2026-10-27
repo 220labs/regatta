@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `vault_commit`'s push of the vault's main tries once more, from the fetch, when it is refused and
+  origin moved meanwhile (another SessionEnd landing between the fetch and the push makes a
+  non-fast-forward). The vault is rechecked clean before each attempt; a refusal with origin unmoved
+  is reported at once, never retried.
+
 - The dream line at session start counts keel's D-shaped items (`- **D3 — P3.`) as well as the old
   `P3.` lines, which it read as "0 proposals" for three weeks, and names the embark memo's `keel line`
   when aurora's `embark-latest.json` covers the newest dream (the 2026-10-18 dream's D2, fix a).

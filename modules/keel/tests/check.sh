@@ -11,7 +11,7 @@ rc=0
 if command -v claude >/dev/null 2>&1; then
   claude plugin validate --strict "$D/.." > /dev/null || { echo "plugin.json: claude plugin validate --strict fails"; rc=1; }
 fi
-for s in keel paste-paths owed test_lookout sheep_gate; do
+for s in keel paste-paths owed test_lookout sheep_gate sheep_control; do
   echo "== $s"
   bash "$D/$s.sh" || rc=1
 done

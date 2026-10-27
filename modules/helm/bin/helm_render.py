@@ -458,14 +458,20 @@ def ask_links(repo, branch, rel):
     return course, github
 
 
-def poll_cards():
+def poll_cards(states=None):
+    """One card per open ask in ask poll's cache, as the board shows them (board-cleanup S1): a template's
+    or a test's D-items are none, nor a branch whose PR is merged or closed (the cache may hold rows the
+    poll's own filter did not see: carried rows, an older poll's), and one doc item on two branches is one
+    card, the newest branch's. The cache keeps every row: keel's lookout watches it per branch."""
     p = Path(os.environ.get("ASK_CACHE_DIR") or Path(os.environ.get("HOME") or Path.home()) / "Library/Caches/ask") / "asks.json"
     try:
         d = json.loads(p.read_text())
     except (OSError, ValueError):
         return []
+    rows = [a for a in d.get("asks") or [] if isinstance(a, dict) and not helmlib.not_an_ask(a.get("rel"))
+            and not helmlib.branch_ended(states or {}, a.get("repo"), a.get("branch"), a.get("sha"), a.get("t"))]
     out = []
-    for a in d.get("asks") or []:
+    for a in helmlib.newest_per_item(rows):
         course, github = ask_links(a.get("repo"), a.get("branch"), a.get("rel"))
         out.append(_card("ask", a.get("title") or a.get("item"), helmlib.columns()[0], repo=a.get("repo"), ref="%s#%s" % (a.get("rel"), a.get("item")),
                          branch=a.get("branch"), reversible=a.get("reversible"), recommended=a.get("recommended"),
@@ -596,14 +602,16 @@ def branch_host(doc):
     return parts[1] if len(parts) > 2 and parts[0] == "claude" else None
 
 
-def lookout_cards():
+def lookout_cards(states=None):
     """The lookout's open cards (crosstalk S6): a doc it could not hail or start a run for, a branch on
     another host — `keel lookout --status --json`, one card each in the owner's column (the lookout
     names no other). Its doc is `repo@branch:path`; the card text is the why. Each peer's cards too,
     read over ssh (S6 landing review, 19), their why led by the host; a peer read drops this Mac's
     cards that only say that host's own lookout acts. PLAN_KEEL is a test's stand-in; PLAN_NO_MEMO
     keeps a test off the real state. No keel, an old keel without the flag, a keel that fails, a peer
-    that does not answer: no cards from it, never the board's failure."""
+    that does not answer: no cards from it, never the board's failure. A card on a branch whose PR is
+    merged or closed is no card (board-cleanup S1: 23 of 31 on one Mac, 2026-10-26); the lookout's own
+    state keeps it."""
     rows = []
     try:
         keel = os.environ.get("PLAN_KEEL") or (None if os.environ.get("PLAN_NO_MEMO") else helmlib.peer("keel"))
@@ -631,6 +639,11 @@ def lookout_cards():
         doc = str(r.get("doc") or "")
         repo, _, rest = doc.partition("@")
         branch, _, rel = rest.partition(":")
+        # the branch's tip, so a branch that moved on past its merged PR keeps its card (as stall_gone)
+        tip = next((t for t in (_tip(top, branch) for top in helmlib.repo_tops().get(Path(repo).name, [])) if t[0]),
+                   (None, None)) if rest else (None, None)
+        if rest and helmlib.branch_ended(states or {}, Path(repo).name, branch, *tip):
+            continue
         items = r.get("items") if isinstance(r.get("items"), list) else []
         # the guard fails closed: a doc not in repo@branch:path form is judged by its whole string
         # by: the owner, lower-case, as the human cards' doer field and lane (helmlib D3-A)
@@ -751,12 +764,29 @@ def waiting_cards(judged, here=None):
         else:
             slug = _github_slug(repo)
             url = "https://github.com/%s/tree/%s" % (slug, w["branch"]) if slug and w.get("branch") else None
-        out.append(_card("waiting", "waiting on %s" % helmlib.display(helmlib.people()[0]), helmlib.columns()[0], repo=repo, by=w.get("host"), url=url,
+        out.append(_card("waiting", "%s · waiting on %s" % (session_topic(w), helmlib.display(helmlib.people()[0])), helmlib.columns()[0],
+                         repo=repo, by=w.get("host"), url=url, branch=w.get("branch"),
                          session=w.get("session_id"), updated=w.get("since"), guarded=helmlib.guarded(w.get("cwd") or "")))
     for x in judged.get("prompts") or []:
         out.append(_card("permission", "waits at a prompt", helmlib.columns()[0], repo=_repo_of_cwd(x.get("cwd")), by=x.get("host"),
                          session=x.get("session_id"), updated=x.get("updated"), guarded=helmlib.guarded(x.get("cwd") or "")))
     return out
+
+
+DATE_PREFIX = re.compile(r"^\d{4}-\d\d-\d\d-")
+
+
+def session_topic(w):
+    """What a waiting card names (board-cleanup S1: "waiting on <owner>" alone said nothing): the
+    branch's topic (`claude/<host>/<date>-<topic>` → `<topic>`), else the worktree's folder, else the
+    session's first 8 characters."""
+    b = str(w.get("branch") or "")
+    if b and b not in ("main", "master", "HEAD"):
+        return DATE_PREFIX.sub("", b.rsplit("/", 1)[-1]) or b
+    parts = Path(str(w.get("cwd") or "")).parts
+    if "worktrees" in parts and parts.index("worktrees") + 1 < len(parts):
+        return parts[parts.index("worktrees") + 1]
+    return (w.get("session_id") or "?")[:8]
 
 
 def _repo_of_cwd(cwd):
@@ -769,23 +799,117 @@ def _repo_of_cwd(cwd):
     return parts[-1] if parts else None
 
 
-def stall_cards():
+STALL_DAYS = 7   # a stall older than this is a header count with its age, no card (board-cleanup S1); HELM_STALL_DAYS overrides
+
+
+def stall_days():
+    try:
+        return float(os.environ.get("HELM_STALL_DAYS") or STALL_DAYS)
+    except ValueError:
+        return STALL_DAYS
+
+
+_BRANCHES = []
+
+
+def _branches():
+    """wharf's hooks/branches.py, for prove(); None without wharf: a stall with no PR then keeps its card."""
+    if not _BRANCHES:
+        try:
+            from importlib.machinery import SourceFileLoader
+            p = helmlib.peer("branches.py")
+            _BRANCHES.append(SourceFileLoader("wharf_branches", str(p)).load_module() if p else None)
+        except Exception:   # noqa: BLE001 — a broken peer costs the content check, never the board
+            _BRANCHES.append(None)
+    return _BRANCHES[0]
+
+
+def _tip(top, branch):
+    """(sha, commit time) of `branch` in a checkout, its local ref else origin's; (None, None)."""
+    for ref in ("refs/heads/" + branch, "refs/remotes/origin/" + branch):
+        try:
+            r = subprocess.run(["git", "-C", str(top), "log", "-1", "--format=%H %ct", ref, "--"], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            return None, None
+        sha, _, t = r.stdout.strip().partition(" ")
+        if r.returncode == 0 and sha:
+            return sha, float(t or 0)
+    return None, None
+
+
+def landed_on_main(top, branch):
+    """wharf's branches.prove() of `branch` against origin's main, or None. Only "every changed file
+    identical on main" counts: "no net change" is a branch with nothing to land, and "merged" (its tip on
+    main) is also what a branch reset onto main reads (AGENTS.md, the vacuous proofs); a branch merged as
+    it stood has a merged PR, which the caller reads first."""
+    br = _branches()
+    if br is None:
+        return None
+    try:
+        b = br.Branch(branch)
+        for side, ref in (("local", "refs/heads/"), ("remote", "refs/remotes/origin/")):
+            setattr(b, side, br.out(top, "rev-parse", "-q", "--verify", ref + branch) or None)
+        tgt = br.target(top, br.main_branch(top))
+        proof = br.prove(top, b, tgt) if b.tips and tgt else None
+    except Exception:   # noqa: BLE001
+        return None
+    return proof if proof and set(proof.split(" / ")) == {"every changed file identical on main"} else None
+
+
+def stall_gone(s, states):
+    """Why a stall is no card: its `(repo, branch)`'s PR is merged or closed, or the branch's content is
+    on main though it has no PR (work landed through another branch); None while it may matter."""
+    repo, branch = s.get("repo"), s.get("branch")
+    if not (repo and branch) or branch in ("main", "master"):
+        return None
+    tops = helmlib.repo_tops().get(repo, [])
+    tip = (None, None)
+    for top in tops:
+        tip = _tip(top, branch)
+        if tip[0]:
+            break
+    ended = helmlib.branch_ended(states, repo, branch, *tip)
+    if ended:
+        return "PR " + ended
+    if any(helmlib.pr_state(states.get(str(t)), branch)[1] for t in tops):
+        return None   # an open PR, or one the branch moved past: live work's claim
+    for top in tops:
+        proof = landed_on_main(top, branch)
+        if proof:
+            return proof
+    return None
+
+
+def stall_cards(states=None):
     """(cards, judged): one card per stall bin/stalls.py finds on both Macs (chain-manager E1) —
     titled `<topic> · S1 gone 40h`, Blocked for a class the tick acts on (A1/A2) or a raise to a
     live manager, the owner's column for every other raise, with the evidence line and the rule that
-    decided. A classifier that fails costs its cards, never the board: judged carries the error."""
+    decided. A classifier that fails costs its cards, never the board: judged carries the error.
+    The board's view only (board-cleanup S1): a stall whose work landed is no card, and one older than
+    STALL_DAYS is counted in judged["hidden"] with the oldest's start; stalls.py --json and the tick
+    still see every record."""
     try:
         import stalls
         res = stalls.judge(peer=not os.environ.get("PLAN_NO_PEER"), orca_held=helmlib.brake_refusal())
     except Exception as e:
         return [], {"error": "stalls: %s: %s" % (e.__class__.__name__, str(e)[:200])}
-    cards = []
+    cards, now, days = [], time.time(), stall_days()
+    hidden = {"landed": 0, "old": 0, "oldest": None}
     for s in res["stalls"]:
+        if stall_gone(s, states or {}):
+            hidden["landed"] += 1
+            continue
+        since = s.get("since")
+        if isinstance(since, (int, float)) and now - since > days * 86400:
+            hidden["old"] += 1
+            hidden["oldest"] = since if hidden["oldest"] is None else min(hidden["oldest"], since)
+            continue
         cards.append(_card("stall", s["title"], s["column"], repo=s.get("repo"), by=s.get("host"),
                            updated=s.get("since"), evidence=stalls.evidence_line(s), stall=s["class"],
                            action=s["action"], rule=s["rule"], session=s.get("session"), run=s.get("run"),
                            orca_dispatch=s.get("orca_dispatch"), next_action=s.get("next_action"),
-                           guarded=s.get("guarded")))
+                           branch=s.get("branch"), guarded=s.get("guarded")))
+    res["hidden"] = hidden
     return cards, res
 
 
@@ -839,23 +963,67 @@ def todo_cards():
     return out
 
 
-def pr_cards(repos):
-    if os.environ.get("PLAN_NO_GH"):
-        return []
-    out = []
-    for repo in sorted(repos)[:8]:
-        path = Path.home() / "projects" / repo
-        if not (path / ".git").exists() or helmlib.guarded(repo):
+def pr_cards(states, live=()):
+    """(cards, idle): every open PR of every repo this Mac has cloned (board-cleanup S1: no cap — the
+    board showed 10 of one repo's 102), from prefetch_prs()'s one read per repo. A ready PR waits on the
+    owner; a WIP one (draft, or `WIP:`) is Running while a live session holds its `(repo, branch)`, and
+    otherwise only counted: `idle`."""
+    out, idle = [], 0
+    live = set(live)
+    for name, tops in sorted(helmlib.repo_tops().items()):
+        if helmlib.guarded(name):
             continue
-        try:
-            r = subprocess.run(["gh", "pr", "list", "--json", "number,title,isDraft,url,updatedAt", "--limit", "10"],
-                               cwd=str(path), capture_output=True, text=True, timeout=20)
-            prs = json.loads(r.stdout or "[]")
-        except (subprocess.TimeoutExpired, ValueError, OSError):
+        for top in tops:
+            for p in states.get(str(top)) or []:
+                if str(p.get("state") or "").upper() != "OPEN":
+                    continue
+                wip = p.get("isDraft") or (p.get("title") or "").startswith("WIP:")
+                if wip and (name, p.get("headRefName")) not in live:
+                    idle += 1
+                    continue
+                out.append(_card("pr", "#%s %s" % (p["number"], p.get("title")), "Running" if wip else helmlib.columns()[0],
+                                 repo=name, url=p.get("url"), branch=p.get("headRefName"), updated=helmlib._iso_ts(p.get("updatedAt"))))
+    return out, idle
+
+
+def done_cards(states, root=None):
+    """Done today (board-cleanup S1: the column was always empty): each PR merged today in a repo this
+    Mac has cloned, and each `launched` line dated today in a repo's autofinished log whose PR is not
+    carded already. A guarded repo's are left out, as held_cards leaves them."""
+    out, seen, still_open = [], set(), set()
+    for name, tops in sorted(helmlib.repo_tops().items()):
+        if helmlib.guarded(name):
             continue
-        for p in prs:
-            wip = p.get("isDraft") or (p.get("title") or "").startswith("WIP:")
-            out.append(_card("pr", "#%s %s" % (p["number"], p.get("title")), "Running" if wip else helmlib.columns()[0], repo=repo, url=p.get("url")))
+        for top in tops:
+            for p in states.get(str(top)) or []:
+                if str(p.get("state") or "").upper() == "OPEN":
+                    still_open.add((name, str(p["number"])))
+                t = helmlib._iso_ts(p.get("mergedAt")) if str(p.get("state") or "").upper() == "MERGED" else None
+                if t and _today(t):
+                    seen.add((name, str(p["number"])))
+                    out.append(_card("done", "#%s %s" % (p["number"], p.get("title")), "Done today", repo=name,
+                                     url=p.get("url"), branch=p.get("headRefName"), updated=t))
+    root = Path(root or Path.home() / "projects")
+    for f in sorted(list(root.glob("*/.git/claude/autofinished")) + list(root.glob("*/*/.git/claude/autofinished"))):
+        name = str(f.parent.parent.parent.relative_to(root))
+        short = Path(name).name
+        if helmlib.guarded(name):
+            continue
+        for e in helmlib._common().autofinished(f.parent.parent):
+            if e["outcome"] not in ("launched", "landed"):
+                continue
+            try:
+                ts = dt.datetime.fromisoformat(e["ts"]).timestamp()
+            except ValueError:
+                continue
+            pr = re.search(r"#(\d+)\b", e["detail"] or "")
+            # a PR readied for the owner's tap (the other Mac's launch) is not done while it is open
+            if not _today(ts) or (pr and ((short, pr.group(1)) in seen or (short, pr.group(1)) in still_open)):
+                continue
+            if pr:
+                seen.add((short, pr.group(1)))
+            out.append(_card("done", helmlib._common().autofinished_phrase(e), "Done today", repo=short,
+                             branch=e["branch"], updated=ts))
     return out
 
 
@@ -953,13 +1121,16 @@ def overview_state():
     cards = []
     for st in states:
         cards += plan_cards(st)
-    polled = poll_cards()
+    # one read of every cloned repo's pull requests serves the stall, ask, PR and Done today cards
+    prs = {} if os.environ.get("PLAN_NO_GH") else helmlib.prefetch_prs([t for ts in helmlib.repo_tops().values() for t in ts])
+    polled = poll_cards(prs)
     cards += polled
     cards += memo_cards({Path((c.get("ref") or "").split("#")[0]).name for c in polled})
-    cards += lookout_cards()
-    stalled, judged = stall_cards()
-    # a stall replaces the run's own card (an ask guard's, a permission prompt's): one card per run
-    covered = {c.get("session") for c in stalled if c.get("session")}
+    cards += lookout_cards(prs)
+    stalled, judged = stall_cards(prs)
+    # a stall replaces the run's own card (an ask guard's, a permission prompt's): one card per run —
+    # every stall's, a landed or old one's too, whose run must not come back as a card of its own
+    covered = {s.get("session") for s in judged.get("stalls") or [] if s.get("session")}
     cards += [c for c in run_cards() if not (c.get("session") and c["session"] in covered)]
     cards += stalled
     # a WAITING session a stall already cards (a run's S6) keeps the stall's card alone
@@ -970,12 +1141,18 @@ def overview_state():
     cards += held
     # a held PR's card names its class; the plain PR card for the same link would only repeat it
     held_urls = {c["url"] for c in held if c.get("url")}
-    cards += [c for c in pr_cards({c["repo"] for c in cards if c.get("repo")}) if c.get("url") not in held_urls]
+    # a session at work on a branch, either Mac's, or a running task's: its WIP PR is a Running card
+    live = {(_repo_of_cwd(x.get("cwd")), x.get("branch")) for x in judged.get("live") or [] if x.get("branch")}
+    live |= {(Path(str(t.get("repo") or "")).name, t.get("branch")) for st in states for t in st["tasks"]
+             if t["status"] == "running" and t.get("branch")}
+    pr, wip_idle = pr_cards(prs, live)
+    cards += [c for c in pr if c.get("url") not in held_urls]
+    cards += done_cards(prs)
     cards = embark_first(cards)
     for c in cards:  # K6: another person reads the board; a guarded card keeps its column and nothing else
         if c.get("guarded"):
             for k in ("title", "recommended", "blockers", "by", "owner", "doc", "ref", "url", "evidence", "rule", "session", "run",
-                      "next_action", "orca_dispatch", "host", "course", "github"):
+                      "next_action", "orca_dispatch", "host", "course", "github", "branch"):
                 c.pop(k, None)
             c["title"] = "guarded — open it"
     cols = [{"name": n, "cards": [c for c in cards if c["column"] == n]} for n in board_columns()]
@@ -983,6 +1160,11 @@ def overview_state():
     return {"kind": "overview", "as_of": time.time(), "host": helmlib.host(), "columns": cols,
             "header": {"needs_owner": len(cols[0]["cards"]), "owner": helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
                        "stalled": None if "error" in judged else len(stalled),
+                       "stalls_old": (judged.get("hidden") or {}).get("old") or 0,
+                       "stalls_oldest": (judged.get("hidden") or {}).get("oldest"),
+                       "stalls_landed": (judged.get("hidden") or {}).get("landed") or 0,
+                       "stall_days": (lambda d: int(d) if d == int(d) else d)(stall_days()),
+                       "wip_idle": wip_idle,
                        "stalls_note": judged.get("error") or "; ".join(judged.get("notes") or []) or None,
                        "sheep": paused_note(), "talk": talk_note()},
             "timeline": timeline(states)}
@@ -1006,7 +1188,8 @@ def board_sig(st):
     cols = [{"name": col.get("name"), "cards": [card(c) for c in col.get("cards") or []]} if isinstance(col, dict) else col
             for col in st.get("columns") or []]
     hdr = st.get("header") or {}
-    return hashlib.sha256(json.dumps({"columns": cols, "needs_owner": hdr.get("needs_owner"), "stalled": hdr.get("stalled")},
+    return hashlib.sha256(json.dumps({"columns": cols, "needs_owner": hdr.get("needs_owner"), "stalled": hdr.get("stalled"),
+                                       "stalls_old": hdr.get("stalls_old"), "wip_idle": hdr.get("wip_idle")},
                                      ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -1085,7 +1268,7 @@ h1{font-size:17px;margin:0;font-weight:600}.mute{color:var(--mute)}.pill{border:
 .c0{border-left-color:var(--owner)}.c1{border-left-color:var(--peer)}.c2{border-left-color:var(--block)}.c3{border-left-color:var(--run)}.c4{border-left-color:var(--park)}.c5{border-left-color:var(--done)}
 .tl{overflow-x:auto}.tl svg{display:block}.tasks{display:grid;gap:8px}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;font-size:13px;vertical-align:top}
-.hidden{display:none}
+.hidden{display:none}.more{font-size:12px;margin:0 0 7px}
 </style></head><body>
 <header><h1 id="title"></h1><span id="head" class="mute"></span>
 <span><button class="pill" data-view="board">Board</button> <button class="pill" data-view="timeline">Timeline</button></span>
@@ -1112,10 +1295,20 @@ function card(c,i){var m=[];if(c.plan)m.push(esc(c.plan));if(c.repo)m.push(esc(c
  if(c.rule)x.push(esc(c.rule)+(c.action?' → '+esc(c.action):''));
  if(c.held)x.push(esc(c.held));
  var link=(c.course?' <a href="'+esc(c.course)+'">course</a>':'')+(c.github?' <a href="'+esc(c.github)+'">github</a>':'')+(c.url?' <a href="'+esc(c.url)+'">open</a>':'');
- return '<div class="card c'+i+'"><div class="t">'+esc(c.kind==='ask'?'? ':c.kind==='human'?'◯ ':c.kind==='pr'?'⇡ ':c.kind==='permission'?'! ':c.kind==='stall'?'⚠ ':c.kind==='waiting'?'… ':c.kind==='held'?'⏸ ':'')+esc(c.title)+link+'</div><div class="m">'+m.join(' · ')+'</div>'+(x.length?'<div class="m">'+x.join(' · ')+'</div>':'')+'</div>'}
+ return '<div class="card c'+i+'"><div class="t">'+esc(c.kind==='ask'?'? ':c.kind==='human'?'◯ ':c.kind==='pr'?'⇡ ':c.kind==='permission'?'! ':c.kind==='stall'?'⚠ ':c.kind==='waiting'?'… ':c.kind==='held'?'⏸ ':c.kind==='done'?'✓ ':'')+esc(c.title)+link+'</div><div class="m">'+m.join(' · ')+'</div>'+(x.length?'<div class="m">'+x.join(' · ')+'</div>':'')+'</div>'}
+// the owner's column groups by kind (board-cleanup S1: 130 cards in one list), five each, "+N more" to open
+var KINDS=[['asks',['ask']],['stalls',['stall','road']],['sessions waiting',['waiting','permission','task']],['PRs',['pr','held']],['memos',['memo','lookout']]],SHOW=5,more={};
+function kindOf(c){for(var j=0;j<KINDS.length;j++)if(KINDS[j][1].indexOf(c.kind)>=0)return j;return KINDS.length}
+function lanes(col,i){var groups={},rank={};col.cards.forEach(function(c){var k,r;
+  if(c.label){k=c.label;r=-1}else if(i===0){r=kindOf(c);k=r<KINDS.length?KINDS[r][0]:'other'}else{k=(lane==='by'?by(c):c[lane])||'—';r=0}
+  (groups[k]=groups[k]||[]).push(c);rank[k]=r});
+ return Object.keys(groups).sort(function(a,b){return rank[a]-rank[b]||(a<b?-1:a>b?1:0)}).map(function(k){return [k,groups[k]]})}
 function board(cols){var h='<div class="board">';cols.forEach(function(col,i){if(i===1&&!col.cards.length)return;
- h+='<section class="col"><h2>'+esc(col.name)+' · '+col.cards.length+'</h2>';var groups={};col.cards.forEach(function(c){var k=c.label||(lane==='by'?by(c):c[lane])||'—';(groups[k]=groups[k]||[]).push(c)});
- Object.keys(groups).sort(function(a,b){var la=groups[a][0].label?0:1,lb=groups[b][0].label?0:1;return la-lb||(a<b?-1:a>b?1:0)}).forEach(function(k){h+='<div class="lane">'+esc(k)+'</div>'+groups[k].map(function(c){return card(c,i)}).join('')});h+='</section>'});return h+'</div>'}
+ h+='<section class="col"><h2>'+esc(col.name)+' · '+col.cards.length+'</h2>';
+ lanes(col,i).forEach(function(g){var key=i+'/'+g[0],cs=g[1],open=more[key];
+  h+='<div class="lane">'+esc(g[0])+' · '+cs.length+'</div>'+(open?cs:cs.slice(0,SHOW)).map(function(c){return card(c,i)}).join('');
+  if(cs.length>SHOW)h+='<button class="pill more" data-more="'+esc(key)+'">'+(open?'fewer':'+'+(cs.length-SHOW)+' more')+'</button>'});
+ h+='</section>'});return h+'</div>'}
 var FILL={running:'var(--run)',relayed:'var(--park)',parked:'var(--park)',waiting:'var(--owner)',blocked:'var(--block)',failed:'var(--block)',done:'var(--done)',landed:'var(--done)',launched:'var(--done)',planned:'var(--mute)'};
 function timeline(rows){if(!rows||!rows.length)return '<p class="mute">No ships with tasks.</p>';
  var now=Date.now()/1000,lo=now,hi=now;rows.forEach(function(r){r.bars.forEach(function(b){lo=Math.min(lo,b.start||now);hi=Math.max(hi,b.end||now)});(r.milestones||[]).forEach(function(m){hi=Math.max(hi,m.on)})});
@@ -1141,7 +1334,7 @@ function planView(s){var h='<div class="tasks"><table><tr><th>Task</th><th>Statu
  return h+'</table></div>'}
 function draw(){document.documentElement.dataset.view=view;var o=S.kind==='overview';
  document.getElementById('title').textContent=o?'Helm · board':'Helm · '+(S.topic||S.id);
- var hd=o?[S.header.needs_owner+' need '+(S.header.owner||'the owner'),S.header.stalled?S.header.stalled+' stalled':'',S.header.today_cost?'today '+money(S.header.today_cost):'',S.header.week||'',S.header.talk||'',S.header.sheep||'']:['started '+(S.started?when(S.started):'none'),'due '+(S.due?when(S.due):'none'),S.cost!=null?money(S.totals.cost)+' of '+money(S.cost)+' est.':money(S.totals.cost)+' so far',S.totals.est_to_go?money(S.totals.est_to_go)+' to go':'',S.totals.open_asks+' open asks'];
+ var hd=o?[S.header.needs_owner+' need '+(S.header.owner||'the owner'),S.header.stalled?S.header.stalled+' stalled':'',S.header.stalls_old?S.header.stalls_old+' stalls over '+(S.header.stall_days||7)+'d (oldest '+ago(S.header.stalls_oldest)+')':'',S.header.wip_idle?S.header.wip_idle+' WIP PRs idle':'',S.header.today_cost?'today '+money(S.header.today_cost):'',S.header.week||'',S.header.talk||'',S.header.sheep||'']:['started '+(S.started?when(S.started):'none'),'due '+(S.due?when(S.due):'none'),S.cost!=null?money(S.totals.cost)+' of '+money(S.cost)+' est.':money(S.totals.cost)+' so far',S.totals.est_to_go?money(S.totals.est_to_go)+' to go':'',S.totals.open_asks+' open asks'];
  document.getElementById('head').textContent=hd.filter(Boolean).join(' · ');
  document.getElementById('lanes').className=o&&view==='board'?'':'hidden';
  var rows=o?S.timeline:[{plan:S.topic||S.id,id:S.id,bars:S.tasks.map(function(t){return{id:t.id,title:t.title,start:t.started||S.created,end:t.eta||t.updated,status:t.status,kind:t.kind,deps:t.deps,cost:t.cost,est:t.est_to_go,parked_at:t.parked_at,overrun:t.overrun,flags:(t.asks||[]).filter(function(a){return a.open}).map(function(a){return a.ref.split('#').pop()}),blockers:t.blockers}}),milestones:S.milestones,totals:S.totals}];
@@ -1149,7 +1342,7 @@ function draw(){document.documentElement.dataset.view=view;var o=S.kind==='overv
  document.querySelectorAll('[data-view]').forEach(function(b){b.setAttribute('data-on',b.dataset.view===view)});
  document.querySelectorAll('[data-lane]').forEach(function(b){b.setAttribute('data-on',b.dataset.lane===lane)});
  document.getElementById('foot').textContent='as of '+when(S.as_of)+' on '+(S.host||'?');}
-document.addEventListener('click',function(e){var b=e.target.closest('[data-view],[data-lane]');if(!b)return;if(b.dataset.view){view=b.dataset.view;put('view',view)}else{lane=b.dataset.lane;put('lane',lane)}draw()});
+document.addEventListener('click',function(e){var b=e.target.closest('[data-view],[data-lane],[data-more]');if(!b)return;if(b.dataset.more){more[b.dataset.more]=!more[b.dataset.more];draw();return}if(b.dataset.view){view=b.dataset.view;put('view',view)}else{lane=b.dataset.lane;put('lane',lane)}draw()});
 function poll(){fetch('state.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(j){if(j&&j.as_of!==S.as_of){S=j;draw()}}).catch(function(){})}
 draw();setInterval(poll,30000);
 })();

@@ -477,7 +477,15 @@ case "\$1" in
   -U) [ "\$2" = -dmS ] || exit 1; name=\$3; shift 3; [ -n "\${STUB_NOSTART:-}" ] && exit 0; "\$@" >/dev/null 2>&1 & exit 0;;
   -ls) cat "$T/screen.ls" 2>/dev/null; exit 1;;
   -wipe) [ -f "$T/screen.ls" ] && sed -i '' '/Dead/d' "$T/screen.ls"; exit 0;;
-  -S) case "\$*" in *hardcopy*) for a; do f=\$a; done; echo "Do you trust the files in this folder?" > "\$f";;
+  -S) case "\$*" in *hardcopy*) for a; do f=\$a; done
+                    # blind: a plain hardcopy writes an empty file, only -h returns the screen (the build Mac, 2026-10-26);
+                    # gone: the first call reads the window, every later one finds no such screen and writes nothing
+                    case "\${STUB_SCREEN:-}" in
+                      blind) case " \$* " in *" -h "*) echo "Do you trust the files in this folder?" > "\$f";; *) : > "\$f";; esac;;
+                      gone) n=\$(cat "$T/hc.n" 2>/dev/null || echo 0); echo \$((n + 1)) > "$T/hc.n"
+                            if [ "\$n" = 0 ]; then echo "Choose the text style that looks best" > "\$f"; else echo "No screen session found." >&2; exit 1; fi;;
+                      *) echo "Do you trust the files in this folder?" > "\$f";;
+                    esac;;
                     *quit*) pkill -TERM -f "$HOME/Library/Caches/run-seed/\${2#*.}.sh" 2>/dev/null
                             # the window's own SELF_CLOSE, once its screen is gone
                             [ -n "\${STUB_SELFCLOSE:-}" ] && python3 "$T/rmwin" "$T/windows.json" "\$STUB_SELFCLOSE";; esac;;
@@ -680,6 +688,18 @@ has "$HOME/silent.log" "Do you trust the files" "  with what its screen showed"
 has "$HOME/silent.log" "never started interactively — retrying once, visible again" "  then retried once, visible (never headless, 2026-10-13)"
 has "$HOME/silent.log" "FAILED: never started interactively, twice" "  then FAILED"
 check "$(grep -c -- ' -p ' "$T/claude.calls")" "0" "  never as claude -p"
+
+# the screen read (orca-launcher S7): a never-started run's last screen reaches its log, three ways
+: > "$T/claude.calls"
+STUB_SCREEN=blind STUB_RUN=silent DISPATCH_HOST=buildbox DISPATCH_LOG="$T/blind.log" "$B/dispatch" $BR --repo "$T/repo"
+has "$T/blind.log" "Do you trust the files" "a plain hardcopy that writes an empty file: the -h read still shows the screen"
+grep -q "no screen contents" "$T/blind.log"; check "$?" "1" "  never the blind line"
+has "$T/screen.calls" "hardcopy -h " "  asked with -h first"
+rm -f "$T/hc.n"
+DISPATCH_SNAP_EVERY=0.5 STUB_SCREEN=gone STUB_RUN=silent DISPATCH_HOST=buildbox DISPATCH_LOG="$T/gone.log" "$B/dispatch" $BR --repo "$T/repo"
+has "$T/gone.log" "no screen now — screen exited 1: No screen session found.; its last screen" "a window that closed before the end: the last screen it showed, and why the read failed"
+has "$T/gone.log" "Choose the text style that looks best" "  the screen the rolling snapshot kept"
+has "$T/gone.log" "(no screen contents: screen exited 1: No screen session found.)" "  and a run that never showed one says why, not a bare blank"
 
 : > "$T/claude.calls"
 STUB_RUN=hooked DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/hooked.log" "$B/dispatch" $BR --repo "$T/repo"

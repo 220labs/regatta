@@ -1,9 +1,12 @@
 # Mermaid — pinned, fetched once
 
-What `bin/keel build` (the form) and `keel sheep` (the spacesheep page) inline into a page whose doc
-has a ```` ```mermaid ```` fence, so the diagram draws with no install and a page without one stays as
-small as before. Shape D2-B of docs/design-docs-shape-2026-10-14.md, built as entry S13
-(2026-10-15): the owner took Mermaid as a new dependency in that answer.
+What draws a ```` ```mermaid ```` fence for `bin/keel build` (the form) and `keel sheep` (the
+spacesheep page). Shape D2-B of docs/design-docs-shape-2026-10-14.md, built as entry S13
+(2026-10-15): the owner took Mermaid as a new dependency in that answer. Until 2026-10-26 the file
+was inlined into every page with a diagram (3.3 MB of a 3.66 MB page, too slow through the local
+mirror); since then keel draws each fence at build time under headless Chrome, light and dark, and
+the page carries the two pictures as `<img>`s, cached per diagram in the cache's `mermaid-svg/`
+(`mermaid_svgs` in `bin/keel`). Without Chrome or this file, a fence shows its source.
 
 - Version: **11.17.2** (npm, published 2026-08-25; the last 11.x — 12.0.0 was five weeks old and a
   new major) — `MERMAID_VERSION` in `bin/keel`

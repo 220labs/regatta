@@ -41,6 +41,14 @@ What sessionpipe does that this works around (its 0.5.0 source, read 2026-10-03)
   sessionpipe: `uninstall` removes it cleanly, and `install`/`update` replace it with the
   ungated form (R1) — after either, run `sheep gate` at once. `sync.py` names an ungated entry
   at every session start, and `gate` runs `forget-private` before it writes the sink.
+- **Codex and Antigravity report through the same gate** (2026-10-26). `gate` writes their entries
+  itself, seeded from Claude Code's command — `install --codex --antigravity` is never needed, and
+  would write them ungated (R1) — into Codex's hooks.json and Antigravity's config/hooks.json
+  whenever their folder is on the Mac (HARNESSES' comment has the shapes); `check` counts them
+  with the Claude dirs, and a folder with no entries of ours is dark like an unhooked login dir.
+  Codex runs a non-managed hook only once the owner trusts it in `codex` → /hooks; `check` notes
+  each entry with no trust recorded (codex_unreviewed). The outbox holds a folder per harness, and
+  `forget-private` forgets each by its harness (`sessionpipe forget codex <id>`).
 - **`sessionpipe status` and `doctor` call every gated file "stale"** (they want the exact entry
   they write) and `doctor` says to run `sessionpipe install` again — the one command that
   removes the gate. "stale" is the gate working: never answer it with `install`.
@@ -53,7 +61,9 @@ What sessionpipe does that this works around (its 0.5.0 source, read 2026-10-03)
   the same day (the inventory's reading; this Mac still runs 0.5.0).
 - **Backfill does not pass through the gate**: it reads ~/.claude/projects directly and queues a
   `session.backfill` row (cwd, title) for every session of the last N days, the vault's
-  included. A bare `sessionpipe install` backfills 30 days. So: always `install --backfill 0`,
+  included. A bare `sessionpipe install` backfills 30 days, and hooks every harness it detects
+  (Gemini CLI's settings.json and Codex's notify among them, which nothing here gates). So: always
+  `install --backfill 0 --claude-code` (the flag order keeps the overlay suite's grep matching),
   never `sessionpipe backfill`; `forget-private` finds and deletes such rows from the outbox.
 - An install with no sink above tier 0 is "lean": it skips PreToolUse and PostToolUseFailure.
   `gate` adds every missing event of EVENTS in gated form, its command copied from an entry
@@ -111,6 +121,7 @@ a passkey tap and is the owner's in an attended session (D3; hooks/secrets_guard
 Tests: hooks/test_hooks.sh, "sheep". $SHEEP_PROJECTS, $SHEEP_LAUNCH_AGENTS and $SHEEP_LAUNCHCTL point
 control at a scratch tree.
 """
+import contextlib
 import datetime as dt
 import io
 import json
@@ -184,9 +195,30 @@ _gate = SourceFileLoader("sheep_gate", str(HERE.parent / "hooks" / "sheep_gate.p
 EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
           "PermissionRequest", "Notification", "Stop", "SubagentStart", "SubagentStop",
           "PreCompact", "PostCompact", "SessionEnd", "StopFailure"]
+# The other harnesses sessionpipe 0.5.0 hooks, each behind the same gate (core/src/adapters/codex.ts,
+# antigravity.ts, read 2026-10-26). Codex: $CODEX_HOME/hooks.json ($CODEX_HOME defaults to .codex in
+# the home folder), Claude-shaped, every timeout 5, matcher "" on tool and permission events. Its
+# `notify` fallback in config.toml is never written here (Codex Computer Use may hold that slot, and
+# an argv-borne event would need a second gate form), so Codex reports once its hooks pass the
+# review in `codex` → /hooks, which check notes; a notify that runs sessionpipe (its own install's)
+# is ungated and counted so (codex_notify()). Antigravity: $GEMINI_CLI_HOME/config/hooks.json
+# ($GEMINI_CLI_HOME defaults to .gemini in the home folder), top-level keys are hook names, ours
+# "sessionpipe": {enabled, <Event>: [handler] or, for tool events, [{matcher "*", hooks: [handler]}]}.
+CODEX_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop",
+                "Interrupt", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "SessionEnd"]
+AG_EVENTS = ["PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"]
+AG_KEY = "sessionpipe"
+HARNESSES = ("claude-code", "codex", "antigravity")
 # sessionpipe's own test for "an entry we wrote", ported from claude-shaped.ts.
 OURS = re.compile(r'(?:sessionpipe[^"\n]*[\\/]hook\.js|[\\/]sessionpipe-hook)"?\s+[a-z][a-z-]*\s+[A-Za-z]+\s*$')
-TAIL = re.compile(r"\s+claude-code\s+[A-Za-z]+\s*$")
+
+
+def tail(name):
+    """A sessionpipe command's `<harness> <Event>` tail, for one harness."""
+    return re.compile(r"\s+%s\s+[A-Za-z]+\s*$" % re.escape(name))
+
+
+TAIL = tail("claude-code")
 SINK = {"name": "spacesheep.dev", "url": "https://spacesheep.dev", "tier": 2, "pii": False}
 KEY = "SPACESHEEP_SESSIONS_KEY"
 KEEP_BACKUPS = 5
@@ -367,6 +399,14 @@ def claude_dirs():
     return [d for i, d in enumerate(out) if i == 0 or d.exists()]
 
 
+def harness_files():
+    """[(harness, hooks file)] for each harness besides Claude Code whose folder is on this Mac
+    (sessionpipe's detect, narrowed to the folder the file sits in: it is never created)."""
+    codex = Path(os.environ.get("CODEX_HOME") or HOME / ".codex") / "hooks.json"
+    ag = Path(os.environ.get("GEMINI_CLI_HOME") or HOME / ".gemini") / "config" / "hooks.json"
+    return [(n, p) for n, p in (("codex", codex), ("antigravity", ag)) if p.parent.is_dir()]
+
+
 def config_file():
     if os.environ.get("SESSIONPIPE_CONFIG"):
         return Path(os.environ["SESSIONPIPE_CONFIG"]).resolve()
@@ -492,10 +532,10 @@ def ours(group):
         any(OURS.search(h["command"]) for h in _cmds(group))
 
 
-def survey(cfg):
-    """{event: "gated" | "ungated" | "absent"} over EVENTS and any other event sessionpipe hooks."""
+def survey(cfg, events=EVENTS):
+    """{event: "gated" | "ungated" | "absent"} over `events` and any other event sessionpipe hooks."""
     hooks = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
-    out = {ev: "absent" for ev in EVENTS}
+    out = {ev: "absent" for ev in events}
     for ev, groups in hooks.items():
         for g in groups if isinstance(groups, list) else []:
             if not ours(g):
@@ -554,23 +594,39 @@ def seed_missing(base):
     return None if exe and Path(exe.group(1)).exists() else (exe.group(1) if exe else base)
 
 
-def gate_file(path, dry, seed=None):
+def _base_exe(base, name):
+    """Refuse a sessionpipe command to copy that is not there, or whose executable is missing."""
+    if not base:
+        raise Refused(f"no sessionpipe command of {name}'s or Claude Code's to copy — "
+                      "run `sessionpipe install --backfill 0 --claude-code` first")
+    missing = seed_missing(base)
+    if missing:
+        raise Refused(f"{missing} is missing — run `sessionpipe install --backfill 0 --claude-code` first")
+
+
+def gate_file(path, dry, seed=None, name="claude-code"):
     """Gate every sessionpipe entry and add the missing events; returns (changes, survey) —
     the survey as the file stands after the write, or as it stands now on a dry run. A file
     sessionpipe never hooked is left alone unless `seed` (seed_command()) is given: a login dir
     made after `sessionpipe install` (a second login dir, 2026-10-06) then gets all of EVENTS, gated,
     without a second install and its ungated window — the file created when the dir holds
-    projects/ but no settings.json, as sessionpipe's own install would."""
+    projects/ but no settings.json, as sessionpipe's own install would. `name` "codex" does the
+    same to Codex's hooks.json (Claude-shaped): CODEX_EVENTS, every timeout 5, created beside a
+    seed in a Codex home that has none, and no claude-settings lock: neither Codex nor Orca, which
+    writes the same file, takes it, so a lock file would sit in the Codex home for nothing, and an
+    Orca write between this read and the replace is lost (rare: Orca writes at its own install)."""
     if not path.parent.is_dir():
         return [], None  # ~/.claude is in claude_dirs() even when absent: never create it
+    claude = name == "claude-code"
+    events = EVENTS if claude else CODEX_EVENTS
     cs = _claude_settings()
-    with cs.Lock(path.parent):  # the lock claude-settings' apply takes beside this file
+    with cs.Lock(path.parent) if claude else contextlib.nullcontext():  # the lock claude-settings' apply takes beside this file
         cfg = read_settings(path)
         if cfg is None:
-            if not (seed and (path.parent / "projects").is_dir()):
+            if not (seed and (not claude or (path.parent / "projects").is_dir())):
                 return [], None
             cfg = {}  # a login dir with sessions but no settings.json yet (bin/account links projects/ only)
-        before = survey(cfg)
+        before = survey(cfg, events)
         if "hooks" in cfg and not isinstance(cfg["hooks"], dict):
             return [], before  # not Claude Code's shape: never overwritten
         hooks = cfg.get("hooks") or {}
@@ -585,25 +641,99 @@ def gate_file(path, dry, seed=None):
                     if OURS.search(h["command"]) and h["command"] != gated(h["command"]):
                         h["command"] = gated(h["command"])
                         changes.append(f"gated {ev}")
-        base = TAIL.sub("", bare(mine[0])) if mine else seed  # read back from what sessionpipe wrote
-        for ev in EVENTS:
+        own = [c for c in mine if tail(name).search(c)]
+        base = tail(name).sub("", bare(own[0])) if own else seed  # read back from what sessionpipe wrote
+        for ev in events:
             if not isinstance(hooks.get(ev, []), list):
                 continue  # a malformed event value is left as it is
             if not any(ours(g) for g in hooks.get(ev) or []):
-                exe = re.match(r'^"([^"]+)"', base)
-                if not exe or not Path(exe.group(1)).exists():
-                    raise Refused(f"{exe.group(1) if exe else base} is missing — "
-                                  "run `sessionpipe install --backfill 0` first")
+                _base_exe(base, name)
                 e = {"matcher": ""} if re.search(r"Tool|Permission", ev) else {}
-                e["hooks"] = [{"type": "command", "command": gated(f"{base} claude-code {ev}"),
-                               "timeout": 130 if ev == "PermissionRequest" else 5}]
+                e["hooks"] = [{"type": "command", "command": gated(f"{base} {name} {ev}"),
+                               "timeout": 130 if claude and ev == "PermissionRequest" else 5}]
                 hooks.setdefault(ev, []).append(e)
                 changes.append(f"added {ev}")
         cfg["hooks"] = hooks
         if not changes or dry:
             return changes, before
         write_settings(cs, path, cfg)
-        return changes, survey(read_settings(path))  # the re-read, not the write, is the report
+        return changes, survey(read_settings(path), events)  # the re-read, not the write, is the report
+
+
+def ag_commands(entry):
+    """{event: [command]} in Antigravity's hook entry: a handler, or a matcher group of handlers."""
+    out = {}
+    for ev, v in entry.items() if isinstance(entry, dict) else ():
+        for item in v if isinstance(v, list) else []:
+            hs = item.get("hooks") if isinstance(item, dict) and isinstance(item.get("hooks"), list) else [item]
+            out.setdefault(ev, []).extend(h["command"] for h in hs
+                                          if isinstance(h, dict) and isinstance(h.get("command"), str))
+    return out
+
+
+def ag_survey(cfg):
+    """survey() for Antigravity's hooks.json: our entry's events, by their commands. An entry the
+    owner disabled (`enabled: false`) is surveyed the same — it is hooked, not dark, and an
+    ungated command in it is still one to gate; gate_ag() keeps it disabled."""
+    entry = cfg.get(AG_KEY)
+    out = {ev: "absent" for ev in AG_EVENTS}
+    if not isinstance(entry, dict):
+        return out
+    for ev, cmds in ag_commands(entry).items():
+        mine = [c for c in cmds if OURS.search(c)]
+        if mine:
+            out[ev] = "gated" if all(is_gated(c) for c in mine) else "ungated"
+    return out
+
+
+def ag_entry(base, enabled=True):
+    """sessionpipe's own entry (antigravity.ts entry(), not lean), each command gated."""
+    def handler(ev):
+        return {"type": "command", "command": gated(f"{base} antigravity {ev}"), "timeout": 5}
+    out = {"enabled": enabled}
+    for ev in AG_EVENTS:
+        out[ev] = [{"matcher": "*", "hooks": [handler(ev)]}] if "Tool" in ev else [handler(ev)]
+    return out
+
+
+def gate_ag(path, dry, seed=None):
+    """gate_file() for Antigravity: our key replaced whole by ag_entry(), as sessionpipe's install
+    replaces it, an owner's `enabled: false` kept; every other key (Orca's) keeps its value, though
+    the writer re-indents the file. Created beside a seed in a config folder that holds no
+    hooks.json. No lock, as for Codex's file (gate_file)."""
+    if not path.parent.is_dir():
+        return [], None
+    cfg = read_settings(path)
+    if cfg is None:
+        if not seed:
+            return [], None
+        cfg = {}
+    before = ag_survey(cfg)
+    have = cfg.get(AG_KEY) if isinstance(cfg.get(AG_KEY), dict) else {}
+    own = [c for cmds in ag_commands(have).values() for c in cmds if OURS.search(c) and tail("antigravity").search(c)]
+    if not own and not seed:
+        return [], before
+    base = tail("antigravity").sub("", bare(own[0])) if own else seed
+    want = ag_entry(base, have.get("enabled") is not False)
+    if cfg.get(AG_KEY) == want:
+        return [], before
+    _base_exe(base, "antigravity")
+    verb = {"absent": "added", "ungated": "gated"}
+    changes = [f"{verb.get(before[ev], 'rewrote')} {ev}" for ev in AG_EVENTS if have.get(ev) != want[ev]] \
+        or ["rewrote its entry"]
+    cfg[AG_KEY] = want
+    if dry:
+        return changes, before
+    write_settings(_claude_settings(), path, cfg)
+    return changes, ag_survey(read_settings(path))
+
+
+def harness_survey(name, cfg):
+    return ag_survey(cfg) if name == "antigravity" else survey(cfg, CODEX_EVENTS)
+
+
+def gate_harness(name, path, dry, seed):
+    return gate_ag(path, dry, seed) if name == "antigravity" else gate_file(path, dry, seed, name)
 
 
 # --- sessionpipe's config.json ----------------------------------------------------------------
@@ -732,35 +862,48 @@ def transcript_index():
     return idx
 
 
+def session_key(name, sid):
+    """An outbox session's key here and in the pending file: a bare id for claude-code (the
+    file's form before Codex and Antigravity reported), `<harness>:<id>` for the others."""
+    return sid if name == "claude-code" else f"{name}:{sid}"
+
+
+def split_key(key):
+    name, _, sid = key.partition(":")
+    return (name, sid) if sid and name in HARNESSES else ("claude-code", key)
+
+
 def private_sessions():
-    """[(session id, reason)]: every claude-code outbox file whose session is private, and every
-    id a refused forget left pending."""
-    base = state_dir() / "outbox" / "claude-code"
+    """[(session key, reason)]: every outbox file, of each harness, whose session is private, and
+    every key a refused forget left pending. Only Claude Code's transcripts sit under a slug of
+    their folder, so only its sessions fall back to transcript_index()."""
     out = dict(read_pending())
     index = None  # built on the first file that needs it: an empty outbox costs no scan
-    for f in sorted(base.glob("*.jsonl")) if base.is_dir() else []:
-        sid = f.name[:-len(".jsonl")]
-        cwd = None
-        try:
-            with f.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        j = json.loads(line)
-                    except ValueError:
-                        continue
-                    s = j.get("session") if isinstance(j, dict) else None
-                    cwd = s.get("cwd") if isinstance(s, dict) and isinstance(s.get("cwd"), str) else None
-                    if cwd:
-                        break
-        except OSError:
-            continue
-        why = _gate.private_reason(cwd=cwd)
-        if not why:
-            index = transcript_index() if index is None else index
-            folder = index.get(sid)
-            why = _gate._slug_reason(folder) if folder else None
-        if why:
-            out.setdefault(sid, why)
+    for name in HARNESSES:
+        base = state_dir() / "outbox" / name
+        for f in sorted(base.glob("*.jsonl")) if base.is_dir() else []:
+            sid = f.name[:-len(".jsonl")]
+            cwd = None
+            try:
+                with f.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            j = json.loads(line)
+                        except ValueError:
+                            continue
+                        s = j.get("session") if isinstance(j, dict) else None
+                        cwd = s.get("cwd") if isinstance(s, dict) and isinstance(s.get("cwd"), str) else None
+                        if cwd:
+                            break
+            except OSError:
+                continue
+            why = _gate.private_reason(cwd=cwd)
+            if not why and name == "claude-code":
+                index = transcript_index() if index is None else index
+                folder = index.get(sid)
+                why = _gate._slug_reason(folder) if folder else None
+            if why:
+                out.setdefault(session_key(name, sid), why)
     return sorted(out.items())
 
 
@@ -820,8 +963,32 @@ def cmd_gate(dry, no_sink=False, sink=False):
         verb = "would change" if dry else "changed"
         say(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent"
             + (f" — {verb}: {', '.join(changes)}" if changes else ""))
+    for name, path in harness_files() if hooked else []:   # seeded from Claude Code's entries
+        try:
+            changes, s = gate_harness(name, path, dry, seed)
+        except (OSError, ValueError, Refused) as exc:   # another tool's file: skipped, as check skips it
+            say(f"{path}: not touched — {exc}")
+            continue
+        if s is None:
+            continue
+        c = counts(s)
+        notify = name == "codex" and codex_notify(path)
+        c["ungated"] += notify
+        for k in total:
+            total[k] += c[k]
+        verb = "would change" if dry else "changed"
+        say(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent"
+            + (f" — {verb}: {', '.join(changes)}" if changes else ""))
+        if notify:
+            say(f"  {NOTIFY_LINE}")
+        if name == "codex" and not dry and codex_unreviewed(path):
+            say(f"  {review_note(path)}")
+    gem = gemini_cli_ungated() if hooked else 0
+    if gem:
+        total["ungated"] += gem
+        say(f"{gemini_cli_file()}: {gem} ungated — {GEMINI_LINE}")
     if not hooked:
-        say("sessionpipe is not installed here — `sessionpipe install --backfill 0` first (no sink yet), then `sheep gate`")
+        say("sessionpipe is not installed here — `sessionpipe install --backfill 0 --claude-code` first (no sink yet), then `sheep gate`")
         return 1
     if total["ungated"] and not dry:
         raise Refused("an entry is still ungated after the write — no sink written")
@@ -840,11 +1007,90 @@ def cmd_gate(dry, no_sink=False, sink=False):
     return rc or r2rc
 
 
+def _snake(ev):
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", ev).lower()
+
+
+def codex_unreviewed(path):
+    """How many of our entries in Codex's hooks.json have no trusted_hash in its config.toml.
+    Codex keeps the /hooks review there, one table per entry, keyed by position:
+    [hooks.state."<hooks.json>:<event in snake case>:<group>:<handler>"] (read from this Mac's
+    config.toml, 2026-10-26; Orca's entries were trusted that way). The hash itself is not
+    checked — how Codex computes it is not documented — so a rewritten entry whose old hash
+    stands reads as reviewed here while Codex asks again. 0 when the file does not read."""
+    try:
+        cfg = read_settings(path) or {}
+        toml = (path.parent / "config.toml").read_text(encoding="utf-8")
+    except (OSError, ValueError, Refused):
+        return 0
+    trusted = set()
+    for m in re.finditer(r'^\[hooks\.state\."([^"]+)"\]\s*$((?:\n(?!\[).*)*)', toml, re.M):
+        if re.search(r"^\s*trusted_hash\s*=", m.group(2), re.M):
+            trusted.add(m.group(1))
+    names = {str(path), str(path.resolve())}
+    hooks = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
+    n = 0
+    for ev, groups in hooks.items():
+        for gi, g in enumerate(groups if isinstance(groups, list) else []):
+            if not ours(g):
+                continue
+            for hi, h in enumerate(g.get("hooks")):
+                if isinstance(h, dict) and OURS.search(str(h.get("command"))) and \
+                        not any(f"{p}:{_snake(ev)}:{gi}:{hi}" in trusted for p in names):
+                    n += 1
+    return n
+
+
+def review_note(path):
+    n = codex_unreviewed(path)
+    return (f"{n} Codex hook entr{'y' if n == 1 else 'ies'} in {path} not yet reviewed — Codex runs none "
+            "until then; start `codex`, then /hooks, and trust them")
+
+
+# A top-level `notify` that runs sessionpipe for Codex, itself or as Computer Use's --previous-notify
+# (whose argv holds it JSON-escaped): what `sessionpipe install --codex` writes (codex-config.ts OURS).
+NOTIFY_OURS = re.compile(r'(?:hook\.js|sessionpipe-hook)\\*"\s*,\s*\\*"codex\\*"')
+NOTIFY_LINE = ("its notify runs sessionpipe with no gate in front (sessionpipe's own install wrote it) — "
+               "remove that notify, or the sessionpipe part of its --previous-notify; sheep gate never writes one")
+
+
+def codex_notify(path):
+    """Whether Codex's config.toml beside `path` runs sessionpipe from its top-level notify (the
+    lines before the first [table]: Codex reads it nowhere else). False when it does not read."""
+    try:
+        text = (path.parent / "config.toml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    head = re.split(r"(?m)^[ \t]*\[", text, maxsplit=1)[0]
+    return any(NOTIFY_OURS.search(l) for l in head.splitlines() if re.match(r"\s*notify\s*=", l))
+
+
+def gemini_cli_file():
+    return Path(os.environ.get("GEMINI_CLI_HOME") or HOME / ".gemini") / "settings.json"
+
+
+def gemini_cli_ungated():
+    """sessionpipe entries in Gemini CLI's settings.json (Claude-shaped), all ungated: gate never
+    writes there, so only a bare `sessionpipe install` put them there. 0 when it does not read."""
+    try:
+        cfg = read_settings(gemini_cli_file()) or {}
+    except (OSError, ValueError, Refused):
+        return 0
+    hooks = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
+    return sum(1 for gs in hooks.values() if isinstance(gs, list) for g in gs if ours(g)
+               for h in _cmds(g) if OURS.search(h["command"]))
+
+
+GEMINI_LINE = ("sessionpipe hooks Gemini CLI here with no gate in front (a bare `sessionpipe install` wrote them) "
+               "— `sessionpipe uninstall`, then `sessionpipe install --backfill 0 --claude-code` and sheep gate")
+
+
 def hook_totals():
-    """(totals, lines, files hooked, unreadable, dark) over every Claude config dir — check's body,
-    and what hooks/sync.py reads at session start (R1). `dark`: config dirs sessionpipe never
-    hooked while another is hooked — their sessions never report; counted only then, since with
-    none hooked sessionpipe is simply not installed."""
+    """(totals, lines, files hooked, unreadable, dark) over every Claude config dir, then Codex's
+    and Antigravity's hooks.json (harness_files()) — check's body, and what hooks/sync.py reads at
+    session start (R1). `files` counts Claude config dirs only. `dark`: hooks files sessionpipe
+    never hooked while a Claude dir is hooked — their sessions never report; counted only then,
+    since with none hooked sessionpipe is simply not installed."""
     lines, total, files, unreadable = [], {"gated": 0, "ungated": 0, "absent": 0}, 0, 0
     dark = []
     for d in claude_dirs():
@@ -867,6 +1113,28 @@ def hook_totals():
         for k in total:
             total[k] += c[k]
         lines.append(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent")
+    for name, path in harness_files():   # Codex's and Antigravity's hooks.json, when their folder is here
+        try:
+            cfg = read_settings(path) or {}
+        except (OSError, ValueError, Refused) as exc:
+            lines.append(f"{path}: unreadable — {exc}")
+            unreadable += 1
+            continue
+        c = counts(harness_survey(name, cfg))
+        notify = name == "codex" and codex_notify(path)
+        c["ungated"] += notify
+        if not (c["gated"] or c["ungated"]):
+            dark.append(path)
+            continue
+        for k in total:
+            total[k] += c[k]
+        lines.append(f"{path}: {c['gated']} gated, {c['ungated']} ungated, {c['absent']} absent")
+        if notify:
+            lines.append(f"{path.parent / 'config.toml'}: {NOTIFY_LINE}")
+    gem = gemini_cli_ungated()
+    if gem:
+        total["ungated"] += gem
+        lines.append(f"{gemini_cli_file()}: {gem} ungated — {GEMINI_LINE}")
     if not files:
         dark = []
     for path in dark:
@@ -955,6 +1223,9 @@ def cmd_check():
     if files and not http_sinks(cfg):
         notes.append(f"no {SINK['name']} sink — nothing leaves this Mac and its sessions do not reach the board "
                      "(D1 wants one: `sheep gate --sink` once R2's read is done)")
+    for name, path in harness_files() if files else []:
+        if name == "codex" and codex_unreviewed(path):
+            notes.append(review_note(path))
     if daemon_refusing():
         notes.append("the control daemon refused a headless turn (mode) since its last start — sessionpipe "
                      f"0.5.0 keeps refusing after one failed `claude --help` read; restart it: {DAEMON_KICK}")
@@ -974,6 +1245,7 @@ def cmd_check():
         if total["ungated"]:
             head += f", {total['ungated']} UNGATED — run {_sheep_cmd()} gate"
         if dark:
+            # "login dir" covers Codex's and Antigravity's files too: the overlay's suite reads this line
             head += (f", {len(dark)} login dir{'' if len(dark) == 1 else 's'} NEVER HOOKED — "
                      f"its sessions do not report; run {_sheep_cmd()} gate")
         if total["absent"]:
@@ -1031,7 +1303,7 @@ def cmd_forget(dry):
         pending[sid] = why
         write_pending(pending)  # before the call: sessionpipe deletes the outbox file either way
         try:
-            r = subprocess.run([sp, "forget", "claude-code", sid], capture_output=True, text=True, timeout=60)
+            r = subprocess.run([sp, "forget", *split_key(sid)], capture_output=True, text=True, timeout=60)
             out, code = r.stdout + r.stderr, r.returncode
         except subprocess.TimeoutExpired:
             out, code = "timed out after 60 s", 1
@@ -1088,7 +1360,7 @@ def cmd_audit():
     for s, why in hits:
         say(f"PRIVATE on the board: {s.get('source')}:{s.get('session_id')} on {s.get('machine')}, cwd {s.get('cwd')} ({why})")
     say(f"board: {len(rows)} session(s) read, {len(hits)} private"
-        + (" — the deletion is `sessionpipe forget claude-code <id>` per session, run by the owner" if hits else ""))
+        + (" — the deletion is `sessionpipe forget <source> <id>` per session, run by the owner" if hits else ""))
     return 1 if hits else 0
 
 
@@ -1401,14 +1673,121 @@ def control_notes():
     return out
 
 
+def daemon_state():
+    """The control daemon as it runs, not as control.json says: {"state", "why"}, state one of up,
+    error (a receiver not polling), down (not running, its launchd job loaded or no plist at all),
+    unloaded (not running, its plist there but not loaded), unknown (no answer this tool can read).
+    A last_error while polling is up, the error named: sessionpipe keeps polling after a 5xx or a
+    network blip and clears it on the next good poll; only a 401 stops it (polling false; cli.js'
+    pollLoop, read in the finish review, 2026-10-26). From 23 Oct 09:01 UTC
+    to 25 Oct 00:39 UTC the daemon had no connection — first last_error "the receiver no longer knows
+    this machine (401)" with polling false, then, after a re-pair, not running with its job unloaded —
+    while control.json, all check read, said paired (docs/sheep-listen-2026-10-24.md, section 4).
+    `sessionpipe control status` asks the daemon's socket and exits 0 either way: its JSON
+    {receivers: [{url, polling, last_error, …}]}, or the line "the control daemon isn't running"
+    (sessionpipe 0.5.0's cli.js, read 2026-10-25). `launchctl print` exits non-zero for a job not loaded."""
+    sp = sessionpipe_bin()
+    if not sp:
+        return {"state": "unknown", "why": "sessionpipe is not installed"}
+    try:
+        r = subprocess.run([sp, "control", "status"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"state": "unknown", "why": f"sessionpipe control status did not answer ({exc})"}
+    out = (r.stdout or "") + (r.stderr or "")
+    i = out.find("{")
+    try:
+        st = json.loads(out[i:]) if i >= 0 else None
+    except ValueError:
+        st = None
+    # the JSON first: a receiver's last_error may itself hold "is not running"
+    if not (isinstance(st, dict) and isinstance(st.get("receivers"), list)) and ("isn't running" in out or "is not running" in out):
+        lc = os.environ.get("SHEEP_LAUNCHCTL") or "launchctl"
+        try:
+            j = subprocess.run([lc, "print", f"gui/{os.getuid()}/{CONTROL_LABEL}"], capture_output=True, text=True, timeout=15)
+            loaded = j.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            loaded = None
+        if loaded is False and launch_agent().exists():
+            return {"state": "unloaded", "why": f"the control daemon isn't running and its launchd job {CONTROL_LABEL} is not loaded"}
+        return {"state": "down", "why": "the control daemon isn't running"}
+    if not isinstance(st, dict) or not isinstance(st.get("receivers"), list):
+        first = next((l.strip() for l in out.splitlines() if l.strip()), f"exit {r.returncode}")
+        return {"state": "unknown", "why": f"sessionpipe control status said {first[:120]!r}"}
+    rs = [x for x in st["receivers"] if isinstance(x, dict)]
+    if not rs:
+        return {"state": "error", "why": "the running daemon has no receiver"}
+    # polling but stuck for good: a token it cannot read (no request is sent) or an HTTP 4xx (a 403 or
+    # 404 never clears); a 5xx or a network error clears on the next good poll. sessionpipe 0.5.0's
+    # pollLoop sets `last_poll` on any answer, a 4xx's too, so its age tells nothing (re-review, 2026-10-26)
+    def stuck(x):
+        e = str(x.get("last_error") or "")
+        return e.startswith("can't read") or bool(re.match(r"HTTP 4\d\d\b", e))
+    bad = [x for x in rs if x.get("polling") is False or stuck(x)]
+    if bad:
+        return {"state": "error", "why": "; ".join(
+            f"{re.sub(r'^https?://', '', str(x.get('url') or '?')).split('/')[0]}: "
+            + (str(x.get("last_error"))[:160] if x.get("last_error") else "not polling") for x in bad)}
+    erred = "".join(f"; last error from {re.sub(r'^https?://', '', str(x.get('url') or '?')).split('/')[0]}: "
+                    f"{str(x['last_error'])[:160]}" for x in rs if x.get("last_error"))
+    return {"state": "up", "why": f"polling {', '.join(re.sub(r'^https?://', '', str(x.get('url') or '?')).split('/')[0] for x in rs)}{erred}"}
+
+
+def daemon_fix(d, s):
+    """The fix for a dead daemon, the owner's where it needs a passkey tap."""
+    if d["state"] == "error":
+        return (f"re-pair in the owner's terminal (a passkey tap): "
+                f"{pair_line(s['name'], [], (s.get('conf') or {}).get('mode', 'safe'))}")
+    if d["state"] == "unloaded":
+        return f"launchctl bootstrap gui/$(id -u) {launch_agent()}"
+    if not launch_agent().exists():   # pair --no-service: no job to kick (finish review, 2026-10-26)
+        return "start it by hand: sessionpipe control run (or re-pair, which installs its launchd agent)"
+    return DAEMON_KICK
+
+
+def daemon_plan():
+    """None when this account's plan carries Talk or is not known (then a dead daemon is a failure),
+    else the core's one line saying why not. Read live, through the cache's TTL (`sheep_plan(cli, env)`):
+    `check` is no hook. An unknown plan, or no core, counts as having Talk (spacesheep-tiers' rule)."""
+    try:
+        env = dict(os.environ)
+        if not env.get("SPACESHEEP_KEY"):
+            try:
+                k = env_value("SPACESHEEP_KEY")
+            except Exception:
+                k = None
+            if k:
+                env["SPACESHEEP_KEY"] = k.strip().strip("'\"")
+        common = _common()
+        return common.sheep_talk_refusal(common.sheep_plan(spacesheep_bin(), env))
+    except Exception:
+        return None
+
+
+def daemon_lines(s):
+    """(lines, problems) for the daemon of a paired Mac: a dead one fails check with its fix, unless the
+    plan has no Talk, where it is expected and named so; one this tool cannot read is said, never failed."""
+    d = daemon_state()
+    if d["state"] == "up":
+        return [f"control daemon: up, {d['why']}"], []
+    if d["state"] == "unknown":
+        return [f"control daemon: not read ({d['why']})"], []
+    no_talk = daemon_plan()
+    if no_talk:
+        return [f"control daemon: {d['why']} — expected: {no_talk}"], []
+    return [], [f"control daemon DEAD: {d['why']} — the Session tab and @session reach no session here; {daemon_fix(d, s)}"]
+
+
 def control_lines(s):
     """(lines, problems) for check: problems fail it — a private folder, a stale plist, a name the
-    tab does not know; the rest is said and passes."""
+    tab does not know, a dead daemon (daemon_lines); the rest is said and passes."""
     if not s["paired"]:
         return ["control: not paired here (sheep control prints the pair line)"], []
     c, lines, problems = s["conf"], [], []
     lines.append(f"control: paired as {c.get('name')}, mode {c.get('mode', 'safe')}, "
                  f"{len(s['folders'])} folders, receivers {receivers_text(c)}")
+    dl, dp = daemon_lines(s)
+    lines += dl
+    problems += dp
     for f, why in s["private"]:
         problems.append(f"control folder PRIVATE: {f} — {why}; run {_sheep_cmd()} control")
     if s["misnamed"]:
@@ -1462,6 +1841,10 @@ def cmd_control(dry, adds):
     added = [f for f in new if f not in old]
     renamed = c.get("name") != name
     say(f"control: paired with {receivers_text(c)}, mode {c.get('mode', 'safe')}")
+    # what runs, not only what control.json says: a dead daemon read as "paired" for two days (section 4)
+    dl, dp = daemon_lines({"name": name, "conf": c})
+    for line in dl + dp:
+        say("  " + line.replace("control daemon", "daemon", 1))
     say(f"  name: {name}" + (f" (was {c.get('name')!r})" if renamed else ""))
     say(f"  folders: {len(new)}" + (f", added {', '.join(Path(f).name for f in added)}" if added else "")
         + (f", dropped {', '.join(dropped)}" if dropped else ""))

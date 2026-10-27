@@ -12,6 +12,7 @@ has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3:
 hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
+unset ACCOUNTS_FILE ACCOUNT_ORCA_FILE   # rc-hosts reads the login dirs in every case: never the caller's registry
 export HOME="$T/home"
 # a stand-in overlay: the checkout claude-host's allowlist names (rc-hosts primary()), marked in the
 # suite's config dir with the core's keys beside it (B14b: the marker is how an overlay is named)
@@ -20,7 +21,7 @@ for k in guarded orca-deny; do [ -e "$REGATTA_CONFIG/regatta/$k" ] || : > "$REGA
 [ -e "$REGATTA_CONFIG/regatta/log-dir" ] || echo "$T/logs" > "$REGATTA_CONFIG/regatta/log-dir"
 [ -e "$REGATTA_CONFIG/regatta/projects" ] || echo "$HOME/projects" > "$REGATTA_CONFIG/regatta/projects"
 mkdir -p "$HOME/projects/demo" "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/.claude/sessions" "$T/coding/bin" "$T/stub" "$T/pids" "$T/kids"
-touch "$HOME/.local/bin/claude"
+touch "$HOME/.local/bin/claude"; chmod +x "$HOME/.local/bin/claude"   # claude-host always starts this file: a launcher needs it executable
 # Links, not copies (B7): rc-hosts finds the core from its own resolved path (lib/core_path.py), and
 # reads the registry and the launcher's source through the overrides below, never the real ones.
 ln -s "$B/rc-hosts" "$T/coding/bin/rc-hosts"
@@ -512,6 +513,17 @@ check "$(RC --launcher "$P/dispatch") $(cat "$T/out")" "0 $H" "granted, version 
 check "$(RC --launcher claude) $(cat "$T/out")" "0 $H" "…and claude"
 check "$(RC --launcher "$HOME/projects/overlay/.claude/worktrees/x/bin/dispatch")" "1" "…never a worktree's script, which claude-host would refuse"
 check "$(RC --launcher /usr/local/bin/other)" "1" "…nor anything off the list"
+# a launcher whose claude is missing is no launcher: claude-host always starts the claude binary, and its
+# spawn failure reaches only the screen (launcher-clock follow-up, 2026-10-24); a script still goes through
+mv "$HOME/.local/bin/claude" "$HOME/.local/bin/claude.keep"
+check "$(RC --launcher claude)" "1" "…not for claude when the claude binary is missing"
+check "$(RC --launcher "$HOME/.local/bin/claude")" "1" "…nor for its path"
+check "$(RC --launcher "$P/dispatch") $(cat "$T/out")" "0 $H" "…but a script does (claude-host starts that file, not claude)"
+chmod -x "$HOME/.local/bin/claude.keep"; mv "$HOME/.local/bin/claude.keep" "$HOME/.local/bin/claude"
+check "$(RC --launcher claude)" "1" "…nor when it is not executable"
+chmod +x "$HOME/.local/bin/claude"
+check "$(RC --launcher claude) $(cat "$T/out")" "0 $H" "…and again once it is"
+
 mv "$H" "$H.v2"; printf '#!/bin/sh\necho "usage: claude-host remote-control <args...> | claude-host --probe" >&2; exit 2\n' > "$H"; chmod +x "$H"
 check "$(RC --launcher "$P/dispatch")" "1" "a granted build from before 2026-10-18 (no --version) hosts, but starts no script"
 mv "$H.v2" "$H"
@@ -519,6 +531,38 @@ G="$HOME/.local/bin/claude-host.granted"
 cp "$G" "$T/granted.keep"; rm -f "${G:?}"
 check "$(RC --launcher "$P/dispatch")" "1" "no grant on record: nothing goes through it"
 cp "$T/granted.keep" "$G"
+
+echo "launcherlib: the one rule clock and helm ask through (bin/launcherlib.py)"
+ll() { python3 -I -c "import sys; sys.path.insert(0, '$B'); import launcherlib as l; $1"; }
+rch() {  # rch <name> <python body>: a stand-in rc-hosts, run by Python as launcherlib runs the real one
+  printf 'import sys, time, os\nHOST = %s\n%s\n' "\"$H\"" "$2" > "$T/$1"
+}
+mkdir -p "$T/ll-dir"
+rch rch-ok 'open(os.environ["LL_CALLS"], "a").write(" ".join(sys.argv[1:]) + "\n"); print(HOST)'
+rch rch-fail 'print(HOST); sys.exit(1)'
+rch rch-empty 'sys.exit(0)'
+rch rch-banner 'print("a banner"); print(HOST)'
+rch rch-dir 'print(os.path.dirname(HOST))'
+rch rch-noexec 'print(HOST + ".granted")'
+rch rch-gone 'print("/no/such/claude-host")'
+rch rch-slow 'time.sleep(5); print(HOST)'
+export LL_CALLS="$T/ll.calls"
+rm -f "$T/ll.calls"
+check "$(ll "print(l.ask('$T/rch-ok', 'claude'))")" "$H" "ask: the path rc-hosts printed, when it is an executable file"
+check "$(cat "$T/ll.calls")" "--launcher claude" "  asked as dispatch asks"
+check "$(ll "print(l.ask('$T/rch-fail', 'claude'))")" "None" "ask: a non-zero exit is bare, whatever it printed"
+check "$(ll "print(l.ask('$T/rch-empty', 'claude'))")" "None" "ask: an empty answer is bare"
+check "$(ll "print(l.ask('$T/rch-banner', 'claude'))")" "$H" "ask: the last line is the answer"
+check "$(ll "print(l.ask('$T/rch-dir', 'claude'))")" "None" "ask: a directory is no launcher"
+check "$(ll "print(l.ask('$T/rch-noexec', 'claude'))")" "None" "ask: a file that is not executable is no launcher"
+check "$(ll "print(l.ask('$T/rch-gone', 'claude'))")" "None" "ask: a path that is not there is no launcher"
+check "$(ll "print(l.ask('$T/no-such-script', 'claude'))")" "None" "ask: a script that does not run is bare"
+check "$(ll "print(l.ask(None, 'claude'))")" "None" "ask: no rc-hosts is bare"
+check "$(ll "l.ASK_TIMEOUT = 1; print(l.ask('$T/rch-slow', 'claude'))")" "None" "ask: no answer within the bound is bare"
+check "$(ll "print(l.through(['/p/dispatch', '--x'], '/h/claude-host'))")" "['/h/claude-host', '/p/dispatch', '--x']" "through: the launcher first, argv as it is"
+check "$(ll "print(l.through(['claude', 'a'], '/h/claude-host'))")" "['/h/claude-host', 'claude', 'a']" "through: claude stays the word claude"
+check "$(ll "print(l.through(['/c/claude', 'a'], '/h/claude-host', ('claude', '/c/claude')))")" "['/h/claude-host', 'claude', 'a']" "through: a claude path of the caller's becomes the word"
+check "$(ll "print(l.through(['/p/dispatch'], None))")" "['/p/dispatch']" "through: no launcher, argv as it is"
 
 echo "--agents: nothing that starts claude may skip claude-host (the anti-whack-a-mole check)"
 LA="$HOME/Library/LaunchAgents"; mkdir -p "$T/la.keep"; mv "${LA:?}"/*.plist "$T/la.keep/" 2>/dev/null
@@ -643,12 +687,15 @@ mk = lambda n, line, pc=None: {"id": n, "name": n, "prompt": head + "\n\n" + lin
 json.dump([mk("night", p + "/clock fire aurora -- " + p + "/weekly-run aurora " + home,
               p + "/clock fire aurora --precheck --due -- " + p + "/weekly-run aurora " + home),
            mk("pass", p + "/dispatch claude/x --repo r --account a"),
+           mk("canary", p + "/clock canary beat orca", p + "/clock fire canary --precheck -- " + p + "/clock canary beat orca"),
            mk("free", "Tidy the docs")], open(out, "w"))
 PY
 check "$(RC --agents)" "0" "automations whose lines name the primary's scripts: green"
 has "$T/out" "ok       automation night: Orca starts its run; weekly-run is the primary checkout's" "…a fired job named"
 has "$T/out" "ok       automation pass: Orca starts its run; dispatch is the primary checkout's" "…a dispatch line named"
 hasnt "$T/out" "automation free" "…a prompt not in the clock's shape is clock check's, not this check's"
+has "$T/out" "ok       automation canary: a canary beat; its launcher line starts no claude of its own" "…a canary beat starts no claude (clock canary, orca-launcher S5)"
+has "$T/out" "note     automation canary: its precheck fires the job through launchd (seam P); only a manual run starts a claude in Orca" "…its precheck fires the beat through launchd, as the note says"
 # seam P (orca-launcher S3): which automations start a claude in Orca is a note, never a count
 has "$T/out" "note     automation night: its precheck fires the job through launchd (seam P); only a manual run starts a claude in Orca" "…a precheck that fires the job: a note saying so"
 has "$T/out" "note     automation pass: Orca starts a claude for each run — no precheck fires its job" "…one without: a note naming the precheck to give it"
@@ -659,6 +706,7 @@ out, head, home, p = sys.argv[1:]
 json.dump([{"id": "wt", "name": "wt", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/dispatch claude/x"},
            {"id": "bare", "name": "bare", "prompt": head + "\n\ndispatch claude/x"},
            {"id": "fc", "name": "fc", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/clock fire aurora -- " + home + "/projects/overlay/bin/weekly-run aurora " + home},
+           {"id": "cc", "name": "cc", "prompt": head + "\n\n" + home + "/projects/overlay-copy/bin/clock canary beat orca"},
            {"id": "pc", "name": "pc", "prompt": head + "\n\n" + p + "/dispatch claude/x --repo r --account a",
             "precheck": {"command": home + "/projects/overlay-copy/bin/clock fire pc --precheck -- " + p + "/dispatch claude/x --repo r --account a"}}], open(out, "w"))
 PY
@@ -667,6 +715,8 @@ has "$T/out" "OUTSIDE  automation wt: launches dispatch from outside $P" "…nam
 has "$T/out" "note     automation bare: dispatch named without a path" "…a pathless line is a note"
 has "$T/out" "OUTSIDE  automation fc: fires through" "…a fire through another checkout's clock named OUTSIDE"
 has "$T/out" "OUTSIDE  automation pc: its precheck fires through" "…a precheck firing through another checkout's clock named OUTSIDE too"
+has "$T/out" "OUTSIDE  automation cc: beats through" "…a canary beating through another checkout's clock named OUTSIDE (orca-launcher S5)"
+has "$T/out" "overlay-copy/bin/clock, not the primary checkout's clock" "…naming that clock"
 echo '[]' > "$T/autos.json"
 printf '#!/bin/sh\nexit 1\n' > "$T/stub/orca.down"; chmod +x "$T/stub/orca.down"
 check "$(ORCA_HOST_CLI="$T/stub/orca.down" RC --agents)" "0" "Orca unread: a note, never a failure"
@@ -834,6 +884,43 @@ print(len(r.survey(lines, since="2026-10-18 13:09")), len(r.survey(lines, since=
 PY
 )" "2 0 0" "--health's rule: only refusals since the sitting, none from a pid --agents calls pending"
 
+echo "--tcc-survey: a job Orca started is counted too (orca-launcher S7)"
+# the ATTRIBUTION lines of tonight's evidence, shaped as the log prints them: Orca responsible, a child accessing
+orca_req() {   # ID SERVICE PREFLIGHT RESPONSIBLE ACCESSING AUTHVALUE
+  printf '%s\n' "2026-10-26 02:10:0${1#*.} Df tccd[408:1] [com.apple.TCC:access] AUTHREQ_CTX: msgID=$1, function=TCCAccessRequest, service=kTCCService$2, preflight=$3, query=1" \
+    "2026-10-26 02:10:0${1#*.} Df tccd[408:1] [com.apple.TCC:access] AUTHREQ_ATTRIBUTION: msgID=$1, attribution={$4$5 }," \
+    "2026-10-26 02:10:0${1#*.} Df tccd[408:1] [com.apple.TCC:access] AUTHREQ_RESULT: msgID=$1, authValue=$6, authReason=5, authVersion=1,"
+}
+ORCA_R='responsible={TCCDProcess: identifier=com.stablyai.orca, pid=777, auid=502, euid=502, binary_path=/Applications/Orca.app/Contents/MacOS/Orca}, '
+{ orca_req 501.1 FileProviderDomain no "$ORCA_R" 'accessing={TCCDProcess: identifier=com.anthropic.claude-code, pid=778, auid=502, euid=502, binary_path=/Users/u/.local/share/claude/versions/2.1.302}, ' 0
+  orca_req 501.2 FileProviderDomain no "$ORCA_R" 'accessing={TCCDProcess: identifier=com.anthropic.claude-code, pid=779, auid=502, euid=502, binary_path=/Users/u/.local/share/claude/versions/2.1.302}, ' 0
+  orca_req 501.3 SystemPolicyAllFiles no "$ORCA_R" 'accessing={TCCDProcess: identifier=python3, pid=780, auid=502, euid=502, binary_path=/usr/bin/python3}, ' 0
+  orca_req 501.4 DeveloperTool no "$ORCA_R" 'accessing={TCCDProcess: identifier=sh, pid=781, auid=502, euid=502, binary_path=/bin/sh}, ' 0
+  orca_req 501.5 SystemPolicyAllFiles no '' 'accessing={TCCDProcess: identifier=com.stablyai.orca, pid=777, auid=502, euid=502, binary_path=/Applications/Orca.app/Contents/MacOS/Orca}, ' 0
+  orca_req 501.6 SystemPolicyAllFiles no "$ORCA_R" 'accessing={TCCDProcess: identifier=bun, pid=782, auid=502, euid=502, binary_path=/Users/u/.bun/bin/bun}, ' 2
+  orca_req 501.7 SystemPolicyAllFiles no 'responsible={TCCDProcess: identifier=org.example.app, pid=900, auid=502, euid=502, binary_path=/Applications/Example.app/Contents/MacOS/Example}, ' 'accessing={TCCDProcess: identifier=bun, pid=901, auid=502, euid=502, binary_path=/Users/u/.bun/bin/bun}, ' 0
+  orca_req 501.8 SystemPolicyAllFiles no 'responsible={TCCDProcess: identifier=org.example.claude-host, pid=1, auid=502, euid=502, binary_path=/Users/u/.local/bin/claude-host}, ' 'accessing={TCCDProcess: identifier=bun, pid=2, auid=502, euid=502, binary_path=/Users/u/.bun/bin/bun}, ' 0
+  # no accessing block: the asker is `requesting` (the review's live shape); with neither, no job is named and none is counted
+  orca_req 501.9 SystemPolicyAllFiles no "$ORCA_R" 'requesting={TCCDProcess: identifier=bun, pid=783, auid=502, euid=502, binary_path=/Users/u/.bun/bin/bun}, ' 0
+  orca_req 502.1 SystemPolicyAllFiles no "$ORCA_R" '' 0
+} > "$T/tcc-orca.log"
+check "$(python3 - "$T/coding/bin/rc-hosts" "$T/tcc-orca.log" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)
+for (svc, res, acc), (n, last, vs) in sorted(r.survey(open(sys.argv[2]).read().splitlines()).items()):
+    print(svc, res, acc, n, ",".join(sorted(vs)))
+PY
+)" "FileProviderDomain denied/no-record REAL via Orca: ~/.local/share/claude/versions/<v> 2 Orca
+SystemPolicyAllFiles denied/no-record REAL via Orca: /usr/bin/python3 1 Orca
+SystemPolicyAllFiles denied/no-record REAL via Orca: ~/.bun/bin/bun 1 Orca" "a refusal charged to Orca while a child of it asks (accessing, else requesting) is listed, one row per accessor; Orca's own requests, one naming no asker, a quiet service, an allowed one, another app's and claude-host's are not"
+check "$(python3 - "$T/coding/bin/rc-hosts" "$T/tcc-orca.log" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.module_from_spec(s); l.exec_module(r)
+lines = open(sys.argv[2]).read().splitlines()
+print(len(r.survey(lines, since="2026-10-26 02:11")), len(r.survey(lines, skip={777})), len(r.survey(lines, skip={999})))
+PY
+)" "0 0 3" "  --health's since and skip rules reach it too (the responsible pid is Orca's)"
+
 echo "--tcc-survey --host: a peer is a line of wharf-runs/ssh, never a name in code"
 check "$(RC --tcc-survey --host nosuch)" "1" "--host of a Mac the key does not name"
 has "$T/out" "only buildbox (ssh buildbox-ssh)" "…is refused, naming the peers the key holds"
@@ -855,6 +942,80 @@ l = m.SourceFileLoader("r", sys.argv[1]); s = u.spec_from_loader("r", l); r = u.
 r.load("org.example.claude.host.fresh", plistlib.loads((r.AGENTS / "org.example.claude.host.fresh.plist").read_bytes()))
 PY
 check "$(grep -n 'kill SIGTERM\|bootout' "$T/calls" | head -2 | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' ' ')" "kill SIGTERM bootout gui/$(id -u)/org.example.claude.host.fresh " "load() ends a running job by SIGTERM before bootout, which would SIGKILL claude-host"
+
+echo "a confidential scope's host: only on its own login, only with \"rc\": {…} (confidential-reach S10)"
+NL=org.example.claude.host.node; NP="$HOME/Library/LaunchAgents/$NL.plist"
+# the fixture logins' dirs: acct-own's here, acct-gone's never made, acct-orca's Orca's, acct-main the default
+OWN="$HOME/.cfg-own"; ORC="$HOME/.orca-profile"; DEF="$HOME/.claude"; REAL="$(cd "$HOME" && pwd -P)"
+repo "$HOME/projects/node"; mkdir -p "$OWN/sessions" "$ORC"
+export ACCOUNTS_FILE="$T/accounts.json" ACCOUNT_ORCA_FILE="$T/orca.json"
+cat > "$ACCOUNTS_FILE" <<JSON
+{"accounts": [{"label": "acct-own", "home": "$OWN"}, {"label": "acct-orca", "via": "orca"},
+              {"label": "acct-gone", "home": "$OWN-gone"}, {"label": "acct-main", "home": "$DEF", "primary": true}]}
+JSON
+echo "{\"acct-orca\": {\"home\": \"$ORC\"}}" > "$ACCOUNT_ORCA_FILE"
+reg() {  # reg <the node entry's rc, as JSON, or "" for none> <the scope's login>
+  echo "{\"repos\": {\"node\": {\"hosts\": [\"laptop\"]${1:+, \"rc\": $1}}}, \"scopes\": {\"sec\": {\"repos\": [\"node\"], \"confidential\": true, \"login\": \"$2\"}}}" > "$T/coding/repos.json"
+}
+reg "" acct-own
+check "$(RC --check)" "0" "--check: a confidential repo with no rc key"
+has "$T/out" "held     node · laptop: confidential scope sec: its entry says no \"rc\": {…}" "…holds its host and says why"
+hasnt "$T/out" "missing  node" "…and wants none"
+RC >/dev/null; test -f "$NP"; check $? 1 "…a plain run writes no plist"
+reg true acct-own
+check "$(RC --check)" "0" "\"rc\": true"
+has "$T/out" "held     node · laptop: confidential scope sec: its entry says no \"rc\": {…}" "…is no rc object: held"
+reg '{}' acct-orca
+check "$(RC --check)" "0" "\"rc\": {} on an Orca-held login, its dir read back"
+has "$T/out" "held     node · laptop: confidential scope sec: login acct-orca is Orca's" "…held: no home of its own"
+reg '{}' acct-gone
+check "$(RC --check)" "0" "a login whose home is not on this Mac"
+has "$T/out" "login acct-gone has no home on this Mac ($OWN-gone)" "…held, naming the home"
+reg '{}' acct-nope
+check "$(RC --check)" "0" "a login the account registry lacks"
+has "$T/out" "login acct-nope is no Claude row of the account registry" "…held"
+reg '{}' acct-own
+check "$(RC --check)" "0" "\"rc\": {} and a login with a home here"
+has "$T/out" "missing  node · laptop" "…wants the host"
+echo '{"projects": {}}' > "$OWN/.claude.json"   # the login's own trust: the node not accepted
+check "$(RC --check)" "0" "--check with the repo untrusted in the login's own .claude.json"
+has "$T/out" "node · laptop: waits for workspace trust" "…trust is read from the host's config dir, not the default one"
+rm -f "$OWN/.claude.json"
+check "$(RC)" "0" "a plain run"
+check "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw -o - "$NP")" "$OWN" "…its plist carries the scope's login"
+check "$(RC --check)" "0" "--check after"
+has "$T/out" "ok       node · laptop: in sync, running" "…in sync"
+plutil -remove EnvironmentVariables.CLAUDE_CONFIG_DIR "$NP"   # the stopgap's case: a host on the default login
+check "$(RC --check)" "1" "--check: the host's plist names no config dir"
+has "$T/out" "FAIL     node · laptop: runs on $REAL/.claude, not $REAL/.cfg-own" "…FAILs, naming both"
+check "$(RC)" "1" "a plain run with that host running"
+check "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw -o - "$NP" 2>/dev/null)" "" "…leaves it for --restart (it would end its sessions)"
+echo 731 > "$T/kids/$(cat "$T/pids/$NL")"
+echo "{\"pid\":731,\"sessionId\":\"5e55731-0000\",\"status\":\"idle\",\"statusUpdatedAt\":$(( ($(date +%s) - 60) * 1000 )),\"cwd\":\"$HOME/projects/node\"}" > "$OWN/sessions/731.json"
+echo "{\"pid\":731,\"sessionId\":\"dead0731-0000\",\"status\":\"busy\",\"statusUpdatedAt\":$(( ($(date +%s) - 86400) * 1000 ))}" > "$DEF/sessions/731.json"   # a dead session's leftover, the pid reused
+check "$(RC --restart node)" "0" "--restart with an idle session recorded in the scope's login dir"
+hasnt "$T/out" "busy" "…the newest record is found there, past a stale one in the default dir: idle, not busy"
+check "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw -o - "$NP")" "$OWN" "…and the host moves to the scope's login"
+rm -f "$T/kids/"* "$OWN/sessions/731.json" "$DEF/sessions/731.json"
+reg false acct-own
+check "$(RC --check)" "1" "\"rc\": false with the host still loaded"
+has "$T/out" "FAIL     node · laptop: a confidential scope's host is loaded, held: \"rc\": false" "…FAILs"
+check "$(RC)" "0" "a plain run"
+has "$T/out" "retiring $NL" "…retires it: \"rc\": false keeps winning"
+test -f "$NP"; check $? 1 "…its plist gone"
+check "$(RC --check)" "0" "--check after"
+hasnt "$T/out" "node · laptop" "…\"rc\": false says nothing once no host is left"
+reg '{}' acct-main
+check "$(RC)" "0" "a scope on the default login"
+check "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw -o - "$NP" 2>/dev/null)" "" "…no CLAUDE_CONFIG_DIR for the default dir: it would move .claude.json"
+check "$(RC --check)" "0" "…and --check"
+has "$T/out" "ok       node · laptop: in sync" "…in sync"
+echo '{"repos": {"node": {"hosts": ["laptop"], "rc": {}}}, "scopes": [{"repos": ["node"], "confidential": true}]}' > "$T/coding/repos.json"
+rm -f "$NP"
+check "$(RC)" "1" "a registry whose scopes is no object (torn)"
+has "$T/out" "the registry does not read" "…refuses, naming why"
+test -f "$NP"; check $? 1 "…and writes no host on the default login"
+unset ACCOUNTS_FILE ACCOUNT_ORCA_FILE
 
 echo
 [ "$fails" -eq 0 ] && echo "all rc-hosts tests pass" || { echo "$fails rc-hosts test(s) FAILED"; exit 1; }

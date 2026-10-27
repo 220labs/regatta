@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- The stall class `start path dead` (orca-launcher S7, docs/orca-launcher-2026-10-24.md G2): `stalls.py` reads
+  wharf-runs' `clock canary check --json` on this Mac (its own Orca and beat files: no peer, nothing on the laptop)
+  and raises one stall per failing canary beat, keyed `[host, "canary", beat]`, titled `canary orca · start path
+  dead`, in the owner's column. The stall road files it on a yard like any raise, with the mention; a pass that
+  could not read the check (the brake, a hung or garbled answer, an Orca it could not read) closes no issue
+  (`unread["canary"]`, `STALLS_CANARY`, 0 turns it off). Nor does one in the 90 minutes after the studio brake ends
+  (it froze Orca serve, so no beat fired), or one whose Orca read already failed. A beat that fails again after it
+  cleared is a new instance and waits the 10 minutes again; a beat whose login a confidential scope runs on is guarded.
+  G2: 45 minutes from the missed beat to the issue (the record's arithmetic), up to 105 from the last good one.
+- The board drops dead cards (board-cleanup S1, `docs/helm-board-noise-2026-10-25.md`): one cached
+  `gh pr list` read per cloned repo (`helmlib.repo_prs`, every open PR and the newest 300 of any state,
+  cached 10 minutes, the repos read in parallel) serves every reader, matched by `(repo, branch)`. A stall whose branch's PR is merged or closed,
+  or whose content is on main with no PR (wharf's `branches.prove`, its "every changed file identical"
+  proof only), is no card, nor one older than 7 days (`HELM_STALL_DAYS`): the header counts the old ones,
+  with the oldest's age and the days it was told; `stalls.py --json` and the tick still see every record. Ask and lookout cards on a merged or
+  closed branch drop off too, as do a template's and a test fixture's D-items, and one doc item on two
+  branches is one card, the newest branch's.
+- The ask poll skips a branch whose PR is merged or closed and any `TEMPLATE.md` or `tests/` doc, and
+  rings one banner per doc item; `asks.json` rows carry the branch's `t` and `sha`, and keep every live
+  branch's row (keel's lookout watches it per branch). `seen.json`'s keys are unchanged. `asks.json`'s
+  `ended` lists each branch skipped for its PR, and `stalls.poll_asks` reads it as asked, so a WAITING run
+  there raises no new S6 (the landing review). No guarded repo's PRs are read.
+- PR cards cover every open PR in every cloned repo (no 8-repo, 10-PR cap); a WIP PR is Running only while
+  a live session (`stalls.judge`'s new `live` list) or a running task holds its `(repo, branch)`, else a
+  header count. Done today lists today's merged PRs and today's `launched` lines in each repo's
+  autofinished log whose PR is not still open (one readied for a tap). The owner's column groups by kind (asks, stalls, sessions waiting, PRs, memos), five
+  each with "+N more"; a waiting card names its branch's topic.
+
 - The embark memo leads the owner's column (embark-on-helm, 2026-10-25): `helm_render.embark_first`
   puts the newest open `docs/embark/embark-<date>.md` first, titled and labelled Embark, whether it
   came from this Mac's `keel list` or a lookout card (this Mac's or a peer's).
@@ -10,6 +38,10 @@
   carrying dispatch's reason from the record's `launch`, never S1's retry: a re-dispatched build would
   end on the same line and meet the same gate (2026-10-25, yolo-launch review D1-B). One whose launch
   started is no card here; a launch that stops is S4 or S5 as before.
+
+- The skipper asks for claude-host through wharf-runs' `launcherlib.py`, the one home of the launcher
+  rule that `rc-hosts` and `clock` use too; its answers are the same (a non-executable path, an empty
+  or a failed answer: a bare `claude`), and the argv it builds is the library's.
 - The skipper's `claude` starts through `claude-host` where wharf-runs' `rc-hosts --launcher claude`
   names one, as dispatch's runs do: skipper-ears S1 (2026-10-24) saw a bare `claude` under launchd hang
   before its first turn on the yard, its binary denied Full Disk Access, and every case pass through

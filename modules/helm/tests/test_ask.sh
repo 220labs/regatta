@@ -926,5 +926,71 @@ check "$(SURFACES_HOST=elsewhere-x N8 "print(m.stall_road('yardhost-x'), m.stall
 check "$(CFG8="$T/cfg8-none" N8 "print(m.stall_road('yardhost-x'))")/$(( $(wc -l < "$T/gh8.calls" | tr -d ' ') - n0 ))" \
   "(False, 'github-issue: no helm/logbook-repo value in the config dir')/1" "  no logbook value: no road, said, and stall_road calls nothing (the one call is the notice above)"
 
+echo "board-cleanup S1: the poll skips a merged or closed branch, a template and a test's fixture; one banner per doc item"
+BC="$T/bc"; mkdir -p "$BC"
+# HELM_GH stands in for `gh pr list`: per repo folder ($PWD's name), the PRs a --state asks for
+cat > "$BC/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+state = sys.argv[sys.argv.index("--state") + 1]
+prs = {"bcrepo": [{"number": 3, "state": "OPEN", "headRefName": "claude/a/open"},
+                  {"number": 2, "state": "CLOSED", "headRefName": "claude/a/closed", "closedAt": "2026-01-01T00:00:00Z"},
+                  {"number": 1, "state": "MERGED", "headRefName": "claude/a/merged", "mergedAt": "2026-01-01T00:00:00Z"}],
+       "bctwin": []}.get(os.path.basename(os.getcwd()), [])
+with open(os.environ["BC_CALLS"], "a") as fh:
+    fh.write("%s %s\n" % (os.path.basename(os.getcwd()), state))
+print(json.dumps([p for p in prs if state == "all" or p["state"] == "OPEN"]))
+PY
+chmod +x "$BC/gh"
+bcdoc() { mkdir -p "$(dirname "$1")"; printf '# %s\n\n## Decisions\n\n- **D1 — %s**\n\n  Reversible: yes\n\n  ➤ Recommended: A\n\n  ➤ Answer:\n\n' "$2" "$2" > "$1"; }
+bcpush() { git -C "$1" push -q origin "$2" 2>/dev/null; }
+for name in bcrepo bctwin; do
+  BR="$BC/$name"; git init -q --bare "$BC/$name.git"; git init -q -b main "$BR"; mkdir -p "$BR/docs"
+  echo "# $name" > "$BR/README.md"; git -C "$BR" add -A; git -C "$BR" commit -qm init
+  git -C "$BR" remote add origin "$BC/$name.git"; bcpush "$BR" main
+done
+BR="$BC/bcrepo"
+for b in merged closed open; do
+  git -C "$BR" checkout -q -b "claude/a/$b" main; bcdoc "$BR/docs/$b.md" "ask on $b"
+  git -C "$BR" add -A; git -C "$BR" commit -qm "$b"; bcpush "$BR" "claude/a/$b"
+done
+# on the open branch: a test's fixture and a template, neither asks anybody
+mkdir -p "$BR/modules/x/tests/fixtures" "$BR/modules/x/skills/cap"
+bcdoc "$BR/modules/x/tests/fixtures/f.md" "a fixture"; bcdoc "$BR/modules/x/skills/cap/TEMPLATE.md" "a template"
+git -C "$BR" add -A; git -C "$BR" commit -qm "fixture and template"; bcpush "$BR" claude/a/open
+# one doc item on two branches, the older committed an hour back: one banner, the newest branch's row on the board
+git -C "$BR" checkout -q -b claude/a/older main; bcdoc "$BR/docs/shared.md" "shared ask"; git -C "$BR" add -A
+GIT_COMMITTER_DATE="$(( $(date +%s) - 3600 )) +0000" git -C "$BR" commit -qm older; bcpush "$BR" claude/a/older
+git -C "$BR" checkout -q -b claude/a/newer main; bcdoc "$BR/docs/shared.md" "shared ask"; git -C "$BR" add -A
+git -C "$BR" commit -qm newer; bcpush "$BR" claude/a/newer
+# the twin shares the merged branch's name; its own repo has no PR for it, so its ask stands
+TW="$BC/bctwin"; git -C "$TW" checkout -q -b claude/a/merged main; bcdoc "$TW/docs/twin.md" "twin ask"
+git -C "$TW" add -A; git -C "$TW" commit -qm twin; bcpush "$TW" claude/a/merged
+mkdir -p "$BC/cache"; echo '[]' > "$BC/cache/seen.json"
+bcpoll() { HELM_GH="$BC/gh" BC_CALLS="$BC/calls" HELM_PR_TTL=0 ASK_CACHE_DIR="$BC/cache" PLAN_CACHE_DIR="$BC/plancache" "$B/ask" poll --repos "$BR" "$TW"; }
+out=$(bcpoll)
+bcrows() { python3 -c "import json; print(sorted((a['repo'], a['branch'].split('/')[-1], a['rel'].split('/')[-1]) for a in json.load(open('$BC/cache/asks.json'))['asks']))"; }
+check "$(bcrows)" "[('bcrepo', 'newer', 'shared.md'), ('bcrepo', 'older', 'shared.md'), ('bcrepo', 'open', 'open.md'), ('bctwin', 'merged', 'twin.md')]" \
+  "asks.json: the open branch's ask, the twin's on a branch name its own repo never merged, both shared rows; none of a merged or closed branch, a fixture or a template"
+check "$(echo "$out" | grep -c 'banner: ')" "3" "  three banners: the open ask, the twin's, and the shared item once"
+has "$out" "banner: bcrepo D1 — shared ask" "  …the shared one by its title"
+check "$(python3 -c "import json; a=[x for x in json.load(open('$BC/cache/asks.json'))['asks'] if x['rel']=='docs/shared.md']; print(all(isinstance(x.get('t'), int) and len(x.get('sha') or '') == 40 for x in a))")" "True" \
+  "  each row carries its branch's last commit time and tip, for the newest-branch pick and the PR's head"
+check "$(sort -u "$BC/calls" | tr '\n' ' ')" "bcrepo all bcrepo open bctwin all bctwin open " "  one read of each repo's PRs, all states and every open one"
+check "$(ASK_CACHE_DIR="$BC/cache" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls; print(sorted(b.split("/")[-1] for r, b in stalls.poll_asks() if r == "bcrepo"))' "$B")" \
+  "['closed', 'merged', 'newer', 'older', 'open']" "  asks.json's ended lists the merged and closed branches, and stalls read them as asked: no new S6 for a dead run"
+python3 - "$BC/cache/seen.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+keys = [k for k in json.load(open(p)) if "shared.md" not in k or "older" in k]
+json.dump(keys, open(p, "w"))
+PY
+out=$(bcpoll)
+check "$(echo "$out" | grep -c 'banner: ')" "0" "  seen.json naming the item on one branch only (its older key): no banner for the same item on another"
+check "$(python3 -c "import json; print(sorted(k.split(':')[1].split('/')[-1] for k in json.load(open('$BC/cache/seen.json')) if 'shared' in k))")" "['newer', 'older']" \
+  "  seen.json keeps every row's key in its old form"
+out=$(PLAN_NO_GH=1 ASK_CACHE_DIR="$BC/cache" PLAN_CACHE_DIR="$BC/plancache" "$B/ask" poll --repos "$BR" "$TW")
+has "$out" "ask poll: 6 open" "GitHub unread (PLAN_NO_GH): every branch is scanned as before, the fixture and template still skipped"
+
 echo
 [ "$fails" = 0 ] && echo "test_ask ($HELM_NAMES names): all passed" || { echo "test_ask ($HELM_NAMES names): $fails failed"; exit 1; }

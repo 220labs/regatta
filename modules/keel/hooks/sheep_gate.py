@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """sheep_gate — the privacy gate in front of every sessionpipe hook entry. Stdlib, Python 3.9.
 
-    python3 <overlay>/hooks/sheep_gate.py "<sessionpipe-hook>" claude-code <Event>
+    python3 <overlay>/hooks/sheep_gate.py "<sessionpipe-hook>" <harness> <Event>
 
-`bin/sheep gate` rewrites each sessionpipe entry in settings.json to this form; sessionpipe's
-own command is the argv after this script. The gate reads the hook's stdin JSON and, when the
-event is private, exits 0 having sent nothing: sessionpipe never runs, so no outbox line, no
-sink. Otherwise it runs sessionpipe's command with the same stdin bytes; its stdout (a
-PermissionRequest answer) passes through, its exit code does not — a script under hooks/ never
-exits non-zero (AGENTS.md), and a crashing sessionpipe must not block a tool or erase a prompt.
+`bin/sheep gate` rewrites each sessionpipe entry to this form — Claude Code's settings.json,
+Codex's hooks.json, Antigravity's hooks.json (the harness is the argv's second-last word);
+sessionpipe's own command is the argv after this script. The gate reads the hook's stdin JSON
+and, when the event is private, exits 0 having sent nothing: sessionpipe never runs, so no
+outbox line, no sink. Otherwise it runs sessionpipe's command with the same stdin bytes; its
+stdout (a PermissionRequest answer) passes through, its exit code does not — a script under
+hooks/ never exits non-zero (AGENTS.md), and a crashing sessionpipe must not block a tool or
+erase a prompt. Antigravity reads a hook's stdout as its answer and takes anything but JSON as a
+deny (sessionpipe's adapters/antigravity.ts), so for it the gate prints `{}` before anything
+else, on every path, and discards sessionpipe's stdout (0.5.0 only ever answers `{}` there).
+
+Where a session runs, per harness: Claude Code and Codex put `cwd` in the event (Codex's
+`transcript_path` is a rollout under $CODEX_HOME/sessions, which says nothing of the folder, so only
+Claude Code's is read as a slug); Antigravity has no `cwd` but `workspacePaths` (file:// URIs or
+paths), each judged, and this process's cwd only when it names none.
 
 Why it exists: sessionpipe has no folder rule — its config holds sinks and per-harness switches,
 its filter is per tier and event type — so the vault has to be dropped before sessionpipe ever
@@ -58,6 +67,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 
@@ -240,9 +250,37 @@ def private_reason(cwd=None, transcript_path=None, project_dir=None):
     return None
 
 
-def main():
-    argv = sys.argv[1:]
-    data = sys.stdin.buffer.read()
+def harness(argv):
+    """The harness sessionpipe's command names: its second-last word (`<hook> <harness> <Event>`,
+    or `node <hook.js> <harness> <Event>`); claude-code for a command too short to say."""
+    return argv[-2] if len(argv) >= 3 else "claude-code"
+
+
+def workspace_paths(value):
+    """Antigravity's workspacePaths as absolute local paths, as sessionpipe's agWorkspaces reads
+    them: a file:// URI decoded, a plain absolute path kept, a remote URI or a relative path left
+    out (the raw-text scan still sees its words)."""
+    out = []
+    for p in value if isinstance(value, list) else []:
+        if not isinstance(p, str) or not p:
+            continue
+        if p[:5].lower() == "file:":
+            p = urllib.parse.unquote(urllib.parse.urlparse(p).path)
+        elif re.match(r"^[a-z][a-z0-9+.-]*://", p, re.I):
+            continue
+        if os.path.isabs(p) and p not in out:
+            out.append(p)
+    return out
+
+
+def places(name, event):
+    """The folders the session runs in, per harness (module docstring)."""
+    if name == "antigravity":
+        return workspace_paths(event.get("workspacePaths")) or [os.getcwd()]
+    return [event["cwd"] if isinstance(event.get("cwd"), str) else os.getcwd()]
+
+
+def main(argv, data):
     try:
         event = json.loads(data or b"null")
     except ValueError:
@@ -251,18 +289,30 @@ def main():
         return
     if confidential_roots() is None or PRIVATE_UNREAD:
         return
-    cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else os.getcwd()
-    if private_reason(cwd, event.get("transcript_path"), os.environ.get("CLAUDE_PROJECT_DIR")) \
+    name = harness(argv)
+    transcript = event.get("transcript_path") if name == "claude-code" else None
+    if any(private_reason(p) for p in places(name, event)) \
+            or private_reason(None, transcript, os.environ.get("CLAUDE_PROJECT_DIR")) \
             or _text_reason(data):
         return
-    # stdout and stderr are inherited (a PermissionRequest answer goes straight back);
-    # communicate() feeds stdin without the 64 KB pipe-buffer deadlock.
-    subprocess.Popen(argv, stdin=subprocess.PIPE).communicate(data)
+    # communicate() feeds stdin without the 64 KB pipe-buffer deadlock. Claude Code and Codex:
+    # stdout and stderr are inherited (a PermissionRequest answer goes straight back).
+    # Antigravity: the answer was written before anything else, and sessionpipe 0.5.0's own is `{}`
+    # on every path (antigravity.ts fromHook), so its stdout goes nowhere: a second answer is noise.
+    out = subprocess.DEVNULL if name == "antigravity" else None
+    subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out).communicate(data)
 
 
 if __name__ == "__main__":
+    # Antigravity: `{}` first, as sessionpipe's own hook.js does, so a crash or Antigravity's 5 s
+    # timeout killing this process still leaves it an answer (module docstring).
+    if harness(sys.argv[1:]) == "antigravity":
+        try:
+            os.write(1, b"{}\n")
+        except BaseException:
+            pass
     try:
-        main()
+        main(sys.argv[1:], sys.stdin.buffer.read())
     except BaseException:  # SystemExit included: this hook's only exit code is 0
         pass
     os._exit(0)
