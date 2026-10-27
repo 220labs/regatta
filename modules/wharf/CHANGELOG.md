@@ -20,6 +20,16 @@
   sync's `push_left` leaves no retry marker for such a branch. A session in #169's old worktree had pushed it back and opened the stale #171
   (night-landings finding 3, 2026-10-25).
 
+- The template's `check.yml` and `automerge.yml` key their concurrency group on draft (`…-draft` / `…-live`), so a
+  `synchronize` run that still says draft, and skips, can no longer cancel the `ready_for_review` run
+  started a second before it (the 2026-10-25 race; regatta's own the same). A repo made
+  from the template before this copies the line by hand.
+
+- The template's `check.yml` names its job `check (draft)` on a draft, so the skipped draft run no longer reports
+  under the required `check`; its `automerge.yml` reads the last 20 `check.yml` runs on the head, filtered to those
+  not skipped, instead of the newest alone, and reads `hold` live before arming (ci-draft-race step 2, 2026-10-27). Read back live on a draft head: a
+  skipped job reports the name expression's text, never `check`.
+
 - `/finish` step 11.4: a landing another Mac sent here (`--unattended … --from=<host>`, which
   `autofinish-run`'s job writes) takes that host's path, so a laptop sweep's landing merges on the other
   Mac as it would have on the laptop (D2-A of the lander's move, 2026-10-23).

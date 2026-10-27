@@ -28,11 +28,29 @@ permissions:
 # A newer push to the same PR makes the older run moot, and so does the PR closing; every run
 # bills the account's minutes. Keyed on the PR number: a merged PR's `closed` event carries the
 # base branch in github.ref, not refs/pull/N/merge. github.ref is the push trigger's key.
+# And keyed on draft: a `synchronize` run whose payload still says draft (its job skips) started a
+# second after the `ready_for_review` run and cancelled it, so no check completed and automerge
+# waited for a hand re-run (another repo's pull request, 2026-10-25). A skipped draft run now sits in its own
+# group; a newer live run still cancels an older one, and `closed` still cancels a live run, its
+# payload saying draft false once the PR was ready. `&&` returns its first falsy operand, else its
+# last, and `||` its first truthy one (actions/runner's Expressions2 And.cs and Or.cs), so a push,
+# with no draft at all, reads `live`. Only github, inputs and vars reach a group:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
 concurrency:
-  group: check-${{ github.event.pull_request.number || github.ref }}
+  group: check-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.draft && 'draft' || 'live' }}
   cancel-in-progress: true
 jobs:
   check:
+    # Named for the draft too: the skipped draft run survives (the group above keeps it from cancelling
+    # the ready run), GitHub reports a skipped job as a passed check, and branch protection requires
+    # `check`, so a skipped run reporting under that name could let a merge through before the live
+    # run finishes. Only a live run is `check` now; a draft's reports `check (draft)`, which nothing
+    # requires. `jobs.<job_id>.name` reaches the github context (the table at
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability).
+    # Seen live on a sibling repo's draft head (2026-10-27, `gh api …/commits/<sha>/check-runs`): a job
+    # skipped by its `if` is not evaluated, and reports this expression's text as its name; a live
+    # run reports `check`. Either way a skipped run is never `check`.
+    name: ${{ github.event.pull_request.draft && 'check (draft)' || 'check' }}
     # Not on a draft: the checkpoint hook pushes one every ~10 min, and those runs were most
     # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
     # check, so automerge.yml arms only once this head has a run that is not skipped.
