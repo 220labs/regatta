@@ -9,6 +9,8 @@
     account limits [LABEL | --all [--parked] [--orca]] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
     account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
     account refresh [--force]                                   the Drive-backed files' local copies, re-read (the usage tick's, through claude-host; exit 3 outside it)
+    account tenant set NAME --repos KEY… --logins LABEL…        one tenant into the tenants file (a login in one tenant only), then its copy refreshed; a person's (exit 2 unattended)
+    account tenant drop NAME                                    one tenant out of the tenants file, then its copy refreshed; a person's too
     account which                                               the label of the dir this process runs under
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
     account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
@@ -105,8 +107,11 @@ another seat. A tenant's own row is not confined to its repos: its own deny list
 may run (an organisation's seat wants the vault on it). Entries are repo keys as in a deny list,
 or a glob (`acme-*`; `*` spans `/`) matched against the key and, when git cannot answer, the path,
 so a repo cloned later is the tenant's the day it lands. With no reading of the tenant login's
-limits, pick runs it there rather than nothing, as the primary's rule has it: no other row may. `holds_denied` ignores tenancy: a folder holding a
-tenant's repo loads nothing of it. The guard (account_guard) asks `allowed` on the default dir too
+limits, pick runs it there rather than nothing, as the primary's rule has it: no other row may. `holds_denied` ignores tenancy, a folder
+holding a tenant's repo loads nothing of it, bar one tenant: the one holding the vault (`lighthouse/vault`), whose files the
+default dir's CLAUDE.md imports. A folder holding any of that tenant's repos is off every row but the tenant's, the default dir's
+included (confidential-reach S7, 2026-10-26: the vault is a tenant like any other, and its tenant replaces the work seats' deny
+lists and ORCA_ROW's). A row refused the vault by tenancy is an employer's, as one refused it by its deny list is. The guard (account_guard) asks `allowed` on the default dir too
 while any tenant exists, and the refusal names the way in: the login's VS Code profile (`vscode
 LABEL`), or `cc X` in a Terminal. `doctor` checks that VS Code ties each tenant repo's folder, and
 each workspace that opens one, to a profile of the tenant's login.
@@ -117,6 +122,8 @@ ignored. Each good read is copied beside it (`.tenants.json.last`), and a link t
 drive behind it away) holds by that copy, never failing open: that would let every seat, another
 employer's included, into a tenant's repos. Only with no copy either is tenancy off, said on stderr
 (not under --json). To end tenancy, write `{}`: a deleted file or link leaves the copy holding.
+`tenant set` and `tenant drop` are its one writer (S7): a person's, refused under CLAUDE_UNATTENDED; they write through the
+link, read the file back and refresh the copy, and refuse rather than drop what they cannot read or give a login a second tenant.
 
 Drive-backed reads are local (docs/orca-launcher-2026-10-24.md, S4, 2026-10-24: no unattended run may
 hang on a person). The tenants file and the logins file are
@@ -245,8 +252,8 @@ LINKS = ("projects", "sessions", "skills", "plugins", "agents", "rules", "CLAUDE
 # the one the owner edits (code review 2026-10-03).
 # An employer login's CLAUDE.md links the work file instead (the owner, 2026-10-18, answering
 # docs/orca-hosts-2026-10-17.md F5: "work files only"): the owner's working-style files, never the
-# private ones. "Employer" is any row refused the vault — a work login by its own deny list, an
-# Orca login by ORCA_ROW's — so the rule follows the deny lists, never a list of names.
+# private ones. "Employer" is any row refused the vault — by its own deny list, by tenancy (the vault's
+# tenant is another's, S7), an Orca login by ORCA_ROW's — so the rule follows the refusals, never a list of names.
 # The overlay's bootstrap.sh writes the work file. Orca rewrites a profile's CLAUDE.md from its own one-line stub
 # at each setup but leaves a symlink alone ("user-owned", claude-profile-sharing.ts), so a link is
 # what survives there.
@@ -263,11 +270,21 @@ def overlay_key_missing(rel, env=None):
 
 
 def employer(a):
-    """True when the row is refused the vault (`lighthouse/vault`): its CLAUDE.md gets the work file.
-    No vault named, no employer row — bar where the overlay is installed: there it is an error."""
+    """True when the row is refused the vault (`lighthouse/vault`), by its deny list or by tenancy (the
+    vault's tenant is another's, S7): its CLAUDE.md gets the work file. No vault named, no employer row —
+    bar where the overlay is installed: there it is an error."""
     if not VAULT:
         overlay_key_missing("lighthouse/vault")
-    return bool(VAULT) and bool(denied(a, projects_dir() / VAULT, routes=False))
+    return bool(VAULT) and bool(denied(a, projects_dir() / VAULT))
+
+
+def new_orca_row(reg, label):
+    """The row orca-sync builds for an Orca login no row names yet. It carries its routes like every
+    registry row: employer() reads them, and without them a new employer login would link the private
+    CLAUDE.md until the next sync (cr-s7 review, 2026-10-26)."""
+    a = dict(core().orca_row(label), home=HOME / ".orca-unsynced" / label)
+    a["routed"] = routes_for(reg, a)
+    return a
 
 
 def projects_dir():
@@ -695,6 +712,109 @@ def cmd_refresh(force=False):
     return rc
 
 
+TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def cmd_tenant(reg, what, name, repos=(), logins=()):
+    """`tenant set NAME --repos … --logins …` and `tenant drop NAME`: the tenants file's one writer
+    (confidential-reach S7, 2026-10-26). A person's, so main refuses it under CLAUDE_UNATTENDED: the entry
+    decides which seat may open which repo, and the link it writes may put a privacy prompt on a run nobody
+    watches. It refuses rather than writes when the key is a last good copy only (bootstrap.sh --config
+    relinks it), when the file does not read or parse (writing would drop every tenant it holds), when a
+    label is no claude row of the registry, when a login is in another tenant's `logins` already (one tenant
+    per login: the later would take it silently, as apply_tenants reads two), and when a repo entry is
+    another tenant's (both would refuse it, and it would run nowhere). It writes through the link to its
+    target, reads the file back, and refreshes the hooks' copy (refresh's tenants half), so the guard holds
+    the new entry at the next prompt."""
+    if not TENANT_NAME.fullmatch(name or ""):
+        print(f"account tenant: {name!r} is no tenant name (letters, digits, '.', '_' or '-')", file=sys.stderr)
+        return 1
+    if not (TENANTS.is_symlink() or TENANTS.exists()):
+        if tenants_last().is_file() or (CONFIG / "regatta" / "overlay").exists():
+            print(f"account tenant: {TENANTS} is not written here (its last good copy alone, or the overlay links it) — "
+                  f"{bootstrap_cmd()} --config relinks it; nothing written", file=sys.stderr)
+            return 1
+        if reg.get("tenants") or any(a.get("tenant") for a in reg["accounts"]):
+            print("account tenant: the registry (accounts.json) carries tenants, and a new tenants file would replace "
+                  "them all — move them into the file by hand first; nothing written", file=sys.stderr)
+            return 1
+        raw = {}
+    else:
+        try:
+            raw = json.loads(TENANTS.read_text())
+            if not isinstance(raw, dict):
+                raise ValueError("no JSON object")
+        except (OSError, ValueError) as e:
+            print(f"account tenant: {TENANTS} does not read ({e}) — writing would drop the tenants it holds; nothing written",
+                  file=sys.stderr)
+            return 1
+    new = dict(raw)
+    if what == "drop":
+        if name not in raw:
+            print(f"account tenant: no tenant {name} in {TENANTS.name} ({', '.join(raw) or 'none'}); nothing written", file=sys.stderr)
+            return 1
+        del new[name]
+    else:
+        entries, bad = [], []
+        for r in repos:
+            e = tenant_entry(r)
+            if not e:
+                bad.append(r)
+            elif e not in entries:
+                entries.append(e)
+        labels = {a["label"]: a for a in reg["accounts"] if a.get("provider") == "claude"}
+        unknown = [l for l in logins if l not in labels]
+        why = []
+        if bad:
+            why.append(f"repos {', '.join(map(repr, bad))} are no repo keys (a key is relative to {projects_dir()})")
+        if unknown:
+            why.append(f"{', '.join(unknown)} is no claude row of {REGISTRY.name} ({', '.join(labels) or 'none'})")
+        for n, t in raw.items():
+            if n == name:
+                continue
+            both = [l for l in dict.fromkeys(logins) if l in tenant_logins(t)]
+            if both:
+                why.append(f"{', '.join(both)} is {n}'s login already: a login is in one tenant only (take it out of {n} first)")
+            theirs = [x for x in (tenant_entry(r) for r in ((t.get("repos") if isinstance(t, dict) and isinstance(t.get("repos"), list) else None) or [])
+                                  if isinstance(r, str)) if x]
+            clash = [e for e in entries for x in theirs if e == x or (is_glob(x) and not is_glob(e) and fnmatch.fnmatchcase(e, x))
+                     or (is_glob(e) and not is_glob(x) and fnmatch.fnmatchcase(x, e))]
+            if clash:
+                why.append(f"{', '.join(dict.fromkeys(clash))} is {n}'s already: a repo in two tenants runs nowhere")
+        if why:
+            for w in why:
+                print(f"account tenant: {w}", file=sys.stderr)
+            print("account tenant: nothing written", file=sys.stderr)
+            return 1
+        entry = dict(raw.get(name)) if isinstance(raw.get(name), dict) else {}
+        entry.update({"repos": entries, "logins": list(dict.fromkeys(logins))})
+        new[name] = entry
+    target = TENANTS.resolve() if TENANTS.is_symlink() else TENANTS
+    try:
+        write_json(target, new)
+        back = json.loads(target.read_text())
+    except (OSError, ValueError) as e:
+        print(f"account tenant: {target} not written or not read back ({e})", file=sys.stderr)
+        return 1
+    if back != new:
+        print(f"account tenant: {target} reads back otherwise than written — check it by hand", file=sys.stderr)
+        return 1
+    _, source, err = tenants_read()   # refresh's tenants half: the hooks' copy holds the new file at once
+    if source != "file":
+        print(f"account tenant: written, but {TENANTS} does not read through its link ({err}); {tenants_last().name} not refreshed",
+              file=sys.stderr)
+        return 1
+    print(f"tenant {name}: " + ("dropped" if what == "drop" else
+                                f"{', '.join(new[name]['repos'])} — runs on {', '.join(new[name]['logins'])} only")
+          + f" ({target})")
+    print(f"refresh: {TENANTS.name} → {tenants_last().name}")
+    if what == "set":
+        off = [a["label"] for a in reg["accounts"] if a.get("provider") == "claude" and a["label"] not in logins]
+        print(f"  refused to {', '.join(off) or 'no other row'}, the default dir unless it is one of its logins, "
+              "and every Orca login no row names")
+    return 0
+
+
 def tenants_source():
     """Where tenancy is read from, by its key's name, for the lines that name it."""
     return TENANTS.name if tenants_file() else "accounts.json tenants"
@@ -737,10 +857,13 @@ def routes_for(reg, a):
     for name, repos in (reg.get("tenants") or {}).items():
         if a.get("tenant") == name:
             continue
-        logins = [r["label"] for r in reg.get("accounts") or [] if r.get("tenant") == name
-                  and r.get("enabled", True) and r.get("provider", "claude") == "claude"]
+        rows = [r for r in reg.get("accounts") or [] if r.get("tenant") == name
+                and r.get("enabled", True) and r.get("provider", "claude") == "claude"]
+        logins = [r["label"] for r in rows]
+        # the default dir has no VS Code profile of its own name: use_line names the default profile for it (S7)
+        default = next((r["label"] for r in rows if r.get("home") == DEFAULT_DIR.absolute()), None)
         for e in repos:
-            out.setdefault(e, {"tenant": name, "logins": logins})
+            out.setdefault(e, {"tenant": name, "logins": logins, "default": default})
     return out
 
 
@@ -1006,7 +1129,7 @@ def use_line(t):
     for label in t["logins"]:
         short = label[len(prefix):]
         cc = f"`cc {short}`" if label.startswith(prefix) and len(short) == 1 else f"`{BIN / 'account'} run {label}`"
-        ways.append(f"VS Code profile {label}, or {cc} in a Terminal")
+        ways.append(f"{'the default VS Code profile' if label == t.get('default') else 'VS Code profile ' + label}, or {cc} in a Terminal")
     return "open it in " + "; or ".join(ways)
 
 
@@ -1054,21 +1177,44 @@ def scope_login_of(path):
     return (name, login) if login else None
 
 
-def holds_denied(a, path):
+def holds_denied(a, path, deny_list=True):
     """→ the key of a denied repo that lies inside `path` (path is the home or the projects folder,
     say), else None. Claude Code reads every ancestor's .claude/CLAUDE.md — the default dir's is the
     home folder's — and follows its imports when they sit inside the cwd (2.1.302's memory loader,
     read in its source 2026-10-18), so a session started there on an employer login would load the
-    private imports after all."""
-    deny = ((a.get("repos") or {}).get("deny")) or []
+    private imports after all. Tenancy counts for the vault's tenant alone (header, S7): its repos are
+    denied here to every row but the tenant's, as a deny list's are; another tenant's repo loads nothing
+    at the start. deny_list=False asks that rule alone: the default dir's own deny list binds pick only."""
+    deny = list(((a.get("repos") or {}).get("deny")) or []) if deny_list else []
+    if not VAULT:
+        overlay_key_missing("lighthouse/vault")   # as employer() does: an installed overlay without it fails closed
+    t = route_of(a, VAULT) if VAULT else None
+    if t:
+        deny += [e for e, x in (a.get("routed") or {}).items() if x.get("tenant") == t["tenant"]]
     if not deny or not path:
         return None
     p = Path(path).expanduser().absolute().resolve()
     for d in deny:
-        root = (projects_dir() / d).absolute()
+        if is_glob(d):   # a tenant's glob: the folder its literal head names holds whatever it matches
+            head = []
+            for part in d.strip("/").split("/"):
+                if is_glob(part):
+                    break
+                head.append(part)
+            root = projects_dir().joinpath(*head, "_")
+        else:
+            root = (projects_dir() / d).absolute()
         if p in root.parents or p in root.resolve().parents:
             return d
     return None
+
+
+def holds_line(a, path, h, whose):
+    """The refusal of a start in `path`, which holds repo `h`: ' is off ' is what account_guard blocks on,
+    and ' holds ' what it lets pass after a `cd`. A tenant's entry names its tenant, a deny list's `whose`."""
+    t = route_of(a, h)
+    why = f"{t['tenant']}'s, {tenants_source()}" if t else whose
+    return f"{path} is off {a['label']}: it holds {h} ({why}); start the session inside a repo"
 
 
 def current_home():
@@ -2366,7 +2512,7 @@ def cmd_orca_sync(reg, off=False):
             continue
         label = orca_label(x, taken)
         taken.add(label)
-        a = dict(orca_row(label), home=HOME / ".orca-unsynced" / label)
+        a = new_orca_row(reg, label)
         reg["accounts"].append(a)
         work.append((a, x, ""))
         claimed.add(x.get("id"))
@@ -2748,6 +2894,8 @@ def tenant_ties(reg):
             # a profile is the login's only when its panel carries the login's dir: `code --profile X`
             # makes a bare one when X is missing, so the profile comes first (review 2026-10-20)
             ready = [l for l in logins if profiles.get(l) and profile_entry(profiles[l]) == str(rows[l]["home"])]
+            if any(is_default(rows[l]) for l in logins):
+                ready.append("default")   # the default profile's panel runs on the default dir: the vault's tenant (S7)
             if prof in ready:
                 out.append((prof, "ok", f"{p} opens on VS Code profile {prof}, {name}'s login"))
             elif logins and not ready:
@@ -2761,8 +2909,9 @@ def tenant_ties(reg):
                 out.append(("-", "fix", f"{p} is {name}'s, and {why}", fix))
             else:
                 label = ready[0]
-                out.append((label, "fix", f"{p} opens on VS Code profile {prof}, which is refused {name}'s repos",
-                            f"{shlex.quote(CODE_CLI)} --profile {label} {shlex.quote(str(p))}   (opens it in a window, tied to {label} for good)"))
+                fix = (f"{shlex.quote(CODE_CLI)} --profile {label} {shlex.quote(str(p))}   (opens it in a window, tied to {label} for good)"
+                       if label != "default" else f"open {p} in VS Code and switch its window to the Default profile")
+                out.append((label, "fix", f"{p} opens on VS Code profile {prof}, which is refused {name}'s repos", fix))
     return out
 
 
@@ -2874,6 +3023,43 @@ def tenancy_state(reg, peer=None):
             why, fix = f"its row is a {a.get('provider')} login, not claude", f"take {l} out of {TENANTS}"
         # info: whether its tenant still has a login is the per-tenant line above
         out.append((l, "info", f"{l}, in the \"logins\" of {', '.join(names)} in {TENANTS.name}, is no enabled login: {why}", fix))
+    return out
+
+
+def tenancy_roster(reg):
+    """→ [(label, level, text, fix)] for doctor, from the rows apply_tenants assigned, in either form tenancy
+    was written in: each tenant, its repos and the logins it runs on (ok); each deny-list entry a tenant
+    already refuses that row (a fix: a hand-kept line tenancy derives, G3 of confidential-reach S7, ORCA_ROW's
+    once); and the vault refused no login while more than one runs here (a fix: every seat may open it, and
+    none is an employer's, so none links the work memory — the state a deny list taken off before the vault's
+    tenant was written leaves)."""
+    rows = [a for a in reg["accounts"] if a["provider"] == "claude"]
+    out = []
+    for n, entries in (reg.get("tenants") or {}).items():
+        logins = [a["label"] for a in rows if a.get("tenant") == n and a["enabled"]]
+        if entries and logins:
+            out.append(("-", "ok", f"tenant {n}: {', '.join(entries)} — runs on {', '.join(logins)} only ({tenants_source()})"))
+    implicit = set()
+    for a in rows:
+        for d in ((a.get("repos") or {}).get("deny")) or []:
+            t = route_of(a, d)
+            if not t or (a.get("implicit") and d in implicit):
+                continue
+            if a.get("implicit"):
+                implicit.add(d)
+            where = "the overlay's regatta/orca-deny" if a.get("implicit") else f"{a['label']}'s deny list in {REGISTRY.name}"
+            out.append(("-" if a.get("implicit") else a["label"], "fix",
+                        f"{d} on {where} is {t['tenant']}'s already: tenancy refuses it there, the line is kept by hand",
+                        f"take {d} off {where}"))
+    if VAULT and sum(1 for a in rows if a["enabled"]) > 1:
+        try:
+            orca = core().ORCA_ROW["repos"]["deny"]
+        except Exception:
+            orca = []
+        if VAULT not in orca and not any(denied(a, projects_dir() / VAULT) for a in rows):
+            out.append(("-", "fix", f"the vault ({VAULT}) is refused no login: no tenant holds it and no deny list names it — "
+                        "every seat may open it, and none links the work memory",
+                        f"{BIN / 'account'} tenant set <name> --repos {VAULT} … --logins <the owner's logins>"))
     return out
 
 
@@ -3085,6 +3271,8 @@ def doctor_local(reg, logins, peer=None, record=True):
             f(*t)
     for t in tenancy_state(reg, peer):   # VS Code or not: the tenants file is the guard's, not the panel's
         f(*t)
+    for t in tenancy_roster(reg):
+        f(*t)
     for t in stale_copies(peer):   # the hooks' copies of the Drive-backed files (S4)
         f(*t)
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
@@ -3236,6 +3424,14 @@ def main(argv):
     p.add_argument("path")
     p = sub.add_parser("refresh")
     p.add_argument("--force", action="store_true")
+    p = sub.add_parser("tenant")
+    tsub = p.add_subparsers(dest="what", required=True)
+    q = tsub.add_parser("set")
+    q.add_argument("name")
+    q.add_argument("--repos", nargs="+", required=True)
+    q.add_argument("--logins", nargs="+", required=True)
+    q = tsub.add_parser("drop")
+    q.add_argument("name")
     p = sub.add_parser("add")
     p.add_argument("label")
     p.add_argument("--no-login", action="store_true")
@@ -3255,10 +3451,20 @@ def main(argv):
         return 0
     if args.cmd == "refresh":   # before load_registry: the copies are refreshed whatever the registry says
         return cmd_refresh(args.force)
-    if args.cmd in ("doctor", "setup"):   # a person's: judged by the links, as stale_copies compares them (S4 finish review)
+    if args.cmd == "tenant" and os.environ.get("CLAUDE_UNATTENDED"):
+        # a flag that stands for a person's yes refuses an unattended caller (AGENTS.md's trap); so does this verb
+        print("account tenant: the tenants file is the owner's to write — an unattended caller (CLAUDE_UNATTENDED) "
+              "may not; nothing written", file=sys.stderr)
+        return 2
+    if args.cmd in ("doctor", "setup", "tenant"):   # a person's: judged by the links, as stale_copies compares them (S4 finish review)
         global READ_LINKS
         READ_LINKS = True
     reg = load_registry()
+    if args.cmd == "tenant":
+        if not REGISTRY.is_file():
+            print(f"account tenant: no registry at {REGISTRY} — the logins it names must be its rows", file=sys.stderr)
+            return 1
+        return cmd_tenant(reg, args.what, args.name, getattr(args, "repos", ()), getattr(args, "logins", ()))
     if args.cmd in ("pick", "limits") and args.repo is not None and REGISTRY.is_file():  # a key is a repo, a path its repo; neither → refused, never "no rule"
         args.repo, why = resolve_repo_arg(args.repo, reg)
         if why:
@@ -3284,9 +3490,11 @@ def main(argv):
             return 1
         cwd = os.getcwd()
         r = routed_off(a, cwd)  # a tenant's repo is off every other row, the default dir's too
-        d = r[0] if r else None if is_default(a) else (denied(a, cwd) or holds_denied(a, cwd))
-        if d:
-            why = off_line(a, d) or f"{d} is off {a['label']} (accounts.json deny list)"
+        d = r[0] if r else None if is_default(a) else denied(a, cwd)
+        h = None if d else holds_denied(a, cwd, deny_list=not is_default(a))   # the vault's tenant: the default dir's too
+        if d or h:
+            why = (off_line(a, d) or f"{d} is off {a['label']} (accounts.json deny list)") if d \
+                else holds_line(a, cwd, h, "accounts.json deny list")
             print(f"account: {why}", file=sys.stderr)
             return 1
         # An inherited token outranks the config dir's login (autofinish-run's KEEP_CLAUDE), so a
@@ -3313,9 +3521,13 @@ def main(argv):
         here = current_home()
         for a in reg["accounts"]:
             if a["provider"] == "claude" and a["home"] == here and is_default(a):
-                r = routed_off(a, args.path)   # the default dir denies nothing but another tenant's repo
+                r = routed_off(a, args.path)   # the default dir denies nothing but another tenant's repo…
                 if r:
                     print(off_line(a, r[0]))
+                    return 1
+                h = holds_denied(a, args.path, deny_list=False)   # …and a folder holding the vault's tenant's (S7)
+                if h:
+                    print(holds_line(a, args.path, h, ""))
                     return 1
             if a["provider"] == "claude" and a["home"] == here and not is_default(a):
                 d = denied(a, args.path)
@@ -3325,7 +3537,7 @@ def main(argv):
                     return 1
                 h = holds_denied(a, args.path)
                 if h:   # a folder holding a denied repo: its sessions would load what the list keeps out
-                    print(f"{args.path} is off {a['label']}: it holds {h} ({whose}); start the session inside a repo")
+                    print(holds_line(a, args.path, h, whose))
                     return 1
         if any(a["provider"] == "claude" and a["home"] == here for a in reg["accounts"]):
             return 0
@@ -3342,9 +3554,14 @@ def main(argv):
         except (ValueError, OSError):
             # no row names this dir (a registry without the default dir's row, a stray dir): it is no
             # tenant's, so a tenant's repo is off it (review 2026-10-20); anything else stays open
-            r = routed_off({"label": "this login (no row)", "routed": routes_for(reg, {})}, args.path)
+            stray = {"label": "this login (no row)", "routed": routes_for(reg, {})}
+            r = routed_off(stray, args.path)
             if r:
-                print(off_line({"label": "this login (no row)", "routed": routes_for(reg, {})}, r[0]))
+                print(off_line(stray, r[0]))
+                return 1
+            h = holds_denied(stray, args.path)   # no tenant's, so the vault's tenant's folder too (S7)
+            if h:
+                print(holds_line(stray, args.path, h, ""))
                 return 1
             return 0
         email = (signed_in_as(here) or "").lower()
@@ -3369,17 +3586,21 @@ def main(argv):
                 print(off_line(owner, d) or f"{d} is off {owner['label']}, whose login this Orca dir is (accounts.json deny list)")
                 return 1
             if h:
-                print(f"{args.path} is off {owner['label']}, whose login this Orca dir is: it holds {h}; "
-                      f"start the session inside a repo")
+                print(holds_line(owner, args.path, h, "accounts.json deny list").replace(
+                    f" is off {owner['label']}:", f" is off {owner['label']}, whose login this Orca dir is:", 1))
                 return 1
             return 0
         common = core()
         unsynced = common.orca_row("unsynced")
         unsynced["routed"] = routes_for(reg, unsynced)   # no row names it, so no tenant either
-        d = denied(unsynced, args.path) or holds_denied(unsynced, args.path)
+        d = denied(unsynced, args.path)
         if d:
             print(off_line(unsynced, d) or f"{d} is off this Orca login, which no row names yet (ORCA_ROW's deny list; "
                   f"`account orca-sync` records it)")
+            return 1
+        h = holds_denied(unsynced, args.path)
+        if h:   # its own line, with ' holds ', so a `cd` there is not refused (account_guard)
+            print(holds_line(unsynced, args.path, h, "ORCA_ROW's deny list"))
             return 1
         return 0
     if args.cmd == "add":

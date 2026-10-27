@@ -1527,5 +1527,115 @@ check "$(TENANTS_FILE="$TN/dead.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUN
 has "$T/out" "$TN/dead.json reads nothing" "…still names the tenants link's state (review 2026-10-23)"
 check "$(grep -c Traceback "$T/ts.err")" 0 "tenancy_state never raised in these cases"
 
+echo "the vault as a tenant (confidential-reach S7, 2026-10-26): one tenant holds it, the folders holding it hold for it, tenant set writes it"
+cat > "$ACCOUNTS_FILE.vt" <<'J'
+{"accounts": [
+  {"label": "work", "provider": "claude", "home": "~/.claude-work"},
+  {"label": "lab", "provider": "claude", "home": "~/.claude-lab"},
+  {"label": "spare", "provider": "claude", "home": "~/.claude-spare"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}
+J
+# the overlay's config with regatta/orca-deny written empty: tenancy alone refuses an unnamed Orca login
+rm -rf "$T/cfg-vt"; cp -R "$REGATTA_CONFIG" "$T/cfg-vt"; : > "$T/cfg-vt/regatta/orca-deny"
+mkdir -p "$T/vt"; echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/tenants.json"
+VT() { REGATTA_CONFIG="${VT_CONFIG:-$T/cfg-vt}" TENANTS_FILE="${VT_TENANTS:-$T/vt/tenants.json}" ACCOUNTS_FILE="${VT_ACCOUNTS:-$ACCOUNTS_FILE.vt}" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" ACCOUNT_NOW=$WED A "$@"; }
+check "$(CLAUDE_UNATTENDED=1 VT tenant set owner --repos privy cv app --logins main spare)" 2 "tenant set refuses an unattended caller (the owner's to write)"
+has "$T/out" "nothing written" "…saying so"
+check "$(grep -c owner "$T/vt/tenants.json")" 0 "…the file untouched"
+check "$(CLAUDE_UNATTENDED=1 VT tenant drop acme)" 2 "tenant drop refuses one too"
+check "$(VT tenant set owner --repos privy cv app ./privy --logins main spare)" 0 "tenant set owner: written"
+has "$T/out" "tenant owner: privy, cv, app — runs on main, spare only" "…naming what it wrote, each entry once"
+has "$T/out" "refresh: tenants.json → .tenants.json.last" "…and the copy it refreshed"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sorted(d), d["owner"]["logins"], d["acme"]["logins"])' "$T/vt/tenants.json")" \
+  "['acme', 'owner'] ['main', 'spare'] ['lab']" "…beside acme's entry, kept"
+check "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True), end="")' "$T/vt/tenants.json" | cmp -s - "$T/vt/.tenants.json.last" && echo same)" \
+  "same" "…and the hooks' copy holds it at once"
+check "$(VT tenant set other --repos zed --logins lab)" 1 "a login in another tenant already: refused (one tenant per login)"
+has "$T/out" "lab is acme's login already: a login is in one tenant only" "…saying whose"
+check "$(VT tenant set other --repos privy --logins work)" 1 "a repo another tenant holds: refused"
+has "$T/out" "privy is owner's already" "…saying whose"
+check "$(VT tenant set other --repos acme-two --logins work)" 1 "…a key another tenant's glob takes too"
+check "$(VT tenant set other --repos zed --logins nobody)" 1 "a label no claude row has: refused"
+has "$T/out" "nobody is no claude row of accounts.json.vt" "…naming the registry"
+check "$(VT tenant set other --repos /abs --logins work; grep -c other "$T/vt/tenants.json")" "1
+0" "an absolute repo entry: refused, nothing written"
+ln -sfn "$T/vt/nowhere.json" "$T/vt/gone.json"
+check "$(VT_TENANTS="$T/vt/gone.json" VT tenant set owner --repos privy --logins main; test -e "$T/vt/nowhere.json" && echo made)" 1 \
+  "a tenants link that reads nothing: refused, never a file that drops the tenants it held"
+has "$T/out" "writing would drop the tenants it holds" "…saying why"
+mkdir -p "$T/vt/drive"; echo '{}' > "$T/vt/drive/tenants.json"; ln -sfn "$T/vt/drive/tenants.json" "$T/vt/linked.json"
+check "$(VT_TENANTS="$T/vt/linked.json" VT tenant set owner --repos privy --logins main; test -L "$T/vt/linked.json" && echo link; grep -c privy "$T/vt/drive/tenants.json")" "0
+link
+1" "through a link: its target written, the link kept"
+check "$(VT allowed "$PR/privy")" 0 "the default dir, a login of the vault's tenant, is allowed the vault"
+check "$(CLAUDE_CONFIG_DIR="$S1" VT allowed "$PR/privy")" 0 "…and spare, its other login"
+check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$PR/privy")" 1 "work, with no deny list, is refused the vault by tenancy"
+has "$T/out" "privy is off work: it is owner's, which runs on spare, main only (tenants.json)" "…the tenant's line, with the way in"
+has "$T/out" "or the default VS Code profile, or \`$B/account run main\` in a Terminal" "…the default dir's way in is the default profile, never one of its label"
+check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$PR")" 1 "…and ~/projects, which holds the vault's tenant's repos (holds_denied, S7)"
+has "$T/out" "is off work: it holds privy (owner's, tenants.json); start the session inside a repo" "…with the guard's ' is off ' and ' holds '"
+check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$HOME")" 1 "…and ~ too"
+check "$(CLAUDE_CONFIG_DIR="$L" VT allowed "$PR")" 1 "lab, another tenant's login, is refused that folder too"
+check "$(CLAUDE_CONFIG_DIR="$S1" VT allowed "$PR")" 0 "the vault's tenant's own login may start in ~/projects"
+check "$(VT allowed "$PR")" 0 "…and the default dir, its login"
+check "$(VT allowed "$PR/acme-one")" 1 "the default dir is still refused acme's repo"
+check "$(CLAUDE_CONFIG_DIR="$L" VT allowed "$PR/acme-one")" 0 "…which lab runs"
+check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$PR/overlay")" 0 "work in a repo no tenant holds: allowed"
+check "$(cd "$PR" && VT run work --version)" 1 "run work from ~/projects: refused before claude starts"
+has "$T/out" "is off work: it holds privy (owner's" "…on the holds line"
+VU() { CLAUDE_CONFIG_DIR="$UO/claude-profiles/p1/home" ACCOUNT_ORCA_DATA="$UO" VT "$@"; }
+check "$(VU allowed "$PR/app")" 1 "an Orca login no row names is refused app, a vault-tenant repo regatta/orca-deny never named"
+has "$T/out" "app is off unsynced: it is owner's" "…by tenancy"
+check "$(VU allowed "$PR/privy")" 1 "…and the vault, with regatta/orca-deny written empty"
+check "$(VU allowed "$PR")" 1 "…and ~/projects"
+has "$T/out" "it holds privy (owner's, tenants.json)" "…on a ' holds ' line, so a cd there is not refused"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}' > "$ACCOUNTS_FILE.vt0"
+check "$(CLAUDE_CONFIG_DIR="$T/elsewhere" VT_ACCOUNTS="$ACCOUNTS_FILE.vt0" VT allowed "$PR")" 1 "a dir no row names is refused the folder too: it is no tenant's"
+vpy() { REGATTA_CONFIG="${VT_CONFIG:-$T/cfg-vt}" TENANTS_FILE="${VT_TENANTS:-$T/vt/tenants.json}" ACCOUNTS_FILE="${VT_ACCOUNTS:-$ACCOUNTS_FILE.vt}" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_vt", sys.argv[1]).load_module()
+reg = a.load_registry()
+'"$1" "$B/account" "$(cd "$PR" && pwd -P)" 2>&1; }
+check "$(vpy 'print([(r["label"], a.employer(r)) for r in reg["accounts"] if r["provider"] == "claude"])')" \
+  "[('work', True), ('lab', True), ('spare', False), ('main', False)]" "employer(): a row refused the vault by tenancy links the work memory, as a deny list's did"
+check "$(vpy 'print(a.employer(a.new_orca_row(reg, "fresh")))')" "True" "orca-sync's new row carries its routes: a login synced the first time is an employer too, with the deny lists gone"
+roster='for t in a.tenancy_roster(reg): print(t[1], t[0], t[2], "|", t[3] if len(t) > 3 else "")'
+vpy "$roster" > "$T/roster"
+has "$T/roster" "ok - tenant owner: privy, cv, app — runs on spare, main only (tenants.json)" "doctor reports the vault's tenant"
+has "$T/roster" "ok - tenant acme: acme-* — runs on lab only" "…and every other"
+check "$(grep -c '^fix' "$T/roster")" 0 "…and nothing to fix once the deny lists are gone"
+sed 's|"home": "~/.claude-work"}|"home": "~/.claude-work", "repos": {"deny": ["privy", "zed"]}}|' "$ACCOUNTS_FILE.vt" > "$ACCOUNTS_FILE.vt3"
+VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" vpy "$roster" > "$T/roster"
+has "$T/roster" "fix work privy on work's deny list in accounts.json.vt3 is owner's already: tenancy refuses it there" "doctor: a deny-list entry tenancy derives is a fix (G3)"
+has "$T/roster" "| take privy off work's deny list" "…its fix takes it off"
+check "$(grep -c zed "$T/roster")" 0 "…an entry no tenant holds stays unnamed"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/acme-only.json"
+VT_TENANTS="$T/vt/acme-only.json" vpy "$roster" > "$T/roster"
+has "$T/roster" "fix - the vault (privy) is refused no login: no tenant holds it and no deny list names it" "doctor: the deny lists gone before the vault's tenant was written is a fix"
+has "$T/roster" "tenant set <name> --repos privy" "…whose fix is tenant set"
+VT_CONFIG="$REGATTA_CONFIG" VT_TENANTS="$T/vt/acme-only.json" vpy "$roster" > "$T/roster"
+check "$(grep -c 'refused no login' "$T/roster")" 0 "…while regatta/orca-deny still names the vault, none"
+export ACCOUNT_VSCODE_USER="$T/vsc-t"
+vpy 'for t in a.tenant_ties(reg): print(t[1], t[2].replace(sys.argv[2], "PR"))' > "$T/ties"
+has "$T/ties" "ok PR/privy opens on VS Code profile default, owner's login" "doctor: a vault-tenant repo on the default profile is tied, the default dir being its login"
+check "$(grep -c '^fix PR/privy\|^fix PR/app' "$T/ties")" 0 "…no fix for the owner's repos"
+unset ACCOUNT_VSCODE_USER
+gentries() { env -u CLAUDE_CONFIG_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/tenants.json" ACCOUNTS_FILE="$1" python3 -c '
+import sys; sys.path.insert(0, sys.argv[1]); import account_guard as g; print(g.tenant_entries())' "$B/../hooks" 2>&1; }
+check "$(gentries "$ACCOUNTS_FILE.vt")" "['acme-*']" "the guard's prefilter leaves out the default dir's own tenant: no subprocess on its prompts in the vault"
+check "$(gentries "$T/no-such-registry.json")" "['acme-*', 'privy', 'cv', 'app']" "…a registry that does not read: every entry asked about"
+check "$(echo "{\"cwd\": \"$PR/acme-one\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PROJECT_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" python3 "$B/../hooks/account_guard.py" | grep -c '"block"')" 1 "…while another tenant's repo still blocks a default-dir prompt"
+mkdir -p "$T/cfg-noov/regatta" && echo '{"tenants": {"acme": {"repos": ["acme-*"]}}, "accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}' > "$T/vt/regtenants.json"
+check "$(VT_CONFIG="$T/cfg-noov" VT_TENANTS="$T/vt/none.json" VT_ACCOUNTS="$T/vt/regtenants.json" VT tenant set owner --repos privy --logins main; ls "$T/vt/none.json" 2>&1 | grep -c 'No such')" "1
+1" "tenant set with no file refuses when the registry holds tenants: the new file would replace them"
+check "$(VT tenant drop nobody)" 1 "tenant drop of a tenant the file lacks: refused"
+check "$(VT tenant drop owner; grep -c owner "$T/vt/tenants.json")" "0
+0" "tenant drop owner: out of the file"
+check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$PR/privy")" 0 "…and work, with no deny list, may open the vault again (the order S7 keeps: tenant first, lists after)"
+
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
