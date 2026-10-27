@@ -9,6 +9,10 @@
   `workspacePaths` and always answers it with JSON (`{}` when it sends nothing: silence there is a deny).
   `check` counts both files and notes Codex entries not yet trusted in `codex` → /hooks;
   `forget-private` forgets a private session by its harness.
+- Every command keel prints for a session to run names keel by its module path (`keel_cmd()`), never
+  `memo`, which no PATH holds: `keel line`'s listener hint said `memo sheep wait`, and the session got
+  exit 127 (peer-manager-relay, 2026-10-26). The same goes for `sheep pull`, `serve` and `pull` in the
+  page-state, stale-page and wait messages. The wait's own lines and usage read `keel sheep`.
 - The listen reminder (paste-paths' `manager_findings`) counts a manager's live runs on peer Macs too,
   through helm's `asklib.peer_runs` (one ssh a peer, cached 10 minutes for every session here). A laptop
   manager of a build-box run with a plan page is told to start `ask listen`, as one of a local run is.

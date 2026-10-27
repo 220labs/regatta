@@ -401,7 +401,7 @@ check "$(lf "[github]($BLOB) | [course]($FORM) — [m.md]($MP#L1)")" "the links 
 check "$(lf "[Form]($FORM) | [github]($BLOB) — [m.md]($MP#L1)")" "the labels are exactly course, local, github, space (not 'Form') / the course link is missing" "labels exactly"
 check "$(lf "[form]($FORM) | [github]($BLOB) — [m.md]($MP#L1)")" "the labels are exactly course, local, github, space (not 'form') / the course link is missing" "the label before 2026-10-17, form, is named as wrong"
 check "$(lf "[course]($FORM) | [github](${BLOB/blob/edit}) — [m.md]($MP#L1)")" "the github link is not this branch's read (blob) view of docs/m.md" "the edit URL is not the github part"
-check "$(lf "[course](http://127.0.0.1:1/deadbeef/) | [github]($BLOB) — [m.md]($MP#L1)")" "the course link is not a running memo serve of this doc — memo line prints the form (the doc's page, or a fresh serve where it has none)" "a dead form is named"
+check "$(lf "[course](http://127.0.0.1:1/deadbeef/) | [github]($BLOB) — [m.md]($MP#L1)")" "the course link is not a running memo serve of this doc — keel line prints the form (the doc's page, or a fresh serve where it has none)" "a dead form is named"
 check "$(lf "[course]($FORM) | [github]($BLOB) | [artifact](https://claude.ai/a/1) — [m.md]($MP#L1)")" "ok" "another format after the three passes"
 check "$(lf "[course]($FORM) | [github]($BLOB) | [space](https://example.com/x) — [m.md]($MP#L1)")" "the space link is not a spacesheep.dev page (https://example.com/x)" "a space link elsewhere is named"
 check "$(CLAUDE_UNATTENDED=1 lf "[github]($BLOB) — [m.md]($MP#L1)")" "ok" "an unattended run owes no form where no page can be made"
@@ -411,7 +411,7 @@ check "$(plf "[course](https://spacesheep.dev/@sam/m) | [github]($BLOB) — [m.m
 check "$(plf "[github]($BLOB) — [m.md]($MP#L1)")" "the course link is missing / the space link is missing" "…owed attended too: the page is the form wherever it can be made, and space beside it"
 check "$(CLAUDE_UNATTENDED=1 plf "[github]($BLOB) — [m.md]($MP#L1)")" "the course link is missing / the space link is missing" "…owed in an unattended run too"
 check "$(plf "[course](https://example.com/x) | [github]($BLOB) — [m.md]($MP#L1)")" "the course link is not a spacesheep.dev page (https://example.com/x)" "…and a form link elsewhere is named"
-check "$(plf "[course]($FORM) | [github]($BLOB) — [m.md]($MP#L1)")" "the space link is missing / the course link is a memo serve form, but this doc has a spacesheep page — the page is the form (memo line prints it once the doc is committed)" "…a memo serve form is refused for a doc that has a page (review 2026-10-16: an uncommitted doc once got one)"
+check "$(plf "[course]($FORM) | [github]($BLOB) — [m.md]($MP#L1)")" "the space link is missing / the course link is a memo serve form, but this doc has a spacesheep page — the page is the form (keel line prints it once the doc is committed)" "…a memo serve form is refused for a doc that has a page (review 2026-10-16: an uncommitted doc once got one)"
 
 run pull "$M" > "$T/p1.out" 2>&1
 has "$T/p1.out" "fast-forwarded claude/x" "pull fast-forwards"
@@ -1387,7 +1387,11 @@ has "$T/s1b.out" "already showing this commit" "…and it says so"
 gitc "$G/sh" push -q -u origin claude/sh 2>/dev/null  # url links only what GitHub holds
 srun line "$SM" > "$T/s2.out" 2> "$T/s2.err"
 check "$(cat "$T/s2.out")" "[course](https://spacesheep.dev/@sam/memo) | [github](https://github.com/owner/repo/blob/claude/sh/docs/s.md) — [s.md]($(cd "$G/sh/docs" && pwd -P)/s.md#L1)" "line: with D-items the page is the form, first; then GitHub, then the file (2026-10-14)"
-has "$T/s2.err" "memo sheep wait" "…and stderr names the listener that wakes the session on a Save"
+has "$T/s2.err" "keel sheep wait" "…and stderr names the listener that wakes the session on a Save"
+# peer-manager-relay (2026-10-26): it named `memo sheep wait`, which no PATH has (exit 127); now keel's own path
+wcmd=$(sed -n 's/.*while `\([^ `]*\) sheep wait .*/\1/p' "$T/s2.err" | head -1)
+check "$(python3 -c 'import os, pwd, sys; c = sys.argv[1]; print(bool(c) and any(os.access(c.replace("~", h, 1) if c.startswith("~") else c, os.X_OK) for h in (os.environ["HOME"], pwd.getpwuid(os.getuid()).pw_dir)))' "$wcmd")" \
+  "True" "  …by a path that runs ($wcmd), never memo"
 check "$(grep -c '^deploy' "$S/cli.log")" "2" "…the pinned page already shows this commit: no deploy"
 # The mirror (bin/sheep local_url): with a live mirror.json the first link (course or local) is its
 # local address and space stays on spacesheep.dev; line_findings takes that address as the pinned page
@@ -1448,7 +1452,7 @@ check "$(sed -E 's#\(https://spacesheep[^)]*\)#(PAGE)#' "$T/s2p.out")" "[github]
 check "$rc" "0" "…exit 0: no form is owed"
 has "$T/s2p.err" "keel line: no course — no D-items" "…stderr says why no course link"
 has "$T/s2p.err" "keel line: no local — no local mirror" "…and why no local link"
-has "$T/s2p.err" "memo sheep wait" "…and the listener that wakes the session on comments"
+has "$T/s2p.err" "keel sheep wait" "…and the listener that wakes the session on comments"
 sleep 300 > /dev/null 2>&1 & MPID=$!  # the first stand-in was killed above, for the dead-mirror case
 printf '{"pid": %s, "port": 4999, "site": "https://spacesheep.dev"}\n' "$MPID" > "$SPACESHEEP_CONFIG_DIR/mirror.json"
 srun line "$G/sh/notes/plain.md" > "$T/s2pm.out" 2>/dev/null; rc=$?
@@ -1460,15 +1464,15 @@ has "$S/page.html" "Comments work too" "…its page takes notes, feedback and co
 # M7: by hand the same doc is mirrored as `line` does; the checkpoint's hook still skips it
 printf '# Plain two\n\nNo questions here either.\n' > "$G/sh/notes/plain2.md"; gitc "$G/sh" add notes; gitc "$G/sh" commit -qm plain2
 srun sheep "$G/sh/notes/plain2.md" > "$T/s2q.out" 2>&1; rc=$?
-check "$rc" "0" "M7: memo sheep <doc> by hand mirrors a doc without D-items"
+check "$rc" "0" "M7: keel sheep <doc> by hand mirrors a doc without D-items"
 has "$T/s2q.out" "page:   https://spacesheep.dev/@sam/memo (" "…and prints its page"
 check "$(srun sheep --hook "$G/sh/notes/plain2.md")" "" "…while the hook path still skips it, silently"
 gitc "$G/sh" reset -q --hard HEAD~1
 srun sheep pull > "$T/s2u1.out" 2>&1; rc=$?
 check "$rc" "1" "M7: sheep pull with no doc is a usage line, rc 1"
-has "$T/s2u1.out" "usage: memo sheep <doc> | sheep pull <doc>" "…not \"pull: no such file\""
+has "$T/s2u1.out" "usage: keel sheep <doc> | sheep pull <doc>" "…not \"pull: no such file\""
 srun sheep check > "$T/s2u2.out" 2>&1
-has "$T/s2u2.out" "usage: memo sheep <doc>" "…and so for check"
+has "$T/s2u2.out" "usage: keel sheep <doc>" "…and so for check"
 run sheep -h > "$T/s2h.out" 2>&1
 has "$T/s2h.out" "Deploy a memo's page to spacesheep" "sheep -h has a description"
 gitc "$G/sh" reset -q --hard HEAD~1; gitc "$G/sh" push -q -f origin claude/sh 2>/dev/null; cp "$T/version.keep" "$S/version"
@@ -1899,7 +1903,7 @@ cat > "$S/events.json" <<'EOF'
 EOF
 srun sheep wait "$SM" --idle 20 > "$T/w1.out" 2>&1; rc=$?
 check "$rc" "0" "wait exits when a Save is in the room (the exit wakes the session)"
-has "$T/w1.out" "memo sheep wait: a Save from the page — taking it in" "…saying what woke it"
+has "$T/w1.out" "keel sheep wait: a Save from the page — taking it in" "…saying what woke it"
 check "$(grep -A1 'D1 — Ship it' "$SM" | tail -1)" "  ➤ Answer: later, on Friday" "…with the Save in the memo"
 has "$T/w1.out" "next: commit docs/s.md on claude/sh" "…and the next step named"
 gitc "$G/sh" commit -qam "D1 from the page"
@@ -1918,7 +1922,7 @@ printf '{"comments": [{"id": "old", "body": "said before the wait"}, {"id": "new
 for _ in $(seq 100); do kill -0 "$wpid" 2>/dev/null || break; sleep 0.1; done
 check "$(kill -0 "$wpid" 2>/dev/null && echo running || echo exited)" "exited" "wait exits on a new comment once the comments go quiet"
 kill "$wpid" 2>/dev/null
-has "$T/w3.out" "memo sheep wait: 1 thread with new words — not taken in" "…one new thread (the one open before the wait is not new), woken and not taken in (part D)"
+has "$T/w3.out" "keel sheep wait: 1 thread with new words — not taken in" "…one new thread (the one open before the wait is not new), woken and not taken in (part D)"
 has "$T/w3.out" "/@sam/memo?comment=new1" "…printed with the page link that opens the thread"
 has "$T/w3.out" "   on D1 — Ship it?" "…its anchor in words"
 has "$T/w3.out" "   Sam, 2099-01-01 00:00: and one more thing" "…then who, when, what"
@@ -2823,7 +2827,7 @@ check "$(MEMO_SHEEP_STATE="$S/state" python3 -c 'import sys; from importlib.mach
 for _ in $(seq 100); do kill -0 "$wpid" 2>/dev/null || break; sleep 0.1; done
 check "$(kill -0 "$wpid" 2>/dev/null && echo running || echo exited)" "exited" "S4: a wait wakes on a Save a pull drained into the pin while it listened"
 kill "$wpid" 2>/dev/null
-has "$T/w5.out" "memo sheep wait: a Save already drained from the page — taking it in" "…saying what woke it"
+has "$T/w5.out" "keel sheep wait: a Save already drained from the page — taking it in" "…saying what woke it"
 check "$(grep -A1 'D1 — Ship it' "$SM" | tail -1)" "  ➤ Answer: drained answer" "…and taking it in"
 gitc "$G/sh" checkout -q -- docs/s.md
 
