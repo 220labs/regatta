@@ -19,6 +19,7 @@ The context (`ctx`) a backend reads, all optional:
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -197,12 +198,215 @@ def this_host():
         return None
 
 
+def elsewhere(ctx):
+    """True when ctx's manager runs on another Mac than this one (manager_host names it)."""
+    mh, here = ctx.get("manager_host"), this_host()
+    return bool(mh and here and mh.lower() != here.lower())
+
+
+# ---------------------------------------------------------------------------- a manager on a peer Mac
+
+# A run on one Mac whose manager is a session on another has no registry here to read, and builds go
+# to the build box while typed sessions run on the laptop. Before this, such a manager was `remote`,
+# Talk's alone, and a manager with no plan page had no road at all: board-cleanup's D2 parked as "no
+# skipper live" on the build box while its manager on the laptop was live (peer-manager-relay,
+# 2026-10-26). Now one ssh to the manager's host reads its registry there: the hosts this Mac reaches
+# are the config dir's `wharf-runs/ssh` (`<host>:<alias>`, as stalls and harness read them). ssh runs
+# one way: a host with no alias here stays `remote`, as before.
+PEER_CONNECT = 6    # ssh's ConnectTimeout, seconds (hail uses 6; stalls 10)
+PEER_TIMEOUT = 30
+_PEER_SEEN = {}     # (alias, session) → (answer, why): resolve(), File and the name read it once a process
+
+# Runs on the peer under its own python3, stdlib only: the newest registry record of argv[1] and whether
+# its pid lives. It reads the ssh login's registries: `~/.claude/sessions` and every Orca profile's own
+# `sessions/` (lighthouse's `account` links one only where it can). A pid that answers EPERM belongs to
+# another user, so it is not the manager's (the registry is this login's): dead, as pid_alive reads it.
+PEER_PROBE = r'''
+import glob, json, os, sys
+from pathlib import Path
+sid, best = sys.argv[1], None
+regs = [str(Path.home() / ".claude" / "sessions")] + glob.glob(str(Path.home() / "Library" / "Application Support" / "orca" / "claude-profiles" / "*" / "home" / "sessions"))
+for f in [Path(x) for r in regs for x in glob.glob(os.path.join(r, "*.json"))]:
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        continue
+    if isinstance(d, dict) and d.get("sessionId") == sid and (best is None or d.get("updatedAt", 0) > best.get("updatedAt", 0)):
+        best = d
+alive = False
+if best:
+    try:
+        os.kill(int(best.get("pid")), 0)
+        alive = True
+    except (OSError, ValueError, TypeError):
+        pass
+rec = {k: best.get(k) for k in ("pid", "name", "status")} if best else None
+print(json.dumps({"record": rec, "alive": alive}))
+'''
+
+# Appends LINE (set in front, as an ascii() literal) to the peer's file queue for argv[1]: the path
+# queue_dir() and ask_guard.py's prompt hook read there by default.
+PEER_QUEUE = r'''
+import os, sys
+from pathlib import Path
+p = Path.home() / "Library/Logs/claude-weekly/asks" / ("%s.jsonl" % sys.argv[1])
+p.parent.mkdir(parents=True, exist_ok=True)
+fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+try:
+    os.write(fd, (LINE + "\n").encode())
+finally:
+    os.close(fd)
+print(p)
+'''
+
+
+def peer_alias(host):
+    """The ssh alias this Mac reads HOST over (the config dir's `wharf-runs/ssh`), or None: no host, this
+    Mac, no line for it, no core."""
+    return peer_hosts().get(host.lower()) if host else None
+
+
+def peer_ssh(alias, argv, script, timeout=PEER_TIMEOUT):
+    """(stdout, None) of `python3 - ARGV` with SCRIPT on its stdin on ALIAS, or (None, why). ASK_SSH stands
+    in for ssh (tests)."""
+    cmd = [os.environ.get("ASK_SSH") or "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % PEER_CONNECT, alias,
+           "python3 - " + " ".join(shlex.quote(a) for a in argv)]
+    try:
+        r = subprocess.run(cmd, input=script, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "ssh %s: %s" % (alias, e.__class__.__name__)
+    if r.returncode != 0:
+        return None, "ssh %s: %s" % (alias, ((r.stderr or "").strip().splitlines() or ["exit %d" % r.returncode])[-1][:160])
+    return r.stdout, None
+
+
+def peer_hosts():
+    """{host: alias} of the peers `wharf-runs/ssh` names, this Mac left out; {} without the key or a core."""
+    c = _common()
+    try:
+        lines = (c.config_lines("wharf-runs/ssh") if c else None) or []
+    except Exception:
+        return {}
+    here = (this_host() or "").lower()
+    out = {}
+    for line in lines:
+        name, _, alias = line.partition(":")
+        if alias.strip() and name.strip() and name.strip().lower() != here:
+            out[name.strip().lower()] = alias.strip()
+    return out
+
+
+# Runs on a peer: its live dispatched runs that relay over Talk (a manager, a plan page, not ended, a pid
+# that lives), as {manager, topic}. dispatch-rc's same() also checks the pid's start time; this probe does
+# not, so a reused pid can cost one extra listen reminder, never a missed relay.
+PEER_RUNS_PROBE = r'''
+import glob, json, os
+from pathlib import Path
+out = []
+for f in glob.glob(str(Path.home() / "Library/Logs/claude-weekly/run-seed-runs" / "*.json")):
+    try:
+        st = json.load(open(f))
+    except (OSError, ValueError):
+        continue
+    if not isinstance(st, dict) or not st.get("manager") or not st.get("plan_space") or st.get("ended"):
+        continue
+    try:
+        os.kill(int(st.get("pid")), 0)
+    except (OSError, ValueError, TypeError):
+        continue
+    out.append({"manager": st["manager"], "topic": st.get("topic") or "?"})
+print(json.dumps(out))
+'''
+PEER_RUNS_TTL = 600   # keel's Stop hook asks every turn of every session; one ssh a peer per 10 minutes
+PEER_RUNS_WAIT = 10   # …and waits at most this long for one, once a TTL
+
+
+def peer_runs(cache_dir):
+    """[{manager, topic, host}] of the live runs on every peer that relay over Talk, for keel's listen
+    reminder (paste-paths manager_findings): a manager on the laptop of a run on the build box is told to
+    listen as one of a local run is (peer-manager-relay). Cached PEER_RUNS_TTL in
+    CACHE_DIR/peer-runs.json, shared by every session here; a peer that does not answer counts as none
+    until the cache ages. Never raises."""
+    p = Path(cache_dir) / "peer-runs.json"
+    try:
+        d = json.loads(p.read_text())
+        if time.time() - float(d.get("t", 0)) < PEER_RUNS_TTL and isinstance(d.get("runs"), list):
+            return d["runs"]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    # one refresher at a time (finish review): every session's Stop lands here once the cache ages, and
+    # each would start its own ssh and wait; the others read none until the refresher writes. A marker a
+    # killed refresher left goes stale after a TTL of its own.
+    lock = Path(cache_dir) / "peer-runs.refreshing"
+    try:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        if lock.exists() and time.time() - lock.stat().st_mtime > PEER_RUNS_WAIT * 3:
+            lock.unlink()
+        os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return []
+    except OSError:
+        pass
+    try:
+        return _peer_runs_read(p)
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
+def _peer_runs_read(p):
+    runs = []
+    for host, alias in sorted(peer_hosts().items()):
+        out, _ = peer_ssh(alias, [], PEER_RUNS_PROBE, timeout=PEER_RUNS_WAIT)
+        try:
+            got = json.loads(out.strip().splitlines()[-1]) if out and out.strip() else []
+        except ValueError:
+            got = []
+        runs += [dict(r, host=host) for r in got if isinstance(r, dict) and r.get("manager")] if isinstance(got, list) else []
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".%d.tmp" % os.getpid())
+        tmp.write_text(json.dumps({"t": int(time.time()), "runs": runs}))
+        tmp.replace(p)
+    except OSError:
+        pass
+    return runs
+
+
+def peer_manager(ctx):
+    """(alias, answer, why) for a manager on a peer this Mac reaches, or None when ctx's manager is not
+    elsewhere or its host has no alias here. answer is the peer's {"record", "alive"}, None when the peer
+    did not answer (why says so). One ssh per (alias, session) a process."""
+    m = ctx.get("manager")
+    if not m or not elsewhere(ctx):
+        return None
+    alias = peer_alias(ctx.get("manager_host"))
+    if not alias:
+        return None
+    if (alias, m) not in _PEER_SEEN:
+        out, why = peer_ssh(alias, [m], PEER_PROBE)
+        ans = None
+        if out is not None:
+            try:
+                ans = json.loads(out.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                why = "ssh %s: the probe printed no JSON" % alias
+            if not isinstance(ans, dict):
+                ans, why = None, why or "ssh %s: the probe printed no record" % alias
+        _PEER_SEEN[(alias, m)] = (ans, why)
+    return (alias,) + _PEER_SEEN[(alias, m)]
+
+
 def manager_state(ctx):
     """('live' | 'gone' | 'remote', why) for ctx['manager'] (finding 4 of the launch review,
     2026-10-10): a record in this Mac's registry with a live pid is live, with a dead pid gone; no
     record on the manager's own Mac is gone too — a leftover plan dir is not a manager. A manager
-    on another Mac (DISPATCH_MANAGER_HOST names it) has no registry here to read: 'remote', and
-    only Talk can reach it. No host recorded and no record here reads as gone."""
+    on another Mac (DISPATCH_MANAGER_HOST names it) is judged by that Mac's registry, read over the
+    ssh alias `wharf-runs/ssh` names (peer-manager-relay): live, or gone on a dead pid. With no alias, a
+    peer that does not answer, or no record there, it is 'remote', and only Talk can reach it. No host recorded and no
+    record here reads as gone."""
     m = ctx.get("manager")
     if not m:
         return "gone", "no manager (DISPATCH_SKIPPER unset)"
@@ -211,9 +415,22 @@ def manager_state(ctx):
         if pid_alive(rec.get("pid")):
             return "live", "pid %s" % rec.get("pid")
         return "gone", "the manager's session has ended (pid %s is gone)" % rec.get("pid")
-    mh, here = ctx.get("manager_host"), this_host()
-    if mh and here and mh != here:
-        return "remote", "on %s: its registry is not readable here" % mh
+    mh = ctx.get("manager_host")
+    if elsewhere(ctx):
+        peer = peer_manager(ctx)
+        if not peer:
+            return "remote", "on %s: its registry is not readable here (no ssh road to it in wharf-runs/ssh)" % mh
+        alias, ans, why = peer
+        if ans is None:
+            return "remote", "on %s: its registry is not readable here (%s)" % (mh, why)
+        prec = ans.get("record")
+        if not prec:
+            # a registry the probe cannot see (another login, a profile it does not glob, an id /clear
+            # changed) is no proof of an end: Talk keeps the road it had (finish review)
+            return "remote", "on %s: no record of it in the registries there" % mh
+        if not ans.get("alive"):
+            return "gone", "the manager's session has ended (pid %s on %s is gone)" % (prec.get("pid"), mh)
+        return "live", "on %s, pid %s (its registry, over ssh %s)" % (mh, prec.get("pid"), alias)
     return "gone", "the manager's session has ended (no record in %s)" % sessions_dir()
 
 
@@ -294,6 +511,10 @@ def resolve(ctx):
         return ctx, ("live", "this Mac's standing manager" if not ctx.get("scope") else "the scope's skipper")
     st = manager_state(ctx) if ctx.get("manager") else ("gone", "no manager (DISPATCH_SKIPPER unset)")
     if st[0] != "gone":
+        peer = peer_manager(ctx) if st[0] == "live" and not ctx.get("manager_name") else None
+        if peer and peer[1] and (peer[1].get("record") or {}).get("name"):
+            # the RELAYED line names a peer's manager as a local one is named: its registry name
+            ctx = dict(ctx, manager_name=peer[1]["record"]["name"])
         return ctx, st
     if os.environ.get("SKIPPER_SCOPE"):
         return ctx, ("gone", "a skipper's own ask goes to the owner (skipper · %s relays to no skipper)" % os.environ["SKIPPER_SCOPE"])
@@ -561,20 +782,31 @@ class File:
     def available(self, ctx):
         """A live manager on this Mac: its registry record with a live pid (finding 4). A plan dir
         left behind by a session that ended is not one — the queue would wait for a prompt that
-        never comes."""
+        never comes. Or a live manager on a peer this Mac reaches over ssh (peer-manager-relay): its
+        own queue there, which its prompt hook prints as it prints a local one."""
         if not ctx.get("manager"):
             return False, "no manager id"
         rec = registry(ctx["manager"])
         if rec is None:
-            return False, "the manager is not on this Mac"
+            peer = peer_manager(ctx)
+            if peer and peer[1] and peer[1].get("alive"):
+                return True, "%s over ssh %s, pid %s" % (ctx.get("manager_host"), peer[0], (peer[1].get("record") or {}).get("pid"))
+            return False, "the manager is not on this Mac" + (" (%s)" % peer[2] if peer and peer[2] else "")
         if not pid_alive(rec.get("pid")):
             return False, "the manager's process %s is gone" % rec.get("pid")
         return True, "this Mac, pid %s" % rec.get("pid")
 
     def send(self, ctx, text):
+        line = json.dumps({"t": int(time.time()), "from": ctx.get("session"), "text": text}, ensure_ascii=False)
+        if registry(ctx["manager"]) is None and peer_manager(ctx):
+            alias = peer_manager(ctx)[0]
+            # ascii(): a literal Python 3.9 reads from stdin whatever the line holds (hail's bundle())
+            out, why = peer_ssh(alias, [ctx["manager"]], "LINE = %s\n%s" % (ascii(line), PEER_QUEUE))
+            if out is None:
+                return "unreachable", "file: %s" % why
+            return "queued", "file: %s on %s" % (out.strip().splitlines()[-1] if out.strip() else "the queue", ctx.get("manager_host"))
         p = self.path(ctx)
         p.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"t": int(time.time()), "from": ctx.get("session"), "text": text}, ensure_ascii=False)
         fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             os.write(fd, (line + "\n").encode())
@@ -591,7 +823,7 @@ class File:
         return [json.loads(x) for x in lines if x.strip().startswith("{")]
 
     def describe(self):
-        return "file — a line the manager's next prompt prints; one Mac, always deliverable"
+        return "file — a line the manager's next prompt prints; this Mac, or a peer `wharf-runs/ssh` reaches"
 
 
 BACKENDS = {b.name: b for b in (Talk(), SendMessage(), File())}

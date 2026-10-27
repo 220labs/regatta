@@ -9,6 +9,9 @@
   `workspacePaths` and always answers it with JSON (`{}` when it sends nothing: silence there is a deny).
   `check` counts both files and notes Codex entries not yet trusted in `codex` → /hooks;
   `forget-private` forgets a private session by its harness.
+- The listen reminder (paste-paths' `manager_findings`) counts a manager's live runs on peer Macs too,
+  through helm's `asklib.peer_runs` (one ssh a peer, cached 10 minutes for every session here). A laptop
+  manager of a build-box run with a plan page is told to start `ask listen`, as one of a local run is.
 - The hand-over line carries both spacesheep links: first the page at the local mirror (`course` with
   D-items, `local` without), last the same page on spacesheep.dev as `space` (the owner, 2026-10-26). With
   no local address `course` is the internet page and stands for `space`. The Stop hooks never read the
