@@ -16,6 +16,7 @@ export LOOKOUT_HARNESS="$T/bin/harness" LOOKOUT_HAIL="$T/bin/hail" LOOKOUT_HOST=
 export LOOKOUT_PICKUP="$T/bin/pickup" LOOKOUT_DISPATCH="$T/bin/dispatch" LOOKOUT_AUTOFINISH="$T/bin/autofinish"
 unset KEEL_VIEWER DISPATCH_LABEL
 unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID MEMO_NOW
+unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 mkdir -p "$T/bin" "$T/state" "$T/sheep" "$T/ask" "$T/runs" "$T/srv"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }

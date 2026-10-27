@@ -9470,7 +9470,8 @@ def lock_held(f):
     """Whether a process holds an flock on `f` — read, never taken: a LOCK_EX|LOCK_NB take would
     end a `sheep wait` starting that instant (it finds the lock taken and exits). On macOS F_GETLK
     reports a flock(2) lock (probed 2026-10-21: l_type F_WRLCK, l_pid -1); elsewhere the two kinds
-    are apart, and lsof names a process with the file open. Unknown reads as held: the doc is then
+    are apart: Linux's /proc/locks lists the flock by inode, and lsof, where /proc is not there, names
+    a process with the file open. Unknown reads as held: the doc is then
     left alone, the safe way."""
     if sys.platform == "darwin":
         import fcntl
@@ -9486,6 +9487,25 @@ def lock_held(f):
             return True
         finally:
             os.close(fd)
+    if sys.platform.startswith("linux"):
+        # /proc/locks lists every lock by inode (`FLOCK ADVISORY WRITE <pid> <maj>:<min>:<inode> 0 EOF`),
+        # so no lsof is needed (a bare Ubuntu image has none: it read as held, and the lookout left
+        # every doc alone). The inode alone is matched: a device number may differ from stat's on a
+        # btrfs subvolume, and a collision across filesystems only reads as held, the safe way.
+        try:
+            ino = str(os.stat(str(f)).st_ino)
+        except OSError:
+            return False  # no such file, no lock
+        try:
+            with open("/proc/locks") as fh:
+                for line in fh:
+                    cols = line.split()
+                    # `1: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<inode> 0 EOF`; a waiter's line starts `1: ->`
+                    if len(cols) > 5 and cols[1] == "FLOCK" and cols[5].rsplit(":", 1)[-1] == ino:
+                        return True
+            return False
+        except OSError:
+            pass  # no /proc/locks (a sandbox): ask lsof, and unknown reads as held
     try:
         r = subprocess.run(["lsof", "-t", "--", str(f)], capture_output=True, text=True, timeout=10)
         return bool(r.stdout.strip())
