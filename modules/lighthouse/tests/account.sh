@@ -661,7 +661,7 @@ has "$T/out" "CLAUDE_CONFIG_DIR=$F claude auth login" "…with the login line"
 login "$F/.claude.json" u-f f@example.com; CLAUDE_CONFIG_DIR="$F" "$B/trust-projects" --no-external-imports > /dev/null 2>&1  # the helper rewrote the file, trust with it
 login "$S1/.claude.json" u-f f@example.com
 check "$(DR --local)" 1 "a parked dir signed in to work's seat → a problem (review 2026-10-06)"
-has "$T/out" "a second way into work's seat that its deny list does not cover" "…naming the seat"
+has "$T/out" "a second way into work's seat that its deny list and tenancy do not cover (cv, privy)" "…naming the seat and what it would bypass"
 has "$T/out" "CLAUDE_CONFIG_DIR=$S1 claude auth logout" "…with the logout line"
 login "$S1/.claude.json" u-primary p@example.com
 mkdir -p "$HOME/.claude-stray"; touch "$F/remote-settings.json"
@@ -1289,10 +1289,16 @@ echo '{"acme": {"repos": ["acme-one"]}}' > "$T/tenants-nologin.json"
 check "$(TENANTS_FILE="$T/tenants-nologin.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A allowed "$PR/acme-one")" 1 "a file tenant with no logins: its repos run nowhere"
 has "$T/out" "no enabled login is acme's in tenants-nologin.json" "…saying where to name one"
 ln -s "$T/nowhere.json" "$T/tenants-gone.json"
-check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/acme-one")" 0 "a link that reads nothing: tenancy off, the registry's tenants not read instead"
-has "$T/out" "unreadable" "…said on stderr"
-check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/privy")" 1 "…while deny lists keep working"
-check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…and --json stays parseable with stderr merged in (dispatch reads it so; review 2026-10-22)"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/acme-one")" 1 "a link that reads nothing, no copy: tenancy closed, the default dir refused (S7b), the registry's tenants not read instead"
+has "$T/out" "acme-one is off main: tenancy does not read ($T/tenants-gone.json:" "…the refusal says why, never \"tenancy is off\""
+has "$T/out" "so every repo is closed to every login until it reads — $B/account refresh --force once its drive is mounted" "…and the read that opens it"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/app")" 1 "…every repo, one no tenant ever named included"
+check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/privy")" 1 "…and every row"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$T/vt")" 0 "…but a folder outside the projects folder, and above none of it, holds no repo: allowed"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "3 None" "…pick --repo waits (exit 3), and --json stays parseable with stderr merged in (dispatch reads it so; review 2026-10-22)"
+has "$T/out" "app: tenancy does not read and has no last good copy (closed until it reads)" "…naming why each row was skipped"
+check "$(TENANTS_FILE="$T/tenants-gone.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 work" "…while a pick with no repo still runs"
+check "$(TENANTS_FILE="$T/no-such-tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" A allowed "$PR/cv")" 0 "no tenants key at all, no copy: tenancy off (only {} or no key turns it off)"
 cp "$T/tenants.json" "$T/tenants-drive.json"; ln -s "$T/tenants-drive.json" "$T/tenants-link.json"
 check "$(CLAUDE_CONFIG_DIR="$F" TENANTS_FILE="$T/tenants-link.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" A allowed "$PR/acme-one")" 1 "a link that reads: a secondary is refused the tenant's repo…"
 check "$(test -f "$T/.tenants-link.json.last" && echo kept)" "kept" "…and the good read is copied beside the link"
@@ -1475,8 +1481,10 @@ for t in a.tenancy_state(a.load_registry()):
 ln -s "$TN/away.json" "$TN/dead.json"
 tstate "$TN/dead.json" > "$T/ts"
 has "$T/ts" "fix - TN/dead.json reads nothing" "a link that reads nothing with no copy: a fix…"
-has "$T/ts" "no last good copy — tenancy is off" "…saying tenancy is off"
+has "$T/ts" "no last good copy — tenancy is closed: every repo is refused to every login, the default dir's included, until it reads" "…saying tenancy is closed (S7b), never off"
+hasnt "$T/ts" "tenancy is off" "…not a word of off"
 has "$T/ts" "--config   (relinks it" "…the fix relinks it"
+has "$T/ts" "; then $B/account refresh --force" "…then reads it into the copy"
 echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$TN/away2.json"; ln -s "$TN/away2.json" "$TN/held.json"
 tstate "$TN/held.json" > "$T/ts"
 check "$(cat "$T/ts")" "" "the link reads: nothing to say"
@@ -1633,9 +1641,91 @@ mkdir -p "$T/cfg-noov/regatta" && echo '{"tenants": {"acme": {"repos": ["acme-*"
 check "$(VT_CONFIG="$T/cfg-noov" VT_TENANTS="$T/vt/none.json" VT_ACCOUNTS="$T/vt/regtenants.json" VT tenant set owner --repos privy --logins main; ls "$T/vt/none.json" 2>&1 | grep -c 'No such')" "1
 1" "tenant set with no file refuses when the registry holds tenants: the new file would replace them"
 check "$(VT tenant drop nobody)" 1 "tenant drop of a tenant the file lacks: refused"
+check "$(VT tenant drop acme; grep -c acme "$T/vt/tenants.json")" "0
+0" "tenant drop acme: out of the file"
+hasnt "$T/out" "warning" "…no warning: acme never held the vault"
+VT tenant set acme --repos acme-* --logins lab > /dev/null
 check "$(VT tenant drop owner; grep -c owner "$T/vt/tenants.json")" "0
 0" "tenant drop owner: out of the file"
+has "$T/out" "account tenant: warning — owner held the vault (privy): no tenant holds it now" "…warning: the vault's tenant is what kept it off the work seats (S7 review)"
+has "$T/out" "tenant set owner --repos privy cv app --logins main spare" "…naming the line that sets it again"
 check "$(CLAUDE_CONFIG_DIR="$F" VT allowed "$PR/privy")" 0 "…and work, with no deny list, may open the vault again (the order S7 keeps: tenant first, lists after)"
+VT tenant set owner --repos privy cv app --logins main spare > /dev/null
+check "$(VT tenant set owner --repos cv app --logins main spare)" 0 "tenant set that leaves the vault out of its tenant: written"
+has "$T/out" "account tenant: warning — owner held the vault (privy): no tenant holds it now" "…with the drop's warning, as it opens the vault the same way (S7b landing review)"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["owner"]["repos"]=["privy", 3, "_p*"]; json.dump(d, open(p,"w"))' "$T/vt/tenants.json"
+check "$(VT tenant drop owner)" 0 "tenant drop of a hand-edited tenant with a non-string entry: no traceback after the write"
+has "$T/out" "tenant set owner --repos privy '_p*' --logins main spare" "…its restore line quoted for the shell, the bad entry left out"
+
+echo "tenancy that cannot be read fails closed (confidential-reach S7b, 2026-10-27)"
+VT tenant set owner --repos privy cv app --logins main spare > /dev/null
+ln -sfn "$T/vt/away.json" "$T/vt/closed.json"; rm -f "$T/vt/.closed.json.last"
+VC() { VT_TENANTS="$T/vt/closed.json" VT "$@"; }
+check "$(VC allowed "$PR/privy")" 1 "closed: the default dir, the vault's tenant's login while the file read, is refused the vault too"
+check "$(CLAUDE_CONFIG_DIR="$F" VC allowed "$PR/privy")" 1 "…a work seat is refused it"
+has "$T/out" "privy is off work: tenancy does not read" "…on the closed line"
+check "$(CLAUDE_CONFIG_DIR="$F" VC allowed "$PR")" 1 "…and ~/projects"
+has "$T/out" "is off work: it holds repos, and tenancy does not read" "…on a ' holds ' line"
+check "$(CLAUDE_CONFIG_DIR="$F" VC allowed "$HOME")" 1 "…and ~"
+check "$(CLAUDE_CONFIG_DIR="$UO/claude-profiles/p1/home" ACCOUNT_ORCA_DATA="$UO" VC allowed "$PR/overlay")" 1 "…an Orca login no row names, in a repo no tenant held"
+check "$(cd "$PR" && VC run spare --version)" 1 "…run refuses before claude starts"
+check "$(VC pick --repo "$PR/privy" --json) $(field "['account']")" "3 None" "…pick --repo waits on every row"
+check "$(VT_TENANTS="$T/vt/closed.json" vpy 'print([(r["label"], a.employer(r)) for r in reg["accounts"] if r["provider"] == "claude"])' | tail -1)" \
+  "[('work', True), ('lab', True), ('spare', True), ('main', True)]" "…every row is an employer's while closed: the work memory, never the private one"
+check "$(VT_TENANTS="$T/vt/closed.json" vpy 'import tempfile; d=a.Path(tempfile.mkdtemp()); r=[x for x in reg["accounts"] if x["label"] == "spare"][0]
+print(a.closed_row(r), a.home_memory_excluded(r, d), "--no-external-imports" in a.trust_argv(r), (d / "settings.json").exists())' | tail -1)" \
+  "True None False False" "…but no write that outlives it: no claudeMdExcludes, no trust No on the owner's own login (S7b landing review)"
+check "$(vpy 'r=[x for x in reg["accounts"] if x["label"] == "work"][0]; print(a.closed_row(r), "--no-external-imports" in a.trust_argv(r))' | tail -1)" \
+  "False True" "…while a work seat on a file that reads still gets them"
+VT_TENANTS="$T/vt/closed.json" vpy "$roster" > "$T/roster"
+check "$(grep -c "tenancy unread" "$T/roster")" 0 "doctor's roster names no tenant for a closed tenancy, nor a deny entry it 'covers'"
+check "$(VT_TENANTS="$T/vt/closed.json" vpy 'print(a.tenant_ties(reg))' | tail -1)" "[]" "…nor do the VS Code ties (one fix line, tenancy_state's, says it)"
+echo '{}' > "$T/vt/empty.json"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_TENANTS="$T/vt/empty.json" VT allowed "$PR/privy")" 0 "a file written {}: tenancy off, explicitly (the one written way to end it)"
+echo "  setup seeds the copy on a new host"
+mkdir -p "$T/vt/d2"; cp "$T/vt/tenants.json" "$T/vt/d2/tenants.json"; ln -sfn "$T/vt/d2/tenants.json" "$T/vt/seed.json"; rm -f "$T/vt/.seed.json.last"
+check "$(VT_TENANTS="$T/vt/seed.json" ACCOUNT_LOGINS="$T/no-logins.json" VT setup --no-record)" 1 "setup with no logins file still exits 1…"
+has "$T/out" "ok  tenants: seed.json → .seed.json.last" "…after seeding the tenants copy first"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$T/vt/.seed.json.last")" "['acme', 'owner']" "…which holds the file"
+rm "$T/vt/d2/tenants.json"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_TENANTS="$T/vt/seed.json" VT allowed "$PR/privy") $(CLAUDE_CONFIG_DIR="$S1" VT_TENANTS="$T/vt/seed.json" VT allowed "$PR/privy")" "1 0" \
+  "…so with the drive away the copy holds: work refused, the tenant's login not"
+VT_TENANTS="$T/vt/closed.json" ACCOUNT_LOGINS="$T/no-logins.json" VT setup --no-record > /dev/null
+has "$T/out" "tenants: closed.json did not read" "setup on a host whose link never read: says so…"
+has "$T/out" "tenancy is closed here until it does" "…closed, not off"
+echo "  doctor names an entry two tenants both take"
+mkdir -p "$PR/acme-one" && git -C "$PR/acme-one" init -q 2>/dev/null
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}, "beta": {"repos": ["*-one", "zed"], "logins": ["work"]}, "gamma": {"repos": ["zed"], "logins": ["spare"]}}' > "$T/vt/overlap.json"
+VT_TENANTS="$T/vt/overlap.json" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ov"
+has "$T/ov" "fix acme-one is in both acme's and beta's \"repos\" in overlap.json: each refuses it to the other's logins, so it runs on neither" "two globs that take one cloned repo: a fix naming it"
+has "$T/ov" "fix zed is in both beta's and gamma's" "…one key in two tenants: a fix"
+has "$T/ov" "| keep it in one tenant's \"repos\"" "…whose fix keeps it in one"
+check "$(VT tenant set delta --repos '*-one' --logins work)" 1 "tenant set refuses a glob that takes a repo another tenant's glob takes"
+has "$T/out" "acme-one is acme's already" "…naming the repo both take"
+check "$(vpy 'print(a.entries_clash(["studio"], ["studio/pipeline"]), a.entries_clash(["studio/pipeline"], ["studio"]), a.entries_clash(["studio"], ["studiox"]))' | tail -1)" \
+  "['studio'] ['studio/pipeline'] []" "entries_clash: a key inside another's folder clashes, as denied() refuses it to both (S7b landing review)"
+check "$(vpy 'print(a.repo_keys_here() is None)' | tail -1)" "False" "repo_keys_here: a registry that reads gives keys"
+echo "  the default dir outside the vault's tenant (the S7 review's third finding)"
+VT tenant set owner --repos privy cv app --logins spare > /dev/null
+vpy "$roster" > "$T/roster"
+has "$T/roster" "info main the default dir (main) is not owner's login, which holds the vault: a session it starts in the home or the projects folder is refused" "doctor says so, as info"
+check "$(VT allowed "$PR") $(VT allowed "$HOME")" "1 1" "allowed refuses the default dir there"
+gq() { echo "{\"cwd\": \"$1\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PROJECT_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="${2:-$T/vt/tenants.json}" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" python3 "$B/../hooks/account_guard.py" 2>"$T/gq.err" | grep -c '"block"'; }
+check "$(gq "$PR") $(gq "$HOME")" "1 1" "…and the guard asks there now: the default dir blocked at ~/projects and ~ (was never asked)"
+check "$(gq "$T/vt")" "0" "…not elsewhere"
+check "$(echo "{\"cwd\": \"$PR\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PROJECT_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" python3 "$B/../hooks/account_guard.py" | python3 -c 'import json,sys; r=json.load(sys.stdin)["reason"]; print("start the session inside a repo" in r, "default VS Code profile" in r)')" \
+  "True False" "…its reason passed on as it is: never the deny list's way out, the default login it is on (S7b landing review)"
+VT tenant set owner --repos privy cv app --logins main spare > /dev/null
+check "$(gq "$PR") $(gq "$HOME")" "0 0" "the default dir the vault's tenant's login: silent at both (no subprocess: its own tenant's entries are left out)"
+check "$(gq "$PR/privy" "$T/vt/closed.json") $(gq "$PR" "$T/vt/closed.json") $(gq "$PR/overlay" "$T/vt/closed.json")" "1 1 1" "closed: the guard blocks the default dir in the vault, at ~/projects and in any repo"
+has "$T/gq.err" "tenancy closed" "…saying so on stderr"
+check "$(echo "{\"cwd\": \"$PR/privy\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PROJECT_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/closed.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" \
+  ACCOUNT_ORCA_FILE="$T/no-orca.json" python3 "$B/../hooks/account_guard.py" | python3 -c 'import json,sys; r=json.load(sys.stdin)["reason"]; print("tenancy does not read" in r, "default VS Code profile" in r)')" \
+  "True False" "…its reason passed on as it is: the read that opens it, never the deny list's way out"
+check "$(gentries "$ACCOUNTS_FILE.vt" | tail -1) $(env -u CLAUDE_CONFIG_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/closed.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" python3 -c '
+import sys; sys.path.insert(0, sys.argv[1]); import account_guard as g; print(g.tenant_entries())' "$B/../hooks" 2>/dev/null)" "['acme-*'] ['*']" "the guard's entries: a closed tenancy is ['*']"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }

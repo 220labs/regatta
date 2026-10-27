@@ -13,6 +13,9 @@ on the default login).
 A tenant's repo (bin/account's header, Tenants, 2026-10-20) is off every login but the tenant's,
 the default dir's included, so while the tenants file (else the registry) names a tenant the hook asks on the default dir
 too (bar in its own tenant's repos, which it runs: the vault's tenant, S7), and a tenant refusal is passed on as `allowed` words it: it names the login's own way in.
+A tenants file that reads nothing, with no last good copy, is closed tenancy (confidential-reach S7b, 2026-10-27): every repo
+is asked about and `allowed` refuses each, naming the read that opens it. While the default dir is refused the vault (closed,
+or not the vault's tenant), a start in the projects folder or the home folder is asked about too: both hold it.
 A no-op without CLAUDE_CONFIG_DIR and no tenant (the default dir denies nothing) and for a dir the registry
 has no row for — bar a tenant's repo, which such a dir is refused too, and one under Orca's data, which `allowed` answers by the row of the login it is
 signed in as, else ORCA_ROW's list (2026-10-17). Fails closed when bin/account cannot run the regatta core (a
@@ -80,8 +83,10 @@ def tenant_entries():
             if isinstance(t, dict):
                 break
         if not isinstance(t, dict):
-            print(f"account_guard: {tenants} unreadable, and no last good copy — tenancy unchecked", file=sys.stderr)
-            return []
+            # closed, as bin/account reads it (its header, S7b): every repo is asked about, and `allowed`
+            # refuses each; open here, a work seat's default dir would reach the vault on a new host
+            print(f"account_guard: {tenants} unreadable, and no last good copy — tenancy closed", file=sys.stderr)
+            return ["*"]
         label = default_row(accounts).get("label")
         own = None
         for n, v in t.items():   # a label in two tenants' logins is the later one's (bin/account's apply_tenants)
@@ -143,16 +148,42 @@ def tenant_entry(r):
     return r.strip("/") or None
 
 
+def projects_folder():
+    """The core's `regatta/projects`, else `projects` in the home folder."""
+    config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    try:
+        return Path((config / "regatta" / "projects").read_text().strip().splitlines()[0]).expanduser()
+    except (OSError, IndexError):
+        return Path.home() / "projects"
+
+
+def holds_vault(cwd, entries):
+    """True when cwd is the projects folder or a folder above it (the home folder) and an entry the default dir
+    is refused takes the vault (`lighthouse/vault`): bin/account's holds_denied refuses such a start, since the
+    default dir's CLAUDE.md imports the vault's files, and maybe_tenants never sees it (no part under the
+    projects folder; the S7 review's third finding, fixed in S7b). Never true where the default dir is the
+    vault's tenant: tenant_entries leaves its own tenant's entries out, so the owner's prompts there cost nothing."""
+    config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    try:
+        vault = (config / "lighthouse" / "vault").read_text().split()[0]
+    except (OSError, IndexError):
+        return False
+    if not any(fnmatch.fnmatchcase(vault, e) for e in entries):
+        return False
+    try:
+        projects = projects_folder().resolve()
+        here = Path(cwd).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return here == projects or here in projects.parents
+
+
 def maybe_tenants(cwd, entries):
     """True when cwd could be in a tenant's repo: under the projects folder (the core's `regatta/projects`,
     else `projects` in the home folder) with leading parts an entry matches — a key, or a glob as bin/account reads one.
     A prefilter, so a default-dir prompt elsewhere costs no subprocess (0.4 s, review 2026-10-20).
     A worktree outside the projects folder is not seen here: the default dir's sessions start inside it."""
-    config = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
-    try:
-        projects = Path((config / "regatta" / "projects").read_text().strip().splitlines()[0]).expanduser()
-    except (OSError, IndexError):
-        projects = Path.home() / "projects"
+    projects = projects_folder()
     try:
         rel = Path(cwd).expanduser().resolve().relative_to(projects.resolve()).parts
     except (ValueError, OSError):
@@ -160,6 +191,12 @@ def maybe_tenants(cwd, entries):
     # Every leading run of parts, not just as many as the entry has: bin/account matches a glob against the
     # whole repo key, where `*` spans `/` ("*-acme" takes clients/x-acme; review 2026-10-21).
     return any(fnmatch.fnmatchcase("/".join(rel[:k]), e) for e in entries for k in range(1, len(rel) + 1))
+
+
+def own_way(why):
+    """True when `allowed`'s line names its own way out, which the guard passes on as it is: a tenant's
+    (off_line: the tenant's login) or a closed tenancy's (bin/account's closed_text: the read that opens it)."""
+    return "'s, which runs on " in why or "tenancy does not read" in why
 
 
 def main():
@@ -186,10 +223,10 @@ def main():
         if t.returncode == 1 and " is off " in t.stdout and " holds " not in t.stdout:
             why = t.stdout.strip()
             # a tenant's line (off_line) names its own login's way in, from either source (review 2026-10-23)
-            print(json.dumps({"decision": "block", "reason": why if "'s, which runs on " in why else
+            print(json.dumps({"decision": "block", "reason": why if own_way(why) else
                               f"{why}: open it in the default VS Code profile, or a Terminal claude on the default login (no CLAUDE_CONFIG_DIR)"}))
             return
-    if default_dir and not maybe_tenants(cwd, entries):
+    if default_dir and not maybe_tenants(cwd, entries) and not holds_vault(cwd, entries):
         return
     r = subprocess.run([sys.executable, str(ACCOUNT), "allowed", cwd], capture_output=True, text=True, timeout=20)
     # The default dir is the seat a broken core is repaired from: it was never blocked before tenancy,
@@ -216,7 +253,9 @@ def main():
     if r.returncode != 1 or " is off " not in r.stdout:
         return
     why = r.stdout.strip()
-    if "'s, which runs on " in why:   # a tenant's repo (off_line): the line already names its own login's way in
+    # a tenant's repo (off_line), or tenancy closed: the line already names its own way out; and the default
+    # dir's refusals are all tenancy's, where "use the default login" would send it back to itself (S7b review)
+    if own_way(why) or default_dir:
         print(json.dumps({"decision": "block", "reason": why}))
         return
     print(json.dumps({"decision": "block", "reason": f"{why}: open it in the default VS Code profile, "
