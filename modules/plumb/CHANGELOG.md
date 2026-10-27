@@ -8,6 +8,13 @@
   ceiling by lighthouse's `account limits --cached`, matched by home, or not eligible there (overage on,
   `same_as`); a reading over 2 h old tells nothing; one `STOP:` line says why, exit 0.
   Run by hand with neither a session nor `--until`, the session stop is off as before.
+- usage-report's day files gain a last column, `branch` (trim-join, 2026-10-27): the `claude/*` branch a
+  session's main-chain calls name most that day, an agent's only where the main chain names none; a file
+  from before it reads as empty. `usage-report branches [--days N]` fills it in this host's past files from
+  the transcripts and the archive still here, changing no other cell, and the tick runs it once per host
+  (`.branches-filled`). `trim collect` joins a session by it between the run record and the transcript
+  (join `usage`), so a typed session whose transcript Claude Code pruned still finds its landing. `usage` ranks under
+  `transcript` when a re-collect merges, and the verdict counts a landing with no readable arm with the unjoined.
 - `trim collect|report|verdict` (trim S1–S2, 2026-10-26): one row per outcome joined from the usage CSVs, run
   records, dispatch logs, transcripts, review-gate rows, merged PRs and their diffs, finisher and bench rows, as
   weekly JSONL records; a scorecard; the verdict (one-sided Beta bound over precommitted looks, cost ratio, CUSUM,
