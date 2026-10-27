@@ -424,9 +424,11 @@ def scope_of_key(key, path=None):
     return next((n for n, s in scopes.items() if key and key in scope_members(s, repos)), None)
 
 
-def confidential_scopes(path=None):
-    """{name: scope} for each scope flagged `"confidential": true` (only a real true counts)."""
-    return {n: s for n, s in scope_registry(path)[1].items() if isinstance(s, dict) and s.get("confidential") is True}
+def confidential_scopes(path=None, reg=None):
+    """{name: scope} for each scope flagged `"confidential": true` (only a real true counts). REG: a
+    registry read_registry() parsed already, so a gate judges the tear and the scopes from one read."""
+    scopes = (reg.get("scopes") or {}) if isinstance(reg, dict) else scope_registry(path)[1]
+    return {n: s for n, s in scopes.items() if isinstance(s, dict) and s.get("confidential") is True} if isinstance(scopes, dict) else {}
 
 
 SCOPE_MARK = "confidential:"
@@ -441,10 +443,11 @@ def scope_marker(name):
     return SCOPE_MARK + hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
 
 
-def scope_of_marker(marker, path=None):
-    """The confidential scope whose scope_marker() is `marker`, by this host's registry — or None: no
-    such scope, an open one, two that share the 8 hex (refused rather than guessed). Never raises."""
-    hits = [n for n in confidential_scopes(path) if isinstance(marker, str) and scope_marker(n) == marker]
+def scope_of_marker(marker, path=None, reg=None):
+    """The confidential scope whose scope_marker() is `marker`, by this host's registry (or REG, one
+    read_registry() parse) — or None: no such scope, an open one, two that share the 8 hex (refused
+    rather than guessed). Never raises."""
+    hits = [n for n in confidential_scopes(path, reg=reg) if isinstance(marker, str) and scope_marker(n) == marker]
     return hits[0] if len(hits) == 1 else None
 
 

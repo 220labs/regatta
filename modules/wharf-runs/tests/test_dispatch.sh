@@ -2946,20 +2946,34 @@ env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $BR --repo "$T/repo" --o
 check "$?" "0" "item 20: a dispatch of a branch whose entry is claimed here: exit 0…"
 has "$T/out" "is claimed here already (queue entry fleet:repo--demo)" "  …said as such, never 'no room … queued'"
 qreset
-# --origin through the queue (confidential-reach S5 beside dispatch-queue S1): the entry is pushed to the
-# home, so it carries the scope's marker, never the name the run was given
+# --origin through the queue (confidential-reach S5 beside dispatch-queue S1, the rebase's review): a
+# confidential origin is a spawn, `.review` or not — node-local, never the fleet ref — and the entry
+# carries the scope's marker, never the name the run was given
+QSP="$HA/Library/Caches/run-seed/queue-local/_spawn/repo--demo.json"
 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --on here --headless --origin node > "$T/out" 2>&1
 check "$?" "0" "--origin through the queue: queued and claimed here…"
-"${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json > "$T/qentry.json" 2>/dev/null
-check "$(python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("args") or []; print(a[a.index("--origin") + 1] if "--origin" in a else "none")' "$T/qentry.json")" "$NM" \
-  "  …the entry carrying the scope's marker…"
-hasnt "$T/qentry.json" '"node"' "  …and never its name"
+check "$(qtree)" "" "  …never on the fleet ref, though the repo is open…"
+check "$(python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("args") or []; print(a[a.index("--origin") + 1] if "--origin" in a else "none")' "$QSP" 2>&1)" "$NM" \
+  "  …but node-local (queue-local/_spawn/), the entry carrying the scope's marker…"
+hasnt "$QSP" '"node"' "  …and never its name"
 QP=$(qplists "$HA" | head -1)
 has "$QP" "<string>--origin</string><string>$NM</string>" "  the claimed job hands the marker on"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_MAX_RUNS=5 qfire "$QP"
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("origin"), d.get("origin_mark"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node $NM" \
   "  and the fired run's record reads it back here: the name and the marker"
 check "$(qload 'q.bad_args({"args": ["--origin", "node"]})')" "--origin 'node' does not match its pattern" "  an entry naming a scope is never claimable (bad_args)"
+qreset
+# a claimed job whose origin no longer reads here (the scope gone from the registry, or torn) hands its
+# entry back rather than leaving it claimed with no job and its slot held for the lease
+printf '{"repos": {"o": {}}, "scopes": {"pub": {"repos": ["o"]}}}\n' > "$T/origin-gone.json"
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --on here --headless --origin "$NM" > "$T/out" 2>&1
+QP=$(qplists "$HA" | head -1)
+check "$(python3 "$T/qget.py" state < "$QSP" 2>&1)" "claimed" "an --origin entry claimed here…"
+CLAUDE_REPOS_JSON="$T/origin-gone.json" DISPATCH_MAX_RUNS=5 qfire "$QP" > "$T/out" 2>&1
+check "$(python3 "$T/qget.py" state < "$QSP" 2>&1)" "queued" "  …whose job finds the scope gone from the registry: back to queued, never left claimed"
+check "$([ -f "$QP" ] && echo kept || echo gone)" "gone" "  its plist removed"
+hasnt "$QSP" '"node"' "  the refusal it records names no scope"
+check "$(python3 "$QB" reserved "${QC[@]}")" "0" "  and no slot held for it"
 qreset
 
 echo "  the third landing review (docs/dispatch-queue-s1-review-3-2026-10-27.md), one case each"

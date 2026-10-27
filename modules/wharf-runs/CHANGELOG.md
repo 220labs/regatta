@@ -21,6 +21,12 @@
   dispatch host and a scheduled job (escaped into the plist); a marker is read back by this host's
   registry and refused when no confidential scope has it or the registry is torn; the run's record keeps
   the name as `origin` and the marker as `origin_mark`; refused given twice, with `--start` and under
+  WEEKLY_RUN. Through the queue (dispatch-queue S1, the rebase's review): an entry given `--origin` routes
+  node-local to `queue-local/_spawn/` as a `.review` seed does, never the fleet ref; it carries the marker
+  alone, never the name it was given (`FLAGS` takes `--origin` only as `confidential:<8 hex>`); a claimed
+  job refused on its origin hands the entry back (`refused`) rather than leaving it claimed with no job. The
+  origin read judges the tear and the scopes from one `read_registry()` (the core's `confidential_scopes`
+  and `scope_of_marker` take `reg=`), and the record keeps `origin_mark` for a name given too.
   WEEKLY_RUN. Through the queue (dispatch-queue S1) the entry carries the marker alone, never the name it
   was given: `FLAGS` takes `--origin` only as `confidential:<8 hex>`, since an entry is pushed to the home.
 - The suites delete under HOME through `rm_own` (the core's entry, 2026-10-27).
