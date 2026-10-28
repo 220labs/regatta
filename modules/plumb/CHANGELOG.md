@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `crew-report` reads the core's attribution (attribution, 2026-10-27): a session, or every session
+  under a folder glob (relative to `projects_root`, worktree part kept), attributed to another project by a row of
+  the core's `attribution.jsonl` (`regatta attribution add|list`) moves its typed-prompt time and its model cost,
+  a subagent's included. The rules live in the core's `common.attribution`; crew-report keeps none. The report
+  adds `attributed: <n> sessions, <m> path rules — <min> min, <cost> moved`. No verb, file or config key of its
+  own. usage-report's keys are unchanged; suite `tests/crew-report-attribution.sh`. Needs the core of the
+  same release (`under_projects`, `projects_rel`, `attribution_match`): with an older core every report fails.
 - `bench drive` is tethered (bench-tether, 2026-10-27; finding 6 of the night-landings digest): before
   each start it stops once the session that started it is gone (its claude, from `CLAUDE_PID` or the
   walk up `ps`), once `--until` passes, or once the runs' login is parked, locked or past its week

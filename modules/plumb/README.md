@@ -26,6 +26,9 @@ crew-report week --week 2026-W42 --until 2026-10-18T15:17   # a replay cut short
 crew-report week --write                          # <reports>/<week>.md, and latest.md for the last complete week
 crew-report week --write --publish                # the weekly job's flags: the files to publish too
 crew-report week --this-host                      # the cost column for this Mac's calls only
+regatta attribution add PROJECT                   # count this session ($CLAUDE_CODE_SESSION_ID) to PROJECT
+regatta attribution add PROJECT --path 'repo/.claude/worktrees/topic'   # every session under a folder
+regatta attribution list                          # the rows (the core's verb; the report reads them)
 ```
 
 **What counts as typed.** A user event with `origin.kind == "human"`, or a local slash command
@@ -109,6 +112,21 @@ gap, and `--until` drops the rows after the cut.
   comment box on the page, a doc with no course page (notes, rules, transcripts; a Mac without the
   CLI), a page not redeployed since it learned to heartbeat, and a course re-read after its branch
   landed and keel pruned the pin (about 14 days). The report says so in one line.
+
+**Attribution.** A prompt and a cost row belong to the project their working folder names. Work done
+in one repo for another project (a session in a lean repo, because the other's context is heavy) is
+moved by the core's attribution file: `regatta attribution add PROJECT [--session ID | --path GLOB]
+[--why TEXT]` appends a row and `regatta attribution list` shows them (the rows, the resolution rules,
+the file and its `regatta/attribution` key are the core README's; this tool asks `common.attribution`
+for each prompt and cost row and keeps no rules of its own). A `path` glob is matched against
+`projects_root`. A subagent's cost follows its parent's session. Time and cost move together, and show
+in the target's row. usage-report's rows carry only a project key, so a `path` row is matched against
+each folder the row's session worked in, read from its transcript (the key itself when the session is
+not on disk; usage-report strips a worktree part from it, so there only a repo-wide glob moves cost). One line under the totals says what moved:
+`attributed: <n> sessions, <m> path rules — <minutes> min, <cost> moved` (minutes gross, per source
+project). `regatta attribution add` checks a PROJECT and a `--path` against the core's projects folder
+(`regatta/projects`): keep `projects_root` the same folder, as both defaults are. The rows name sessions, so the
+file is private state: it is never published with a report.
 
 **Config.** `$CREW_REPORT_CONFIG`, else `plumb/crew-report.json` in the regatta config dir. Without
 it the defaults apply: prompts, and measured reading when `reads` holds rows; gap 20, sensitivity

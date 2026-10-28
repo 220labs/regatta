@@ -16,7 +16,7 @@ p = common.tool(sys.argv[2]); print(p or "")' "$M/lib" "$1"; }
 if ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common' "$M/lib"; then
   echo "FAIL: the core does not load here (its line above)"; rc=1
 fi
-for s in crew-report usage-report interruptions trim; do
+for s in crew-report crew-report-attribution usage-report interruptions trim; do
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  skip: $s not in this copy"; continue; fi
   bash "$D/$s.sh" || rc=1
