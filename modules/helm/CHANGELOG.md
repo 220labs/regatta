@@ -4,6 +4,10 @@
 
 - The suite's two deletes of the run-records folder go through `rm_own` (the core's entry: a block of
   this suite, run in a shell with the real HOME, emptied a Mac's run records on 2026-10-25).
+- The board's Intake column (lighthouse-ops S4): a card per open issue of the desk's intake, from lighthouse's
+  `ops intake --json` where this host has an `intake-state.json`, grouped by kind (deadman, stall, contact,
+  bug, other); titled by its kind and number, never the issue's own title, and linked to GitHub. Last of the
+  columns, so the others keep their colours; `board_sig` never reads the issue's time.
 - The board's ops row (lighthouse-ops S2): one line under the header from lighthouse's `ops status --json`
   where this host has an `ops.jsonl`, amber once the row is an hour old; `board_sig` counts it by the
   row's sig alone, never its line, which carries the sample's age and the gauges.

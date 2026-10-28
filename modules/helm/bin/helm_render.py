@@ -42,8 +42,10 @@ import helmlib  # noqa: E402
 import surfaces  # noqa: E402
 
 # The two people columns come first, the owner's and everyone else's (helmlib.columns(): the config
-# dir's `regatta/owner` and `helm/people`); the page skips the second while it is empty.
-OTHER_COLUMNS = ("Blocked", "Running", "Parked / Relayed", "Done today")
+# dir's `regatta/owner` and `helm/people`); the page skips the second while it is empty. Intake holds the
+# desk's open issues (lighthouse-ops S4), grouped by kind, until S5's classifier sends each where it goes;
+# it is last because the page colours a card by its column's index (.c0-.c6).
+OTHER_COLUMNS = ("Blocked", "Running", "Parked / Relayed", "Done today", "Intake")
 
 
 def board_columns():
@@ -1128,6 +1130,41 @@ def ops_row():
     return {"line": d["line"], "sig": d.get("sig"), "stale": bool(d.get("stale"))}
 
 
+def intake_cards():
+    """One card per open issue the desk's intake holds (lighthouse-ops S4): lighthouse's `ops intake --json`,
+    which judges each against the registry as it reads now (a torn one gives none, a fenced scope's are
+    dropped). The card carries no title of the issue — a contact is a stranger's text — only its kind and
+    number, and links to GitHub; `label` is the kind, the lane the page groups it by. Its `updated` (the
+    issue's creation) is a clock board_sig never reads. [] when lighthouse is absent, this host has no intake,
+    or the read fails. HELM_OPS replaces the tool (the tests')."""
+    stub = os.environ.get("HELM_OPS")
+    try:
+        path = Path(stub) if stub else helmlib.peer("ops")
+        if not path or not (stub or (helmlib._common().LOG_DIR / "intake-state.json").exists()):
+            return []
+        cp = subprocess.run([sys.executable, str(path), "intake", "--json"], capture_output=True, text=True,
+                            timeout=10, stdin=subprocess.DEVNULL)
+        d = json.loads(cp.stdout) if cp.returncode == 0 else None
+    except (ImportError, OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    try:
+        # on a confidential scope's own yard ops keeps its issues; the shared page guards them, as skipperlib does
+        conf = set(helmlib._common().confidential_scopes())
+        conf_unread = False
+    except Exception:  # noqa: BLE001 — scopes that do not read guard every card
+        conf, conf_unread = set(), True
+    out = []
+    for c in (d.get("open") if isinstance(d, dict) and isinstance(d.get("open"), list) else []):
+        if not isinstance(c, dict) or not c.get("repo") or c.get("number") is None:
+            continue
+        kind = str(c.get("kind") or "other")
+        out.append(_card("intake", "%s #%s" % (kind, c["number"]), "Intake", repo=c["repo"], label=kind,
+                         ref="%s#%s" % (c.get("slug") or c["repo"], c["number"]), url=c.get("url"),
+                         by=c.get("author"), updated=c.get("created"),
+                         guarded=conf_unread or c.get("scope") in conf or helmlib.guarded(c["repo"])))
+    return out
+
+
 def overview_state():
     states = []
     for pid in helmlib.list_plans():
@@ -1168,6 +1205,7 @@ def overview_state():
     pr, wip_idle = pr_cards(prs, live)
     cards += [c for c in pr if c.get("url") not in held_urls]
     cards += done_cards(prs)
+    cards += intake_cards()
     cards = embark_first(cards)
     for c in cards:  # K6: another person reads the board; a guarded card keeps its column and nothing else
         if c.get("guarded"):
@@ -1289,7 +1327,7 @@ h1{font-size:17px;margin:0;font-weight:600}.mute{color:var(--mute)}.pill{border:
 .lane{font-size:11px;color:var(--mute);margin:8px 0 4px;border-top:1px dashed var(--line);padding-top:4px}
 .card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--mute);border-radius:6px;padding:7px 9px;margin:0 0 7px}
 .card .t{font-weight:550}.card .m{font-size:12px;color:var(--mute)}
-.c0{border-left-color:var(--owner)}.c1{border-left-color:var(--peer)}.c2{border-left-color:var(--block)}.c3{border-left-color:var(--run)}.c4{border-left-color:var(--park)}.c5{border-left-color:var(--done)}
+.c0{border-left-color:var(--owner)}.c1{border-left-color:var(--peer)}.c2{border-left-color:var(--block)}.c3{border-left-color:var(--run)}.c4{border-left-color:var(--park)}.c5{border-left-color:var(--done)}.c6{border-left-color:var(--amber)}
 .tl{overflow-x:auto}.tl svg{display:block}.tasks{display:grid;gap:8px}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;font-size:13px;vertical-align:top}
 .hidden{display:none}.more{font-size:12px;margin:0 0 7px}
@@ -1324,9 +1362,11 @@ function card(c,i){var m=[];if(c.plan)m.push(esc(c.plan));if(c.repo)m.push(esc(c
  return '<div class="card c'+i+'"><div class="t">'+esc(c.kind==='ask'?'? ':c.kind==='human'?'◯ ':c.kind==='pr'?'⇡ ':c.kind==='permission'?'! ':c.kind==='stall'?'⚠ ':c.kind==='waiting'?'… ':c.kind==='held'?'⏸ ':c.kind==='done'?'✓ ':'')+esc(c.title)+link+'</div><div class="m">'+m.join(' · ')+'</div>'+(x.length?'<div class="m">'+x.join(' · ')+'</div>':'')+'</div>'}
 // the owner's column groups by kind (board-cleanup S1: 130 cards in one list), five each, "+N more" to open
 var KINDS=[['asks',['ask']],['stalls',['stall','road']],['sessions waiting',['waiting','permission','task']],['PRs',['pr','held']],['memos',['memo','lookout']]],SHOW=5,more={};
+// Intake's lanes in ops' order (deadman first); any other label ranks after them, alphabetically
+var IKINDS=['deadman','stall','contact','bug','other'];
 function kindOf(c){for(var j=0;j<KINDS.length;j++)if(KINDS[j][1].indexOf(c.kind)>=0)return j;return KINDS.length}
 function lanes(col,i){var groups={},rank={};col.cards.forEach(function(c){var k,r;
-  if(c.label){k=c.label;r=-1}else if(i===0){r=kindOf(c);k=r<KINDS.length?KINDS[r][0]:'other'}else{k=(lane==='by'?by(c):c[lane])||'—';r=0}
+  if(c.label){k=c.label;var j=IKINDS.indexOf(k);r=j<0?-1:j-IKINDS.length}else if(i===0){r=kindOf(c);k=r<KINDS.length?KINDS[r][0]:'other'}else{k=(lane==='by'?by(c):c[lane])||'—';r=0}
   (groups[k]=groups[k]||[]).push(c);rank[k]=r});
  return Object.keys(groups).sort(function(a,b){return rank[a]-rank[b]||(a<b?-1:a>b?1:0)}).map(function(k){return [k,groups[k]]})}
 function board(cols){var h='<div class="board">';cols.forEach(function(col,i){if(i===1&&!col.cards.length)return;

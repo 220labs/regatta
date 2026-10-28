@@ -9,7 +9,9 @@
 #                other host, or a key that names none, is refused. On a Mac one LaunchAgent; on
 #                Linux (the yard node's agent guest) the systemd timer is yard-node S5's: this prints
 #                the unit's lines and writes nothing (the seam: the same command and environment).
-#   --remove     unload that agent and delete its plist
+#                Beside it the intake (S4): `ops ingest` every 10 minutes, the same host rule and
+#                environment, its own agent (`<label>.ingest`) or, on Linux, its own unit's lines.
+#   --remove     unload both agents and delete their plists
 # Nothing here runs by itself: the job exists only after someone runs --schedule on the ops host.
 # Environment (the tests use it, so they never touch the real launchd):
 #   LIGHTHOUSE_LAUNCH_DIR  where the plist goes   (default ~/Library/LaunchAgents)
@@ -30,6 +32,7 @@ lc=${LIGHTHOUSE_LAUNCHCTL:-launchctl}
 os=${LIGHTHOUSE_UNAME:-$(uname)}
 uid=$(id -u)
 plist="$la/$label.plist"
+iplist="$la/$label.ingest.plist"
 
 case "${1:-}" in
   --check)
@@ -41,7 +44,7 @@ sys.path.insert(0, find_core.hooks())
 import common
 print("core:     %s" % common.__file__)
 for k in ("accounts.json", "tenants.json", "logins.json", "user.json", "env-keys.json", "hosts", "vault", "vaults",
-          "gated-tools", "ff", "design-host", "cc-prefix", "shares", "nas", "drive", "yabairc", "ops-host"):
+          "gated-tools", "ff", "design-host", "cc-prefix", "shares", "nas", "drive", "yabairc", "ops-host", "ops-projects"):
     p = common.CONFIG / "lighthouse" / k
     print("%-9s %s" % ("ok" if p.exists() else "--", "lighthouse/" + k + ("" if p.exists() else
           " (a link that reads nothing)" if p.is_symlink() else " (absent: its default)")))
@@ -49,13 +52,16 @@ for t in ("fork_claude_session.py", "worktree_allow.py", "tend", "sync.py", "rc-
           "knowledge-commit", "usage-report", "headroom", "dispatch", "dispatch-queue"):
     print("%-9s %s" % ("peer" if common.tool(t) else "--", t + ("" if common.tool(t) else " not installed: its verb says so")))
 PY
-    if [ "$os" = Darwin ] && "$lc" print "gui/$uid/$label" >/dev/null 2>&1; then
-      echo "ops job:  loaded ($label, every 15 min)"
-    elif [ -f "$plist" ]; then
-      echo "ops job:  plist written but not loaded ($plist)"
-    else
-      echo "ops job:  off ($(python3 "$here/bin/ops" is-host 2>&1 || true))"
-    fi
+    for j in "$label|$plist|15|ops job" "$label.ingest|$iplist|10|ingest"; do
+      l=${j%%|*}; r=${j#*|}; p=${r%%|*}; r=${r#*|}; m=${r%%|*}; n=${r#*|}
+      if [ "$os" = Darwin ] && "$lc" print "gui/$uid/$l" >/dev/null 2>&1; then
+        echo "$n:  loaded ($l, every $m min)"
+      elif [ -f "$p" ]; then
+        echo "$n:  plist written but not loaded ($p)"
+      else
+        echo "$n:  off ($(python3 "$here/bin/ops" is-host 2>&1 || true))"
+      fi
+    done
     ;;
   --schedule)
     # the host rule first: only the ops host gets the job (two samplers would write two desks' rows)
@@ -69,18 +75,25 @@ PY
     # the dry run: a job whose ops has no sample verb would fail at argparse every 15 minutes, seen only in its log
     python3 "$job/bin/ops" sample --help >/dev/null 2>&1 \
       || { echo "lighthouse: not scheduling the desk's sampler — $job/bin/ops has no sample verb" >&2; exit 1; }
+    python3 "$job/bin/ops" ingest --help >/dev/null 2>&1 \
+      || { echo "lighthouse: not scheduling the desk's intake — $job/bin/ops has no ingest verb" >&2; exit 1; }
     if [ "$os" != Darwin ]; then
       # yard-node S5's seam: the unit it writes runs this, under this environment, every 15 minutes
       echo "lighthouse: a systemd timer is yard-node S5's, not written here; its unit's lines:" >&2
       echo "  ExecStart=$(command -v python3) $job/bin/ops sample" >&2
       echo "  Environment=LIGHTHOUSE_DESK=1${REGATTA_CONFIG:+ REGATTA_CONFIG=$REGATTA_CONFIG}" >&2
       echo "  OnBootSec=2min, OnUnitActiveSec=15min (the timer)" >&2
+      echo "lighthouse: the intake's unit beside it (S4):" >&2
+      echo "  ExecStart=$(command -v python3) $job/bin/ops ingest" >&2
+      echo "  Environment=LIGHTHOUSE_DESK=1${REGATTA_CONFIG:+ REGATTA_CONFIG=$REGATTA_CONFIG}" >&2
+      echo "  OnBootSec=3min, OnUnitActiveSec=10min (the timer)" >&2
       exit 1
     fi
     mkdir -p "$la"
-    python3 - "$job" "$label" "$plist" <<'PY'
+    write_plist() {
+    python3 - "$job" "$1" "$2" "$3" "$4" <<'PY'
 import os, plistlib, sys
-here, label, out = sys.argv[1:4]
+here, label, out, verb, every = sys.argv[1:6]
 sys.path.insert(0, os.path.join(here, "lib"))
 import find_core
 sys.path.insert(0, find_core.hooks())
@@ -94,26 +107,40 @@ if os.environ.get("REGATTA_CONFIG"):
     env["REGATTA_CONFIG"] = os.environ["REGATTA_CONFIG"]
 plist = {
     "Label": label,
-    "ProgramArguments": [sys.executable, os.path.join(here, "bin", "ops"), "sample"],
-    "StartInterval": 900,
+    "ProgramArguments": [sys.executable, os.path.join(here, "bin", "ops"), verb],
+    "StartInterval": int(every),
     "RunAtLoad": True,
     "EnvironmentVariables": env,
-    "StandardOutPath": str(log / "ops-sample.log"),
-    "StandardErrorPath": str(log / "ops-sample.log"),
+    "StandardOutPath": str(log / ("ops-%s.log" % verb)),
+    "StandardErrorPath": str(log / ("ops-%s.log" % verb)),
 }
 with open(out, "wb") as f:
     plistlib.dump(plist, f)
 PY
-    "$lc" bootout "gui/$uid/$label" 2>/dev/null || true
-    # bootout returns before the old job is gone ("Bootstrap failed: 5"): one retry
-    "$lc" bootstrap "gui/$uid" "$plist" 2>/dev/null || { sleep 2; "$lc" bootstrap "gui/$uid" "$plist"; }
-    echo "lighthouse: scheduled $label (ops sample every 15 min) — $plist"
+    }
+    load() {
+      "$lc" bootout "gui/$uid/$1" 2>/dev/null || true
+      # bootout returns before the old job is gone ("Bootstrap failed: 5"): one retry
+      "$lc" bootstrap "gui/$uid" "$2" 2>/dev/null || { sleep 2; "$lc" bootstrap "gui/$uid" "$2"; }
+    }
+    write_plist "$label" "$plist" sample 900
+    write_plist "$label.ingest" "$iplist" ingest 600
+    # each job loads on its own: a sampler that will not bootstrap never leaves the intake unloaded (set -e)
+    failed=""
+    if load "$label" "$plist"; then echo "lighthouse: scheduled $label (ops sample every 15 min) — $plist"
+    else failed="$label"; fi
+    if load "$label.ingest" "$iplist"; then echo "lighthouse: scheduled $label.ingest (ops ingest every 10 min) — $iplist"
+    else failed="${failed:+$failed and }$label.ingest"; fi
+    [ -z "$failed" ] || { echo "lighthouse: launchctl would not bootstrap $failed (install.sh --check says which runs)" >&2; exit 1; }
     ;;
   --remove)
-    if [ "$os" = Darwin ]; then "$lc" bootout "gui/$uid/$label" 2>/dev/null || true; fi
-    rm -f "$plist"
-    echo "lighthouse: removed $label"
+    if [ "$os" = Darwin ]; then
+      "$lc" bootout "gui/$uid/$label" 2>/dev/null || true
+      "$lc" bootout "gui/$uid/$label.ingest" 2>/dev/null || true
+    fi
+    rm -f "$plist" "$iplist"
+    echo "lighthouse: removed $label and $label.ingest"
     ;;
-  "") echo "lighthouse: nothing to install outside the plugin; for cc, add to the shell's rc file: . '$here/shell/cc.zsh'; --schedule adds the desk's sampler on the ops host" ;;
+  "") echo "lighthouse: nothing to install outside the plugin; for cc, add to the shell's rc file: . '$here/shell/cc.zsh'; --schedule adds the desk's sampler and intake on the ops host" ;;
   *) echo "usage: install.sh [--check | --schedule | --remove]" >&2; exit 2 ;;
 esac
