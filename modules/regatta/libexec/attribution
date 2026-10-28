@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""regatta attribution — count a session, or every session under a folder, to a project, in every
+report of time or cost by project (crew-report's weekly report; any reader that asks the core).
+Stdlib, Python 3.9.
+
+    regatta attribution add PROJECT [--session ID | --path GLOB] [--why TEXT]
+    regatta attribution list
+
+  PROJECT   a folder under the projects folder holding `.git`, as a report names the project
+  --session a sessionId; default $CLAUDE_CODE_SESSION_ID
+  --path    a glob relative to the projects folder, a worktree's `.claude/worktrees/<topic>` part
+            kept (an absolute path under the projects folder is made relative); it matches that
+            folder and every folder under it
+  --why     a note kept beside the row
+
+The rows are appended to `attribution.jsonl` in the state dir (`regatta/attribution` in the config
+dir moves it; written empty it turns attribution off) and never rewritten; the newest row wins
+(common.py, "attribution"). The rows name sessions, so the file is private state, never published.
+Exit 0 done, 2 a usage error or a refusal (no such project, no session, attribution off), 1 a write
+that failed.
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import common  # noqa: E402
+
+
+def cmd_add(a):
+    to = a.project.strip().strip("/")
+    if not to or ".." in Path(to).parts or not (common.PROJECTS / to / ".git").exists():
+        print("regatta attribution: '%s' is not a repo under %s (a folder holding .git)" % (a.project, common.PROJECTS), file=sys.stderr)
+        return 2
+    f = common.attribution_file()
+    if not f:
+        print("regatta attribution: attribution is turned off (regatta/attribution is empty)", file=sys.stderr)
+        return 2
+    row = {"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "project": to}
+    if a.path is not None:
+        # A glob relative to the projects folder as given; an absolute, `~` or `./` path is made one
+        # (another home's projects folder read as this one's), and refused outside it: a row that
+        # can never match would sit in the append-only file for good.
+        g = a.path.strip()
+        if g.startswith(("/", "~", ".")):
+            g = os.path.abspath(os.path.expanduser(g))
+            rel = common.projects_rel(g) if g.rstrip("/") != str(common.PROJECTS).rstrip("/") else ""
+            if rel is None:
+                print("regatta attribution: --path %s is not under %s" % (a.path, common.PROJECTS), file=sys.stderr)
+                return 2
+            g = rel
+        g = g.strip("/")
+        if not g:
+            print("regatta attribution: --path is empty", file=sys.stderr)
+            return 2
+        row["path"] = g
+    else:
+        sid = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if not sid:
+            print("regatta attribution: no --session or --path, and CLAUDE_CODE_SESSION_ID is not set", file=sys.stderr)
+            return 2
+        row["session"] = sid
+    row["why"] = a.why or ""
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        lead = b""   # a last line without its newline must not join ours
+        if f.is_file() and f.stat().st_size:
+            with open(f, "rb") as fh:
+                fh.seek(-1, os.SEEK_END)
+                lead = b"" if fh.read(1) == b"\n" else b"\n"
+        with open(f, "ab") as fh:
+            fh.write(lead + (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+    except OSError as e:
+        print("regatta attribution: cannot write %s: %s" % (f, e), file=sys.stderr)
+        return 1
+    print("regatta attribution: %s to %s (%s)" % ("folder " + row["path"] if "path" in row else "session " + row["session"], to, f))
+    return 0
+
+
+def cmd_list(_a):
+    idx = common.attribution_rows()
+    if not idx["file"]:
+        print("regatta attribution: attribution is turned off")
+    elif not idx["rows"]:
+        print("no attribution rows (%s)" % idx["file"])
+    for r in idx["rows"]:
+        print("%s  %s  %s %s" % (r["ts"] or "-", r["project"], r["kind"], r["key"]) + ("  " + r["why"] if r["why"] else ""))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="regatta attribution", description="count a session or a folder's sessions to a project")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    g = sub.add_parser("add", help="append a row")
+    g.add_argument("project", metavar="PROJECT", help="a folder under the projects folder holding .git")
+    what = g.add_mutually_exclusive_group()
+    what.add_argument("--session", help="a sessionId (default $CLAUDE_CODE_SESSION_ID)")
+    what.add_argument("--path", help="a glob relative to the projects folder, a worktree's part kept; "
+                                     "matches that folder and every folder under it")
+    g.add_argument("--why", help="a note kept beside the row")
+    sub.add_parser("list", help="list the rows")
+    a = ap.parse_args(argv)
+    return cmd_add(a) if a.cmd == "add" else cmd_list(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
