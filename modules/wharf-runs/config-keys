@@ -10,5 +10,6 @@ wharf-runs/load-margin
 # Not listed: wharf-runs/node/* (bin/yard-node's docstring) — only a Mac that drives a yard node
 # has them, so naming them here would report them missing on every other Mac.
 # Nor wharf-runs/nodes/<NAME>/* and wharf-runs/tofu/<NAME>/ (the same docstring): a named node's,
-# on the one Mac that buys and drives it.
+# on the one Mac that buys and drives it. A node folder's `orca-pair` is orca-host's: optional, as
+# a Mac with no node has no folder.
 # Not listed either: wharf-runs/finisher-rotation, a window that is off when absent (autofinish-run's header).

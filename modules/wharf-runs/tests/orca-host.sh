@@ -5,10 +5,11 @@
 # converged, each drifted field alone, extra repos and groups only noted, nestWorkspaces named), the
 # runtime client against a fake socket (the answer matched by id past a keepalive, a refusal raised
 # with its method), the pairing link's checks (not a link, a phone link, a link to the wrong Mac),
-# and the pairs and ssh aliases read from the config dir; then the Linux peer side from a copy
-# loaded as Linux (orca-ide only, ~/.config/orca, the guest's installer or the release .deb by apt,
-# the systemd unit restarted, no clipboard, no Homebrew PATH on the peer). Host and repo names are
-# made up. Scratch paths only; no Orca, no network.
+# the pairs and ssh aliases read from the config dir, a named node's folder carrying its own pairing
+# and ssh (never a wharf-runs/ssh peer, never autofinish-run's landing peer, a torn folder an
+# error); then the Linux peer side from a copy loaded as Linux (orca-ide only, ~/.config/orca, the
+# guest's installer or the release .deb by apt, the systemd unit restarted, no clipboard, no
+# Homebrew PATH on the peer). Host and repo names are made up. Scratch paths only; no Orca, no network.
 #   bash modules/wharf-runs/tests/orca-host.sh
 set -u
 M="$(cd "$(dirname "$0")/.." && pwd)"
@@ -289,6 +290,148 @@ rc, out = run(["check"])
 check(rc == 1 and "✗ pairs:" in out and "orca-pairs missing" in out and "orca-host check:" in out,
       "  and check names the missing pairs as a fault, the rest of its report kept")
 check("environment rm" not in out, "  and, PAIRS unknown, no working pairing is called unwanted")
+
+# ---- a named node's folder carries its pairing (the overlay installed, PEERS missing from here on)
+nodes = cfg / "wharf-runs" / "nodes"
+(nodes / "acme").mkdir(parents=True)
+(nodes / "acme" / "orca-pair").write_text("laptop\n")
+(nodes / "acme" / "ssh").write_text("acme-vps\n")
+(nodes / "acme" / "scope").write_text("acme\n")
+(nodes / "box").mkdir()
+(nodes / "box" / "name").write_text("box7\n")
+(nodes / ".DS_Store").write_text("")
+(cfg / "wharf-runs" / "orca-pairs").write_text("laptop:studio\n")
+check(oh.peers_of("laptop") == ["studio", "acme-agent"] and oh.peers_of("studio") == [],
+      "a node folder's orca-pair: the laptop holds the node's guest, `<folder>-agent`, after PAIRS; the studio none")
+check([n["peer"] for n in oh.node_peers()] == ["acme-agent", "box7-agent"],
+      "  the peer is the guest's hostname from the folder's `name` when set, as written; a dot file is no node")
+check(oh.reach("acme-agent")[0] == "acme-vps", "  --on's alias is the folder's own ssh, though PEERS is missing")
+sent_on = []
+class Ran:
+    returncode, stdout, stderr = 0, "", ""
+os.environ.pop("ORCA_HOST_SSH", None)
+real_run = oh.subprocess.run
+oh.subprocess.run = lambda argv, **kw: sent_on.append(argv) or Ran()
+try:
+    rc = oh.run_on("acme-agent", ["check"])
+finally:
+    oh.subprocess.run = real_run
+check(rc == 0 and len(sent_on) == 2 and all(a[:4] == ["ssh", "-o", "ConnectTimeout=10", "acme-vps"] for a in sent_on),
+      f"--on acme-agent: the copy and the run both go by the node's ssh alias (got {[a[:4] for a in sent_on]})")
+rc, out = run(["--on", "box7-agent", "check"])
+check(rc == 2 and str(nodes / "box" / "ssh") in out and "acme-agent" in out,
+      "  a node with no ssh: exit 2 naming its folder's ssh key, PEERS missing or not")
+oh.cli = lambda *a, **k: {"environments": [{"name": "studio"}, {"name": "acme-agent"}]}
+rc, out = run(["check"])
+check("paired with acme-agent" in out and "names: acme-agent" not in out and "is also named" not in out,
+      "check: the node's pairing is expected, its environment never called unwanted")
+
+# the fence: a node peer is in no wharf-runs/ssh reader, nor autofinish-run's landing peer
+(cfg / "wharf-runs" / "ssh").write_text("studio:Studio-Agent\n")
+check(not any("acme" in l for l in oh.common.config_lines("wharf-runs/ssh") or []) and oh.ssh_alias("studio") == "Studio-Agent",
+      "  the node's pairing writes nothing to wharf-runs/ssh, which every ssh reader reads")
+check(oh.ssh_alias("acme-agent") is None and oh.reach("acme-agent")[0] == "acme-vps",
+      "  ssh_alias stays PEERS-only, so clock (which reads each peer's alias through it) never dials the node")
+readers = sorted(p.relative_to(M.parent).as_posix() for d in ("bin", "lib", "libexec", "hooks")
+                 for p in M.parent.glob(f"*/{d}/**/*") if p.is_file()
+                 and "wharf-runs/nodes" in p.read_text(encoding="utf-8", errors="replace"))
+check(sorted(set(readers) - {"wharf-runs/bin/yard-node"}) == ["wharf-runs/bin/orca-host"],   # yard-node: not on the twin
+      f"  only orca-host and yard-node read a node folder: no dispatch, berth, pickup, helm or landing (got {readers})")
+os.environ.pop("AUTOFINISH_ON", None)
+os.environ["AUTOFINISH_HOST"] = "laptop"
+afr = load("afr", M / "bin" / "autofinish-run")
+check(afr.peer_of() == ("studio", "Studio-Agent", None), f"  autofinish-run lands on PAIRS' first row, never the node (got {afr.peer_of()})")
+(cfg / "wharf-runs" / "orca-pairs").write_text("")
+check(afr.peer_of() == (None, None, None) and oh.peers_of("laptop") == ["acme-agent"],
+      "  and with the laptop's PAIRS row gone the node still pairs, yet no landing goes to it")
+del os.environ["AUTOFINISH_HOST"]
+(cfg / "wharf-runs" / "ssh").write_text("studio:Studio-Agent\nacme-agent:elsewhere\n")
+rc, out = run(["check"])
+check(rc == 1 and "✗ node acme-agent is also named in wharf-runs/ssh" in out, "a node peer PEERS also names is a fault")
+check(oh.reach("acme-agent")[0] == "acme-vps", "  and --on still takes the node folder's ssh, never that row")
+(cfg / "wharf-runs" / "ssh").write_text("studio:Studio-Agent\n")
+(cfg / "wharf-runs" / "orca-pairs").write_text("laptop:studio\nlaptop:acme-agent\n")
+(cfg / "wharf-runs" / "finish-on").write_text("laptop:acme-agent\n")
+rc, out = run(["check"])
+check(rc == 1 and "✗ node acme-agent is also named in wharf-runs/orca-pairs" in out and "landing peer" in out
+      and "✗ node acme-agent is also named in wharf-runs/finish-on" in out,
+      "a node peer an orca-pairs or finish-on row names is a fault: autofinish-run could land on it")
+(cfg / "wharf-runs" / "finish-on").unlink(); (cfg / "wharf-runs" / "orca-pairs").write_text("")
+
+# a node folder that does not read: an error naming it, as a missing key with an overlay
+(nodes / "acme" / "orca-pair").write_bytes(b"\xff\xfe laptop\n")
+try:
+    oh.peers_of("laptop")
+    check(False, "an unreadable orca-pair raises")
+except oh.OrcaError as e:
+    check(str(nodes / "acme" / "orca-pair") in str(e) and "not UTF-8" in str(e), "an orca-pair that is not UTF-8: an error naming it")
+(nodes / "acme" / "orca-pair").write_text("laptop\n")
+(nodes / "gone").symlink_to(T / "nowhere")
+rc, out = run(["check"])
+check(rc == 1 and "✗ pairs:" in out and str(nodes / "gone") in out and "environment rm" not in out
+      and "orca-host check:" in out and out.count(str(nodes / "gone")) == 1,
+      "a node folder whose link's target moved: one pairs fault naming it, nothing called unwanted, the report kept")
+rc, out = run(["--on", "gone-agent", "check"])
+check(rc == 2 and str(nodes / "gone") in out, "  and --on a peer that could be a node refuses in one line, exit 2")
+check(oh.reach("studio")[0] == "Studio-Agent", "  while a Mac peer, which never ends -agent, is still reached")
+(nodes / "gone").unlink()
+(nodes / "acme" / "orca-pair").unlink(); (nodes / "acme" / "orca-pair").symlink_to(T / "nowhere")
+try:
+    oh.node_peers()
+    check(False, "an orca-pair link whose target moved raises")
+except oh.OrcaError as e:
+    check(str(nodes / "acme" / "orca-pair") in str(e) and "target moved" in str(e),
+          "an orca-pair that is a link whose target moved: an error naming it, never no pairing")
+(nodes / "acme" / "orca-pair").unlink(); (nodes / "acme" / "orca-pair").write_text("laptop\n")
+(nodes / "box" / "name").unlink(); (nodes / "box" / "name").symlink_to(T / "nowhere")
+try:
+    oh.node_peers()
+    check(False, "a name link whose target moved raises")
+except oh.OrcaError as e:
+    check(str(nodes / "box" / "name") in str(e), "  and a moved `name` link too: never the peer renamed to the folder's")
+(nodes / "box" / "name").unlink()
+for line, why in (("laptop:acme-agent", "an orca-pairs row"), ("Laptop", "upper case"), ("laptop_7", "an underscore")):
+    (nodes / "acme" / "orca-pair").write_text(line + "\n")
+    try:
+        oh.node_peers()
+        check(False, f"an orca-pair line that is {why} raises")
+    except oh.OrcaError as e:
+        check(str(nodes / "acme" / "orca-pair") in str(e) and "bare host" in str(e),
+              f"an orca-pair line that is {why}: an error naming it, never a node that pairs with no Mac")
+(nodes / "acme" / "orca-pair").write_text("laptop\n")
+(nodes / "acme-old").mkdir(); (nodes / "acme-old" / "name").write_text("acme\n")
+try:
+    oh.node_peers()
+    check(False, "two folders giving one peer raise")
+except oh.OrcaError as e:
+    check(str(nodes / "acme") in str(e) and str(nodes / "acme-old") in str(e),
+          "two folders that give the same peer: an error naming both, never one ssh taken silently")
+(nodes / "acme-old" / "name").unlink(); (nodes / "acme-old").rmdir()
+(nodes / "box" / "name").write_text("Box7\n")
+try:
+    oh.node_peers()
+    check(False, "an upper-case name raises")
+except oh.OrcaError as e:
+    check("no hostname" in str(e), "a `name` in upper case: an error, as yard-node refuses to render it")
+(nodes / "box" / "name").write_text("box_7\n")
+try:
+    oh.node_peers()
+    check(False, "a node name that is no hostname raises")
+except oh.OrcaError as e:
+    check("no hostname" in str(e), "a node `name` that is no hostname: an error, not a peer Tailscale never names")
+(nodes / "box" / "name").unlink()
+for p in sorted(nodes.rglob("*"), reverse=True):
+    p.unlink() if p.is_file() or p.is_symlink() else p.rmdir()
+nodes.rmdir()
+nodes.symlink_to(T / "nowhere")
+try:
+    oh.node_peers()
+    check(False, "a nodes folder whose link's target moved raises")
+except oh.OrcaError as e:
+    check(str(nodes) in str(e), "the nodes folder itself a link whose target moved: unreadable, never no nodes")
+nodes.unlink()
+check(oh.node_peers() == [], "no nodes folder: no node, no error")
+(cfg / "wharf-runs" / "ssh").unlink(); (cfg / "wharf-runs" / "orca-pairs").unlink()
 
 # ---- the Linux peer side, from a copy loaded as Linux
 os.environ["ORCA_HOST_PLATFORM"] = "linux"

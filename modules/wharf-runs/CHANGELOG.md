@@ -3,6 +3,14 @@
 ## Unreleased
 
 - The suites delete under HOME through `rm_own` (the core's entry, 2026-10-27).
+- `orca-host`: a named yard node's folder carries its Orca pairing, so no overlay table holds a row per node.
+  `wharf-runs/nodes/<name>/orca-pair` lists the hosts whose Orca holds the node's guest (`<name>-agent`, the
+  hostname yard-node renders) as an environment; `pair`, `check` and `--on` take it beside `orca-pairs`, and
+  `--on` reaches the node by the folder's own `ssh`, never `wharf-runs/ssh`, whose every reader would reach it.
+  `check` faults a node peer `wharf-runs/ssh` names, or an `orca-pairs` or `finish-on` row (autofinish-run's landing
+  peer); `ssh_alias` stays `wharf-runs/ssh` only, so clock never dials a node. A node folder or key that does not read
+  (a link whose target moved included), an `orca-pair` line that is no bare host, or two folders giving one peer is
+  an error naming it (node pairs, 2026-10-28).
 - `check`: a run that holds its slot but has not yet dropped its queue ticket no longer also counts as
   ahead, which made a third check wait with three slots for three on a slow runner Mac; the slot's pid
   is written right after its start (ci-fleet follow-ups, 2026-10-27).

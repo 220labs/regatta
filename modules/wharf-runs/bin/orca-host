@@ -30,9 +30,26 @@ Which Macs are which is private and comes from the config dir (the design's C3),
 
   wharf-runs/orca-pairs   <host>:<peer> — PEER's Orca is an environment of HOST's (PAIRS)
   wharf-runs/ssh          <peer>:<ssh alias> — how `--on PEER` reaches it (PEERS)
+  wharf-runs/nodes/<name>/orca-pair
+                          <host> per line — a named yard node's Orca is an environment of each
+                          HOST's, so the node's folder carries its pairing and no overlay table
+                          holds a row per node. Its peer name is the guest's hostname yard-node
+                          renders, `<name>-agent` (the folder's `name`, else the folder's own
+                          name), which must equal its Tailscale HostName for `pair` to check the
+                          link. `--on` reaches it by the folder's `ssh`, the guest's own alias (a
+                          named node is one cloud machine, host and guest at once; yard-node reads
+                          `ssh` only for the unnamed node, where it is the hypervisor), never
+                          through PEERS: every reader of `wharf-runs/ssh` would reach a node listed
+                          there or place work on it, and a confidential scope's node is never one.
+                          `ssh_alias` stays PEERS-only for that reason (clock reads it). `check`
+                          faults a node peer PEERS names, or a PAIRS or finish-on row names
+                          (autofinish-run takes the first as its landing peer).
 
 Without them no Mac pairs and `--on` knows no peer; where an overlay is installed (its
 `regatta/overlay` marker in the config dir) a missing one is an error naming it, as the core does for its own keys.
+A node folder is optional, and so is its `orca-pair`; one that is there and does not read (a link
+whose target moved, a key that is not UTF-8) is an error naming it, as a missing key is with an
+overlay: read as no node, its pairing would vanish from `check`, and its peer could be looked up in PEERS.
 The registry is the core's `repos_json()`; `scopes` (its scope order, anchor and twins) and
 `account` (orca-sync) are peers found by `common.tool()`.
 
@@ -63,7 +80,7 @@ v1.4.227) on 2026-10-17, checked again against the installed 1.4.229 bundle on 2
   one group, where a VS Code scope file lists it in every window.
 - **Pairing goes one way**: the Mac at the keyboard drives the always-on one's Orca, never the
   reverse — work flows to the server, and a link back would fail whenever the laptop sleeps.
-  PAIRS declares it, and `check` expects exactly those.
+  PAIRS and each node folder's orca-pair declare it, and `check` expects exactly those.
 - **Worktrees**: Orca's default base is origin/HEAD and its default home ~/orca/workspaces; the
   workflow starts a branch from local `main` inside <repo>/.claude/worktrees/, where the
   checkpoint hook, the locks and sync.py look. `worktreeBasePath` places `<base>/<name>` only while
@@ -164,6 +181,11 @@ REMOTE_COPY = "~/.cache/orca-host/orca-host"
 PALETTE = ["#8b5cf6", "#22c55e", "#ef4444", "#f97316", "#14b8a6", "#eab308", "#ec4899"]
 NEUTRAL = "#737373"
 PAIRS_KEY, PEERS_KEY = "wharf-runs/orca-pairs", "wharf-runs/ssh"
+NODES_DIR, NODE_PAIR_KEY = "wharf-runs/nodes", "orca-pair"
+# The guest role a named node boots (yard-node's `values()`: GUEST_NAME is `<name>-<role>`, and
+# node/agent.user-data.yaml sets `hostname:` from it); copied, as `--on` sends this file alone.
+NODE_ROLE = "agent"
+HOST_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")   # yard-node's HOST_NAME
 
 
 class OrcaError(Exception):
@@ -187,14 +209,99 @@ def config_map(key):
     return out
 
 
+def node_peers():
+    """[{folder, peer, hosts, ssh}] for each named node under `<config>/wharf-runs/nodes/`, sorted by
+    folder; [] without the folder. A folder or key that is there and does not read is an OrcaError
+    naming it (the module docstring), never a node skipped."""
+    root = common.CONFIG / NODES_DIR
+    hint = "fix or remove it (yard-node's node folder)"
+    if not os.path.lexists(root):
+        return []
+    try:
+        names = sorted(p.name for p in root.iterdir() if not p.name.startswith("."))
+    except OSError as e:   # a link whose target moved, a file in its place, no access
+        raise OrcaError(f"{root} {e.strerror or type(e).__name__} — {hint}")
+    out = []
+    for name in names:
+        if not (root / name).is_dir():
+            raise OrcaError(f"{root / name} is not a folder (a link whose target moved?) — {hint}")
+
+        def key(k):
+            path = root / name / k
+            # The core reads a link whose target moved as absent; here it is unreadable (the root
+            # AGENTS.md trap on repos.json links): a moved orca-pair would drop the pairing, a moved
+            # name rename the peer.
+            if os.path.islink(path) and not os.path.exists(path):
+                raise OrcaError(f"{path} is a link whose target moved — {hint}")
+            got, why = common.config_read(f"{NODES_DIR}/{name}/{k}")
+            if why:
+                raise OrcaError(f"{path} {why} — {hint}")
+            return got or []
+
+        # As written, never lower-cased: yard-node refuses a name its HOST_NAME does not match, so a
+        # name orca-host folded would be a guest no render ever boots.
+        host = (key("name") or [name])[0]
+        peer = f"{host}-{NODE_ROLE}"
+        if not HOST_NAME.match(host) or not HOST_NAME.match(peer):
+            raise OrcaError(f"{root / name}: {peer!r} is no hostname, so no Tailscale peer can carry it — {hint}")
+        hosts = key(NODE_PAIR_KEY)
+        bad = [h for h in hosts if not HOST_NAME.match(h)]
+        if bad:   # an orca-pairs row pasted here, or a mDNS name, would match no Mac and say nothing
+            raise OrcaError(f"{root / name / NODE_PAIR_KEY}: {bad[0]!r} is not a host name as "
+                            f"common.host_name() reports one (a bare host per line) — {hint}")
+        twin = next((n for n in out if n["peer"] == peer), None)
+        if twin:   # reach() would take one folder's ssh and never say so
+            raise OrcaError(f"{root / twin['folder']} and {root / name} both give the peer {peer} — {hint}")
+        out.append({"folder": name, "peer": peer, "hosts": hosts, "ssh": (key("ssh") or [None])[0]})
+    return out
+
+
 def peers_of(host):
-    """The Macs whose Orca this Mac's should hold as environments (PAIRS)."""
-    return list(config_map(PAIRS_KEY).get(host) or [])
+    """The peers whose Orca this Mac's should hold as environments: PAIRS, then each node folder
+    that names this Mac in its `orca-pair`."""
+    out = list(config_map(PAIRS_KEY).get(host) or [])
+    return out + [n["peer"] for n in node_peers() if host in n["hosts"] and n["peer"] not in out]
+
+
+def reach(peer):
+    """(ssh alias or None, the key that should hold it) for `--on PEER`: a node peer by its own
+    folder's `ssh` and never PEERS, any other by PEERS. `run_on` alone calls it: `ssh_alias` stays
+    PEERS-only, as clock's peer reads depend on it never reaching a node. A torn node folder stops
+    only a peer that could be a node (one ending `-agent`)."""
+    try:
+        nodes = node_peers()
+    except OrcaError:
+        if peer.endswith(f"-{NODE_ROLE}"):
+            raise
+        nodes = []
+    node = next((n for n in nodes if n["peer"] == peer), None)
+    if node:
+        return node["ssh"], common.CONFIG / NODES_DIR / node["folder"] / "ssh"
+    return ssh_alias(peer), common.CONFIG / PEERS_KEY
 
 
 def ssh_alias(peer):
-    """How `--on PEER` reaches PEER (PEERS), or None."""
+    """How PEERS reaches PEER, or None; never a node folder's ssh (`reach` takes that, for `--on`)."""
     return (config_map(PEERS_KEY).get(peer) or [None])[0]
+
+
+# The keys whose rows would hand a node peer to another reader: PEERS by its key (every ssh reader),
+# PAIRS and finish-on by their value (autofinish-run's PEER_KEYS take the first row as the landing peer).
+CLASH_KEYS = ((PEERS_KEY, 0, "every reader of that key would reach it"),
+              (PAIRS_KEY, 2, "autofinish-run could take it as the landing peer"),
+              ("wharf-runs/finish-on", 2, "autofinish-run would send a landing there"))
+
+
+def node_clash():
+    """[(peer, key, why)] for each node peer a CLASH_KEYS row also names, sorted. A missing or
+    unreadable key clashes with nothing (check's pairs line, and `--on`, say what is wrong with it)."""
+    peers = {n["peer"] for n in node_peers()}
+    out = []
+    for k, side, why in CLASH_KEYS:
+        lines, _ = common.config_read(k)
+        named = {l.partition(":")[side].strip().lower() for l in lines or []}
+        out += [(p, k, why) for p in sorted(peers & named)]
+    return out
 
 
 def _load(name, path):
@@ -852,8 +959,14 @@ def cmd_check():
             notes.append(f"paired with {p} (Orca's own record; `orca-host pair {p}` proves it live)" if p in envs
                          else f"not paired with {p}: orca-host pair {p}")
         if want_peers is not None:
-            notes += [f"an environment PAIRS does not name: {e} (orca environment rm --environment {e} if unwanted)"
+            notes += [f"an environment neither PAIRS nor a node folder names: {e} (orca environment rm --environment {e} if unwanted)"
                       for e in sorted(x for x in envs - set(want_peers) if x)]
+    try:   # config alone, so said with the runtime down too
+        faults += [f"node {p} is also named in {k}: {why} — remove its line there (the node folder's "
+                   f"orca-pair pairs it, and `--on {p}` takes the folder's own ssh)" for p, k, why in node_clash()]
+    except OrcaError as e:
+        if f"pairs: {e}" not in faults:   # the same torn folder peers_of met, said once
+            faults.append(f"pairs: {e}")
     if not relay_signed_in():
         notes.append("not signed in at Orca's relay (only the phone needs it): sign in from Orca's settings")
     for f in faults:
@@ -871,13 +984,14 @@ def run_on(peer, argv, stdin=None):
     """argv of this script on PEER: the script copied to REMOTE_COPY (mode 600), then run there
     with PEER's own registry. ORCA_HOST_SSH overrides the ssh command for tests."""
     try:
-        alias = ssh_alias(peer)
+        alias, where = reach(peer)
+        if not alias:   # a node with no `ssh` is said so even where PEERS is missing
+            peers = {l.partition(":")[0].strip().lower() for l in common.config_read(PEERS_KEY)[0] or []}
+            known = ", ".join(sorted(peers - {""} | {n["peer"] for n in node_peers()})) or "none"
+            print(f"orca-host: no ssh alias for {peer} in {where} (known: {known})")
+            return 2
     except OrcaError as e:
         print(f"orca-host: {e}")
-        return 2
-    if not alias:
-        known = ", ".join(config_map(PEERS_KEY)) or "none"
-        print(f"orca-host: no ssh alias for {peer} in {common.CONFIG / PEERS_KEY} (known: {known})")
         return 2
     ssh = shlex.split(os.environ.get("ORCA_HOST_SSH") or f"ssh -o ConnectTimeout=10 {alias}")
     src = Path(__file__).read_text()
