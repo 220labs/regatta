@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The desk's sampler (lighthouse-ops S2, 2026-10-27): `ops sample` appends one row to the log dir's
+  `ops.jsonl` — the dispatch queue, the run slots, the 5-minute load per core, headroom's memory, the
+  check slots, the CI budgets from S1's usage read (and `ci-usage.json` with it), the token's standing as
+  `token.plan` and `token.project` (`ok`, `refused`, `absent`; a GraphQL read of the viewer's Projects,
+  never a write), the token weeks and the week's cost — each read bounded, side by side, a failed one its
+  field's null and why. Only in the desk's own job on `lighthouse/ops-host`; `--print` reads no token and
+  writes nothing. `ops status` prints the last row, `--json` with its board line and its clock-free sig;
+  `ops is-host` answers the host rule. `install.sh --schedule` loads the 15-minute LaunchAgent on the ops
+  host alone, refusing any other, and on Linux prints the systemd unit's lines for yard-node S5.
 - Tenancy that cannot be read fails closed (confidential-reach S7b, 2026-10-27): a tenants key that reads
   nothing with no last good copy (a new Mac, a drive away before its first read) refuses every repo to every
   row, the default dir's included, where it used to turn tenancy off and let the work seats into the vault

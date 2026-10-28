@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
-"""ops — the operations desk's own verbs (docs/lighthouse-ops-2026-10-26.md; S1 builds these two).
+"""ops — the operations desk's own verbs (docs/lighthouse-ops-2026-10-26.md; S1 built usage and pick, S2
+the sampler: sample, status, is-host).
 
+    ops sample [--print]             one row of the desk's metrics appended to the log dir's ops.jsonl
+                                     (docs/lighthouse-ops-metrics-2026-10-26.md): the queue, the run slots,
+                                     machine load, check slots, CI budgets, the token's standing, token
+                                     weeks and cost; ci-usage.json rewritten on the way. Only in the
+                                     desk's own job on `lighthouse/ops-host` (exit 2 elsewhere); --print
+                                     prints the row and writes nothing, anywhere, with no token read
+    ops status [--json]              the last row, readable; --json: {row, age_s, stale, line, sig} for
+                                     helm's board (`line` its ops row, `sig` the row without its clocks
+                                     and gauges); exit 3 when there is no row
+    ops is-host                      exit 0 on `lighthouse/ops-host`, 3 on another host, 4 when the key
+                                     names none or cannot be read (install.sh --schedule asks it)
     ops usage [--write] [--json]     CI minutes and credits used this month, per account in the config
                                      dir's `lighthouse/ci-budgets.json`: GitHub's billing usage endpoint
                                      (a user's or an organization's) and CircleCI's insights summary
@@ -38,7 +50,31 @@ the last seven days' items as the week. CircleCI's is `org_data.metrics.total_cr
 last 30 days (and 7 for a week share): "not a financial reporting tool", so the pick adds a margin.
 LIGHTHOUSE_OPS_GITHUB_API and LIGHTHOUSE_OPS_CIRCLECI_API replace the two base URLs (a suite's stub).
 
-Tests: tests/ops.sh; the pick's own cases are wharf's tests/test_ci_provider.sh.
+The sampler's row (S2). Each read is a subprocess of a peer's tool or a file, run side by side, each
+under its own 10 s bound and the whole under 60 s; a read that fails or does not answer writes its field
+as null and the reason under `why`, and never aborts the row (`partial` says the deadline cut one):
+  queue    dispatch-queue's ref (`list --all --json --status`): pending by priority, live; no queue home
+           (`wharf-runs/queue-repo`) is null, and `slots` stands for it
+  slots    `dispatch --slots`: busy runs of the cap      load   the 5-minute load per core (berth's rule)
+  mem      `headroom --json --no-log` (its own log stays its own): avail %, swap GB, swap MB/s
+  check    wharf-runs' check slots under ~/Library/Caches/check-slots (CHECK_SLOT_DIR): busy, waiting
+  budget   per budgeted account, S1's usage(): state, used, cap, share; ci-usage.json is written from it
+  token    `plan` the billing read's standing (S1's usage), `project` a GraphQL `viewer { projectsV2 }`
+           read, never a write: `ok`, `refused` or `absent` each, for S1's and S7's cases; null when the
+           endpoint did not answer. The token goes into the request header only, as above.
+  weeks    `account limits --all --cached --json`, per login label: weekly, five_hour, fable, locked
+  cost     plumb's `usage-report numbers --json`: the week's list price, and its effective figure by the
+           core's cost ratio (null when the ratio is unread)
+  registry `ok` or `unreadable` (the core's registry_unreadable(): a torn file reads as no repos)
+CI queues (`ci.lanes.<lane>.queued_s_p50`, which `ci-provider --pick` reads) are not sampled yet.
+
+The job: every 15 minutes on `lighthouse/ops-host` alone, with LIGHTHOUSE_DESK=1 and no Claude Code
+variable, running `ops sample`. On a Mac it is lighthouse's install.sh --schedule (a LaunchAgent);
+elsewhere — the yard node's agent guest — a systemd timer is yard-node S5's, and install.sh prints the
+unit's lines rather than writing one. Either way the job is this command and that environment.
+
+Tests: tests/ops.sh; the pick's own cases are wharf's tests/test_ci_provider.sh; the board's row is
+helm's tests/test_helm.sh.
 """
 import argparse
 import datetime
@@ -137,6 +173,15 @@ def http_get(url, headers):
     """(status, decoded JSON or None); status 0 when no answer came. The suite replaces it. The
     headers are unredirected: urllib copies a request's headers onto a redirect to any host, and
     these carry the token (the landing review)."""
+    return _request(url, headers)
+
+
+def http_post(url, headers, body):
+    """http_get's POST of a JSON body (the GraphQL probe, a read); the suite replaces it too."""
+    return _request(url, dict(headers, **{"Content-Type": "application/json"}), json.dumps(body).encode())
+
+
+def _request(url, headers, data=None):
     u = urllib.parse.urlsplit(url)
     try:
         host = u.hostname
@@ -146,7 +191,7 @@ def http_get(url, headers):
     # `localhost@example` through (the second landing review)
     if not (u.scheme == "https" or (u.scheme == "http" and host in LOOPBACK and not u.username)):
         return 0, None
-    req = urllib.request.Request(url, headers={"User-Agent": "lighthouse-ops"})
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "lighthouse-ops"})
     for k, v in headers.items():
         req.add_unredirected_header(k, v)
     try:
@@ -237,14 +282,20 @@ def budgets_file():
     return (acc if isinstance(acc, dict) else {}), None
 
 
-def usage(now=None):
-    """The usage row: {as_of, host, token: {github, circleci}, accounts: {key: row}}."""
+def tokens():
+    """(tokens, why): read_tokens() once, its refusal as the why."""
+    try:
+        return read_tokens(), None
+    except Refused as e:
+        return {}, str(e)
+
+
+def usage(now=None, toks=None):
+    """The usage row: {as_of, host, token: {github, circleci}, accounts: {key: row}}. toks: tokens()'s
+    pair, when the caller read the file already (the sampler)."""
     now = time.time() if now is None else now
     accounts, why = budgets_file()
-    try:
-        toks, tok_why = read_tokens(), None
-    except Refused as e:
-        toks, tok_why = {}, str(e)
+    toks, tok_why = toks or tokens()
     row = {"as_of": int(now), "host": common.host_name(), "token": {}, "accounts": {}}
     if why:
         row["why"] = why
@@ -339,9 +390,488 @@ def cmd_pick(a):
     return 3 if seen.get(3) else 0
 
 
+# ---- the sampler (S2; the header's "The sampler's row") ----------------------------------------
+SAMPLE_DEADLINE = 60     # s a whole sample (the metrics doc's bound); a read still out then is `partial`
+STALE = 3600             # s: an older row is stale on the board (the metrics doc's "the ops host is down")
+TAIL = 65536             # bytes read from the end of ops.jsonl: the file grows 96 rows a day, never read whole
+FIELDS = ("registry", "queue", "slots", "load", "mem", "check", "budget", "weeks", "cost")
+NO_QUEUE = "no queue home (wharf-runs/queue-repo): the run slots stand for it"
+
+
+def ops_file():
+    return common.LOG_DIR / "ops.jsonl"
+
+
+def ops_host():
+    """(0, None) on `lighthouse/ops-host`; (3, why) on another host; (4, why) when the key names none
+    or cannot be read — the desk is then off everywhere, as ci-provider's --apply reads it."""
+    lines, why = common.config_read("lighthouse/ops-host")
+    if why:
+        return 4, "lighthouse/ops-host cannot be read (%s)" % why
+    if not lines:
+        return 4, "lighthouse/ops-host names no host: the desk is off"
+    if len(lines) > 1:
+        return 4, "lighthouse/ops-host names one host, and it has %d lines" % len(lines)
+    if lines[0].lower() != common.host_name():
+        return 3, "this host is %s, not lighthouse/ops-host's %s: the desk runs there only" % (common.host_name(), lines[0])
+    return 0, None
+
+
+def child_env():
+    # the desk's marker never reaches a child (the sense component's "The marker"); no token is in it
+    return {k: v for k, v in os.environ.items() if k != "LIGHTHOUSE_DESK"}
+
+
+def peer_out(name, args, ok=(0,)):
+    """(stdout, None) from a peer's tool (the core's tool()), or (None, why)."""
+    timeout = TIMEOUT
+    p = common.tool(name)
+    if not p:
+        return None, "%s is not installed" % name
+    cmd = [str(p)] + list(args)
+    if not os.access(str(p), os.X_OK):
+        cmd = [sys.executable] + cmd
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=child_env(),
+                            stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return None, "%s took over %d s" % (name, timeout)
+    except OSError as e:
+        return None, "%s did not start (%s)" % (name, e.strerror or type(e).__name__)
+    if cp.returncode not in ok:
+        last = (cp.stderr or "").strip().splitlines()[-1:]
+        return None, "%s exited %d%s" % (name, cp.returncode, (": " + last[0][:200]) if last else "")
+    return cp.stdout, None
+
+
+def peer_json(name, args, ok=(0,)):
+    out, why = peer_out(name, args, ok)
+    if why:
+        return None, why
+    try:
+        return json.loads(out), None
+    except ValueError:
+        return None, "%s printed no JSON" % name
+
+
+def read_queue():
+    _, why = peer_out("dispatch-queue", ["home"])
+    if why:
+        # exit 1 is "no home" (dispatch-queue's header) and prints nothing; a crash that exits 1 leaves a stderr line
+        return None, NO_QUEUE if why == "dispatch-queue exited 1" else why
+    d, why = peer_json("dispatch-queue", ["list", "--all", "--json", "--status"])
+    if why:
+        return None, why
+    if not isinstance(d, dict) or not isinstance(d.get("entries"), list):
+        return None, "dispatch-queue list answered no entries"
+    if d.get("unreadable"):
+        return None, "the queue is unreadable: %s" % "; ".join(str(x) for x in d.get("why") or [])[:300]
+    es = [e for e in d["entries"] if isinstance(e, dict)]
+    by = {}
+    for e in es:
+        if e.get("state") == "queued":
+            p = str(e.get("priority") or "normal")
+            by[p] = by.get(p, 0) + 1
+    return {"pending": sum(by.values()), "by_priority": by,
+            "live": sum(1 for e in es if e.get("state") in ("claimed", "waiting", "running"))}, None
+
+
+def read_slots():
+    out, why = peer_out("dispatch", ["--slots"])
+    if why:
+        return None, why
+    try:
+        busy, cap = out.split()[:2]
+        return {"busy": int(busy), "max": int(cap)}, None
+    except ValueError:
+        return None, "dispatch --slots printed %r" % out.strip()[:60]
+
+
+def read_load():
+    try:
+        five = os.getloadavg()[1]
+    except OSError:
+        return None, "the load average is unreadable here"
+    cores = os.cpu_count()
+    if not cores:
+        return None, "no core count"
+    return {"per_core": round(five / cores, 2), "cores": cores}, None   # berth's rule: 5 minutes, per core
+
+
+def read_mem():
+    d, why = peer_json("headroom", ["--json", "--no-log"], ok=(0, 3))   # 3 is over a limit, a reading still
+    if why:
+        return None, why
+    s = d.get("sample") if isinstance(d, dict) else None
+    if not isinstance(s, dict):
+        return None, "headroom answered no sample"
+    return {"avail": s.get("avail"), "swap_gb": s.get("swap"), "rate": s.get("rate"), "room": d.get("room")}, None
+
+
+def read_check():
+    """wharf-runs' check slots on this login: a slot-<i> dir whose `pid` runs, a ticket in queue/ whose
+    name ends in a running pid (check's header). No slot dir is no check run yet: zero, not unread."""
+    d = Path(os.environ.get("CHECK_SLOT_DIR") or Path.home() / "Library" / "Caches" / "check-slots")
+
+    def alive(pid):
+        try:
+            os.kill(int(pid), 0)
+        except (ValueError, ProcessLookupError):
+            return False
+        except PermissionError:
+            return True
+        return True
+    try:
+        if not d.is_dir():
+            return {"slots_busy": 0, "waiting": 0}, None
+        busy = 0
+        for s in d.glob("slot-*"):
+            try:
+                busy += alive((s / "pid").read_text().strip())
+            except OSError:
+                pass
+        q = d / "queue"
+        waiting = sum(1 for t in (q.iterdir() if q.is_dir() else []) if alive(t.name.rsplit(".", 1)[-1]))
+    except OSError as e:
+        return None, "the check slots at %s are unreadable (%s)" % (d, e.strerror or type(e).__name__)
+    return {"slots_busy": busy, "waiting": waiting}, None
+
+
+def read_weeks():
+    d, why = peer_json("account", ["limits", "--all", "--cached", "--json"])
+    if why:
+        return None, why
+    if not isinstance(d, list):
+        return None, "account limits answered no rows"
+    out = {}
+    for r in d:
+        if isinstance(r, dict):
+            lim = r.get("limits") if isinstance(r.get("limits"), dict) else {}
+            out[str(r.get("label") or "default")] = {
+                "weekly": lim.get("seven_day"), "five_hour": lim.get("five_hour"), "fable": lim.get("fable_week"),
+                "locked": lim.get("locked") or [], "eligible": r.get("eligible")}
+    return out, None
+
+
+def read_cost():
+    d, why = peer_json("usage-report", ["numbers", "--json"])
+    if why:
+        return None, why
+    lst = d.get("proxy_usd") if isinstance(d, dict) else None
+    if not isinstance(lst, (int, float)) or isinstance(lst, bool):
+        return None, "usage-report numbers carried no proxy_usd"
+    ratio, _ = common.cost_ratio()
+    return {"week_list": round(lst, 2), "week_effective": round(lst * ratio, 2) if ratio else None,
+            "window": d.get("window")}, None
+
+
+def read_budget(now, toks, keep):
+    """Per budgeted account from S1's usage(): state, used, cap, share; keep["usage"] the whole usage
+    row, which the job writes to ci-usage.json (one billing read a sample, not two)."""
+    row = usage(now, toks)
+    keep["usage"] = row
+    budgets, bwhy = budgets_file()
+    if bwhy and not bwhy.startswith("no budgets"):
+        return None, bwhy
+    out = {}
+    for key, r in row["accounts"].items():
+        b = budgets.get(key) if isinstance(budgets.get(key), dict) else {}
+        e = {"state": r.get("state")}
+        if r.get("state") == "ok":
+            e.update(used=r["month_used"], week_used=r["week_used"], unit=r["unit"], net_amount=r["net_amount"])
+            cap = b.get("month_minutes") if r["unit"] == "minutes" else b.get("month_credits")
+            if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0:
+                e.update(cap=cap, share=round(r["month_used"] / cap, 3))
+        else:
+            e["why"] = r.get("why")
+        out[key] = e
+    return out, None
+
+
+def no_github_token(toks):
+    """(word, why) when the token file gave no GITHUB_TOKEN — absent, or refused (S1's usage words) — else None."""
+    t, why = toks
+    if t.get("GITHUB_TOKEN"):
+        return None
+    if why and not why.startswith("absent"):
+        return "refused", why
+    return "absent", why or "no GITHUB_TOKEN in %s" % DESK_FILE
+
+
+def plan_word(toks, urow):
+    """token.plan: the billing read's standing, as S1's usage() judged it for the GitHub accounts."""
+    gone = no_github_token(toks)
+    if gone:
+        return gone
+    if urow is None:
+        return None, "the billing read did not answer within the sample"
+    w = (urow.get("token") or {}).get("github")
+    if w is None:
+        return None, "no github account in ci-budgets.json to probe the billing read with"
+    if w in ("ok", "refused", "absent"):
+        return w, None if w == "ok" else next((r.get("why") for r in urow["accounts"].values()
+                                               if r.get("state") == w), None)
+    return None, next((r.get("why") for r in urow["accounts"].values() if r.get("state") == w), "unread")
+
+
+def project_word(toks):
+    """token.project: a GraphQL read of the viewer's Projects (S7 writes one; this never does)."""
+    gone = no_github_token(toks)
+    if gone:
+        return gone
+    code, out = http_post(GITHUB_API + "/graphql",
+                          {"Authorization": "Bearer " + toks[0]["GITHUB_TOKEN"], "Accept": "application/json"},
+                          {"query": "query { viewer { projectsV2(first: 1) { totalCount } } }"})
+    if code in (401, 403):
+        return "refused", "GitHub's GraphQL answered %d" % code
+    if code != 200 or not isinstance(out, dict):
+        return None, "GitHub's GraphQL answered %s" % (code or "nothing")
+    data = out.get("data") if isinstance(out.get("data"), dict) else {}
+    viewer = data.get("viewer") if isinstance(data.get("viewer"), dict) else {}
+    errs = [e for e in out.get("errors") or [] if isinstance(e, dict)] if isinstance(out.get("errors"), list) else []
+    if isinstance(viewer.get("projectsV2"), dict) and not errs:
+        return "ok", None
+    kinds = sorted({str(e.get("type")) for e in errs if e.get("type")})
+    # a token without the Projects permission is answered 200 with an error, not 403 (not probed: S7's first case)
+    if set(kinds) & {"FORBIDDEN", "INSUFFICIENT_SCOPES"} or any("not accessible" in str(e.get("message", "")).lower() for e in errs):
+        return "refused", "GitHub's GraphQL refused the Projects read (%s)" % (", ".join(kinds) or "not accessible")
+    return None, "GitHub's GraphQL answered no viewer.projectsV2"
+
+
+def sample(now=None, read_token=True):
+    """(row, usage row or None). Every read side by side, each bounded; one that fails or is still out
+    at the deadline is its field's null and why, never the row's end."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+    now = time.time() if now is None else now
+    t0 = time.monotonic()
+    row = {"as_of": int(now), "host": common.host_name(), "partial": False, "why": {}}
+    keep = {}
+
+    def registry():
+        return ("unreadable" if common.registry_unreadable() else "ok"), None
+    jobs = {"registry": registry, "queue": read_queue, "slots": read_slots, "load": read_load, "mem": read_mem,
+            "check": read_check, "weeks": read_weeks, "cost": read_cost}
+    toks = tokens() if read_token else None
+    if read_token:
+        jobs["budget"] = lambda: read_budget(now, toks, keep)
+        jobs["token.project"] = lambda: project_word(toks)
+    pool = ThreadPoolExecutor(max_workers=len(jobs))
+    futs = {k: pool.submit(fn) for k, fn in jobs.items()}
+    done, _ = wait(list(futs.values()), timeout=SAMPLE_DEADLINE)
+    got = {}
+    for k, f in futs.items():
+        if f not in done:
+            got[k] = (None, "not answered within the sample's %d s" % SAMPLE_DEADLINE)
+            row["partial"] = True
+            continue
+        try:
+            got[k] = f.result()
+        except Exception as e:   # noqa: BLE001 — one read's crash is its field's null, never the row's end
+            got[k] = (None, "the read failed (%s)" % type(e).__name__)
+    pool.shutdown(wait=False)
+    for k in FIELDS:
+        if k == "budget" and not read_token:
+            got[k] = (None, "--print reads no token: budgets are read in the desk's job")
+        row[k], why = got[k]
+        if row[k] is None:
+            row["why"][k] = why
+    if read_token:
+        words = {"plan": plan_word(toks, keep.get("usage")), "project": got["token.project"]}
+    else:
+        words = {k: (None, "--print reads no token") for k in ("plan", "project")}
+    row["token"] = {k: w for k, (w, _) in words.items()}
+    row["why"].update({"token." + k: why for k, (w, why) in words.items() if why and w != "ok"})
+    row["took_s"] = round(time.monotonic() - t0, 1)
+    return row, keep.get("usage")
+
+
+def append_row(row):
+    path = ops_file()
+    os.makedirs(path.parent, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:   # one write of the whole line: a reader never sees half a row but at a crash
+        os.write(fd, (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    finally:
+        os.close(fd)
+    return path
+
+
+def last_row(path=None):
+    """(the last whole row of ops.jsonl, None), or (None, why); read from its tail, never whole."""
+    path = path or ops_file()
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - TAIL))
+            chunk = fh.read()
+    except FileNotFoundError:
+        return None, "no sample yet at %s (the desk's job writes it: `ops sample`)" % path
+    except OSError as e:
+        return None, "%s unreadable (%s)" % (path, e.strerror or type(e).__name__)
+    for line in reversed(chunk.splitlines()):
+        try:   # the chunk's first line may be cut, a crash's last one torn: the one before stands
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and isinstance(r.get("as_of"), (int, float)) and not isinstance(r.get("as_of"), bool):
+            return r, None
+    return None, "no whole row in %s" % path
+
+
+def ago(s):
+    m = int(max(0, s) // 60)
+    return "%d min" % m if m < 120 else "%d h" % (m // 60)
+
+
+def unread(row):
+    """The fields a row holds no reading for — a missing queue home is the queue off, not unread."""
+    return [k for k in FIELDS if row.get(k) is None and not (k == "queue" and (row.get("why") or {}).get(k) == NO_QUEUE)]
+
+
+def num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def status_line(row, now):
+    """The board's ops row: one line, its age last."""
+    bits = []
+    q, s, c, l, m = (row.get(k) if isinstance(row.get(k), dict) else None for k in ("queue", "slots", "check", "load", "mem"))
+    if q:
+        by = q.get("by_priority") or {}
+        order = ("force", "high", "normal", "low")
+        bits.append("queue %s%s" % (q.get("pending"), " (%s)" % ", ".join(
+            "%s %s" % (by[p], p) for p in sorted(by, key=lambda p: order.index(p) if p in order else 9)) if by else ""))
+    elif (row.get("why") or {}).get("queue") == NO_QUEUE:
+        bits.append("queue off")
+    if s:
+        bits.append("runs %s/%s" % (s.get("busy"), s.get("max")))
+    if c:
+        bits.append("checks %s busy%s" % (c.get("slots_busy"), ", %s waiting" % c["waiting"] if c.get("waiting") else ""))
+    if l and num(l.get("per_core")):
+        bits.append("load %.2f/core" % l["per_core"])
+    if m and num(m.get("avail")):
+        bits.append("mem %d%% free" % m["avail"])
+    b = row.get("budget") if isinstance(row.get("budget"), dict) else {}
+    shares = [v["share"] for v in b.values() if isinstance(v, dict) and num(v.get("share"))]
+    if shares:
+        bits.append("CI budget at most %d%% used" % round(max(shares) * 100))
+    t = row.get("token") if isinstance(row.get("token"), dict) else {}
+    bits.append("token plan %s, project %s" % (t.get("plan") or "unread", t.get("project") or "unread"))
+    if row.get("registry") == "unreadable":
+        bits.append("registry unreadable")
+    if unread(row):
+        bits.append("unread: " + ", ".join(unread(row)))
+    if row.get("partial"):
+        bits.append("partial")
+    age = now - row["as_of"]
+    bits.append("sampled %s ago%s" % (ago(age), " — stale" if age > STALE else ""))
+    return "ops %s: %s" % (row.get("host") or "?", " · ".join(bits))
+
+
+def row_sig(row, now):
+    """The row without its clocks (as_of, the age) or its gauges (load, memory, budgets, weeks, cost), which
+    move on every sample: hashed as helm_render.board_sig hashes cards, so the board deploys when a count,
+    a token's word, an unread field or the stale mark changes, and the hourly redeploy refreshes the rest
+    (AGENTS.md's trap on clocks in a rendered state)."""
+    import hashlib
+    keep = {k: row.get(k) for k in ("host", "registry", "queue", "slots", "check", "token")}
+    keep.update(unread=unread(row), partial=bool(row.get("partial")), stale=now - row["as_of"] > STALE)
+    return hashlib.sha256(json.dumps(keep, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def say_status(row, now):
+    w = row.get("why") or {}
+    print("ops: sampled %s on %s (%s ago%s)%s" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(row["as_of"])),
+                                                   row.get("host"), ago(now - row["as_of"]),
+                                                   ", stale" if now - row["as_of"] > STALE else "",
+                                                   ", partial" if row.get("partial") else ""))
+
+    def line(k, text):
+        print("  %-9s %s" % (k, text if row.get(k) is not None else "unread — %s" % w.get(k, "no reason recorded")))
+    q = row.get("queue") or {}
+    if row.get("queue") is None and w.get("queue") == NO_QUEUE:
+        print("  %-9s off — %s" % ("queue", NO_QUEUE))
+    else:
+        line("queue", "%s pending%s, %s live" % (q.get("pending"), " (%s)" % ", ".join(
+            "%s %s" % (n, p) for p, n in sorted((q.get("by_priority") or {}).items())) if q.get("by_priority") else "", q.get("live")))
+    s, l, m, c = (row.get(k) or {} for k in ("slots", "load", "mem", "check"))
+    line("slots", "%s of %s runs" % (s.get("busy"), s.get("max")))
+    line("load", "%s per core (%s cores, 5 min)" % (l.get("per_core"), l.get("cores")))
+    line("mem", "%s%% free, %s GB swap, %s MB/s swapping" % (m.get("avail"), m.get("swap_gb"), m.get("rate")))
+    line("check", "%s slots busy, %s waiting" % (c.get("slots_busy"), c.get("waiting")))
+    if row.get("budget") is None:
+        line("budget", "")
+    elif not row["budget"]:
+        print("  %-9s no accounts in ci-budgets.json" % "budget")
+    for key, b in sorted((row.get("budget") or {}).items()):
+        print("  %-9s %s: %s" % ("budget", key, ("%s of %s %s this month (%d%%), %s this week" % (
+            b.get("used"), b.get("cap", "?"), b.get("unit"), round(b["share"] * 100), b.get("week_used")) if num(b.get("share"))
+            else "%s %s this month, no cap" % (b.get("used"), b.get("unit"))) if b.get("state") == "ok"
+            else "%s (%s)" % (b.get("state"), b.get("why"))))
+    t = row.get("token") or {}
+    for k in ("plan", "project"):
+        print("  %-9s %s: %s%s" % ("token", k, t.get(k) or "unread", " — %s" % w["token." + k] if w.get("token." + k) else ""))
+    if row.get("weeks") is None:
+        line("weeks", "")
+    for label, x in sorted((row.get("weeks") or {}).items()):
+        print("  %-9s %s: week %s%%, 5-hour %s%%, Fable %s%%%s" % ("weeks", label, x.get("weekly"), x.get("five_hour"), x.get("fable"),
+                                                                ", locked " + ", ".join(map(str, x["locked"])) if x.get("locked") else ""))
+    k = row.get("cost") or {}
+    line("cost", "%s list%s, %s" % (common.usd(k["week_list"]) if num(k.get("week_list")) else "?",
+                                    " (%s effective)" % common.usd(k["week_effective"]) if num(k.get("week_effective")) else " (effective unknown: no ratio)",
+                                    " to ".join(map(str, k.get("window") or [])) or "the week"))
+    line("registry", str(row.get("registry")))
+
+
+def cmd_sample(a):
+    if a.print:
+        row, _ = sample(read_token=False)
+        print(json.dumps(row, indent=1, sort_keys=True))
+        return 0
+    why = desk_refusal() or ops_host()[1]
+    if why:
+        # a session's row, or another host's, would stand beside the desk's own as if it were one
+        print("ops sample: %s" % why, file=sys.stderr)
+        return 2
+    row, urow = sample()
+    if urow is not None:
+        write_usage(urow)
+    path = append_row(row)
+    print("ops sample: %s — %s" % (path, status_line(row, time.time())))
+    return 0
+
+
+def cmd_status(a):
+    now = time.time()
+    row, why = last_row()
+    if row is None:
+        if a.json:
+            print(json.dumps({"row": None, "why": why}))
+        else:
+            print("ops status: %s" % why, file=sys.stderr)
+        return 3
+    if a.json:
+        print(json.dumps({"row": row, "age_s": int(now - row["as_of"]), "stale": now - row["as_of"] > STALE,
+                          "line": status_line(row, now), "sig": row_sig(row, now)}, sort_keys=True))
+    else:
+        say_status(row, now)
+    return 0
+
+
+def cmd_is_host(a):
+    rc, why = ops_host()
+    print(why or "this host is lighthouse/ops-host's %s" % common.host_name())
+    return rc
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="ops", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="verb", required=True)
+    s = sub.add_parser("sample")
+    s.add_argument("--print", action="store_true")
+    st = sub.add_parser("status")
+    st.add_argument("--json", action="store_true")
+    sub.add_parser("is-host")
     u = sub.add_parser("usage")
     u.add_argument("--write", action="store_true")
     u.add_argument("--json", action="store_true")
@@ -349,7 +879,8 @@ def main(argv):
     k.add_argument("--apply", action="store_true")
     k.add_argument("repo", nargs="*")
     a = ap.parse_args(argv)
-    return cmd_usage(a) if a.verb == "usage" else cmd_pick(a)
+    return {"usage": cmd_usage, "pick": cmd_pick, "sample": cmd_sample, "status": cmd_status,
+            "is-host": cmd_is_host}[a.verb](a)
 
 
 if __name__ == "__main__":

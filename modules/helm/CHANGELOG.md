@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The board's ops row (lighthouse-ops S2): one line under the header from lighthouse's `ops status --json`
+  where this host has an `ops.jsonl`, amber once the row is an hour old; `board_sig` counts it by the
+  row's sig alone, never its line, which carries the sample's age and the gauges.
 - `helm page [SHIP]`: the ship's page, published once, its space printed (peer-manager-relay S1, D1-A).
   No ship, it is made first (topic `skipper <id>`, the session as its skipper); a ship that has a page
   publishes nothing. Exit 3, one line on stderr, when no page may go: no sheep render, no CLI, key or Talk service named, an

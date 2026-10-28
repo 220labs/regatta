@@ -1108,6 +1108,26 @@ def timeline(states):
     return rows
 
 
+def ops_row():
+    """The desk's ops row (lighthouse-ops S2): lighthouse's `ops status --json`, which owns the row's format —
+    its one line, its staleness and its sig (the row without its clocks and gauges, for board_sig). None when
+    lighthouse is absent, no sample was taken on this host (no subprocess then, on every poll), or the read
+    fails. HELM_OPS replaces the tool (the tests')."""
+    stub = os.environ.get("HELM_OPS")
+    try:
+        path = Path(stub) if stub else helmlib.peer("ops")
+        if not path or not (stub or (helmlib._common().LOG_DIR / "ops.jsonl").exists()):
+            return None
+        cp = subprocess.run([sys.executable, str(path), "status", "--json"], capture_output=True, text=True,
+                            timeout=10, stdin=subprocess.DEVNULL)
+        d = json.loads(cp.stdout) if cp.returncode == 0 else None
+    except (ImportError, OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if not isinstance(d, dict) or not isinstance(d.get("line"), str):
+        return None
+    return {"line": d["line"], "sig": d.get("sig"), "stale": bool(d.get("stale"))}
+
+
 def overview_state():
     states = []
     for pid in helmlib.list_plans():
@@ -1157,6 +1177,7 @@ def overview_state():
             c["title"] = "guarded — open it"
     cols = [{"name": n, "cards": [c for c in cards if c["column"] == n]} for n in board_columns()]
     today_cost = sum(t.get("cost") or 0 for st in states for t in st["tasks"] if _today(t.get("updated")))
+    ops = ops_row()
     return {"kind": "overview", "as_of": time.time(), "host": helmlib.host(), "columns": cols,
             "header": {"needs_owner": len(cols[0]["cards"]), "owner": helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
                        "stalled": None if "error" in judged else len(stalled),
@@ -1166,7 +1187,8 @@ def overview_state():
                        "stall_days": (lambda d: int(d) if d == int(d) else d)(stall_days()),
                        "wip_idle": wip_idle,
                        "stalls_note": judged.get("error") or "; ".join(judged.get("notes") or []) or None,
-                       "sheep": paused_note(), "talk": talk_note()},
+                       "sheep": paused_note(), "talk": talk_note(),
+                       "ops": (ops or {}).get("line"), "ops_stale": (ops or {}).get("stale"), "ops_sig": (ops or {}).get("sig")},
             "timeline": timeline(states)}
 
 
@@ -1178,7 +1200,8 @@ BOARD_SIG_KEYS = ("column", "kind", "repo", "ref", "url", "doc", "session", "run
 def board_sig(st):
     """What the board shows that is worth a new version: each card's identity and its title without
     ages, and the owner's column's count — never the header's week line ("sampled N min ago"), the timeline's
-    `now` or `as_of`, which move on every poll (re-review of landing review 10)."""
+    `now` or `as_of`, which move on every poll (re-review of landing review 10). The ops row counts by its
+    `ops_sig` alone, never its line, which carries the sample's age and the gauges (lighthouse-ops S2)."""
     def card(c):
         if not isinstance(c, dict):
             return c
@@ -1189,7 +1212,8 @@ def board_sig(st):
             for col in st.get("columns") or []]
     hdr = st.get("header") or {}
     return hashlib.sha256(json.dumps({"columns": cols, "needs_owner": hdr.get("needs_owner"), "stalled": hdr.get("stalled"),
-                                       "stalls_old": hdr.get("stalls_old"), "wip_idle": hdr.get("wip_idle")},
+                                       "stalls_old": hdr.get("stalls_old"), "wip_idle": hdr.get("wip_idle"),
+                                       "ops": hdr.get("ops_sig")},
                                      ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -1269,10 +1293,12 @@ h1{font-size:17px;margin:0;font-weight:600}.mute{color:var(--mute)}.pill{border:
 .tl{overflow-x:auto}.tl svg{display:block}.tasks{display:grid;gap:8px}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;font-size:13px;vertical-align:top}
 .hidden{display:none}.more{font-size:12px;margin:0 0 7px}
+#ops{padding:5px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--mute)}#ops.stale{color:var(--amber)}
 </style></head><body>
 <header><h1 id="title"></h1><span id="head" class="mute"></span>
 <span><button class="pill" data-view="board">Board</button> <button class="pill" data-view="timeline">Timeline</button></span>
 <span id="lanes"><button class="pill" data-lane="plan">by plan</button> <button class="pill" data-lane="repo">by repo</button> <button class="pill" data-lane="by">by whom</button></span></header>
+<div id="ops" class="hidden"></div>
 <main><div id="app"></div><p class="mute" id="foot"></p></main>
 <script type="application/json" id="snapshot">{{STATE}}</script>
 <script>
@@ -1336,6 +1362,7 @@ function draw(){document.documentElement.dataset.view=view;var o=S.kind==='overv
  document.getElementById('title').textContent=o?'Helm · board':'Helm · '+(S.topic||S.id);
  var hd=o?[S.header.needs_owner+' need '+(S.header.owner||'the owner'),S.header.stalled?S.header.stalled+' stalled':'',S.header.stalls_old?S.header.stalls_old+' stalls over '+(S.header.stall_days||7)+'d (oldest '+ago(S.header.stalls_oldest)+')':'',S.header.wip_idle?S.header.wip_idle+' WIP PRs idle':'',S.header.today_cost?'today '+money(S.header.today_cost):'',S.header.week||'',S.header.talk||'',S.header.sheep||'']:['started '+(S.started?when(S.started):'none'),'due '+(S.due?when(S.due):'none'),S.cost!=null?money(S.totals.cost)+' of '+money(S.cost)+' est.':money(S.totals.cost)+' so far',S.totals.est_to_go?money(S.totals.est_to_go)+' to go':'',S.totals.open_asks+' open asks'];
  document.getElementById('head').textContent=hd.filter(Boolean).join(' · ');
+ var op=document.getElementById('ops');if(o&&S.header.ops){op.textContent=S.header.ops;op.className=S.header.ops_stale?'stale':''}else op.className='hidden';
  document.getElementById('lanes').className=o&&view==='board'?'':'hidden';
  var rows=o?S.timeline:[{plan:S.topic||S.id,id:S.id,bars:S.tasks.map(function(t){return{id:t.id,title:t.title,start:t.started||S.created,end:t.eta||t.updated,status:t.status,kind:t.kind,deps:t.deps,cost:t.cost,est:t.est_to_go,parked_at:t.parked_at,overrun:t.overrun,flags:(t.asks||[]).filter(function(a){return a.open}).map(function(a){return a.ref.split('#').pop()}),blockers:t.blockers}}),milestones:S.milestones,totals:S.totals}];
  document.getElementById('app').innerHTML=view==='timeline'?timeline(rows):(o?board(S.columns):planView(S));
