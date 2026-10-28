@@ -121,6 +121,134 @@ PROJECTS = _path_key("projects", Path.home() / "projects")
 LOG_DIR = _path_key("log-dir", Path.home() / ".local" / "state" / "regatta")
 
 
+# ---- attribution: a session, or the sessions under a folder, counted to a project --------------
+# Work done in one repo for another project (a session in a lean repo, because the other's context
+# is heavy) belongs to the other in every reader of per-project time or cost. One file of JSON
+# lines, `~/.local/state/regatta/attribution.jsonl` whatever `regatta/log-dir` says (an overlay may
+# point that at usage data; `regatta/attribution` in the config dir moves the file, written empty it
+# turns attribution off); append-only, never rewritten by code:
+#   {"ts": ISO, "project": "<folder under projects>", "session": "<sessionId>" | "path": "<glob>", "why": "…"}
+# `path` is a glob relative to the projects folder, a worktree's `.claude/worktrees/<topic>` part
+# kept; it matches that folder and every folder under it. Resolution per (session, cwd): a session
+# row wins, else a path row, else None (the reader's own project); among rows of one kind the
+# newest `ts` wins, a row without a readable `ts` is the oldest, a later line breaks a tie.
+# The key is optional and read only by reports, so it is checked here, when used, never in
+# config_problems(): a bad value there would fail every hook's import. A relative or unreadable
+# value turns attribution off with one line on stderr. Resolved once per process, as the rows are:
+# a report asks for every prompt and cost row.
+_ATTRIBUTION = {}
+_ATTRIBUTION_FILE = []
+
+
+def attribution_file():
+    """The attribution file, or None when it is turned off."""
+    if not _ATTRIBUTION_FILE:
+        lines, why = config_read("regatta/attribution")
+        f = Path.home() / ".local" / "state" / "regatta" / "attribution.jsonl"
+        if why or (lines and not os.path.isabs(os.path.expanduser(lines[0]))):
+            import sys
+            print("regatta: regatta/attribution %s: attribution off"
+                  % ("unreadable (%s)" % why if why else "is not an absolute path: " + lines[0]), file=sys.stderr)
+            f = None
+        elif lines is not None:
+            f = Path(lines[0]).expanduser() if lines else None
+        _ATTRIBUTION_FILE.append(f)
+    return _ATTRIBUTION_FILE[0]
+
+
+def under_projects(cwd, root=None):
+    """`cwd` as a path under the projects folder (`root`, else PROJECTS), another home's prefix read
+    as this one's (a path from the other Mac's transcripts); None outside it."""
+    p = (str(cwd) if cwd else "").rstrip("/")
+    root = str(Path(root).expanduser() if root else PROJECTS).rstrip("/")
+    if p.startswith(root + "/"):
+        return p
+    rp, pp = Path(root).parts, Path(p).parts
+    if len(rp) >= 3 and len(pp) > len(rp) and pp[len(rp) - 1] == rp[-1] and pp[:len(rp) - 2] == rp[:-2]:
+        return root + "/" + "/".join(pp[len(rp):])
+    return None
+
+
+def projects_rel(cwd, root=None):
+    """A folder relative to the projects folder, a worktree's part kept; None outside it."""
+    p = under_projects(cwd, root)
+    return p[len(str(Path(root).expanduser() if root else PROJECTS).rstrip("/")) + 1:] if p else None
+
+
+def _attribution_ts(v):
+    import datetime as dt
+    try:
+        t = dt.datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def attribution_rows():
+    """The rows as the reader resolves them, read once per process: {"file", "rows", "session":
+    {id: row}, "path": [rows, newest first]}; each row {n, ts, project, kind, key, why}. No file, or
+    attribution off, is no rows. A line that is no row (not JSON, not an object, no `project`, not
+    exactly one of `session` and `path`) is skipped with one warning on stderr."""
+    f = attribution_file()
+    if str(f) in _ATTRIBUTION:
+        return _ATTRIBUTION[str(f)]
+    out = {"file": f, "rows": [], "session": {}, "path": []}
+    _ATTRIBUTION[str(f)] = out
+    try:
+        lines = f.read_text(encoding="utf-8", errors="replace").splitlines() if f else []
+    except OSError:
+        lines = []
+    rows = []
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            d = None
+        d = d if isinstance(d, dict) else {}
+        kinds = [k for k in ("session", "path") if d.get(k)]
+        if not (isinstance(d.get("project"), str) and d["project"].strip("/ ") and len(kinds) == 1
+                and isinstance(d[kinds[0]], str)):
+            import sys
+            print("regatta: %s line %d is not an attribution row: skipped" % (f, n), file=sys.stderr)
+            continue
+        rows.append({"n": n, "ts": d.get("ts") or "", "when": _attribution_ts(d.get("ts")),
+                     "project": d["project"].strip("/ "), "kind": kinds[0], "key": d[kinds[0]],
+                     "why": d.get("why") if isinstance(d.get("why"), str) else ""})
+    out["rows"] = rows
+    for r in sorted(rows, key=lambda r: (r["when"], r["n"]), reverse=True):
+        if r["kind"] == "session":
+            out["session"].setdefault(r["key"], r)
+        else:
+            out["path"].append(r)
+    return out
+
+
+def attribution_match(session=None, cwd=None, root=None):
+    """The row that attributes (session, cwd): a session row, else the newest path row whose glob is
+    the folder or a parent of it; None when nothing does. `root` is the projects folder the globs are
+    relative to (default PROJECTS)."""
+    idx = attribution_rows()
+    r = idx["session"].get(session) if session else None
+    if r:
+        return r
+    rel = projects_rel(cwd, root)
+    if rel is not None:
+        for r in idx["path"]:
+            g = r["key"].strip("/")
+            if g and (fnmatch.fnmatchcase(rel, g) or fnmatch.fnmatchcase(rel, g + "/*")):
+                return r
+    return None
+
+
+def attribution(session=None, cwd=None, root=None):
+    """The project a session is attributed to, or None: the one reader of the attribution file
+    (`regatta attribution`'s rows), for every report of time or cost by project."""
+    r = attribution_match(session, cwd, root)
+    return r["project"] if r else None
+
+
 def regatta_root():
     """The regatta checkout this core belongs to: the monorepo above this file when it runs from
     one (a source shim sets `__file__` to the core's own path, so through a shim this is the

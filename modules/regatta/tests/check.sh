@@ -633,6 +633,8 @@ REGATTA_CONFIG="$REAL_RC" HOME="$REAL_HOME" bash "$M/tests/classes.sh" | sed 's/
 check "${PIPESTATUS[0]}" 0 "tests/classes.sh: the list covers every live path, class 1 and class 2"
 bash "$M/tests/flare.sh" | sed 's/^/  /'
 check "${PIPESTATUS[0]}" 0 "tests/flare.sh: regatta flare files, retries and refuses as it says"
+bash "$M/tests/attribution.sh" | sed 's/^/  /'
+check "${PIPESTATUS[0]}" 0 "tests/attribution.sh: common.attribution resolves and regatta attribution appends as it says"
 
 
 # Every module targets going public, and nothing forces it (the owner, 2026-10-23: "target every
