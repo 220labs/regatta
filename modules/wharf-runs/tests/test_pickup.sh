@@ -27,6 +27,9 @@ CONFIRMED="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import bra
 WAITON="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_status as s; print(s.WAITING)' "$WBIN")"
 RCH=\''"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home")/modules/wharf-runs/bin/rc-hosts"'\'
 export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 export ACCOUNTS_FILE="$T/no-accounts.json"   # no registry unless a case names one: the default is the config dir's lighthouse/accounts.json, the real one (B9)
 mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/projects"
 git config --global user.name Test; git config --global user.email t@example.com
@@ -319,7 +322,7 @@ has "$T/out" "off is disabled" "…a disabled row says so"
 echo '{"accounts": [' > "$T/accounts.json"
 check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --no-fetch)" "0" "a broken registry never blocks a start"
 has "$T/out" "⚠ account pick failed" "…it says so and uses the default login"
-rm -rf "$HOME/.acct-b" "$HOME/.claude/usage-probe.json" "$HOME/.claude/stub-usage"
+rm_own "$HOME/.acct-b" "$HOME/.claude/usage-probe.json" "$HOME/.claude/stub-usage"
 check "$([ -f "$PA" ] && echo parked)" "parked" "…the old transcript untouched"
 check "$(PICKUP_NO_START=1 P open alpha --fresh --no-fetch)" "0" "--fresh from a session that did nothing else"
 has "$T/out" "→ here: fresh, as asked: this session adopts it with the bundle" "…adopts it here"
@@ -729,7 +732,7 @@ check "$(cd "$SIB" && PICKUP_VSCODE_WINDOW=0 PICKUP_VSCODE_CLI="$T/code2" CODE2_
 has "$T/out" "→ window: fresh, as asked: a new Terminal window in that repo adopts it" "…a Terminal window too"
 check "$(cd "$SIB" && CODE2_STATUS="$T/status" PICKUP_VSCODE_WINDOW=3 PICKUP_VSCODE_CLI="$T/code2" CLAUDE_CODE_SESSION_ID=$Q P open gamma --repo "$R" --fresh --dry-run --no-fetch)" "0" "--dry-run"
 has "$T/out" "would open: vscode://anthropic.claude-code/open?windowId=" "…says the link"
-rm -f "$HOME/.claude/ide/"*.lock; { kill $LS $LD; wait $LS $LD; } 2>/dev/null
+rm_own "$HOME/.claude/ide/"*.lock; { kill $LS $LD; wait $LS $LD; } 2>/dev/null
 trap 'rm -rf "$T"' EXIT  # the listeners are gone: their pids may be anyone's by exit (review 2026-10-14)
 
 echo "next in a repo dispatch takes (D1, 2026-10-05): seeded, not a tab"

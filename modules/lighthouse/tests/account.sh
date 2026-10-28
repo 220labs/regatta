@@ -26,6 +26,9 @@ export REGATTA_CLAUDE_HOST=0
 # the stand-in drive: a link under $T is a link into a cloud drive (the core's drive_backed()); a plain file is not
 export REGATTA_DRIVE_ROOTS="$T"
 export HOME="$T/home" TZ=America/Los_Angeles REGATTA_CONFIG="$T/config"
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # the scratch commits' identity: with HOME moved, check.yml's is gone (AGENTS.md, the HOME-move trap)
 export GIT_CONFIG_GLOBAL="$T/gitconfig"
 git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch main
@@ -245,7 +248,7 @@ check "$(grep -c "$S1" "$T/probes")" 0 "…without probing it"
 check "$(ACCOUNT_NOW=$WED A limits --all --cached --json; field "[0]['eligible']")" "0
 False" "limits: the duplicate is not eligible"
 has "$T/out" "same login as main (p@example.com)" "…and says whose login it carries"
-rm -rf "$S1/sessions"; ln -s "$P1/sessions" "$S1/sessions"
+rm_own "$S1/sessions"; ln -s "$P1/sessions" "$S1/sessions"
 check "$(A check)" 1 "check: a duplicate login is a problem"
 has "$T/out" "⚠   spare" "…marked ⚠"
 has "$T/out" "auth login" "…with the re-login line"
@@ -1440,7 +1443,7 @@ check "$(grep -c plain.code-workspace "$T/ties")" 0 "…a workspace with no tena
 mkdir -p "$PR/acme-zone"; git init -q "$PR/acme-zone/inner"
 ties > "$T/ties"
 has "$T/ties" "PR/acme-zone/inner opens on VS Code profile default" "doctor: a nested repo the glob takes (\`*\` spans /) is checked too (review 2026-10-21)"
-rm -rf "$PR/acme-zone"
+rm_own "$PR/acme-zone"
 echo '{"accounts": [{"label": "far", "provider": "claude", "home": "~/.claude-far", "tenant": "beta"},
   {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"beta": {"repos": ["acme-two"]}}}' > "$ACCOUNTS_FILE.t11"
 TIES_FILE="$ACCOUNTS_FILE.t11" ties > "$T/ties"

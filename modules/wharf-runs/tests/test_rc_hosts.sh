@@ -14,6 +14,9 @@ hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; fail
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
 unset ACCOUNTS_FILE ACCOUNT_ORCA_FILE   # rc-hosts reads the login dirs in every case: never the caller's registry
 export HOME="$T/home"
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # a stand-in overlay: the checkout claude-host's allowlist names (rc-hosts primary()), marked in the
 # suite's config dir with the core's keys beside it (B14b: the marker is how an overlay is named)
 echo "$HOME/projects/overlay" > "$REGATTA_CONFIG/regatta/overlay"
@@ -330,7 +333,7 @@ mkdir -p "$HOME/projects/broken"; echo "gitdir: /nowhere" > "$HOME/projects/brok
 echo '{"repos": {"plain": {"hosts": ["laptop"]}, "fresh": {"hosts": ["laptop"]}, "broken": {"hosts": ["laptop"]}}}' > "$T/coding/repos.json"
 check "$(RC --check)" "0" "a repo whose commits cannot be read"
 has "$T/out" "missing  broken · laptop" "…keeps (here: wants) its host: retiring is the costly side"
-rm -rf "$HOME/projects/broken"
+rm_own "$HOME/projects/broken"
 echo '{"repos": {"plain": {"hosts": ["laptop"]}, "fresh": {"hosts": ["laptop"]}, "stale": {"hosts": ["laptop"]}, "twin": {"hosts": ["laptop"], "twin_of": "plain"}}}' > "$T/coding/repos.json"
 
 echo "the reaper converges: a new host loads, an empty changed one reloads, a busy one waits"
@@ -730,7 +733,7 @@ check "$(RC --agents)" "0" "before this Mac's sitting, a bare job is a note, nev
 has "$T/out" "--       org.example.claude.dispatch.x.z.202611010900" "…named"
 has "$T/out" "the sitting is rc-hosts --grant" "…with the sitting"
 cp "$T/granted.keep" "$G"
-rm -f "${LA:?}"/*.plist "$T/pids/org.example.claude.ok"; mv "$T/la.keep/"*.plist "$LA/" 2>/dev/null
+rm_own "${LA:?}"/*.plist "$T/pids/org.example.claude.ok"; mv "$T/la.keep/"*.plist "$LA/" 2>/dev/null
 
 echo "--probe-all: per service, from claude-host's child as launchd starts it"
 printf '{"results": {"fda": {"what": "Full Disk Access", "result": "ok"}, "cloud:GoogleDrive-a": {"what": "GoogleDrive-a (File Provider)", "result": "no answer"}, "automation:com.apple.Notes": {"what": "Automation of Notes", "result": "denied (execution error: Not authorized to send Apple events to Notes. (-1743))"}, "photos": {"what": "Photos", "result": "n/a"}}}\n' > "$T/tcc.json"

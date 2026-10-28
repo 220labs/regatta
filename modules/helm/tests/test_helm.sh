@@ -60,6 +60,9 @@ hasnt() { case "$1" in *"$2"*) echo "  FAIL $3: [$2] found"; fails=$((fails+1));
 # the first N characters of stdin's first line: `cut -c` counted bytes on CircleCI's ubuntu-2604
 # image (uutils 0.8.0), as GNU's does, so a `·` cost a character there (AGENTS.md's Traps)
 chars() { python3 -c 'import sys; print(sys.stdin.readline().rstrip("\n")[:int(sys.argv[1])])' "$1"; }
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # a state the code under test reaches by itself: polled every 0.1 s, up to 15 s, never a fixed sleep
 until_() { local i; for i in $(seq 1 150); do eval "$1" && return 0; sleep 0.1; done; return 1; }
 
@@ -934,7 +937,7 @@ PY
   check "$(echo "$ov" | python3 -c "import json,sys; print([c['title'] for col in json.load(sys.stdin)['columns'] for c in col['cards'] if 'secret' in c['title']])" 2>&1)" \
     "[]" "  an ask-guard card from a guarded repo carries no topic"
   check "$(grep -o 'INTS = (.*)' "$(src dispatch)")" "$(grep -o 'INTS = (.*)' "$(src dispatch-rc)")" "dispatch's record() and dispatch-rc's typed() type the same fields"
-  rm -rf "$R"
+  rm_own "$R"
 
   echo "B1: stalls — S1–S7 from records, the registry, autofinished, the plan store and the poll cache"
   # Fixtures shaped on the real ones of P1, P2 and P4 (chain-manager section 3), ids changed: a repo
@@ -1412,7 +1415,7 @@ print([len(k.follow_up(k.Memory([retry(w)]), runs, 2000, False, "dry")) for w in
 PY
 )" "[1, 0]" "a follow-up: an S2 start's run is the next step's brief (any blob); a re-dispatch's must be its own"
   unset STALLS_LOG STALLS_STATE_DIR STALLS_DISPATCH STALLS_AUTOFINISH_RUN AUTOFINISH_ACCOUNT AUTOFINISH_STATE_DIR GATE_PLAN_STALL_PROVIDER CLAUDE_BIN GATE_LOG DISPATCH_MAX_RUNS
-  rm -rf "$R" "$T/sess/work.json" "$T/sess/wait.json"
+  rm_own "$R" "$T/sess/work.json" "$T/sess/wait.json"
 
   echo "B8: Orca workers — S1, S6, S7 through harness list --harness orca, the registry over Orca's liveness"
   # A stub `orca` answering from a fixture state in the shapes of Orca 1.4.225 (B5's probe, P3's
