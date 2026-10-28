@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `KEEL_BRIEF_DAY` (YYYY-MM-DD) pins the day `pickup brief`'s same-day guard reads, for suites that cross midnight.
 - Codex and Antigravity sessions reach spacesheep through the same privacy gate as Claude Code's:
   `sheep gate` writes sessionpipe's entries, gated, into Codex's `hooks.json` and Antigravity's
   `config/hooks.json` beside Orca's, seeded from Claude Code's command (no

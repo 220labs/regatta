@@ -10558,8 +10558,10 @@ def lookout_week(top):
 
 def brief_day():
     """Today as `pickup brief` dates its file (datetime.date.today()): the brief's title and the
-    same-day guard read the one clock pickup writes by, never now_ts() (S11c item 15)."""
-    return dt.date.today().isoformat()
+    same-day guard read the one clock pickup writes by, never now_ts() (S11c item 15). KEEL_BRIEF_DAY
+    (YYYY-MM-DD) pins it for the tests: a suite that dated its fixtures by `date` before midnight
+    and ran this after it failed four cases (regatta#217's CI, 2026-10-27)."""
+    return os.environ.get("KEEL_BRIEF_DAY") or dt.date.today().isoformat()
 
 
 def branch_topic(branch):

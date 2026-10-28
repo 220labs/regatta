@@ -15,6 +15,8 @@ export SPACESHEEP_CONFIG_DIR="$T/ss-config" SPACESHEEP_KEY=ss_test MEMO_SHEEP_BI
 export LOOKOUT_HARNESS="$T/bin/harness" LOOKOUT_HAIL="$T/bin/hail" LOOKOUT_HOST=laptop REGATTA_LAPTOP=laptop
 export LOOKOUT_PICKUP="$T/bin/pickup" LOOKOUT_DISPATCH="$T/bin/dispatch" LOOKOUT_AUTOFINISH="$T/bin/autofinish"
 unset KEEL_VIEWER DISPATCH_LABEL
+# keel's brief day, pinned: fixtures dated by the wall clock fail across midnight (regatta#217, 2026-10-27)
+export KEEL_BRIEF_DAY=2026-10-21
 unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID MEMO_NOW
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 mkdir -p "$T/bin" "$T/state" "$T/sheep" "$T/ask" "$T/runs" "$T/srv"
@@ -764,7 +766,7 @@ onbranch() {  # onbranch BRANCH FILE TEXT — a file committed on the branch, pu
   gitc "$P" checkout -q "$1"; mkdir -p "$(dirname "$P/$2")"; printf '%s' "$3" > "$P/$2"
   gitc "$P" add "$2"; gitc "$P" commit -q -m "add $2"; gitc "$P" push -q origin "$1" 2>/dev/null; gitc "$P" checkout -q main
 }
-TODAY=$(date +%Y-%m-%d)
+TODAY=$KEEL_BRIEF_DAY
 
 B16=claude/laptop/2026-10-21-twodocs
 doc "$B16" "" plan
@@ -834,6 +836,19 @@ NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
 lk
 has "$T/out" "answer demo@$BOD:docs/d.md D1 — card · no live session for demo@$BOD:docs/d.md D1 — the branch's brief docs/handoff/$TODAY-otherdoc.md holds steps of docs/e.md; a run for docs/d.md waits until it lands" "finish review: a same-day brief of another doc is never merged under this doc's plan: a card"
 check "$(wc -l < "$T/pickup.log" | tr -d ' ')" "$NP" "…and no brief"
+# the day boundary: a seed written the day before the pass is no longer today's, whatever the wall clock
+BYD=claude/laptop/2026-10-21-yday
+doc "$BYD" "" plan
+onbranch "$BYD" "docs/handoff/2026-10-20-yday.md" "# yday — a seed
+Task: x
+"
+asks "$BYD=D1,D2"
+lk
+gh_answer "$BYD" D1 "A"
+asks "$BYD=D2"
+lk
+has "$T/out" "answer demo@$BYD:docs/d.md D1 — dispatching" "midnight: a seed from the day before the pinned brief day is not the branch's own brief (regatta#217)"
+lk   # its result collected
 
 BDS=claude/laptop/2026-10-21-drysave
 doc "$BDS" "" plan
@@ -904,19 +919,22 @@ EOF
   "items 10, 29, 23: no wip step, none placed in another repo's path; a component's own Action plan; one unreadable component; a dry Save's items given"
 
 check "$(python3 - "$B/keel" <<'EOF'
-import sys
+import os, sys
 from importlib.machinery import SourceFileLoader as L
 m = L("k", sys.argv[1]).load_module()
 home = str(m.Path.home())
 m.overlay_cmd = lambda n: home + "/projects/ovl/bin/" + n
 ev = {"doc": "demo@claude/laptop/2026-10-21-x:docs/d.md", "kind": "answer", "branch": "claude/laptop/2026-10-21-x",
       "rel": "docs/d.md", "items": ["D1"]}
+pin = os.environ.pop("KEEL_BRIEF_DAY")
 b = m.run_brief(ev, ["S1"], "abcdef1234")
+os.environ["KEEL_BRIEF_DAY"] = pin
 print(m.hail_text("answer"), "`~/projects/ovl/bin/keel pull docs/d.md`" in b, "~/projects/ovl/bin/ask relay docs/d.md" in b,
-      home in b, b.split("\n")[0].endswith("run on docs/d.md, " + m.dt.date.today().isoformat()))
+      home in b, b.split("\n")[0].endswith("run on docs/d.md, " + m.dt.date.today().isoformat()),
+      m.run_brief(ev, ["S1"], "abcdef1234").split("\n")[0].endswith(", " + pin))
 EOF
-)" "an answer landed on GitHub: ~/projects/ovl/bin/keel pull, then act on it True True False True" \
-  "items 11, 15, 16: the hail and the brief name the overlay ~/-relative; the brief's date on pickup's clock"
+)" "an answer landed on GitHub: ~/projects/ovl/bin/keel pull, then act on it True True False True True" \
+  "items 11, 15, 16: the hail and the brief name the overlay ~/-relative; the brief's date on pickup's clock, or the pinned day"
 
 git -C "$P" fetch -q origin 2>/dev/null
 check "$(python3 - "$B/keel" "$P" "$B14" <<'EOF'
