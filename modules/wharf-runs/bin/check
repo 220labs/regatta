@@ -70,7 +70,8 @@
 # one of $CHECK_SLOTS (default 2, about what the laptop held beside its sessions; per host below) slots per Mac login (under $HOME, so a second login has its own):
 # a directory $CHECK_SLOT_DIR (~/Library/Caches/check-slots)/slot-<i> made with mkdir (atomic), with
 # the holder's `pid`, `start` (its ps lstart, so a reused pid is not mistaken for the holder),
-# `checkout` and `since` inside; `pid` is written last, by rename, so a holder with a pid is whole.
+# `checkout` and `since` inside: `start` first, then `pid` by rename (a pid always has its start),
+# then `checkout` and `since`, so a reader may see a pid before those two (since 2026-10-27).
 # A slot whose holder is dead is taken over; one with no pid older than 2 min (a crash between mkdir
 # and the write) too — bin/dispatch's take_lock pattern. A slot is given back at exit (any exit a
 # trap sees); a SIGKILLed holder's slot is reclaimed by the next waiter. Waiters queue in order of
@@ -435,25 +436,38 @@ ticket="$sd/queue/$(stamp).$$"
 printf '%s\n%s\n%s\n' "$$" "$me_start" "$wt" > "$sd/queue/.t.$$" && mv "$sd/queue/.t.$$" "$ticket"
 said=""
 while :; do
-  free=()
+  free=(); holders=" "
   for i in $(seq 1 "$n"); do
     s="$sd/slot-$i"
-    if [ -d "$s" ]; then p=$(cat "$s/pid" 2>/dev/null); slot_live "$s" "$p" || reclaim "$s" "$p"; fi
+    if [ -d "$s" ]; then
+      p=$(cat "$s/pid" 2>/dev/null)
+      # a holder by pid and start both, and only a live one: a dead pid left in an unreclaimable slot
+      # must not let a new run that reuses it skip the queue
+      if slot_live "$s" "$p"; then holders="$holders$p|$(cat "$s/start" 2>/dev/null) "; else reclaim "$s" "$p"; fi
+    fi
     [ -d "$s" ] || free+=("$s")
   done
+  # a ticket whose run already holds a slot (it drops the ticket just after) is not ahead: counted
+  # as a taken slot and a waiter both, it made a third check wait with three slots for three
+  # (test_check.sh's "this host's line, 3", once on a slow runner Mac, 2026-10-27)
   rank=0
   for t in $(ls "$sd/queue" 2>/dev/null | sort); do
     f="$sd/queue/$t"; [ "$f" = "$ticket" ] && break
     { read -r tp; read -r ts; } 2>/dev/null < "$f" || { tp=""; ts=""; }
-    if alive "$tp" "$ts"; then rank=$((rank + 1)); else rm -f "$f"; fi
+    if ! alive "$tp" "$ts"; then rm -f "$f"
+    else case "$holders" in *" $tp|$ts "*) ;; *) rank=$((rank + 1)) ;; esac; fi
   done
   if [ "$rank" -lt "${#free[@]}" ]; then
     for s in "${free[@]}"; do
       if mkdir "$s" 2>/dev/null; then
-        printf '%s\n' "$me_start" > "$s/start"; printf '%s\n' "$wt" > "$s/checkout"; date '+%Y-%m-%d %H:%M:%S' > "$s/since"
+        # start before pid (a pid without its start reads as dead and is reclaimed), the pid next, so
+        # the window where the slot names no holder is as short as it can be; the rest after
+        printf '%s\n' "$me_start" > "$s/start"
         # held only once the pid reads back as ours: a racing reclaimer may have removed the dir
         printf '%s\n' "$$" > "$s/pid.$$" 2>/dev/null && mv "$s/pid.$$" "$s/pid" 2>/dev/null \
-          && [ "$(cat "$s/pid" 2>/dev/null)" = "$$" ] && { held="$s"; break; }
+          && [ "$(cat "$s/pid" 2>/dev/null)" = "$$" ] && {
+            held="$s"   # first: a signal from here on still gives the slot back
+            printf '%s\n' "$wt" > "$s/checkout"; date '+%Y-%m-%d %H:%M:%S' > "$s/since"; break; }
       fi
     done
     [ -n "$held" ] && break
@@ -461,7 +475,8 @@ while :; do
     who=""
     for i in $(seq 1 "$n"); do
       s="$sd/slot-$i"; [ -d "$s" ] || continue
-      who="$who; pid $(cat "$s/pid" 2>/dev/null || echo '?') $(cat "$s/checkout" 2>/dev/null) (since $(cat "$s/since" 2>/dev/null))"
+      # checkout and since come just after the pid: a holder caught between reads as `?`
+      who="$who; pid $(cat "$s/pid" 2>/dev/null || echo '?') $(cat "$s/checkout" 2>/dev/null || echo '?') (since $(cat "$s/since" 2>/dev/null || echo '?'))"
     done
     if [ ${#free[@]} -eq 0 ]; then w="all $n taken${who:+:${who#;}}"; else w="${#free[@]} of $n free"; fi
     echo "check: waiting for a slot — $w$([ "$rank" -gt 0 ] && echo "; $rank ahead in the queue")"
