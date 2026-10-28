@@ -1,18 +1,20 @@
-# Two renders of one document: the captain and the admiral
+# Three renders of one document: the captain, the commodore and the admiral
 
-*A method for turning one source document into two renders that are held to it by checks: a
-dense page that is read (the captain render) and a sparse deck that is spoken over (the admiral
-render). Everything here was built and enforced for one project's decks first, and is written up
-without their content. sextant's `pitch` implements every check named below (`bin/pitch`, its library
+*A method for turning one source document into renders that are held to it by checks: a dense page
+that is read (the captain render), a sparse deck that is spoken over (the admiral render), and
+between them a deck that is sent and read alone (the commodore render). The captain and the admiral
+were built and enforced for one project's decks first, and are written up without their content; the
+commodore was added when sextant took the method in (renders S6, 2026-10-28). sextant's `pitch` implements every check named below (`bin/pitch`, its library
 `bin/pitchlib.py`); [config.md](config.md), beside this file, lists what a project sets in its
 `pitch.json`.*
 
-Sections: 1 why two renders · 2 the admiral render · 3 the captain render · 4 rules for every folder
-deck · 5 the checks, by rule id · 6 traps · 7 the Slides runtime · 8 sources · 9 not verified.
+Sections: 1 why three renders · 2 the admiral render, and the commodore · 3 the captain render · 4 rules
+for every folder deck · 5 the checks, by rule id · 6 traps · 7 the Slides runtime · 8 sources · 9 not
+verified.
 
 ---
 
-## 1. Why two renders
+## 1. Why three renders
 
 A document to be studied and a talk to be listened to are different genres: "readers are not
 listeners" (Norman). The authorities that seem to disagree are answering different questions.
@@ -21,27 +23,34 @@ towards one message and few words. Tufte writes about the document, and his reme
 not a better slide but a paper handout that everyone holds. Amazon's six-page memos, read in
 silence at the start of a meeting, make the same move.
 
-So the method keeps both and holds each to its own rules:
+So the method keeps both, adds the third genre the two leave open, and holds each to its own rules:
 
 - **The admiral render is spoken**: about twenty words a slide, three statements, large type, a
   title that states the message, the detail in speaker notes. It is for the room.
 - **The captain render is read**: the full document as a page, with its tables and figures, dense
-  on purpose. It is handed to everyone in the room, and it is what gets sent when the deck would
-  travel without its speaker. The admiral deck is only honest because the captain page exists.
+  on purpose. It is handed to everyone in the room, and it is what a reader alone with time gets.
+  The admiral deck is only honest because the captain page exists.
+- **The commodore render is sent**: the deck for a reader who asked for the deck and reads it
+  alone, without a speaker. About fifty words a slide, six blocks, nothing under 40 px, the
+  admiral's titles, and links: its last slide links the captain page, so the detail it leaves out is
+  one click away.
 
 A deck sent on its own to be read is a third genre. DocSend's figures put typical sent decks near
 50 words a slide, and Doumont warns that slides do not double as a document sent by e-mail. The
-method answers it by sending the captain page and never the admiral deck.
+method first answered it by never sending a deck, only the captain page; but a reader who asks for
+the deck gets one, so the commodore holds that deck to its own rules instead. Doumont's warning is
+why it links the page rather than replacing it, and why the admiral is still never sent alone.
 
 **The one rule over both: one source text, several renders, no prose typed twice.** The document
 is the truth and the renders are views of it. A correction goes into the document first, then into
 every render in the same change, then the check. The commonest failure (section 6, trap 1) is a
 document corrected while its render is left behind. So the document holds every render's words: the
-captain page is generated from it whole (`pitch memo`), and the admiral deck's slides sit in one
+captain page is generated from it whole (`pitch memo`), and both decks' slides sit in one
 ```` ```deck ```` fence at its end (`pitch build`), in the same file and the same commit as the
-correction they must follow.
+correction they must follow. The commodore is not a second story: it is the admiral's slides with a
+detail layer (`detail`, `links`) and the slides only it carries (`"admiral": false`).
 
-## 2. The admiral render: rules, numbers, sources
+## 2. The admiral render: rules, numbers, sources; and the commodore
 
 | Rule | Value | Where it comes from |
 | --- | --- | --- |
@@ -72,6 +81,23 @@ once, so this is not a clean measurement of words per slide. Mayer's redundancy 
 show on-screen text identical to the narration, d = 0.86) was measured with recorded narration and
 weakens for experienced learners. Garner et al. 2011 cuts the other way, and is why the numbers
 that must land stay on screen.
+
+**The commodore render.** Every admiral rule above holds for the sent deck under a `commodore.*` rule
+id, titles as messages included, with these limits instead (the `commodore` section of the config):
+
+| Rule | admiral | commodore | Where it comes from |
+| --- | --- | --- | --- |
+| Words on screen per slide | 25 | **50**, link text counted | DocSend's typical sent deck (section 1); Khosla's dated 2019 deck says fewer than 50. Khosla's line limits are not adopted |
+| Text blocks besides the title | 3 | **6**: statements, detail lines and links | a house rule; no study behind it |
+| Lines per block and per title | 2 | **3** | a house rule |
+| Smallest type | 60 px | **40 px** | the caption floor (section 4): at 40 px no body line reads as furniture, while at 32 px one repeated on three slides is a running caption |
+| Links | none | **https only**, each URL also in the document's body or its sidecar | a link the document never names is a claim it cannot correct; the sidecar is where the page's own URL lives once it is published |
+
+Three rules written for the admiral widen for the commodore alone: `deck.external` passes a
+commodore's own link (`<a href="https://…">`, in the builder's spelling); the pins read the
+commodore's own short list (`commodore_must_appear`), between the admiral's and the page's; and the
+markup grammar admits an `<a href>` inside a statement, which the fit estimate reads as its
+paragraph's own text. The palette, contrast, the runtime's limits and the fit estimate are shared.
 
 ## 3. The captain render: rules
 
@@ -110,8 +136,9 @@ authoring marker reaching the reader (section 6, trap 2).
 - A well-formed index: `deck.json` at version 4 with a non-empty `order` that equals the slide
   files, every section starting at a slide that exists, one `<section id="<file stem>">` per file.
 - Nothing reaches outside the deck: no `scheme://`, no protocol-relative `//host`, no `data:` body,
-  no network API, no `<script>`. The one exception is a face: a Google Fonts css2 `href`, or a
-  `src` to an uploaded asset (`/_blob/…`) or an installed file (`project/ds/…`).
+  no network API, no `<script>`. The exceptions are a face (a Google Fonts css2 `href`, or a `src` to
+  an uploaded asset, `/_blob/…`, or an installed file, `project/ds/…`) and, in a commodore deck alone,
+  its own links: `<a href="https://…">`, starting with a configured link prefix.
 
 ## 5. The checks, by rule id
 
@@ -137,17 +164,17 @@ runs the same check through the template in [config.md](config.md), section 13.
 | `admiral.title` | a title that names a topic instead of stating a message (heuristic, below), unless exempted with a reason |
 | `admiral.slide-count` | more than `max_slides` slides |
 | `admiral.invented-number` | a number on a slide or in its note that the document does not contain, magnitude included (`$250M` does not match `$250K`) |
-| `admiral.exemption-stale` | a title exemption naming a slide that no longer exists, or one without a reason |
+| `admiral.exemption-stale` | a title exemption naming a slide that no longer exists in either deck, or one without a reason |
 | `deck.index` | `deck.json` out of step with the slide files, or a slide file without exactly one matching `<section>` |
 | `deck.generator-drift` | slide files that differ from what the builder writes from the content file (a hand edit the next build would revert), or no content file |
 | `deck.page-number` | a page number on any folder-deck slide |
 | `deck.running-caption` | a caption repeating on three or more slides |
-| `deck.external` | a slide reaching outside the deck; a face loading from anywhere but Google Fonts or an asset |
+| `deck.external` | a slide reaching outside the deck; a face loading from anywhere but Google Fonts or an asset; on a commodore, any URL but its own links |
 | `captain.type-floor` | type under 16 px in a memo or single-file deck |
 | `captain.allowlist` | a memo loading from outside the allowlist, or calling a network API |
 | `single.external` | a single-file deck with any absolute or protocol-relative URL or network API |
 | `single.authoring-marker` | a `//` comment inside a slide template or data string; an HTML comment inside a data string; a script the scan cannot pair |
-| `claims.must-appear` | a pinned phrase missing from the document or from one of its renders |
+| `claims.must-appear` | a pinned phrase missing from the document or from one of its renders; each deck reads its own list |
 | `claims.retired` | a retired claim reappearing in any Markdown or HTML file under the root |
 | `claims.table` | a render whose document has no pinned phrases (when `require_pins`), or a pin entry whose renders are gone |
 | `root.orphan` | an HTML file or a deck folder that no document pairs with, so nothing checks it |
@@ -167,6 +194,21 @@ runs the same check through the template in [config.md](config.md), section 13.
 | `review.sections` | a captain review missing a template section, or with them out of order |
 | `review.options` | an option without its four lines, no option at all, or a best three of the wrong length |
 | `review.decisions` | a captain review's D-list: no item, an id used twice, an item without exactly one `Reversible: yes\|no`, `➤ Recommended:` and `➤ Answer:` |
+| `commodore.words` | more than the commodore's `max_words` (50) words on screen, link text included |
+| `commodore.statements` | more than its `max_statements` (6) text blocks besides the title: statements, detail lines and links |
+| `commodore.markup` | anything outside the grammar, which for the commodore admits an `<a href>`, text only, inside a `p` |
+| `commodore.runtime-limits` | a note over 4,000 characters; more than 200 elements |
+| `commodore.type-floor` | a block that renders under its `min_font_px` (40); a size in any unit but px |
+| `commodore.palette` | a hex colour outside the palette; a colour named by word or function |
+| `commodore.contrast` | text or a painted mark below its WCAG ratio; a link is read in its paragraph's colour |
+| `commodore.fit.overfull` | an estimated column taller than the room |
+| `commodore.fit.lines` | a title or block running to more than its `max_lines` (3) lines |
+| `commodore.fit.dangling` | a line ending on one of the dangling words |
+| `commodore.fit.width` | a declared width wider than its column; a word wider than its box |
+| `commodore.title` | a title that names a topic instead of stating a message, unless exempted with a reason |
+| `commodore.slide-count` | more than its `max_slides` slides |
+| `commodore.invented-number` | a number on a slide (its detail and link text included) or in its note that the document's body does not contain |
+| `commodore.links` | a link that does not start with a `link_prefixes` entry (https, by default), or whose URL neither the document's body nor its sidecar names |
 
 **The markup grammar.** Every check after markup reads the slide through the layout estimate, so a
 slide may use only what the estimate models, per tag. A `<section>` holds one title, body `div`s
@@ -178,7 +220,10 @@ Lengths are px and never negative. Two reviews got about two dozen slides past a
 of allowed properties: a sized `<b>`, a nested `<p>`, a duplicate `style` attribute, an
 `!important`, a negative gap, a gradient, a grid, `font:` shorthand, letter-spacing of −40 px,
 line-height 0. Each is now a control the suite must refuse (the controls group in sextant's
-`tests/pitch_cases.py`).
+`tests/pitch_cases.py`). The commodore's grammar adds one shape: a `p` may hold links, each an `<a>`
+with an `href` and nothing else, holding text only. Unstyled, a link inherits its paragraph's face,
+size, weight and colour, so the estimate measures it as the run of text it is and the contrast rule
+reads its paragraph's colour, which is the colour the runtime shows it in (section 7).
 
 **The title heuristic.** Telling a clause from a label exactly needs a parser, so this is a
 heuristic and says so. It fails the two shapes a topic title takes: a noun phrase with no verb
@@ -199,16 +244,21 @@ that has not been measured falls back to the Slides type's 0.6 em a character, w
 (safe, never the reverse): on that same deck it predicts a second line Chrome does not set on 2 of 5
 slides.
 
-**The builder.** `pitch build <document>` writes the slides from the document's deck fence (or from
-the export's content file, `slides.json`, beside the deck; never both), checks every slide in memory,
-and writes nothing unless all pass. Its `--check` mode compares the files on disk with what it would
-write; `deck.generator-drift` runs it, and also refuses a fence nothing has built.
+**The builder.** `pitch build <document>` writes the slides from the document's deck fence (or, for
+the admiral, from the export's content file, `slides.json`, beside the deck; never both), checks every
+slide in memory, and writes nothing unless all pass. `--deck commodore` (or `all`) builds the sent
+deck too, from the fence alone; once it exists, a plain build rebuilds both. Its `--check` mode
+compares the files on disk with what it would write; `deck.generator-drift` runs it, and also refuses
+a fence nothing has built, or one carrying the commodore's keys with no commodore deck.
 
 **The deck fence.** One ```` ```deck ```` fence at the document's end holds the slides as a JSON list,
-the content file's form. Every check that compares a render with its document (the invented-number
-check and both pin tables) reads the document with that fence cut out: read with the body, the fence
+the content file's form; a slide may add `detail` (lines only the commodore shows), `links` (`{"text",
+"url"}`, the commodore's) and `"admiral": false` (a slide only the commodore carries). Every check that
+compares a render with its document (the invented-number checks, the pin tables and the commodore's
+link sources) reads the document with that fence cut out: read with the body, the fence
 would vouch for the very slides it holds, and a number corrected in the body and left in the fence
-would pass. The suite holds both: a stale number in the fence, and a pin only the fence carries.
+would pass. The suite holds each: a stale number in the fence, a pin only the fence carries, a
+commodore detail with a number the body lacks, and a link only the fence names.
 
 **The captain review.** A document whose title ends `(captain review, <date>)` or `(executive
 review, <date>)` is a captain review, written for the person who decides in the template beside
@@ -217,7 +267,7 @@ reads it; `pitch review <document>` holds it before any render exists, with no c
 being plain is the reader's test, never a rule.
 
 **The calibrator.** `pitch calibrate glyphs` measures the face into the table `face.glyphs` names;
-`pitch calibrate render` lays every admiral slide out in headless Chrome and compares line counts and
+`pitch calibrate render` lays every admiral and commodore slide out in headless Chrome and compares line counts and
 column height with the estimate (`--shots` writes a PNG per slide). It needs Chrome and the network,
 so it is not part of the check; run it by hand once per face, and again when the face changes.
 
@@ -235,9 +285,13 @@ rewritten without its content; the rest are from the code and from generalising 
 2. **A `//` comment inside a JavaScript template literal renders as slide text.** In a single-file
    deck the slides are template literals, where `//` is content. Use `<!-- … -->` inside a template;
    `//` belongs only in code outside one. In a data string an HTML comment prints verbatim too.
-3. **An absolute link passes a local link check and breaks for everyone else.** A check that
-   resolves `/Users/…` against the local disk is green on the machine that wrote it. Links in a
-   document and its renders are relative; a pointer outside the repo is named, not linked.
+3. **A link that resolves only where it was written breaks for everyone else.** A check that
+   resolves `/Users/…` against the local disk is green on the machine that wrote it. Inside the repo,
+   a document's links are relative, and a pointer outside the repo is named, not linked. A render
+   published as an artifact has no repo around it, so there the opposite holds: a link a reader can
+   follow is absolute, `https://`. `pitch memo` keeps an https or `mailto:` link and reduces any other
+   to its text; a commodore's links are https and each is also in the document or its sidecar
+   (`commodore.links`).
 4. **A guard can pin a claim that has since been retired.** A pinned phrase once forced both files
    to keep asserting a date the decision had removed, so fixing the content meant editing a test,
    which reads as weakening a check. When a decision retires a claim, retire its guard in the same
@@ -322,7 +376,10 @@ pages (`format.md`, `layout.md`, `styles.md`, `craft.md`, served by every Slides
 - nothing scrolls, and an over-full slide shrinks its text box by box down to 60%;
 - text wraps only at spaces, and a word wider than its box breaks mid-word;
 - a runtime floor of 24 px, unchecked by its own build;
-- `<aside>` speaker notes of at most 4,000 characters, readable by anyone who opens the deck.
+- `<aside>` speaker notes of at most 4,000 characters, readable by anyone who opens the deck;
+- an inline `<a href>`, listed in its format among what a slide may hold: probed on a private slide
+  (renders S5, 2026-10-28), it shows underlined in its paragraph's colour, with no blue of its own, and
+  opens in a new tab from Present.
 
 Three of its instructions contradict the method, each resolved on purpose:
 
@@ -365,6 +422,10 @@ Three of its instructions contradict the method, each resolved on purpose:
 - A published deck had not been seen in the Slides runtime itself when this method was written:
   its files were byte for byte what the builder writes, and Chrome laid them out as the estimate
   predicted.
+- The commodore's link was probed on one private slide, opened by its owner (renders S5): not in the
+  deck's PDF or PPTX export, and not clicked by another viewer. Its limits of six blocks and three
+  lines are house rules with no study behind them, and the first real sent deck (S7) is the first
+  reader to test them.
 - The glyph-width accuracy figures (the 300 random lines) were measured on the first project's face
   only. A new face needs `pitch calibrate glyphs` and then `pitch calibrate render`; the suite's own
   face agreed on its five slides, which is a check of those slides, not of the face at large

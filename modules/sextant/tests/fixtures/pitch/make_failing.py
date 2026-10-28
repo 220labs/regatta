@@ -3,13 +3,15 @@
 an expect.json naming the rule and anything that must fire beside it; and <out>/pitch.json, the
 shared config each root finds above itself (a root that changes one setting extends it). The rules
 that need a captain review, a generated page or a deck fence (renders S3) mutate a copy of review/
-instead, which carries its own config, into <out>/<name>/.
+instead, which carries its own config, into <out>/<name>/; so do the commodore's (renders S6), whose
+deck the review's fence builds beside its admiral deck.
 
     python3 -I make_failing.py <out>          # tests/pitch.sh: <out> is a temp dir, never committed
 
 `also` is honest about side effects, never a tolerance: a slide edited by hand is also a slide its
 content file no longer generates, so a slide-level mutation lists `deck.generator-drift` beside its
-own rule. tests/pitch_cases.py asserts each root fires exactly {rule} plus `also`.
+own rule. tests/pitch_cases.py asserts each root fires exactly {rule} plus `also`; a rule of None is a
+root built to pass, a near miss that must fire nothing.
 """
 import json
 import shutil
@@ -329,6 +331,138 @@ def m_fence_stale_number(r):
     regenerate(r)
 
 
+# --- the commodore, on a copy of review/: its deck is built from the same fence -------------------
+
+def commodore_deck(r):
+    return r / f"{REVIEW_STEM}-commodore-deck"
+
+
+def c_slide(r, sid):
+    return commodore_deck(r) / "project" / "slides" / f"{sid}.html"
+
+
+def review_cfg(r):
+    return rf.Config.load(r / rf.CONFIG_NAME)
+
+
+def rewrite_commodore(r, sid, **changes):
+    """One commodore slide from changed fence content, written to its slide file only: a hand edit."""
+    slides = json.loads(rf.deck_fences(review_doc(r).read_text(encoding="utf-8"), CFG)[0][1])
+    i = next(k for k, s in enumerate(slides) if s["id"] == sid)
+    slides[i] = dict(slides[i], **changes)
+    look = rf.Look(review_cfg(r).commodore_view())
+    c_slide(r, sid).write_text(look.commodore_html(slides[i], i, len(slides)), encoding="utf-8")
+
+
+def fence_rebuilt(r, old, new):
+    """The fence edited and the commodore built again from it, as a careful person would: what is
+    left is the one thing the edit broke, never the deck's drift."""
+    edit(review_doc(r), old, new)
+    cfg = review_cfg(r)
+    for sid, html, _ in rf.build_all(commodore_deck(r), cfg):
+        c_slide(r, sid).write_text(html, encoding="utf-8")
+
+
+def review_config(r, section, data):
+    path = r / rf.CONFIG_NAME
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    cfg.setdefault(section, {}).update(data)
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+HALL = "The hall is free on Thursdays until June."
+
+
+def c_words(r):
+    rewrite_commodore(r, "crew", detail=[HALL, "Every fixer who signed up has run Saturday benches since last spring.",
+                                         "Each of them brings their own tools and knows where the hall keeps its fuses."])
+
+
+def c_statements(r):
+    rewrite_commodore(r, "crew", detail=[HALL, "Lamps.", "Radios.", "Kettles.", "Bikes."])
+
+
+def c_markup(r):
+    edit(c_slide(r, "crew"), "</h2>", "</h2>\n<table><tr><td>cell</td></tr></table>")
+
+
+def c_note(r):
+    rewrite_commodore(r, "crew", note="more " * 820)
+
+
+def c_type(r):
+    edit(c_slide(r, "crew"), "font-size:40px", "font-size:36px")
+
+
+def c_palette(r):
+    edit(c_slide(r, "crew"), "font-weight:700;letter-spacing", "color:#1A2B3C;font-weight:700;letter-spacing")
+
+
+def c_contrast(r):
+    edit(c_slide(r, "crew"), "font-weight:700;letter-spacing", "color:#C9CED8;font-weight:700;letter-spacing")
+
+
+def c_overfull(r):
+    edit(c_slide(r, "crew"), "</h2>", '</h2>\n<div style="width:120px;height:700px;background:#2F6FDB"></div>')
+
+
+def c_lines(r):
+    rewrite_commodore(r, "close", detail=[
+        "Coordinating volunteers across neighbouring benches requires considerable forethought, deliberate "
+        "scheduling, dependable communication, generous encouragement, sustained organisational commitment, "
+        "comprehensive record-keeping, remarkably patient explanations."])
+
+
+def c_dangling(r):
+    # "…the spare benches in / the building": a line ends on "in".
+    rewrite_commodore(r, "crew", detail=["The hall is free on Thursdays until June, and all five fixers who signed up "
+                                         "already know where to find the spare benches in the building."])
+
+
+def c_width(r):
+    edit(c_slide(r, "crew"), "width:1500px", "width:1700px")
+
+
+def c_title(r):
+    rewrite_commodore(r, "crew", headline="The Thursday crew")
+
+
+def c_slide_count(r):
+    review_config(r, "commodore", {"max_slides": 5})
+
+
+def c_number(r):
+    rewrite_commodore(r, "money", note="Option B costs $1.5K; option C costs nothing in money.")
+
+
+def c_links(r):
+    review_config(r, "commodore", {"link_prefixes": ["https://example.org/"]})
+
+
+def c_detail_number(r):
+    # A number only the fence's detail carries: the body never said the queue reopened at 15:00.
+    fence_rebuilt(r, "The queue closed at 13:00 every Saturday in January.", "The queue closed at 13:00 and reopened at 15:00.")
+
+
+def c_link_unnamed(r):
+    # A link to a page neither the body nor the sidecar names: the sidecar records memo-0003.
+    fence_rebuilt(r, "https://example.com/artifact/memo-0003", "https://example.com/artifact/memo-0004")
+
+
+def c_line_at_floor(r):
+    # One line on three slides at the 40 px floor: content, not a running caption (at 32 px it would be one).
+    line = "Every figure here is in the review."
+    fence_rebuilt(r, '"detail": ["The queue closed', f'"detail": ["{line}", "The queue closed')
+    fence_rebuilt(r, f'"detail": ["{HALL}"]', f'"detail": ["{HALL}", "{line}"]')
+    fence_rebuilt(r, '"note": "Option B costs $1.2K;', f'"detail": ["{line}"],\n  "note": "Option B costs $1.2K;')
+
+
+def c_only_pin(r):
+    # The commodore's pinned phrase gone from the body and kept in the fence's detail.
+    edit(review_doc(r), "The `hall` is free on Thursdays until June.", "The `hall` is free on Thursdays until May.")
+    regenerate(r)
+
+
 def m_fence_only_pin(r):
     # The admiral's pinned phrase gone from the body and kept in the fence (and so on the slide).
     edit(review_doc(r), "run by the Thursday crew of 5 fixers", "run by a crew of 5 fixers")
@@ -342,8 +476,29 @@ REVIEW_CASES = [
     ("review.sections", "review.sections", m_review_sections, []),
     ("review.options", "review.options", m_review_options, []),
     ("review.decisions", "review.decisions", m_review_decisions, []),
-    ("fence.stale-number", "admiral.invented-number", m_fence_stale_number, []),
+    # The note is both decks': the commodore shows the stale figure too.
+    ("fence.stale-number", "admiral.invented-number", m_fence_stale_number, ["commodore.invented-number"]),
     ("fence.only-pin", "claims.must-appear", m_fence_only_pin, []),
+    ("commodore.words", "commodore.words", c_words, DRIFT),
+    ("commodore.statements", "commodore.statements", c_statements, DRIFT),
+    ("commodore.markup", "commodore.markup", c_markup, DRIFT),
+    ("commodore.runtime-limits", "commodore.runtime-limits", c_note, DRIFT),
+    ("commodore.type-floor", "commodore.type-floor", c_type, DRIFT),
+    ("commodore.palette", "commodore.palette", c_palette, DRIFT),
+    ("commodore.contrast", "commodore.contrast", c_contrast, DRIFT),
+    ("commodore.fit.overfull", "commodore.fit.overfull", c_overfull, DRIFT),
+    ("commodore.fit.lines", "commodore.fit.lines", c_lines, DRIFT),
+    ("commodore.fit.dangling", "commodore.fit.dangling", c_dangling, DRIFT),
+    ("commodore.fit.width", "commodore.fit.width", c_width, DRIFT),
+    ("commodore.title", "commodore.title", c_title, DRIFT),
+    ("commodore.slide-count", "commodore.slide-count", c_slide_count, DRIFT),
+    ("commodore.invented-number", "commodore.invented-number", c_number, DRIFT),
+    # deck.external reads the same prefixes: a link outside them reaches outside the deck too.
+    ("commodore.links", "commodore.links", c_links, ["deck.external", *DRIFT]),
+    ("commodore.detail-number", "commodore.invented-number", c_detail_number, []),
+    ("commodore.link-unnamed", "commodore.links", c_link_unnamed, []),
+    ("commodore.line-at-floor", None, c_line_at_floor, []),
+    ("fence.commodore-pin", "claims.must-appear", c_only_pin, []),
 ]
 
 

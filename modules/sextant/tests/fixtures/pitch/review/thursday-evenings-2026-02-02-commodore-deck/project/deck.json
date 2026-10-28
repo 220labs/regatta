@@ -1,0 +1,18 @@
+{
+  "v": 4,
+  "title": "Thursday evenings at the repair café — whether to open a second night (captain review, 2026-02-02)",
+  "order": [
+    "cover",
+    "queue",
+    "crew",
+    "money",
+    "options",
+    "close"
+  ],
+  "faces": {
+    "source-sans-3": {
+      "family": "Source Sans 3",
+      "href": "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700;800&display=swap"
+    }
+  }
+}

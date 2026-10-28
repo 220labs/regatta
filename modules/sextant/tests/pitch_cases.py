@@ -15,9 +15,10 @@ Then the CLI: `pitch check` on a root and on one document, `--json`, `pitch buil
 and comparing; the sidecar's shape and the `publish` section (renders S2); `pitch calibrate`, its
 arguments and the table it writes, with Chrome replaced by a canned measurement: no case starts a
 browser; and the document (renders S3): the deck fence, `pitch memo`'s converter, the captain
-review's shape, `pitch renders`, the skills' verbs. Two passing roots: passing/ (the export's
+review's shape, `pitch renders`, the skills' verbs; and the commodore (renders S6): its grammar, its
+links, the three widened rules, its builds and its sidecar key. Two passing roots: passing/ (the export's
 document, its hand-written page and its `slides.json` deck) and review/ (a captain review, its
-generated page and its deck in a fence). One line per case, `ok` or `FAIL`; exit 1 on any failure.
+generated page, its sidecar and both decks from one fence). One line per case, `ok` or `FAIL`; exit 1 on any failure.
 """
 import contextlib
 import importlib.machinery
@@ -162,7 +163,8 @@ def group_fixtures(failing_dir):
     def fires_exactly(root):
         expect = json.loads((root / "expect.json").read_text())
         got = rules(checked(root))
-        assert got == {expect["rule"], *expect["also"]}, f"expected {expect}, fired {sorted(got)}"
+        # A rule of None: a near miss built to pass, which must fire nothing at all.
+        assert got == {expect["rule"], *expect["also"]} - {None}, f"expected {expect}, fired {sorted(got)}"
     for root in failing:
         case(f"failing/{root.name} fires exactly its rule", fires_exactly, root)
 
@@ -1206,7 +1208,8 @@ def group_document(scratch):
         assert r.returncode == 0 and r.stdout.strip() == (
             "[memo](https://example.com/artifact/memo-0001) | [admiral deck](https://example.com/artifact/deck-0002)"), r.stdout
         r = run("renders", doc, "--links")
-        assert r.returncode == 1 and r.stdout == "" and r.stderr.count("has no URL") == 2, (r.stdout, r.stderr)
+        assert r.returncode == 1 and r.stdout == "[memo](https://example.com/artifact/memo-0003)\n", (r.stdout, r.stderr)
+        assert r.stderr.count("has no URL") == 2 and "commodore deck" in r.stderr, r.stderr
     case("renders: each render and its URL, the memo first; --links one line, exit 1 when one is unpublished", renders_verb)
 
     # --- the skills -------------------------------------------------------------------------------
@@ -1222,6 +1225,296 @@ def group_document(scratch):
     case("skills: /pitch and /captain name themselves, and every pitch verb and flag they name exists", skills_name_real_verbs)
 
 
+# ------------------------------------------------------------------------------------------------
+# commodore: the sent deck (renders S6): its grammar, its links, its builds, its sidecar key
+# ------------------------------------------------------------------------------------------------
+
+def group_commodore(scratch):
+    print("commodore — the sent deck: links, the widened rules, builds, the sidecar")
+    work = scratch / "commodore"
+    work.mkdir()
+    doc = REVIEW / f"{REVIEW_STEM}.md"
+    cfg = pl.find_config(REVIEW)
+    com = cfg.commodore_view()
+    ink, paper = cfg.layout["ink"], cfg.layout["paper"]
+    H = '<h2 style="font-size:88px;line-height:1.05;font-weight:800;width:1560px">The grant pays for ten nights</h2>'
+    LINK = '<p style="font-size:40px;line-height:1.3;width:1500px">{}</p>'
+
+    def made(body):
+        return pl.Slide(f'<section id="t" style="background:{paper};color:{ink};font-family:\'{cfg.face_family}\', Arial;'
+                        f'padding:{cfg.margin}px;display:flex;flex-direction:column;gap:56px">{H}{body}<aside>n</aside></section>',
+                        "made.html")
+
+    def grammar():
+        ok = made(LINK.format('Read <a href="https://example.com/r">the whole review</a> first'))
+        assert pl.problems(ok, "k/t", com) == [], pl.problems(ok, "k/t", com)
+        assert rules(pl.markup_problems(ok, cfg)) == {"admiral.markup"}, "the admiral took a link"
+        for bad in ('<h2 style="font-size:88px"><a href="https://example.com/r">x</a></h2>',
+                    LINK.format('<a href="https://example.com/r" style="font-size:20px">small</a>'),
+                    LINK.format('<a href="https://example.com/r" target="_blank">x</a>'),
+                    LINK.format('<a href="https://example.com/r"><b>bold</b></a>'),
+                    LINK.format('<a>no target</a>'),
+                    '<div style="display:flex"><a href="https://example.com/r">bare</a></div>'):
+            assert rules(pl.markup_problems(made(bad), com)) == {"commodore.markup"}, bad
+    case("grammar: the commodore's <p> holds an <a href> and nothing else does; the admiral refuses it", grammar)
+
+    def hostile_url():
+        html = pl.Look(com).link({"text": "x", "url": 'https://example.com/r" onclick="alert(1)'}, 40)
+        s = made(html)
+        a = next(n for n in s.nodes if n.tag == "a")
+        assert set(a.attrs) == {"href"} and "onclick" in a.attrs["href"], a.attrs
+        assert 'href="https://example.com/r&quot; onclick=&quot;alert(1)"' in html, html
+        # The cut passes only the builder's plain spelling, so this one is still a URL for deck.external.
+        assert pl.EXTERNAL_URL.search(pl._commodore_links_cut(html, cfg)), "an escaped quote passed the link cut"
+    case("a link's URL holding a quote stays one href, and deck.external still sees it", hostile_url)
+
+    def fit_inline():
+        words = "How the network runs a session on a weekday evening, from the first bench to the last"
+        plain, linked = made(LINK.format(words)), made(LINK.format(f'<a href="https://example.com/r">{words}</a>'))
+        a, b = pl.fit(plain, com)[0].blocks, pl.fit(linked, com)[0].blocks
+        assert a == b and a[-1][2] == 2, (a, b)
+        assert len(linked.words) == len(plain.words), "link text is not counted as words"
+        assert pl.contrast_problems(linked, com) == [], "the link's own text was not read in its paragraph's colour"
+    case("the estimate reads an inline link as its paragraph's text: lines, words and contrast alike", fit_inline)
+
+    def link_scheme():
+        s = made(LINK.format('<a href="http://example.com/r">plain http</a>'))
+        assert rules(pl.problems(s, "k/t", com)) == {"commodore.links"}
+        narrow = copy_of(json.loads((REVIEW / "pitch.json").read_text(encoding="utf-8")))
+        narrow["commodore"] = {"link_prefixes": ["https://example.org/"]}
+        n = pl.Config(narrow, REVIEW).commodore_view()
+        assert rules(pl.link_problems(made(LINK.format('<a href="https://example.com/r">x</a>')), n)) == {"commodore.links"}
+    case("commodore.links: an http link, or one outside the configured prefixes, is refused on the slide", link_scheme)
+
+    def external():
+        root = work / "external"
+        shutil.copytree(REVIEW, root)
+        deck = root / f"{REVIEW_STEM}-commodore-deck" / "project"
+        close = deck / "slides" / "close.html"
+        assert not rules(pl.check_folder_deck(deck, pl.find_config(root))), "the passing commodore's link"
+        text = close.read_text(encoding="utf-8")
+        for bad in (text.replace('href="https://', 'href="http://'), text.replace('<a href="https://example.com/artifact/memo-0003">',
+                    "<a href='https://example.com/artifact/memo-0003'>"),
+                    text.replace("</aside>", " see https://example.com/x</aside>")):
+            close.write_text(bad, encoding="utf-8")
+            assert "deck.external" in rules(pl.check_folder_deck(deck, pl.find_config(root))), bad[-200:]
+        close.write_text(text, encoding="utf-8")
+        admiral = root / f"{REVIEW_STEM}-admiral-deck" / "project"
+        a = admiral / "slides" / "close.html"
+        a.write_text(a.read_text(encoding="utf-8").replace("</h2>", '</h2><p style="font-size:68px">'
+                                                           '<a href="https://example.com/r">x</a></p>'), encoding="utf-8")
+        assert "deck.external" in rules(pl.check_folder_deck(admiral, pl.find_config(root))), "an admiral link passed"
+    case("deck.external: a commodore's own https link passes; http, another spelling, a URL in text, or a link "
+         "on the admiral fail", external)
+
+    def caption_at_32():
+        # The fixture commodore.line-at-floor passes one line on three slides at 40 px; at 32 px the
+        # same line is small print, and three of it is a running caption.
+        slides = [made(LINK.format("Every figure here is in the review.").replace("40px", "32px")).html for _ in range(3)]
+        texts = [pl.furniture_texts(h, cfg) for h in slides]
+        assert all(("Every figure here is in the review.", True) in t for t in texts), texts[0]
+        at_floor = pl.furniture_texts(made(LINK.format("Every figure here is in the review.")).html, cfg)
+        assert ("Every figure here is in the review.", False) in at_floor, at_floor
+    case("furniture: a line at 40 px is content; the same line at 32 px is small print", caption_at_32)
+
+    def sources():
+        def found(body, url):
+            return bool(re.search(re.escape(url) + pl.URL_END, body))
+        assert found("see https://x.example/a.", "https://x.example/a")
+        assert found("[guide](https://x.example/a) and", "https://x.example/a")
+        assert not found("see https://x.example/abc", "https://x.example/a"), "a prefix of a longer URL passed"
+        assert not found("https://x.example/a.b", "https://x.example/a")
+        body = pl.document_body(doc, cfg)
+        assert "memo-0003" not in body and "The hall is free" not in body, "the fence's detail and links reach the body"
+        assert "memo-0003" in doc.read_text(encoding="utf-8")
+    case("link sources: a URL in the body is matched whole; the fence's detail and links are cut from the body", sources)
+
+    # --- builds ----------------------------------------------------------------------------------
+    def builds():
+        r = run("build", doc, "--check")
+        assert r.returncode == 0 and r.stdout.count("slides match") == 2, (r.stdout, r.stderr)
+        r = run("build", REVIEW / f"{REVIEW_STEM}-commodore-deck", "--check")
+        assert r.returncode == 0 and "6 slides match" in r.stdout, (r.stdout, r.stderr)
+        r = run("build", doc, "--deck", "admiral", "--check")
+        assert r.returncode == 0 and r.stdout.count("slides match") == 1 and "5 slides" in r.stdout, r.stdout
+        r = run("build", REVIEW / f"{REVIEW_STEM}-commodore-deck", "--deck", "admiral", "--check")
+        assert r.returncode == 2 and "is the commodore deck" in r.stderr, (r.returncode, r.stderr)
+    case("build: a document builds both decks once the commodore exists; --deck picks one; a folder its own", builds)
+
+    def first_commodore():
+        root, md = review_copy(work, "firstcom")
+        shutil.rmtree(root / f"{REVIEW_STEM}-commodore-deck")
+        got = [m for r, m in pl.check_root(root, pl.find_config(root)) if r == "deck.generator-drift"]
+        assert len(got) == 1 and "--deck commodore" in got[0], got
+        assert run("build", md).returncode == 0 and not (root / f"{REVIEW_STEM}-commodore-deck").exists(), \
+            "the default built a commodore nobody asked for"
+        r = run("build", md, "--deck", "commodore")
+        assert r.returncode == 0 and "a first" in r.stdout, (r.stdout, r.stderr)
+        assert not pl.check_root(root, pl.find_config(root))
+    case("build: a fence carrying commodore keys and no commodore deck is drift; --deck commodore makes it", first_commodore)
+
+    def all_or_nothing():
+        root, md = review_copy(work, "atomic")
+        before = {p: p.read_text(encoding="utf-8") for p in root.rglob("slides/*.html")}
+        edit_text(md, '"note": "They said so in January."},',
+                  '"note": "They said so in January.", "statements": ["5 fixers ready for Thursdays and every one of them '
+                  'has run a Saturday bench before", "3 for lamps and radios, 2 for bikes, and all of them '
+                  'bring their own tools and their own spare parts from home"]},')
+        edit_text(md, '"Recommended: open Thursdays"', '"Recommended: open Thursdays from the nineteenth"')
+        r = run("build", md, "--deck", "all")
+        assert r.returncode == 1 and "refused" in r.stderr, (r.returncode, r.stderr)
+        after = {p: p.read_text(encoding="utf-8") for p in root.rglob("slides/*.html")}
+        assert after == before, "a refused build of one deck wrote the other"
+    case("build: when one deck refuses, neither is written", all_or_nothing)
+
+    def shapes():
+        def crew(change):
+            def apply(slides):
+                change(next(x for x in slides if x["id"] == "crew"))
+            return apply
+        for apply, words in ((crew(lambda x: x.update(detail="The hall is free on Thursdays until June.")), "detail is a list"),
+                             (crew(lambda x: x.update(links=[{"url": "https://example.com/repair-cafe/guide"}])),
+                              "each with its text"),
+                             (crew(lambda x: x.update(admiral="no")), "admiral is true or false")):
+            root, md = review_copy(work, f"shape-{len(list(work.iterdir()))}")
+            text = md.read_text(encoding="utf-8")
+            fence = text[text.index("```deck\n") + len("```deck\n"):text.rindex("```")]
+            slides = json.loads(fence)
+            apply(slides)
+            md.write_text(text.replace(fence, json.dumps(slides, ensure_ascii=False) + "\n"), encoding="utf-8")
+            r = run("build", md, "--deck", "all")
+            assert r.returncode == 1 and words in r.stderr and "Traceback" not in r.stderr, (words, r.stderr)
+        root = work / "slidesjson"
+        shutil.copytree(PASSING, root)
+        shutil.copy(FIXTURES / "pitch.json", root)
+        r = run("build", root / f"{STEM}.md", "--deck", "commodore")
+        assert r.returncode == 1 and "from the fence alone" in r.stderr, (r.returncode, r.stderr)
+    case("build: a detail, a link or an admiral flag of the wrong shape is refused; slides.json builds no commodore", shapes)
+
+    def admiral_flag():
+        root, md = review_copy(work, "flag")
+        built = pl.build_all(root / f"{REVIEW_STEM}-admiral-deck", pl.find_config(root))
+        assert [b[0] for b in built] == ["cover", "queue", "crew", "money", "close"], [b[0] for b in built]
+        text = md.read_text(encoding="utf-8")
+        fence = text[text.index("```deck"):]
+        md.write_text(text.replace(fence, fence.replace('{"id": "', '{"admiral": false, "id": "')), encoding="utf-8")
+        try:
+            pl.build_all(root / f"{REVIEW_STEM}-admiral-deck", pl.find_config(root))
+            raise AssertionError("an admiral deck of no slides was built")
+        except SystemExit as e:
+            assert "has none" in str(e.code), e.code
+        assert not [m for r, m in pl.check_documents(root, pl.find_config(root)) if "admiral deck" in m], \
+            "a commodore-only fence was asked for an admiral deck"
+        r = run("build", md, "--check")        # the default build asks no admiral deck of that fence either
+        assert "has none" not in r.stderr + r.stdout, (r.returncode, r.stdout, r.stderr)
+    case("admiral: false leaves a slide out of the admiral; a fence of the commodore's alone builds no admiral", admiral_flag)
+
+    def interpreters():
+        root = work / "interp"
+        shutil.copytree(REVIEW, root)
+        data = json.loads((root / "pitch.json").read_text(encoding="utf-8"))
+        data["builder"] = {"extra_interpreters": [sys.executable]}
+        (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+        assert not pl.check_root(root, pl.find_config(root)), "the subprocess build of a clean root drifted"
+        money = root / f"{REVIEW_STEM}-commodore-deck" / "project" / "slides" / "money.html"
+        money.write_text(money.read_text(encoding="utf-8").replace("ten nights", "ten evenings"), encoding="utf-8")
+        drift = [m for r, m in pl.check_root(root, pl.find_config(root)) if r == "deck.generator-drift"]
+        assert len(drift) == 2 and all("money" in m for m in drift), drift
+    case("deck.generator-drift: this interpreter in-process, each extra one as a subprocess, both reporting", interpreters)
+
+    # --- config, claims, exemptions, the sidecar ---------------------------------------------------
+    def config_refused():
+        for section, word in ((None, "commodore is None"),
+                              ({"max_words": "50"}, "commodore.max_words"), ({"min_font_px": 0}, "commodore.min_font_px"),
+                              ({"link_prefixes": ["http://"]}, "commodore.link_prefixes"),
+                              ({"link_prefixes": []}, "commodore.link_prefixes")):
+            root = work / f"cfg-{len(list(work.iterdir()))}"
+            shutil.copytree(REVIEW, root)
+            data = json.loads((root / "pitch.json").read_text(encoding="utf-8"))
+            data["commodore"] = section
+            (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+            r = run("check", root)
+            assert r.returncode == 2 and word in r.stderr and "Traceback" not in r.stderr, (section, r.stderr[-300:])
+    case("config: a commodore limit that is no whole number, or a link prefix that is not https, exits 2", config_refused)
+
+    def old_suffixes():
+        root = work / "oldlist"
+        shutil.copytree(REVIEW, root)
+        data = json.loads((root / "pitch.json").read_text(encoding="utf-8"))
+        data["naming"] = {"folder_deck_suffixes": ["-deck", "-admiral-deck"]}
+        (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+        assert "commodore" in {k for _, _, k in pl.renders(root, pl.find_config(root))}
+        c = root / f"{REVIEW_STEM}-commodore-deck" / "project" / "slides" / "crew.html"
+        c.write_text(c.read_text(encoding="utf-8").replace("font-size:40px", "font-size:36px"), encoding="utf-8")
+        assert "commodore.type-floor" in rules(pl.check_root(root, pl.find_config(root)))
+    case("naming: an adopter's suffix list written before the commodore still has its deck checked", old_suffixes)
+
+    def claims_table():
+        root = work / "pins"
+        shutil.copytree(REVIEW, root)
+        data = json.loads((root / "pitch.json").read_text(encoding="utf-8"))
+        del data["claims"]["commodore_must_appear"]
+        (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+        got = [m for r, m in pl.check_claims(root, pl.find_config(root)) if r == "claims.table"]
+        assert len(got) == 1 and "no commodore_must_appear entry" in got[0], got
+        shutil.rmtree(root / f"{REVIEW_STEM}-commodore-deck")
+        data["claims"]["commodore_must_appear"] = {REVIEW_STEM: ["$6K"]}
+        (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+        got = [m for r, m in pl.check_claims(root, pl.find_config(root)) if r == "claims.table"]
+        assert got == [f"commodore_must_appear names {REVIEW_STEM}, which has no commodore render"], got
+    case("claims.table: a commodore with no pins, and pins with no commodore", claims_table)
+
+    def exemption_kept():
+        root = work / "exempt"
+        shutil.copytree(REVIEW, root)
+        data = json.loads((root / "pitch.json").read_text(encoding="utf-8"))
+        data["admiral"] = {"headline_exempt": {f"{REVIEW_STEM}/options": "a slide only the sent deck carries"}}
+        (root / "pitch.json").write_text(json.dumps(data), encoding="utf-8")
+        assert pl.check_exemptions(root, pl.find_config(root)) == []
+    case("admiral.exemption-stale: an exemption for a slide only the commodore carries is not stale", exemption_kept)
+
+    def sidecar():
+        good = json.loads((PASSING / f"{STEM}.pitch.json").read_text(encoding="utf-8"))
+        deck = {"url": "https://example.com/artifact/deck-0004", "first_published": "2026-02-03",
+                "type_url": "https://example.com/type/slides"}
+        assert pl.sidecar_problems(dict(good, published=dict(good["published"], commodore_deck=deck)), f"{STEM}.md") == []
+        bare = dict(deck)
+        del bare["type_url"]
+        got = pl.sidecar_problems({"published": {"commodore_deck": bare}}, f"{STEM}.md")
+        assert got == ["published.commodore_deck lacks type_url"], got
+        root = work / "stalecom"
+        shutil.copytree(REVIEW, root)
+        side = root / f"{REVIEW_STEM}.pitch.json"
+        data = json.loads(side.read_text(encoding="utf-8"))
+        data["published"]["commodore_deck"] = deck
+        side.write_text(json.dumps(data), encoding="utf-8")
+        assert pl.check_sidecars(root, pl.find_config(root)) == []
+        r = run("renders", root / f"{REVIEW_STEM}.md")
+        assert "deck-0004" in r.stdout and r.stdout.index("memo") < r.stdout.index("commodore deck"), r.stdout
+        shutil.rmtree(root / f"{REVIEW_STEM}-commodore-deck")
+        stale = [m for r, m in pl.check_sidecars(root, pl.find_config(root)) if r == "sidecar.stale"]
+        assert len(stale) == 1 and "published.commodore_deck" in stale[0], stale
+    case("sidecar: published.commodore_deck's shape, its URL in pitch renders, and a gone commodore is stale", sidecar)
+
+    def calibrate_both():
+        def measure(page, c, budget_ms=15000, shot=None):
+            slides = {}
+            for html in re.findall(r"<section\b.*?</section>\n", page, re.S):
+                s = pl.Slide(html, "x.html")
+                f, column, _, top = pl.fit(s, c)
+                slides[s.section.attrs["id"]] = {"blocks": [{"tag": b[0], "text": b[1], "lines": b[2], "height": b[3],
+                                                             "font": "Source Sans 3", "size": 0} for b in f.blocks],
+                                                 "column": column, "top": top}
+            measure.pages += 1
+            return {"slides": slides}
+        measure.pages = 0
+        with canned(measure):
+            r = run("calibrate", "render", REVIEW)
+        assert r.returncode == 0 and measure.pages == 2 and f"{REVIEW_STEM}-commodore-deck: estimate" in r.stdout, \
+            (r.returncode, r.stdout[-400:], r.stderr[-400:])
+    case("calibrate render: the commodore's slides are laid out too", calibrate_both)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: pitch_cases.py <failing-dir>")
@@ -1231,7 +1524,8 @@ def main():
     with tempfile.TemporaryDirectory() as scratch:
         for group, args in ((group_renders, ()), (group_fixtures, (failing_dir,)), (group_controls, (cfg,)),
                             (group_cli, (failing_dir, Path(scratch))), (group_sidecar, (failing_dir, Path(scratch))),
-                            (group_calibrate, (Path(scratch),)), (group_document, (Path(scratch),))):
+                            (group_calibrate, (Path(scratch),)), (group_document, (Path(scratch),)),
+                            (group_commodore, (Path(scratch),))):
             t = time.monotonic()
             group(*args)
             print(f"  ({time.monotonic() - t:.1f}s)")

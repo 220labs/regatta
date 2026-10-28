@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `pitch` (renders S6): the commodore, the deck that is sent and read alone, built from the same
+  ```` ```deck ```` fence as the admiral: a slide may add `detail`, `links` (`{"text", "url"}`) and
+  `"admiral": false`, which the admiral never shows. `build <doc> --deck admiral|commodore|all` (a
+  document's default: the admiral, and the commodore once its folder exists) writes
+  `<stem>-commodore-deck/`; every deck named is built in memory before any is written. A `commodore`
+  section in `pitch.json` holds its limits (50 words, link text counted; 6 blocks; 3 lines; a 40 px
+  floor; `link_prefixes`, https by default), `layout.commodore` its sizes, `claims.commodore_must_appear`
+  its pins, `naming.commodore_suffix` its folder, which joins `folder_deck_suffixes` and is read as a
+  member of any list. 15 new rule ids (59): every admiral slide rule as `commodore.*`, and
+  `commodore.links` (a link outside the prefixes, or a URL neither the document's body nor its sidecar
+  names). Three rules widen for the commodore alone: `deck.external` passes its own `<a href="https://…">`,
+  the pins read its own list, and the markup grammar admits an `<a href>` in a `p` (the fit estimate
+  reads it as its paragraph's text). The sidecar takes `published.commodore_deck`; `renders` lists it;
+  `calibrate render` lays its slides out too. This interpreter's `deck.generator-drift` build now runs
+  in the checker's process (an `extra_interpreters` entry still runs as a subprocess): the suite went
+  from 12 s to 4 s with 19 more failing roots. The review fixture gains a sidecar and a commodore deck.
+  The suite runs 338 cases.
 - `pitch` (renders S3): the document holds every render's words (D2-A). The admiral deck's slides live
   in one ```` ```deck ```` fence at the document's end, which `build <doc>` reads (a first build makes
   the deck folder and a `deck.json`); a `slides.json` deck still builds, and one with both is refused.
