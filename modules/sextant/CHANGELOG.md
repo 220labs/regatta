@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `pitch` (renders S3): the document holds every render's words (D2-A). The admiral deck's slides live
+  in one ```` ```deck ```` fence at the document's end, which `build <doc>` reads (a first build makes
+  the deck folder and a `deck.json`); a `slides.json` deck still builds, and one with both is refused.
+  The fence is cut from what `admiral.invented-number` and the pins read, so a stale fence and a pin
+  only the fence carries both fail. `memo <doc> [--check] [--replace]` writes the captain page from the
+  document, refusing a block it cannot place by line; `review <doc>` holds a captain review to
+  `skills/captain/TEMPLATE.md` with no config; `renders <doc> [--links]` lists the renders and their
+  published links. 14 new rule ids (44): `captain.contract.*` (title, tokens, dark-scheme, dark-theme,
+  background, script-version, css-load: the artifact page contract), `captain.generator-drift`,
+  `captain.unplaced`, `review.title|sections|options|decisions`, `sidecar.stale`; a sidecar's asset may
+  be the upload's `/_blob/<id>`. `pitch.json` gains `naming.deck_fence` and `memo.dark`. New skills
+  `/pitch` and `/captain` with the review template; a second passing root (an invented captain review
+  holding every shape the converter places). The suite runs 285 cases.
 - `pitch` (renders S2): `calibrate glyphs|render [<root>] [--shots DIR]`, the export's calibrator,
   by hand only (Chrome and the network; no check calls it). `glyphs` no longer reads the table it is
   about to write, so a first measurement and a changed face run; `render` refuses a root with no

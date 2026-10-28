@@ -12,9 +12,12 @@ Three groups, as the export's pytest suite had them (152 tests there, the same s
   controls  the rules module alone, each rule against a slide made in place to fail it (the 90
             parametrised cases, as loops).
 Then the CLI: `pitch check` on a root and on one document, `--json`, `pitch build` writing, refusing
-and comparing; the sidecar's shape and the `publish` section (renders S2); and `pitch calibrate`, its
+and comparing; the sidecar's shape and the `publish` section (renders S2); `pitch calibrate`, its
 arguments and the table it writes, with Chrome replaced by a canned measurement: no case starts a
-browser. One line per case, `ok` or `FAIL`; exit 1 on any failure.
+browser; and the document (renders S3): the deck fence, `pitch memo`'s converter, the captain
+review's shape, `pitch renders`, the skills' verbs. Two passing roots: passing/ (the export's
+document, its hand-written page and its `slides.json` deck) and review/ (a captain review, its
+generated page and its deck in a fence). One line per case, `ok` or `FAIL`; exit 1 on any failure.
 """
 import contextlib
 import importlib.machinery
@@ -22,6 +25,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,7 +42,9 @@ import pitchlib as pl  # noqa: E402
 PITCH = BIN / "pitch"
 FIXTURES = HERE / "fixtures" / "pitch"
 PASSING = FIXTURES / "passing"
+REVIEW = FIXTURES / "review"
 STEM = "evening-hours-2026-01-12"
+REVIEW_STEM = "thursday-evenings-2026-02-02"
 FAILED, RAN = [], []
 
 
@@ -50,7 +56,7 @@ def case(name, fn, *args):
     except AssertionError as e:
         FAILED.append(name)
         print(f"  FAIL {name}: {e}")
-    except Exception as e:      # a crash is a failure of its case, never of the run
+    except (Exception, SystemExit) as e:    # a crash, or a sys.exit, fails its case, never the run
         FAILED.append(name)
         print(f"  FAIL {name}: {type(e).__name__}: {e}")
 
@@ -102,8 +108,8 @@ def run(*args):
 # ------------------------------------------------------------------------------------------------
 
 def group_renders():
-    print("renders — the passing root, one case per rule")
-    findings = checked(PASSING)
+    print("renders — the passing roots, one case per rule")
+    findings = checked(PASSING) + checked(REVIEW)
 
     def holds(rule):
         hits = [m for r, m in findings if r == rule]
@@ -119,7 +125,8 @@ def group_renders():
     def something():
         # Without this the suite would pass by finding nothing: renaming a deck once made every
         # case skip with exit 0.
-        assert {k for _, _, k in pl.renders(PASSING, pl.find_config(PASSING))}, f"no renders under {PASSING}"
+        for root in (PASSING, REVIEW):
+            assert {k for _, _, k in pl.renders(root, pl.find_config(root))}, f"no renders under {root}"
     case("there is something to check", something)
 
 
@@ -137,7 +144,7 @@ def group_fixtures(failing_dir):
     failing = sorted(p for p in failing_dir.iterdir() if p.is_dir())
 
     def clean():
-        found = checked(PASSING)
+        found = checked(PASSING) + checked(REVIEW)
         assert not found, "; ".join(f"{r} {m}" for r, m in found)
     case("the passing fixtures are clean", clean)
 
@@ -831,6 +838,390 @@ def group_calibrate(scratch):
     case("calibrate render: a root with no admiral deck exits 2, never a vacuous pass", nothing_to_lay_out)
 
 
+# ------------------------------------------------------------------------------------------------
+# document: the deck fence, `pitch memo`, the captain review, `pitch renders` (renders S3)
+# ------------------------------------------------------------------------------------------------
+
+def page_of(text, scratch, name="doc"):
+    """(page, unplaced) for a Markdown text, written beside the review root's config."""
+    root = scratch / f"conv-{name}"
+    root.mkdir(exist_ok=True)
+    shutil.copy(REVIEW / "pitch.json", root)
+    (root / f"{name}.md").write_text(text, encoding="utf-8")
+    return pl.memo_page(root / f"{name}.md", pl.Config.load(root / "pitch.json"))
+
+
+def main_of(page):
+    return page[page.index("<main>") + 7:page.index("</main>")]
+
+
+def review_copy(work, name):
+    root = work / name
+    shutil.copytree(REVIEW, root)
+    return root, root / f"{REVIEW_STEM}.md"
+
+
+def edit_text(path, old, new):
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"{old!r} not in {path.name}"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def group_document(scratch):
+    print("document — the deck fence, pitch memo, the captain review, pitch renders")
+    work = scratch / "document"
+    work.mkdir()
+    doc = REVIEW / f"{REVIEW_STEM}.md"
+    deck = REVIEW / f"{REVIEW_STEM}-admiral-deck"
+
+    # --- the deck fence ---------------------------------------------------------------------------
+    def fence_matches():
+        for target in (doc, deck):
+            r = run("build", target, "--check")
+            assert r.returncode == 0 and "5 slides match" in r.stdout, (target.name, r.stdout, r.stderr)
+        assert not (deck / "slides.json").exists(), "the review root's deck has a content file beside its fence"
+    case("build --check: the review's deck matches its fence, by document or by deck", fence_matches)
+
+    def body_cut():
+        cfg = pl.find_config(REVIEW)
+        body, whole = pl.document_body(doc, cfg), doc.read_text(encoding="utf-8")
+        assert body.count("\n") == whole.count("\n"), "the cut changed the line count"
+        assert "The Thursday crew can start" in whole and "The Thursday crew can start" not in body
+        assert "18:00" in body, "the cut took a fence that is not the deck's"
+    case("the number and pin reads see the body: the deck fence cut, other fences kept, lines kept", body_cut)
+
+    def both_sources():
+        root, md = review_copy(work, "both")
+        shutil.copy(PASSING / f"{STEM}-admiral-deck" / "slides.json", root / f"{REVIEW_STEM}-admiral-deck")
+        r = run("build", md)
+        assert r.returncode == 1 and "two sources" in r.stderr and "keep the fence" in r.stderr, (r.returncode, r.stderr)
+        assert "deck.generator-drift" in rules(pl.check_root(root, pl.find_config(root)))
+    case("build: a fence and a slides.json both is refused, exit 1; check calls it drift", both_sources)
+
+    def two_fences():
+        root, md = review_copy(work, "twofences")
+        md.write_text(md.read_text(encoding="utf-8") + '\n```deck\n[]\n```\n', encoding="utf-8")
+        r = run("build", md)
+        assert r.returncode == 1 and "2 deck fences" in r.stderr, (r.returncode, r.stderr)
+    case("build: two deck fences are refused, naming their lines", two_fences)
+
+    def bad_fence():
+        root, md = review_copy(work, "badfence")
+        edit_text(md, '"id": "cover",', '"id": "cover"')
+        r = run("build", md)
+        assert r.returncode == 1 and "is not JSON" in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr)
+        edit_text(md, '"id": "cover"', '"name": "cover",')
+        r = run("build", md)
+        assert r.returncode == 1 and "each with an id" in r.stderr, (r.returncode, r.stderr)
+    case("build: a fence that is not JSON, or not slides, is refused with its reason, never a traceback", bad_fence)
+
+    def duplicate_ids():
+        root, md = review_copy(work, "dupids")
+        edit_text(md, '"id": "crew"', '"id": "queue"')
+        r = run("build", md)
+        assert r.returncode == 1 and "used twice: ['queue']" in r.stderr, (r.returncode, r.stderr)
+    case("build: a slide id used twice is refused; its file would overwrite the first", duplicate_ids)
+
+    def method_table():
+        text = (HERE.parent / "skills" / "pitch" / "method.md").read_text(encoding="utf-8")
+        table = text[text.index("## 5. The checks, by rule id"):text.index("**The markup grammar.**")]
+        listed = re.findall(r"^\| `([a-z.-]+)` \|", table, re.M)
+        assert sorted(listed) == sorted(pl.RULES), (sorted(set(pl.RULES) - set(listed)), sorted(set(listed) - set(pl.RULES)))
+    case("method.md's table names every rule id in RULES, and no other", method_table)
+
+    def first_build():
+        root, md = review_copy(work, "first")
+        shutil.rmtree(root / f"{REVIEW_STEM}-admiral-deck")
+        assert "deck.generator-drift" in rules(pl.check_root(root, pl.find_config(root)))
+        r = run("build", md, "--check")
+        assert r.returncode == 1 and "not built yet" in r.stderr and not (root / f"{REVIEW_STEM}-admiral-deck").exists()
+        r = run("build", md)
+        built = root / f"{REVIEW_STEM}-admiral-deck" / "project"
+        assert r.returncode == 0 and (built / "deck.json").exists(), (r.stdout, r.stderr)
+        assert json.loads((built / "deck.json").read_text()) == json.loads((deck / "project" / "deck.json").read_text())
+        assert not pl.check_root(root, pl.find_config(root))
+        (built / "deck.json").write_text('{"v": 4, "title": "Mine", "order": ["cover", "queue", "crew", "money", "close"]}')
+        run("build", md)
+        assert json.loads((built / "deck.json").read_text())["title"] == "Mine", "a second build rewrote deck.json"
+    case("build: a fence with no deck makes the folder and a first deck.json, once; check calls the unbuilt fence drift", first_build)
+
+    def first_refused():
+        root, md = review_copy(work, "firstrefused")
+        shutil.rmtree(root / f"{REVIEW_STEM}-admiral-deck")
+        edit_text(md, '"The café needs a second night"', '"The café needs a second night"')
+        r = run("build", md)
+        assert r.returncode == 1 and "refused" in r.stderr, (r.returncode, r.stderr)
+        assert not (root / f"{REVIEW_STEM}-admiral-deck").exists(), "a refused first build left a folder behind"
+    case("build: a refused first build writes nothing, not even the folder", first_refused)
+
+    def fence_edited():
+        root, md = review_copy(work, "fenceedit")
+        edit_text(md, '"5 fixers ready for Thursdays"', '"5 fixers ready on Thursdays"')
+        assert rules(pl.check_root(root, pl.find_config(root))) == {"deck.generator-drift"}
+    case("a fence edited without a rebuild is drift: the slides no longer say what it says", fence_edited)
+
+    def nested_fence():
+        cfg = pl.find_config(REVIEW)
+        text = "# T\n\n````markdown\n```deck\n[]\n```\n````\n"
+        assert pl.deck_fences(text, cfg) == [], "a deck fence quoted inside another fence was read as the deck"
+        assert pl.deck_fences("# T\n\n~~~deck\n[1]\n~~~\n", cfg) == [(3, "[1]")]
+    case("a ```deck quoted inside a longer fence is not the deck; ~~~deck is", nested_fence)
+
+    # --- pitch memo: the converter ----------------------------------------------------------------
+    def memo_matches():
+        r = run("memo", doc, "--check")
+        assert r.returncode == 0 and "matches" in r.stdout, (r.returncode, r.stdout, r.stderr)
+    case("memo --check: the review's page is what pitch memo writes", memo_matches)
+
+    def memo_writes():
+        root, md = review_copy(work, "memowrite")
+        page = root / f"{REVIEW_STEM}-memo.html"
+        page.unlink()
+        r = run("memo", md)
+        assert r.returncode == 0 and page.read_text(encoding="utf-8") == (REVIEW / page.name).read_text(encoding="utf-8")
+        edit_text(md, "the cheapest way", "the simplest way")
+        assert run("memo", md, "--check").returncode == 1
+        assert run("memo", md).returncode == 0 and "simplest" in page.read_text(encoding="utf-8")
+    case("memo: writes the page; a corrected document makes --check exit 1 until it runs again", memo_writes)
+
+    def hand_written():
+        root = work / "handmemo"
+        shutil.copytree(PASSING, root)
+        shutil.copy(FIXTURES / "pitch.json", root)
+        page = root / f"{STEM}-memo.html"
+        before = page.read_text(encoding="utf-8")
+        r = run("memo", root / f"{STEM}.md")
+        assert r.returncode == 1 and "--replace" in r.stderr and page.read_text(encoding="utf-8") == before, r.stderr
+        r = run("memo", root / f"{STEM}.md", "--replace")
+        assert r.returncode == 0 and pl.MEMO_MARK in page.read_text(encoding="utf-8")
+    case("memo: a hand-written page is overwritten only with --replace", hand_written)
+
+    def unplaced():
+        shapes = {
+            "raw HTML": ("<div>boxed</div>", "raw HTML block"),
+            "image": ("See ![the hall](hall.png) here.", "an image"),
+            "diagram": ("```mermaid\nflowchart LR\n  A --> B\n```", "a mermaid fence"),
+            "indented code": ("    code", "indented code"),
+            "setext": ("A heading\n=========", "underlined"),
+            "setext dashes": ("A heading\n---", "underlined"),
+            "reference link": ("See [notes][n].\n\n[n]: /srv/notes/x.md", "reference-style link"),
+            "after a comment": ("<!-- note --> Important sentence.", "after a comment"),
+            "edgeless table": ("a | b\n--- | ---\n1 | 2", "do not start with |"),
+            "heading image": ("## ![x](x.png) Title", "an image in a heading"),
+            "header image": ("| ![x](x.png) |\n| --- |\n| a |", "an image in a table"),
+            "table image": ("| a |\n| --- |\n| ![x](x.png) |", "an image in a table"),
+        }
+        for what, (block, words) in shapes.items():
+            page, found = page_of(f"# Title\n\nA line.\n\n{block}\n\nAfter.\n", scratch, what.replace(" ", "-"))
+            line = 7 if what == "table image" else 5      # a table's image is named by its row
+            assert page is None and found and found[0][0] == line and words in found[0][1], (what, found)
+        page, found = page_of("No title here.\n", scratch, "untitled")
+        assert page is None and "no `# ` title" in found[0][1], found
+    case("memo: raw HTML, an image, a diagram, indented code, a setext heading (= or -), a reference link, "
+         "text after a comment, no title: each a finding by line", unplaced)
+
+    def hostile():
+        md = ('# T\n\nSee <https://x.example/"onmouseover="alert(1)> now.\n\n'
+              '[a](https://x.example/`"onclick=alert(1)//`)\n\n<https://x.example/start> leads the line.\n\n'
+              'A stray \x00 byte, and x&not y.\n')
+        page, found = page_of(md, scratch, "hostile")
+        assert not found, found
+        body = main_of(page)
+        assert not re.search(r"\son\w+\s*=", body), body
+        for want in ('<a href="https://x.example/start">', "x&amp;not y", "\ufffd"):
+            assert want in body, (want, body)
+        page, found = page_of("# T\n\n[w](https://x.example/wiki/Foo_(bar)) and `fetch(url)` in prose.\n", scratch, "parens")
+        assert not found and '<a href="https://x.example/wiki/Foo_(bar)">w</a>' in page, page
+        root = scratch / "conv-parens"
+        (root / "parens-memo.html").write_text(page, encoding="utf-8")
+        cfg = pl.Config.load(root / "pitch.json")
+        assert not pl.check_memo(root / "parens-memo.html", cfg, root / "parens.md"), "a prose fetch( is no network call"
+        cfg.captain["min_font_px"] = 20
+        page, _ = pl.memo_page(root / "parens.md", cfg)
+        (root / "parens-memo.html").write_text(page, encoding="utf-8")
+        assert not pl.captain_floor(root / "parens-memo.html", cfg), "a raised floor fails the page memo wrote"
+    case("memo: no attribute injected through an autolink or a link's code span; a NUL or a bare & is harmless; "
+         "a ) in a URL, a prose fetch( and a raised type floor", hostile)
+
+    def refuses_cli():
+        root, md = review_copy(work, "memorefuse")
+        edit_text(md, "## The options", "<div>a box</div>\n\n## The options")
+        page = root / f"{REVIEW_STEM}-memo.html"
+        before = page.read_text(encoding="utf-8")
+        r = run("memo", md)
+        assert r.returncode == 1 and "captain.unplaced" in r.stdout and "nothing written" in r.stderr, (r.stdout, r.stderr)
+        assert page.read_text(encoding="utf-8") == before
+        r = run("memo", work / "nope.md")
+        assert r.returncode == 2, r.returncode
+        bare = work / "noconfig"
+        bare.mkdir()
+        (bare / "x.md").write_text("# X\n")
+        r = run("memo", bare / "x.md")
+        assert r.returncode == 2 and "pitch.json" in r.stderr, (r.returncode, r.stderr)
+    case("memo: an unplaced block exits 1, nothing written; no document or no config exits 2", refuses_cli)
+
+    def shapes():
+        md = ("# A *title* with `code`\n\nPara **one**, __two__, _three_ and \\*four\\*; a & b, &amp; c < d.\n"
+              "It wraps in\n2026. Still one paragraph.\n\n"
+              "* star\n+ plus\n\n3. three\n4. four\n1) paren\n\n- tight\n- items\n\nBetween.\n\n- loose\n\n- items\n"
+              "lazy line\n\n| a | b |\n| --- | --- |\n| `x|y` | c \\| d |\n\n"
+              "[repo](docs/x.md) [disk](/srv/notes/x.md) [web](https://example.com/a?b=1&c=2) "
+              "[mail](mailto:owner) <https://example.com/auto>\n\n"
+              "A line <!-- hidden too --> goes on.\n\n<!-- hidden -->\n\n```deck\n[]\n```\n\n```text\n<b>kept</b>\n```\n\n***\n")
+        page, found = page_of(md, scratch, "shapes")
+        assert not found, found
+        body = main_of(page)
+        want = ['<h1>A <em>title</em> with <code>code</code></h1>', '<strong>one</strong>', '<strong>two</strong>',
+                '<em>three</em>', '*four*', 'a &amp; b, &amp;amp; c &lt; d.', 'It wraps in\n2026. Still one paragraph.',
+                '<ul>\n<li>star</li>\n</ul>\n<ul>\n<li>plus</li>\n</ul>', '<ol start="3">\n<li>three</li>\n<li>four</li>\n</ol>',
+                '<ol>\n<li>paren</li>\n</ol>', '<li>tight</li>', '<li><p>loose</p></li>', '<p>items\nlazy line</p>',
+                '<td><code>x|y</code></td><td>c | d</td>', 'repo disk', '<a href="https://example.com/a?b=1&amp;c=2">web</a>',
+                '<a href="mailto:owner">mail</a>', '<a href="https://example.com/auto">', '<pre><code>&lt;b&gt;kept&lt;/b&gt;</code></pre>',
+                '<hr>', '<title>A title with code</title>', 'A line  goes on.']
+        missing = [w for w in want if w not in page]
+        assert not missing, f"{missing}\n{body}"
+        for gone in ("hidden", "docs/x.md", "/srv/notes", "deck"):
+            assert gone not in body, f"{gone!r} reached the page"
+    case("memo: every inline and block shape it places, a deck fence and a comment that never reach the page", shapes)
+
+    def page_holds():
+        page = REVIEW / f"{REVIEW_STEM}-memo.html"
+        cfg = pl.find_config(REVIEW)
+        assert not (pl.captain_floor(page, cfg) + pl.contract_problems(page, cfg)), "the generated page breaks a page rule"
+        assert pl.MEMO_MARK in page.read_text(encoding="utf-8")
+    case("memo: the page it writes holds the type floor and the page contract", page_holds)
+
+    # --- the page contract ------------------------------------------------------------------------
+    def contract_controls():
+        cfg = pl.find_config(PASSING)
+        base = (PASSING / f"{STEM}-memo.html").read_text(encoding="utf-8")
+
+        def fired(text):
+            p = work / "contract.html"
+            p.write_text(text, encoding="utf-8")
+            return rules(pl.contract_problems(p, cfg))
+        assert fired(base) == set()
+        assert fired(base.replace('"dark"]', "'dark']").replace('"light"]', "'light']")) == set(), "quotes"
+        assert "captain.contract.dark-theme" in fired(base.replace(':root[data-theme="dark"]', '/* :root[data-theme="dark"] */ .x'))
+        pinned = base.replace("</body>", '<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script></body>')
+        assert fired(pinned) == set()
+        assert fired(base.replace(".answer {", ".answer { background: url(https://fonts.gstatic.com/x.png);")) == set()
+        assert "captain.contract.css-load" in fired(base.replace(".answer {", ".answer { background: url('data:image/png,AA');"))
+    case("contract: either quote style passes; a commented-out block, a data: url() fail; a versioned script passes", contract_controls)
+
+    # --- the captain review -----------------------------------------------------------------------
+    def review_clean():
+        r = run("review", doc)
+        assert r.returncode == 0 and r.stdout.strip().endswith("0 finding(s)"), (r.stdout, r.stderr)
+        bare = work / "reviewbare"
+        bare.mkdir()
+        shutil.copy(doc, bare)
+        r = run("review", bare / doc.name)
+        assert r.returncode == 0, ("review needs a config", r.stdout, r.stderr)
+    case("review: the fixture is a captain review; review needs no pitch.json", review_clean)
+
+    template = HERE.parent / "skills" / "captain" / "TEMPLATE.md"
+
+    def template_is_not_one():
+        r = run("review", template)
+        assert r.returncode == 1 and "review.title" in r.stdout and "review.decisions" in r.stdout, r.stdout
+        heads = [ln[3:].strip() for ln in template.read_text(encoding="utf-8").split("\n") if ln.startswith("## ")]
+        assert tuple(heads) == pl.REVIEW_SECTIONS, heads
+        lines = set(re.findall(r"\*\*(.+?):\*\*", template.read_text(encoding="utf-8")))
+        assert set(pl.OPTION_LINES) <= lines, lines
+    case("review: the template is not a review (its placeholders fail); its headings and option lines are the check's", template_is_not_one)
+
+    def variants(name, old, new, rule, words):
+        def run_it():
+            root, md = review_copy(work, f"rv-{name}")
+            text = md.read_text(encoding="utf-8")
+            assert old in text, old
+            md.write_text(text.replace(old, new, 1), encoding="utf-8")
+            got = pl.review_problems(md.read_text(encoding="utf-8"), md.name) if pl.is_review(md.read_text()) else None
+            if rule is None:
+                assert got == [], got
+                return
+            assert got and {r for r, _ in got} == {rule} and any(words in m for _, m in got), got
+        return run_it
+    title = "(captain review, 2026-02-02)"
+    for name, old, new, rule, words in (
+            ("executive", title, "(executive review, 2026-02-02)", None, ""),
+            ("nodate", title, "(captain review)", "review.title", "ends `(captain review"),
+            ("baddate", title, "(captain review, 2026-02-31)", "review.title", "ends `(captain review"),
+            ("order", "## The options", "## Decisions-moved", "review.sections", "no `## The options`"),
+            ("noriskline", "- **The one risk:** the visitors who never book", "- the visitors who never book",
+             "review.options", "option 'C — Keep one session and book visits ahead'"),
+            ("bestthree", "3. **B**", "- **B**", "review.options", "2 numbered items, want 3"),
+            ("maybe", "Reversible: yes", "Reversible: maybe", "review.decisions", "is yes or no"),
+            ("twoanswers", "  ➤ Answer:\n", "  ➤ Answer:\n\n  ➤ Answer:\n", "review.decisions", "2 `➤ Answer:` lines"),
+            ("norecommend", "  ➤ Recommended: A", "  Recommended: A", "review.decisions", "0 `➤ Recommended:` lines"),
+            ("noitem", "- **D1 — Open", "- Open", "review.decisions", "no D-item"),
+            ("twice", "Open feedback goes below this line.",
+             "- **D1 — Again?** A repeat.\n\n  Reversible: no\n\n  ➤ Recommended: no\n\n  ➤ Answer:\n\nOpen feedback goes below this line.",
+             "review.decisions", "the id is used twice"),
+            ("afterfeedback", "Open feedback goes below this line.",
+             "Open feedback goes below this line.\n\n➤ Answer: a note in the feedback, not D1's", None, "")):
+        case(f"review: {name}", variants(name, old, new, rule, words))
+
+    def swapped():
+        root, md = review_copy(work, "rv-swapped")
+        text = md.read_text(encoding="utf-8")
+        a, b = "## The answer", "## Where things stand"
+        md.write_text(text.replace(a, "\x00").replace(b, a).replace("\x00", b), encoding="utf-8")
+        got = pl.review_problems(md.read_text(encoding="utf-8"), md.name)
+        assert {r for r, _ in got} == {"review.sections"} and "out of order" in got[0][1], got
+    case("review: sections out of order", swapped)
+
+    def not_a_review():
+        root, md = review_copy(work, "rv-proposal")
+        edit_text(md, "(captain review, 2026-02-02)", "(proposal, 2026-02-02)")
+        r = run("review", md)
+        assert r.returncode == 1 and "not a captain review" in r.stdout, r.stdout
+        assert not {r for r in rules(pl.check_root(root, pl.find_config(root))) if r.startswith("review.")}
+    case("review: another kind is no captain review: review says so, check holds it to nothing", not_a_review)
+
+    # --- the sidecar and pitch renders ------------------------------------------------------------
+    def stale_deck():
+        root = work / "staledeck"
+        shutil.copytree(PASSING, root)
+        shutil.copy(FIXTURES / "pitch.json", root)
+        shutil.rmtree(root / f"{STEM}-admiral-deck")
+        cfg = pl.find_config(root)
+        stale = [m for r, m in pl.check_sidecars(root, cfg, STEM) if r == "sidecar.stale"]
+        assert len(stale) == 1 and "published.admiral_deck" in stale[0], stale
+    case("sidecar.stale: a deck the sidecar records that is gone, in a one-document check too", stale_deck)
+
+    def blob_assets():
+        good = json.loads((PASSING / f"{STEM}.pitch.json").read_text(encoding="utf-8"))
+        assert pl.sidecar_problems(dict(good, assets={"mark.svg": "/_blob/abc_123"}), f"{STEM}.md") == []
+        assert pl.sidecar_problems(dict(good, assets={"mark.svg": "blob/abc"}), f"{STEM}.md")
+    case("sidecar.shape: an asset recorded as the upload's /_blob/<id> passes; another relative path fails", blob_assets)
+
+    def renders_verb():
+        r = run("renders", PASSING / f"{STEM}.md")
+        lines = r.stdout.strip().split("\n")
+        assert r.returncode == 0 and lines[0].startswith("memo") and "memo-0001" in lines[0], r.stdout
+        assert "not recorded by the sidecar" in lines[2], lines
+        r = run("renders", PASSING / f"{STEM}.md", "--links")
+        assert r.returncode == 0 and r.stdout.strip() == (
+            "[memo](https://example.com/artifact/memo-0001) | [admiral deck](https://example.com/artifact/deck-0002)"), r.stdout
+        r = run("renders", doc, "--links")
+        assert r.returncode == 1 and r.stdout == "" and r.stderr.count("has no URL") == 2, (r.stdout, r.stderr)
+    case("renders: each render and its URL, the memo first; --links one line, exit 1 when one is unpublished", renders_verb)
+
+    # --- the skills -------------------------------------------------------------------------------
+    def skills_name_real_verbs():
+        verbs = {"check", "build", "memo", "review", "renders", "calibrate"}
+        for skill in ("pitch", "captain"):
+            text = (HERE.parent / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+            assert text.startswith(f"---\nname: {skill}\ndescription: "), skill
+            named = set(re.findall(r"`pitch (\w+)", text))
+            assert named and named <= verbs, (skill, named - verbs)
+            for flag in set(re.findall(r"`pitch \w+[^`]*?(--[a-z]+)", text)):
+                assert flag in pitch("--help").stdout + "".join(pitch(v, "--help").stdout for v in named), flag
+    case("skills: /pitch and /captain name themselves, and every pitch verb and flag they name exists", skills_name_real_verbs)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: pitch_cases.py <failing-dir>")
@@ -840,7 +1231,7 @@ def main():
     with tempfile.TemporaryDirectory() as scratch:
         for group, args in ((group_renders, ()), (group_fixtures, (failing_dir,)), (group_controls, (cfg,)),
                             (group_cli, (failing_dir, Path(scratch))), (group_sidecar, (failing_dir, Path(scratch))),
-                            (group_calibrate, (Path(scratch),))):
+                            (group_calibrate, (Path(scratch),)), (group_document, (Path(scratch),))):
             t = time.monotonic()
             group(*args)
             print(f"  ({time.monotonic() - t:.1f}s)")
