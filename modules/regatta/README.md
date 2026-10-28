@@ -12,6 +12,7 @@ dependency by bare name.
 | `bin/secrets` | each repo's `.env` against its `.env.example`, in a shared folder |
 | `bin/regatta` | `root`, `has <module>`, `which <tool>`, `check`, `shim <path>`, and `regatta <name>` for a tool kept off PATH |
 | `libexec/flare`, `/regatta:flare` | a bug report, an idea or a question, filed as an issue on Regatta's public repo with the evidence attached (below) |
+| `libexec/attribution` | `regatta attribution add\|list`: count a session, or the sessions under a folder, to a project in every report of time or cost (below) |
 
 ## Install
 
@@ -65,6 +66,7 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   | `regatta/orca-deny` | the repos an Orca login no registry row names may never open (`common.ORCA_ROW`) | none denied |
   | `regatta/log-dir` | where `jev.jsonl` and `gate.jsonl` go, and `sheep/`: the account's spacesheep plan as last read (`plan.json`, an hour) and this Mac's 24-hour deploy log keel and helm share (`deploys.jsonl`); a leading `~` is the home folder of the moment | `.local/state/regatta` in the home folder |
   | `regatta/projects` | the projects folder `secrets` reads repo names under, `~` as above | `projects` in the home folder |
+  | `regatta/attribution` | where the attribution file is (an absolute path, `~` as above); written empty it turns attribution off (below). Optional even with an overlay, and read only when a report asks: a relative or unreadable value turns attribution off with one stderr line, never an ImportError | `.local/state/regatta/attribution.jsonl` in the home folder, whatever `regatta/log-dir` says |
   | `sheep/machines` | how many machines publish from the spacesheep account: each Mac's part of the 24-hour publish cap is the cap divided by it (`common.sheep_budget`; read when used, never an ImportError) | the hosts `lighthouse/hosts` lists, else 1 |
 - **A module's own private values** are listed in its `config-keys` file (one key per line, `#`
   comments); `regatta check` reports each one that is unreadable, or missing where an overlay is
@@ -95,7 +97,42 @@ helloworld's file scan first (machine and home paths, addresses, credential shap
 list where there is one) and a finding stops it, exit 3; an unattended run only dry-runs. `regatta/flare-repo` in the config dir sends flares to
 another repo, a fork's own. Without Claude Code: the repo's Bug and Idea forms on GitHub.
 
+## Attribution: whose time and money was it
+
+A session in one repo that did work for another project (a lean repo chosen because the other's
+context is heavy) is counted to the other in every report of time or cost by project. One file of JSON
+lines, `~/.local/state/regatta/attribution.jsonl` (`regatta/attribution` moves it; written empty it
+turns attribution off), appended to and never rewritten. The file is the Mac's own: a report counts the
+rows of the Mac it runs on, so add a row where the weekly report runs, or point both Macs' key at one
+plain file:
+
+```json
+{"ts": "2026-10-27T12:00:00Z", "project": "proj-b", "session": "<sessionId>", "why": "…"}
+{"ts": "2026-10-27T12:00:00Z", "project": "proj-b", "path": "proj-a/.claude/worktrees/topic", "why": "…"}
+```
+
+`project` is a folder under the projects folder, as a report names it. `path` is a glob relative to the
+projects folder, a worktree's `.claude/worktrees/<topic>` part kept; it matches that folder and every
+folder under it. Per (session, folder) a `session` row wins, else a `path` row, else nothing: the
+reader keeps its own project. Among rows of one kind the newest `ts` wins; a row without a readable
+`ts` is the oldest. The rows name sessions, so the file is private state: never published.
+
+```bash
+regatta attribution add proj-b                                      # this session ($CLAUDE_CODE_SESSION_ID)
+regatta attribution add proj-b --path 'proj-a/.claude/worktrees/topic' --why 'lean repo, proj-b work'
+regatta attribution list
+```
+
+`add` exits 2, with one line, for a PROJECT that is no folder holding `.git` under the projects folder,
+for a `--path` given as an absolute, `~` or `./` path outside it (stored relative when inside), for no
+session to attribute, and when attribution is off. A `path` row has no time bound: it also counts a
+later session in that folder.
+
+A reader asks `common.attribution(session, cwd, root=None)`: the project, or `None`. It reads the
+file once per process; a line that is no row is skipped with one warning on stderr. `crew-report`'s
+weekly report uses it; a new reader of per-project time or cost goes through it, never its own copy.
+
 ## Check
 
-`bash modules/regatta/tests/check.sh` — scratch paths only; it runs `tests/flare.sh` too (a
-stand-in `gh`, nothing reaches GitHub).
+`bash modules/regatta/tests/check.sh` — scratch paths only; it runs `tests/flare.sh` and
+`tests/attribution.sh` too (a stand-in `gh`, nothing reaches GitHub).

@@ -5,7 +5,17 @@
 - `common.landed_pr(slug, branch, base=, timeout=5)`: the merged pull request from a head branch at
   any sha (into `base` when given, head.ref checked), while none from it is open (`merged_pr` matches
   one sha); wharf's checkpoint asks it before every push.
-
+- Attribution (attribution, 2026-10-27): a session, or every session under a folder glob, is
+  counted to another project in every report of time or cost by project. `common.attribution(session,
+  cwd, root=None)` is the one reader (the project or `None`; `attribution_match` gives the row) of
+  `~/.local/state/regatta/attribution.jsonl`, whatever `regatta/log-dir` says (`regatta/attribution` in the
+  config dir moves it, written empty turns it off; a relative or unreadable value turns it off with one
+  stderr line, never an import error in a hook), rows `{"ts", "project", "session" | "path",
+  "why"}`: a session row beats a path row, the newest `ts` wins among rows of a kind, a bad line is skipped
+  with one stderr warning, read once per process. `regatta attribution add PROJECT [--session ID | --path
+  GLOB] [--why T]` and `regatta attribution list` are the verb; suite `tests/attribution.sh`. The helpers
+  `under_projects` and `projects_rel` (a path under the projects folder, another home's prefix read as this
+  one's) moved in from crew-report. `hooks/common.py` is in `autofinish_exclude`: this lands by `/finish`.
 - The gate's confidential stopgap (2026-10-26): `classify` treats a repo of any confidential scope as
   a guarded source for every vendor but Anthropic, so Jev (review-gate's same-shadow) or Codex gets its
   text only on the owner's per-vendor quote; a torn registry guards every source. The rule is
