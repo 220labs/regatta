@@ -78,6 +78,8 @@ check "$(GF '' "'$PJ/k/docs/x.md', '$WT/a', '$PJ/transcripts/z-1/s.jsonl', '$PJ/
   "no scope: the confidential scope's checkout, worktree and archive fenced; the rest quoted"
 check "$(GF '' "'$HD/.claude/projects/$SK/s.jsonl', '~/.acct-gone/projects/$SK--claude-worktrees-old/m.md', '$HD/.claude/projects/-other/s.jsonl'")" \
   "fenced fenced quote" "  a login's slug folder, a removed worktree's under a login no row lists: fenced by name"
+check "$(GF '' "'/tmpdir/c-501/$SK/abc/work/x.txt', '/tmpdir/c-501/$SK--claude-worktrees-t/abc/work', '/tmpdir/c-501/-other/abc/work'")" \
+  "fenced fenced quote" "  a session's scratch folder, under no projects/ folder: fenced by its slug part (trim-cross-host D2)"
 check "$(GF '' "(None, '$PJ/o/x'), ('$PJ/o/x', '$PJ/k'), (), (None,)")" "quote fenced fenced fenced" \
   "  any fenced path fences the item; one with no path is never quoted"
 check "$(GF '"half"' "'$PJ/o/x', '$PJ/k/x', '$PJ/elsewhere', ()")" "quote fenced outside outside" \
