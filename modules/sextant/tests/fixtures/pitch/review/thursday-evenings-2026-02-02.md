@@ -100,15 +100,22 @@ Open feedback goes below this line.
   "note": "The detail: this review and its page, handed to the group."},
  {"id": "queue", "headline": "Saturdays turn people away",
   "statements": ["31 turned away in January", "80 of 124 visits ended in a repair"],
+  "detail": ["The queue closed at 13:00 every Saturday in January."],
   "note": "The queue closed at 13:00. About 64 % of January's visits ended in a finished repair."},
  {"id": "crew", "headline": "The Thursday crew can start",
   "statements": ["5 fixers ready for Thursdays", "3 for lamps and radios, 2 for bikes"],
+  "detail": ["The hall is free on Thursdays until June."],
   "note": "They said so in January."},
  {"id": "money", "headline": "The grant pays for ten nights",
   "statements": ["$2.4K of the $6K grant", "$240 a night, tea included"],
   "note": "Option B costs $1.2K; option C costs nothing in money."},
+ {"id": "options", "admiral": false, "headline": "The other two options see fewer people",
+  "statements": ["Longer Saturdays: $1.2K, from the same fixers", "Booking ahead: no money, and fewer walk-ins"],
+  "links": [{"text": "How the network runs a session", "url": "https://example.com/repair-cafe/guide"}],
+  "note": "Option B asks the Saturday fixers for more hours; option C trades the queue for fewer visits."},
  {"id": "close", "headline": "The group decides by 9 February",
   "statements": ["Recommended: open Thursdays"],
+  "links": [{"text": "The whole review, with its figures", "url": "https://example.com/artifact/memo-0003"}],
   "note": "Recommended: A. It is the only option that sees the people turned away."}
 ]
 ```

@@ -1,10 +1,11 @@
 """pitch's library: the renders' rules, the checker that holds a docs root to them, and the builder
-that writes an admiral deck, in one place.
+that writes the decks, in one place.
 
-A document has renders: the captain page (`<stem>-memo.html`), read in full, and the admiral deck
+A document has renders: the captain page (`<stem>-memo.html`), read in full; the admiral deck
 (`<stem>-admiral-deck/project/`), spoken: about twenty words a slide, at most three statements, no
-type under 60 px, a title that states the message. The method (skills/pitch/method.md) gives every number and its
-source. Two things enforce the format: the builder (`pitch build`) refuses to write a slide that
+type under 60 px, a title that states the message; and the commodore deck
+(`<stem>-commodore-deck/project/`), sent and read alone: fifty words, six blocks, a 40 px floor, and
+links (renders S6). The method (skills/pitch/method.md) gives every number and its source. Two things enforce the format: the builder (`pitch build`) refuses to write a slide that
 breaks a rule, and the checker (`pitch check`) refuses one that arrived by any other route. Both are
 this file, and neither keeps its own copy of a number: two copies of the rules drifting apart is the
 stale-render trap in miniature (the method, section 6).
@@ -61,6 +62,16 @@ DEFAULTS = {
         "extra_verbs": [],          # base forms added to the title heuristic's lexicon
         "dangling_words": ["a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "and", "or", "with"],
     },
+    # The sent deck (renders S6): the admiral's rules under `commodore.*` ids, with these limits. Its
+    # links are https, each URL also in the document's body or its sidecar.
+    "commodore": {
+        "max_words": 50,            # DocSend's sent decks (the method, section 1); link text counted
+        "max_statements": 6,        # text blocks besides the title: statements, details and links
+        "max_lines": 3,
+        "min_font_px": 40,          # the caption floor, so no body line reads as furniture
+        "max_slides": 12,
+        "link_prefixes": ["https://"],  # a link must start with one; narrow it to a host, never widen it
+    },
     "runtime": {                    # the Slides runtime's own numbers
         "canvas_px": [1920, 1080],
         "margin_px": 128,           # 1664 x 824 inside
@@ -87,7 +98,8 @@ DEFAULTS = {
     "naming": {
         "documents_glob": "*.md",
         "admiral_suffix": "-admiral-deck",
-        "folder_deck_suffixes": ["-deck", "-admiral-deck"],
+        "commodore_suffix": "-commodore-deck",
+        "folder_deck_suffixes": ["-deck", "-admiral-deck", "-commodore-deck"],
         "memo_suffix": "-memo.html",
         "single_deck_suffix": "-deck.html",
         "content_file": "slides.json",
@@ -96,8 +108,9 @@ DEFAULTS = {
         "deck_fence": "deck",       # the info word of the fence at a document's end holding its slides
     },
     "claims": {
-        "must_appear": {},          # "<document stem>": [phrases every non-admiral render and the document carry]
+        "must_appear": {},          # "<document stem>": [phrases every render but a deck with its own list (the admiral's, the commodore's) and the document carry]
         "admiral_must_appear": {},  # "<document stem>": [phrases the admiral render and the document carry]
+        "commodore_must_appear": {},    # the same for the commodore render
         "retired": [],              # [[phrase, why]]: corrected claims that must not come back anywhere
         "retired_scan": ["**/*.md", "**/*.html"],
         "require_pins": True,       # a render whose stem has no entry is a finding, not a silent pass
@@ -119,6 +132,10 @@ DEFAULTS = {
         "cover_statement_px": 60, "leading": 1.25, "text_w": 1500, "head_w": 1560,
         "head_letter_spacing_px": -5, "statement_letter_spacing_px": -1,
         "head_gap_px": 72, "row_gap_px": 48, "transition": "fade",
+        # The commodore's sizes: smaller than the admiral's, never under its 40 px floor.
+        "commodore": {"head_px": 88, "cover_head_px": 120, "statement_px": 52, "cover_statement_px": 48,
+                      "detail_px": 40, "link_px": 40, "head_letter_spacing_px": -4, "head_gap_px": 56,
+                      "row_gap_px": 32},
     },
 }
 
@@ -158,6 +175,9 @@ class Config:
         self.text_contrast, self.large_text_contrast = a["text_contrast"], a["large_text_contrast"]
         self.large_text_px, self.mark_contrast = a["large_text_px"], a["mark_contrast"]
         self.headline_exempt = dict(a["headline_exempt"])
+        # The rule ids' prefix and the links switch: commodore_view() changes both, with the limits.
+        self.rid, self.links, self.a_slide = "admiral", False, "an admiral slide"
+        self.commodore = _commodore(d["commodore"])
         self.dangling = {w.lower() for w in a["dangling_words"]}   # tokens are lower-cased
         self.canvas_w, self.canvas_h = r["canvas_px"]
         self.margin, self.max_note_chars, self.max_elements = r["margin_px"], r["max_note_chars"], r["max_elements"]
@@ -177,6 +197,27 @@ class Config:
             raise ConfigError(f"naming.sidecar_suffix is {suffix!r}: text ending .json, longer than .json")
         self.verbs = VERBS | {w.lower() for w in a["extra_verbs"]}
         self.finite = AUXILIARIES | _inflected(self.verbs)
+
+    def commodore_view(self):
+        """This config as the commodore's rules read it: its own limits and `commodore.*` rule ids,
+        `<a href>` admitted in a statement, everything else (palette, face, contrast, runtime) shared."""
+        view = copy.copy(self)
+        c = self.commodore
+        view.max_words, view.max_statements, view.max_lines = c["max_words"], c["max_statements"], c["max_lines"]
+        view.min_font_px, view.max_slides = c["min_font_px"], c["max_slides"]
+        view.link_prefixes = tuple(c["link_prefixes"])
+        view.rid, view.links, view.a_slide = "commodore", True, "a commodore slide"
+        return view
+
+    def view(self, kind):
+        return self.commodore_view() if kind == "commodore" else self
+
+    @property
+    def deck_suffixes(self):
+        """Every folder-deck suffix, the commodore's always among them: an adopter's own list, written
+        before the commodore existed, would otherwise leave a built commodore deck seen by no check."""
+        out = list(self.naming["folder_deck_suffixes"])
+        return out + [s for s in (self.naming["admiral_suffix"], self.naming["commodore_suffix"]) if s not in out]
 
     def _load_glyphs(self, name):
         """{weight: {char: thousandths of an em}} for the configured face, or {} (the fallback)."""
@@ -232,6 +273,20 @@ def _publish(p):
     return p
 
 
+def _commodore(c):
+    """The `commodore` section, refused when a limit could not mean what its key says."""
+    if not isinstance(c, dict):
+        raise ConfigError(f"commodore is {c!r}, not an object")
+    for k in ("max_words", "max_statements", "max_lines", "min_font_px", "max_slides"):
+        if not (isinstance(c.get(k), int) and not isinstance(c.get(k), bool) and c[k] > 0):
+            raise ConfigError(f"commodore.{k} is {c.get(k)!r}, not a whole number above 0")
+    prefixes = c.get("link_prefixes")
+    if not (isinstance(prefixes, list) and prefixes
+            and all(isinstance(x, str) and x.startswith("https://") for x in prefixes)):
+        raise ConfigError(f"commodore.link_prefixes is {prefixes!r}: a list of https:// prefixes")
+    return c
+
+
 CONFIG_NAME = "pitch.json"
 
 
@@ -246,22 +301,33 @@ def find_config(start, explicit=None, load_glyphs=True):
     raise SystemExit(f"no {CONFIG_NAME} at or above {p}; pass --config")
 
 
-def admiral_decks(root, cfg, only=None):
-    """(document, project dir) for every admiral render under root: the one definition the checker,
-    the calibrator and the builder share."""
+def admiral_decks(root, cfg, only=None, kind="admiral"):
+    """(document, project dir) for every admiral render under root (or every commodore render, by
+    `kind`): the one definition the checker, the calibrator and the builder share."""
     out = []
     for md in sorted(Path(root).glob(cfg.naming["documents_glob"])):
         if only is not None and md.stem != only:
             continue
-        project = md.with_name(md.stem + cfg.naming["admiral_suffix"]) / "project"
+        project = md.with_name(md.stem + cfg.naming[f"{kind}_suffix"]) / "project"
         if (project / "deck.json").exists():
             out.append((md, project))
     return out
 
 
+def deck_kind(deck_dir, cfg):
+    """"admiral" or "commodore" for a built deck's folder by its suffix; None for any other folder."""
+    name = Path(deck_dir).name
+    for kind in ("commodore", "admiral"):
+        suffix = cfg.naming[f"{kind}_suffix"]
+        if name.endswith(suffix) and name != suffix:
+            return kind
+    return None
+
+
 def stem_of(deck_dir, cfg):
-    """The document stem of an admiral deck folder, for headline_exempt's keys."""
-    return Path(deck_dir).name[: -len(cfg.naming["admiral_suffix"])]
+    """The document stem of an admiral or commodore deck folder, for headline_exempt's keys."""
+    kind = deck_kind(deck_dir, cfg) or "admiral"
+    return Path(deck_dir).name[: -len(cfg.naming[f"{kind}_suffix"])]
 
 
 # ------------------------------------------------------------------------------------------------
@@ -482,12 +548,13 @@ def type_problems(slide, cfg):
         if "font-size" in n.style:
             value = n.style["font-size"]
             if not re.fullmatch(r"\d+(?:\.\d+)?px", value):
-                out.append(("admiral.type-floor", f"{slide.name}: font-size {value!r} - admiral slides size type in px only"))
+                out.append((f"{cfg.rid}.type-floor", f"{slide.name}: font-size {value!r} - {cfg.rid} slides size "
+                                                     "type in px only"))
         if n.tag in TEXT_TAGS and n.text():
             px = font_px(n)
             if px is not None and px < cfg.min_font_px:
-                out.append(("admiral.type-floor", f"{slide.name}: <{n.tag}> “{n.text()[:30]}” renders at {px:g}px "
-                                                  f"(floor {cfg.min_font_px}px)"))
+                out.append((f"{cfg.rid}.type-floor", f"{slide.name}: <{n.tag}> “{n.text()[:30]}” renders at {px:g}px "
+                                                     f"(floor {cfg.min_font_px}px)"))
     return out
 
 
@@ -506,6 +573,10 @@ def type_problems(slide, cfg):
 #   a <div> holding no text is a mark (a dot, a bar, a week) and alone may be painted, sized,
 #     bordered or rounded;
 #   lengths are px and never negative, save letter-spacing.
+# The commodore widens it by one shape (renders S6): a statement (<p>) may hold links, each an <a> with
+# an href and no other attribute, holding text only. The runtime shows one underlined in its
+# paragraph's colour (S5's probe), so it inherits everything the estimate and the contrast rule read:
+# an inline run of the paragraph's own text, the same face, size and weight.
 # Widen a grammar only together with the estimate, contrast_problems() and the controls in the suite.
 HEX = r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?"
 LEN = r"\d+(?:\.\d+)?px"
@@ -524,10 +595,12 @@ MARK_STYLE = dict(LAYOUT_STYLE, **{
     "flex": r"none", "width": LEN, "height": LEN, "background": HEX,
     "border": rf"\d+px solid {HEX}", "border-radius": r"\d+(?:px|%)", "overflow": r"hidden",
 })
-ATTRIBUTES = {"section": {"id", "style", "data-transition"}}
+ATTRIBUTES = {"section": {"id", "style", "data-transition"}, "a": {"href"}}
 
 
-def _grammar(node):
+def _grammar(node, cfg):
+    if node.tag == "a" and cfg.links and node.parent is not None and node.parent.tag == "p":
+        return {}
     if node.tag == "section":
         return SECTION_STYLE
     if node.tag in ("h1", "h2", "p"):
@@ -540,7 +613,7 @@ def _grammar(node):
 
 
 def markup_problems(slide, cfg):
-    R = "admiral.markup"
+    R = f"{cfg.rid}.markup"
     out = []
     for n in slide.section.iter():
         where = f"{slide.name}: <{n.tag}>"
@@ -548,9 +621,9 @@ def markup_problems(slide, cfg):
         if n.tag != "aside" and _in_aside(n):
             out.append((R, f"{where} inside the note: a note is plain text"))
             continue
-        grammar = _grammar(n)
+        grammar = _grammar(n, cfg)
         if grammar is None:
-            out.append((R, f"{where} is outside what an admiral slide may use"))
+            out.append((R, f"{where} is outside what {cfg.a_slide} may use"))
             continue
         extra = set(n.attrs) - ATTRIBUTES.get(n.tag, {"style"})
         if extra:
@@ -561,8 +634,15 @@ def markup_problems(slide, cfg):
                 out.append((R, f"{where}: {prop} is outside this tag's grammar"))
             elif not re.fullmatch(pattern, value):
                 out.append((R, f"{where}: {prop}:{value} is not a form the estimate reads"))
-        if n.tag in ("h1", "h2", "p"):
+        if n.tag == "a":
+            if "href" not in n.attrs:
+                out.append((R, f"{where} has no href"))
             kids = [c.tag for c in n.children if isinstance(c, Node)]
+            if kids:
+                out.append((R, f"{where} holds {kids}: a link holds text only"))
+        if n.tag in ("h1", "h2", "p"):
+            # A link is the one tag a statement may hold, and only where its grammar says (_grammar).
+            kids = [c.tag for c in n.children if isinstance(c, Node) and not (c.tag == "a" and n.tag == "p" and cfg.links)]
             if kids:
                 out.append((R, f"{where} holds {kids}: a title or statement holds text only"))
             if "font-size" not in n.style:
@@ -582,7 +662,7 @@ def markup_problems(slide, cfg):
     if slide.asides and kids and kids[-1].tag != "aside":
         out.append((R, f"{slide.name}: the <aside> is not the section's last child"))
     if len(slide.headings) != 1:
-        out.append((R, f"{slide.name}: {len(slide.headings)} headings; an admiral slide has exactly one title"))
+        out.append((R, f"{slide.name}: {len(slide.headings)} headings; {cfg.a_slide} has exactly one title"))
     if len(slide.asides) > 1:
         out.append((R, f"{slide.name}: {len(slide.asides)} notes; the runtime takes one <aside>"))
     if "background" not in slide.section.style:
@@ -596,19 +676,35 @@ def markup_problems(slide, cfg):
 def density_problems(slide, cfg):
     out = []
     if len(slide.words) > cfg.max_words:
-        out.append(("admiral.words", f"{slide.name}: {len(slide.words)} words on screen (limit {cfg.max_words}) "
-                                     "- cut it, or move it to the note"))
+        out.append((f"{cfg.rid}.words", f"{slide.name}: {len(slide.words)} words on screen (limit {cfg.max_words}) "
+                                        "- cut it, or move it to the note"))
     if len(slide.statements) > cfg.max_statements:
-        out.append(("admiral.statements", f"{slide.name}: {len(slide.statements)} statements "
-                                          f"(limit {cfg.max_statements})"))
+        out.append((f"{cfg.rid}.statements", f"{slide.name}: {len(slide.statements)} statements "
+                                             f"(limit {cfg.max_statements})"))
     if len(slide.note) > cfg.max_note_chars:
-        out.append(("admiral.runtime-limits", f"{slide.name}: a {len(slide.note)}-character note "
-                                              f"(the runtime's limit is {cfg.max_note_chars})"))
+        out.append((f"{cfg.rid}.runtime-limits", f"{slide.name}: a {len(slide.note)}-character note "
+                                                 f"(the runtime's limit is {cfg.max_note_chars})"))
     elements = sum(1 for n in slide.section.iter() if n is not slide.section and not _in_aside(n))
     if elements > cfg.max_elements:
-        out.append(("admiral.runtime-limits", f"{slide.name}: {elements} elements "
-                                              f"(the runtime's limit is {cfg.max_elements})"))
+        out.append((f"{cfg.rid}.runtime-limits", f"{slide.name}: {elements} elements "
+                                                 f"(the runtime's limit is {cfg.max_elements})"))
     return out
+
+
+def link_problems(slide, cfg):
+    """A commodore's links, as a slide alone can judge them: each starts with a configured prefix
+    (https, by default). Whether its URL is the document's or the sidecar's is the checker's question
+    (check_commodore), since a slide has neither around it."""
+    if not cfg.links:
+        return []
+    return [(f"{cfg.rid}.links", f"{slide.name}: a link to {n.attrs.get('href')!r}, not one starting "
+                                 f"{' or '.join(cfg.link_prefixes)}")
+            for n in slide.nodes if n.tag == "a" and not (n.attrs.get("href") or "").startswith(cfg.link_prefixes)]
+
+
+def slide_links(slide):
+    """(text, href) of every link on a slide, in order."""
+    return [(n.text(), n.attrs.get("href") or "") for n in slide.nodes if n.tag == "a"]
 
 
 # ------------------------------------------------------------------------------------------------
@@ -739,7 +835,7 @@ def title_problems(slide, key, cfg):
     if key in cfg.headline_exempt:
         return []
     why = headline_problem(slide.headline, cfg)
-    return [("admiral.title", f"{slide.name}: {why}")] if why else []
+    return [(f"{cfg.rid}.title", f"{slide.name}: {why}")] if why else []
 
 
 # ------------------------------------------------------------------------------------------------
@@ -814,7 +910,7 @@ def _nearest_text_block(node):
 
 def contrast_problems(slide, cfg):
     """Membership of the palette is not legibility: two allowed colours can pair at 1.5:1."""
-    R = "admiral.contrast"
+    R = f"{cfg.rid}.contrast"
     out = []
     for n in slide.nodes:
         own_text = "".join(c for c in n.children if isinstance(c, str)).strip()
@@ -847,14 +943,14 @@ def colour_problems(slide, cfg):
     function or a CSS name carries no hex, so a hex scan alone cannot see it: any word in a colour
     property but `solid` is refused, in any case. Scanning style values rather than the raw file
     also keeps `&#160;` from being read as a colour."""
-    R = "admiral.palette"
+    R = f"{cfg.rid}.palette"
     out = []
     for n in slide.nodes:
         for prop, value in n.style.items():
             out += [(R, f"{slide.name}: colour {h} is not in the palette")
                     for h in re.findall(r"#[0-9a-fA-F]{3,8}\b", value) if parse_colour(h) not in cfg.allowed_colours]
             if prop in ("color", "background", "border") or "color" in prop:
-                out += [(R, f"{slide.name}: {prop}:{value} - admiral slides name colours in hex only")
+                out += [(R, f"{slide.name}: {prop}:{value} - {cfg.rid} slides name colours in hex only")
                         for word in re.findall(r"(?<![#\w])[A-Za-z][A-Za-z-]*", value)
                         if word.lower() not in ("solid", "px")][:1]
     return out
@@ -882,6 +978,11 @@ def colour_problems(slide, cfg):
 # reverse. Checked on 300 random lines at 60-150 px, weights 400-800, spacing 0 to -5 px: of the
 # 273 with no over-long word, 248 broke exactly as Chrome did; the other 25 broke a word early
 # somewhere, and 12 of those ran to one line more; none ran to fewer lines than Chrome's.
+#
+# A commodore's link is an <a> inside its statement with no style of its own (the grammar's one
+# widening): Node.text() joins an inline tag's text to its paragraph's with no separator, and the
+# wrap reads the paragraph's face, size, weight and spacing, which the link inherits. So a link is
+# measured as the run of text it is; its underline takes no width.
 
 
 def _family(node):
@@ -965,7 +1066,7 @@ def _measure(node, avail_w, fit, cfg):
     # width over the room is a problem, not something to clamp quietly.
     declared = _px(node.style["width"]) if node.style.get("width") else None
     if declared is not None and declared > avail_w + 0.5:
-        fit.problems.append(("admiral.fit.width", f"<{node.tag}> is {declared:.0f}px wide in {avail_w:.0f}px of room"))
+        fit.problems.append((f"{cfg.rid}.fit.width", f"<{node.tag}> is {declared:.0f}px wide in {avail_w:.0f}px of room"))
     if node.tag in TEXT_TAGS:
         px = font_px(node)
         pad = _box(node.style, "padding")
@@ -975,15 +1076,15 @@ def _measure(node, avail_w, fit, cfg):
         text = node.text()
         lines, widest = wrap(text, inner, px, cfg, _weight(node), _family(node), ls)
         if widest > inner + 0.5:
-            fit.problems.append(("admiral.fit.width", f"“{text[:40]}”: a word {widest:.0f}px wide in a "
+            fit.problems.append((f"{cfg.rid}.fit.width", f"“{text[:40]}”: a word {widest:.0f}px wide in a "
                                                       f"{inner:.0f}px box breaks mid-word"))
         if len(lines) > cfg.max_lines:
-            fit.problems.append(("admiral.fit.lines", f"“{text[:40]}” runs to {len(lines)} lines "
+            fit.problems.append((f"{cfg.rid}.fit.lines", f"“{text[:40]}” runs to {len(lines)} lines "
                                                       f"(limit {cfg.max_lines}): shorten it"))
         for line in lines[:-1]:
             last = line.split(" ")[-1].lower()
             if last in cfg.dangling:
-                fit.problems.append(("admiral.fit.dangling", f"“{line}” ends a line on “{last}”: join it to "
+                fit.problems.append((f"{cfg.rid}.fit.dangling", f"“{line}” ends a line on “{last}”: join it to "
                                                              "the next word with a no-break space"))
         h = len(lines) * _line_height(node, px) + pad[0] + pad[2]
         fit.blocks.append((node.tag, text, len(lines), h, inner, lines))
@@ -999,7 +1100,7 @@ def _measure(node, avail_w, fit, cfg):
                  for k in kids]
         declared = sum(_px(k.style["width"]) for k in kids if k.style.get("width")) + gap * max(len(kids) - 1, 0)
         if declared > inner_w + 0.5:
-            fit.problems.append(("admiral.fit.width", f"a row of {declared:.0f}px declared width in "
+            fit.problems.append((f"{cfg.rid}.fit.width", f"a row of {declared:.0f}px declared width in "
                                                       f"{inner_w:.0f}px of room"))
         free = inner_w - sum(f for f in fixed if f) - gap * max(len(kids) - 1, 0)
         share = free / max(sum(1 for f in fixed if f is None), 1)
@@ -1023,7 +1124,7 @@ def fit(slide, cfg):
     top = pad[0] + (max(room - column, 0) / 2 if centred else 0)
     if column > room + 0.5:
         shrink = round((1 - cfg.shrink_floor) * 100)
-        f.problems.append(("admiral.fit.overfull", f"the column is {column:.0f}px in {room:.0f}px of room: the "
+        f.problems.append((f"{cfg.rid}.fit.overfull", f"the column is {column:.0f}px in {room:.0f}px of room: the "
                                                    f"runtime would shrink its text by up to {shrink}%, under the "
                                                    f"{cfg.min_font_px}px floor - cut or split the slide"))
     return f, column, room, top
@@ -1043,7 +1144,8 @@ def problems(slide, key, cfg):
     if markup:
         return markup
     return (density_problems(slide, cfg) + type_problems(slide, cfg) + colour_problems(slide, cfg)
-            + contrast_problems(slide, cfg) + geometry_problems(slide, cfg) + title_problems(slide, key, cfg))
+            + contrast_problems(slide, cfg) + geometry_problems(slide, cfg) + title_problems(slide, key, cfg)
+            + link_problems(slide, cfg))
 
 
 # ================================================================================================
@@ -1066,6 +1168,11 @@ RULES = (
     "captain.contract.dark-theme", "captain.contract.background", "captain.contract.script-version",
     "captain.contract.css-load", "captain.generator-drift", "captain.unplaced",
     "review.title", "review.sections", "review.options", "review.decisions",
+    # renders S6: the commodore, the sent deck: the admiral's slide rules under its own limits, and links
+    "commodore.words", "commodore.statements", "commodore.markup", "commodore.runtime-limits",
+    "commodore.type-floor", "commodore.palette", "commodore.contrast", "commodore.fit.overfull",
+    "commodore.fit.lines", "commodore.fit.dangling", "commodore.fit.width", "commodore.title",
+    "commodore.slide-count", "commodore.invented-number", "commodore.links",
 )
 
 # ------------------------------------------------------------------------------------------------
@@ -1082,7 +1189,7 @@ def folder_decks(root, cfg, only=None):
     """(document, suffix, project dir) for every folder deck, admiral or not."""
     out = []
     for md in documents(root, cfg, only):
-        for suffix in cfg.naming["folder_deck_suffixes"]:
+        for suffix in cfg.deck_suffixes:
             project = md.with_name(md.stem + suffix) / "project"
             if (project / "deck.json").exists() or (project / "slides").is_dir():
                 out.append((md, suffix, project))
@@ -1099,10 +1206,13 @@ def single_decks(root, cfg, only=None):
             if md.with_name(md.stem + cfg.naming["single_deck_suffix"]).exists()]
 
 
+DECK_KINDS = ("admiral", "commodore", "folder")       # the kinds of render that are a deck folder
+
+
 def renders(root, cfg, only=None):
-    """(document, render path, kind) for every render; kind is admiral, folder, memo or single."""
-    out = [(md, p, "admiral" if s == cfg.naming["admiral_suffix"] else "folder")
-           for md, s, p in folder_decks(root, cfg, only)]
+    """(document, render path, kind) for every render; kind is admiral, commodore, folder, memo or single."""
+    kinds = {cfg.naming["admiral_suffix"]: "admiral", cfg.naming["commodore_suffix"]: "commodore"}
+    out = [(md, p, kinds.get(s, "folder")) for md, s, p in folder_decks(root, cfg, only)]
     out += [(md, p, "memo") for md, p in memos(root, cfg, only)]
     out += [(md, p, "single") for md, p in single_decks(root, cfg, only)]
     return out
@@ -1150,27 +1260,74 @@ def admiral_slides(project, cfg):
 
 
 def check_admiral(md, project, cfg):
+    """An admiral deck, or a commodore deck when cfg is the commodore's view: the same rules, each
+    under its own deck's limits and rule ids."""
+    R = cfg.rid
     out = []
     slides = admiral_slides(project, cfg)
     if len(slides) > cfg.max_slides:
-        out.append(("admiral.slide-count", f"{project.parent.name}: {len(slides)} slides (limit {cfg.max_slides})"))
+        out.append((f"{R}.slide-count", f"{project.parent.name}: {len(slides)} slides (limit {cfg.max_slides})"))
     for key, s in slides:
         out += problems(s, key, cfg)
     # Every figure on a slide, and in its presenter note, appears in the document. A twenty-word
     # slide is where a wrong number hides best: there is no sentence around it to contradict it,
     # and the pinned phrases cover only a handful of claims. The note counts because a figure the
     # speaker is handed is quoted aloud. The document's deck fence is cut first: it holds these
-    # very slides, so read with the body it would vouch for every number they show.
-    doc_nums = numbers(document_body(md, cfg), with_bare=True)
-    out += [("admiral.invented-number", f"{s.name}: {n} appears nowhere in {md.name}")
+    # very slides, so read with the body it would vouch for every number they show. A commodore's
+    # detail and link text are on screen, so they count; a link's URL is no figure a reader sees.
+    body = document_body(md, cfg)
+    doc_nums = numbers(body, with_bare=True)
+    out += [(f"{R}.invented-number", f"{s.name}: {n} appears nowhere in {md.name}")
             for _, s in slides for n in sorted(s.figures - doc_nums)]
+    if cfg.links:
+        out += link_sources(md, slides, body, cfg)
     out += check_builder(project.parent, cfg)
     return out
 
 
+def check_commodore(md, project, cfg):
+    return check_admiral(md, project, cfg.commodore_view())
+
+
+# Where a URL found in the document's body ends: whitespace, a bracket or a quote, or a sentence's
+# punctuation before whitespace. Without it a link to /a would pass on the body's /abc.
+URL_END = r"(?=$|[\s<>()\[\]\"'`]|[.,;:!?](?:\s|$))"
+
+
+def _strings(data):
+    if isinstance(data, str):
+        yield data
+    elif isinstance(data, dict):
+        for v in data.values():
+            yield from _strings(v)
+    elif isinstance(data, list):
+        for v in data:
+            yield from _strings(v)
+
+
+def link_sources(md, slides, body, cfg):
+    """Each commodore link's URL is also in the document's body (the fence cut) or in its sidecar: a
+    link the document never names is a claim it cannot correct, and one to a page the sidecar never
+    recorded is a link nothing updates (the memo's URL lives there once it is published)."""
+    sidecar = md.with_name(md.stem + cfg.naming["sidecar_suffix"])
+    try:
+        recorded = set(_strings(json.loads(sidecar.read_text(encoding="utf-8"))))
+    except (OSError, ValueError):
+        recorded = set()
+    out = []
+    for _, s in slides:
+        for text, url in slide_links(s):
+            if url and url not in recorded and not re.search(re.escape(url) + URL_END, body):
+                out.append((f"{cfg.rid}.links", f"{s.name}: “{text[:40]}” links {url}, which neither {md.name}'s "
+                                                f"body nor {sidecar.name} names"))
+    return out
+
+
 def check_exemptions(root, cfg, only=None):
-    """An exemption outliving its slide would wave through whatever later takes the id."""
-    slides = {key for _, project in admiral_decks(root, cfg, only) for key, _ in admiral_slides(project, cfg)}
+    """An exemption outliving its slide would wave through whatever later takes the id. Both decks
+    read the same keys, so a slide only the commodore carries keeps its exemption alive."""
+    slides = {key for kind in ("admiral", "commodore") for _, project in admiral_decks(root, cfg, only, kind)
+              for key, _ in admiral_slides(project, cfg)}
     exempt = {k: why for k, why in cfg.headline_exempt.items() if only is None or k.startswith(only + "/")}
     out = [("admiral.exemption-stale", f"headline_exempt names a slide that does not exist: {k}")
            for k in sorted(set(exempt) - slides)]
@@ -1190,11 +1347,15 @@ def check_builder(deck_dir, cfg):
             return [("deck.generator-drift", f"{deck_dir.name}: no deck fence in {md.name} and no {content.name}, "
                                              "so nothing generates its slides")]
         return []
-    out = []
-    # A subprocess per deck, as the export ran it: the build under each interpreter named, and the
-    # checker's own process never imports a second copy of these rules.
+    # This interpreter's build runs here, on the rules already loaded: the same code `pitch build
+    # --check` runs, without a second interpreter start per deck (a fifth of a second each on a loaded
+    # Mac, and the suite's 65 failing roots hold 92 decks; renders S6 took the suite from 12 s to 20 s
+    # with a subprocess for each). Each other interpreter named still runs it as a subprocess, as the
+    # export did: whether the builder works under that Python is the question there.
+    drift = _drift_here(deck_dir, cfg)
+    out = [("deck.generator-drift", f"{deck_dir.name} under {sys.executable}: {drift[:600]}")] if drift else []
     builder = HERE / "pitch"
-    for py in [sys.executable] + [p for p in cfg.builder["extra_interpreters"] if Path(p).exists()]:
+    for py in [p for p in cfg.builder["extra_interpreters"] if Path(p).exists()]:
         args = [py, "-I", str(builder), "build", str(deck_dir)]
         if cfg.base_dir:
             args += ["--config", str(_config_path(cfg))]
@@ -1203,6 +1364,24 @@ def check_builder(deck_dir, cfg):
             out.append(("deck.generator-drift", f"{deck_dir.name} under {py}: "
                                                 f"{(run.stdout + run.stderr).strip()[:600]}"))
     return out
+
+
+def _drift_here(deck_dir, cfg):
+    """What `pitch build <deck> --check` would say, in this process; None when the slides match. A
+    refusal and a crash are drift, as the subprocess's non-zero exit was: nothing generates the deck."""
+    try:
+        built = build_all(deck_dir, cfg)
+    except SystemExit as e:
+        return str(e.code)
+    except Exception as e:              # the subprocess printed its traceback here; this is its last line
+        return f"the builder crashed: {type(e).__name__}: {e}"
+    slide_dir = deck_dir / "project" / "slides"
+    drifted = [sid for sid, html, _ in built
+               if not (slide_dir / f"{sid}.html").exists() or (slide_dir / f"{sid}.html").read_text(encoding="utf-8") != html]
+    if drifted:
+        return (f"{deck_dir.name}: slides on disk differ from what {deck_source(deck_dir, cfg)[0]} says: {drifted} "
+                "— a render was edited by hand, which the next build would silently revert")
+    return None
 
 
 def _config_path(cfg):
@@ -1269,8 +1448,19 @@ def furniture_texts(slide_text, cfg):
     return out
 
 
+def _commodore_links_cut(text, cfg):
+    """A commodore slide's text with each of its own links' targets taken out: `<a href="https://…">`
+    in the builder's spelling, starting with a configured prefix. That one shape is how the sent deck
+    reaches its page (renders S6); any other URL, an http one or one in another attribute, stays in
+    the text for deck.external to refuse."""
+    prefixes = tuple(cfg.commodore["link_prefixes"])
+    return re.sub(r'<a href="(https://[^"<>\s]*)">',
+                  lambda m: "<a>" if html.unescape(m.group(1)).startswith(prefixes) else m.group(0), text)
+
+
 def check_folder_deck(project, cfg):
     out, label = [], project.parent.name
+    commodore = deck_kind(project.parent, cfg) == "commodore"
     index_path = project / "deck.json"
     if not index_path.exists():
         return [("deck.index", f"{label}: slides/ without a deck.json, so no check reads it as a deck")]
@@ -1301,9 +1491,11 @@ def check_folder_deck(project, cfg):
         text = p.read_text(encoding="utf-8")
         if text.count("<section ") != 1 or f'<section id="{p.stem}"' not in text:
             out.append(("deck.index", f"{label}/slides/{p.name} must hold exactly one <section id=\"{p.stem}\">"))
-        # `/_blob/<id>` (an uploaded asset, served by the deck's own host) is root-relative and passes.
-        urls = [m.group(0) for m in EXTERNAL_URL.finditer(text)] + re.findall(r"data:[a-z]+/", text)
-        apis = [m.group(0) for m in NETWORK_APIS.finditer(text)]
+        # `/_blob/<id>` (an uploaded asset, served by the deck's own host) is root-relative and passes,
+        # and so does a commodore's own link.
+        scanned = _commodore_links_cut(text, cfg) if commodore else text
+        urls = [m.group(0) for m in EXTERNAL_URL.finditer(scanned)] + re.findall(r"data:[a-z]+/", scanned)
+        apis = [m.group(0) for m in NETWORK_APIS.finditer(scanned)]
         if urls or apis or "<script" in text:
             out.append(("deck.external", f"{label}/slides/{p.name} reaches outside the deck: URLs {urls}, APIs {apis}"))
         texts = furniture_texts(text, cfg)
@@ -1484,16 +1676,17 @@ def check_single_deck(path, cfg):
 
 def check_claims(root, cfg, only=None):
     out = []
-    must, adm = cfg.claims["must_appear"], cfg.claims["admiral_must_appear"]
+    # Each deck its own short list: a sent deck carries more than a spoken one, never the page's all.
+    tables = {"admiral": "admiral_must_appear", "commodore": "commodore_must_appear"}
+    pins = {name: dict(cfg.claims.get(name) or {}) for name in ("must_appear", *tables.values())}
     if only is not None:
-        must, adm = ({s: v for s, v in t.items() if s == only} for t in (must, adm))
+        pins = {name: {s: v for s, v in t.items() if s == only} for name, t in pins.items()}
     by_stem = {}
     found = renders(root, cfg, only)
     for md, path, kind in found:
         by_stem.setdefault(md.stem, []).append(kind)
-        table = adm if kind == "admiral" else must
-        name = "admiral_must_appear" if kind == "admiral" else "must_appear"
-        phrases = table.get(md.stem)
+        name = tables.get(kind, "must_appear")
+        phrases = pins[name].get(md.stem)
         if not phrases:
             if cfg.claims["require_pins"]:
                 out.append(("claims.table", f"{path.name}: no {name} entry for {md.stem}, so nothing is compared"))
@@ -1506,11 +1699,12 @@ def check_claims(root, cfg, only=None):
             if missing:
                 out.append(("claims.must-appear", f"{phrase!r} missing from: {', '.join(missing)}"))
     # A table entry whose renders are gone is a guard nothing reads.
-    full = {s for s, kinds in by_stem.items() if any(k != "admiral" for k in kinds)}
-    admiral = {s for s, kinds in by_stem.items() if "admiral" in kinds}
-    out += [("claims.table", f"must_appear names {s}, which has no non-admiral render") for s in sorted(set(must) - full)]
-    out += [("claims.table", f"admiral_must_appear names {s}, which has no admiral render")
-            for s in sorted(set(adm) - admiral)]
+    full = {s for s, kinds in by_stem.items() if any(k not in tables for k in kinds)}
+    out += [("claims.table", f"must_appear names {s}, which has no render but a deck with its own list")
+            for s in sorted(set(pins["must_appear"]) - full)]
+    for kind, name in tables.items():
+        have = {s for s, kinds in by_stem.items() if kind in kinds}
+        out += [("claims.table", f"{name} names {s}, which has no {kind} render") for s in sorted(set(pins[name]) - have)]
     files = sorted({p for pattern in cfg.claims["retired_scan"] for p in Path(root).glob(pattern) if p.is_file()})
     if only is not None:
         # One document's files: itself and its renders, a deck folder whole.
@@ -1537,7 +1731,8 @@ def check_claims(root, cfg, only=None):
 #
 #     {"document": "<stem>.md",                                   optional
 #      "published": {"memo": {"url", "first_published"},           one entry or more
-#                    "admiral_deck": {"url", "first_published", "type_url"}},
+#                    "admiral_deck": {"url", "first_published", "type_url"},
+#                    "commodore_deck": {"url", "first_published", "type_url"}},
 #      "assets": {"<file>": "<url>"},                             optional
 #      "images": [{"file", "route", "prompt"}]}                   optional
 #
@@ -1547,6 +1742,7 @@ def check_claims(root, cfg, only=None):
 SIDECAR_RENDERS = {
     "memo": ("url", "first_published"),
     "admiral_deck": ("url", "first_published", "type_url"),
+    "commodore_deck": ("url", "first_published", "type_url"),
 }
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 BLOB = re.compile(r"/_blob/[A-Za-z0-9_-]+")
@@ -1654,17 +1850,17 @@ def check_root(root, cfg, only=None):
     if only is not None:
         # The document's own deck folders still count: one with no project/ is no render, and
         # would otherwise pass this check by never being seen.
-        seen_dirs = {p.parent for _, p, k in found if k in ("admiral", "folder")}
+        seen_dirs = {p.parent for _, p, k in found if k in DECK_KINDS}
         out += [("root.orphan", f"{d.name}: a deck folder no check sees (no project/)")
-                for d in (root / (only + s) for s in cfg.naming["folder_deck_suffixes"])
+                for d in (root / (only + s) for s in cfg.deck_suffixes)
                 if d.is_dir() and d not in seen_dirs]
         return (out + _check_renders(found, cfg) + check_exemptions(root, cfg, only) + check_claims(root, cfg, only)
                 + check_sidecars(root, cfg, only) + check_documents(root, cfg, only))
     seen_files = {p for _, p, k in found if k in ("memo", "single")}
     orphans = [h.name for h in root.glob("*.html") if h not in seen_files]
     out += [("root.orphan", f"{n}: an HTML render with no document of its name, so nothing checks it") for n in orphans]
-    seen_dirs = {p.parent for _, p, k in found if k in ("admiral", "folder")}
-    suffixes = tuple(cfg.naming["folder_deck_suffixes"])
+    seen_dirs = {p.parent for _, p, k in found if k in DECK_KINDS}
+    suffixes = tuple(cfg.deck_suffixes)
     out += [("root.orphan", f"{d.name}: a deck folder no check sees (no document, or no project/)")
             for d in sorted(root.iterdir()) if d.is_dir() and d.name.endswith(suffixes) and d not in seen_dirs]
     out += _check_renders(found, cfg)
@@ -1678,10 +1874,12 @@ def check_root(root, cfg, only=None):
 def _check_renders(found, cfg):
     out = []
     for md, path, kind in found:
-        if kind in ("admiral", "folder"):
+        if kind in DECK_KINDS:
             out += check_folder_deck(path, cfg)
         if kind == "admiral":
             out += check_admiral(md, path, cfg)
+        elif kind == "commodore":
+            out += check_commodore(md, path, cfg)
         elif kind == "memo":
             out += check_memo(path, cfg, md)
         elif kind == "single":
@@ -1707,9 +1905,19 @@ def _check_renders(found, cfg):
 #      "graphic": {"kind": "track", "values": [140, 0], "of": 420},      optional
 #      "centred": true}                                                   optional
 #
-# The first slide is the cover. `centred` defaults to true for the first and the last slide (they
-# are statements), false for the rest, which hang from the top margin so the title does not hop
-# between neighbouring slides. A `graphic` has one entry per statement: `track` fills an outlined
+# The commodore deck, sent and read alone (renders S6), is built from the same list, with three keys
+# only it reads:
+#
+#      "detail": ["a line the reader alone needs", "..."],                 optional, after the statements
+#      "links": [{"text": "The whole review", "url": "https://..."}],       optional, after the detail
+#      "admiral": false                                                     optional: the commodore's alone
+#
+# The admiral deck skips a slide marked `"admiral": false` and never shows `detail` or `links`; the
+# commodore shows every slide, its statements, its detail and its links, each a block of its own.
+#
+# In each deck the first slide is the cover. `centred` defaults to true for the first and the last
+# slide (they are statements), false for the rest, which hang from the top margin so the title does
+# not hop between neighbouring slides. A `graphic` has one entry per statement: `track` fills an outlined
 # bar in proportion to value/of (0 reads as an empty track, not a missing bar); `weeks` draws `of`
 # slots and fills the span [first, last] given for each statement. Write NBSP ("a small") in a
 # headline to keep the article with its noun.
@@ -1770,6 +1978,47 @@ class Look:
         return (f'<div style="display:flex;flex-direction:column;gap:20px">'
                 f'{self.statement(text, px)}{drawn}</div>')
 
+    def detail(self, text, px):
+        return f'<p style="font-size:{px}px;line-height:1.3;color:{self.muted};width:{self.text_w}px">{text}</p>'
+
+    def link(self, link, px):
+        # The runtime underlines a link in its paragraph's colour (S5's probe): it needs no style.
+        return (f'<p style="font-size:{px}px;line-height:1.3;width:{self.text_w}px">'
+                f'<a href="{_href(link["url"])}">{link["text"]}</a></p>')
+
+    def commodore_html(self, s, index, count):
+        """A sent slide: the admiral's layout at the commodore's sizes, then its detail and its links."""
+        C = self.cfg.layout["commodore"]
+        sid, headline, statements, note = s["id"], s["headline"], s["statements"], s.get("note", "")
+        graphic = s.get("graphic")
+        cover = index == 0
+        bg = self.paper if index % 2 else self.raised
+        if cover:
+            head_px = C["cover_head_px"]
+            rows = [self.statement(t, C["cover_statement_px"], cover=True) for t in statements]
+        else:
+            head_px, px = C["head_px"], C["statement_px"]
+            if graphic and len(graphic["values"]) != len(statements):
+                sys.exit(f"{sid}: {len(graphic['values'])} graphic rows for {len(statements)} statements")
+            rows = [self.evidence_row(t, px, graphic, i) if graphic else self.bullet_row(t, px)
+                    for i, t in enumerate(statements)]
+        rows += [self.detail(t, C["detail_px"]) for t in s.get("detail", [])]
+        rows += [self.link(link, C["link_px"]) for link in s.get("links", [])]
+        body = (f'<div style="display:flex;flex-direction:column;gap:{C["row_gap_px"]}px">\n'
+                + "\n".join(rows) + "\n</div>")
+        centred = s.get("centred", index in (0, count - 1))
+        centre = "justify-content:center;" if centred else ""
+        return (
+            f'<section id="{sid}" data-transition="{self.transition}" style="background:{bg};color:{self.ink};'
+            f'font-family:{self.font};padding:{self.cfg.margin}px;display:flex;flex-direction:column;'
+            f'{centre}gap:{C["head_gap_px"]}px">\n'
+            f'<h2 style="font-size:{head_px}px;line-height:1.05;letter-spacing:{C["head_letter_spacing_px"]}px;'
+            f'font-weight:800;width:{self.head_w}px">{headline}</h2>\n'
+            f"{body}\n"
+            f"<aside>{note}</aside>\n"
+            "</section>\n"
+        )
+
     def slide_html(self, s, index, count):
         sid, headline, statements, note = s["id"], s["headline"], s["statements"], s.get("note", "")
         graphic = s.get("graphic")
@@ -1803,19 +2052,25 @@ class Look:
 
 
 def build_all(deck_dir, cfg):
-    """Every slide, built and checked in memory. Nothing reaches disk until all of them pass.
+    """Every slide of an admiral or a commodore deck, built and checked in memory. Nothing reaches
+    disk until all of them pass.
 
     An earlier version checked inside the write loop, so a refusal mid-deck left the earlier
     slides rewritten and the later ones stale: a deck half one version and half another, with every check green on
     the mixture.
     """
+    kind = deck_kind(deck_dir, cfg) or "admiral"
     source, slides = deck_source(deck_dir, cfg)
+    cfg = cfg.view(kind)
+    if not slides:
+        sys.exit(f"{source}: every slide says \"admiral\": false, so the admiral deck has none")
     if len(slides) > cfg.max_slides:
         sys.exit(f"{len(slides)} slides, the limit is {cfg.max_slides}")
     look, stem = Look(cfg), stem_of(deck_dir, cfg)
+    write = look.commodore_html if kind == "commodore" else look.slide_html
     built, refused = [], []
     for i, s in enumerate(slides):
-        html = look.slide_html(s, i, len(slides))
+        html = write(s, i, len(slides))
         slide = Slide(html, f"{s['id']}.html")
         refused += [msg for _, msg in problems(slide, f"{stem}/{s['id']}", cfg)]
         _, column, room, _ = fit(slide, cfg)
@@ -1842,7 +2097,7 @@ def build_all(deck_dir, cfg):
 # Run it when a deck's face or weights change; until then the estimate uses `face.fallback_em`,
 # which over-wraps.
 #
-# `pitch calibrate render` lays out every admiral slide under the root in headless Chrome, with the
+# `pitch calibrate render` lays out every admiral and commodore slide under the root in headless Chrome, with the
 # Slides runtime's resets (no margins, border-box, the aside hidden, a 1920 x 1080 section), and
 # compares each text block's line count and the column's height with the estimate. It exits 1 on any
 # line-count difference. `--shots` also writes one PNG per slide.
@@ -1957,28 +2212,30 @@ MEASURE_JS = """
 
 
 def calibrate_render(root, cfg, shots=None):
-    """Every admiral slide under root, the estimate against Chrome: 0 when every line count agrees."""
+    """Every admiral and commodore slide under root, the estimate against Chrome: 0 when every line
+    count agrees."""
     worst, status = 0, 0
     face = f'<link rel="stylesheet" href="{cfg.face_href}">' if cfg.face_href else ""
     js = MEASURE_JS.replace("WEIGHTS", json.dumps(cfg.face_weights)).replace("FAMILY", cfg.face_family or "sans-serif")
-    decks = admiral_decks(root, cfg)
+    decks = [(md, p, cfg) for md, p in admiral_decks(root, cfg)]
+    decks += [(md, p, cfg.commodore_view()) for md, p in admiral_decks(root, cfg, kind="commodore")]
     if not decks:
         sys.exit(f"no admiral deck under {root}: nothing to lay out")
-    for md, project in decks:
+    for md, project, view in decks:
         order = json.loads((project / "deck.json").read_text(encoding="utf-8"))["order"]
         sections = {sid: (project / "slides" / f"{sid}.html").read_text(encoding="utf-8") for sid in order}
         page = (f'<!doctype html><meta charset="utf-8">{face}<style>{reset(cfg)}</style>'
                 + "".join(sections.values()) + f'<pre id="out">pending</pre><script>{js}</script>')
         got = chrome(page, cfg)["slides"]
-        print(f"{md.stem}: estimate against Chrome")
+        print(f"{project.parent.name}: estimate against Chrome")
         print(f"  {'slide':10} {'column est':>10} {'chrome':>8} {'diff':>6}   {'top est':>7} {'chrome':>7}   lines (est/chrome)")
         for sid in order:
             slide = Slide(sections[sid], f"{sid}.html")
-            if markup_problems(slide, cfg):
+            if markup_problems(slide, view):
                 sys.exit(f"{md.stem}: {sid}.html is outside the markup grammar; `pitch check` names what")
             if sid not in got:
                 sys.exit(f"{md.stem}: {sid}.html has no <section id=\"{sid}\">, so Chrome's measure cannot be matched")
-            f, column, room, top = fit(slide, cfg)
+            f, column, room, top = fit(slide, view)
             m = got[sid]
             est_lines = [b[2] for b in f.blocks]
             real_lines = [b["lines"] for b in m["blocks"]]
@@ -1993,7 +2250,8 @@ def calibrate_render(root, cfg, shots=None):
             if shots:
                 Path(shots).mkdir(parents=True, exist_ok=True)
                 one = f'<!doctype html><meta charset="utf-8">{face}<style>{reset(cfg)}</style>{sections[sid]}'
-                chrome(one, cfg, shot=str(Path(shots) / f"{md.stem}-{sid}.png"))
+                deck = "" if view.rid == "admiral" else f"-{view.rid}"     # the admiral's names as before
+                chrome(one, cfg, shot=str(Path(shots) / f"{md.stem}{deck}-{sid}.png"))
     print(f"largest column difference: {worst:.1f}px")
     return status
 
@@ -2034,6 +2292,11 @@ def fences(lines):
     return out
 
 
+def admiral_wanted(slides):
+    """A fence builds the admiral unless every slide is the commodore's alone (`"admiral": false`)."""
+    return not slides or any(not (isinstance(x, dict) and x.get("admiral") is False) for x in slides)
+
+
 def deck_fences(text, cfg):
     """(first line number, JSON text) of each deck fence in a document."""
     lines = text.split("\n")
@@ -2049,11 +2312,31 @@ def document_body(md, cfg):
     return "\n".join(lines)
 
 
+COMMODORE_KEYS = ("detail", "links", "admiral")
+
+
+def _slide_shape(s):
+    """What is wrong with one slide's commodore keys, or None."""
+    if "detail" in s and not (isinstance(s["detail"], list) and all(isinstance(t, str) for t in s["detail"])):
+        return f"{s['id']}: detail is a list of lines"
+    if "links" in s and not (isinstance(s["links"], list) and all(
+            isinstance(x, dict) and isinstance(x.get("text"), str) and x["text"].strip()
+            and isinstance(x.get("url"), str) for x in s["links"])):
+        return f"{s['id']}: links is a list of {{\"text\", \"url\"}}, each with its text"
+    if "admiral" in s and not isinstance(s["admiral"], bool):
+        return f"{s['id']}: admiral is true or false"
+    return None
+
+
 def deck_source(deck_dir, cfg):
-    """(where, slides): an admiral deck's words, from the document's deck fence or the content file,
-    never both. A refusal is sys.exit(message): the builder's exit 1."""
+    """(where, slides): a deck's words, from the document's deck fence or the content file, never
+    both; the admiral's without the slides marked `"admiral": false`, the commodore's all of them. The
+    commodore is built from a fence only: the content file is the export's admiral deck, kept so an
+    adopter migrates without a red check. A refusal is sys.exit(message): the builder's exit 1."""
+    kind = deck_kind(deck_dir, cfg) or "admiral"
     md = deck_dir.parent / (stem_of(deck_dir, cfg) + ".md")
-    content = deck_dir / cfg.naming["content_file"]
+    content = (md.with_name(md.stem + cfg.naming["admiral_suffix"]) if kind == "commodore" else deck_dir) \
+        / cfg.naming["content_file"]
     found = deck_fences(md.read_text(encoding="utf-8"), cfg) if md.exists() else []
     if len(found) > 1:
         sys.exit(f"{md.name} has {len(found)} deck fences (lines {', '.join(str(n) for n, _ in found)}); one holds the deck")
@@ -2061,6 +2344,8 @@ def deck_source(deck_dir, cfg):
         # Two copies of the words is the root trap itself: say which to keep rather than pick one.
         sys.exit(f"two sources for {deck_dir.name}: the deck fence in {md.name} and {content.name}; "
                  f"keep the fence and delete {content.name}")
+    if kind == "commodore" and not found:
+        sys.exit(f"no deck fence in {md.name}: the commodore deck is built from the fence alone")
     if found:
         where, raw = f"{md.name}'s deck fence (line {found[0][0]})", found[0][1]
     elif content.exists():
@@ -2079,6 +2364,11 @@ def deck_source(deck_dir, cfg):
     twice = sorted({i for i in ids if ids.count(i) > 1})
     if twice:                           # one slide file per id: the second would overwrite the first
         sys.exit(f"{where}: slide ids used twice: {twice}")
+    wrong = [w for w in map(_slide_shape, slides) if w]
+    if wrong:
+        sys.exit(f"{where}: " + "; ".join(wrong))
+    if kind == "admiral":
+        slides = [s for s in slides if s.get("admiral") is not False]
     return where, slides
 
 
@@ -2108,9 +2398,26 @@ def check_documents(root, cfg, only=None):
         text = md.read_text(encoding="utf-8")
         if is_review(text):
             out += review_problems(text, md.name)
-        deck = md.with_name(md.stem + cfg.naming["admiral_suffix"])
-        if deck_fences(text, cfg) and not (deck / "project" / "deck.json").exists():
-            out.append(("deck.generator-drift", f"{md.name}: a deck fence nothing has built; `pitch build {md.name}`"))
+        found = deck_fences(text, cfg)
+        if not found:
+            continue
+        try:
+            slides = json.loads(found[0][1])
+        except ValueError:
+            slides = None                   # the builder's own refusal names it, at `pitch build`
+        slides = slides if isinstance(slides, list) else []
+        # A fence builds the admiral unless every slide is the commodore's alone, and the commodore
+        # once any slide carries what only it shows: words in the fence that no deck shows are the
+        # stale-render trap waiting for its first correction.
+        want = {"admiral": admiral_wanted(slides),
+                "commodore": any(isinstance(x, dict) and (x.get("detail") or x.get("links") or x.get("admiral") is False)
+                                 for x in slides)}
+        for kind, wanted in want.items():
+            deck = md.with_name(md.stem + cfg.naming[f"{kind}_suffix"])
+            if wanted and not (deck / "project" / "deck.json").exists():
+                flag = "" if kind == "admiral" else " --deck commodore"
+                out.append(("deck.generator-drift", f"{md.name}: a deck fence whose {kind} deck nothing has built; "
+                                                    f"`pitch build {md.name}{flag}`"))
     return out
 
 
@@ -2119,7 +2426,8 @@ def sidecar_stale(data, md, cfg):
     if not isinstance(data, dict) or not isinstance(data.get("published"), dict):
         return []
     where = {"memo": md.with_name(md.stem + cfg.naming["memo_suffix"]),
-             "admiral_deck": md.with_name(md.stem + cfg.naming["admiral_suffix"]) / "project" / "deck.json"}
+             "admiral_deck": md.with_name(md.stem + cfg.naming["admiral_suffix"]) / "project" / "deck.json",
+             "commodore_deck": md.with_name(md.stem + cfg.naming["commodore_suffix"]) / "project" / "deck.json"}
     return [f"published.{key} names {where[key].relative_to(md.parent).parts[0]}, which is gone: "
             "rebuild it, or drop the entry with the artifact"
             for key in data["published"] if key in where and not where[key].exists()]
@@ -2676,12 +2984,13 @@ def published_links(md, cfg):
         published = json.loads(sidecar.read_text(encoding="utf-8")).get("published") or {}
     except (OSError, ValueError, AttributeError):
         published = {}
-    keys = {"admiral": "admiral_deck", "memo": "memo"}
-    labels = {"memo": "memo", "admiral": "admiral deck", "folder": "deck", "single": "single deck"}
+    keys = {"admiral": "admiral_deck", "commodore": "commodore_deck", "memo": "memo"}
+    labels = {"memo": "memo", "admiral": "admiral deck", "commodore": "commodore deck", "folder": "deck",
+              "single": "single deck"}
     out = []
     # The memo first, as the skill publishes it; a deck by its folder, which is what a person names.
     for _, path, kind in sorted(renders(md.parent, cfg, md.stem), key=lambda r: list(labels).index(r[2])):
         entry = published.get(keys.get(kind, ""))
         url = entry.get("url") if isinstance(entry, dict) and _https(entry.get("url")) else None
-        out.append((labels[kind], path.parent if kind in ("admiral", "folder") else path, url, kind in keys))
+        out.append((labels[kind], path.parent if kind in DECK_KINDS else path, url, kind in keys))
     return out

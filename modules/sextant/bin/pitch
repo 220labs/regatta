@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""pitch: hold a document's renders to the method, and build its admiral deck and its page.
+"""pitch: hold a document's renders to the method, and build its decks and its page.
 
     pitch check <docs-root|document.md> [--config pitch.json] [--json]
-    pitch build <stem>-admiral-deck|<document.md> [--config pitch.json] [--check]
+    pitch build <deck folder>|<document.md> [--deck admiral|commodore|all] [--config pitch.json] [--check]
     pitch memo <document.md> [--config pitch.json] [--check] [--replace]
     pitch review <document.md>
     pitch renders <document.md> [--config pitch.json] [--links]
@@ -10,17 +10,21 @@
 
 `check` holds every render of every document under a root to the method: the admiral deck to its
 rules, every folder deck to the furniture rules, the captain renders to their floor and their
-allowlist, and every render to the claims its document makes. Given one document, it checks that
+allowlist, the commodore deck to the admiral's rules at its own limits and to its links, and every
+render to the claims its document makes. Given one document, it checks that
 document and its renders only. Exit 0 clean, 1 on any finding, each finding a rule id and a message;
 2 when the check could not run (no config, no such path, a render it cannot parse), so a caller never
 reads a crash as a finding (AGENTS.md's trap: a probe's "refuse" exit must not be 1).
 
-`build` writes an admiral deck's slides from where its words live: the ```deck fence at its
-document's end, or the export's content file (`slides.json`) beside the deck, never both. It refuses
-the whole deck, nothing written, when any slide breaks a rule; `--check` compares only, exit 1 on
-drift (a slide edited by hand, which the next build would silently revert). Given a document with a
-fence, it makes the deck folder and a first `deck.json` if there are none. Exit 1 on a refusal or
-drift, 2 when it could not run.
+`build` writes a deck's slides from where its words live: the ```deck fence at its document's end,
+or, for the admiral alone, the export's content file (`slides.json`) beside the deck, never both. A
+deck folder builds that deck; a document builds `--deck admiral` (the spoken deck), `commodore` (the
+sent one, from the fence only) or `all`, and by default the admiral plus the commodore once its folder
+exists, so a corrected fence rebuilds both. Every deck named is built in memory first: when any slide
+of any of them breaks a rule, nothing is written. `--check` compares only, exit 1 on drift (a slide
+edited by hand, which the next build would silently revert). Given a document with a fence, it makes
+a deck's folder and a first `deck.json` if there are none. Exit 1 on a refusal or drift, 2 when it
+could not run.
 
 `memo` writes the captain page, `<stem>-memo.html`, from the document's Markdown; a block it cannot
 place (raw HTML, an image, a diagram) is listed by line and nothing is written, exit 1. It will not
@@ -45,11 +49,12 @@ rule: skills/pitch/method.md.
 Pairing is by file name beside the document `<root>/<stem>.md` (every suffix is a parameter):
   <stem>-admiral-deck/project/   the admiral render: deck.json + slides/<id>.html, and the builder's
                                  content file in <stem>-admiral-deck/
+  <stem>-commodore-deck/project/ the commodore render, sent and read alone, from the deck fence
   <stem>-deck/project/           a folder deck that is not admiral (Slides-type, captain density)
   <stem>-memo.html               the captain render, a plain page
   <stem>-deck.html               a single-file deck, slides as JavaScript template literals
   <stem>.pitch.json              the sidecar: where each render was published (its shape is checked)
-  ```deck … ``` in <stem>.md     the admiral deck's words; cut from what the number and pin checks read
+  ```deck … ``` in <stem>.md     both decks' words; cut from what the number, pin and link checks read
 
 Why every check refuses to be vacuous: the first version of the pairing suite this comes from was
 mutation-tested and found to skip everything, green, the moment a deck was renamed.
@@ -91,42 +96,68 @@ def cmd_check(a):
 
 
 def cmd_build(a):
-    deck_dir = Path(a.deck).resolve()
-    cfg = pl.find_config(deck_dir.parent if deck_dir.is_file() else deck_dir, a.config)
+    target = Path(a.deck).resolve()
+    cfg = pl.find_config(target.parent if target.is_file() else target, a.config)
     md = None
-    if deck_dir.is_file():
-        md, deck_dir = deck_dir, deck_dir.with_name(deck_dir.stem + cfg.naming["admiral_suffix"])
-    # A document's fence builds a deck that has no folder yet; its folder is made only once every
-    # slide has passed, so a refused first build leaves nothing behind for the check to call an orphan.
-    first = md is not None and not deck_dir.is_dir() and bool(pl.deck_fences(md.read_text(encoding="utf-8"), cfg))
-    if not deck_dir.is_dir() and not first:
-        raise CouldNotRun(f"pitch build: no admiral deck folder at {deck_dir}")
-    if not deck_dir.name.endswith(cfg.naming["admiral_suffix"]) or deck_dir.name == cfg.naming["admiral_suffix"]:
-        # stem_of() cuts the suffix by length: any other folder would yield a wrong stem and keys
-        raise CouldNotRun(f"pitch build: {deck_dir.name} is not an admiral deck (<stem>{cfg.naming['admiral_suffix']})")
-    slide_dir = deck_dir / "project" / "slides"
-    built = pl.build_all(deck_dir, cfg)
-    if a.check and first:
-        sys.exit(f"{deck_dir.name} is not built yet: `pitch build {md.name}`")
-    if a.check:
-        drifted = [sid for sid, html, _ in built
-                   if not (slide_dir / f"{sid}.html").exists()
-                   or (slide_dir / f"{sid}.html").read_text(encoding="utf-8") != html]
-        if drifted:
-            sys.exit(f"slides on disk differ from what {pl.deck_source(deck_dir, cfg)[0]} says: {drifted} — a render "
-                     "was edited by hand, which the next build would silently revert")
-        print(f"{len(built)} slides match the generator")
-        return 0
-    slide_dir.mkdir(parents=True, exist_ok=True)
-    for sid, html, _ in built:
-        (slide_dir / f"{sid}.html").write_text(html, encoding="utf-8")
-    print(f"{len(built)} slides written:\n  " + "\n  ".join(b[2] for b in built))
-    index = deck_dir / "project" / "deck.json"
-    md = md or deck_dir.parent / (pl.stem_of(deck_dir, cfg) + ".md")
-    if not index.exists() and md.exists():
-        index.write_text(json.dumps(pl.deck_index(md, [b[0] for b in built], cfg), indent=2, ensure_ascii=False) + "\n",
-                         encoding="utf-8")
-        print(f"a first {index.relative_to(deck_dir.parent)}: its order is the deck's, and from now on it is yours")
+    if target.is_file():
+        md = target
+        kinds = {"admiral": ["admiral"], "commodore": ["commodore"], "all": ["admiral", "commodore"]}.get(a.which)
+        if kinds is None:               # the default: the admiral, and the commodore once it is built
+            built_commodore = md.with_name(md.stem + cfg.naming["commodore_suffix"]).is_dir()
+            slides = []
+            for _, body in pl.deck_fences(md.read_text(encoding="utf-8"), cfg)[:1]:
+                try:
+                    slides = json.loads(body)
+                except ValueError:
+                    pass                # the builder's own refusal names it
+            slides = slides if isinstance(slides, list) else []
+            kinds = (["admiral"] if pl.admiral_wanted(slides) else []) + (["commodore"] if built_commodore else [])
+        decks = [md.with_name(md.stem + cfg.naming[f"{k}_suffix"]) for k in kinds]
+    else:
+        decks = [target]
+    fenced = md is not None and bool(pl.deck_fences(md.read_text(encoding="utf-8"), cfg))
+    plans = []
+    for deck_dir in decks:
+        # A document's fence builds a deck that has no folder yet; its folder is made only once every
+        # slide has passed, so a refused first build leaves nothing behind for the check to call an orphan.
+        first = fenced and not deck_dir.is_dir()
+        if md is not None and not fenced and pl.deck_kind(deck_dir, cfg) == "commodore":
+            sys.exit(f"no deck fence in {md.name}: the commodore deck is built from the fence alone")
+        if not deck_dir.is_dir() and not first:
+            raise CouldNotRun(f"pitch build: no deck folder at {deck_dir}")
+        kind = pl.deck_kind(deck_dir, cfg)
+        if kind is None:
+            # stem_of() cuts the suffix by length: any other folder would yield a wrong stem and keys
+            raise CouldNotRun(f"pitch build: {deck_dir.name} is not an admiral deck (<stem>{cfg.naming['admiral_suffix']}) "
+                              f"or a commodore deck (<stem>{cfg.naming['commodore_suffix']})")
+        if a.which and md is None and a.which not in ("all", kind):
+            raise CouldNotRun(f"pitch build: {deck_dir.name} is the {kind} deck, not --deck {a.which}")
+        plans.append((deck_dir, first, pl.build_all(deck_dir, cfg)))
+    # Only now, every deck built in memory: a refusal in the second leaves the first untouched too.
+    for deck_dir, first, built in plans:
+        slide_dir = deck_dir / "project" / "slides"
+        if a.check and first:
+            sys.exit(f"{deck_dir.name} is not built yet: `pitch build {md.name}"
+                     f"{'' if pl.deck_kind(deck_dir, cfg) == 'admiral' else ' --deck commodore'}`")
+        if a.check:
+            drifted = [sid for sid, html, _ in built
+                       if not (slide_dir / f"{sid}.html").exists()
+                       or (slide_dir / f"{sid}.html").read_text(encoding="utf-8") != html]
+            if drifted:
+                sys.exit(f"{deck_dir.name}: slides on disk differ from what {pl.deck_source(deck_dir, cfg)[0]} says: "
+                         f"{drifted} — a render was edited by hand, which the next build would silently revert")
+            print(f"{len(built)} slides match the generator ({deck_dir.name})")
+            continue
+        slide_dir.mkdir(parents=True, exist_ok=True)
+        for sid, html, _ in built:
+            (slide_dir / f"{sid}.html").write_text(html, encoding="utf-8")
+        print(f"{deck_dir.name}: {len(built)} slides written:\n  " + "\n  ".join(b[2] for b in built))
+        index = deck_dir / "project" / "deck.json"
+        doc = md or deck_dir.parent / (pl.stem_of(deck_dir, cfg) + ".md")
+        if not index.exists() and doc.exists():
+            index.write_text(json.dumps(pl.deck_index(doc, [b[0] for b in built], cfg), indent=2, ensure_ascii=False)
+                             + "\n", encoding="utf-8")
+            print(f"a first {index.relative_to(deck_dir.parent)}: its order is the deck's, and from now on it is yours")
     return 0
 
 
@@ -211,8 +242,10 @@ def main(argv=None):
     c.add_argument("target", metavar="root|doc")
     c.add_argument("--config")
     c.add_argument("--json", action="store_true")
-    b = sub.add_parser("build", help="write an admiral deck's slides from its deck fence or content file")
-    b.add_argument("deck", metavar="deck|doc", help="the <stem>-admiral-deck folder, or its document")
+    b = sub.add_parser("build", help="write a deck's slides from its deck fence or content file")
+    b.add_argument("deck", metavar="deck|doc", help="a <stem>-admiral-deck or <stem>-commodore-deck folder, or its document")
+    b.add_argument("--deck", dest="which", choices=["admiral", "commodore", "all"],
+                   help="given a document: which deck (default: the admiral, and the commodore once it is built)")
     b.add_argument("--config")
     b.add_argument("--check", action="store_true", help="compare only; exit 1 on drift")
     m = sub.add_parser("memo", help="write the captain page from the document's Markdown")

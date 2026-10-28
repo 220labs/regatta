@@ -10,6 +10,7 @@
   "claims": {
     "must_appear": {"thursday-evenings-2026-02-02": ["$6K", "10 weeks", "31 people"]},
     "admiral_must_appear": {"thursday-evenings-2026-02-02": ["$6K", "the Thursday crew"]},
+    "commodore_must_appear": {"thursday-evenings-2026-02-02": ["$6K", "free on Thursdays until June"]},
     "retired": [["opens every evening", "the café opens two sessions a week, not every evening"]]
   }
 }

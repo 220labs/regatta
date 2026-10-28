@@ -12,7 +12,8 @@ fixtures use it to change one setting each.
 
 The worked example is sextant's `tests/fixtures/pitch/pitch.json`, with a passing document, its
 renders and its sidecar in `tests/fixtures/pitch/passing/`; beside it, `tests/fixtures/pitch/review/`
-holds an invented captain review with its own config, its generated page and its deck in a fence. A config `pitch` cannot read as written
+holds an invented captain review with its own config, its generated page, its sidecar, and both decks
+built from one fence. A config `pitch` cannot read as written
 (a `publish` value outside its set, a glyph table measuring another face) stops the check with
 exit 2, never a finding.
 
@@ -93,20 +94,22 @@ slide). Neither is part of any check.
 | --- | --- | --- | --- |
 | `documents_glob` | `"*.md"` | the source documents, relative to the root | `"*.md"` |
 | `admiral_suffix` | `"-admiral-deck"` | `<stem><suffix>/project/` is the admiral render | as default |
-| `folder_deck_suffixes` | `["-deck", "-admiral-deck"]` | every folder-deck suffix; the furniture and index rules bind all of them | as default |
+| `commodore_suffix` | `"-commodore-deck"` | `<stem><suffix>/project/` is the commodore render | as default |
+| `folder_deck_suffixes` | `["-deck", "-admiral-deck", "-commodore-deck"]` | every folder-deck suffix; the furniture and index rules bind all of them. The admiral's and the commodore's suffixes are read as members whether the list names them or not, so a list written before the commodore never leaves its deck unseen | as default |
 | `memo_suffix` | `"-memo.html"` | the captain page | as default |
 | `single_deck_suffix` | `"-deck.html"` | the older single-file deck | as default |
 | `content_file` | `"slides.json"` | the export's content file, in `<stem><admiral_suffix>/`; a document's deck fence replaces it, and the two together are refused | as default |
 | `deck_index_version` | `4` | the `v` a Slides `deck.json` must carry | `4` |
 | `sidecar_suffix` | `".pitch.json"` | `<stem><suffix>` beside the document is its sidecar (section 12) | as default |
-| `deck_fence` | `"deck"` | the info word of the fence at the document's end that holds the admiral deck's slides | as default |
+| `deck_fence` | `"deck"` | the info word of the fence at the document's end that holds both decks' slides | as default |
 
 ## 8. `claims`: what every render must and must not say
 
 | Key | Default | Meaning | Neutral example |
 | --- | --- | --- | --- |
-| `must_appear` | `{}` | `"<document stem>": [phrases]` that the document and every non-admiral render carry, matched on normalised text (tags, backticks and case dropped). The figures that were wrong once and had to be corrected in two places | `{"spring-plan-2026-03-01": ["$18K", "12 weeks"]}` |
+| `must_appear` | `{}` | `"<document stem>": [phrases]` that the document and every render but a deck with its own list (the admiral's, the commodore's) carry, matched on normalised text (tags, backticks and case dropped). The figures that were wrong once and had to be corrected in two places | `{"spring-plan-2026-03-01": ["$18K", "12 weeks"]}` |
 | `admiral_must_appear` | `{}` | the same for the admiral render: the few claims that must survive simplification | `{"spring-plan-2026-03-01": ["$18K"]}` |
+| `commodore_must_appear` | `{}` | the same for the commodore render, which `must_appear` no longer binds: the sent deck's own list, usually between the admiral's and the page's | `{"spring-plan-2026-03-01": ["$18K", "12 weeks"]}` |
 | `retired` | `[]` | `[[phrase, why]]`: corrected claims that must not come back in any file under the root. When a decision retires a claim, retire its pinned phrase in the same change | `[["opens every evening", "it opens three evenings a week"]]` |
 | `retired_scan` | `["**/*.md", "**/*.html"]` | globs, relative to the root, that the retired check reads | as default |
 | `require_pins` | `true` | a render whose document has no entry is a finding, rather than a render nothing compares | `true` |
@@ -132,6 +135,7 @@ None of these is a rule; the rules above hold whatever they produce. Colours mus
 | `head_letter_spacing_px`, `statement_letter_spacing_px` | `-5`, `-1` | tracking |
 | `head_gap_px`, `row_gap_px` | `72`, `48` | space under the title, and between statements |
 | `transition` | `"fade"` | the slide's `data-transition` |
+| `commodore` | `{"head_px": 88, "cover_head_px": 120, "statement_px": 52, "cover_statement_px": 48, "detail_px": 40, "link_px": 40, "head_letter_spacing_px": -4, "head_gap_px": 56, "row_gap_px": 32}` | the commodore's sizes and gaps; a value under `commodore.min_font_px` makes the builder refuse every slide it touches. Its widths, leading and colours are the admiral's above |
 
 ## 11. `publish`: how the renders reach a reader
 
@@ -157,6 +161,8 @@ check` holds its shape (`sidecar.shape`) whenever one is there.
 {"document": "spring-plan-2026-03-01.md",
  "published": {
    "memo":         {"url": "https://…", "first_published": "2026-03-02", "file": "spring-plan-2026-03-01-memo.html"},
+   "commodore_deck": {"url": "https://…", "first_published": "2026-03-03", "type_url": "https://…",
+                      "folder": "spring-plan-2026-03-01-commodore-deck"},
    "admiral_deck": {"url": "https://…", "first_published": "2026-03-03", "type_url": "https://…",
                     "folder": "spring-plan-2026-03-01-admiral-deck", "slides": 9}},
  "assets": {"cover.png": "https://…"},
@@ -166,10 +172,10 @@ check` holds its shape (`sidecar.shape`) whenever one is there.
 | Key | Required | Holds |
 | --- | --- | --- |
 | `document` | no | the document's file name; when present it must be the one the sidecar sits beside |
-| `published` | yes, one render or more | one entry per published render, keyed by the render: `memo` (the captain page) or `admiral_deck` |
+| `published` | yes, one render or more | one entry per published render, keyed by the render: `memo` (the captain page), `commodore_deck` or `admiral_deck` |
 | `published.<render>.url` | yes | the artifact's https URL, the one every later publish updates |
 | `published.<render>.first_published` | yes | the date of the first publish, `YYYY-MM-DD` |
-| `published.admiral_deck.type_url` | yes, for a deck | the https URL of the artifact type the deck was created from |
+| `published.admiral_deck.type_url`, `published.commodore_deck.type_url` | yes, for a deck | the https URL of the artifact type the deck was created from |
 | `assets` | no | `{"<file>": "<url>"}`: each uploaded file and the URL the upload returned, https or the deck's own `/_blob/<id>` |
 | `images` | no | `[{"file", "route", "prompt"}]`: each generated image, its route (any `publish.images` route but `none`) and its prompt |
 
@@ -178,7 +184,8 @@ saying which working copy published it), is a free-form note and passes. `sideca
 sidecar that is not JSON, lacks a required key, names a render key it does not know, holds a URL that
 is not https or a date that is not one, or sits beside no document (the document renamed and its
 sidecar left behind: the root's finding, not a document's). `sidecar.stale` fires on one that records a
-render that is gone: the page deleted, the deck folder removed. A folder deck that is not the admiral and
+render that is gone: the page deleted, a deck folder removed. Every string in a sidecar also counts as a
+place a commodore link's URL may be named (`commodore.links`): the page's own URL, once published. A folder deck that is not the admiral and
 the older single-file deck have no key: the skill does not publish them.
 
 ## 13. A pytest template, for a project whose check is pytest
@@ -220,6 +227,24 @@ contract asks for.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `dark` | `{"ink": "#F2F2F2", "muted": "#B4B4B4", "accent": "#8AB4F8", "paper": "#151515", "raised": "#232323"}` | the five tokens in the dark theme |
+
+## 15. `commodore`: the sent deck's rules
+
+The deck that is sent and read alone ([method.md](method.md), sections 1 and 2) is held to every
+admiral rule under a `commodore.*` rule id, with these limits instead. Its palette, face, contrast,
+runtime and title lexicon are the admiral's; its sizes are `layout.commodore`.
+
+| Key | Default | Meaning | Neutral example |
+| --- | --- | --- | --- |
+| `max_words` | `50` | words on screen per slide, link text counted, notes excluded | `50` |
+| `max_statements` | `6` | text blocks besides the title: statements, `detail` lines and `links` | `6` |
+| `max_lines` | `3` | lines a title or block may run to | `3` |
+| `min_font_px` | `40` | the smallest type any block may render at; the caption floor, so no body line is furniture | `40` |
+| `max_slides` | `12` | slides in one commodore deck, the `"admiral": false` ones included | `12` |
+| `link_prefixes` | `["https://"]` | what every link's URL must start with (`commodore.links`); each entry must itself start `https://`, so a project can narrow it to a host, never widen it to http | `["https://claude.ai/"]` |
+
+Not a parameter: each link's URL must also be in the document's body (the deck fence cut) or in its
+sidecar. A link the document never names is a claim it cannot correct.
 
 ## What is deliberately not a parameter
 

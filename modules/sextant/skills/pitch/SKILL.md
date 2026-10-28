@@ -1,7 +1,7 @@
 ---
 name: pitch
-description: Render one Markdown document — a proposal, a strategy, a captain review — for the people it is for, from that one text: the captain page, read alone, generated from the document (`pitch memo`), and the admiral deck, spoken over, built from the deck fence at the document's end (`pitch build`); both held to the document by `pitch check` and published as private Artifacts, the page first, their links kept in a sidecar. Use for "make a memo of this", "turn this into a deck", "pitch this to <reader>", or when a document changed and its renders must follow.
-argument-hint: <document.md> [captain|admiral|all]
+description: Render one Markdown document — a proposal, a strategy, a captain review — for the people it is for, from that one text: the captain page, read in full, generated from the document (`pitch memo`); the commodore deck, sent and read alone, and the admiral deck, spoken over, both built from the deck fence at the document's end (`pitch build`); all held to the document by `pitch check` and published as private Artifacts, the page first, their links kept in a sidecar. Use for "make a memo of this", "turn this into a deck", "send them the deck", "pitch this to <reader>", or when a document changed and its renders must follow.
+argument-hint: <document.md> [captain|admiral|commodore|all]
 effort: high
 allowed-tools: Bash(pitch:*), Bash(*sextant/*bin/pitch *)
 ---
@@ -23,8 +23,8 @@ generated again in the same change, then `pitch check`. Never edit a render: the
 `pitch memo` and the slides by `pitch build`, and `pitch check` refuses a render that differs from
 what they write.
 
-The argument after the document picks the renders: `captain` the page, `admiral` the deck, `all`
-both (the default).
+The argument after the document picks the renders: `captain` the page, `admiral` the spoken deck,
+`commodore` the sent deck (with the page, which it links), `all` every one (the default).
 
 ## 1. The document first
 
@@ -46,11 +46,12 @@ both (the default).
 | The occasion | The render | What the reader gets |
 | --- | --- | --- |
 | a reader alone, with time: sent, linked, handed over | **captain**: the page, read in full | the whole document, its tables and its figures |
+| a reader who asked for the deck, reading it alone | **commodore**: the sent deck, about fifty words a slide, with links | the deck, its last slide linking the captain page |
 | a room, someone speaking | **admiral**: the deck, about twenty words a slide | the deck on the screen and the captain page in every hand |
 
 The admiral deck is never sent alone: without its speaker it says too little, and the page is what
 makes it honest (method.md, section 1). When a reader asks for "the deck" to read by themselves, send
-the captain page.
+the commodore, and its link to the page.
 
 ## 3. The brand
 
@@ -74,19 +75,30 @@ render` on the deck (method.md, section 5, "The calibrator").
   block it cannot place (raw HTML, an image, a diagram, indented code) is listed by line and nothing
   is written: rewrite that block in the document. A page someone wrote by hand is overwritten only
   with `--replace`, once its words are all in the document.
-- **The admiral deck:** its words go into one ```` ```deck ```` fence at the document's end, a JSON
-  list with one object per slide (`id`, `headline` stating the message, at most three `statements`,
-  the `note` the speaker says, optionally a `graphic`); the builder's comment in `bin/pitchlib.py`
-  gives every key. `pitch build <document.md>` writes the slides, and on its first run the deck
+- **The decks:** their words go into one ```` ```deck ```` fence at the document's end, a JSON list
+  with one object per slide (`id`, `headline` stating the message, at most three `statements`, the
+  `note` the speaker says, optionally a `graphic`); the builder's comment in `bin/pitchlib.py` gives
+  every key. `pitch build <document.md>` writes the admiral's slides, and on its first run the deck
   folder and a `deck.json`; it refuses the whole deck, nothing written, when one slide breaks a rule,
   and says which. Fix the fence, never a slide file. Every number a slide or its note shows must be
   in the document's body: the fence itself does not count.
+- **The commodore** is the same fence with a detail layer, three keys the admiral never shows:
+  `detail` (lines for the reader alone), `links` (`{"text", "url"}`, each https and each URL also in
+  the document's body or its sidecar) and `"admiral": false` on a slide only the sent deck carries.
+  Its last slide links the captain page by the URL the sidecar records. `pitch build <document.md>
+  --deck commodore` writes it the first time; after that a plain `pitch build` rebuilds both decks.
+  Fifty words a slide, six blocks, three lines a block, nothing under 40 px: when a slide will not
+  fit, the detail belongs on the page, and the link takes the reader there.
 - **The pins:** the claims that were wrong once and must never drift go into `pitch.json`'s
-  `claims.must_appear` (the document and the page) and `claims.admiral_must_appear` (the document and
-  the deck), keyed by the document's stem.
+  `claims.must_appear` (the document and the page), `claims.admiral_must_appear` (the document and the
+  spoken deck) and `claims.commodore_must_appear` (the document and the sent deck), keyed by the
+  document's stem.
 - `pitch check <document.md>` green before anything is published, every time.
 
 ## 5. Publish, the page first
+
+The page goes first because the commodore links to it: its URL exists only once the page is
+published.
 
 1. **Read the sidecar first**: `<stem>.pitch.json` beside the document (config.md, section 12). An
    artifact is keyed by the file it was published from, so a render published again from another
@@ -95,14 +107,19 @@ render` on the deck (method.md, section 5, "The calibrator").
 2. **The captain page**: the Artifact tool, `file_path` the page; the first time with an `icon` and a
    one-sentence `description`. Record `published.memo`: its `url`, `first_published` (today) and
    `file`.
-3. **The admiral deck**: the Slides artifact type. Find it with `Artifact` `list` `scope: "types"`
-   (never a remembered link), create the deck once from its `type_url` with the document's title, and
-   follow the type's own instructions to publish the deck's files (`project/deck.json` and
-   `project/slides/<id>.html`, from the deck folder). Record `published.admiral_deck`: `url`,
-   `first_published`, `type_url`, `folder`.
-4. **Assets** (the wordmark, an image): uploaded once with the Artifact tool's `asset: true` and
+3. **The commodore deck**, when it is wanted: put the page's URL from `published.memo.url` into the
+   last slide's `links` in the fence (it is in the sidecar, so `commodore.links` passes it), `pitch
+   build <document.md> --deck commodore`, `pitch check <document.md>`. Then the Slides artifact type:
+   find it with `Artifact` `list` `scope: "types"` (never a remembered link), create the deck once from
+   its `type_url` with the document's title, and follow the type's own instructions to publish the
+   deck's files (`project/deck.json` and `project/slides/<id>.html`, from the commodore's folder).
+   Record `published.commodore_deck`: `url`, `first_published`, `type_url`, `folder`.
+4. **The admiral deck**: the same type, the same way, from the admiral's folder; a deck of its own,
+   never the commodore's artifact. Record `published.admiral_deck`: `url`, `first_published`,
+   `type_url`, `folder`.
+5. **Assets** (the wordmark, an image): uploaded once with the Artifact tool's `asset: true` and
    referenced exactly as the upload returned it; recorded in `assets` as `{"<file>": "<url>"}`.
-5. `pitch check <document.md>` again (it holds the sidecar's shape, and refuses one naming a render
+6. `pitch check <document.md>` again (it holds the sidecar's shape, and refuses one naming a render
    that is gone), then commit the document, its renders and its sidecar together.
 
 ## 6. Images
@@ -130,5 +147,5 @@ route that is not set up says so in one line; the render goes on without the ima
   not look at, an image route that was skipped.
 - Wire the check where the project's own check runs: `pitch check <docs-root>` (a project whose check
   is pytest: config.md, section 13).
-- When the document changes later: correct the document, `pitch memo`, the fence, `pitch build`,
-  `pitch check`, publish again to the sidecar's URLs, one commit.
+- When the document changes later: correct the document, `pitch memo`, the fence, `pitch build` (both
+  decks), `pitch check`, publish again to the sidecar's URLs, the page first, one commit.
