@@ -262,6 +262,40 @@ print(len(calls), out[-1])
 PY
 )" "2 sheep: unchanged since the last deploy (u1)" \
   "a second pass where only as_of, the week line's sample age, the timeline and a card's age moved: not deployed; a new card: deployed"
+echo "the board's ops row (lighthouse-ops S2): lighthouse's ops status, hashed by its sig alone"
+cat > "$T/ops-stub" <<'PY'
+import json, os, sys
+mode = open(os.environ["OPS_STUB_MODE"]).read().strip()
+if mode == "none":
+    print(json.dumps({"row": None, "why": "no sample yet"})); sys.exit(3)
+age, sig = mode.split()
+print(json.dumps({"row": {}, "age_s": 60, "stale": sig == "stale", "sig": sig,
+                  "line": "ops h: queue 1 · load 0.%s/core · sampled %s min ago" % (age, age)}))
+PY
+check "$(OPS_STUB_MODE="$T/ops-mode" HELM_OPS="$T/ops-stub" python3 - "$B" "$T/ops-mode" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helm_render as h
+def mode(m):
+    open(sys.argv[2], "w").write(m)
+mode("3 s1"); a = h.ops_row()
+mode("8 s1"); b = h.ops_row()
+mode("8 s2"); c = h.ops_row()
+mode("none"); d = h.ops_row()
+st = lambda r: {"columns": [], "header": {"needs_owner": 0, "ops": r and r["line"], "ops_sig": r and r["sig"]}}
+print(a["line"], "|", d, "|", h.board_sig(st(a)) == h.board_sig(st(b)), h.board_sig(st(b)) != h.board_sig(st(c)), h.board_sig(st(a)) != h.board_sig(st(None)))
+PY
+)" "ops h: queue 1 · load 0.3/core · sampled 3 min ago | None | True True True" \
+  "ops_row is ops status' line; no sample is no row; board_sig moves with the row's sig, never with its age or gauges in the line"
+check "$(HELM_OPS="$T/no-such-ops" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.ops_row())' "$B")" "None" "an ops that fails: no row, never a traceback"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.ops_row(), h.overview_state()["header"]["ops"])' "$B")" "None None" "no ops.jsonl in this host's log dir: no row, and no ops call"
+LD=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib; print(helmlib._common().LOG_DIR)' "$B")
+mkdir -p "$LD"; python3 -c 'import json,sys,time; print(json.dumps({"as_of": int(time.time()) - 7200, "host": "h", "registry": "ok", "queue": None, "slots": {"busy": 1, "max": 4}, "token": {"plan": "absent", "project": "absent"}, "partial": False, "why": {"queue": "no queue home (wharf-runs/queue-repo): the run slots stand for it"}}))' > "$LD/ops.jsonl"
+out=$(python3 -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import helm_render as h; s = h.overview_state(); print(json.dumps([s["header"]["ops"], s["header"]["ops_stale"], bool(s["header"]["ops_sig"])], ensure_ascii=False))' "$B")
+check "$out" '["ops h: queue off · runs 1/4 · token plan absent, project absent · unread: load, mem, check, budget, weeks, cost · sampled 2 h ago — stale", true, true]' \
+  "lighthouse's own ops on a two-hour-old row: the board's header carries its line, stale, and its sig"
+has "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.page(h.overview_state(), "t"))' "$B")" "S.header.ops_stale?'stale':''" "…the page draws it as its own row"
+rm -f "$LD/ops.jsonl"
 echo "the publish budget: the board and ship pages pause above helm's share (spacesheep-tiers)"
 cat > "$T/budget.py" <<'PY'
 import json, os, sys, time
