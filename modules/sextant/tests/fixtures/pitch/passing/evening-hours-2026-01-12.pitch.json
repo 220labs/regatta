@@ -1,0 +1,19 @@
+{
+ "document": "evening-hours-2026-01-12.md",
+ "published": {
+  "memo": {
+   "file": "evening-hours-2026-01-12-memo.html",
+   "url": "https://example.com/artifact/memo-0001",
+   "first_published": "2026-01-12"
+  },
+  "admiral_deck": {
+   "folder": "evening-hours-2026-01-12-admiral-deck",
+   "url": "https://example.com/artifact/deck-0002",
+   "type_url": "https://example.com/artifact/type-slides",
+   "first_published": "2026-01-13",
+   "slides": 5
+  }
+ },
+ "assets": {},
+ "images": []
+}

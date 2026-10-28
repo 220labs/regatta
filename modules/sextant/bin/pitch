@@ -3,6 +3,7 @@
 
     pitch check <docs-root|document.md> [--config pitch.json] [--json]
     pitch build <stem>-admiral-deck|<document.md> [--config pitch.json] [--check]
+    pitch calibrate glyphs|render [<docs-root>] [--config pitch.json] [--shots DIR]
 
 `check` holds every render of every document under a root to the method: the admiral deck to its
 rules, every folder deck to the furniture rules, the captain renders to their floor and their
@@ -16,9 +17,16 @@ deck, nothing written, when any slide breaks a rule; `--check` compares only, ex
 slide edited by hand, which the next build would silently revert). Given a document, it builds the
 document's admiral deck. Exit 1 on a refusal or drift, 2 when it could not run.
 
+`calibrate` holds the fit estimate to headless Chrome, by hand: `glyphs` measures the config's face
+and writes its `face.glyphs` table, `render` lays every admiral slide under the root out and compares
+line counts with the estimate (exit 1 on a difference; `--shots` writes a PNG per slide). It needs
+Chrome and the network, so no check calls it. Exit 2 when it could not run (no Chrome, no deck, the
+face did not load).
+
 The config is `pitch.json`, found at or above the root (or the deck) unless --config names one; a
 config may start with "extends": "<another config>", relative to itself. Anything left out takes
-the default in pitchlib.py (DEFAULTS).
+the default in pitchlib.py (DEFAULTS). Every key: skills/pitch/config.md; the method behind every
+rule: skills/pitch/method.md.
 
 Pairing is by file name beside the document `<root>/<stem>.md` (every suffix is a parameter):
   <stem>-admiral-deck/project/   the admiral render: deck.json + slides/<id>.html, and the builder's
@@ -26,6 +34,7 @@ Pairing is by file name beside the document `<root>/<stem>.md` (every suffix is 
   <stem>-deck/project/           a folder deck that is not admiral (Slides-type, captain density)
   <stem>-memo.html               the captain render, a plain page
   <stem>-deck.html               a single-file deck, slides as JavaScript template literals
+  <stem>.pitch.json              the sidecar: where each render was published (its shape is checked)
 
 Why every check refuses to be vacuous: the first version of the pairing suite this comes from was
 mutation-tested and found to skip everything, green, the moment a deck was renamed.
@@ -94,11 +103,21 @@ def cmd_build(a):
     return 0
 
 
+def cmd_calibrate(a):
+    # `glyphs` does not read the table it writes: it may not exist yet, or measure the old face.
+    # `render` reads it, since the estimate it holds to Chrome is the one the check makes.
+    cfg = pl.find_config(a.root, a.config, load_glyphs=a.what != "glyphs")
+    if a.what == "glyphs":
+        pl.measure_glyphs(cfg)
+        return 0
+    return pl.calibrate_render(Path(a.root).resolve(), cfg, a.shots)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pitch", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="\n".join(__doc__.split("\n")[2:5]))
-    sub = ap.add_subparsers(dest="verb", metavar="check|build")
+    sub = ap.add_subparsers(dest="verb", metavar="check|build|calibrate")
     sub.required = True
     c = sub.add_parser("check", help="hold a docs root, or one document, to the method; exit 1 on a finding")
     c.add_argument("target", metavar="root|doc")
@@ -108,17 +127,22 @@ def main(argv=None):
     b.add_argument("deck", metavar="deck|doc", help="the <stem>-admiral-deck folder, or its document")
     b.add_argument("--config")
     b.add_argument("--check", action="store_true", help="compare only; exit 1 on drift")
+    k = sub.add_parser("calibrate", help="hold the fit estimate to headless Chrome (by hand; never in a check)")
+    k.add_argument("what", choices=["glyphs", "render"])
+    k.add_argument("root", nargs="?", default=".", help="where the config is found; render's docs root")
+    k.add_argument("--config")
+    k.add_argument("--shots", metavar="DIR", help="render: one PNG per slide into DIR")
     a = ap.parse_args(argv)
     try:
-        if a.verb == "check":
+        if a.verb in ("check", "calibrate"):
             try:
-                return cmd_check(a)
-            except SystemExit as e:     # check's own refusals (no config, no such path): could not run
+                return cmd_check(a) if a.verb == "check" else cmd_calibrate(a)
+            except SystemExit as e:     # their own refusals (no config, no such path, no Chrome): could not run
                 if isinstance(e.code, int):
                     raise
                 raise CouldNotRun(e.code)
         return cmd_build(a)             # build's sys.exit(message) is a refusal or drift: exit 1
-    except CouldNotRun as e:
+    except (CouldNotRun, pl.ConfigError) as e:
         print(e, file=sys.stderr)
         return 2
     except Exception:                   # a crash is "could not tell", never a finding

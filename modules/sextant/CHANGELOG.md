@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `pitch` (renders S2): `calibrate glyphs|render [<root>] [--shots DIR]`, the export's calibrator,
+  by hand only (Chrome and the network; no check calls it). `glyphs` no longer reads the table it is
+  about to write, so a first measurement and a changed face run; `render` refuses a root with no
+  admiral deck (exit 2) rather than passing it. `pitch.json` gains `publish` (`design_system`,
+  `brand`, `images`, `asset_host`; a memo may load from `asset_host`) and `naming.sidecar_suffix`; a
+  value outside its set stops the check (exit 2). The sidecar `<stem>.pitch.json` is checked when
+  present: a 30th rule id, `sidecar.shape`, with a passing sidecar and a failing root. The method and
+  the config reference are public as `skills/pitch/method.md` and `config.md`, the latter with a
+  15-line pytest template. The suite runs 206 cases.
 - New tool: `bin/pitch` (renders S1) — `check <root|doc> [--json]` holds a document's renders to
   the method (the captain page, the admiral deck, every folder and single-file deck; 29 rule ids,
   exit 1 on a finding, 2 when it could not run), `build <deck|doc> [--check]` writes an admiral deck from its `slides.json`,
