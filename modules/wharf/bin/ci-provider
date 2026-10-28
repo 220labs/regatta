@@ -1863,10 +1863,37 @@ install)
       --url "https://github.com/$slug" --name "$name" --labels "$label" --work _work
   fi
   unset token || true
+  # config.sh freezes the caller's LANG into .env, which every job reads. A locale this Mac lacks
+  # (C.UTF-8, which macOS 12 has not, from a newer Mac's ssh) puts every job in C, where bash's
+  # printf %q escapes each non-ASCII character (the 2016 laptop's first job, 2026-10-27). Such a
+  # LANG, fresh or from an earlier install, becomes an installed UTF-8 one, and the service restarts
+  # (an empty or absent LANG is C too). The list read once, into a variable: `locale -a | grep -q`
+  # under pipefail fails when grep stops reading early, which would call an installed LANG missing
+  relang=
+  have=
+  if [ -f .env ]; then have=$(sed -n 's/^LANG=//p' .env | head -1); fi
+  locales=$(locale -a 2>/dev/null || true)
+  if [ -z "$have" ] || ! grep -qxF "$have" <<<"$locales"; then
+    for l in en_US.UTF-8 C.UTF-8; do
+      if grep -qxF "$l" <<<"$locales"; then
+        if grep -q '^LANG=' .env 2>/dev/null; then sed "s/^LANG=.*/LANG=$l/" .env > .env.new && mv .env.new .env
+        else printf 'LANG=%s\n' "$l" >> .env; fi
+        echo "LANG ${have:-(none)} is no locale here: $l (a job running now is cut by the restart)"
+        relang=1; break
+      fi
+    done
+    [ -n "$relang" ] || echo "⚠ LANG ${have:-(none)} is no locale here and neither en_US.UTF-8 nor C.UTF-8 is installed: jobs run in C" >&2
+  fi
   # svc.sh's install refuses an existing plist, and `launchctl load` a loaded one; grep without
   # -q reads to the end, so pipefail never sees launchctl die of SIGPIPE
   [ -f .service ] || ./svc.sh install
   svc=$(basename "$(cat .service)" .plist)
+  if [ -n "$relang" ] && launchctl list | grep -F "$svc" >/dev/null; then
+    # started at once, never by re-reading the list, where a stopped job may still show a moment;
+    # two commands, so a failing stop ends the install under set -e (an `&&` would let it pass)
+    ./svc.sh stop
+    ./svc.sh start
+  fi
   launchctl list | grep -F "$svc" >/dev/null || ./svc.sh start
   ./svc.sh status
   ;;

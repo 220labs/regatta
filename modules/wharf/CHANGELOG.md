@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ci-provider --runner install`: a runner whose frozen LANG is no locale on its Mac (C.UTF-8 from a
+  newer Mac's ssh, on macOS 12) takes an installed UTF-8 one and restarts, so its jobs no longer run
+  in C (ci-fleet follow-ups, 2026-10-27).
 - `ci-provider --runner` serves a fleet of runner Macs: the osx-x64 build beside osx-arm64 by the Mac's
   `uname -m`, `--host`/`--name`/`--labels` for a further Mac, `--instance N` for a further runner on one
   Mac, and an install that never narrows or re-routes a variable other registered runners serve. The

@@ -99,6 +99,19 @@ cat > "$T/ssh/rbin/uname" <<'EOF'
 [ "$1" = -m ] && { echo "${FAKE_ARCH:-arm64}"; exit 0; }
 exec /usr/bin/uname "$@"
 EOF
+# and its installed locales $FAKE_LOCALES's (unset: C, en_US.UTF-8, C.UTF-8 and the suite's own LANG),
+# written in pieces with a pause and a long tail, as the real one is: a `locale -a | grep -q` reader
+# then meets SIGPIPE under pipefail, as on a Mac (497 of 500 there, 2026-10-27), not a single write
+cat > "$T/ssh/rbin/locale" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = -a ]; then
+  for l in ${FAKE_LOCALES:-C en_US.UTF-8 C.UTF-8 ${LANG:-}}; do printf '%s\n' "$l"; done
+  sleep 0.2
+  for i in $(seq 1 400); do printf 'zz_%s.UTF-8\n' "$i"; done
+  exit 0
+fi
+exec /usr/bin/locale "$@"
+EOF
 cat > "$T/ssh/rbin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_SSH/curl"; exit 22
@@ -391,6 +404,7 @@ fakerunner() { # fakerunner <dir> <word>: a runner's svc.sh and config.sh, its s
 case "\$1" in
   install) echo "\$HOME/Library/LaunchAgents/actions.runner.acme-demo.laptop.plist" > .service ;;
   start) echo "1	0	actions.runner.acme-demo.laptop" > "\$FAKE_SSH/loaded"; echo started >> "\$FAKE_SSH/svc" ;;
+  stop) rm -f "\$FAKE_SSH/loaded"; echo stopped >> "\$FAKE_SSH/svc" ;;
   status) echo "status actions.runner.acme-demo.laptop: $2" ;;
   uninstall) rm -f .service "\$FAKE_SSH/loaded" ;;
 esac
@@ -399,7 +413,7 @@ EOF
 #!/usr/bin/env bash
 [ "${ACTIONS_RUNNER_INPUT_TOKEN:-}" = "$FAKE_TOKEN" ] && echo "$1" >> "$FAKE_SSH/envtoken"
 [ "$1" = remove ] && rm -f .runner
-[ "$1" = --unattended ] && echo '{"gitHubUrl": "https://github.com/acme/demo"}' > .runner
+[ "$1" = --unattended ] && echo '{"gitHubUrl": "https://github.com/acme/demo"}' > .runner && printf 'LANG=%s\n' "${LANG:-}" > .env
 echo "config.sh $*"
 EOF
   chmod +x "$1/svc.sh" "$1/config.sh"
@@ -933,6 +947,21 @@ grep -q "holds another repo's runner" "$T/out"; check "$?" "0" "…saying whose"
 grep -q 'status actions.runner' "$T/out"; check "$?" "1" "…its svc.sh never run"
 rm -rf "$RH/actions-runners/acme/demo-2"
 "$CP" "$R" --runner status --host old-ci > /dev/null 2>&1; check "$?" "2" "--host without --name: an error (two Macs would share a name)"
+echo "{\"total_count\":1,\"runners\":[$OLDMAC]}" > "$T/gh/runners.json"
+printf 'LANG=C.UTF-8\n' > "$RH/actions-runners/acme/demo/.env"; printf '1\t0\tactions.runner.acme-demo.laptop\n' > "$T/ssh/loaded"; : > "$T/ssh/svc"
+FAKE_LOCALES="C en_US.UTF-8" "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "a runner whose LANG is no locale on its Mac (C.UTF-8 on macOS 12)"
+check "$(cat "$RH/actions-runners/acme/demo/.env")" "LANG=en_US.UTF-8" "…takes an installed UTF-8 one (2026-10-27)"
+check "$(tr '\n' ' ' < "$T/ssh/svc")" "stopped started " "…and restarts, so the jobs read it"
+grep -q 'LANG C.UTF-8 is no locale here: en_US.UTF-8' "$T/out"; check "$?" "0" "…saying so"
+: > "$T/ssh/svc"; "$CP" "$R" --runner install $FLEET > /dev/null 2>&1
+check "$(cat "$RH/actions-runners/acme/demo/.env"; grep -c stopped "$T/ssh/svc")" "LANG=en_US.UTF-8
+0" "an installed LANG: left as it is, no restart"
+printf 'OTHER=1\n' > "$RH/actions-runners/acme/demo/.env"; : > "$T/ssh/svc"
+FAKE_LOCALES="C en_US.UTF-8" "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "a runner with no LANG at all (C too)"
+check "$(tr '\n' ' ' < "$RH/actions-runners/acme/demo/.env")" "OTHER=1 LANG=en_US.UTF-8 " "…gains an installed UTF-8 one, the rest kept"
+printf 'LANG=xx_XX.UTF-8\n' > "$RH/actions-runners/acme/demo/.env"
+FAKE_LOCALES="C" "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "no UTF-8 locale on the Mac at all"
+grep -q 'neither en_US.UTF-8 nor C.UTF-8 is installed: jobs run in C' "$T/out"; check "$?" "0" "…said, never silent"
 "$CP" "$R" --runner status --instance 2 > "$T/out" 2>&1; check "$?" "0" "--instance 2: status"
 grep -q 'not configured: .*actions-runners/acme/demo-2$' "$T/out"; check "$?" "0" "…in <repo>-2"
 grep -q "acme/demo's runner laptop-2 " "$T/out"; check "$?" "0" "…named <name>-2"
