@@ -16,6 +16,10 @@
                                maximum lifetime. A run not busy yet has its screen read every
                                DISPATCH_SNAP_EVERY (60 s; `hardcopy -h`), so the log of a run that
                                never started shows the last screen it had, even if its window closed.
+                               Where a queue home is set, it claims (`dispatch --claim`) when its
+                               busy run turns parked, its slot then free, once each parked stretch —
+                               not for a yolo or dnd run, whose end hands its slot to its landing
+                               (S2 of docs/dispatch-queue-2026-10-25.md).
     dispatch-rc end TOPIC [REPO]
                                end the live run of TOPIC now, busy or not (`dispatch --end`)
     dispatch-rc end-warm BRANCH REPO [--dry-run]
@@ -775,11 +779,12 @@ def live(skip_repo=None, skip_topic=None, reap=True):
     return out
 
 
-def unfinished(repo, topic):
+def unfinished(repo, topic, reap=True):
     """after()'s view: REPO's TOPIC runs not yet ended whose claude or watcher still runs. A run
     whose claude has exited is not gone until its watcher has quit the screen, freed the worktree
-    lock and written `ended` (re-review of 2026-10-05: the next run started in that gap)."""
-    out = dict(live())
+    lock and written `ended` (re-review of 2026-10-05: the next run started in that gap). REAP False
+    under dispatch's start lock, as live()'s: a reap ends the orphan, and its end claims (S2a's review, item 1)."""
+    out = dict(live(reap=reap))
     for path in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
         if path in out:
             continue
@@ -1300,6 +1305,60 @@ def close_window(st, fresh=False):
     return False
 
 
+def queue_home_set():
+    """A queue home is configured here (`wharf-runs/queue-repo`, not `off`): dispatch-queue's home() rule,
+    read without starting it — a watcher of every run asks."""
+    if common:
+        lines = common.config_lines("wharf-runs/queue-repo") or []
+    else:
+        cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+        try:
+            with open(os.path.join(cfg, "wharf-runs", "queue-repo"), encoding="utf-8-sig") as f:
+                lines = [l.strip() for l in f if l.strip()]
+        except (OSError, ValueError):
+            lines = []
+    v = lines[0].strip() if lines else ""
+    return bool(v) and v.lower() != "off"
+
+
+# a fired job's own words, which a claim from inside its run must not carry: dispatch reads DISPATCH_LABEL
+# as "I am a launchd job", and the rest name that job's log, year and queue claim
+JOB_ENV = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "DISPATCH_LOADED_AT", "DISPATCH_EVENT_AT", "DISPATCH_ORIGIN")
+
+
+# False in the queue's own process (dispatch-queue's rc_mod()): a run its claim or sweep ends there is ended
+# under dispatch's start lock, and a claim from finish() would wait 150 s on the lock its own parent holds,
+# then give up while a job fired meanwhile dropped the entry (S2a's landing review, item 1). The queue's own
+# pass claims what that end freed; nothing else needs to
+CLAIM_AT_END = True
+
+
+def queue_claim(why, event_at=None):
+    """The watcher's claim (S2 of docs/dispatch-queue-2026-10-25.md): `dispatch --claim`, which claims
+    what this Mac has room for under dispatch's start lock and starts each by its own job. Synchronous —
+    seconds, between two polls — and its lines go to this run's log. Never raises; no home, no call."""
+    if not CLAIM_AT_END or not queue_home_set():
+        return
+    env = {k: v for k, v in os.environ.items() if k not in JOB_ENV}
+    argv = [os.path.join(HERE, "dispatch"), "--claim"] + (["--event-at", str(int(event_at))] if event_at else [])
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=300, cwd=HOME)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        say("queue: the claim as %s did not finish (%s)" % (why, e))
+        return
+    got = [l for l in (r.stdout or "").splitlines() if l.startswith("claimed ")]
+    say("queue: claimed as %s: %s" % (why, "; ".join(got)) if got else
+        "queue: a claim as %s took nothing%s" % (why, "" if r.returncode == 0 else " (exit %d: %s)" % (
+            r.returncode, ((r.stderr or "").strip().splitlines() or [""])[-1][:160])))
+
+
+def lands_after(st):
+    """A run whose end hands its slot to its landing: dispatch's yolo_launch starts autofinish-run for a
+    yolo or dnd run, and a claim at its parking took the slot and refused the landing at its cap (the
+    third landing review's item 11). Its fire path claims after the launch instead."""
+    return st.get("yolo") == 1 or st.get("task_mode") in ("yolo", "dnd")
+
+
 def finish(path, st, reason):
     """After the claude process: the screen, the window, the lock, the record. Once: a run
     ended by `--end` or an orphan reaper is not re-ended by its watcher."""
@@ -1333,6 +1392,10 @@ def finish(path, st, reason):
     st.update(ended=int(time.time()), end_reason=reason)
     save(path, st)
     say("ended session %s (%s)" % (st["session"], reason))
+    # no fire path behind a run whose watcher is gone (an orphan a reap, tidy or after() ended): its slot is
+    # free and nothing else claims it (S2). A watched run's fire path claims at its end, after its launch
+    if watcher_gone(st) and not st.get("probe"):
+        queue_claim("its run ended with no watcher (%s)" % reason, st["ended"])
 
 
 def last_answer(sid):
@@ -1452,6 +1515,7 @@ def watch_loop(path, st, start, busy, started):
     # not probed). Before the watcher started, wall time — a few seconds.
     awake0, before = time.monotonic(), max(0.0, start - started)
     seen = {"t": time.time(), "lines": [], "at": 0.0}   # the last screen a not-busy run showed (SNAP_EVERY)
+    claimed = False   # this parked stretch has claimed (the queue's watcher claim, S2)
     while True:
         if not same(st):
             if not busy and seen["lines"]:
@@ -1480,6 +1544,15 @@ def watch_loop(path, st, start, busy, started):
             except OSError:
                 pass
         idle_s = RC.idle_hours(rec) * 3600 if rec else 0
+        # The watcher's claim (S2): the run's slot is free once it turns parked — warm, or waiting on a
+        # prompt — and no longer counted (parked(), the cap's own rule), not at its end up to an hour on.
+        # Once a stretch: busy again re-arms it. Never for a probe, or a run whose end hands its slot on
+        if busy and not st.get("probe") and not lands_after(st):
+            if status == "busy":
+                claimed = False
+            elif not claimed and parked(st):
+                claimed = True
+                queue_claim("this run turned %s" % (status or "parked"), time.time())
         # idle: let the Mac sleep through the warm hour; busy again: hold it off again. A run with
         # background tasks allowed reads idle while a background job still runs, and that job would
         # stall in the sleep (review of 2026-10-08): it is held awake throughout. The default,

@@ -8,6 +8,8 @@
 # dispatch --slots
 # dispatch --queue [--all] [--json]
 # dispatch --sweep
+# dispatch --claim [--event-at EPOCH]
+# dispatch --poll
 # dispatch --end TOPIC [--repo DIR]
 # dispatch --start PROMPT DIR NAME [--session-id ID] [--resume ID [--fork]] [--allow TOOL]... [--undeny TOOL]...
 #                   [--model M] [--effort E] [--headless] [--dry-run]
@@ -138,8 +140,8 @@
 # failed (two runs on 2026-10-05). macOS has no setsid(1) to detach it otherwise; launchd is the
 # path every scheduled run already takes. --dry-run still runs here.
 #
-# The queue (S1 of docs/dispatch-queue-2026-10-25.md; bin/dispatch-queue's header has the mechanics): once a
-# home is configured (`wharf-runs/queue-repo`, set on purpose: no fallback until S2), a run now on this Mac — a direct
+# The queue (S1 and S2's first half of docs/dispatch-queue-2026-10-25.md; bin/dispatch-queue's header has the mechanics): once a
+# home is configured (`wharf-runs/queue-repo`, set on purpose: no fallback yet), a run now on this Mac — a direct
 # run, a --next — is an entry on the fleet's queue ref, one per branch, and this Mac claims what it has room
 # for, best first (force, high, normal, low, then age), starting each at once through a RunAtLoad job that
 # runs `dispatch BRANCH … --from-queue STORE:KEY`. A full Mac leaves the entry queued: a direct run says so
@@ -156,7 +158,12 @@
 #   --queue     the entries this Mac could run, or every one (--all); --json for a reader, whose rule is that
 #               an unreadable queue counts as an entry (dispatch-queue has: exit 4).
 #   --sweep     the outbox, this Mac's own entries reconciled with its records, cards, then a claim — what the
-#               10-minute job S2 installs runs; by hand meanwhile.
+#               queue-sweep job runs every 10 min on every Mac with a home (dispatch-queue jobs, run as each
+#               run starts and at each enqueue here, installs it; `regatta check` names a Mac without it).
+#   --claim     claim what this Mac has room for now: what a run's watcher runs when its run turns parked or
+#               ends with no fire path behind it (dispatch-rc); --event-at, when the slot freed (G3's start).
+#   --poll      one pass of the pending poll, the 60 s job loaded only while entries pend on a Mac no kick
+#               road reaches and with room (dispatch-queue poll). Without a home, each is a no-op.
 #
 # Limits (review of 2026-10-05: nothing bounded an unattended chain):
 #   - a run is ended at DISPATCH_MAX_H hours (default 8) even if never idle, and caffeinate ends with it;
@@ -412,10 +419,17 @@ queue_on() {
   fi
   [ -n "$qhome" ]
 }
+# the queue's jobs (dispatch-queue jobs): the sweep where a home is, neither where none is — a plist compare
+# when nothing changed, and no python at all with no queue key and no job left behind (S2)
+queue_jobs() {
+  [ -n "$qkeys" ] || ls "$LA/$lprefix".queue-*.plist >/dev/null 2>&1 || return 0
+  python3 "$Q" jobs "${qctx[@]}"
+}
 # the slots this host reserved for claims whose run has no record yet, bar this run's own (dispatch-queue reserved)
 qreserved() {
   local r
-  queue_on || { echo 0; return; }
+  # one python start, not two: no queue key and no claims folder is no reservation (the fourth review's item 14)
+  [ -n "$qkeys" ] || [ -d "$cache/queue/claims" ] || { echo 0; return; }
   r=$(python3 "$Q" reserved "${qctx[@]}" ${fromq:+--except "$fromq"} 2>/dev/null)
   case "$r" in ''|*[!0-9]*) echo 0;; *) echo "$r";; esac
 }
@@ -445,7 +459,10 @@ roomy() {
 branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; model="opus"; effort="high"; model_given=0; effort_given=0; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
 account=""; force=0; fallback=""; on_here=0; on_typed=0; on_default=0; at_default=0; on_auto=0; ifroom=0
 start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
-prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0
+prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0; qverb=""; evat=""
+# before the flags: --slots counts the queue's claims (qreserved) under $cache, and every later home path is
+# written through it, $LA or $runs (S2a's landing review, item 2: a public line names no $HOME path of its own)
+cache="$HOME/Library/Caches/run-seed"; lockd="$cache/start.lock"
 while [ $# -gt 0 ]; do
   case "$1" in
     --start|--launch) [ $# -ge 4 ] || { echo "dispatch: --start PROMPT DIR NAME" >&2; exit 2; }
@@ -479,6 +496,8 @@ while [ $# -gt 0 ]; do
     --from-queue) fromq="${2:-}"; [ -n "$fromq" ] || { echo "dispatch: --from-queue takes a queue id" >&2; exit 2; }; shift 2;;
     --queue) shift; exec python3 "$Q" list "$@" --host "$self_host";;
     --sweep) sweep=1; shift;;
+    --claim|--poll) qverb="${1#--}"; shift;;
+    --event-at) evat="${2:-}"; case "$evat" in ''|*[!0-9]*) echo "dispatch: --event-at takes an epoch" >&2; exit 2;; esac; shift 2;;
     --status) python3 "$here/bin/dispatch-rc" status; rc=$?
               python3 "$Q" list --status --host "$self_host" 2>/dev/null; exit "$rc";;
     --cap) echo "$max_runs"; exit 0;;
@@ -494,11 +513,12 @@ done
 # The weekly Sextant (aurora's weekly-run exports WEEKLY_RUN) runs in `auto` mode: its allow rules
 # only spare the classifier, they refuse nothing. So the one shape it may schedule is held here — a
 # branch at a reset slot with --if-room and nothing else; the fired run never carries WEEKLY_RUN
-# (the S7 /finish review's F1, F5).
+# (the S7 /finish review's F1, F5). The queue's verbs (--claim, --poll, --event-at) are refused with the
+# rest: each starts work beside the one shape (S2a's landing review, item 6).
 if [ -n "${WEEKLY_RUN:-}" ]; then
   case "$at" in reset|reset+30|reset+60) slot=1;; *) slot=0;; esac
   if [ "$slot" = 0 ] || [ "$ifroom" = 0 ] || [ -z "$branch" ] \
-     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode$fromq${prio_given#0}" ] || [ "$sweep" = 1 ] \
+     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end$account$note$bg$on$mode$fromq${prio_given#0}$qverb$evat" ] || [ "$sweep" = 1 ] \
      || [ "$model/$effort" != opus/high ]; then
     echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
   fi
@@ -508,6 +528,12 @@ if [ -n "${WEEKLY_RUN:-}" ]; then
 fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
 [ "$sweep" = 0 ] || exec python3 "$Q" sweep "${qctx[@]}"
+# a claim now (a run's watcher, as its slot frees) and the pending poll's pass: nothing without a home
+if [ -n "$qverb" ]; then
+  queue_on || [ "$qverb" = poll ] || exit 0   # the poll's pass removes a poll job left by a home since unset
+  [ "$qverb" = claim ] && exec python3 "$Q" claim ${evat:+--event-at "$evat"} "${qctx[@]}"
+  exec python3 "$Q" poll "${qctx[@]}"
+fi
 # --from-queue is the queue's own job (dispatch-queue's start_job), nobody's flag to type
 if [ -n "$fromq" ] && { [ -z "${DISPATCH_LABEL:-}" ] || [ -n "$at$end" ] || [ "$cancel$next$start$probe" != 0000 ]; }; then
   echo "dispatch: --from-queue is the queue's launchd job's flag (dispatch-queue start_job), with no --at, --next, --start, --probe or --cancel" >&2; exit 2
@@ -1059,7 +1085,9 @@ queue_args() {
   [ "$headless" = 1 ] && qa+=(--arg=--headless)
   [ "$yolo" = 1 ] && qa+=(--arg=--yolo)
   [ "$ifroom" = 1 ] && qa+=(--arg=--if-room)
-  [ -n "$mode" ] && [ "$mode" != yolo ] && qa+=(--arg=--mode "--arg=$mode")
+  # --mode only when one was given: an inherited one rides as the hint (DISPATCH_MODE, below), which the fire
+  # path reads as the one-shot's plist does, and enqueue judged it a raise (the fourth review's item 12)
+  [ "$mode_given" = 1 ] && [ -n "$mode" ] && [ "$mode" != yolo ] && qa+=(--arg=--mode "--arg=$mode")
   [ -n "$bg" ] && qa+=(--arg=--background "--arg=$bg")
   [ -n "$account" ] && qa+=(--arg=--account "--arg=$account")
   [ "$force" = 1 ] && qa+=(--arg=--force)
@@ -1070,7 +1098,7 @@ queue_args() {
     val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && qa+=(--env "${v#*:}=$val")
   done
 }
-qparse() {   # dispatch-queue enqueue's JSON line -> q_res q_qid q_ours q_rank q_off q_why, as shell words
+qparse() {   # dispatch-queue enqueue's JSON line -> q_res q_qid q_ours q_rank q_off q_why q_err, as shell words
   printf '%s\n' "$1" | tail -1 | python3 -c 'import json, shlex, sys
 try:
     d = json.loads(sys.stdin.read())
@@ -1078,7 +1106,7 @@ except ValueError:
     d = {}
 q = d.get("qid") or ""
 v = dict(q_res=d.get("result") or "", q_qid=q, q_ours="1" if q and q in (d.get("claimed") or []) else "0",
-         q_rank=str(d.get("rank") or "?"), q_off="1" if d.get("offline") else "0", q_why=d.get("no_room") or "")
+         q_rank=str(d.get("rank") or "?"), q_off=d.get("offline") or "", q_why=d.get("no_room") or "", q_err=d.get("error") or "")
 print(" ".join("%s=%s" % (k, shlex.quote(x)) for k, x in v.items()))'
 }
 # A run now on this Mac, through the queue: enqueued and, with room here, claimed and started at once.
@@ -1126,17 +1154,14 @@ queue_dispatch() {
     esac
     echo "dispatch: $branch is ${q_res#busy } (queue entry $q_qid) — one branch, one host: end with the WAITING line — the next step waits for a run to end (that one; $qhow)" >&2; exit 2
   fi
-  [ "$q_off" = 1 ] && echo "dispatch: the queue's home did not answer — the entry waits in this Mac's outbox, which every queue call retries" >&2
-  q_err=$(printf '%s\n' "$out" | tail -1 | python3 -c 'import json, sys
-try:
-    print(json.loads(sys.stdin.read()).get("error") or "")
-except ValueError:
-    pass' 2>/dev/null)
+  # the reason, not "did not answer" alone: a put that lost the lease thrice waits there too (the fourth review's item 11)
+  [ -n "$q_off" ] && echo "dispatch: the entry waits in this Mac's outbox ($q_off), which every queue call and the sweep retry" >&2
   [ -z "$q_err" ] || echo "dispatch: queued as $q_qid, but its claim here failed ($q_err) — a later claim starts it (dispatch --queue)" >&2
   # one pending run per branch, as the one-shot's --next kept it: the queued step replaces a pending one
   [ "$next" = 1 ] && clear_jobs "" "replaced the pending" >&2
   branch_entry_yield >&2
   mark_dispatched "$self_host"
+  queue_jobs >&2
   if [ "$q_ours" = 1 ]; then
     [ "$next" = 1 ] && { confirm; exit $?; }
     echo "started from the queue: $q_qid ($prio) on this Mac, at once; log $log"; exit 0
@@ -1174,6 +1199,12 @@ queue_unsure() {   # MRC WHY
   case "$1" in 0|3) return 0;; esac
   echo "FAILED: the queue did not say whether $fromq is still this job's claim (exit $1: ${2:-no answer}); not running"
   queue_refused "the queue did not read at fire time on $self_host (mine exit $1)"; exit 1
+}
+# A stale job ran nothing: its reservation goes now, not at the lease (the first review's item 10); by its own
+# label only, so a newer claim of the entry keeps its slot
+queue_unreserve() {
+  [ -n "${DISPATCH_LABEL:-}" ] && python3 "$Q" unreserve "$fromq" --label "$DISPATCH_LABEL" "${qctx[@]}" >/dev/null 2>&1
+  return 0
 }
 # The record exists: a claimed entry is running; a run not from the queue marks a queued entry of its
 # branch as live here (one branch, one host).
@@ -1427,7 +1458,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
 fi
 
 # From here on: the run itself (fired by launchd, or --dry-run).
-cache="$HOME/Library/Caches/run-seed"; lockd="$cache/start.lock"; held=""
+held=""   # the start lock is ours (take_lock); $cache and $lockd are set before the flags
 # plist first: bootout SIGTERMs this very script, and a plist left behind fires again next year.
 # Its own label only, never the branch's: a successor this run scheduled is another job.
 cleanup() {
@@ -1446,7 +1477,9 @@ cleanup() {
 }
 qlog0=0; [ -f "$log" ] && qlog0=$(wc -c < "$log" | tr -d ' ')
 trap cleanup EXIT
-# a job that survived a crash or reboot fires a year late: refuse it
+# a job that survived a crash or reboot fires a year late: refuse it. A queue job's plist carries no year (it
+# runs at load, and `mine` judges a stale one): a claim in a year's last seconds failed its entry (the first
+# review's item 6; dispatch-queue start_job)
 if [ -n "${DISPATCH_YEAR:-}" ] && [ "$DISPATCH_YEAR" != "$(date +%Y)" ]; then echo "dispatch: scheduled for $DISPATCH_YEAR, it is $(date +%Y); not running" >&2; exit 0; fi
 exec 3>&1   # --dry-run prints here, past the log redirect
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -1462,8 +1495,11 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
 # AskUserQuestion: nobody watches a run, and in auto mode the classifier would answer it (R2 of
 # docs/session-asks-2026-10-09.md); the PreToolUse hook (hooks/ask_guard.py) is the guard, this the belt
 # dispatch-queue's enqueue and claim: a run reaches the queue through dispatch, whose raise checks run
-# first; enqueue repeats them (its raise_refusal), and this is the habit guard (queue-s1 review, item 1)
-denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" AskUserQuestion)
+# first; enqueue repeats them (its raise_refusal), and this is the habit guard (queue-s1 review, item 1).
+# S2's verbs beside them: dispatch --claim and --poll (the watcher's and the poll job's, never a session's),
+# dispatch-queue poll and jobs (they load and boot out launchd jobs), unreserve (it frees a claim's slot)
+# — S2a's landing review, item 6
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" "Bash(*dispatch --claim*)" "Bash(*dispatch --poll*)" "Bash(*dispatch-queue poll*)" "Bash(*dispatch-queue jobs*)" "Bash(*dispatch-queue unreserve*)" AskUserQuestion)
 # --start's changes to both lists (bash 3.2: an empty array under set -u needs the ${a[@]+…} form)
 for t in ${extra_allow[@]+"${extra_allow[@]}"}; do
   case " ${tools[*]} " in *" $t "*) ;; *) tools+=("$t");; esac
@@ -1626,7 +1662,7 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   # the plist's variables must not reach the session: its own dispatch calls would delete this job.
   # CLAUDE_UNATTENDED reaches its hooks: checkpoint.py keeps the run read-only on live systems.
   local hpf="$state.claude-pid" hw; rm -f "$hpf"; hw=($(hpf_env "$hpf"))
-  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
+  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
   kpid=$!; cpid=$(pid_of_claude "$kpid" "$hpf"); chain_record
   record mode=headless background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" started="$(date +%s)" log="$log" wt="$wt" \
     watcher="$$" watcher_start="$(pstart $$)" "${crec[@]}"
@@ -1665,7 +1701,7 @@ runner_text() {   # PROMPT DIR REMOTE-CONTROL-NAME PIDFILE — with $sid set; cl
   echo '#!/bin/bash'
   printf 'echo $$ $PPID > %q\n' "$4"   # claude (exec'd below) and its SCREEN master
   echo 'for v in $(env | sed -n "s/^\(CLAUDE[A-Z_]*\)=.*/\1/p"); do case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN) ;; *) unset "$v";; esac; done'
-  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_LOADED_AT DISPATCH_ORIGIN DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
+  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_LOADED_AT DISPATCH_EVENT_AT DISPATCH_ORIGIN DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
   printf 'cd %q || exit 1\n' "$2"
   printf 'exec env'
   local hw; hw=($(hpf_env "$4.claude"))
@@ -2014,7 +2050,7 @@ PY
   # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
   # without the build's login (pick_account exported it): autofinish-run picks its own, fresh, as
   # the sweep's start_runner does — a build on a second login must not run on it past its ceiling (review, 2026-10-08)
-  env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
+  env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
     "$AFRUN" "$wt" --rule "$rule" --by "$by" 2>&1
   arc=$?
   echo "== $m: autofinish-run exit $arc"
@@ -2029,7 +2065,7 @@ if [ "$start" = 1 ] && [ "$dry" = 1 ]; then
   untrusted && echo "# not trusted: $repo — the run would trust it first (bin/trust-projects)"
   if [ "$headless" = 1 ]; then
     run_env headless >&2
-    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
+    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
     printf ' %q' "${renv[@]}" "${chain[@]}" "${CL[@]}" -p "$lprompt" "${sargs[@]}" --model "$model" --effort "$effort" \
       --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text
     echo
@@ -2046,6 +2082,7 @@ fi
   # an installed tidier on an older plist (its interval) is brought up to this code: from here, a
   # job of its own, never from the tidier itself (dispatch-rc refresh_tidy)
   [ "$dry" = 1 ] || python3 "$here/bin/dispatch-rc" refresh-tidy
+  [ "$dry" = 1 ] || queue_jobs   # the queue-sweep job, as the tidier: brought here by a run's start (S2)
   # a claimed entry's job (dispatch-queue start_job): its load-to-start seconds, the RunAtLoad latency
   if [ -n "$fromq" ]; then
     case "${DISPATCH_LOADED_AT:-}" in ''|*[!0-9]*) lat="";; *) lat=", $(( $(date +%s) - DISPATCH_LOADED_AT )) s from its job's load";; esac
@@ -2058,7 +2095,8 @@ fi
       mine=$(python3 "$Q" mine "$fromq" --label "${DISPATCH_LABEL:-}" "${qctx[@]}" 2>&1); mrc=$?
       queue_unsure "$mrc" "$mine"
       if [ "$mrc" != 0 ]; then
-        qdone=1; echo "== a stale queue job: $fromq is not this job's claim now (${mine:-exit $mrc}); not running"; exit 0
+        qdone=1; echo "== a stale queue job: $fromq is not this job's claim now (${mine:-exit $mrc}); not running"
+        queue_unreserve; exit 0
       fi
     fi
   fi
@@ -2093,7 +2131,7 @@ fi
     ensure_trusted || exit 1
     if [ "$headless" = 1 ]; then
       run_env headless
-      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
+      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
       echo "== probe exit $? at $(date)"; exit 0
     fi
     # the visible path, as a run takes it: no worktree, its own screen; no run cap, no after()
@@ -2140,7 +2178,8 @@ fi
     mine=$(python3 "$Q" mine "$fromq" --label "${DISPATCH_LABEL:-}" "${qctx[@]}" 2>&1); mrc=$?
     queue_unsure "$mrc" "$mine"
     if [ "$mrc" != 0 ]; then
-      qdone=1; echo "== a stale queue job: $fromq is not this job's claim after its wait (${mine:-exit $mrc}); not running"; exit 0
+      qdone=1; echo "== a stale queue job: $fromq is not this job's claim after its wait (${mine:-exit $mrc}); not running"
+      queue_unreserve; exit 0
     fi
   fi
   git -C "$repo" fetch origin "$branch" 2>&1 || { echo "FAILED: $branch is not on origin"; exit 1; }

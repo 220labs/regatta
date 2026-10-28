@@ -1802,7 +1802,8 @@ class Ship:
 
     def runs_busy(self, wt):
         """(runs busy on this Mac, dispatch's cap) as dispatch counts them before a start
-        (`dispatch-rc live --no-reap`: read only; warm and waiting runs not counted), or (None, cap)
+        (`dispatch-rc live --no-reap`: read only; warm and waiting runs not counted; plus the queue's
+        reservations, `dispatch-queue reserved`), or (None, cap)
         when it cannot be read — then the start goes ahead and dispatch's own refusal decides. A
         launch refused there ends `never-started` at gate `refused` and is started again here. The
         cap is dispatch's `--cap` (its one home; DISPATCH_MAX_RUNS first, as dispatch reads it)."""
@@ -1815,9 +1816,19 @@ class Ship:
         try:
             r = subprocess.run([os.environ.get("WHARF_DISPATCH_RC") or str(HERE / "dispatch-rc"), "live", "--no-reap",
                                 str(self.repo), topic], capture_output=True, text=True, timeout=60)
-            return int(r.stdout.strip()), most
+            n = int(r.stdout.strip())
         except (OSError, subprocess.TimeoutExpired, ValueError):
             return None, most
+        # the queue's claims hold their slots before their records exist, as dispatch's own count adds them
+        # (its qreserved; the queue's first landing review, item 10): unread, none — dispatch's refusal decides
+        if (Path.home() / "Library" / "Caches" / "run-seed" / "queue" / "claims").is_dir():
+            try:
+                q = subprocess.run([os.environ.get("WHARF_DISPATCH_QUEUE") or str(HERE / "dispatch-queue"), "reserved"],
+                                   capture_output=True, text=True, timeout=60)
+                n += int(q.stdout.strip()) if q.returncode == 0 else 0
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                pass
+        return n, most
 
     def start_launch(self, st, task):
         """--launch: a `launch: finish` block whose predecessor ended is launched by `bin/autofinish-run
