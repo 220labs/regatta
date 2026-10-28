@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `check`: a run that holds its slot but has not yet dropped its queue ticket no longer also counts as
+  ahead, which made a third check wait with three slots for three on a slow runner Mac; the slot's pid
+  is written right after its start (ci-fleet follow-ups, 2026-10-27).
 - `tests/queue_live.sh <queue repo url>`: the queue's live case, run by hand against a real home on a scratch
   `refs/regatta/*` ref, `dispatch-queue`'s write path re-done in shell (a hook-less bare clone, an orphan commit
   by `commit-tree`, `push --force-with-lease`). It proves the home takes and serves the ref, a

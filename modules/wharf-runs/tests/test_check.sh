@@ -101,12 +101,22 @@ mkdir -p "$T/slots/slot-1"
 until_ "grep -q waiting '$T/young.out'"; check "$?" "0" "no pid, younger than 2 min: a holder still writing, waited for"
 rmdir "$T/slots/slot-1"; wait $y; check "$?" "0" "…and taken once it goes"
 "$B/check" "$G" > /dev/null; check "$(ls -A "$T/slots/queue" | wc -l | tr -d ' ')" "0" "no ticket left in the queue"
+# a run between taking its slot and dropping its ticket: one holder, never also one ahead
+sleep 60 & lp=$!; ls="$(TZ=UTC LC_ALL=C ps -o lstart= -p $lp | xargs)"
+mkdir -p "$T/slots/slot-1"; echo $lp > "$T/slots/slot-1/pid"; echo "$ls" > "$T/slots/slot-1/start"
+printf '%s\n%s\n%s\n' "$lp" "$ls" "$G" > "$T/slots/queue/0000000001.000000.$lp"
+# in the background, bounded: the old double count waited until the holder (60 s) went
+CHECK_SLOTS=2 "$B/check" "$G" > "$T/held.out" 2>&1 & hp=$!
+until_ "grep -q '^DONE\|waiting' '$T/held.out'"
+check "$(grep -c waiting "$T/held.out")" "0" "a holder whose ticket is still queued is not also ahead (2026-10-27)"
+check "$(grep -c '^DONE' "$T/held.out")" "1" "…and it ran"
+kill $lp $hp 2>/dev/null; wait $lp $hp 2>/dev/null; rm -rf "$T/slots/slot-1" "$T/slots/queue/0000000001.000000.$lp"
 
 echo "a slot taken, the rest queued in turn"
 Q=$(mk q 'bash turn.sh')
 export ORDER="$T/order"; : > "$ORDER"
 WHO=A HOLD=2 "$B/check" "$Q" > "$T/A.out" 2>&1 & pa=$!
-until_ "[ -s '$T/slots/slot-1/pid' ]"
+until_ "[ -s '$T/slots/slot-1/since' ]"   # written last since 2026-10-27, after pid and checkout
 check "$(cat "$T/slots/slot-1/pid")" "$pa" "the slot holds the holder's pid"
 check "$(cat "$T/slots/slot-1/checkout")" "$(cd "$Q" && pwd -P)" "…and its checkout"
 WHO=B HOLD=0 "$B/check" "$Q" > "$T/B.out" 2>&1 & pb=$!
@@ -131,7 +141,9 @@ mkdir -p "$T/cfg/wharf-runs"; printf 'other:5\nlaptopx: 3\n*:1\n' > "$T/cfg/whar
 : > "$ORDER"
 for w in A B C; do env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=laptopx WHO=$w HOLD=3 "$B/check" "$Q" > "$T/${w}3.out" 2>&1 & eval "p$w=\$!"; done
 wait $pA $pB $pC
-check "$(cat "$T/A3.out" "$T/B3.out" "$T/C3.out" | grep -c waiting)" "0" "this host's line, 3: three checks run together"
+# what matters is that all three ran at once, as the two-slot case asks of two; a `waiting` line can
+# still slip into the instant between a run's mkdir and its pid, and costs one poll at most
+check "$(head -3 "$ORDER" | grep -c start)" "3" "this host's line, 3: three checks run together"
 : > "$ORDER"
 env -u CHECK_SLOTS REGATTA_CONFIG="$T/cfg" CHECK_HOST=nobody WHO=A HOLD=2 "$B/check" "$Q" > "$T/A4.out" 2>&1 & pa=$!
 until_ "[ -s '$T/slots/slot-1/pid' ]"
