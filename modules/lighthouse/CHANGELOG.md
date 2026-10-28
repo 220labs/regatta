@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- account.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The desk's sampler (lighthouse-ops S2, 2026-10-27): `ops sample` appends one row to the log dir's
   `ops.jsonl` — the dispatch queue, the run slots, the 5-minute load per core, headroom's memory, the
   check slots, the CI budgets from S1's usage read (and `ci-usage.json` with it), the token's standing as

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The suites delete under HOME through `rm_own` (the core's entry, 2026-10-27).
 - `check`: a run that holds its slot but has not yet dropped its queue ticket no longer also counts as
   ahead, which made a third check wait with three slots for three on a slow runner Mac; the slot's pid
   is written right after its start (ci-fleet follow-ups, 2026-10-27).

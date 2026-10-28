@@ -14,6 +14,9 @@ W="$D/bin/weekly-run"
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" REGATTA_CONFIG="$T/config" WEEKLY_LOG_DIR="$T/logs"
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # The moved HOME drops check.yml's git identity, and the code under test commits (the embark memo,
 # the dream): an ubuntu runner cannot guess one from its hostname as a Mac does (the twin's CI,
 # 2026-10-25). The file replaces check.yml's, so it carries that one's init.defaultBranch too.
@@ -373,7 +376,7 @@ mkdir -p "$HOME/.config"; cp -R "$REGATTA_CONFIG" "$HOME/.config/regatta"
 out=$(env -i HOME="$HOME" PATH=/usr/bin:/bin "$W" where); check $? 0 "where: exit 0"
 check "$(echo "$out" | sed -n 's/^vault //p')" "$V" "  the vault from the config dir under HOME"
 env -i HOME="$HOME" PATH=/usr/bin:/bin "$W" aurora "$V" --dry-run | grep -q "the night's order"; check $? 0 "  --dry-run plans the night"
-rm -rf "$HOME/.config/regatta"
+rm_own "$HOME/.config/regatta"
 
 echo "install.sh against a scratch launchd"
 cat > "$T/launchctl" <<EOF

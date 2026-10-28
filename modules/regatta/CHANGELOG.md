@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The check lints every module's suites (`tests/home_rm.py`): a recursive `rm` (the flag anywhere in its
+  flags), an `rm` of a glob or a `find -delete` of a path under `$HOME` (directly, by `~/`, or through
+  variables built from it) goes through the suite's `rm_own`, which deletes only under the suite's own `$T`,
+  refuses `..` and `//`, and does not exist in a block run outside the suite. On 2026-10-25 a session ran a
+  sed range of helm's suite in a shell whose HOME was the real one, and its `rm -rf "$R"` emptied the build
+  Mac's run records; every such delete, in nine suites, now goes through it. A single named file is not
+  linted.
 - `common.landed_pr(slug, branch, base=, timeout=5)`: the merged pull request from a head branch at
   any sha (into `base` when given, head.ref checked), while none from it is open (`merged_pr` matches
   one sha); wharf's checkpoint asks it before every push.

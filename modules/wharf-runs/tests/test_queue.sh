@@ -18,6 +18,9 @@ has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3:
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 # every home path through $HL, one definition (S2a's landing review, item 2: the publish gate)
 export HOME="$T/home"; HL="$HOME/Library"; mkdir -p "$HL/LaunchAgents"
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 export ACCOUNTS_FILE="$T/no-accounts.json"
 # a moved HOME drops the global git identity (AGENTS.md: a suite that moves HOME and commits)
 printf '[user]\n\tname = t\n\temail = t@t\n[init]\n\tdefaultBranch = main\n' > "$T/gitconfig"; export GIT_CONFIG_GLOBAL="$T/gitconfig"
@@ -44,8 +47,8 @@ qget() { local k=$1; shift; "${QGIT[@]}" show "refs/regatta/queue:queue/$k.json"
 qplists() { ls "$LA"/org.example.claude.dispatch.*.q[0-9]*.plist 2>/dev/null; }
 qreset() {
   "${QGIT[@]}" update-ref -d refs/regatta/queue 2>/dev/null
-  rm -rf "$HL/Caches/run-seed/queue" "$HL/Logs/claude-weekly/run-seed-runs"
-  rm -f "$LA"/*.plist "$T/calls" "$QL"
+  rm_own "$HL/Caches/run-seed/queue" "$HL/Logs/claude-weekly/run-seed-runs"
+  rm_own "$LA"/*.plist "$T/calls" "$QL"
 }
 enq() { python3 "$QB" enqueue --repo "$T/repo" --branch "claude/laptop/2026-10-27-$1" "${QC[@]}" "${@:2}" > /dev/null; }
 pkey() { python3 -c 'import plistlib, sys; d = plistlib.load(open(sys.argv[1], "rb")); v = d
@@ -420,7 +423,7 @@ check "$(qget repo--c7 branch) $(ls "$HL/Caches/run-seed/queue/outbox" 2>/dev/nu
 check "$(grep -c 'waits in this Mac.s outbox (\$q_off)' "$B/dispatch")" "1" "  dispatch says why it waits there, not 'did not answer' alone"
 qreset
 check "$(qpy spent)" "fleet:w fleet:y fleet:z" "first review's item 10: a reservation whose job exited (its plist gone) is spent; its plist kept, young or its claimer alive, held"
-rm -rf "$HL/Caches/run-seed/queue/claims"; mkdir -p "$HL/Caches/run-seed/queue/claims"
+rm_own "$HL/Caches/run-seed/queue/claims"; mkdir -p "$HL/Caches/run-seed/queue/claims"
 printf '{"qid": "fleet:u", "at": %s, "label": "L1"}' "$(date +%s)" > "$HL/Caches/run-seed/queue/claims/fleet_u.a.json"
 printf '{"qid": "fleet:u", "at": %s, "label": "L2"}' "$(date +%s)" > "$HL/Caches/run-seed/queue/claims/fleet_u.b.json"
 python3 "$QB" unreserve fleet:u --label L1 "${QC[@]}"
@@ -434,7 +437,7 @@ import importlib.machinery, sys
 w = importlib.machinery.SourceFileLoader("w", sys.argv[1]).load_module()
 s = w.Ship.__new__(w.Ship); s.repo = sys.argv[2]
 print(s.runs_busy(sys.argv[2] + "/2026-10-27-x"))' "$B/wharf" "$T/repo")" "(3, 5)" "  wharf's runs_busy: 1 run and 2 reservations, against the cap"
-rm -rf "$HL/Caches/run-seed/queue/claims"
+rm_own "$HL/Caches/run-seed/queue/claims"
 check "$(WHARF_DISPATCH_RC="$T/rc-stub" WHARF_DISPATCH_QUEUE="$T/q-stub" DISPATCH_MAX_RUNS=5 python3 -c '
 import importlib.machinery, sys
 w = importlib.machinery.SourceFileLoader("w", sys.argv[1]).load_module()

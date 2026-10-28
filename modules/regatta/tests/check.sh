@@ -879,5 +879,33 @@ if [ -f "$WH" ]; then
 fi
 check "$g4c" 0 "  G4: of $g4n hook readers, the number that opened a Drive-backed file (target 0)"
 
+# 2026-10-25: a block of test_helm.sh run in a shell whose HOME was the real one emptied the build
+# Mac's run records. A suite's recursive or glob delete under HOME goes
+# through its rm_own, which deletes only under the suite's own $T and is absent from a block run outside.
+echo "a suite deletes under HOME only through its rm_own (F2)"
+# (this file holds the lint's own fixture below, so it is not scanned)
+out=$(find "$ROOT/modules" -path '*/tests/*' -name '*.sh' ! -path "$M/tests/check.sh" -print0 | xargs -0 python3 "$M/tests/home_rm.py" | sed "s#$ROOT/##")
+check "$out" "" "  no suite's recursive or glob delete names a path under HOME (else: <file>:<line>, to go through rm_own)"
+hv='$HOME' tl='~'   # the fixture's home paths, spelled apart: the publish gate refuses them whole
+printf 'R="%s/Library/Logs/x"\nrm -rf "$R"\nrm -fr %s/y\nrm_own "$R"\nrm -rf "$T/z"\n# rm -rf "%s"\n' "$hv" "$tl" "$hv" > "$T/hr.sh"
+check "$(python3 "$M/tests/home_rm.py" "$T/hr.sh" | sed "s#$T/##" | tr '\n' ';')" "hr.sh:2: rm -rf \"\$R\";hr.sh:3: rm -fr $tl/y;" \
+  "  the lint: a variable from HOME and a tilde path flagged; rm_own, \$T and a comment not"
+# the shapes the landing review found missed: a variable built from another, the flag later in the run, a
+# glob, find -delete, a backslash continuation; a single named file, a \${X:?} and a quoted case are not
+printf 'P="%s/p"; Q="$P/q"\nrm -rf "$Q/x"\nrm -f -r "$P"\nrm -f "$P"/*.json\nfind "$P" -name y -delete\nrm -rf \\\n  "$Q"\nrm -f "${P:?}/one.json"\nx "rm -rf $P"\n' "$hv" > "$T/hr2.sh"
+check "$(python3 "$M/tests/home_rm.py" "$T/hr2.sh" | sed "s#$T/##" | cut -d: -f2 | tr '\n' ' ')" "2 3 4 5 6 " \
+  "  …and through a second variable, a later -r, a glob, find -delete and a continued line; not one named file"
+defs=$(grep -rh --include='*.sh' '^rm_own() ' "$ROOT/modules" /dev/null < /dev/null | sort -u)
+check "$(printf '%s' "$defs" | grep -c '^rm_own() ')" "1" "  every suite's rm_own is the same line"
+mkdir -p "$T/own/in" "$T/away"; touch "$T/away/keep" "$T/own/keep"
+check "$( (eval "$defs"; T="$T/own"; rm_own "$T/in" && echo deleted; rm_own "$T/../away/keep" 2>/dev/null || echo refused-dots
+          rm_own "$T/../away" 2>/dev/null || echo refused-outside) | tr '\n' ' ')" "deleted refused-dots refused-outside " \
+  "  rm_own deletes under its \$T and refuses a path outside it or climbing out"
+o="$T"; ( eval "$defs"; T=; rm_own "$o/own/keep" ) 2>/dev/null; r=$?
+check "$([ "$r" -ne 0 ] && echo refused)|$(ls "$T/own")|$(ls "$T/away")" "refused|keep|keep" \
+  "  …and with \$T empty (a block run outside its suite) it deletes nothing"
+check "$( (eval "$defs"; T="$T/own"; rm_own "$T//" 2>/dev/null || echo refused-double) )|$(ls "$T/own")" "refused-double|keep" \
+  "  …nor \$T itself, spelled with a double slash"
+
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]

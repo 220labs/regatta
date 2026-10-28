@@ -53,6 +53,9 @@ has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3:
 # moves below (bin/blueprintlib.py; dispatch --next and pickup seed read blueprints, wharf-on-orca S5)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export HOME="$T/home"; mkdir -p "$HOME/Library/LaunchAgents"
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 export ACCOUNTS_FILE="$T/no-accounts.json"   # no registry unless a case names one: the default is the config dir's lighthouse/accounts.json, the real one (B9)
 # a repo with a seeded branch on a bare origin
 git init -q --bare "$T/origin.git"
@@ -160,7 +163,7 @@ has "$T/ssh.calls" "DISPATCH_DEPTH=2 $RBIN" "  the chain's depth travels (the pe
 has "$T/ssh.calls" "--at @$EP" "epoch, not a clock time, crosses the wire"
 has "$T/ssh.calls" "note" "note quoted through"
 # scheduled there: the asking session is recorded as handed off, so tidy closes its window once idle
-HO="$HOME/Library/Caches/run-seed/handoffs"; rm -rf "$HO"
+HO="$HOME/Library/Caches/run-seed/handoffs"; rm_own "$HO"
 # the asking session sits on the branch it hands off, in the repo it names: its own repo, on $BR
 git clone -q -b "$BR" "$T/origin.git" "$T/caller" && ln -s "$T/caller" "$HOME/projects/caller"
 git init -q "$T/elsewhere" && git -C "$T/elsewhere" checkout -q -b "$BR"
@@ -851,7 +854,7 @@ STUB_RUN=profile CLAUDE_CONFIG_DIR="$HOME/.claude-orca" DISPATCH_HOST=buildbox D
 RS=$!; wait_run "$RS" "" 30
 check "$(field config_dir)" "$HOME/.claude-orca" "  the rc record names the run's config dir"
 check "$(field end_reason)" "idle 11 min" "a run whose login keeps its own sessions/ is found there and ended idle"
-rm -rf "$HOME/.claude-orca"   # later cases glob ~/.claude*
+rm_own "$HOME/.claude-orca"   # later cases glob ~/.claude*
 python3 - "$B/dispatch-rc" "$HOME" <<'PY' > "$T/out"
 import importlib.machinery, importlib.util, json, os, sys
 loader = importlib.machinery.SourceFileLoader("drc", sys.argv[1])
@@ -1077,7 +1080,7 @@ check "$(python3 "$B/dispatch-rc" live "$T/repo" demo)" "2" "a waiting run (a di
 # …unless a subagent under it still writes: "waiting" then means one agent's prompt, the rest still spend
 mkdir -p "$HOME/.claude/projects/p/b3/subagents"; : > "$HOME/.claude/projects/p/b3/subagents/agent-1.jsonl"
 check "$(python3 "$B/dispatch-rc" live "$T/repo" demo)" "3" "  waiting with a subagent writing in the last 30 s: still counted (review 2026-10-10)"
-rm -rf "$HOME/.claude/projects/p/b3"
+rm_own "$HOME/.claude/projects/p/b3"
 check "$(DISPATCH_MAX_PARKED=0 python3 "$B/dispatch-rc" live "$T/repo" demo)" "3" "  past DISPATCH_MAX_PARKED parked runs count again: a prompt every run hits cannot fill the Mac"
 rm -f "$HOME/.claude/sessions/$WP3.json"
 reap() { local f p; for f in "$@"; do p=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pid"])' "$f"); kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; }
@@ -1105,7 +1108,7 @@ ew EWC busyone claude/laptop/2026-10-08-launch busy
 python3 "$B/dispatch-rc" end-warm claude/laptop/2026-10-08-launch "$T/repo" > "$T/out"; rc=$?
 check "$rc $(kill -0 $EWC 2>/dev/null && echo alive)" "3 alive" "a busy run of the branch: exit 3, left alone — no launch"
 kill $EWB $EWC 2>/dev/null; wait $EWB $EWC 2>/dev/null
-rm -f "$RUNS"/00000000-00002*; rm -f "$HOME/.claude/sessions/$EWA.json" "$HOME/.claude/sessions/$EWB.json" "$HOME/.claude/sessions/$EWC.json"
+rm_own "$RUNS"/00000000-00002*; rm -f "$HOME/.claude/sessions/$EWA.json" "$HOME/.claude/sessions/$EWB.json" "$HOME/.claude/sessions/$EWC.json"
 
 echo "find_window: the newest, and never a '-' after the topic"
 printf '[%s]' '{"id": 70, "app": "Terminal", "title": "sam — run · demo-b · repo — screen", "space": 5},
@@ -2654,7 +2657,7 @@ check "$(python3 "$QB" reserved "${QC[@]}")" "0" "  its claim is reserved waitin
 printf '{"repo": "%s", "topic": "chain7", "session": "s-c7b", "pid": 4000000, "started": %s, "queue": "fleet:repo--chain7"}' "$T/repo" "$(( $(date +%s) + 1 ))" \
   > "$RUNS/00000000-000072-repo.chain7.json"
 check "$(python3 "$QB" reserved "${QC[@]}")" "0" "item 5: …until its run's record exists: then live() counts it, never both"
-kill $C7 2>/dev/null; wait $C7 2>/dev/null; rm -f "$RUNS"/00000000-00007*
+kill $C7 2>/dev/null; wait $C7 2>/dev/null; rm_own "$RUNS"/00000000-00007*
 qreset
 
 echo "  items 19 and 3: a re-dispatch on the branch's host; a stale job"
@@ -3014,7 +3017,7 @@ check "$(python3 "$QB" reserved "${QC[@]}")" "1" "  …and holds it once that ru
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-27-other4 --claim "${QC1[@]}" > "$T/out"
 has "$T/out" '"claimed": []' "  so the ended run's claim takes nothing: the slot is the waiter's"
 check "$(python3 "$QB" reserved --except fleet:repo--chain4 "${QC[@]}")" "0" "  and the waiter's own cap check finds the slot free"
-rm -f "$RUNS"/00000000-00004*
+rm_own "$RUNS"/00000000-00004*
 check "$(qload '(lambda m: (setattr(m, "live", lambda a, b, c: [("p%d" % i, {"topic": "t%d" % i, "repo": "/r"}) for i in range(8)]), setattr(m, "parked", lambda st: True), setattr(m, "MAX_PARKED", 6), q.busy("'"$T/launchctl"'") - len(q.held("'"$T/launchctl"'")))[3])(q.rc_mod())')" "2" \
   "fourth review: the claim counts parked runs past DISPATCH_MAX_PARKED, as the fire path's dispatch-rc live does"
 check "$(qload '(lambda m: (setattr(m, "parked", lambda st: True), setattr(m, "MAX_PARKED", 6), m.counted([("p%d" % i, {}) for i in range(8)]))[2])(q.rc_mod())')" "2" \

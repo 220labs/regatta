@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- trim.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - `crew-report` reads the core's attribution (attribution, 2026-10-27): a session, or every session
   under a folder glob (relative to `projects_root`, worktree part kept), attributed to another project by a row of
   the core's `attribution.jsonl` (`regatta attribution add|list`) moves its typed-prompt time and its model cost,

@@ -28,6 +28,9 @@ hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; fail
 
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
 export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1
+# a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
+# suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # the suite runs inside Claude sessions and dispatch runs: their markers gate `arm` and `override`
 unset CLAUDECODE CLAUDE_UNATTENDED
 # Since E1 is wired, start_runner starts a real claude session: no test may reach it. Every
@@ -1335,7 +1338,7 @@ printf '{"branch": "%s", "started": 2, "task_mode": "ask", "repo": "%s"}\n' "$(b
 check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("autofinish", sys.argv[1]).load_module(); print(m.runner_by(sys.argv[2], "M"))' "$B/autofinish" "$(wtp $M m-code)" 2>&1)" "dnd" \
   "  runner_by reads the mode with its repo: a sibling repo's same-named branch in ask does not lower it"
 rm -f "$RUNS/m-code-sibling.json"
-rm -f "$RUNS"/m-*.json
+rm_own "$RUNS"/m-*.json
 
 echo "the launchd job (install.sh --schedule, the module's own)"
 LC="$T/lc"; printf '#!/bin/sh\necho "$*" >> "%s"\n[ "$1" = print ] && exit 113\nexit 0\n' "$T/lc.calls" > "$LC"; chmod +x "$LC"

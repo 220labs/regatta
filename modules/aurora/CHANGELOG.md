@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The suite deletes its config dir under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The night's `trim` section (self-tuning S5, 2026-10-27): weekly, after `branches` and before the dream, no
   session — plumb's `trim collect`, `report --write` and `verdict --write`, each `--night`, over every repo
   `aurora/trim-repos` names (one path a line; absent, the core's own checkout) that holds a vertical file. A
