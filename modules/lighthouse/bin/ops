@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ops — the operations desk's own verbs (docs/lighthouse-ops-2026-10-26.md; S1 built usage and pick, S2
-the sampler: sample, status, is-host).
+the sampler: sample, status, is-host; S4 the intake: ingest, intake).
 
     ops sample [--print]             one row of the desk's metrics appended to the log dir's ops.jsonl
                                      (docs/lighthouse-ops-metrics-2026-10-26.md): the queue, the run slots,
@@ -11,6 +11,14 @@ the sampler: sample, status, is-host).
     ops status [--json]              the last row, readable; --json: {row, age_s, stale, line, sig} for
                                      helm's board (`line` its ops row, `sig` the row without its clocks
                                      and gauges); exit 3 when there is no row
+    ops ingest                       one intake pass (docs/lighthouse-ops-intake-2026-10-26.md): every fleet
+                                     repo's issues and comments since its cursor, and every Project
+                                     `lighthouse/ops-projects` names, appended to the log dir's intake.jsonl,
+                                     a row an event, metadata and the body's hash only; a confidential scope
+                                     whose yard is not this host skipped (`skipped: fenced`), a torn registry
+                                     nothing (exit 3). Only in the desk's job on the ops host (exit 2 elsewhere)
+    ops intake [--json]              the open issues the intake holds, each judged against the registry as it
+                                     reads now; --json: {open, why, sig} for helm's board, a card each
     ops is-host                      exit 0 on `lighthouse/ops-host`, 3 on another host, 4 when the key
                                      names none or cannot be read (install.sh --schedule asks it)
     ops usage [--write] [--json]     CI minutes and credits used this month, per account in the config
@@ -68,10 +76,19 @@ as null and the reason under `why`, and never aborts the row (`partial` says the
   registry `ok` or `unreadable` (the core's registry_unreadable(): a torn file reads as no repos)
 CI queues (`ci.lanes.<lane>.queued_s_p50`, which `ci-provider --pick` reads) are not sampled yet.
 
-The job: every 15 minutes on `lighthouse/ops-host` alone, with LIGHTHOUSE_DESK=1 and no Claude Code
-variable, running `ops sample`. On a Mac it is lighthouse's install.sh --schedule (a LaunchAgent);
+The jobs: every 15 minutes on `lighthouse/ops-host` alone, with LIGHTHOUSE_DESK=1 and no Claude Code
+variable, running `ops sample`; every 10 minutes, the same way, `ops ingest` (S4). On a Mac it is lighthouse's install.sh --schedule (a LaunchAgent);
 elsewhere — the yard node's agent guest — a systemd timer is yard-node S5's, and install.sh prints the
-unit's lines rather than writing one. Either way the job is this command and that environment.
+unit's lines rather than writing one. Either way each job is its command and that environment.
+
+The intake's row (S4), one an event: seen, repo (the registry key), slug, number, event (seen on a first
+pass, opened, reopened, edited, closed, comment, comment-edited, item), kind (deadman, stall, contact, bug,
+other: the first of those a label names, by that order), label, state, created, updated (epoch seconds; G3 is seen − created),
+author (self: the registry's `machine_account`; member: an owner, member or collaborator; else stranger),
+body_sha (16 hex of the body's sha256, never the body), url, scope (the registry's); a Project item adds
+project, item, type and fields (single-select, number, date and iteration values: never a text field). A
+skip is a row once per change of reason: {scope, skipped: fenced} or {repo|project, skipped: unread, why}.
+LIGHTHOUSE_OPS_GH replaces `gh` (the suite's stub).
 
 Tests: tests/ops.sh; the pick's own cases are wharf's tests/test_ci_provider.sh; the board's row is
 helm's tests/test_helm.sh.
@@ -864,6 +881,506 @@ def cmd_is_host(a):
     return rc
 
 
+# ---- the intake (S4; docs/lighthouse-ops-intake-2026-10-26.md) -------------------------------------
+# Every fleet repo's issues and comments since its cursor, and every Project `lighthouse/ops-projects`
+# names, as one row an event in the log dir's intake.jsonl. The issues are read with the machine account's
+# `gh` (its token holds `repo`); a Project with the owner's token (D5-A), whose Projects read S2 probes as
+# `token.project`. A row holds metadata and the body's hash, never a body, a title or an email: contacts
+# are strangers' personal data (the brief's rule; the component's "first 500 characters" is not built).
+# intake-state.json beside it is the cursor and the open set: per repo `since` (the newest `updated_at`
+# seen), `edge` (the ids seen at exactly `since`, which GitHub's `since` answers again), `open` (number ->
+# the open issue's metadata, the board's cards) and `skip` (the last reason it was skipped, so a reason is
+# written once, not every 10 minutes); per Project its own `since` and `edge`; `fenced` the scopes skipped.
+# A row is written when an issue is new to the cursor, closes, reopens or changes its label or body; a
+# comment is a row of its own; an issue whose only change is a comment writes only the comment's row.
+# S9's `ops kick <repo>` calls ingest(only={key}): one repo, no Projects, under the same lock.
+
+INTAKE_DEADLINE = 300    # s a whole pass; a repo still out then is unread and keeps its cursor
+GH_TIMEOUT = 60          # s one `gh api --paginate` read
+GH_WORKERS = 6           # repos read side by side: 39 repos x 2 reads well inside 10 minutes
+PROJECT_PAGES = 10       # 100 items a page: a Project's read is bounded
+KINDS = ("deadman", "stall", "contact", "bug")   # a label naming one is the kind; first wins, else `other`
+MEMBER = {"OWNER", "MEMBER", "COLLABORATOR"}     # GitHub's author_association a member holds
+
+
+def intake_file():
+    return common.LOG_DIR / "intake.jsonl"
+
+
+def intake_state_file():
+    return common.LOG_DIR / "intake-state.json"
+
+
+def epoch(iso):
+    """GitHub's `2026-10-27T10:00:00Z` as epoch seconds, or None."""
+    try:
+        return int(datetime.datetime.strptime(str(iso), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def iso(t):
+    return datetime.datetime.fromtimestamp(int(t), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def body_sha(text):
+    """The body's hash, never the body: 16 hex characters of its sha256, or None for none."""
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] if isinstance(text, str) and text else None
+
+
+def kind_of(labels):
+    """(kind, label): the first of KINDS a label names, and that label; else `other` and the first label."""
+    names = [l.get("name") if isinstance(l, dict) else l for l in labels or []]
+    names = [n for n in names if isinstance(n, str) and n]
+    low = {n.lower(): n for n in names}
+    for k in KINDS:
+        if k in low:
+            return k, low[k]
+    return "other", (names[0] if names else None)
+
+
+def author_of(item, me):
+    """`self` for the machine account (the desk's own comments are never re-triaged), `member` for an owner,
+    member or collaborator, else `stranger`."""
+    login = ((item.get("user") or item.get("author") or {}).get("login") or "") if isinstance(item, dict) else ""
+    if me and login.lower() == me.lower():
+        return "self"
+    assoc = item.get("author_association") or item.get("authorAssociation") or ""
+    return "member" if str(assoc).upper() in MEMBER else "stranger"
+
+
+def scope_fenced(name, sc, host):
+    """True when scope `name` is confidential and this host is not its yard: its repos are ingested only on
+    the node that drives them (the confidential rule)."""
+    if not isinstance(sc, dict) or sc.get("confidential") is not True:
+        return False
+    yard = sc.get("yard")
+    return not (isinstance(yard, str) and yard and yard.lower() == host)
+
+
+def repo_fenced(key, reg, host):
+    """The confidential scope that fences registry key `key` on this host, or None. Every scope is asked, not
+    only the first that lists the key (scope_of_repo's answer): a repo in an open scope and a confidential one
+    is fenced (the core's gather_fence, autofinish-run's rotation_fence; S4's landing review)."""
+    for n, sc in sorted(((reg or {}).get("scopes") or {}).items()):
+        if scope_fenced(n, sc, host) and common.scope_of_repo(key, reg={"scopes": {n: sc}, "repos": reg.get("repos")})[0]:
+            return n
+    return None
+
+
+def gh_lines(path):
+    """[object] from `gh api --paginate PATH --jq '.[]'` — one JSON object a line — or raise Refused with
+    the reason. The machine account's gh; the desk's marker never reaches it. ops.gh_lines is the suite's seam."""
+    gh = os.environ.get("LIGHTHOUSE_OPS_GH") or "gh"
+    try:
+        cp = subprocess.run([gh, "api", "--paginate", "-H", "Accept: application/vnd.github+json", path, "--jq", ".[]"],
+                            capture_output=True, text=True, timeout=GH_TIMEOUT, env=child_env(), stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise Refused("gh took over %d s" % GH_TIMEOUT)
+    except OSError as e:
+        raise Refused("gh did not start (%s)" % (e.strerror or type(e).__name__))
+    if cp.returncode:
+        last = (cp.stderr or "").strip().splitlines()[-1:]
+        raise Refused("gh exited %d%s" % (cp.returncode, (": " + last[0][:200]) if last else ""))
+    out = []
+    for line in cp.stdout.splitlines():
+        if line.strip():
+            try:
+                d = json.loads(line)
+            except ValueError:
+                raise Refused("gh printed a line that is not JSON")
+            if isinstance(d, dict):
+                out.append(d)
+    return out
+
+
+def read_repo(slug, since, csince=None):
+    """(issues, comments) of `slug`: issues updated since `since`, comments since `csince` (ISO; `since` when
+    none), pull requests left out; with no cursor yet, the open issues alone and no comments (a first pass
+    cards what is open, never the repo's history)."""
+    q = "sort=updated&direction=asc&per_page=100"
+    if not since:
+        return [i for i in gh_lines("repos/%s/issues?state=open&%s" % (slug, q)) if "pull_request" not in i], []
+    issues = [i for i in gh_lines("repos/%s/issues?state=all&%s&since=%s" % (slug, q, urllib.parse.quote(since)))
+              if "pull_request" not in i]
+    comments = [c for c in gh_lines("repos/%s/issues/comments?%s&since=%s" % (slug, q, urllib.parse.quote(csince or since)))
+                if "/pull/" not in str(c.get("html_url") or "")]
+    return issues, comments
+
+
+def load_intake_state():
+    try:
+        d = json.loads(intake_state_file().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        # a torn state file restarts every cursor as a first pass: open issues again, never the history
+        return {}
+
+
+def save_intake_state(st):
+    path = intake_state_file()
+    os.makedirs(path.parent, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(st, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def append_rows(rows):
+    if not rows:
+        return
+    path = intake_file()
+    os.makedirs(path.parent, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:   # one write: a reader never sees half a pass's rows but at a crash
+        os.write(fd, "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows).encode())
+    finally:
+        os.close(fd)
+
+
+def advance(items, since, edge):
+    """The items past a cursor (newer than `since`, or at it and not in `edge`), and the cursor after: (new, since, edge)."""
+    since, edge = since or "", set(edge or [])
+    new = [i for i in items if (i.get("updated_at") or "") > since
+           or ((i.get("updated_at") or "") == since and str(i.get("id")) not in edge)]
+    top = max([since] + [i.get("updated_at") or "" for i in new])
+    if top != since:
+        edge = set()
+    edge |= {str(i.get("id")) for i in new if i.get("updated_at") == top}
+    return new, top or None, sorted(edge)
+
+
+def repo_rows(key, slug, scope, rs, issues, comments, me, now, t0):
+    """The rows of one repo's read, and its state after: the cursor moved, the open set kept."""
+    first = not rs.get("since")
+    since, csince = rs.get("since"), rs.get("comments_since")
+    opened = dict(rs.get("open") or {})
+    rows = []
+    base = {"seen": int(now), "repo": key, "slug": slug, "scope": scope}
+    if first:
+        # the first cursor is the read's start, not the newest open issue: the next pass starts where this one looked
+        after = {"since": iso(t0), "edge": [], "comments_since": iso(t0), "comments_edge": []}
+    else:
+        # issues and comments each keep their own cursor: one shared `since` would skip a label change made
+        # between the two reads whenever a comment landed after it
+        issues, top_i, edge_i = advance(issues, since, rs.get("edge"))
+        comments, top_c, edge_c = advance(comments, csince or since, rs.get("comments_edge"))
+        after = {"since": top_i, "edge": edge_i, "comments_since": top_c, "comments_edge": edge_c}
+    kinds = {n: (o.get("kind"), o.get("label")) for n, o in opened.items()}
+    for i in issues:
+        n = str(i.get("number"))
+        kind, label = kind_of(i.get("labels"))
+        kinds[n] = (kind, label)
+        meta = {"number": i.get("number"), "kind": kind, "label": label, "created": epoch(i.get("created_at")),
+                "author": author_of(i, me), "body_sha": body_sha(i.get("body")), "url": i.get("html_url")}
+        prev = opened.get(n)
+        if i.get("state") == "open":
+            if first:
+                event = "seen"
+            elif prev is None:
+                event = "opened" if (i.get("created_at") or "") > since else "reopened"
+            elif (prev.get("kind"), prev.get("label"), prev.get("body_sha")) != (kind, label, meta["body_sha"]):
+                event = "edited"
+            else:
+                event = None
+            opened[n] = meta
+        else:
+            # closed: a row when it was open here, or when it opened and closed between two passes
+            event = "closed" if prev is not None or (not first and (i.get("created_at") or "") > since) else None
+            opened.pop(n, None)
+        if event:
+            rows.append(dict(base, event=event, state=i.get("state"), updated=epoch(i.get("updated_at")), **meta))
+    for c in comments:
+        m = str(c.get("issue_url") or "").rstrip("/").rsplit("/", 1)
+        n = m[-1] if len(m) == 2 and m[-1].isdigit() else None
+        kind, label = kinds.get(n, ("other", None))
+        rows.append(dict(base, event="comment" if (c.get("created_at") or "") > (csince or since or "") else "comment-edited",
+                         number=int(n) if n else None, comment=c.get("id"), kind=kind, label=label,
+                         state="open" if n in opened else None, created=epoch(c.get("created_at")),
+                         updated=epoch(c.get("updated_at")), author=author_of(c, me), body_sha=body_sha(c.get("body")),
+                         url=c.get("html_url")))
+    return rows, dict(after, open=opened)
+
+
+PROJECT_QUERY = """query($login: String!, $number: Int!, $after: String) {
+  %s(login: $login) { projectV2(number: $number) { items(first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id type createdAt updatedAt
+      content { __typename
+        ... on Issue { number url issueState: state body authorAssociation author { login } repository { nameWithOwner }
+                       labels(first: 20) { nodes { name } } }
+        ... on PullRequest { number url prState: state repository { nameWithOwner } }
+        ... on DraftIssue { body } }
+      fieldValues(first: 30) { nodes { __typename
+        ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+        ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
+        ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+        ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } } } } } } } }"""
+
+
+def project_items(spec, tok):
+    """([item], cut) of Project `user/<login>/<n>` or `org/<login>/<n>`, read with the owner's token — `cut` True
+    when PROJECT_PAGES ended the read with pages left (the summary says so); Refused with why. Each state is
+    aliased (`issueState`, `prState`): two enum types under one response key fail GraphQL's validation."""
+    parts = spec.split("/")
+    if len(parts) != 3 or parts[0] not in ("user", "org") or not parts[1] or not parts[2].isdigit():
+        raise Refused("%r is not user/<login>/<number> or org/<login>/<number>" % spec)
+    owner = "user" if parts[0] == "user" else "organization"
+    out, after = [], None
+    for _ in range(PROJECT_PAGES):
+        code, d = http_post(GITHUB_API + "/graphql", {"Authorization": "Bearer " + tok, "Accept": "application/json"},
+                            {"query": PROJECT_QUERY % owner, "variables": {"login": parts[1], "number": int(parts[2]), "after": after}})
+        if code != 200 or not isinstance(d, dict):
+            raise Refused("GitHub's GraphQL answered %s" % (code or "nothing"))
+        if d.get("errors"):
+            kinds = sorted({str(e.get("type")) for e in d["errors"] if isinstance(e, dict) and e.get("type")})
+            raise Refused("GitHub's GraphQL refused the Project's read (%s)" % (", ".join(kinds) or "an error"))
+        try:
+            items = d["data"][owner]["projectV2"]["items"]
+            nodes, page = items["nodes"], items["pageInfo"]
+        except (KeyError, TypeError):
+            raise Refused("GitHub's GraphQL answered no %s.projectV2.items" % owner)
+        out += [n for n in nodes if isinstance(n, dict)]
+        if not page.get("hasNextPage"):
+            return out, False
+        after = page.get("endCursor")
+    return out, True
+
+
+def item_fields(item):
+    """{field name: value} of an item's single-select, number, date and iteration fields: no text field, which
+    may carry anything (an issue's title is one)."""
+    out = {}
+    for v in ((item.get("fieldValues") or {}).get("nodes") or []):
+        if not isinstance(v, dict) or not isinstance(v.get("field"), dict) or not v["field"].get("name"):
+            continue
+        val = next((v[k] for k in ("name", "number", "date", "title") if k in v), None)
+        if val is not None:
+            out[v["field"]["name"]] = val
+    return out
+
+
+def ingest(now=None, only=None):
+    """(rows, summary, refused): one pass over the fleet — `only` a set of registry keys (S9's kick: one repo,
+    no Projects). A torn registry ingests nothing; a fenced scope is skipped and named once; a read that fails
+    writes its reason and the rest go on."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+    now = time.time() if now is None else now
+    reg, torn = common.read_registry()
+    if torn:
+        return [], None, "the registry %s cannot be read: nothing ingested (a torn registry is no fence)" % common.repos_json()
+    reg = reg or {}
+    repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
+    me = reg.get("machine_account") if isinstance(reg.get("machine_account"), str) else None
+    host = common.host_name()
+    st = load_intake_state()
+    st_repos = st.setdefault("repos", {})
+    fenced_before = set(st.get("fenced") or [])
+    fenced_now, rows, unread, todo = set(), [], {}, {}
+    base = {"seen": int(now)}
+    for key, entry in sorted(repos.items()):
+        if only is not None and key not in only:
+            continue
+        slug = entry.get("github") if isinstance(entry, dict) else None
+        if not isinstance(slug, str) or "/" not in slug:
+            continue
+        name, _ = common.scope_of_repo(key, reg=reg)
+        fence = repo_fenced(key, reg, host)
+        if fence:
+            fenced_now.add(fence)
+            st_repos.pop(key, None)   # a fenced repo's cursor and open set never stay on this host
+            continue
+        todo[key] = (slug, name)
+    for name in sorted(fenced_now - fenced_before):
+        rows.append(dict(base, scope=name, skipped="fenced"))
+    st["fenced"] = sorted(fenced_now | (fenced_before if only is not None else set()))
+    t0 = time.time()
+    pool = ThreadPoolExecutor(max_workers=GH_WORKERS)
+    futs = {k: pool.submit(read_repo, slug, (st_repos.get(k) or {}).get("since"), (st_repos.get(k) or {}).get("comments_since"))
+            for k, (slug, _) in todo.items()}
+    done, _ = wait(list(futs.values()), timeout=INTAKE_DEADLINE)
+    # the queued reads are cancelled: the interpreter joins a pool's threads at exit, so a repo still queued
+    # would be read after the pass gave it up (a running one ends within twice GH_TIMEOUT: two reads a repo)
+    pool.shutdown(wait=False, cancel_futures=True)
+    if only is None:
+        for gone in set(st_repos) - set(todo):
+            st_repos.pop(gone)   # a repo gone from the registry, or with no github any more
+    for key, f in sorted(futs.items()):
+        slug, scope = todo[key]
+        rs = st_repos.get(key) or {}
+        why = None
+        if f not in done:
+            why = "not read within the pass's %d s" % INTAKE_DEADLINE
+        else:
+            try:
+                issues, comments = f.result()
+            except Refused as e:
+                why = str(e)
+            except Exception as e:   # noqa: BLE001 — one repo's crash is its reason, never the pass's end
+                why = "the read failed (%s)" % type(e).__name__
+        if why:
+            unread[key] = why
+            if rs.get("skip") != why:
+                rows.append(dict(base, repo=key, slug=slug, scope=scope, skipped="unread", why=why))
+            st_repos[key] = dict(rs, skip=why)
+            continue
+        got, after = repo_rows(key, slug, scope, rs, issues, comments, me, now, t0)
+        rows += got
+        st_repos[key] = after
+    projects, punread, ptrunc = 0, {}, {}
+    if only is None:
+        specs = common.config_lines("lighthouse/ops-projects") or []
+        st_proj = st.setdefault("projects", {})
+        if specs:
+            toks, tok_why = tokens()
+            tok = toks.get("GITHUB_TOKEN")
+        slugs = {e.get("github", "").lower(): k for k, e in repos.items() if isinstance(e, dict) and isinstance(e.get("github"), str)}
+        for spec in specs:
+            ps = st_proj.get(spec) or {}
+            try:
+                if not tok:
+                    raise Refused("no GITHUB_TOKEN to read a Project with (%s)" % (tok_why or "not in %s" % DESK_FILE))
+                items, cut = project_items(spec, tok)
+            except Refused as e:
+                punread[spec] = str(e)
+                if ps.get("skip") != str(e):
+                    rows.append(dict(base, project=spec, skipped="unread", why=str(e)))
+                st_proj[spec] = dict(ps, skip=str(e))
+                continue
+            if cut:
+                ptrunc[spec] = len(items)
+            for it in items:
+                it["updated_at"] = it.get("updatedAt")
+            first = ps.get("since") is None
+            new, top, edge = advance(items, ps.get("since"), ps.get("edge"))
+            for it in new:
+                c = it.get("content") if isinstance(it.get("content"), dict) else {}
+                state = (c.get("issueState") or c.get("prState") or "").lower() or None
+                if first and state in ("closed", "merged"):
+                    continue   # a first read cards what is open, never the Project's history (as a repo's)
+                rslug = ((c.get("repository") or {}).get("nameWithOwner") or "")
+                key = slugs.get(rslug.lower())
+                name = common.scope_of_repo(key, reg=reg)[0] if key else None
+                if key and repo_fenced(key, reg, host):
+                    continue   # a fenced scope's issue on a Project: skipped like its repo
+                if not key:
+                    # a repo the registry does not hold is never known not to be confidential: its item
+                    # keeps its metadata, never its repo's name or link
+                    rslug, url = "", None
+                else:
+                    url = c.get("url")
+                kind, label = kind_of((c.get("labels") or {}).get("nodes")) if c.get("__typename") == "Issue" else ("other", None)
+                rows.append(dict(base, event="item", project=spec, item=it.get("id"), type=it.get("type"),
+                                 repo=key, slug=rslug or None, scope=name, number=c.get("number"), kind=kind, label=label,
+                                 state=state, created=epoch(it.get("createdAt")),
+                                 updated=epoch(it.get("updatedAt")),
+                                 author=author_of(c, me) if c.get("__typename") == "Issue" else None,
+                                 body_sha=body_sha(c.get("body")), url=url, fields=item_fields(it)))
+                projects += 1
+            st_proj[spec] = {"since": top or ps.get("since"), "edge": edge}
+        for gone in set(st_proj) - set(specs):
+            st_proj.pop(gone)
+    st["as_of"] = int(now)
+    # rows before the cursor: a crash between the two repeats a pass's rows next time, never loses them
+    append_rows(rows)
+    save_intake_state(st)
+    events = sum(1 for r in rows if "event" in r)
+    summary = "%d repos read, %d events, %d open issues%s%s%s%s%s" % (
+        len(todo) - len(unread), events, sum(len((v or {}).get("open") or {}) for v in st_repos.values()),
+        "; %d Project items" % projects if projects else "",
+        "; fenced: %s" % ", ".join(sorted(fenced_now)) if fenced_now else "",
+        "; unread: %s" % "; ".join("%s (%s)" % kv for kv in sorted(unread.items())) if unread else "",
+        "; Projects unread: %s" % "; ".join("%s (%s)" % kv for kv in sorted(punread.items())) if punread else "",
+        "; Projects cut at their first %s" % "; ".join("%s (%d items)" % kv for kv in sorted(ptrunc.items())) if ptrunc else "")
+    return rows, summary, None
+
+
+def intake_lock():
+    """An exclusive lock on the log dir's intake.lock, or None while another pass holds it (the poll and S9's kick)."""
+    import fcntl
+    path = common.LOG_DIR / "intake.lock"
+    os.makedirs(path.parent, exist_ok=True)
+    fh = open(path, "a")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def open_items(now=None):
+    """(cards, why) — the open issues of intake-state.json, each judged against the registry as it reads now: a
+    torn registry gives none (the fence trap), a repo whose scope is fenced here is dropped."""
+    now = time.time() if now is None else now
+    reg, torn = common.read_registry()
+    if torn:
+        return [], "the registry cannot be read: no intake cards (a torn registry is no fence)"
+    reg = reg or {}
+    try:
+        st = json.loads(intake_state_file().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [], "no intake yet at %s (the desk's job writes it: `ops ingest`)" % intake_state_file()
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return [], "%s unreadable (%s)" % (intake_state_file(), type(e).__name__)
+    host = common.host_name()
+    repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
+    out = []
+    for key, rs in sorted(((st.get("repos") or {}) if isinstance(st, dict) else {}).items()):
+        if key not in repos or not isinstance(rs, dict):
+            continue
+        name, _ = common.scope_of_repo(key, reg=reg)
+        if repo_fenced(key, reg, host):
+            continue
+        slug = (repos.get(key) or {}).get("github")
+        for n, o in sorted((rs.get("open") or {}).items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0):
+            if isinstance(o, dict):
+                out.append({"repo": key, "slug": slug, "number": o.get("number"), "kind": o.get("kind") or "other",
+                            "label": o.get("label"), "created": o.get("created"), "author": o.get("author"),
+                            "url": o.get("url"), "scope": name})
+    order = {k: i for i, k in enumerate(KINDS + ("other",))}
+    out.sort(key=lambda c: (order.get(c["kind"], 9), c["repo"], c["number"] or 0))
+    return out, None
+
+
+def cmd_ingest(a):
+    why = desk_refusal() or ops_host()[1]
+    if why:
+        # a session's pass, or another host's, would move the desk's cursor and write a second intake
+        print("ops ingest: %s" % why, file=sys.stderr)
+        return 2
+    lock = intake_lock()
+    if lock is None:
+        print("ops ingest: another pass holds %s; this one skipped" % (common.LOG_DIR / "intake.lock"))
+        return 0
+    try:
+        rows, summary, refused = ingest()
+    finally:
+        lock.close()
+    if refused:
+        print("ops ingest: %s" % refused, file=sys.stderr)
+        return 3
+    print("ops ingest: %s — %s" % (intake_file(), summary))
+    return 0
+
+
+def cmd_intake(a):
+    cards, why = open_items()
+    if a.json:
+        import hashlib
+        sig = hashlib.sha256(json.dumps([[c[k] for k in ("repo", "number", "kind", "label")] for c in cards]).encode()).hexdigest()[:16]
+        print(json.dumps({"open": cards, "why": why, "sig": sig}, sort_keys=True))
+        return 0
+    if why:
+        print("ops intake: %s" % why, file=sys.stderr)
+    for c in cards:
+        print("%-8s %s#%s  %s, %s ago" % (c["kind"], c["repo"], c["number"], c.get("author") or "?",
+                                         ago(time.time() - c["created"]) if num(c.get("created")) else "?"))
+    if not cards and not why:
+        print("ops intake: no open issue in the fleet's intake")
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="ops", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="verb", required=True)
@@ -872,6 +1389,9 @@ def main(argv):
     st = sub.add_parser("status")
     st.add_argument("--json", action="store_true")
     sub.add_parser("is-host")
+    sub.add_parser("ingest")
+    it = sub.add_parser("intake")
+    it.add_argument("--json", action="store_true")
     u = sub.add_parser("usage")
     u.add_argument("--write", action="store_true")
     u.add_argument("--json", action="store_true")
@@ -880,7 +1400,7 @@ def main(argv):
     k.add_argument("repo", nargs="*")
     a = ap.parse_args(argv)
     return {"usage": cmd_usage, "pick": cmd_pick, "sample": cmd_sample, "status": cmd_status,
-            "is-host": cmd_is_host}[a.verb](a)
+            "is-host": cmd_is_host, "ingest": cmd_ingest, "intake": cmd_intake}[a.verb](a)
 
 
 if __name__ == "__main__":

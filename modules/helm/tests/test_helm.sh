@@ -299,6 +299,46 @@ check "$out" '["ops h: queue off · runs 1/4 · token plan absent, project absen
   "lighthouse's own ops on a two-hour-old row: the board's header carries its line, stale, and its sig"
 has "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.page(h.overview_state(), "t"))' "$B")" "S.header.ops_stale?'stale':''" "…the page draws it as its own row"
 rm -f "$LD/ops.jsonl"
+echo "the board's intake cards (lighthouse-ops S4): lighthouse's ops intake, a card per open issue, hashed without its clocks"
+cat > "$T/intake-stub" <<'PY'
+import os, sys
+if sys.argv[1:] != ["intake", "--json"]:
+    sys.exit(9)
+print(open(os.environ["INTAKE_STUB"]).read())
+PY
+cat > "$T/intake-case.py" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import helm_render as h
+def give(cards):
+    open(sys.argv[2], "w").write(json.dumps({"open": cards, "why": None, "sig": "x"}))
+a = {"repo": "alpha", "slug": "acme/alpha", "number": 4, "kind": "deadman", "label": "deadman", "created": 1000, "author": "self",
+     "url": "https://github.com/acme/alpha/issues/4", "scope": "lab"}
+b = dict(a, number=1, kind="contact", label="contact", author="stranger", url="https://github.com/acme/alpha/issues/1")
+give([a, b]); one = h.intake_cards()
+print([(c["column"], c["kind"], c["title"], c["label"], c["ref"], c["by"], c["url"].rsplit("/", 1)[1]) for c in one])
+st = lambda cs: {"columns": [{"name": "Intake", "cards": cs}], "header": {"needs_owner": 0}}
+give([dict(a, created=5000), b]); later = h.intake_cards()
+give([a, b, dict(b, number=7, kind="bug", label="bug", url="u7")]); more = h.intake_cards()
+give([dict(a, created=None), {"repo": "alpha"}, "junk"]); odd = h.intake_cards()
+print(h.board_sig(st(one)) == h.board_sig(st(later)), h.board_sig(st(one)) != h.board_sig(st(more)), len(odd), "Intake" in h.board_columns())
+PY
+check "$(INTAKE_STUB="$T/intake.json" HELM_OPS="$T/intake-stub" python3 "$T/intake-case.py" "$B" "$T/intake.json" | head -1)" \
+  "[('Intake', 'intake', 'deadman #4', 'deadman', 'acme/alpha#4', 'self', '4'), ('Intake', 'intake', 'contact #1', 'contact', 'acme/alpha#1', 'stranger', '1')]" \
+  "a card per open issue in the Intake column: its kind and number as the title, never the issue's own, the kind its lane, GitHub's link"
+check "$(INTAKE_STUB="$T/intake.json" HELM_OPS="$T/intake-stub" python3 "$T/intake-case.py" "$B" "$T/intake.json" | tail -1)" "True True 1 True" \
+  "board_sig: an issue's time moves nothing, a new issue deploys; a row without a number is no card"
+printf '%s\n' '{"repos": {"alpha": {"github": "acme/alpha"}, "secret": {"github": "acme/secret"}}, "scopes": {"lab": {"repos": ["alpha"]}, "conf": {"repos": ["secret"], "confidential": true}}}' > "$T/intake-conf.json"
+printf '%s\n' '{"open": [{"repo": "secret", "slug": "acme/secret", "number": 7, "kind": "bug", "label": "bug", "url": "u7", "scope": "conf"}, {"repo": "alpha", "slug": "acme/alpha", "number": 2, "kind": "bug", "label": "bug", "url": "u2", "scope": "lab"}], "why": null}' > "$T/intake-conf-cards.json"
+check "$(CLAUDE_REPOS_JSON="$T/intake-conf.json" INTAKE_STUB="$T/intake-conf-cards.json" HELM_OPS="$T/intake-stub" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print([(c["repo"], c["guarded"]) for c in h.intake_cards()])' "$B")" \
+  "[('secret', True), ('alpha', False)]" "a card of a confidential scope (ops keeps them on the scope's own yard): guarded on the shared page"
+check "$(HELM_OPS="$T/no-such-ops" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.intake_cards())' "$B")" "[]" "an ops that fails: no card, never a traceback"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; print(h.intake_cards())' "$B")" "[]" "no intake-state.json in this host's log dir: no card, and no ops call"
+printf '%s\n' '{"repos": {"alpha": {"github": "acme/alpha"}}, "scopes": {}}' > "$T/intake-repos.json"
+printf '%s\n' '{"repos": {"alpha": {"since": "2099-01-01T00:00:00Z", "open": {"2": {"number": 2, "kind": "bug", "label": "bug", "created": 1000, "author": "member", "url": "https://github.com/acme/alpha/issues/2"}}}}}' > "$LD/intake-state.json"
+check "$(CLAUDE_REPOS_JSON="$T/intake-repos.json" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helm_render as h; s = h.overview_state(); print([(c["title"], c["ref"]) for col in s["columns"] if col["name"] == "Intake" for c in col["cards"]])' "$B")" \
+  "[('bug #2', 'acme/alpha#2')]" "lighthouse's own ops intake on this host's state: the overview's Intake column"
+rm -f "$LD/intake-state.json"
 echo "the publish budget: the board and ship pages pause above helm's share (spacesheep-tiers)"
 cat > "$T/budget.py" <<'PY'
 import json, os, sys, time
@@ -772,7 +812,7 @@ PY
 )" "True [] ['a', 'b'] done done" "  both words in STATUSES and ENDED, neither blocks c, both cards Done today, both a done step"
   echo "overview (B6)"
   ov=$("$HM" $BOARD --json)
-  check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['columns'][0]['name'], len(d['columns']))")" "Needs Sam 6" "six columns, Needs Sam first"
+  check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['columns'][0]['name'], len(d['columns']))")" "Needs Sam 7" "seven columns (Intake last, lighthouse-ops S4), Needs Sam first"
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(c['title'] for col in d['columns'] if col['name']=='Blocked' for c in col['cards']))")" "['Sam reviews']" "a human task whose dependency is not done is Blocked"
   "$HM" task mgr-1 sign --kind human $BY alex --title "Alex signs" > /dev/null
   mkdir -p "$T/projects-root/garden"; printf -- '- swap the porch bulb @sam\n- a session item\n' > "$T/projects-root/garden/TODO.md"

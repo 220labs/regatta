@@ -3,6 +3,17 @@
 ## Unreleased
 
 - account.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
+- The desk's intake (lighthouse-ops S4, 2026-10-27): `ops ingest` reads every fleet repo in the registry (its
+  `github`) for issues and comments since that repo's cursor, with the machine account's `gh`, and each Project
+  `lighthouse/ops-projects` names with the desk's token, into the log dir's `intake.jsonl`: one row an event —
+  repo, number, event, kind (deadman, stall, contact, bug, other, by label), label, state, created, seen, the
+  author's kind (self, member, stranger), the body's hash and the scope; never a body, a title or an email. A
+  first pass cards what is open and never reads the history; an unchanged repo writes nothing; a read that
+  fails writes its reason once and the pass goes on. A confidential scope is read only on its own yard
+  (`skipped: fenced` elsewhere), and a torn registry ingests nothing (exit 3). `intake-state.json` holds the
+  cursors and the open set, which `ops intake [--json]` lists for helm's board, re-judged against the registry
+  as it reads. Only in the desk's job on the ops host; `install.sh --schedule` loads it every 10 minutes beside
+  the sampler, and on Linux prints its unit's lines.
 - The desk's sampler (lighthouse-ops S2, 2026-10-27): `ops sample` appends one row to the log dir's
   `ops.jsonl` — the dispatch queue, the run slots, the 5-minute load per core, headroom's memory, the
   check slots, the CI budgets from S1's usage read (and `ci-usage.json` with it), the token's standing as
