@@ -9,6 +9,11 @@
   adds `attributed: <n> sessions, <m> path rules — <min> min, <cost> moved`. No verb, file or config key of its
   own. usage-report's keys are unchanged; suite `tests/crew-report-attribution.sh`. Needs the core of the
   same release (`under_projects`, `projects_rel`, `attribution_match`): with an older core every report fails.
+- `trim collect` joins a session to every `claude/*` branch its CSV rows name (trim-join-2, 2026-10-27), each
+  landing with that branch's own rows' cost, review and first call; the rows naming none go with the branch it
+  named most, so the shares sum to the session, and its end context goes with the branch it worked on last. A
+  run record's branch is still the run's whole. The CSV names one branch per day and session, so the split serves a session that moved on a day later. A
+  `<branch>-land` head, a skipper's hand rename of a seeded branch whose finish stopped on "not pushed", joins its builder under the name without it beside the finish that named it.
 - `bench drive` is tethered (bench-tether, 2026-10-27; finding 6 of the night-landings digest): before
   each start it stops once the session that started it is gone (its claude, from `CLAUDE_PID` or the
   walk up `ps`), once `--until` passes, or once the runs' login is parked, locked or past its week
