@@ -4174,7 +4174,9 @@ def from_scope_judge(root, scope, repo_given, cwd, reg):
             tenants = areg.get("tenants") or {}
             # read_tenants_file() gives {} ("tenancy is off") when the file is written but reads nothing and
             # no last good copy holds: that is no answer, so it refuses (S5's landing re-review)
-            if not tenants and m.tenants_file() and m.tenants_read(write=False)[1] == "none":
+            # since S7b (regatta#243) account closes tenancy itself — its CLOSED tenant holds every repo; an older
+            # account gave {} ("tenancy is off"), read as no answer: both refuse here (S5's landing re-review)
+            if (getattr(m, "CLOSED", None) in tenants) or (not tenants and m.tenants_file() and m.tenants_read(write=False)[1] == "none"):
                 return f"lighthouse's tenancy file is written but does not read, so {key} may be a tenant's — fails closed"
             for name, entries in tenants.items():
                 if entries and m.denied({"routed": dict.fromkeys(entries)}, str(root)):
