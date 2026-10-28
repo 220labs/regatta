@@ -79,6 +79,24 @@
   refuses, each read starts from the given-or-default pair (a stale early read never outlives the fire-time one),
   WEEKLY_RUN writes opus/high into its job so a principal brief refuses there, a list or map `tier:` is a problem
   line again, and a claude-code block naming a principal tier's model or effort is refused (never shown and dropped).
+- `yard-node` gains named nodes and a cloud twin (host-power S6, the Hostinger half). `--node NAME` reads
+  `wharf-runs/nodes/<NAME>/*`; its render adds a payload (`node/agent.payload.yaml`): a user unit that clones
+  the node's repos once `gh` is signed in, and adds the marketplace. A scope node clones its scope's repos and
+  its `carry` list, and its walk knows its scope's login alone; a carry entry or a login in another confidential
+  scope is refused, a shared node takes none, and a torn registry refuses the render. The node with no
+  `--node` renders byte for byte as before. `render agent --node NAME --post-install` wraps the render in
+  `node/post-install.sh` (a NoCloud seed, cloud-init over it, the provider's network left alone; at most 48 KB,
+  its instance-id stable per content). `yard-node cloud plan|apply|show --node NAME` drives the new
+  `tofu/hostinger/` module (provider 0.1.23, its lock file for four platforms): the token is read in-process
+  from the secrets file and reaches tofu only, the state sits at `<config>/wharf-runs/tofu/<NAME>/` with 0600
+  files, `apply` refuses under `CLAUDE_UNATTENDED`, without `--yes` (after printing plan, term, data center,
+  template and price) and with its state outside a vault's `_secrets`; `show` writes the address. The VPS has
+  `prevent_destroy` (destroy cancels the subscription) and ignores plan, template and script after create
+  (an upgrade is made in place in the provider's panel). `tests/node.sh` N8–N12.
+  Checked against a live account (2026-10-27): the default plan is `hostingercom-vps-kvm4-usd-2y` (a term is
+  `-1m`, `-1y` or `-2y`; the guessed `-24m` was refused at plan), `order()` reads a `-Ny` term as months, the
+  token is the file's last `HOSTINGER_API_TOKEN` line, as `source` reads it (the first was a note, answered
+  401), and a wrong plan lists the account's VPS plans only, not its 2,000 catalogue ids.
 
 - `rc-hosts --tcc-survey` counts a job Orca started (orca-launcher S7): a not-allowed privacy request whose
   responsible process is Orca while a child of it asks is listed as `via Orca: <accessing path>` beside the
