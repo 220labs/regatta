@@ -227,6 +227,16 @@ def m_vacuous(r):
                                     encoding="utf-8")
 
 
+def m_sidecar(r):
+    # A deck recorded with no type_url and a date that is no date: the next publish could not find
+    # the artifact to update. One setting, as every fixture here: the sidecar's shape.
+    sidecar = r / f"{STEM}.pitch.json"
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    del data["published"]["admiral_deck"]["type_url"]
+    data["published"]["memo"]["first_published"] = "last Tuesday"
+    sidecar.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+
+
 CASES = [
     ("admiral.words", m_words, DRIFT),
     ("admiral.statements", m_statements, DRIFT),
@@ -257,6 +267,7 @@ CASES = [
     ("claims.table", m_table, []),
     ("root.orphan", m_orphan, []),
     ("root.vacuous", m_vacuous, []),
+    ("sidecar.shape", m_sidecar, []),
 ]
 
 

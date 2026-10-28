@@ -3,13 +3,13 @@ that writes an admiral deck, in one place.
 
 A document has renders: the captain page (`<stem>-memo.html`), read in full, and the admiral deck
 (`<stem>-admiral-deck/project/`), spoken: about twenty words a slide, at most three statements, no
-type under 60 px, a title that states the message. The method (method.md) gives every number and its
+type under 60 px, a title that states the message. The method (skills/pitch/method.md) gives every number and its
 source. Two things enforce the format: the builder (`pitch build`) refuses to write a slide that
 breaks a rule, and the checker (`pitch check`) refuses one that arrived by any other route. Both are
 this file, and neither keeps its own copy of a number: two copies of the rules drifting apart is the
 stale-render trap in miniature (the method, section 6).
 
-Everything that differs between adopters is a parameter in `pitch.json` (the config reference): the
+Everything that differs between adopters is a parameter in `pitch.json` (the config reference, skills/pitch/config.md): the
 palette, the face and its measured glyph widths, the limits, the exemptions. The numbers below in
 DEFAULTS are the method's own; an adopter overrides them knowingly.
 
@@ -18,11 +18,12 @@ Stdlib only, and Python 3.9, so it runs under a stock macOS `python3`. What the 
 own reference pages (`format.md`, `layout.md`, `styles.md`).
 
 It sits in `bin/` beside `pitch`, not in `lib/`: a module's `lib/` counts as live code (the core's
-classes.sh), and nothing runs this from a hook. The three parts below were three files in the
-export this came from (the rules, the checker, the builder); their order and their comments are
-kept, so a change there reads as a change here.
+classes.sh), and nothing runs this from a hook. The four parts below were four files in the
+export this came from (the rules, the checker, the builder, the calibrator); their order and their
+comments are kept, so a change there reads as a change here.
 """
 import copy
+import datetime
 import json
 import re
 import subprocess
@@ -89,6 +90,7 @@ DEFAULTS = {
         "single_deck_suffix": "-deck.html",
         "content_file": "slides.json",
         "deck_index_version": 4,
+        "sidecar_suffix": ".pitch.json",    # <stem><suffix>: where each render was published
     },
     "claims": {
         "must_appear": {},          # "<document stem>": [phrases every non-admiral render and the document carry]
@@ -98,6 +100,12 @@ DEFAULTS = {
         "require_pins": True,       # a render whose stem has no entry is a finding, not a silent pass
     },
     "builder": {"require_content_file": True, "extra_interpreters": []},
+    "publish": {                    # how the skill publishes; no check reads these bar asset_host
+        "design_system": "",        # a Design System artifact's https URL; it wins over `brand`
+        "brand": "",                # the brand doc, relative to the config
+        "images": "none",           # the image route: one of IMAGE_ROUTES
+        "asset_host": "",           # a host a memo may also load from, when uploads come back absolute
+    },
     "layout": {                     # the builder's own look; none of it is a rule
         "ink": "#000000", "muted": "#555555", "accent": "#0055cc", "paper": "#ffffff", "raised": "#f5f5f5",
         "head_px": 104, "cover_head_px": 150, "statement_px": 68, "lone_statement_px": 76,
@@ -106,6 +114,15 @@ DEFAULTS = {
         "head_gap_px": 72, "row_gap_px": 48, "transition": "fade",
     },
 }
+
+
+# The routes `publish.images` may name, and an image in a sidecar may record (the skill says how each
+# one runs). `none` is the default: the wordmark and drawn figures only.
+IMAGE_ROUTES = ("none", "design", "agy", "flow", "imagen")
+
+
+class ConfigError(ValueError):
+    """A config that cannot be read as written: `pitch` exits 2 with the message, never a finding."""
 
 
 def _merge(base, over):
@@ -122,9 +139,10 @@ class Config:
     """The merged parameters, read once. `extends` in a config file names another config, relative
     to it, that is loaded first, so a variant changes only what differs."""
 
-    def __init__(self, data=None, base_dir=None):
+    def __init__(self, data=None, base_dir=None, load_glyphs=True):
         d = _merge(DEFAULTS, data or {})
         self.raw, self.base_dir, self.path = d, Path(base_dir) if base_dir else None, None
+        self.glyphs_from = None     # the config whose table this one inherits, set by load()
         a, r, f = d["admiral"], d["runtime"], d["face"]
         self.max_words, self.target_words = a["max_words"], a["target_words"]
         self.max_statements, self.max_lines = a["max_statements"], a["max_lines"]
@@ -140,9 +158,15 @@ class Config:
         self.allowed_colours = {parse_colour(c) for c in d["palette"]["allowed"]} - {None}
         self.face_family, self.face_stack, self.face_href = f["family"], f["stack"], f["href"]
         self.face_weights, self.fallback_em, self.wrap_margin = f["weights"], f["fallback_em"], f["wrap_margin"]
-        self.glyphs = self._load_glyphs(f["glyphs"])
+        # The calibrator reads the config without the table it is about to write: the first
+        # measurement has no file yet, and a face just changed has one for the old family.
+        self.glyphs = self._load_glyphs(f["glyphs"]) if load_glyphs else {}
         self.captain, self.furniture, self.naming = d["captain"], d["furniture"], d["naming"]
         self.claims, self.builder, self.layout = d["claims"], d["builder"], d["layout"]
+        self.publish = _publish(d["publish"])
+        suffix = self.naming.get("sidecar_suffix")
+        if not (isinstance(suffix, str) and suffix.endswith(".json") and len(suffix) > len(".json")):
+            raise ConfigError(f"naming.sidecar_suffix is {suffix!r}: text ending .json, longer than .json")
         self.verbs = VERBS | {w.lower() for w in a["extra_verbs"]}
         self.finite = AUXILIARIES | _inflected(self.verbs)
 
@@ -151,39 +175,66 @@ class Config:
         if not name:
             return {}
         path = Path(name) if self.base_dir is None else self.base_dir / name
+        if not path.exists():
+            raise ConfigError(f"{path}: no glyph table yet; `pitch calibrate glyphs` measures it")
         g = json.loads(path.read_text(encoding="utf-8"))
         if g.get("family") != self.face_family:
-            raise ValueError(f"{path} measures {g.get('family')!r}, the config's face is {self.face_family!r}")
+            raise ConfigError(f"{path} measures {g.get('family')!r}, the config's face is {self.face_family!r}")
         return {int(w): dict(zip(g["chars"], row)) for w, row in g["widths"].items()}
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, load_glyphs=True):
         path = Path(path).resolve()
         data = json.loads(path.read_text(encoding="utf-8"))
         parent = data.pop("extends", None)
+        inherited = None
         if parent:
-            base = cls.load(path.parent / parent)
-            # The parent's glyph path stays relative to the parent.
-            if "face" not in data or "glyphs" not in data.get("face", {}):
-                data = _merge({"face": {"glyphs": str((base.base_dir / base.raw["face"]["glyphs"]))
-                                        if base.raw["face"]["glyphs"] else ""}}, data)
+            base = cls.load(path.parent / parent, load_glyphs)
+            # The parent's paths stay relative to the parent: its glyph table and its brand doc.
+            if "glyphs" not in (data.get("face") or {}) and base.raw["face"]["glyphs"]:
+                inherited = base.glyphs_from or base.path
+                data = _merge({"face": {"glyphs": str(base.base_dir / base.raw["face"]["glyphs"])}}, data)
+            if "brand" not in (data.get("publish") or {}) and (base.raw.get("publish") or {}).get("brand"):
+                data = _merge({"publish": {"brand": str(base.base_dir / base.raw["publish"]["brand"])}}, data)
             data = _merge(base.raw, data)
-        cfg = cls(data, path.parent)
-        cfg.path = path
+        try:
+            cfg = cls(data, path.parent, load_glyphs)
+        except ConfigError as e:
+            raise ConfigError(f"{path}: {e}") from None
+        cfg.path, cfg.glyphs_from = path, inherited
         return cfg
+
+
+def _publish(p):
+    """The `publish` section, refused when a value could not mean what its key says."""
+    if not isinstance(p, dict):
+        raise ConfigError(f"publish is {p!r}, not an object")
+    extra = sorted(set(p) - set(DEFAULTS["publish"]))
+    if extra:
+        raise ConfigError(f"publish: no key {', '.join(extra)} (it takes {', '.join(DEFAULTS['publish'])})")
+    bad = [k for k in ("design_system", "brand", "images", "asset_host") if not isinstance(p.get(k), str)]
+    if bad:
+        raise ConfigError(f"publish: {', '.join(bad)} must be text")
+    if p["images"] not in IMAGE_ROUTES:
+        raise ConfigError(f"publish.images is {p['images']!r}, not one of {', '.join(IMAGE_ROUTES)}")
+    if p["design_system"] and not p["design_system"].startswith("https://"):
+        raise ConfigError(f"publish.design_system is {p['design_system']!r}, not an https URL")
+    if p["asset_host"] and not re.fullmatch(r"[A-Za-z0-9.-]+(?::\d+)?", p["asset_host"]):
+        raise ConfigError(f"publish.asset_host is {p['asset_host']!r}: a host name alone, no scheme or path")
+    return p
 
 
 CONFIG_NAME = "pitch.json"
 
 
-def find_config(start, explicit=None):
+def find_config(start, explicit=None, load_glyphs=True):
     """An explicit path, else the nearest pitch.json at or above `start`."""
     if explicit:
-        return Config.load(explicit)
+        return Config.load(explicit, load_glyphs)
     p = Path(start).resolve()
     for d in [p] + list(p.parents):
         if (d / CONFIG_NAME).exists():
-            return Config.load(d / CONFIG_NAME)
+            return Config.load(d / CONFIG_NAME, load_glyphs)
     raise SystemExit(f"no {CONFIG_NAME} at or above {p}; pass --config")
 
 
@@ -1001,6 +1052,7 @@ RULES = (
     "deck.index", "deck.generator-drift", "deck.page-number", "deck.running-caption", "deck.external",
     "captain.type-floor", "captain.allowlist", "single.external", "single.authoring-marker",
     "claims.must-appear", "claims.retired", "claims.table", "root.orphan", "root.vacuous",
+    "sidecar.shape",
 )
 
 # ------------------------------------------------------------------------------------------------
@@ -1285,6 +1337,8 @@ def check_memo(path, cfg):
     out = captain_floor(path, cfg)
     text = path.read_text(encoding="utf-8")
     hosts = tuple(cfg.captain["allowed_load_hosts"])
+    if cfg.publish["asset_host"]:       # the artifact store's uploads, when it returns them absolute
+        hosts += (f"https://{cfg.publish['asset_host']}/",)
     bad = [u for u in MEMO_LOAD.findall(text)
            if u.startswith(("http://", "https://", "//", "data:")) and not u.startswith(hosts)]
     apis = [m.group(0) for m in NETWORK_APIS.finditer(text)]
@@ -1437,6 +1491,114 @@ def check_claims(root, cfg, only=None):
 
 
 # ------------------------------------------------------------------------------------------------
+# The sidecar: where each render was published
+# ------------------------------------------------------------------------------------------------
+#
+# An artifact is keyed by the file path it was published from, so the same render published from
+# another working copy becomes a second artifact with a second URL (the method, trap 5). The sidecar
+# `<stem>.pitch.json` beside the document carries each render's URL, so the next publish updates the
+# same artifact. Only its shape is checked here; whether a render it names still exists is
+# `sidecar.stale`'s question, not this one's. The shape (the config reference, "The sidecar"):
+#
+#     {"document": "<stem>.md",                                   optional
+#      "published": {"memo": {"url", "first_published"},           one entry or more
+#                    "admiral_deck": {"url", "first_published", "type_url"}},
+#      "assets": {"<file>": "<url>"},                             optional
+#      "images": [{"file", "route", "prompt"}]}                   optional
+#
+# Any other key, at the top or inside a render's entry, is a free-form note and passes.
+
+# The keys each render's entry must carry, by its key under `published`.
+SIDECAR_RENDERS = {
+    "memo": ("url", "first_published"),
+    "admiral_deck": ("url", "first_published", "type_url"),
+}
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _https(value):
+    return isinstance(value, str) and value.startswith("https://") and len(value) > len("https://")
+
+
+def _date(value):
+    if not (isinstance(value, str) and DATE.fullmatch(value)):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def sidecar_problems(data, md_name):
+    """What is wrong with one sidecar's parsed JSON, as messages; [] when its shape holds."""
+    if not isinstance(data, dict):
+        return ["is not a JSON object"]
+    out = []
+    if "document" in data and data["document"] != md_name:
+        out.append(f"document is {data['document']!r}, but the sidecar sits beside {md_name}")
+    pub = data.get("published")
+    if not isinstance(pub, dict) or not pub:
+        out.append("has no published entry: a sidecar exists to carry each render's URL")
+        pub = {}
+    for key, entry in pub.items():
+        if key not in SIDECAR_RENDERS:
+            out.append(f"published.{key} is no render the sidecar records ({', '.join(SIDECAR_RENDERS)})")
+            continue
+        if not isinstance(entry, dict):
+            out.append(f"published.{key} is not an object")
+            continue
+        missing = [k for k in SIDECAR_RENDERS[key] if k not in entry]
+        if missing:
+            out.append(f"published.{key} lacks {', '.join(missing)}")
+        out += [f"published.{key}.{k} is {entry[k]!r}, not an https URL"
+                for k in ("url", "type_url") if k in entry and not _https(entry[k])]
+        if "first_published" in entry and not _date(entry["first_published"]):
+            out.append(f"published.{key}.first_published is {entry['first_published']!r}, not a YYYY-MM-DD date")
+    assets = data.get("assets", {})
+    if not isinstance(assets, dict) or not all(isinstance(k, str) and _https(v) for k, v in assets.items()):
+        out.append("assets is not {file: https URL}")
+    images = data.get("images", [])
+    if not isinstance(images, list):
+        out.append("images is not a list")
+        images = []
+    for i, img in enumerate(images):
+        if not (isinstance(img, dict) and all(isinstance(img.get(k), str) and img.get(k) for k in ("file", "route", "prompt"))):
+            out.append(f"images[{i}] lacks one of file, route, prompt")
+        elif img["route"] not in IMAGE_ROUTES[1:]:
+            out.append(f"images[{i}].route is {img['route']!r}, not one of {', '.join(IMAGE_ROUTES[1:])}")
+    return out
+
+
+def check_sidecars(root, cfg, only=None):
+    """Every sidecar's shape, and, for the root, a sidecar whose document is gone."""
+    suffix = cfg.naming["sidecar_suffix"]
+    docs = documents(root, cfg, only)
+    out = []
+    for md in docs:
+        path = md.with_name(md.stem + suffix)
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            out.append(("sidecar.shape", f"{path.name}: not JSON ({e})"))
+            continue
+        out += [("sidecar.shape", f"{path.name}: {m}") for m in sidecar_problems(data, md.name)]
+    if only is None:
+        # A sidecar beside no document holds URLs nothing will update: the document was renamed
+        # or deleted and its sidecar left behind.
+        owned = {md.with_name(md.stem + suffix) for md in docs}
+        for folder in sorted({Path(root)} | {md.parent for md in docs}):
+            out += [("sidecar.shape", f"{p.name}: no document {p.name[: -len(suffix)]}.md beside it")
+                    for p in sorted(folder.glob("*" + suffix))
+                    if p not in owned and p.name != suffix and p != cfg.path
+                    # a document the glob leaves out still owns its sidecar
+                    and not p.with_name(p.name[: -len(suffix)] + ".md").exists()]
+    return out
+
+
+# ------------------------------------------------------------------------------------------------
 # The root: nothing unpaired, something to check
 # ------------------------------------------------------------------------------------------------
 
@@ -1457,7 +1619,8 @@ def check_root(root, cfg, only=None):
         out += [("root.orphan", f"{d.name}: a deck folder no check sees (no project/)")
                 for d in (root / (only + s) for s in cfg.naming["folder_deck_suffixes"])
                 if d.is_dir() and d not in seen_dirs]
-        return out + _check_renders(found, cfg) + check_exemptions(root, cfg, only) + check_claims(root, cfg, only)
+        return (out + _check_renders(found, cfg) + check_exemptions(root, cfg, only) + check_claims(root, cfg, only)
+                + check_sidecars(root, cfg, only))
     seen_files = {p for _, p, k in found if k in ("memo", "single")}
     orphans = [h.name for h in root.glob("*.html") if h not in seen_files]
     out += [("root.orphan", f"{n}: an HTML render with no document of its name, so nothing checks it") for n in orphans]
@@ -1468,6 +1631,7 @@ def check_root(root, cfg, only=None):
     out += _check_renders(found, cfg)
     out += check_exemptions(root, cfg)
     out += check_claims(root, cfg)
+    out += check_sidecars(root, cfg)
     return out
 
 
@@ -1624,3 +1788,172 @@ def build_all(deck_dir, cfg):
     if stale:
         sys.exit(f"slides on disk that {content.name} no longer defines: {sorted(stale)} — delete them")
     return built
+
+
+# ================================================================================================
+# The calibrator
+# ================================================================================================
+#
+# Holds the fit estimate's arithmetic to a real browser. Not part of the check: it needs Chrome and
+# the network (the face comes from Google Fonts), and the check must run anywhere, offline. No suite
+# calls Chrome either: tests/pitch_cases.py swaps `chrome` for a canned measurement, in-process.
+#
+# `pitch calibrate glyphs` measures every character in GLYPH_CHARS at each weight the config's face
+# lists, with canvas measureText at 1000 px, and writes the table to the config's `face.glyphs` file.
+# Run it when a deck's face or weights change; until then the estimate uses `face.fallback_em`,
+# which over-wraps.
+#
+# `pitch calibrate render` lays out every admiral slide under the root in headless Chrome, with the
+# Slides runtime's resets (no margins, border-box, the aside hidden, a 1920 x 1080 section), and
+# compares each text block's line count and the column's height with the estimate. It exits 1 on any
+# line-count difference. `--shots` also writes one PNG per slide.
+#
+# A plain browser stands in for the Slides runtime here, which lays out with real CSS flex and the
+# browser's own text engine (its `styles.md`, "Rendering semantics"); the published deck is the
+# final word. CHROME names the browser binary when it is not at the macOS default.
+
+CHROME_DEFAULT = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+GLYPH_CHARS = (" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+               "—–’‘“”…×→≥≤·•€£")
+
+
+def reset(cfg):
+    return (f"*{{margin:0;padding:0;box-sizing:border-box}}body{{width:{cfg.canvas_w}px}}"
+            f"section{{width:{cfg.canvas_w}px;height:{cfg.canvas_h}px;overflow:hidden;position:relative}}"
+            "aside{display:none}")
+
+
+def chrome(page_html, cfg, budget_ms=15000, shot=None):
+    """The page's `<pre id="out">` as JSON after headless Chrome ran its script, or None for a shot.
+    CHROME is read per call, so a caller (or a test) can point it elsewhere."""
+    import html as html_mod
+    import os
+    import tempfile
+    binary = os.environ.get("CHROME", CHROME_DEFAULT)
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Path(tmp) / "page.html"
+        page.write_text(page_html, encoding="utf-8")
+        args = [binary, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                f"--virtual-time-budget={budget_ms}", f"--window-size={cfg.canvas_w},{cfg.canvas_h}"]
+        args += [f"--screenshot={shot}"] if shot else ["--dump-dom"]
+        # Headless Chrome occasionally hangs on exit; a hung run is retried once, never in a loop.
+        for attempt in (1, 2):
+            try:
+                out = subprocess.run(args + [page.as_uri()], capture_output=True, text=True, timeout=90)
+                break
+            except FileNotFoundError:
+                sys.exit(f"no Chrome at {binary}: set CHROME to the browser binary")
+            except subprocess.TimeoutExpired:
+                if attempt == 2:
+                    sys.exit(f"Chrome hung twice on {'a screenshot' if shot else 'a measurement'}")
+        if shot:
+            return None
+        m = re.search(r'<pre id="out">(.*?)</pre>', out.stdout, re.S)
+        if not m:
+            sys.exit("Chrome returned no measurement; is it installed and online?\n" + out.stderr[-800:])
+        body = html_mod.unescape(m.group(1))
+        if not body.startswith("{"):
+            sys.exit("measurement failed: " + body[:400])
+        return json.loads(body)
+
+
+def glyph_table(cfg, got):
+    """The table `face.glyphs` holds, from one measurement: {"loaded": [bool…], "widths": {weight: […]}}."""
+    weights = sorted(cfg.face_weights)
+    if not all(got["loaded"]):
+        sys.exit(f"{cfg.face_family} did not load at every weight: {dict(zip(weights, got['loaded']))}")
+    return {"family": cfg.face_family, "measured_with": "canvas measureText at 1000 px, headless Chrome",
+            "chars": GLYPH_CHARS, "widths": {str(w): got["widths"][str(w)] for w in weights}}
+
+
+def measure_glyphs(cfg):
+    if not (cfg.face_family and cfg.face_href and cfg.raw["face"]["glyphs"]):
+        sys.exit("the config needs face.family, face.href and face.glyphs (the file to write)")
+    if cfg.glyphs_from:
+        # Writing it would re-measure the parent's table for this face, and stop the parent's check.
+        sys.exit(f"face.glyphs is inherited from {cfg.glyphs_from}; name this config's own table")
+    fam, weights = cfg.face_family, sorted(cfg.face_weights)
+    js = f"""
+const chars = {json.dumps(GLYPH_CHARS, ensure_ascii=False)}, weights = {json.dumps(weights)}, fam = {json.dumps(fam)};
+(async () => {{
+  await Promise.all(weights.map(w => document.fonts.load(`${{w}} 100px "${{fam}}"`)));
+  const cv = document.createElement('canvas').getContext('2d'), out = {{loaded: [], widths: {{}}}};
+  for (const w of weights) {{
+    out.loaded.push(document.fonts.check(`${{w}} 100px "${{fam}}"`));
+    cv.font = `${{w}} 1000px "${{fam}}"`;
+    out.widths[w] = [...chars].map(c => Math.round(cv.measureText(c).width));
+  }}
+  document.getElementById('out').textContent = JSON.stringify(out);
+}})();"""
+    page = (f'<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="{cfg.face_href}">'
+            f'<pre id="out">pending</pre><script>{js}</script>')
+    table = glyph_table(cfg, chrome(page, cfg))
+    target = cfg.base_dir / cfg.raw["face"]["glyphs"]
+    new = json.dumps(table, ensure_ascii=False, indent=1)
+    old = target.read_text(encoding="utf-8") if target.exists() else ""
+    target.write_text(new + "\n", encoding="utf-8")
+    print("glyph table unchanged" if old.strip() == new.strip() else f"wrote {target}")
+
+
+MEASURE_JS = """
+(async () => {
+  await document.fonts.ready;
+  for (const w of WEIGHTS) await document.fonts.load(`${w} 100px "FAMILY"`);
+  const out = {slides: {}};
+  for (const sec of document.querySelectorAll('section')) {
+    const top0 = sec.getBoundingClientRect().top;
+    const blocks = [...sec.querySelectorAll('h1,h2,h3,p,li')].filter(e => !e.closest('aside')).map(e => {
+      const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+      const range = document.createRange(); range.selectNodeContents(e);
+      const tops = new Set([...range.getClientRects()].map(q => Math.round(q.top)));
+      return {tag: e.tagName.toLowerCase(), text: e.textContent.trim(), height: r.height,
+              lines: tops.size, font: cs.fontFamily, size: parseFloat(cs.fontSize)};
+    });
+    const flow = [...sec.children].filter(e => e.tagName !== 'ASIDE' && getComputedStyle(e).position !== 'absolute');
+    const first = flow[0].getBoundingClientRect(), last = flow[flow.length - 1].getBoundingClientRect();
+    out.slides[sec.id] = {blocks, column: last.bottom - first.top, top: first.top - top0};
+  }
+  document.getElementById('out').textContent = JSON.stringify(out);
+})();"""
+
+
+def calibrate_render(root, cfg, shots=None):
+    """Every admiral slide under root, the estimate against Chrome: 0 when every line count agrees."""
+    worst, status = 0, 0
+    face = f'<link rel="stylesheet" href="{cfg.face_href}">' if cfg.face_href else ""
+    js = MEASURE_JS.replace("WEIGHTS", json.dumps(cfg.face_weights)).replace("FAMILY", cfg.face_family or "sans-serif")
+    decks = admiral_decks(root, cfg)
+    if not decks:
+        sys.exit(f"no admiral deck under {root}: nothing to lay out")
+    for md, project in decks:
+        order = json.loads((project / "deck.json").read_text(encoding="utf-8"))["order"]
+        sections = {sid: (project / "slides" / f"{sid}.html").read_text(encoding="utf-8") for sid in order}
+        page = (f'<!doctype html><meta charset="utf-8">{face}<style>{reset(cfg)}</style>'
+                + "".join(sections.values()) + f'<pre id="out">pending</pre><script>{js}</script>')
+        got = chrome(page, cfg)["slides"]
+        print(f"{md.stem}: estimate against Chrome")
+        print(f"  {'slide':10} {'column est':>10} {'chrome':>8} {'diff':>6}   {'top est':>7} {'chrome':>7}   lines (est/chrome)")
+        for sid in order:
+            slide = Slide(sections[sid], f"{sid}.html")
+            if markup_problems(slide, cfg):
+                sys.exit(f"{md.stem}: {sid}.html is outside the markup grammar; `pitch check` names what")
+            if sid not in got:
+                sys.exit(f"{md.stem}: {sid}.html has no <section id=\"{sid}\">, so Chrome's measure cannot be matched")
+            f, column, room, top = fit(slide, cfg)
+            m = got[sid]
+            est_lines = [b[2] for b in f.blocks]
+            real_lines = [b["lines"] for b in m["blocks"]]
+            fonts = {b["font"].split(",")[0].strip("'\" ") for b in m["blocks"]}
+            mismatch = est_lines != real_lines
+            worst = max(worst, abs(column - m["column"]))
+            print(f"  {sid:10} {column:10.1f} {m['column']:8.1f} {column - m['column']:6.1f}   {top:7.1f} {m['top']:7.1f}"
+                  f"   {est_lines}/{real_lines}{'  <-- differs' if mismatch else ''}  [{', '.join(sorted(fonts))}]")
+            if mismatch:
+                print("    blocks:", [(b["text"][:30], b["lines"]) for b in m["blocks"]])
+                status = 1
+            if shots:
+                Path(shots).mkdir(parents=True, exist_ok=True)
+                one = f'<!doctype html><meta charset="utf-8">{face}<style>{reset(cfg)}</style>{sections[sid]}'
+                chrome(one, cfg, shot=str(Path(shots) / f"{md.stem}-{sid}.png"))
+    print(f"largest column difference: {worst:.1f}px")
+    return status

@@ -12,13 +12,16 @@ Three groups, as the export's pytest suite had them (152 tests there, the same s
   controls  the rules module alone, each rule against a slide made in place to fail it (the 90
             parametrised cases, as loops).
 Then the CLI: `pitch check` on a root and on one document, `--json`, `pitch build` writing, refusing
-and comparing. One line per case, `ok` or `FAIL`; exit 1 on any failure.
+and comparing; the sidecar's shape and the `publish` section (renders S2); and `pitch calibrate`, its
+arguments and the table it writes, with Chrome replaced by a canned measurement: no case starts a
+browser. One line per case, `ok` or `FAIL`; exit 1 on any failure.
 """
 import contextlib
 import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -494,7 +497,338 @@ def group_cli(failing_dir, scratch):
         assert pitch("bogus").returncode == 2
         r = pitch("--help")
         assert r.returncode == 0 and "check" in r.stdout and "build" in r.stdout, r.stdout
-    case("usage: no verb or an unknown one exits 2; --help names both verbs", usage)
+    case("usage: no verb or an unknown one exits 2; --help names the verbs", usage)
+
+
+# ------------------------------------------------------------------------------------------------
+# the sidecar and the publish section
+# ------------------------------------------------------------------------------------------------
+
+def group_sidecar(failing_dir, scratch):
+    print("sidecar and publish — the sidecar's shape, the publish keys")
+    work = scratch / "sidecar"
+    work.mkdir()
+    shutil.copy(FIXTURES / "pitch.json", work / "pitch.json")
+    good = json.loads((PASSING / f"{STEM}.pitch.json").read_text(encoding="utf-8"))
+    md = f"{STEM}.md"
+
+    def holds():
+        assert pl.sidecar_problems(good, md) == [], pl.sidecar_problems(good, md)
+        notes = copy_of(good)
+        notes["why_this_file"] = "a free-form note"
+        notes["published"]["memo"]["published_from"] = "another working copy"
+        assert pl.sidecar_problems(notes, md) == [], pl.sidecar_problems(notes, md)
+        bare = {"published": {"memo": {"url": "https://example.com/m", "first_published": "2026-01-12"}}}
+        assert pl.sidecar_problems(bare, md) == [], pl.sidecar_problems(bare, md)
+    case("the passing sidecar holds; free-form notes and a memo alone pass", holds)
+
+    def broken(mutate, word):
+        data = copy_of(good)
+        out = mutate(data)              # edits in place; only the not-an-object shape replaces it
+        data = out if isinstance(out, list) else data
+        got = pl.sidecar_problems(data, md)
+        assert got and any(word in m for m in got), f"expected a problem naming {word!r}, got {got}"
+    shapes = [
+        ("not an object", lambda d: [d], "not a JSON object"),
+        ("names another document", lambda d: d.update(document="other.md"), "sits beside"),
+        ("no published", lambda d: d.pop("published"), "no published"),
+        ("published empty", lambda d: d.update(published={}), "no published"),
+        ("a render it does not know", lambda d: d["published"].update(deck={"url": "https://e.com/x"}), "published.deck"),
+        ("an entry that is no object", lambda d: d["published"].update(memo="https://e.com/x"), "not an object"),
+        ("a memo without its url", lambda d: d["published"]["memo"].pop("url"), "lacks url"),
+        ("a deck without its type_url", lambda d: d["published"]["admiral_deck"].pop("type_url"), "lacks type_url"),
+        ("an http url", lambda d: d["published"]["memo"].update(url="http://example.com/m"), "not an https URL"),
+        ("a date that is no date", lambda d: d["published"]["memo"].update(first_published="2026-02-30"), "YYYY-MM-DD"),
+        ("an asset that is no https URL", lambda d: d.update(assets={"a.png": "a.png"}), "assets"),
+        ("images not a list", lambda d: d.update(images={}), "images is not a list"),
+        ("an image without its prompt", lambda d: d.update(images=[{"file": "a.png", "route": "design"}]), "images[0]"),
+        ("an image on no route", lambda d: d.update(images=[{"file": "a.png", "route": "none", "prompt": "p"}]), "route"),
+    ]
+    for name, mutate, word in shapes:
+        case(f"sidecar.shape: {name}", broken, mutate, word)
+
+    def doc_sees_it():
+        r = run("check", failing_dir / "sidecar.shape" / md, "--json")
+        got = {f["rule"] for f in json.loads(r.stdout)}
+        assert r.returncode == 1 and got == {"sidecar.shape"}, (r.returncode, got)
+    case("check <doc>: the document's own sidecar is checked", doc_sees_it)
+
+    def not_json():
+        root = work / "garbled"
+        shutil.copytree(PASSING, root)
+        (root / f"{STEM}.pitch.json").write_text("{\"published\": ", encoding="utf-8")
+        # check_sidecars alone: the root's wiring is the fixture group's, and each check_root here
+        # would start the builder's subprocess again.
+        got = pl.check_sidecars(root, pl.find_config(root))
+        assert [(r, "not JSON" in m) for r, m in got] == [("sidecar.shape", True)], got
+    case("sidecar.shape: a sidecar that is not JSON is a finding, not a crash", not_json)
+
+    def left_behind():
+        root = work / "renamed"
+        shutil.copytree(PASSING, root)
+        shutil.copy(root / f"{STEM}.pitch.json", root / "old-name-2026-01-01.pitch.json")
+        got = pl.check_sidecars(root, pl.find_config(root))
+        assert [r for r, _ in got] == ["sidecar.shape"] and "no document" in got[0][1], got
+        assert pl.check_sidecars(root, pl.find_config(root), STEM) == [], "a document's check took the root's orphan"
+    case("sidecar.shape: a sidecar beside no document is the root's finding, not a document's", left_behind)
+
+    def publish_defaults():
+        cfg = pl.find_config(PASSING)
+        assert cfg.publish == {"design_system": "", "brand": "", "images": "none", "asset_host": ""}, cfg.publish
+    case("publish: the defaults, an image route of none", publish_defaults)
+
+    def publish_refused(section, word):
+        root = work / f"publish-{word.replace('.', '-')}"
+        shutil.copytree(PASSING, root)
+        (root / "pitch.json").write_text(json.dumps({"extends": "../pitch.json", "publish": section}), encoding="utf-8")
+        r = run("check", root)
+        assert r.returncode == 2 and word in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr[-400:])
+    for section, word in (({"images": "midjourney"}, "publish.images"),
+                          ({"design_system": "http://example.com/ds"}, "publish.design_system"),
+                          ({"asset_host": "https://assets.example.com/"}, "publish.asset_host"),
+                          ({"brand": ["docs/brand.md"]}, "must be text")):
+        case(f"publish: {json.dumps(section)} exits 2, naming the key", publish_refused, section, word)
+
+    def asset_host():
+        root = work / "assets"
+        shutil.copytree(PASSING, root)
+        memo = root / f"{STEM}-memo.html"
+        memo.write_text(memo.read_text(encoding="utf-8").replace(
+            "</body>", '<img src="https://assets.example.com/cover.png" alt="the cover"></body>', 1), encoding="utf-8")
+        assert "assets.example.com" in memo.read_text(encoding="utf-8"), "the memo has no </body> to write before"
+        assert rules(pl.check_memo(memo, pl.find_config(root))) == {"captain.allowlist"}
+        (root / "pitch.json").write_text(json.dumps({"extends": "../pitch.json",
+                                                     "publish": {"asset_host": "assets.example.com"}}), encoding="utf-8")
+        assert pl.check_memo(memo, pl.find_config(root)) == []
+        (root / "pitch.json").write_text(json.dumps({"extends": "../pitch.json",
+                                                     "publish": {"asset_host": "other.example.com"}}), encoding="utf-8")
+        assert rules(pl.check_memo(memo, pl.find_config(root))) == {"captain.allowlist"}
+    case("publish.asset_host: a memo may load from it, and only from it", asset_host)
+
+    def config_refused(data, word):
+        root = work / f"refused-{len(list(work.iterdir()))}"
+        shutil.copytree(PASSING, root)
+        (root / "pitch.json").write_text(json.dumps(dict({"extends": "../pitch.json"}, **data)), encoding="utf-8")
+        r = run("check", root)
+        assert r.returncode == 2 and word in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr[-400:])
+    for data, word in (({"publish": None}, "not an object"), ({"publish": "flow"}, "not an object"),
+                       ({"publish": {"image": "flow"}}, "no key image"),
+                       ({"naming": {"sidecar_suffix": ""}}, "naming.sidecar_suffix"),
+                       ({"naming": {"sidecar_suffix": ".json"}}, "naming.sidecar_suffix"),
+                       ({"face": {"glyphs": "glyphs-absent.json"}}, "calibrate glyphs")):
+        case(f"config: {json.dumps(data)} exits 2 with a message, never a traceback", config_refused, data, word)
+
+    def unglobbed_owner():
+        root = work / "unglobbed"
+        shutil.copytree(PASSING, root)
+        (root / "README.md").write_text("# notes\n", encoding="utf-8")
+        shutil.copy(root / f"{STEM}.pitch.json", root / "README.pitch.json")
+        cfg = pl.find_config(root)
+        cfg.naming["documents_glob"] = "*-20??-??-??.md"   # README.md is outside it
+        got = [m for _, m in pl.check_sidecars(root, cfg)]
+        assert not [m for m in got if m.startswith("README.pitch.json")], got
+    case("sidecar.shape: a sidecar whose .md is there but outside the glob is no orphan", unglobbed_owner)
+
+    def inherited_brand():
+        root = work / "brand"
+        (root / "print").mkdir(parents=True)
+        (root / "pitch.json").write_text(json.dumps({"extends": str(FIXTURES / "pitch.json"),
+                                                     "publish": {"brand": "docs/brand.md"}}), encoding="utf-8")
+        (root / "print" / "pitch.json").write_text(json.dumps({"extends": "../pitch.json"}), encoding="utf-8")
+        cfg = pl.Config.load(root / "print" / "pitch.json")
+        assert Path(cfg.publish["brand"]) == (root / "docs" / "brand.md").resolve(), cfg.publish["brand"]
+    case("publish.brand: a variant's inherited brand stays relative to the parent", inherited_brand)
+
+
+def copy_of(data):
+    return json.loads(json.dumps(data))
+
+
+# ------------------------------------------------------------------------------------------------
+# calibrate: the arguments and what it writes, Chrome replaced by a canned measurement
+# ------------------------------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def canned(measure):
+    """pitchlib's `chrome` replaced for the block: the CLI imports the same module, so every verb
+    calls `measure(page_html, cfg, budget_ms=…, shot=…)` instead of a browser."""
+    real = pl.chrome
+    pl.chrome = measure
+    try:
+        yield
+    finally:
+        pl.chrome = real
+
+
+def glyphs_measured(widths=500, loaded=True):
+    def measure(page, cfg, budget_ms=15000, shot=None):
+        measure.pages.append(page)
+        ws = sorted(cfg.face_weights)
+        return {"loaded": [loaded] * len(ws), "widths": {str(w): [widths] * len(pl.GLYPH_CHARS) for w in ws}}
+    measure.pages = []
+    return measure
+
+
+def layout_measured(off_by=0):
+    """Chrome's answer as the estimate itself would give it; `off_by` adds a line to one block."""
+    def measure(page, cfg, budget_ms=15000, shot=None):
+        if shot:
+            measure.shots.append(shot)
+            return None
+        slides = {}
+        for sid, html in measure.deck(cfg).items():
+            f, column, _, top = pl.fit(pl.Slide(html, f"{sid}.html"), cfg)
+            blocks = [{"tag": b[0], "text": b[1], "lines": b[2], "height": b[3], "font": "Source Sans 3", "size": 0}
+                      for b in f.blocks]
+            slides[sid] = {"blocks": blocks, "column": column, "top": top}
+        if off_by:
+            slides["money"]["blocks"][1]["lines"] += off_by
+        return {"slides": slides}
+    measure.shots = []
+    return measure
+
+
+def group_calibrate(scratch):
+    print("calibrate — arguments and the table it writes; no browser")
+    work = scratch / "calibrate"
+    work.mkdir()
+    base = json.loads((FIXTURES / "pitch.json").read_text(encoding="utf-8"))
+
+    def root_with(glyphs="glyphs-source-sans-3.json", name="root"):
+        root = work / name
+        shutil.copytree(PASSING, root)
+        cfg = copy_of(base)
+        cfg["face"]["glyphs"] = glyphs
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        return root
+
+    def usage():
+        assert run("calibrate").returncode == 2
+        assert run("calibrate", "fonts").returncode == 2
+        r = pitch("--help")
+        assert "calibrate" in r.stdout, r.stdout
+    case("calibrate: no target or an unknown one exits 2; --help names it", usage)
+
+    def no_table_named():
+        root = root_with(glyphs="", name="unnamed")
+        with canned(glyphs_measured()):
+            r = run("calibrate", "glyphs", root)
+        assert r.returncode == 2 and "face.glyphs" in r.stderr, (r.returncode, r.stderr)
+    case("calibrate glyphs: a config naming no glyph file exits 2", no_table_named)
+
+    def first_table():
+        root = root_with(name="first")
+        table = root / "glyphs-source-sans-3.json"
+        try:
+            pl.find_config(root)
+            raise AssertionError("the check read a glyph table that is not there")
+        except pl.ConfigError as e:
+            assert "calibrate glyphs" in str(e), e
+        measure = glyphs_measured(widths=512)
+        with canned(measure):
+            r = run("calibrate", "glyphs", root)
+        assert r.returncode == 0 and "wrote" in r.stdout, (r.returncode, r.stdout, r.stderr)
+        t = json.loads(table.read_text(encoding="utf-8"))
+        assert t["family"] == "Source Sans 3" and t["chars"] == pl.GLYPH_CHARS, t["family"]
+        assert sorted(t["widths"]) == ["400", "600", "700", "800"], sorted(t["widths"])
+        assert all(len(row) == len(pl.GLYPH_CHARS) and set(row) == {512} for row in t["widths"].values())
+        assert "Source+Sans+3" in measure.pages[0] and '"Source Sans 3"' in measure.pages[0], "the page loads no face"
+        cfg = pl.find_config(root)
+        assert cfg.glyphs[400]["a"] == 512 and cfg.glyphs[800]["—"] == 512, "the check does not read the table"
+        with canned(glyphs_measured(widths=512)):
+            r = run("calibrate", "glyphs", root)
+        assert r.returncode == 0 and "unchanged" in r.stdout, r.stdout
+    case("calibrate glyphs: writes the table the config names, before it exists; the check reads it", first_table)
+
+    def new_face():
+        root = root_with(name="newface")
+        (root / "glyphs-source-sans-3.json").write_text(json.dumps(
+            {"family": "Old Face", "chars": "a", "widths": {"400": [500]}}), encoding="utf-8")
+        r = run("check", root)
+        assert r.returncode == 2 and "Old Face" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:]
+        with canned(glyphs_measured()):
+            r = run("calibrate", "glyphs", root)
+        assert r.returncode == 0, r.stderr
+        assert json.loads((root / "glyphs-source-sans-3.json").read_text(encoding="utf-8"))["family"] == "Source Sans 3"
+    case("calibrate glyphs: a table for another face stops the check (exit 2) and is re-measured", new_face)
+
+    def inherited_table():
+        root = root_with(name="parent")
+        with canned(glyphs_measured()):
+            assert run("calibrate", "glyphs", root).returncode == 0
+        table = root / "glyphs-source-sans-3.json"
+        before = table.read_text(encoding="utf-8")
+        variant = root / "variant.json"
+        variant.write_text(json.dumps({"extends": "pitch.json", "face": {"family": "Other Face"}}), encoding="utf-8")
+        with canned(glyphs_measured()):
+            r = run("calibrate", "glyphs", root, "--config", variant)
+        assert r.returncode != 0 and "inherited" in r.stderr, (r.returncode, r.stderr[-300:])
+        assert table.read_text(encoding="utf-8") == before, "the variant re-measured the parent's table"
+        assert run("check", root).returncode in (0, 1)
+    case("calibrate glyphs: a variant never writes the table it inherits", inherited_table)
+
+    def not_loaded():
+        root = root_with(name="unloaded")
+        with canned(glyphs_measured(loaded=False)):
+            r = run("calibrate", "glyphs", root)
+        assert r.returncode == 2 and "did not load" in r.stderr, (r.returncode, r.stderr)
+        assert not (root / "glyphs-source-sans-3.json").exists(), "a failed measurement wrote a table"
+    case("calibrate glyphs: a face that did not load exits 2 and writes nothing", not_loaded)
+
+    def no_chrome():
+        root = root_with(name="nochrome")
+        before = os.environ.get("CHROME")
+        os.environ["CHROME"] = str(work / "no-such-browser")
+        try:
+            r = run("calibrate", "glyphs", root)
+        finally:
+            if before is None:
+                os.environ.pop("CHROME")
+            else:
+                os.environ["CHROME"] = before
+        assert r.returncode == 2 and "no Chrome at" in r.stderr, (r.returncode, r.stderr)
+    case("calibrate: no Chrome at CHROME exits 2 and says so", no_chrome)
+
+    def deck_of(root):
+        project = root / f"{STEM}-admiral-deck" / "project"
+        order = json.loads((project / "deck.json").read_text(encoding="utf-8"))["order"]
+        return lambda cfg: {sid: (project / "slides" / f"{sid}.html").read_text(encoding="utf-8") for sid in order}
+
+    def agrees():
+        measure = layout_measured()
+        measure.deck = deck_of(PASSING)
+        with canned(measure):
+            r = run("calibrate", "render", PASSING)
+        assert r.returncode == 0 and "largest column difference: 0.0px" in r.stdout, r.stdout + r.stderr
+        assert "differs" not in r.stdout, r.stdout
+    case("calibrate render: Chrome agreeing with the estimate exits 0", agrees)
+
+    def differs():
+        measure = layout_measured(off_by=1)
+        measure.deck = deck_of(PASSING)
+        with canned(measure):
+            r = run("calibrate", "render", PASSING)
+        assert r.returncode == 1 and "money" in r.stdout and "<-- differs" in r.stdout, r.stdout + r.stderr
+    case("calibrate render: a line count Chrome sets differently exits 1 and names the slide", differs)
+
+    def shots():
+        measure = layout_measured()
+        measure.deck = deck_of(PASSING)
+        with canned(measure):
+            r = run("calibrate", "render", PASSING, "--shots", work / "shots")
+        want = sorted(str(work / "shots" / f"{STEM}-{sid}.png") for sid in measure.deck(None))
+        assert r.returncode == 0 and sorted(measure.shots) == want, (r.returncode, measure.shots)
+    case("calibrate render --shots: one PNG per slide, named <stem>-<slide>", shots)
+
+    def nothing_to_lay_out():
+        root = work / "nodeck"
+        root.mkdir()
+        shutil.copy(PASSING / f"{STEM}.md", root)
+        shutil.copy(FIXTURES / "pitch.json", root)
+        with canned(layout_measured()):
+            r = run("calibrate", "render", root)
+        assert r.returncode == 2 and "no admiral deck" in r.stderr, (r.returncode, r.stdout, r.stderr)
+    case("calibrate render: a root with no admiral deck exits 2, never a vacuous pass", nothing_to_lay_out)
 
 
 def main():
@@ -505,7 +839,8 @@ def main():
     cfg = pl.find_config(PASSING)
     with tempfile.TemporaryDirectory() as scratch:
         for group, args in ((group_renders, ()), (group_fixtures, (failing_dir,)), (group_controls, (cfg,)),
-                            (group_cli, (failing_dir, Path(scratch)))):
+                            (group_cli, (failing_dir, Path(scratch))), (group_sidecar, (failing_dir, Path(scratch))),
+                            (group_calibrate, (Path(scratch),))):
             t = time.monotonic()
             group(*args)
             print(f"  ({time.monotonic() - t:.1f}s)")
