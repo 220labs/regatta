@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Write <out>/<rule id>/: a copy of passing/ with one mutation that breaks exactly that rule, and
 an expect.json naming the rule and anything that must fire beside it; and <out>/pitch.json, the
-shared config each root finds above itself (a root that changes one setting extends it).
+shared config each root finds above itself (a root that changes one setting extends it). The rules
+that need a captain review, a generated page or a deck fence (renders S3) mutate a copy of review/
+instead, which carries its own config, into <out>/<name>/.
 
     python3 -I make_failing.py <out>          # tests/pitch.sh: <out> is a temp dir, never committed
 
@@ -20,7 +22,9 @@ sys.path.insert(0, str(HERE.parents[2] / "bin"))      # modules/sextant/bin
 import pitchlib as rf  # noqa: E402
 
 PASSING = HERE / "passing"
+REVIEW = HERE / "review"
 STEM = "evening-hours-2026-01-12"
+REVIEW_STEM = "thursday-evenings-2026-02-02"
 DRIFT = ["deck.generator-drift"]
 CFG = rf.Config.load(HERE / rf.CONFIG_NAME)
 
@@ -237,6 +241,112 @@ def m_sidecar(r):
     sidecar.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
 
 
+def m_contract_title(r):
+    edit(memo(r), "<title>Evening Hours Pilot</title>", "<title></title>")
+
+
+def m_contract_tokens(r):
+    edit(memo(r), ":root { --ink: #1F2430;", "html { --ink: #1F2430;")
+
+
+def m_contract_dark_scheme(r):
+    text = memo(r).read_text(encoding="utf-8")
+    start = text.index("@media (prefers-color-scheme: dark)")
+    end = text.index("}\n}\n", start) + 4
+    memo(r).write_text(text[:start] + text[end:], encoding="utf-8")
+
+
+def m_contract_dark_theme(r):
+    text = memo(r).read_text(encoding="utf-8")
+    line = next(ln for ln in text.split("\n") if ln.startswith(':root[data-theme="dark"]'))
+    edit(memo(r), line + "\n", "")
+
+
+def m_contract_background(r):
+    edit(memo(r), "body { margin: 0; background: var(--paper); ", "body { margin: 0; ")
+
+
+def m_contract_script(r):
+    edit(memo(r), "</body>", '<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/d3.min.js"></script>\n</body>')
+
+
+def m_contract_css(r):
+    edit(memo(r), ".answer { font-size: 20px;", ".answer { background: url(https://example.com/paper.png); font-size: 20px;")
+
+
+def m_sidecar_stale(r):
+    # The sidecar still records the page's URL; the page is gone. Its single-file deck stays, so the
+    # memo's pinned phrases are still compared and nothing else changes.
+    memo(r).unlink()
+
+
+# --- on a copy of review/: a captain review, its generated page, its deck in a fence ------------
+
+def review_doc(r):
+    return r / f"{REVIEW_STEM}.md"
+
+
+def regenerate(r):
+    """`pitch memo` again after the mutation, as a careful person would: what is left is the one
+    thing the mutation broke, never the page's drift."""
+    page, unplaced = rf.memo_page(review_doc(r), rf.Config.load(r / rf.CONFIG_NAME))
+    assert not unplaced, unplaced
+    (r / f"{REVIEW_STEM}-memo.html").write_text(page, encoding="utf-8")
+
+
+def m_memo_drift(r):
+    edit(review_doc(r), "is the cheapest way to see them", "is the simplest way to see them")
+
+
+def m_unplaced(r):
+    edit(review_doc(r), "## The options", "<div>a box the page cannot place</div>\n\n## The options")
+
+
+def m_review_title(r):
+    edit(review_doc(r), "For: the café's", "Written for the café's")
+    regenerate(r)
+
+
+def m_review_sections(r):
+    edit(review_doc(r), "## Where things stand", "## Background")
+    regenerate(r)
+
+
+def m_review_options(r):
+    edit(review_doc(r), "- **It needs from you:** nothing.\n", "")
+    regenerate(r)
+
+
+def m_review_decisions(r):
+    edit(review_doc(r), "  Reversible: yes\n\n", "")
+    regenerate(r)
+
+
+def m_fence_stale_number(r):
+    # The body corrected, the page regenerated, the deck fence forgotten: its note still says 64 %.
+    # Read with the body, the fence would vouch for its own stale figure.
+    edit(review_doc(r), "- About 64 %", "- About 65 %")
+    regenerate(r)
+
+
+def m_fence_only_pin(r):
+    # The admiral's pinned phrase gone from the body and kept in the fence (and so on the slide).
+    edit(review_doc(r), "run by the Thursday crew of 5 fixers", "run by a crew of 5 fixers")
+    regenerate(r)
+
+
+REVIEW_CASES = [
+    ("captain.generator-drift", "captain.generator-drift", m_memo_drift, []),
+    ("captain.unplaced", "captain.unplaced", m_unplaced, []),
+    ("review.title", "review.title", m_review_title, []),
+    ("review.sections", "review.sections", m_review_sections, []),
+    ("review.options", "review.options", m_review_options, []),
+    ("review.decisions", "review.decisions", m_review_decisions, []),
+    ("fence.stale-number", "admiral.invented-number", m_fence_stale_number, []),
+    ("fence.only-pin", "claims.must-appear", m_fence_only_pin, []),
+]
+
+
 CASES = [
     ("admiral.words", m_words, DRIFT),
     ("admiral.statements", m_statements, DRIFT),
@@ -268,6 +378,14 @@ CASES = [
     ("root.orphan", m_orphan, []),
     ("root.vacuous", m_vacuous, []),
     ("sidecar.shape", m_sidecar, []),
+    ("sidecar.stale", m_sidecar_stale, []),
+    ("captain.contract.title", m_contract_title, []),
+    ("captain.contract.tokens", m_contract_tokens, []),
+    ("captain.contract.dark-scheme", m_contract_dark_scheme, []),
+    ("captain.contract.dark-theme", m_contract_dark_theme, []),
+    ("captain.contract.background", m_contract_background, []),
+    ("captain.contract.script-version", m_contract_script, []),
+    ("captain.contract.css-load", m_contract_css, []),
 ]
 
 
@@ -284,7 +402,12 @@ def main():
         shutil.copytree(PASSING, root)
         mutate(root)
         (root / "expect.json").write_text(json.dumps({"rule": rule, "also": also}) + "\n", encoding="utf-8")
-    print(f"{len(CASES)} failing fixtures written under {out}")
+    for name, rule, mutate, also in REVIEW_CASES:
+        root = out / name
+        shutil.copytree(REVIEW, root)
+        mutate(root)
+        (root / "expect.json").write_text(json.dumps({"rule": rule, "also": also}) + "\n", encoding="utf-8")
+    print(f"{len(CASES) + len(REVIEW_CASES)} failing fixtures written under {out}")
 
 
 if __name__ == "__main__":

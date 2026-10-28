@@ -18,12 +18,14 @@ Stdlib only, and Python 3.9, so it runs under a stock macOS `python3`. What the 
 own reference pages (`format.md`, `layout.md`, `styles.md`).
 
 It sits in `bin/` beside `pitch`, not in `lib/`: a module's `lib/` counts as live code (the core's
-classes.sh), and nothing runs this from a hook. The four parts below were four files in the
+classes.sh), and nothing runs this from a hook. The first four parts below were four files in the
 export this came from (the rules, the checker, the builder, the calibrator); their order and their
-comments are kept, so a change there reads as a change here.
+comments are kept, so a change there reads as a change here. The fifth, the document (its deck
+fence, its generated page, the captain review's shape), is this module's own.
 """
 import copy
 import datetime
+import html
 import json
 import re
 import subprocess
@@ -91,6 +93,7 @@ DEFAULTS = {
         "content_file": "slides.json",
         "deck_index_version": 4,
         "sidecar_suffix": ".pitch.json",    # <stem><suffix>: where each render was published
+        "deck_fence": "deck",       # the info word of the fence at a document's end holding its slides
     },
     "claims": {
         "must_appear": {},          # "<document stem>": [phrases every non-admiral render and the document carry]
@@ -105,6 +108,10 @@ DEFAULTS = {
         "brand": "",                # the brand doc, relative to the config
         "images": "none",           # the image route: one of IMAGE_ROUTES
         "asset_host": "",           # a host a memo may also load from, when uploads come back absolute
+    },
+    "memo": {                       # `pitch memo`'s page: light colours from `layout`, these for dark
+        "dark": {"ink": "#F2F2F2", "muted": "#B4B4B4", "accent": "#8AB4F8", "paper": "#151515",
+                 "raised": "#232323"},
     },
     "layout": {                     # the builder's own look; none of it is a rule
         "ink": "#000000", "muted": "#555555", "accent": "#0055cc", "paper": "#ffffff", "raised": "#f5f5f5",
@@ -163,6 +170,7 @@ class Config:
         self.glyphs = self._load_glyphs(f["glyphs"]) if load_glyphs else {}
         self.captain, self.furniture, self.naming = d["captain"], d["furniture"], d["naming"]
         self.claims, self.builder, self.layout = d["claims"], d["builder"], d["layout"]
+        self.memo = d["memo"]
         self.publish = _publish(d["publish"])
         suffix = self.naming.get("sidecar_suffix")
         if not (isinstance(suffix, str) and suffix.endswith(".json") and len(suffix) > len(".json")):
@@ -1052,7 +1060,12 @@ RULES = (
     "deck.index", "deck.generator-drift", "deck.page-number", "deck.running-caption", "deck.external",
     "captain.type-floor", "captain.allowlist", "single.external", "single.authoring-marker",
     "claims.must-appear", "claims.retired", "claims.table", "root.orphan", "root.vacuous",
-    "sidecar.shape",
+    "sidecar.shape", "sidecar.stale",
+    # renders S3: the page contract, the generated page, the captain review's shape
+    "captain.contract.title", "captain.contract.tokens", "captain.contract.dark-scheme",
+    "captain.contract.dark-theme", "captain.contract.background", "captain.contract.script-version",
+    "captain.contract.css-load", "captain.generator-drift", "captain.unplaced",
+    "review.title", "review.sections", "review.options", "review.decisions",
 )
 
 # ------------------------------------------------------------------------------------------------
@@ -1112,6 +1125,9 @@ def normalise(text):
     as the characters: both are decoded, or a phrase containing one never matches - a silent pass.
     """
     text = re.sub(r"</?[a-zA-Z][^<>]{0,120}>|<!--[^<>]{0,120}-->", " ", text)
+    # A page escapes `<`, `>` and `&` as entities, the document writes the characters: decode, or a
+    # pin holding `n < 50` never matches the page `pitch memo` wrote from it.
+    text = html.unescape(text)
     text = text.replace("`", "").replace("**", "").replace("*", "")
     text = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), text)
     text = text.replace("’", "'").replace(" ", " ")
@@ -1143,8 +1159,9 @@ def check_admiral(md, project, cfg):
     # Every figure on a slide, and in its presenter note, appears in the document. A twenty-word
     # slide is where a wrong number hides best: there is no sentence around it to contradict it,
     # and the pinned phrases cover only a handful of claims. The note counts because a figure the
-    # speaker is handed is quoted aloud.
-    doc_nums = numbers(md.read_text(encoding="utf-8"), with_bare=True)
+    # speaker is handed is quoted aloud. The document's deck fence is cut first: it holds these
+    # very slides, so read with the body it would vouch for every number they show.
+    doc_nums = numbers(document_body(md, cfg), with_bare=True)
     out += [("admiral.invented-number", f"{s.name}: {n} appears nowhere in {md.name}")
             for _, s in slides for n in sorted(s.figures - doc_nums)]
     out += check_builder(project.parent, cfg)
@@ -1167,9 +1184,11 @@ def check_builder(deck_dir, cfg):
     every other check and is silently reverted by the next build: a render corrected without its
     source, the stale-render trap with its two ends swapped. The builder's --check answers it."""
     content = deck_dir / cfg.naming["content_file"]
-    if not content.exists():
+    md = deck_dir.parent / (stem_of(deck_dir, cfg) + ".md")
+    if not content.exists() and not (md.exists() and deck_fences(md.read_text(encoding="utf-8"), cfg)):
         if cfg.builder["require_content_file"]:
-            return [("deck.generator-drift", f"{deck_dir.name}: no {content.name}, so nothing generates its slides")]
+            return [("deck.generator-drift", f"{deck_dir.name}: no deck fence in {md.name} and no {content.name}, "
+                                             "so nothing generates its slides")]
         return []
     out = []
     # A subprocess per deck, as the export ran it: the build under each interpreter named, and the
@@ -1333,15 +1352,30 @@ def captain_floor(path, cfg):
     return [("captain.type-floor", f"{path.name} sets type below the {floor}px floor: {small}")] if small else []
 
 
-def check_memo(path, cfg):
-    out = captain_floor(path, cfg)
-    text = path.read_text(encoding="utf-8")
+def _load_hosts(cfg):
+    """The prefixes a page may load from: the allowlist, the asset store when it returns absolute
+    URLs, and each https host's protocol-relative `//host` spelling."""
     hosts = tuple(cfg.captain["allowed_load_hosts"])
     if cfg.publish["asset_host"]:       # the artifact store's uploads, when it returns them absolute
         hosts += (f"https://{cfg.publish['asset_host']}/",)
+    return hosts + tuple(h[len("https:"):] for h in hosts if h.startswith("https://"))
+
+
+def _code_of(text):
+    """A page's scripts, styles and tags, without its prose: a memo about `fetch(` calls none."""
+    parts = re.findall(r"<(script|style)\b[^>]*>(.*?)</\1\s*>", text, re.S | re.I)
+    return "\n".join([body for _, body in parts] + re.findall(r"<[^>]+>", text))
+
+
+def check_memo(path, cfg, md=None):
+    out = captain_floor(path, cfg) + contract_problems(path, cfg)
+    if md is not None:
+        out += memo_drift(md, path, cfg)
+    text = path.read_text(encoding="utf-8")
+    hosts = _load_hosts(cfg)
     bad = [u for u in MEMO_LOAD.findall(text)
            if u.startswith(("http://", "https://", "//", "data:")) and not u.startswith(hosts)]
-    apis = [m.group(0) for m in NETWORK_APIS.finditer(text)]
+    apis = [m.group(0) for m in NETWORK_APIS.finditer(_code_of(text))]
     if bad or apis:
         out.append(("captain.allowlist", f"{path.name} loads from outside the allowlist: {bad}, APIs {apis}"))
     return out
@@ -1464,7 +1498,8 @@ def check_claims(root, cfg, only=None):
             if cfg.claims["require_pins"]:
                 out.append(("claims.table", f"{path.name}: no {name} entry for {md.stem}, so nothing is compared"))
             continue
-        doc_text, ren_text = normalise(md.read_text(encoding="utf-8")), normalise(render_text(path))
+        # The deck fence is cut from the document's side: a pin it alone carries is no pin.
+        doc_text, ren_text = normalise(document_body(md, cfg)), normalise(render_text(path))
         for phrase in phrases:
             needle = normalise(phrase)
             missing = [w for w, t in (("document", doc_text), (path.name, ren_text)) if needle not in t]
@@ -1514,6 +1549,7 @@ SIDECAR_RENDERS = {
     "admiral_deck": ("url", "first_published", "type_url"),
 }
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+BLOB = re.compile(r"/_blob/[A-Za-z0-9_-]+")
 
 
 def _https(value):
@@ -1556,8 +1592,10 @@ def sidecar_problems(data, md_name):
         if "first_published" in entry and not _date(entry["first_published"]):
             out.append(f"published.{key}.first_published is {entry['first_published']!r}, not a YYYY-MM-DD date")
     assets = data.get("assets", {})
-    if not isinstance(assets, dict) or not all(isinstance(k, str) and _https(v) for k, v in assets.items()):
-        out.append("assets is not {file: https URL}")
+    # An upload's URL as the Artifact tool returns it: https, or the deck's own root-relative /_blob/<id>.
+    if not isinstance(assets, dict) or not all(isinstance(k, str) and (_https(v) or (isinstance(v, str) and BLOB.fullmatch(v)))
+                                               for k, v in assets.items()):
+        out.append("assets is not {file: https URL or /_blob/<id>}")
     images = data.get("images", [])
     if not isinstance(images, list):
         out.append("images is not a list")
@@ -1585,6 +1623,7 @@ def check_sidecars(root, cfg, only=None):
             out.append(("sidecar.shape", f"{path.name}: not JSON ({e})"))
             continue
         out += [("sidecar.shape", f"{path.name}: {m}") for m in sidecar_problems(data, md.name)]
+        out += [("sidecar.stale", f"{path.name}: {m}") for m in sidecar_stale(data, md, cfg)]
     if only is None:
         # A sidecar beside no document holds URLs nothing will update: the document was renamed
         # or deleted and its sidecar left behind.
@@ -1620,7 +1659,7 @@ def check_root(root, cfg, only=None):
                 for d in (root / (only + s) for s in cfg.naming["folder_deck_suffixes"])
                 if d.is_dir() and d not in seen_dirs]
         return (out + _check_renders(found, cfg) + check_exemptions(root, cfg, only) + check_claims(root, cfg, only)
-                + check_sidecars(root, cfg, only))
+                + check_sidecars(root, cfg, only) + check_documents(root, cfg, only))
     seen_files = {p for _, p, k in found if k in ("memo", "single")}
     orphans = [h.name for h in root.glob("*.html") if h not in seen_files]
     out += [("root.orphan", f"{n}: an HTML render with no document of its name, so nothing checks it") for n in orphans]
@@ -1632,6 +1671,7 @@ def check_root(root, cfg, only=None):
     out += check_exemptions(root, cfg)
     out += check_claims(root, cfg)
     out += check_sidecars(root, cfg)
+    out += check_documents(root, cfg)
     return out
 
 
@@ -1643,7 +1683,7 @@ def _check_renders(found, cfg):
         if kind == "admiral":
             out += check_admiral(md, path, cfg)
         elif kind == "memo":
-            out += check_memo(path, cfg)
+            out += check_memo(path, cfg, md)
         elif kind == "single":
             out += check_single_deck(path, cfg)
     return out
@@ -1655,9 +1695,11 @@ def _check_renders(found, cfg):
 #
 # Why a builder and not hand-written slides: the commonest failure of a document with renders is a
 # document corrected without its render, and its cause is that a deck duplicates prose by hand. Here
-# the words live once, in the deck's content file (`slides.json` by default, in
-# `<stem>-admiral-deck/`), and the layout is a few functions. The content file is a JSON list, one
-# object per slide, in order:
+# the words live once, and the layout is a few functions. Where they live (D2-A, renders S3): a
+# ```deck fence at the document's end, so a correction and its slides share one file and one commit;
+# or, the export's form, the deck's content file (`slides.json` by default, in `<stem>-admiral-deck/`),
+# which still builds so an adopter migrates without a red check. Never both (`deck_source`). Either
+# holds a JSON list, one object per slide, in order:
 #
 #     {"id": "money", "headline": "The budget is enough",
 #      "statements": ["$18K for the pilot", "..."],
@@ -1767,10 +1809,7 @@ def build_all(deck_dir, cfg):
     slides rewritten and the later ones stale: a deck half one version and half another, with every check green on
     the mixture.
     """
-    content = deck_dir / cfg.naming["content_file"]
-    if not content.exists():
-        sys.exit(f"no {content.name} in {deck_dir}")
-    slides = json.loads(content.read_text(encoding="utf-8"))
+    source, slides = deck_source(deck_dir, cfg)
     if len(slides) > cfg.max_slides:
         sys.exit(f"{len(slides)} slides, the limit is {cfg.max_slides}")
     look, stem = Look(cfg), stem_of(deck_dir, cfg)
@@ -1786,7 +1825,7 @@ def build_all(deck_dir, cfg):
     slide_dir = deck_dir / "project" / "slides"
     stale = {p.stem for p in slide_dir.glob("*.html")} - {b[0] for b in built}
     if stale:
-        sys.exit(f"slides on disk that {content.name} no longer defines: {sorted(stale)} — delete them")
+        sys.exit(f"slides on disk that {source} no longer defines: {sorted(stale)} — delete them")
     return built
 
 
@@ -1957,3 +1996,692 @@ def calibrate_render(root, cfg, shots=None):
                 chrome(one, cfg, shot=str(Path(shots) / f"{md.stem}-{sid}.png"))
     print(f"largest column difference: {worst:.1f}px")
     return status
+
+
+# ================================================================================================
+# The document: its deck fence, its page, its captain review (renders S3)
+# ================================================================================================
+#
+# D2-A put every render's words in the document. The admiral deck's slides sit in one fence at the
+# document's end (```deck, holding the content file's JSON list); `pitch build` reads it, and every
+# check that compares a render with its document reads the document with that fence cut out, or the
+# fence would vouch for the very slides it holds. The captain page is generated whole from the
+# document by `pitch memo`, a small converter that refuses a block it cannot place rather than drop
+# it. A captain review (the document for the person who decides, /captain's template) is a document
+# whose title says so; its shape is held by the `review.*` rules wherever `pitch check` reads it.
+
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
+
+
+def _closes(line, mark):
+    return re.fullmatch(r" {0,3}" + re.escape(mark[0]) + "{%d,}\\s*" % len(mark), line) is not None
+
+
+def fences(lines):
+    """(first index, last index, info word) of every fenced block in a list of lines; an unclosed
+    fence runs to the end, as Markdown reads it."""
+    out, i = [], 0
+    while i < len(lines):
+        m = FENCE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and not _closes(lines[j], m.group(1)):
+            j += 1
+        out.append((i, min(j, len(lines) - 1), m.group(2).lower()))
+        i = j + 1
+    return out
+
+
+def deck_fences(text, cfg):
+    """(first line number, JSON text) of each deck fence in a document."""
+    lines = text.split("\n")
+    return [(a + 1, "\n".join(lines[a + 1:b])) for a, b, info in fences(lines) if info == cfg.naming["deck_fence"]]
+
+
+def document_body(md, cfg):
+    """The document as the number and pin checks read it: the deck fence blanked, line count kept."""
+    lines = Path(md).read_text(encoding="utf-8").split("\n")
+    for a, b, info in fences(lines):
+        if info == cfg.naming["deck_fence"]:
+            lines[a:b + 1] = [""] * (b + 1 - a)
+    return "\n".join(lines)
+
+
+def deck_source(deck_dir, cfg):
+    """(where, slides): an admiral deck's words, from the document's deck fence or the content file,
+    never both. A refusal is sys.exit(message): the builder's exit 1."""
+    md = deck_dir.parent / (stem_of(deck_dir, cfg) + ".md")
+    content = deck_dir / cfg.naming["content_file"]
+    found = deck_fences(md.read_text(encoding="utf-8"), cfg) if md.exists() else []
+    if len(found) > 1:
+        sys.exit(f"{md.name} has {len(found)} deck fences (lines {', '.join(str(n) for n, _ in found)}); one holds the deck")
+    if found and content.exists():
+        # Two copies of the words is the root trap itself: say which to keep rather than pick one.
+        sys.exit(f"two sources for {deck_dir.name}: the deck fence in {md.name} and {content.name}; "
+                 f"keep the fence and delete {content.name}")
+    if found:
+        where, raw = f"{md.name}'s deck fence (line {found[0][0]})", found[0][1]
+    elif content.exists():
+        where, raw = content.name, content.read_text(encoding="utf-8")
+    else:
+        sys.exit(f"no deck fence in {md.name} and no {content.name} in {deck_dir}")
+    try:
+        slides = json.loads(raw)
+    except ValueError as e:
+        sys.exit(f"{where} is not JSON: {e}")
+    if not (isinstance(slides, list) and slides and all(
+            isinstance(s, dict) and isinstance(s.get("id"), str) and isinstance(s.get("headline"), str)
+            and isinstance(s.get("statements"), list) for s in slides)):
+        sys.exit(f"{where}: a list of slides, each with an id, a headline and its statements")
+    ids = [s["id"] for s in slides]
+    twice = sorted({i for i in ids if ids.count(i) > 1})
+    if twice:                           # one slide file per id: the second would overwrite the first
+        sys.exit(f"{where}: slide ids used twice: {twice}")
+    return where, slides
+
+
+def document_title(text):
+    """The first `# ` line outside fences and comments, its Markdown dropped; "" when there is none."""
+    for _, line in body_lines(text):
+        if line.startswith("# "):
+            return _plain(line[2:].strip())
+    return ""
+
+
+def deck_index(md, ids, cfg):
+    """A first `deck.json` for a deck the fence builds: the Slides type's index, version, title,
+    order and the configured face. The builder writes it once; after that it is the person's, and
+    `deck.index` holds it to the slide files."""
+    index = {"v": cfg.naming["deck_index_version"], "title": document_title(md.read_text(encoding="utf-8")) or md.stem,
+             "order": ids}
+    if cfg.face_family and cfg.face_href:
+        index["faces"] = {cfg.face_family.lower().replace(" ", "-"): {"family": cfg.face_family, "href": cfg.face_href}}
+    return index
+
+
+def check_documents(root, cfg, only=None):
+    """What a document owes on its own: a captain review its template's shape, a deck fence a deck."""
+    out = []
+    for md in documents(root, cfg, only):
+        text = md.read_text(encoding="utf-8")
+        if is_review(text):
+            out += review_problems(text, md.name)
+        deck = md.with_name(md.stem + cfg.naming["admiral_suffix"])
+        if deck_fences(text, cfg) and not (deck / "project" / "deck.json").exists():
+            out.append(("deck.generator-drift", f"{md.name}: a deck fence nothing has built; `pitch build {md.name}`"))
+    return out
+
+
+def sidecar_stale(data, md, cfg):
+    """A render the sidecar records that is gone: its URL now updates nothing the document has."""
+    if not isinstance(data, dict) or not isinstance(data.get("published"), dict):
+        return []
+    where = {"memo": md.with_name(md.stem + cfg.naming["memo_suffix"]),
+             "admiral_deck": md.with_name(md.stem + cfg.naming["admiral_suffix"]) / "project" / "deck.json"}
+    return [f"published.{key} names {where[key].relative_to(md.parent).parts[0]}, which is gone: "
+            "rebuild it, or drop the entry with the artifact"
+            for key in data["published"] if key in where and not where[key].exists()]
+
+
+# ------------------------------------------------------------------------------------------------
+# The page contract: what an artifact page must carry (the artifact runtime's own contract)
+# ------------------------------------------------------------------------------------------------
+#
+# A memo published as an artifact is a page with its own theme: colour tokens on :root, the dark set
+# twice (the viewer's scheme, guarded by the light override, and the explicit dark override), a body
+# background, a title. A page missing one renders, then reads wrongly in one theme: nothing errors.
+# Scripts come from the runtime's CDNs at an exact version (an unpinned one changes under a published
+# page). The captain allowlist reads elements; a CSS url() loads too, and is read here.
+
+PINNED_VERSION = re.compile(r"[@/]v?\d+\.\d+\.\d+")
+
+
+class _PageScan(HTMLParser):
+    """A page's <style> text and inline styles, its <title>, and its script sources."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.css, self.title, self.scripts, self._in = [], "", [], None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in ("style", "title"):
+            self._in = tag
+        if tag == "script" and a.get("src"):
+            self.scripts.append(a["src"])
+        if a.get("style"):
+            self.css.append(a["style"])
+
+    def handle_endtag(self, tag):
+        if tag == self._in:
+            self._in = None
+
+    def handle_data(self, data):
+        if self._in == "style":
+            self.css.append(data)
+        elif self._in == "title":
+            self.title += data
+
+
+def _rule_bodies(css, selector):
+    return [m.group(1) for m in re.finditer(selector + r"\s*\{([^{}]*)\}", css)]
+
+
+def _media_bodies(css, condition):
+    """The text inside each @media block whose condition matches, nested braces balanced."""
+    out = []
+    for m in re.finditer(r"@media[^{]*" + condition + r"[^{]*\{", css):
+        i, depth = m.end(), 1
+        while i < len(css) and depth:
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            i += 1
+        out.append(css[m.end():i - 1])
+    return out
+
+
+def contract_problems(path, cfg):
+    scan = _PageScan()
+    scan.feed(path.read_text(encoding="utf-8"))
+    scan.close()
+    css = re.sub(r"/\*.*?\*/", "", "\n".join(scan.css), flags=re.S)
+    name, out = path.name, []
+    if not scan.title.strip():
+        out.append(("captain.contract.title", f"{name}: no <title>, so the artifact has no name"))
+    if not any("--" in b for b in _rule_bodies(css, r"(?<![\w-]):root")):
+        out.append(("captain.contract.tokens", f"{name}: no colour tokens on :root"))
+    if not any(re.search(r':root:not\(\[data-theme=["\']?light["\']?\]\)\s*\{[^}]*--', b)
+               for b in _media_bodies(css, r"prefers-color-scheme\s*:\s*dark")):
+        out.append(("captain.contract.dark-scheme", f"{name}: no dark tokens under @media (prefers-color-scheme: dark) "
+                                                    "guarded by :root:not([data-theme=\"light\"])"))
+    if not re.search(r':root\[data-theme=["\']?dark["\']?\]\s*\{[^}]*--', css):
+        out.append(("captain.contract.dark-theme", f"{name}: no :root[data-theme=\"dark\"] block"))
+    if not any(re.search(r"background(-color)?\s*:", b) for b in _rule_bodies(css, r"(?:^|[\s,}])body")):
+        out.append(("captain.contract.background", f"{name}: body sets no background"))
+    hosts = _load_hosts(cfg)
+    # Only a script the allowlist lets through: one from elsewhere is `captain.allowlist`'s finding.
+    unpinned = [u for u in scan.scripts if u.startswith(hosts) and not PINNED_VERSION.search(u)]
+    if unpinned:
+        out.append(("captain.contract.script-version", f"{name}: a script names no exact version: {unpinned}"))
+    loads = [u for u in re.findall(r"url\(\s*['\"]?([^'\")\s]+)", css)
+             if u.startswith(("http://", "https://", "//", "data:")) and not u.startswith(hosts)]
+    if loads:
+        out.append(("captain.contract.css-load", f"{name}: CSS loads from outside the allowlist: {loads}"))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------
+# `pitch memo`: the captain page, generated from the document
+# ------------------------------------------------------------------------------------------------
+#
+# The shapes it places (the review fixture under tests/fixtures/pitch/review holds every one):
+# headings, paragraphs, bulleted and numbered lists nested to any depth with continuation blocks in
+# an item, pipe tables, block quotes, fenced code, rules, and inline bold, italic, code spans and
+# links. An HTML comment is dropped, a block or inside a line (a template's guidance is never the reader's); the deck fence is
+# cut (it is the decks' words). What it will not place is reported by line and nothing is written:
+# a raw HTML block, an image (in a paragraph, a heading or a table), a diagram fence (mermaid and the
+# like: a page draws nothing from text), indented code, a heading underlined with = or -, a table
+# whose rows lack their leading |, a reference-style link, text after a comment's -->. A link the reader can follow from a
+# published page (https, mailto) stays a link; any other target, a path in the repo or on a disk,
+# keeps only its text, since an artifact has no repo around it and a disk path would leak.
+
+MEMO_MARK = '<meta name="generator" content="pitch memo">'
+DIAGRAM_FENCES = {"mermaid", "dot", "graphviz", "plantuml", "d2", "svgbob"}
+LIST_ITEM = re.compile(r"^( *)([-*+]|\d{1,9}[.)])( +|$)(.*)$")
+TABLE_SEP = re.compile(r"^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+RULE_LINE = re.compile(r"^ {0,3}([-*_])(?:\s*\1){2,}\s*$")
+HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
+IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _indent(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def _esc(text):
+    """Escape for HTML text: &, < and > always. A bare & is not safe left raw: a browser decodes the
+    old entity names without their `;` (`x&not y` reads `x¬ y`). normalise() decodes them again, so a
+    pinned phrase holding one still matches."""
+    return html.escape(text, quote=False)
+
+
+def _href(url):
+    return html.escape(url, quote=True)
+
+
+def _plain(text):
+    """A heading's text with its Markdown dropped, for <title>."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    return re.sub(r"[*_`]", "", text).strip()
+
+
+def _emphasis(text):
+    text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<![\w])__(?=\S)(.+?)(?<=\S)__(?![\w])", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"<em>\1</em>", text)
+    return re.sub(r"(?<![\w])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w])", r"<em>\1</em>", text)
+
+
+def _inline(text):
+    """One block's text as HTML: code spans literal, links kept or reduced to their text, then
+    escaping and emphasis; placeholders keep what is done out of what follows."""
+    held = []
+
+    def hold(fragment):
+        held.append(fragment)
+        return f"\x00{len(held) - 1}\x00"
+
+    # A NUL of the document's own would never resolve as a placeholder; it is no character a page wants.
+    text = text.replace("\x00", "\ufffd")
+    text = re.sub(r"(`+)(.+?)(?<!`)\1(?!`)", lambda m: hold(f"<code>{_esc(m.group(2).strip())}</code>"), text)
+    text = re.sub(r"\\([\\`*_\[\]()#+\-.!|>])", lambda m: hold(_esc(m.group(1))), text)
+    text = re.sub(r"<!--.*?-->", "", text)         # a comment inside a line is guidance too
+    text = re.sub(r"<(https://[^\s<>\"'\x00]+)>", lambda m: hold(f'<a href="{_href(m.group(1))}">{_esc(m.group(1))}</a>'), text)
+
+    def link(m):
+        label, url = _emphasis(_esc(m.group(1))), m.group(2).strip().split(" ")[0]
+        # A target holding a placeholder (a code span, an escape) would put HTML inside the attribute.
+        if url.startswith(("https://", "mailto:")) and "\x00" not in url:
+            return hold(f'<a href="{_href(url)}">{label}</a>')
+        return hold(label)
+    text = re.sub(r"\[([^\]]+)\]\(((?:[^()]|\([^()]*\))*)\)", link, text)
+    text = _emphasis(_esc(text))
+    while re.search(r"\x00\d+\x00", text):
+        text = re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], text)
+    return text
+
+
+def _cells(line):
+    """A table row's cells: split on pipes outside code spans, the edge pipes dropped."""
+    line = line.strip()
+    line = line[1:] if line.startswith("|") else line
+    line = line[:-1] if line.endswith("|") and not line.endswith("\\|") else line
+    cells, cur, code = [], "", False
+    for i, ch in enumerate(line):
+        if ch == "`":
+            code = not code
+        if ch == "|" and not code and (i == 0 or line[i - 1] != "\\"):
+            cells.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    return cells + [cur.strip()]
+
+
+def _starts_block(line):
+    """A line that ends a paragraph: a heading, a fence, a quote, a rule, a list item (a numbered
+    one only from 1, as CommonMark has it, so a wrapped `2026.` stays text), a comment."""
+    s = line.strip()
+    m = LIST_ITEM.match(line)
+    return bool(HEADING.match(line) or FENCE.match(line) or s.startswith((">", "<!--")) or RULE_LINE.match(line)
+                or (m and m.group(4).strip() and (not m.group(2)[0].isdigit() or int(m.group(2)[:-1]) == 1)))
+
+
+def _blocks(rows, cfg, unplaced):
+    """HTML for a list of (line number, text) rows, recursively for quotes and list items."""
+    out, i = [], 0
+    while i < len(rows):
+        n, line = rows[i]
+        s = line.strip()
+        if not s:
+            i += 1
+            continue
+        if s.startswith("<!--"):
+            while i < len(rows) and "-->" not in rows[i][1]:
+                i += 1
+            if i < len(rows) and rows[i][1].split("-->", 1)[1].strip():
+                unplaced.append((rows[i][0], "text after a comment's `-->`: start it on its own line"))
+            i += 1
+            continue
+        f = FENCE.match(line)
+        if f:
+            j = i + 1
+            while j < len(rows) and not _closes(rows[j][1], f.group(1)):
+                j += 1
+            info = f.group(2).lower()
+            if info in DIAGRAM_FENCES:
+                unplaced.append((n, f"a {info} fence: a page draws no diagram from text; draw it as an image, or cut it"))
+            elif info != cfg.naming["deck_fence"]:
+                body = "\n".join(r[1] for r in rows[i + 1:j])
+                out.append(f"<pre><code>{_esc(body)}</code></pre>")
+            i = j + 1
+            continue
+        h = HEADING.match(line)
+        if h:
+            if IMAGE.search(line):
+                unplaced.append((n, "an image in a heading: upload it and place it by hand"))
+            level = len(h.group(1))
+            out.append(f"<h{level}>{_inline(h.group(2))}</h{level}>")
+            i += 1
+            continue
+        if RULE_LINE.match(line):
+            out.append("<hr>")
+            i += 1
+            continue
+        if s.startswith("|") and i + 1 < len(rows) and TABLE_SEP.match(rows[i + 1][1].strip()):
+            if IMAGE.search(line):
+                unplaced.append((n, "an image in a table: upload it and place it by hand"))
+            head = "".join(f"<th>{_inline(c)}</th>" for c in _cells(line))
+            body, j = [], i + 2
+            while j < len(rows) and rows[j][1].strip().startswith("|"):
+                if IMAGE.search(rows[j][1]):
+                    unplaced.append((rows[j][0], "an image in a table: upload it and place it by hand"))
+                body.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in _cells(rows[j][1])) + "</tr>")
+                j += 1
+            out.append(f"<table>\n<thead><tr>{head}</tr></thead>\n<tbody>\n" + "\n".join(body) + "\n</tbody>\n</table>")
+            i = j
+            continue
+        if s.startswith(">"):
+            quoted, j = [], i
+            while j < len(rows) and rows[j][1].strip().startswith(">"):
+                q = rows[j][1].strip()[1:]
+                quoted.append((rows[j][0], q[1:] if q.startswith(" ") else q))
+                j += 1
+            out.append("<blockquote>\n" + _blocks(quoted, cfg, unplaced) + "\n</blockquote>")
+            i = j
+            continue
+        if LIST_ITEM.match(line) and LIST_ITEM.match(line).group(4).strip():
+            html, i = _list(rows, i, cfg, unplaced)
+            out.append(html)
+            continue
+        if re.match(r"^ {0,3}<(?!https://)[A-Za-z/!?]", line):
+            unplaced.append((n, "a raw HTML block: write it as Markdown, or place it by hand"))
+            i += 1
+            while i < len(rows) and rows[i][1].strip():
+                i += 1
+            continue
+        if line.startswith(("    ", "\t")):
+            unplaced.append((n, "indented code: fence it with ```"))
+            while i < len(rows) and rows[i][1].startswith(("    ", "\t")):
+                i += 1
+            continue
+        para, j = [s], i + 1
+        while j < len(rows) and rows[j][1].strip():
+            # before _starts_block, which reads a `---` underline as a rule
+            if re.fullmatch(r" {0,3}(=+|-+)\s*", rows[j][1]):
+                unplaced.append((n, "a heading underlined with = or -: write it with #"))
+                break
+            if "|" in rows[j][1] and TABLE_SEP.match(rows[j][1].strip()):
+                unplaced.append((n, "a table whose rows do not start with |, or one with no blank line above it"))
+                break
+            if _starts_block(rows[j][1]):
+                break
+            para.append(rows[j][1].strip())
+            j += 1
+        text = "\n".join(para)
+        if IMAGE.search(text):
+            unplaced.append((n, "an image: upload it as an asset and place it by hand"))
+        if re.search(r"^ {0,3}\[[^\]]+\]:\s", text, re.M) or re.search(r"\[[^\]]+\]\[[^\]]*\]", text):
+            # printed as it stands, a definition's target (a disk path, say) would reach the page
+            unplaced.append((n, "a reference-style link: write it inline, [text](target)"))
+        out.append(f"<p>{_inline(text)}</p>")
+        i = j
+    return "\n".join(out)
+
+
+def _list(rows, i, cfg, unplaced):
+    """One list from rows[i]: each item's rows dedented to its content and read as blocks. An item
+    of another marker (`*` after `-`, `1)` after `1.`) starts another list, as CommonMark has it; a
+    blank line between or inside items makes the list loose, and its items keep their paragraphs."""
+    first = LIST_ITEM.match(rows[i][1])
+    indent, marker = len(first.group(1)), re.sub(r"\d", "", first.group(2))
+
+    def same(m):
+        return m and len(m.group(1)) == indent and re.sub(r"\d", "", m.group(2)) == marker and m.group(4).strip()
+    items, loose = [], False
+    while i < len(rows):
+        m = LIST_ITEM.match(rows[i][1])
+        if not same(m):
+            break
+        gap = len(m.group(3))
+        content = indent + len(m.group(2)) + (gap if 0 < gap <= 4 else 1)
+        item = [(rows[i][0], m.group(4))]
+        i += 1
+        while i < len(rows):
+            n, line = rows[i]
+            if not line.strip():
+                k = i
+                while k < len(rows) and not rows[k][1].strip():
+                    k += 1
+                if k < len(rows) and _indent(rows[k][1]) >= content:
+                    item += [(r[0], "") for r in rows[i:k]]
+                    loose, i = True, k
+                    continue
+                break
+            sub = LIST_ITEM.match(line)
+            if _indent(line) >= content or (sub and len(sub.group(1)) > indent):
+                item.append((n, line[min(content, _indent(line)):]))
+            elif not sub and not _starts_block(line):
+                item.append((n, line.strip()))         # a lazy continuation of the item's paragraph
+            else:
+                break
+            i += 1
+        items.append(_blocks(item, cfg, unplaced))
+        k = i
+        while k < len(rows) and not rows[k][1].strip():
+            k += 1
+        if k > i and k < len(rows) and same(LIST_ITEM.match(rows[k][1])):
+            loose, i = True, k
+    if not loose:
+        items = [h.replace("<p>", "", 1).replace("</p>", "", 1) if h.startswith("<p>") else h for h in items]
+    tag = "ol" if marker not in "-*+" else "ul"
+    start = int(first.group(2)[:-1]) if tag == "ol" else 1
+    attr = f' start="{start}"' if start != 1 else ""
+    return f"<{tag}{attr}>\n" + "\n".join(f"<li>{h}</li>" for h in items) + f"\n</{tag}>", i
+
+
+def memo_page(md, cfg):
+    """(html, unplaced): the captain page for a document, or the blocks it could not place, as
+    [(line, what)]; the page is None when any block could not be placed."""
+    text = Path(md).read_text(encoding="utf-8")
+    rows = list(enumerate(text.split("\n"), 1))
+    unplaced = []
+    body = _blocks(rows, cfg, unplaced)
+    title = document_title(text)
+    if not title:
+        unplaced.append((1, "no `# ` title: a page needs one, and its <title> is that line"))
+    if unplaced:
+        return None, sorted(unplaced)
+    L, dark = cfg.layout, cfg.memo["dark"]
+
+    def tokens(c):
+        return " ".join(f"--{k}: {c[k]};" for k in ("ink", "muted", "accent", "paper", "raised"))
+    font = f"'{cfg.face_family}', {cfg.face_stack}" if cfg.face_family else cfg.face_stack
+    floor = cfg.captain["min_font_px"]
+
+    def px(n):                          # a raised floor raises every size under it, or the page fails its own check
+        return f"{max(n, floor)}px"
+    face = f'<link rel="stylesheet" href="{cfg.face_href}">\n' if cfg.face_href else ""
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{MEMO_MARK}
+<title>{_esc(title)}</title>
+{face}<style>
+:root {{ {tokens(L)} }}
+@media (prefers-color-scheme: dark) {{
+  :root:not([data-theme="light"]) {{ {tokens(dark)} }}
+}}
+:root[data-theme="dark"] {{ {tokens(dark)} }}
+body {{ margin: 0; background: var(--paper); color: var(--ink); font-family: {font}; font-size: {px(18)}; line-height: 1.55; }}
+main {{ max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; overflow-wrap: break-word; }}
+h1 {{ font-size: {px(34)}; line-height: 1.15; margin: 0 0 24px; }}
+h2 {{ font-size: {px(24)}; line-height: 1.25; margin: 40px 0 12px; }}
+h3 {{ font-size: {px(20)}; margin: 28px 0 8px; }}
+h4, h5, h6 {{ font-size: {px(18)}; margin: 24px 0 8px; }}
+a {{ color: var(--accent); }}
+blockquote {{ margin: 16px 0; padding: 0 0 0 16px; border-left: 4px solid var(--accent); color: var(--muted); }}
+table {{ display: block; overflow-x: auto; border-collapse: collapse; font-size: {px(16)}; margin: 16px 0; }}
+th, td {{ text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--muted); }}
+pre {{ background: var(--raised); padding: 12px 16px; overflow-x: auto; }}
+code {{ font-family: ui-monospace, Menlo, monospace; font-size: {px(16)}; }}
+hr {{ border: 0; border-top: 1px solid var(--muted); margin: 32px 0; }}
+</style>
+</head>
+<body>
+<main>
+{body}
+</main>
+</body>
+</html>
+"""
+    return page, []
+
+
+def memo_drift(md, path, cfg):
+    """A page `pitch memo` wrote must still be what it writes: the document corrected and the page
+    left behind is the root trap, and a hand edit would be lost at the next run. A hand-written page
+    (no generator mark) is the person's until a correction replaces it."""
+    if MEMO_MARK not in path.read_text(encoding="utf-8"):
+        return []
+    page, unplaced = memo_page(md, cfg)
+    if unplaced:
+        return [("captain.unplaced", f"{md.name}:{n}: {what}") for n, what in unplaced]
+    if page != path.read_text(encoding="utf-8"):
+        return [("captain.generator-drift", f"{path.name} differs from what `pitch memo` writes from {md.name}: "
+                                            "the document changed without its page, or the page was edited by hand")]
+    return []
+
+
+# ------------------------------------------------------------------------------------------------
+# The captain review: one document for the person who decides, in /captain's template
+# ------------------------------------------------------------------------------------------------
+#
+# The template is skills/captain/TEMPLATE.md; its headings are the names below, word for word, so
+# this check and the reader find the same parts. Checked, and why: the title names the kind and the
+# date (the deck's cover reads it); a `For:` line names the reader, whom the plain-words test needs;
+# the five sections in order, the answer first; each option's four lines, of which the one most
+# often dropped asks something of the captain; the best three, ranked; a D-list in the repo's
+# shape. Whether the words are plain is the reader's test, never a lint.
+
+REVIEW_SECTIONS = ("The answer", "Where things stand", "The options", "The best three", "Decisions")
+OPTION_LINES = ("You get at the end", "It costs", "It needs from you", "The one risk")
+REVIEW_KIND = re.compile(r"\((?:captain|executive) review\b", re.I)
+REVIEW_TITLE = re.compile(r"^# .*\((?:captain|executive) review,\s*(\d{4}-\d{2}-\d{2})\)\s*$", re.I)
+D_ITEM = re.compile(r"^\s*(?:[-*]|\d+\.)?\s*\*\*(?P<id>D\d+)\s+[—–-]\s")
+
+
+def body_lines(text):
+    """(line number, line) outside fences and HTML comments."""
+    lines = text.split("\n")
+    hidden = set()
+    for a, b, _ in fences(lines):
+        hidden |= set(range(a, b + 1))
+    out, comment = [], False
+    for i, raw in enumerate(lines):
+        if i in hidden:
+            continue
+        if comment:
+            comment = "-->" not in raw
+            continue
+        if raw.lstrip().startswith("<!--"):
+            comment = "-->" not in raw
+            continue
+        out.append((i + 1, raw))
+    return out
+
+
+def is_review(text):
+    title = next((raw for _, raw in body_lines(text) if raw.startswith("# ")), "")
+    return bool(REVIEW_KIND.search(title))
+
+
+def review_problems(text, name):
+    lines = body_lines(text)
+    out = []
+    title = next((raw for _, raw in lines if raw.startswith("# ")), "")
+    m = REVIEW_TITLE.match(title)
+    if not (m and _date(m.group(1))):
+        out.append(("review.title", f"{name}: the title ends `(captain review, <yyyy-mm-dd>)` or "
+                                    "`(executive review, <yyyy-mm-dd>)`"))
+    if not any(re.match(r"^For:\s*\S", raw) for _, raw in lines):
+        out.append(("review.title", f"{name}: no `For:` line naming the reader"))
+    sections, order, cur = {}, [], None
+    for n, raw in lines:
+        if raw.startswith("## "):
+            cur = raw[3:].strip()
+            order.append(cur)
+            sections[cur] = []
+        elif cur is not None:
+            sections[cur].append((n, raw))
+    for s in REVIEW_SECTIONS:
+        if s not in sections:
+            out.append(("review.sections", f"{name}: no `## {s}`"))
+    present = [h for h in order if h in REVIEW_SECTIONS]
+    if present != [s for s in REVIEW_SECTIONS if s in present]:
+        out.append(("review.sections", f"{name}: sections out of order: {', '.join(present)}"))
+    options = []
+    for n, raw in sections.get("The options", []):
+        if raw.startswith("### "):
+            options.append((raw[4:].strip(), n, []))
+        elif options:
+            options[-1][2].append(raw)
+    if "The options" in sections and not options:
+        out.append(("review.options", f"{name}: The options holds no option (`### A — …`)"))
+    for opt, n, body in options:
+        joined = "\n".join(body)
+        for label in OPTION_LINES:
+            if not re.search(r"^\s*[-*]\s*\*\*%s:\*\*\s*\S" % re.escape(label), joined, re.M):
+                out.append(("review.options", f"{name}:{n}: option {opt!r} has no `**{label}:**` line"))
+    if "The best three" in sections:
+        ranked = [raw for _, raw in sections["The best three"] if re.match(r"^\d+\.\s+\S", raw)]
+        want = min(3, len(options)) if options else 3
+        if len(ranked) != want:
+            out.append(("review.options", f"{name}: The best three holds {len(ranked)} numbered items, want {want}"))
+    if "Decisions" in sections:
+        out += [("review.decisions", f"{name}: {msg}") for msg in _d_list(sections["Decisions"])]
+    return out
+
+
+def _d_list(lines):
+    """Each D-item's block runs to the next item or the open-feedback line."""
+    items, cur = [], None
+    for n, raw in lines:
+        m = D_ITEM.match(raw)
+        if m:
+            cur = (m.group("id"), n, [])
+            items.append(cur)
+        elif raw.startswith("Open feedback"):
+            cur = None
+        elif cur is not None:
+            cur[2].append(raw)
+    if not items:
+        return ["no D-item (`- **D1 — …**`): a captain review asks the captain something"]
+    out, seen = [], set()
+    for did, n, body in items:
+        if did in seen:
+            out.append(f"{did} (line {n}): the id is used twice")
+        seen.add(did)
+        rev = [b for b in body if re.match(r"^\s*Reversible:", b)]
+        if len(rev) != 1:
+            out.append(f"{did} (line {n}): {len(rev)} `Reversible:` lines, want one")
+        elif not re.match(r"^\s*Reversible:\s*(yes|no)\b", rev[0]):
+            out.append(f"{did} (line {n}): `Reversible:` is yes or no")
+        for marker in ("➤ Recommended:", "➤ Answer:"):
+            k = sum(1 for b in body if b.strip().startswith(marker))
+            if k != 1:
+                out.append(f"{did} (line {n}): {k} `{marker}` lines, want one")
+    return out
+
+
+def published_links(md, cfg):
+    """(render label, path, url or None, recorded) for each render of a document: the URL its sidecar
+    holds, and whether the sidecar records that kind of render at all (a folder deck that is not the
+    admiral, and the older single-file deck, are not published by the skill, so it has no key)."""
+    sidecar = md.with_name(md.stem + cfg.naming["sidecar_suffix"])
+    try:
+        published = json.loads(sidecar.read_text(encoding="utf-8")).get("published") or {}
+    except (OSError, ValueError, AttributeError):
+        published = {}
+    keys = {"admiral": "admiral_deck", "memo": "memo"}
+    labels = {"memo": "memo", "admiral": "admiral deck", "folder": "deck", "single": "single deck"}
+    out = []
+    # The memo first, as the skill publishes it; a deck by its folder, which is what a person names.
+    for _, path, kind in sorted(renders(md.parent, cfg, md.stem), key=lambda r: list(labels).index(r[2])):
+        entry = published.get(keys.get(kind, ""))
+        url = entry.get("url") if isinstance(entry, dict) and _https(entry.get("url")) else None
+        out.append((labels[kind], path.parent if kind in ("admiral", "folder") else path, url, kind in keys))
+    return out

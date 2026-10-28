@@ -11,7 +11,8 @@ loads first and this one overrides it, dicts merged key by key, lists replaced w
 fixtures use it to change one setting each.
 
 The worked example is sextant's `tests/fixtures/pitch/pitch.json`, with a passing document, its
-renders and its sidecar in `tests/fixtures/pitch/passing/`. A config `pitch` cannot read as written
+renders and its sidecar in `tests/fixtures/pitch/passing/`; beside it, `tests/fixtures/pitch/review/`
+holds an invented captain review with its own config, its generated page and its deck in a fence. A config `pitch` cannot read as written
 (a `publish` value outside its set, a glyph table measuring another face) stops the check with
 exit 2, never a finding.
 
@@ -95,9 +96,10 @@ slide). Neither is part of any check.
 | `folder_deck_suffixes` | `["-deck", "-admiral-deck"]` | every folder-deck suffix; the furniture and index rules bind all of them | as default |
 | `memo_suffix` | `"-memo.html"` | the captain page | as default |
 | `single_deck_suffix` | `"-deck.html"` | the older single-file deck | as default |
-| `content_file` | `"slides.json"` | the builder's content file, in `<stem><admiral_suffix>/` | as default |
+| `content_file` | `"slides.json"` | the export's content file, in `<stem><admiral_suffix>/`; a document's deck fence replaces it, and the two together are refused | as default |
 | `deck_index_version` | `4` | the `v` a Slides `deck.json` must carry | `4` |
 | `sidecar_suffix` | `".pitch.json"` | `<stem><suffix>` beside the document is its sidecar (section 12) | as default |
+| `deck_fence` | `"deck"` | the info word of the fence at the document's end that holds the admiral deck's slides | as default |
 
 ## 8. `claims`: what every render must and must not say
 
@@ -168,15 +170,16 @@ check` holds its shape (`sidecar.shape`) whenever one is there.
 | `published.<render>.url` | yes | the artifact's https URL, the one every later publish updates |
 | `published.<render>.first_published` | yes | the date of the first publish, `YYYY-MM-DD` |
 | `published.admiral_deck.type_url` | yes, for a deck | the https URL of the artifact type the deck was created from |
-| `assets` | no | `{"<file>": "<https URL>"}`: each uploaded file and the URL the upload returned |
+| `assets` | no | `{"<file>": "<url>"}`: each uploaded file and the URL the upload returned, https or the deck's own `/_blob/<id>` |
 | `images` | no | `[{"file", "route", "prompt"}]`: each generated image, its route (any `publish.images` route but `none`) and its prompt |
 
 Any other key, at the top or inside a render's entry (`file`, `folder`, `slides` above, or a note
 saying which working copy published it), is a free-form note and passes. `sidecar.shape` fires on a
 sidecar that is not JSON, lacks a required key, names a render key it does not know, holds a URL that
 is not https or a date that is not one, or sits beside no document (the document renamed and its
-sidecar left behind: the root's finding, not a document's). Whether every render it names still exists
-is a later rule's question.
+sidecar left behind: the root's finding, not a document's). `sidecar.stale` fires on one that records a
+render that is gone: the page deleted, the deck folder removed. A folder deck that is not the admiral and
+the older single-file deck have no key: the skill does not publish them.
 
 ## 13. A pytest template, for a project whose check is pytest
 
@@ -207,6 +210,16 @@ def test_rule(findings, rule):
 
 Exit 2 (no config, a render it cannot parse) fails every case at the fixture, never passes one. The
 rule ids come from the library, so a rule added there is a case here at the next run.
+
+## 14. `memo`: the generated page's dark colours
+
+`pitch memo` takes the page's light colours from `layout` (`ink`, `muted`, `accent`, `paper`,
+`raised`) and its face from `face`; these are the dark set, written under both dark selectors the page
+contract asks for.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dark` | `{"ink": "#F2F2F2", "muted": "#B4B4B4", "accent": "#8AB4F8", "paper": "#151515", "raised": "#232323"}` | the five tokens in the dark theme |
 
 ## What is deliberately not a parameter
 

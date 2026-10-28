@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""pitch: hold a document's renders to the method, and build its admiral deck.
+"""pitch: hold a document's renders to the method, and build its admiral deck and its page.
 
     pitch check <docs-root|document.md> [--config pitch.json] [--json]
     pitch build <stem>-admiral-deck|<document.md> [--config pitch.json] [--check]
+    pitch memo <document.md> [--config pitch.json] [--check] [--replace]
+    pitch review <document.md>
+    pitch renders <document.md> [--config pitch.json] [--links]
     pitch calibrate glyphs|render [<docs-root>] [--config pitch.json] [--shots DIR]
 
 `check` holds every render of every document under a root to the method: the admiral deck to its
@@ -12,10 +15,21 @@ document and its renders only. Exit 0 clean, 1 on any finding, each finding a ru
 2 when the check could not run (no config, no such path, a render it cannot parse), so a caller never
 reads a crash as a finding (AGENTS.md's trap: a probe's "refuse" exit must not be 1).
 
-`build` writes an admiral deck's slides from its content file (`slides.json`), refusing the whole
-deck, nothing written, when any slide breaks a rule; `--check` compares only, exit 1 on drift (a
-slide edited by hand, which the next build would silently revert). Given a document, it builds the
-document's admiral deck. Exit 1 on a refusal or drift, 2 when it could not run.
+`build` writes an admiral deck's slides from where its words live: the ```deck fence at its
+document's end, or the export's content file (`slides.json`) beside the deck, never both. It refuses
+the whole deck, nothing written, when any slide breaks a rule; `--check` compares only, exit 1 on
+drift (a slide edited by hand, which the next build would silently revert). Given a document with a
+fence, it makes the deck folder and a first `deck.json` if there are none. Exit 1 on a refusal or
+drift, 2 when it could not run.
+
+`memo` writes the captain page, `<stem>-memo.html`, from the document's Markdown; a block it cannot
+place (raw HTML, an image, a diagram) is listed by line and nothing is written, exit 1. It will not
+overwrite a page it did not write unless `--replace` says to. `--check` compares only.
+
+`review` holds a captain review (a document whose title ends `(captain review, <date>)`) to its
+template, skills/captain/TEMPLATE.md, before any render exists; `check` holds the same rules once
+there are renders. It needs no config. `renders` lists a document's renders and the URL its sidecar
+records for each; `--links` prints them as one Markdown line, exit 1 when one is unpublished.
 
 `calibrate` holds the fit estimate to headless Chrome, by hand: `glyphs` measures the config's face
 and writes its `face.glyphs` table, `render` lays every admiral slide under the root out and compares
@@ -35,6 +49,7 @@ Pairing is by file name beside the document `<root>/<stem>.md` (every suffix is 
   <stem>-memo.html               the captain render, a plain page
   <stem>-deck.html               a single-file deck, slides as JavaScript template literals
   <stem>.pitch.json              the sidecar: where each render was published (its shape is checked)
+  ```deck … ``` in <stem>.md     the admiral deck's words; cut from what the number and pin checks read
 
 Why every check refuses to be vacuous: the first version of the pairing suite this comes from was
 mutation-tested and found to skip everything, green, the moment a deck was renamed.
@@ -78,21 +93,27 @@ def cmd_check(a):
 def cmd_build(a):
     deck_dir = Path(a.deck).resolve()
     cfg = pl.find_config(deck_dir.parent if deck_dir.is_file() else deck_dir, a.config)
+    md = None
     if deck_dir.is_file():
-        deck_dir = deck_dir.with_name(deck_dir.stem + cfg.naming["admiral_suffix"])
-    if not deck_dir.is_dir():
+        md, deck_dir = deck_dir, deck_dir.with_name(deck_dir.stem + cfg.naming["admiral_suffix"])
+    # A document's fence builds a deck that has no folder yet; its folder is made only once every
+    # slide has passed, so a refused first build leaves nothing behind for the check to call an orphan.
+    first = md is not None and not deck_dir.is_dir() and bool(pl.deck_fences(md.read_text(encoding="utf-8"), cfg))
+    if not deck_dir.is_dir() and not first:
         raise CouldNotRun(f"pitch build: no admiral deck folder at {deck_dir}")
     if not deck_dir.name.endswith(cfg.naming["admiral_suffix"]) or deck_dir.name == cfg.naming["admiral_suffix"]:
         # stem_of() cuts the suffix by length: any other folder would yield a wrong stem and keys
         raise CouldNotRun(f"pitch build: {deck_dir.name} is not an admiral deck (<stem>{cfg.naming['admiral_suffix']})")
     slide_dir = deck_dir / "project" / "slides"
     built = pl.build_all(deck_dir, cfg)
+    if a.check and first:
+        sys.exit(f"{deck_dir.name} is not built yet: `pitch build {md.name}`")
     if a.check:
         drifted = [sid for sid, html, _ in built
                    if not (slide_dir / f"{sid}.html").exists()
                    or (slide_dir / f"{sid}.html").read_text(encoding="utf-8") != html]
         if drifted:
-            sys.exit(f"slides on disk differ from what {cfg.naming['content_file']} says: {drifted} — a render "
+            sys.exit(f"slides on disk differ from what {pl.deck_source(deck_dir, cfg)[0]} says: {drifted} — a render "
                      "was edited by hand, which the next build would silently revert")
         print(f"{len(built)} slides match the generator")
         return 0
@@ -100,6 +121,73 @@ def cmd_build(a):
     for sid, html, _ in built:
         (slide_dir / f"{sid}.html").write_text(html, encoding="utf-8")
     print(f"{len(built)} slides written:\n  " + "\n  ".join(b[2] for b in built))
+    index = deck_dir / "project" / "deck.json"
+    md = md or deck_dir.parent / (pl.stem_of(deck_dir, cfg) + ".md")
+    if not index.exists() and md.exists():
+        index.write_text(json.dumps(pl.deck_index(md, [b[0] for b in built], cfg), indent=2, ensure_ascii=False) + "\n",
+                         encoding="utf-8")
+        print(f"a first {index.relative_to(deck_dir.parent)}: its order is the deck's, and from now on it is yours")
+    return 0
+
+
+def cmd_memo(a):
+    md = Path(a.doc).resolve()
+    if not md.is_file():
+        raise CouldNotRun(f"pitch memo: no such document: {a.doc}")
+    try:
+        cfg = pl.find_config(md.parent, a.config)
+    except SystemExit as e:             # no config: could not run, never the refusal's 1
+        raise CouldNotRun(e.code)
+    path = md.with_name(md.stem + cfg.naming["memo_suffix"])
+    page, unplaced = pl.memo_page(md, cfg)
+    if unplaced:
+        print("\n".join(f"captain.unplaced             {md.name}:{n}: {what}" for n, what in unplaced))
+        sys.exit(f"{len(unplaced)} block(s) the page cannot place; nothing written")
+    on_disk = path.read_text(encoding="utf-8") if path.exists() else None
+    if a.check:
+        if on_disk != page:
+            sys.exit(f"{path.name} differs from what `pitch memo` writes from {md.name}")
+        print(f"{path.name} matches its document")
+        return 0
+    if on_disk is not None and pl.MEMO_MARK not in on_disk and not a.replace:
+        sys.exit(f"{path.name} was not written by `pitch memo`; --replace overwrites it (its words must be in "
+                 f"{md.name} first)")
+    path.write_text(page, encoding="utf-8")
+    print(f"{path.name} written from {md.name}")
+    return 0
+
+
+def cmd_review(a):
+    md = Path(a.doc)
+    if not md.is_file():
+        raise CouldNotRun(f"pitch review: no such document: {a.doc}")
+    text = md.read_text(encoding="utf-8")
+    findings = pl.review_problems(text, md.name) if pl.is_review(text) else [
+        ("review.title", f"{md.name}: not a captain review; its title ends `(captain review, <yyyy-mm-dd>)`")]
+    for r, m in findings:
+        print(f"{r:28} {m}")
+    print(f"{len(findings)} finding(s)")
+    return 1 if findings else 0
+
+
+def cmd_renders(a):
+    md = Path(a.doc).resolve()
+    if not md.is_file():
+        raise CouldNotRun(f"pitch renders: no such document: {a.doc}")
+    cfg = pl.find_config(md.parent, a.config)
+    found = pl.published_links(md, cfg)
+    if a.links:
+        recorded = [(label, path, url) for label, path, url, rec in found if rec]
+        line = " | ".join(f"[{label}]({url})" for label, _, url in recorded if url)
+        missing = [f"{label} ({path.name}) has no URL in {md.stem}{cfg.naming['sidecar_suffix']}"
+                   for label, path, url in recorded if not url]
+        if line:
+            print(line)
+        for m in missing or ([] if recorded else [f"{md.name} has no render the sidecar records"]):
+            print(f"pitch renders: {m}", file=sys.stderr)
+        return 1 if missing or not recorded else 0
+    for label, path, url, rec in found:
+        print(f"{label:13} {path.name:44} {url or ('not published' if rec else 'not recorded by the sidecar')}")
     return 0
 
 
@@ -116,17 +204,28 @@ def cmd_calibrate(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pitch", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
-                                 epilog="\n".join(__doc__.split("\n")[2:5]))
-    sub = ap.add_subparsers(dest="verb", metavar="check|build|calibrate")
+                                 epilog="\n".join(__doc__.split("\n")[2:8]))
+    sub = ap.add_subparsers(dest="verb", metavar="check|build|memo|review|renders|calibrate")
     sub.required = True
     c = sub.add_parser("check", help="hold a docs root, or one document, to the method; exit 1 on a finding")
     c.add_argument("target", metavar="root|doc")
     c.add_argument("--config")
     c.add_argument("--json", action="store_true")
-    b = sub.add_parser("build", help="write an admiral deck's slides from its content file")
+    b = sub.add_parser("build", help="write an admiral deck's slides from its deck fence or content file")
     b.add_argument("deck", metavar="deck|doc", help="the <stem>-admiral-deck folder, or its document")
     b.add_argument("--config")
     b.add_argument("--check", action="store_true", help="compare only; exit 1 on drift")
+    m = sub.add_parser("memo", help="write the captain page from the document's Markdown")
+    m.add_argument("doc", metavar="doc")
+    m.add_argument("--config")
+    m.add_argument("--check", action="store_true", help="compare only; exit 1 on drift")
+    m.add_argument("--replace", action="store_true", help="overwrite a page `pitch memo` did not write")
+    r = sub.add_parser("review", help="hold a captain review to its template; no config needed")
+    r.add_argument("doc", metavar="doc")
+    n = sub.add_parser("renders", help="a document's renders and the URL its sidecar records for each")
+    n.add_argument("doc", metavar="doc")
+    n.add_argument("--config")
+    n.add_argument("--links", action="store_true", help="one Markdown line of links; exit 1 when one is missing")
     k = sub.add_parser("calibrate", help="hold the fit estimate to headless Chrome (by hand; never in a check)")
     k.add_argument("what", choices=["glyphs", "render"])
     k.add_argument("root", nargs="?", default=".", help="where the config is found; render's docs root")
@@ -134,14 +233,15 @@ def main(argv=None):
     k.add_argument("--shots", metavar="DIR", help="render: one PNG per slide into DIR")
     a = ap.parse_args(argv)
     try:
-        if a.verb in ("check", "calibrate"):
+        if a.verb in ("check", "calibrate", "review", "renders"):
             try:
-                return cmd_check(a) if a.verb == "check" else cmd_calibrate(a)
+                return {"check": cmd_check, "calibrate": cmd_calibrate, "review": cmd_review,
+                        "renders": cmd_renders}[a.verb](a)
             except SystemExit as e:     # their own refusals (no config, no such path, no Chrome): could not run
                 if isinstance(e.code, int):
                     raise
                 raise CouldNotRun(e.code)
-        return cmd_build(a)             # build's sys.exit(message) is a refusal or drift: exit 1
+        return cmd_memo(a) if a.verb == "memo" else cmd_build(a)   # their sys.exit(message): a refusal, exit 1
     except (CouldNotRun, pl.ConfigError) as e:
         print(e, file=sys.stderr)
         return 2

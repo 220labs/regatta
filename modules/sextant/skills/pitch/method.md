@@ -36,7 +36,10 @@ method answers it by sending the captain page and never the admiral deck.
 **The one rule over both: one source text, several renders, no prose typed twice.** The document
 is the truth and the renders are views of it. A correction goes into the document first, then into
 every render in the same change, then the check. The commonest failure (section 6, trap 1) is a
-document corrected while its render is left behind.
+document corrected while its render is left behind. So the document holds every render's words: the
+captain page is generated from it whole (`pitch memo`), and the admiral deck's slides sit in one
+```` ```deck ```` fence at its end (`pitch build`), in the same file and the same commit as the
+correction they must follow.
 
 ## 2. The admiral render: rules, numbers, sources
 
@@ -82,6 +85,16 @@ that must land stay on screen.
 - No footer caption, and no caption whose only content is provenance.
 - It carries every phrase pinned for its document (section 5, `claims.must-appear`).
 - It is handed out with the talk, not only linked.
+- It keeps the artifact page contract: a `<title>`; colour tokens on `:root`; the dark set twice,
+  under `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])` and again
+  under `:root[data-theme="dark"]`; a `body` background; a script from the allowlist at an exact
+  version; no CSS `url()` reaching outside the allowlist. A page missing one still renders, and reads
+  wrongly in one theme.
+- It is generated: `pitch memo <document>` writes it from the document's Markdown, and the check
+  refuses a generated page that differs from what it writes now. A block the converter cannot place
+  (raw HTML, an image, a diagram, indented code) is a finding by line, never dropped. A page written by
+  hand stays until a correction touches it; then `pitch memo --replace` takes over, once its words are
+  all in the document.
 
 A captain render may also be an older single-file deck (`<stem>-deck.html`), whose slides are
 JavaScript template literals. It is held to the 16 px floor, to "fetches nothing", and to no
@@ -140,6 +153,20 @@ runs the same check through the template in [config.md](config.md), section 13.
 | `root.orphan` | an HTML file or a deck folder that no document pairs with, so nothing checks it |
 | `root.vacuous` | a root where no document has any render, so every check would pass by finding nothing |
 | `sidecar.shape` | a sidecar (`<stem>.pitch.json`) that is not the shape [config.md](config.md) section 12 gives, or one beside no document |
+| `sidecar.stale` | a sidecar recording a render that is gone: its URL updates nothing the document has |
+| `captain.contract.title` | a memo with no `<title>` |
+| `captain.contract.tokens` | a memo with no colour tokens on `:root` |
+| `captain.contract.dark-scheme` | a memo with no dark tokens under `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])` |
+| `captain.contract.dark-theme` | a memo with no `:root[data-theme="dark"]` block |
+| `captain.contract.background` | a memo whose `body` sets no background |
+| `captain.contract.script-version` | a memo loading an allowed script that names no exact version |
+| `captain.contract.css-load` | a memo whose CSS `url()` loads from outside the allowlist, a `data:` URI included |
+| `captain.generator-drift` | a page `pitch memo` wrote that differs from what it writes from the document now |
+| `captain.unplaced` | a generated page whose document now holds a block the converter cannot place |
+| `review.title` | a captain review whose title does not end `(captain review, <date>)`, or with no `For:` line |
+| `review.sections` | a captain review missing a template section, or with them out of order |
+| `review.options` | an option without its four lines, no option at all, or a best three of the wrong length |
+| `review.decisions` | a captain review's D-list: no item, an id used twice, an item without exactly one `Reversible: yes\|no`, `➤ Recommended:` and `➤ Answer:` |
 
 **The markup grammar.** Every check after markup reads the slide through the layout estimate, so a
 slide may use only what the estimate models, per tag. A `<section>` holds one title, body `div`s
@@ -172,9 +199,22 @@ that has not been measured falls back to the Slides type's 0.6 em a character, w
 (safe, never the reverse): on that same deck it predicts a second line Chrome does not set on 2 of 5
 slides.
 
-**The builder.** `pitch build <deck>` writes the slides from a content file (`slides.json`),
-checks every slide in memory, and writes nothing unless all pass. Its `--check` mode compares the
-files on disk with what it would write; `deck.generator-drift` runs it.
+**The builder.** `pitch build <document>` writes the slides from the document's deck fence (or from
+the export's content file, `slides.json`, beside the deck; never both), checks every slide in memory,
+and writes nothing unless all pass. Its `--check` mode compares the files on disk with what it would
+write; `deck.generator-drift` runs it, and also refuses a fence nothing has built.
+
+**The deck fence.** One ```` ```deck ```` fence at the document's end holds the slides as a JSON list,
+the content file's form. Every check that compares a render with its document (the invented-number
+check and both pin tables) reads the document with that fence cut out: read with the body, the fence
+would vouch for the very slides it holds, and a number corrected in the body and left in the fence
+would pass. The suite holds both: a stale number in the fence, and a pin only the fence carries.
+
+**The captain review.** A document whose title ends `(captain review, <date>)` or `(executive
+review, <date>)` is a captain review, written for the person who decides in the template beside
+`/captain` (`skills/captain/TEMPLATE.md`). The `review.*` rules hold its shape wherever `pitch check`
+reads it; `pitch review <document>` holds it before any render exists, with no config. The words
+being plain is the reader's test, never a rule.
 
 **The calibrator.** `pitch calibrate glyphs` measures the face into the table `face.glyphs` names;
 `pitch calibrate render` lays every admiral slide out in headless Chrome and compares line counts and
@@ -263,6 +303,11 @@ Found while generalising it:
     under 400 characters as one element, so a page number nested inside a short slide was never
     examined; the first project's decks passed only because their slides are long. The check scans
     every element, nested ones included, and a control holds it.
+
+19. **A fence read with its document vouches for itself.** With the deck's words inside the document,
+    a number corrected in the body and left in the fence was still "in the document", and a pin only
+    the fence carried was still "pinned". Every compare reads the body with the fence cut out, and two
+    fixtures fail if it is ever read whole.
 
 ## 7. The Slides runtime, and where its guidance contradicts the method
 
