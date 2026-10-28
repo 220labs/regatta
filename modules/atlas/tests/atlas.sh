@@ -143,6 +143,66 @@ grep -q "^carried $L --pull" "$RAN"; check $? 0 "  then carried.py --pull on the
 git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$(git -C "$wt2" symbolic-ref --short HEAD)" >/dev/null; check $? 0 "  the branch was pushed to origin"
 echo "$out" | grep -q "wharf is not installed"; check $? 1 "  and no word of a local launch"
 
+echo "F6: knowledge-commit never ends a rebase it did not start, and a rebase of its own drops no commit"
+# stale_rebase <dir> <tracked file>: commit a change to the file, rebase it onto a conflicting one,
+# and put back the rebase-merge folder the abort removed: HEAD on its branch, a rebase still "open",
+# the state the vault's main was in on 2026-10-25 (an earlier rebase's leftover folder).
+stale_rebase() {
+  local d=$1 f=$2 b g; b=$(git -C "$d" symbolic-ref --short HEAD)
+  git -C "$d" branch -q "stale-onto-$$" HEAD
+  echo here > "$d/$f"; git -C "$d" commit -qam here
+  git -C "$d" checkout -q "stale-onto-$$"; echo there > "$d/$f"; git -C "$d" commit -qam there; git -C "$d" checkout -q "$b"
+  git -C "$d" rebase -q "stale-onto-$$" >/dev/null 2>&1
+  g=$(git -C "$d" rev-parse --path-format=absolute --git-path rebase-merge)
+  [ -d "$g" ] || { echo "  FAIL stale_rebase: no rebase-merge in $d"; fails=$((fails+1)); return; }
+  rm -rf "$T/saved-rm"; cp -R "$g" "$T/saved-rm"; git -C "$d" rebase --abort; cp -R "$T/saved-rm" "$g"
+}
+KV="$T/kv"; git init -q -b main "$KV"; echo 1 > "$KV/log.md"; git -C "$KV" add -A; git -C "$KV" commit -qm base
+git clone -q --bare "$KV" "$T/kv-origin.git"; git -C "$KV" remote add origin "$T/kv-origin.git"; git -C "$KV" fetch -q origin
+git -C "$KV" branch -q -u origin/main main
+KO="$T/kv-other"; git clone -q "$T/kv-origin.git" "$KO"
+stale_rebase "$KV" log.md; before=$(git -C "$KV" rev-parse HEAD)
+echo o > "$KO/other.md"; git -C "$KO" add -A; git -C "$KO" commit -qm other; git -C "$KO" push -q origin main   # origin moved
+echo r > "$KV/record.md"
+ATLAS_VAULT="$KV" "$KC" myvault -m "record" >/dev/null 2>"$T/f6.err"; rc=$?
+check "$rc" 1 "a rebase open before the call (HEAD on main, as the vault was on 2026-10-25): refused"
+grep -q "a rebase is in progress in $KV, not started here; left as git has it" "$T/f6.err"; check $? 0 "  and says so, naming the repo"
+check "$(git -C "$KV" rev-parse HEAD)|$(git -C "$KV" status --porcelain -- record.md)" "$before|?? record.md" "  nothing committed, main where it was, the record still on disk"
+test -d "$(git -C "$KV" rev-parse --path-format=absolute --git-path rebase-merge)"; check $? 0 "  the open rebase left as it was"
+git -C "$KV" rebase --quit
+ATLAS_VAULT="$KV" "$KC" myvault -m "record" >"$T/f6.out" 2>&1; rc=$?
+check "$rc|$(git -C "$KV" log -1 --format=%s)|$(git -C "$T/kv-origin.git" log -1 --format=%s main)" "0|record|record" "  settled by rebase --quit, as the refusal says: committed, rebased on origin, pushed"
+git -C "$KO" pull -q --ff-only; echo theirs > "$KO/log.md"; git -C "$KO" commit -qam theirs; git -C "$KO" push -q origin main
+echo ours > "$KV/log.md"
+ATLAS_VAULT="$KV" "$KC" myvault -m "ours" log.md >/dev/null 2>"$T/f6c.err"; rc=$?
+check "$rc" 0 "its own push-step rebase conflicts: committed, not pushed"
+grep -q "main diverged from origin and the rebase conflicts" "$T/f6c.err"; check $? 0 "  and says so"
+check "$(git -C "$KV" symbolic-ref --short HEAD)|$(git -C "$KV" log -1 --format=%s)|$(git -C "$KV" log -2 --format=%s | tail -1)" "main|ours|record" \
+  "  its own rebase aborted: main still holds the new commit and the one before"
+check "$(git -C "$KV" status --porcelain)|$(test -e "$(git -C "$KV" rev-parse --path-format=absolute --git-path rebase-merge)" && echo open)" "|" "  no rebase left open, nothing dirty"
+wt3=$("$KC" mylayer --open third 2>/dev/null); stale_rebase "$wt3" docs/a.md; tip=$(git -C "$wt3" rev-parse HEAD)
+echo d > "$wt3/docs/d.md"; : > "$RAN"
+"$KC" mylayer --in "$wt3" -m "Docs: d" >/dev/null 2>"$T/f6w.err"; rc=$?
+check "$rc" 1 "--in, a rebase open in the worktree (its own git dir): refused"
+grep -q "nothing committed or launched — a rebase is in progress in $wt3" "$T/f6w.err"; check $? 0 "  and says so"
+check "$(git -C "$wt3" rev-parse HEAD)|$(git -C "$wt3" status --porcelain -- docs/d.md)|$(wc -c < "$RAN" | tr -d ' ')" "$tip|?? docs/d.md|0" "  the branch where it was, the file still on disk, nothing run"
+git -C "$wt3" rebase --quit
+echo clash > "$L/docs/a.md"; git -C "$L" commit -qam clash; git -C "$L" push -q origin main   # main moves under the branch
+"$KC" mylayer --in "$wt3" -m "Docs: d" >/dev/null 2>"$T/f6r.err"; rc=$?
+check "$rc" 1 "--in, its own rebase onto origin/main conflicts: not launched"
+check "$(git -C "$wt3" symbolic-ref --short HEAD 2>/dev/null | cut -c1-7)|$(git -C "$wt3" log -1 --format=%s)|$(git -C "$wt3" log -2 --format=%s | tail -1)" "claude/|Docs: d|here" \
+  "  aborted as its own: the branch keeps the new commit and its earlier one"
+
+pg=$(git -C "$L" rev-parse --path-format=absolute --git-path rebase-merge); mkdir -p "$pg"   # a leftover rebase on the primary
+"$KC" mylayer --in "$wt3" -m "Docs: d" >/dev/null 2>"$T/f6p.err"; rc=$?
+check "$rc" 1 "--in, a rebase open on the primary: refused before anything lands"
+grep -q "nothing committed or launched — a rebase is in progress in $L" "$T/f6p.err"; check $? 0 "  and names the primary"
+rmdir "$pg"; touch "$(git -C "$wt3" rev-parse --path-format=absolute --git-path MERGE_HEAD)"   # a merge open in the worktree
+"$KC" mylayer --in "$wt3" -m "Docs: d" >/dev/null 2>"$T/f6m.err"; rc=$?
+check "$rc" 1 "--in, a merge open in the worktree: refused"
+grep -q "a merge is in progress in $wt3" "$T/f6m.err"; check $? 0 "  and says merge"
+rm -f "$(git -C "$wt3" rev-parse --path-format=absolute --git-path MERGE_HEAD)"
+
 echo "the vault commit on the configured vault"
 V="$T/vault"; git -C "$V" init -q -b main 2>/dev/null; echo m > "$V/memo.md"
 echo '{}' | python3 "$A/hooks/vault_commit.py"; check $? 0 "vault_commit: exit 0"

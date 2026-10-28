@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `knowledge-commit` never ends a rebase it did not start: a rebase, merge, cherry-pick or revert open
+  in the repo or the worktree refuses either form before it commits, and a failed rebase of its own is
+  aborted only when its orig-head is the HEAD the run started from. Its push step's `rebase --abort`
+  had ended a leftover rebase on the vault's main and dropped the commit it had just made (F6,
+  2026-10-25).
+
 - `vault_commit`'s push of the vault's main tries once more, from the fetch, when it is refused and
   origin moved meanwhile (another SessionEnd landing between the fetch and the push makes a
   non-fast-forward). The vault is rechecked clean before each attempt; a refusal with origin unmoved

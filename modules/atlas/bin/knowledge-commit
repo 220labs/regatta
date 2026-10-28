@@ -62,6 +62,10 @@
 # (/routine recording a deploy of a prompt that already launched reviewed, gap review item 8).
 # #25 is why the gate exists: a code change launched on the check alone, and the review afterwards
 # found three bugs.
+#
+# It never ends what it did not start (F6, 2026-10-25: busy and rebase_own below): a rebase, merge,
+# cherry-pick or revert open in the repo or the worktree refuses either form before it commits, and
+# a rebase of its own that fails is aborted only once proved its own, HEAD then checked back.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"   # this module: lib/atlaslib.py finds the repos, the core and its peers
 # atlas <python>: run a snippet with atlaslib imported, the rest of the arguments in sys.argv[1:].
@@ -111,6 +115,47 @@ matches() {
 # On the workflow: a .claude/ folder and no marker. The marker means unrestricted, as before.
 on_workflow() { [ -d "$repo/.claude" ] && [ ! -f "$repo/.claude/no-workflow" ]; }
 
+# busy <dir>: the git operation open in <dir>'s worktree (rebase, merge, cherry-pick, revert), or
+# nothing. Why (F6, 2026-10-25): the vault's main still held a rebase-merge folder an earlier rebase
+# left; this tool's push-step rebase failed on it, and its `rebase --abort` ended that other rebase,
+# resetting main to the old orig-head and dropping the commit the same run had just made. An
+# operation this run did not start is named and left as git has it, never ended.
+busy() {
+  local m
+  for m in rebase-merge:rebase rebase-apply:rebase MERGE_HEAD:merge CHERRY_PICK_HEAD:cherry-pick REVERT_HEAD:revert; do
+    if [ -e "$(git -C "$1" rev-parse --path-format=absolute --git-path "${m%%:*}")" ]; then echo "${m#*:}"; return 0; fi
+  done
+}
+# refuse_busy <dir> <what was not done>: exit 1 while an operation is open in <dir>. Before any
+# commit: a `git commit` during someone's merge or cherry-pick would conclude it with our message.
+refuse_busy() {
+  local op; op=$(busy "$1")
+  [ -n "$op" ] || return 0
+  echo "$(basename "$repo"): $2 — a $op is in progress in $1, not started here; left as git has it." >&2
+  echo "  Settle it first: git -C $1 status (a leftover rebase, HEAD on its branch: git -C $1 rebase --quit keeps HEAD; never --abort, which resets to its orig-head)" >&2
+  exit 1
+}
+# rebase_own <dir> <onto>: rebase <dir>'s branch. On a failure it ends only a rebase it can prove its
+# own (none open just before, and the open one's orig-head is the HEAD it started from), then proves
+# HEAD is back there. A rebase it cannot prove is left as git has it; no commit is ever dropped.
+# 0: rebased. 1: not rebased, the reason on stderr.
+rebase_own() {
+  local d=$1 head op orig now
+  head=$(git -C "$d" rev-parse HEAD)
+  op=$(busy "$d")
+  if [ -n "$op" ]; then echo "  a $op is in progress in $d, not started here; left as git has it" >&2; return 1; fi
+  git -C "$d" rebase -q "$2" >/dev/null 2>&1 && return 0
+  if [ "$(busy "$d")" = rebase ]; then
+    orig=$(cat "$(git -C "$d" rev-parse --path-format=absolute --git-path rebase-merge)/orig-head" \
+               "$(git -C "$d" rev-parse --path-format=absolute --git-path rebase-apply)/orig-head" 2>/dev/null | head -1 || true)
+    if [ "$orig" = "$head" ]; then git -C "$d" rebase --abort >/dev/null 2>&1 || true
+    else echo "  the rebase open in $d started from ${orig:-an unknown commit}, not this run's $head; left as git has it" >&2; fi
+  fi
+  now=$(git -C "$d" rev-parse HEAD 2>/dev/null || true)
+  [ "$now" = "$head" ] || echo "  HEAD in $d is ${now:-unreadable}, not $head where this run started; $head stays in the reflog" >&2
+  return 1
+}
+
 if [ "${1:-}" = "--open" ]; then
   slug=${2:-}
   [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "knowledge-commit: --open needs a slug of a-z, 0-9 and -" >&2; exit 2; }
@@ -152,6 +197,9 @@ if [ "${1:-}" = "--in" ]; then
   fi
   b=$(git -C "$wt" symbolic-ref --quiet --short HEAD || true)
   [[ "$b" == claude/* ]] || { echo "knowledge-commit: $wt is on '$b', not a claude/* branch" >&2; exit 1; }
+  refuse_busy "$wt" "nothing committed or launched"
+  # The primary too: a fast-forward of its main past a leftover rebase is undone by the next `rebase --abort`.
+  refuse_busy "$repo" "nothing committed or launched"
   if [ "${1:-}" = "-m" ]; then msgargs=(-m "$2"); shift 2
   elif [ -f "${1:-}" ]; then msgargs=(-F "$1"); shift
   else echo "knowledge-commit: need -m <msg> or a message file" >&2; exit 2; fi
@@ -182,8 +230,7 @@ if [ "${1:-}" = "--in" ]; then
   if [ -z "$(git -C "$wt" rev-list "$base..HEAD")" ]; then
     echo "$(basename "$repo"): nothing to launch from $b — it holds nothing $base lacks"; launched
   fi
-  if ! git -C "$wt" rebase -q "$base" >/dev/null 2>&1; then
-    git -C "$wt" rebase --abort 2>/dev/null || true
+  if ! rebase_own "$wt" "$base"; then
     echo "$(basename "$repo"): NOT launched — $b does not rebase cleanly on $base; resolve in $wt" >&2; exit 1
   fi
   # Read from the base, never the branch: a launch cannot widen its own exemption (item 11).
@@ -330,6 +377,7 @@ fi
 
 branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)
 [ "$branch" = main ] || { echo "knowledge-commit: $repo is on '$branch', not main — refusing" >&2; exit 1; }
+refuse_busy "$repo" "nothing committed"
 if [ "${1:-}" = "-m" ]; then msgargs=(-m "$2"); shift 2
 elif [ -f "${1:-}" ]; then msgargs=(-F "$1"); shift
 else echo "knowledge-commit: need -m <msg> or a message file" >&2; exit 2; fi
@@ -391,8 +439,7 @@ if [ -n "$(git -C "$repo" rev-list main..origin/main)" ]; then
     echo "$(basename "$repo"): committed, NOT pushed — origin moved and uncommitted changes block the rebase: $dirty" >&2
     exit 0
   fi
-  if ! git -C "$repo" rebase -q origin/main 2>/dev/null; then
-    git -C "$repo" rebase --abort 2>/dev/null || true
+  if ! rebase_own "$repo" origin/main; then
     echo "$(basename "$repo"): committed, NOT pushed — main diverged from origin and the rebase conflicts; resolve by hand" >&2
     exit 0
   fi
