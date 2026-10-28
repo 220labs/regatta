@@ -249,6 +249,88 @@ USAGE_CONFIG="$T/cfg-fail.json" USAGE_NOW="2026-09-22T07:10:00-07:00" "$B/usage-
 check "$(grep -c 'notify FAILED two days running' "$T/bulletin.md" 2>/dev/null)" "1" "the second posts one bulletin line"
 unset CLAUDE_BULLETIN
 
+echo "push"
+# rsync is a stub on PATH that records its argv, one call a line, keeps what it was given to send in
+# $T/sent (the scratch copy is gone once push returns), and fails while $T/rsync-fail exists
+PD="$T/pushdata"; mkdir -p "$T/stubbin"
+cat > "$T/stubbin/rsync" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/../rsync.txt"
+for a; do src=$last; last=$a; done
+rm -rf "$(dirname "$0")/../sent"; cp -R "$src" "$(dirname "$0")/../sent"
+[ -e "$(dirname "$0")/../rsync-fail" ] && { echo "ssh: connect to host refused" >&2; exit 12; }
+exit 0
+SH
+chmod +x "$T/stubbin/rsync"
+printf '{"hosts": {"testmac": {"push": ["me@peer:usage/testmac/", "me@other:usage/testmac"]}}}' > "$T/cfg-push.json"
+ptick() { USAGE_DATA="$PD" USAGE_RENDER=0 USAGE_CONFIG="$T/cfg-push.json" USAGE_NOW="$1" PATH="$T/stubbin:$PATH" "$B/usage-report" tick > "$T/ptick.out" 2>&1; }
+calls() { if [ -f "$T/rsync.txt" ]; then wc -l < "$T/rsync.txt" | tr -d ' '; else echo 0; fi; }
+ptick 2026-09-20T09:00:00-07:00
+check "$(calls)" "2" "a tick pushes this host's folder to each target"
+check "$(sed -n 1p "$T/rsync.txt" | sed 's| /[^ ]*/usage-push-[^/ ]*/testmac/ | <copy>/testmac/ |')" "-a --delete --checksum --timeout=30 -e ssh -o BatchMode=yes -o ConnectTimeout=10 <copy>/testmac/ me@peer:usage/testmac/" \
+  "  with pull's flags, --delete (a mirror: a stale copy there goes) and --checksum (a re-fenced day may keep size and mtime), a scratch copy of this host's folder, the target as written"
+check "$(ls -d "$(sed -n 1p "$T/rsync.txt" | awk '{print $(NF-1)}')" 2>/dev/null)" "" "  the copy is removed once push returns"
+check "$(cd "$T/sent" && find . -type f | grep -cv '^\./calls/[0-9-]*\.csv$'):$(test -f "$T/sent/calls/2026-09-19.csv" && echo day)" "0:day" "  the day CSVs alone: limits, accounts and the marker stay here"
+check "$(cmp -s "$T/sent/calls/2026-09-19.csv" "$PD/testmac/calls/2026-09-19.csv" && echo same)" "same" "  with no registry, each day file as written"
+check "$(sed -n 2p "$T/rsync.txt" | awk '{print $NF}')" "me@other:usage/testmac/" "  a target without its trailing slash gets one"
+has "$T/ptick.out" "push me@peer:usage/testmac/: ok" "  …and says so"
+check "$(test -f "$PD/testmac/calls/2026-09-19.csv" && echo yes)" "yes" "  after the tick's collect, so the day's rows go with it"
+ptick 2026-09-20T09:30:00-07:00
+check "$(calls)" "2" "within the hour: no push"
+sleep 1; touch "$PD/testmac/calls/2026-09-19.csv"   # the sleep: a change a second after the push, on any mtime granularity
+ptick 2026-09-20T09:15:00-07:00
+check "$(calls)" "2" "  even with a changed file"
+ptick 2026-09-20T10:05:00-07:00
+check "$(calls)" "4" "an hour on, with a change since: pushes again"
+ptick 2026-09-20T11:10:00-07:00
+check "$(calls)" "4" "an hour on, nothing changed: no push"
+echo x >> "$PD/testmac/limits.jsonl"; ptick 2026-09-20T12:12:00-07:00
+check "$(calls)" "4" "  a file outside calls/ changed: no push either (calls/ alone is sent)"
+touch "$T/rsync-fail"; sleep 1; touch "$PD/testmac/calls/2026-09-19.csv"   # a day file changed, so the hour's push is due
+ptick 2026-09-20T12:15:00-07:00; rc=$?
+check "$rc" "0" "a failed push does not fail the tick"
+has "$T/ptick.out" "push me@peer:usage/testmac/: FAILED ssh: connect to host refused" "  it is reported, with rsync's error"
+has "$T/ptick.out" "tick testmac:" "  and the tick goes on"
+ptick 2026-09-20T12:30:00-07:00
+check "$(calls)" "6" "  not retried within the hour"
+rm -f "$T/rsync-fail"
+ptick 2026-09-20T13:20:00-07:00
+check "$(calls)" "8" "  retried the hour after, though nothing changed"
+check "$(USAGE_DATA="$PD" USAGE_CONFIG="$T/cfg-push.json" USAGE_NOW=2026-09-20T13:25:00-07:00 PATH="$T/stubbin:$PATH" "$B/usage-report" push > /dev/null; echo $?; calls)" "0
+10" "push by hand runs at once, whatever the hour"
+# a target naming another host's folder would overwrite its day files: refused, rsync never runs for it
+printf '{"hosts": {"testmac": {"push": ["me@peer:usage/peerhost/"]}}}' > "$T/cfg-cross.json"
+rm -f "$T/rsync.txt"
+USAGE_DATA="$PD" USAGE_CONFIG="$T/cfg-cross.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/pcross.out" 2>&1; rc=$?
+check "$rc:$(calls)" "1:0" "a target that is not this host's folder is refused, no rsync"
+has "$T/pcross.out" "REFUSED — a target must end in /testmac/" "  …and says why"
+# the overlay installed and no registry file: every row would read as open, so nothing is sent
+cp -R "$T/config" "$T/oconfig"; : > "$T/oconfig/regatta/overlay"
+for k in owner guarded orca-deny; do : > "$T/oconfig/regatta/$k"; done
+rm -f "$T/rsync.txt"
+REGATTA_CONFIG="$T/oconfig" USAGE_DATA="$PD" USAGE_CONFIG="$T/cfg-push.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/pover.out" 2>&1; rc=$?
+check "$rc:$(calls)" "1:0" "the overlay installed, no registry file: refused, no rsync"
+has "$T/pover.out" "push: REFUSED — no scope registry here though the overlay is installed" "  …and says why"
+# no day file to send: a mirror of an empty copy would empty the target, so nothing is sent (the third review)
+ED="$T/emptydata"; mkdir -p "$ED/testmac"; echo x > "$ED/testmac/limits.jsonl"
+ep() { rm -f "$T/rsync.txt" "$ED/testmac/.pushed"; USAGE_DATA="$ED" USAGE_CONFIG="$T/cfg-push.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/pempty.out" 2>&1; }
+pushed_ok() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ok"])' "$ED/testmac/.pushed"; }
+ep; rc=$?
+check "$rc:$(calls):$(pushed_ok)" "1:0:False" "no calls/ folder: refused, no rsync, the marker not ok"
+has "$T/pempty.out" "push: REFUSED — no day file to send; the target keeps its copy" "  …and says why"
+mkdir -p "$ED/testmac/calls"; printf 'x' > "$ED/testmac/calls/._2026-09-19.csv"
+ep; rc=$?
+check "$rc:$(calls):$(pushed_ok)" "1:0:False" "an empty calls/ (a dot file only): refused, no rsync"
+printf 'day,host\n\377\376\n' > "$ED/testmac/calls/2026-09-18.csv"
+ep; rc=$?
+check "$rc:$(calls):$(pushed_ok)" "1:0:False" "only a day file that does not parse: refused, no rsync"
+has "$T/pempty.out" "push: REFUSED — no day file to send" "  …and says why"
+# a host with no push: no rsync, no marker
+rm -rf "$PD"; rm -f "$T/rsync.txt"
+USAGE_DATA="$PD" USAGE_RENDER=0 USAGE_CONFIG="$T/none.json" USAGE_NOW=2026-09-20T09:00:00-07:00 PATH="$T/stubbin:$PATH" "$B/usage-report" tick > "$T/ptick.out" 2>&1
+check "$(calls):$(test -e "$PD/testmac/.pushed" && echo marker || echo none)" "0:none" "a host with no push does nothing"
+lacks "$T/ptick.out" "push " "  and says nothing about it"
+
 echo "numbers"
 check "$(USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" numbers --json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(sorted(d["limit_hits"].items()))')" "[('extra-usage cap', 1), ('weekly', 1)]" "weekly numbers count hits by limit"
 
@@ -615,16 +697,18 @@ echo "the fence: a confidential scope's project detail in no report (the confide
 FD="$T/fdata"; FR="$T/fence/reports"; mkdir -p "$FD/testmac/calls"
 printf '{"repos": {"lab/vault": {}, "harbor": {}}, "scopes": {"s-hidden": {"repos": ["lab/*"], "confidential": true}, "s-open": {"repos": ["harbor"]}}}\n' > "$T/frepos.json"
 printf '{"repos": {"lab/vault": {}}, "scopes": <<<<<<< HEAD\n' > "$T/ftorn.json"
+# argv[2], when given, is the scope's checkout slug under the projects folder the case runs with: a row in
+# that checkout's scratch folder (trim-cross-host D2), left out where the case runs with another folder.
 cat > "$T/fdata.py" <<'PY'
 import csv, json, sys
-D = sys.argv[1]
+D, SLUG = sys.argv[1], (sys.argv[2:] or [""])[0]
 F = ["day", "host", "source", "session", "title", "project", "model", "effort", "skill", "agent", "entry", "calls", "input", "output",
-     "cache_read", "cache_write_5m", "cache_write_1h", "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account"]
-def row(session, title, project, skill, agent, cost):
+     "cache_read", "cache_write_5m", "cache_write_1h", "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account", "branch"]
+def row(session, title, project, skill, agent, cost, branch=""):
     return {"day": "2026-09-19", "host": "testmac", "source": "claude-code", "session": session, "title": title, "project": project,
             "model": "claude-opus-5-5", "effort": "high", "skill": skill, "agent": agent, "entry": "cli", "calls": 10, "input": 0,
             "output": 1000, "cache_read": 100000, "cache_write_5m": 0, "cache_write_1h": 0, "calls_over_200k": 0, "calls_over_400k": 0,
-            "cost": cost, "first": "2026-09-19T17:00:00Z", "last": "2026-09-19T18:00:00Z", "account": ""}
+            "cost": cost, "first": "2026-09-19T17:00:00Z", "last": "2026-09-19T18:00:00Z", "account": "", "branch": branch}
 with open(f"{D}/testmac/calls/2026-09-19.csv", "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=F)
     w.writeheader()
@@ -635,15 +719,81 @@ with open(f"{D}/testmac/calls/2026-09-19.csv", "w", newline="") as f:
     w.writerow(row("v3", "“/aurora dream --scope s-hidden”", "harbor", "", "main", 0.25))  # a pass run from an open repo
     w.writerow(row("g1", "Group folder chat", "lab", "", "main", 0.1))       # the folder that holds the checkout
     w.writerow(row("o2", "Fix the vault deploy", "harbor", "finish", "main", 0.1))  # an open row whose title names the repo
+    w.writerow(dict(row("b1", "Open tools work", "tools", "", "vault-helper", 0.1, "claude/x/2026-09-19-vault-notes"), account="vault-seat"))  # its branch, agent and account do
+    w.writerow(row("e1", "Elsewhere copy", "/elsewhere/y/vault-copy", "", "main", 0.1))  # open, but its path holds the repo's word
+    if SLUG:  # the scope's own scratch folder: no projects/ folder above the slug
+        w.writerow(row("p1", "Scratch probe notes", f"/tmpdir/c-501/{SLUG}/abc123/work", "", "main", 0.1))
+        # a scope's session whose worker's first call ran after a cd to an open folder: the session's
+        # title and branch ride on that row too, so it is fenced with its session (the landing review)
+        w.writerow(row("s1", "Contract draft notes", "lab/vault", "", "main", 0.1, "claude/x/2026-09-19-contract"))
+        w.writerow(row("s1", "Contract draft notes", "/elsewhere/z", "", "worker", 0.1, "claude/x/2026-09-19-contract"))
 json.dump({"ts": "2026-09-19T10:00:00-0700", "repo": "/r/lab/vault", "project": "lab/vault", "branch": "claude/x/2026-09-19-vault-secret-branch",
            "diff": {"added": 10, "removed": 0}, "wrong": {"S1": 1}, "models": {"main": {"claude-opus-5-5": 9}, "agents": []}},
           open(f"{D}/review-gate.jsonl", "w"))
 PY
-python3 "$T/fdata.py" "$FD"
+SLUG=$(python3 -c "import re,sys;print(re.sub('[^A-Za-z0-9]','-',sys.argv[1]))" "$T/noproj/lab/vault")
+python3 "$T/fdata.py" "$FD" "$SLUG"
 fu() { CLAUDE_REPOS_JSON="$1" USAGE_DATA="$FD" USAGE_LOCAL_REPORTS="$FR" USAGE_PUBLISH= USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" "${@:2}"; }
-SECRETS="Secret vault tuning|lab/vault|vault-deploy|vault-agent|vault-secret-branch|s-hidden|Group folder chat|Fix the vault deploy"
+SECRETS="Secret vault tuning|lab/vault|vault-deploy|vault-agent|vault-secret-branch|s-hidden|Group folder chat|Fix the vault deploy|Scratch probe notes|Contract draft|2026-09-19-contract"
 fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null; cp "$FR/2026-09-19.md" "$T/f-open.md"
-check "$(grep -oE "$SECRETS" "$T/f-open.md" | LC_ALL=C sort -u | tr '\n' ' ')" "Fix the vault deploy Group folder chat Secret vault tuning lab/vault s-hidden vault-agent vault-deploy " "no registry: the fixture's names are in the report (the case can see them)"
+check "$(grep -oE "$SECRETS" "$T/f-open.md" | LC_ALL=C sort -u | tr '\n' ' ')" "Contract draft Fix the vault deploy Group folder chat Scratch probe notes Secret vault tuning lab/vault s-hidden vault-agent vault-deploy " "no registry: the fixture's names are in the report (the case can see them)"
+# push (trim-cross-host D1): the copy that leaves this host holds none of a confidential scope's rows
+printf '{"hosts": {"testmac": {"push": ["me@peer:usage/testmac/"]}}}' > "$T/cfg-fpush.json"
+fp() { rm -f "$T/rsync.txt" "$FD/testmac/.pushed"; rm -rf "$T/sent"; CLAUDE_REPOS_JSON="$1" USAGE_DATA="$FD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/fp.out" 2>&1; }
+fp "$T/frepos.json"; rc=$?
+check "$rc:$(calls)" "0:1" "push with a confidential scope: sent"
+check "$(grep -cE "$SECRETS" "$T/sent/calls/2026-09-19.csv")" "0" "  no confidential project, title, skill or agent in what left"
+check "$(python3 -c 'import csv,sys; print(" ".join(r["session"] + "=" + r["title"] for r in csv.DictReader(open(sys.argv[1]))))' "$T/sent/calls/2026-09-19.csv")" \
+  "o1=Open harbor work v3=(confidential) o2=(confidential) b1=Open tools work" "  the open rows kept, an open title naming the scope or its repo blanked; the scope's rows, its scratch folder's, its group folder's and an open path holding its word dropped"
+check "$(python3 -c 'import csv,sys; r=[x for x in csv.DictReader(open(sys.argv[1])) if x["session"]=="b1"][0]; print(repr(r["branch"]), r["agent"], repr(r["account"]))' "$T/sent/calls/2026-09-19.csv")" \
+  "'' (confidential) ''" "  an open row's branch, agent and account label holding the repo's word, hyphen-bounded: blanked"
+check "$(grep -cE "vault|Scratch probe|Elsewhere" "$T/sent/calls/2026-09-19.csv")" "0" "  the scope's word nowhere in what left, as a substring"
+check "$(grep -c '/elsewhere/z' "$T/sent/calls/2026-09-19.csv")" "0" "  a scope's session's row in an open folder: dropped with its session"
+check "$(head -1 "$T/sent/calls/2026-09-19.csv")" "$(head -1 "$FD/testmac/calls/2026-09-19.csv")" "  the header as written"
+check "$(grep -c 'Secret vault tuning' "$FD/testmac/calls/2026-09-19.csv")" "2" "  the host's own file keeps every row"
+has "$T/fp.out" "push me@peer:usage/testmac/: ok (8 confidential rows kept here)" "  the log counts what stayed, naming none"
+printf '\0\0\260junk' > "$FD/testmac/calls/._2026-09-19.csv"; printf 'day,host\n\377\376\n' > "$FD/testmac/calls/2026-09-18.csv"
+fp "$T/frepos.json"; rc=$?
+check "$rc:$(cd "$T/sent/calls" && ls -A | tr '\n' ' ')" "0:2026-09-19.csv " "a dot file and a day file that is not UTF-8: neither sent, the push goes on"
+has "$T/fp.out" "push: 1 day file(s) did not parse and stay here: 2026-09-18.csv" "  the unparsed one named"
+check "$(grep -o -- '--exclude [^ ]*' "$T/rsync.txt")" "--exclude /calls/2026-09-18.csv" "  and excluded, anchored, so --delete keeps the target's last good copy"
+rm -f "$FD/testmac/calls/._2026-09-19.csv" "$FD/testmac/calls/2026-09-18.csv"
+fp "$T/ftorn.json"; rc=$?
+check "$rc:$(calls):$(test -d "$T/sent" && echo sent || echo none)" "1:0:none" "a torn registry: nothing sent, the push fails"
+has "$T/fp.out" "push: REFUSED — the scope registry cannot be read" "  …and says why"
+AD="$T/adata"; mkdir -p "$AD/testmac/calls"; grep -E '^day,|,v[12],' "$FD/testmac/calls/2026-09-19.csv" > "$AD/testmac/calls/2026-09-19.csv"
+rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$T/frepos.json" USAGE_DATA="$AD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/fp.out" 2>&1; rc=$?
+check "$rc:$(calls)" "1:0" "every row fenced: refused, the target keeps its copy (a fence that drops all reads the registry wrong)"
+has "$T/fp.out" "it fences every row; nothing sent" "  …and says why"
+# the real rsync into a local target (the third review, 2026-10-28): what a stub cannot show
+if ! command -v rsync > /dev/null; then echo "  skip: no rsync here, so the push's mirror cases"; else
+MD="$T/mdata"; MT="$T/mtarget/testmac"; mkdir -p "$MD/testmac/calls" "$MT/calls"
+printf '{"hosts": {"testmac": {"push": ["%s/"]}}}' "$MT" > "$T/cfg-rpush.json"
+rp() { rm -f "$MD/testmac/.pushed"; CLAUDE_REPOS_JSON="$1" USAGE_DATA="$MD" USAGE_CONFIG="$T/cfg-rpush.json" "$B/usage-report" push > "$T/rp.out" 2>&1; }
+# one open row whose title is 14 characters and names the scope's repo: `(confidential)` is 14 too
+python3 - "$FD/testmac/calls/2026-09-19.csv" "$MD/testmac/calls/2026-09-19.csv" <<'PY2'
+import csv, sys
+rd = csv.DictReader(open(sys.argv[1], newline=""))
+r = next(x for x in rd if x["session"] == "o1")
+w = csv.DictWriter(open(sys.argv[2], "w", newline=""), fieldnames=rd.fieldnames)
+w.writeheader(); w.writerow(dict(r, title="Tune vault now"))
+PY2
+rp "$T/no-repos.json"; rc=$?
+check "$rc:$(grep -c 'Tune vault now' "$MT/calls/2026-09-19.csv")" "0:1" "real rsync, no registry: the day sent as written"
+rp "$T/frepos.json"; rc=$?
+check "$rc:$(grep -c 'Tune vault now' "$MT/calls/2026-09-19.csv"):$(grep -c '(confidential)' "$MT/calls/2026-09-19.csv")" "0:0:1" \
+  "  the scope made confidential: the 14-character title re-fenced there, though size and mtime are the same"
+echo "good copy" > "$MT/calls/2026-09-18.csv"; echo stale > "$MT/calls/._old.csv"; echo stale > "$MT/limits.jsonl"
+printf 'day,host\n\377\376\n' > "$MD/testmac/calls/2026-09-18.csv"
+rp "$T/frepos.json"; rc=$?
+check "$rc:$(cat "$MT/calls/2026-09-18.csv"):$(cd "$MT" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" \
+  "0:good copy:./calls/2026-09-18.csv ./calls/2026-09-19.csv " "  a day this host cannot read: the target's last good copy kept, the rest of the mirror as sent"
+rm "$MD/testmac/calls/2026-09-19.csv"
+rp "$T/frepos.json"; rc=$?
+check "$rc:$(cd "$MT" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" "1:./calls/2026-09-18.csv ./calls/2026-09-19.csv " \
+  "  nothing readable left to send: refused, the target keeps its copy"
+fi
+rm -f "$FD/testmac/.pushed"
 fu "$T/frepos.json" render --day 2026-09-19 > "$T/f.out"
 check "$(cat "$FR/2026-09-19.md" "$FR/latest.md" "$FR/latest-line.txt" "$T/f.out" | grep -cE "$SECRETS")" "0" \
   "a confidential scope's title, project, skill and agent, its pass run from an open repo, a session in its group folder and an open title naming its repo: in no report file, the line or the log"
@@ -669,6 +819,7 @@ echo "the reports rule: a confidential scope's own report in its node, a count p
 # anchor, its first repo, is a folder here: lab/vault.
 cp -R "$T/config" "$T/fconfig"; mkdir -p "$T/fconfig/regatta" "$T/fproj/lab/vault"; printf '%s\n' "$T/fproj" > "$T/fconfig/regatta/projects"
 NODE="$T/fproj/lab/vault/reports/usage"
+python3 "$T/fdata.py" "$FD"   # without the scratch folder's row: its slug is the other projects folder's
 fs() { REGATTA_CONFIG="$T/fconfig" fu "$@"; }
 fs "$T/frepos.json" render --day 2026-09-19 > "$T/fs.out"
 check "$(cat "$FR/2026-09-19.md" "$FR/latest.md" "$FR/latest-line.txt" "$T/fs.out" | grep -cE "$SECRETS")" "0" "the global report, the line and the log still name nothing of the scope"
