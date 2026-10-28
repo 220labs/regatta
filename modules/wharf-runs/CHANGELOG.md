@@ -5,6 +5,25 @@
 - `check`: a run that holds its slot but has not yet dropped its queue ticket no longer also counts as
   ahead, which made a third check wait with three slots for three on a slow runner Mac; the slot's pid
   is written right after its start (ci-fleet follow-ups, 2026-10-27).
+- The queue's S2, first half (docs/dispatch-queue-2026-10-25.md): what starts a queued entry with nobody
+  retrying. A run's watcher (`dispatch-rc`) runs `dispatch --claim` when its run turns parked (its slot then free),
+  once each parked stretch, never for a yolo or dnd run (its end hands the slot to its landing); an orphan's end
+  claims too. The `queue-sweep` job (`dispatch --sweep` every 10 min) on every Mac with a queue home, installed by
+  `dispatch-queue jobs` as each run starts and at each enqueue, removed with the home; `regatta check` says the
+  home and fails a Mac without the sweep. The pending poll (`dispatch --poll`, every 60 s) loaded only on a Mac
+  no kick road reaches (`wharf-runs/kick-roads`), with room, while the ref holds an entry it may yet take, and
+  booted out otherwise; each pass is one `ls-remote` and claims only when the ref moved or an entry turned
+  claimable. G3's `event_at`: the claim stamps when the slot freed (`--event-at`, or the last end here), and the
+  run's `started` line in `queue.jsonl` carries it with `wait_s`. Carried from S1's reviews: a reservation is
+  spent once its job's plist is gone (and a stale job gives it back at once, `dispatch-queue unreserve`); wharf's
+  `runs_busy` counts reservations; a queue job's plist carries no year; a put that lost the lease thrice says so
+  and is flushed once more; an inherited mode is no raise, and the raise refusal has the cap's waiting words;
+  `Fleet.read` and `write` use one git process for all entries; fewer python starts in `qreserved` and
+  `queue_dispatch`. The `helm/logbook-repo` fallback stays off until the queue is switched on. Cases:
+  `tests/test_queue.sh`.
+- The S2 finish review's fixes: the inherited-mode exemption reads the caller's run record, never its
+  `DISPATCH_MODE`; a reservation whose claimer still runs is never spent; a slow `launchctl print` is "could not
+  tell", never a reload; a raced load keeps its plist, and `job_out` boots out a job with none.
 - `tests/queue_live.sh <queue repo url>`: the queue's live case, run by hand against a real home on a scratch
   `refs/regatta/*` ref, `dispatch-queue`'s write path re-done in shell (a hook-less bare clone, an orphan commit
   by `commit-tree`, `push --force-with-lease`). It proves the home takes and serves the ref, a

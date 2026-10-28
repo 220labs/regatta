@@ -10,8 +10,16 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            one entry per branch (a later one replaces a queued one); with
                                            --claim, this host then claims what it has room for. One JSON
                                            line on stdout: key, qid, store, result, rank, claimed
-    dispatch-queue claim CTX               claim and start what this host has room for, best first
-    dispatch-queue sweep CTX               the outbox, this host's own entries reconciled, cards, a claim
+    dispatch-queue claim [--event-at T] CTX
+                                           claim and start what this host has room for, best first; T is
+                                           when the slot freed (the watcher's word), for G3's event_at
+    dispatch-queue sweep CTX               the outbox, this host's own entries reconciled, cards, a claim —
+                                           every SWEEP seconds from the queue-sweep job (S2)
+    dispatch-queue poll CTX                the pending poll's pass (S2): one ls-remote, a claim only when the
+                                           ref moved or a cached entry is claimable here, then the poll job
+                                           kept or booted out
+    dispatch-queue jobs CTX                the queue-sweep job installed where a home is (its plist rewritten
+                                           only when it differs), both jobs removed where none is
     dispatch-queue list [--all] [--json] [--status]
     dispatch-queue cancel --repo R --branch B
     dispatch-queue waiting|started|refused|failed QID [--session S] [--why W]   the fire path's word
@@ -22,6 +30,7 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            (the readers' rule: an unreadable queue is "has an entry");
                                            --elsewhere: only one live on another host
     dispatch-queue reserved [--except QID] the slots this host's claims hold before their records (held())
+    dispatch-queue unreserve QID [--label L]   a stale job's reservation given back at its exit
     Every verb: exit 5 for a crash, never 1, which dispatch reads as "the queue alone refused it".
     dispatch-queue mine QID [--label L]    the fired job's check: still its claim? exit 0 yes, 3 no, 4 unreadable
   CTX: --host H --cap N --jobbin PATH --prefix P [--launchctl CMD] [--rch CMD]
@@ -31,7 +40,21 @@ The home: `wharf-runs/queue-repo` in the regatta config dir, set on purpose (`of
 reaches the repo by (the live case proved git@). No home: no queue, and dispatch runs as before it. Until
 S2 brings the watcher's claim at a run's end and the sweep job, nothing else turns the queue on: S1 fell
 back to `helm/logbook-repo`, which every Mac has, and so would have queued fleet-wide with nothing to
-start a queued entry but some unrelated dispatch (the landing review's item 15). S2 restores the fallback.
+start a queued entry but some unrelated dispatch (the landing review's item 15). S2's first half brings
+the claim at a run's end and the sweep, but not the fallback: with it, landing would switch the queue on
+on every Mac before S3 gives the callers their words; the dispatch-queue session switches it on.
+
+What starts a queued entry (S2, docs/dispatch-queue-kick-2026-10-25.md "The polls, bounded"): the
+dispatch call that enqueues it, with room here; a slot freeing here — the watcher claims when its run
+turns parked (warm or waiting: no longer counted) and the fire path when its run ends (dispatch-rc's
+queue_claim); the queue-sweep job, every SWEEP seconds on every host with a home (`jobs` installs it at
+each dispatch here, beside the tidier; `regatta check` fails a host with a home and no sweep); and the
+pending poll, a POLL-second job loaded only on a host no kick road reaches (`wharf-runs/kick-roads`;
+absent, no road reaches any host), with room, while the fleet ref holds an entry it may yet take, and
+booted out once the ref holds none or this host is full (its runs' ends claim then). G3's event_at:
+the claim stamps it — the later of the entry's queue time and the slot's freeing (the watcher's
+--event-at, else the last end recorded here) — and the run's `started` line in queue.jsonl carries it
+beside its `wait_s`.
 
 The ref, `refs/regatta/queue`, is no branch: no PR, CI or protection reads it. Every write is one orphan
 commit (no parent, so the ref never grows) of the whole tree, pushed `--force-with-lease=<ref>:<the sha
@@ -65,6 +88,7 @@ import random
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -78,6 +102,9 @@ import common  # noqa: E402
 REF = "refs/regatta/queue"
 LEASE = 15 * 60          # a claim with no record yet is the claimer's for this long (the ref component)
 SWEEP = 10 * 60          # every host's sweep; an entry silent two sweeps is a card
+POLL = 60                # the pending poll's interval, on a host no kick road reaches (S2)
+SPENT = 120              # a reservation whose job's plist is gone, whose job is not running and whose claimer
+                         # has exited is spent this long after its claim: the job exited before its record
 SKIP = 3600              # a host that refused an entry at fire time skips it this long
 LOW_AGE = 2 * 3600       # a `low` entry older than this ranks as normal
 TRIES = 3
@@ -217,6 +244,7 @@ class Fleet:
         self.clone = qdir() / "clone.git"
         self.offline = None   # why the last fetch failed, once one did
         self.write_refused = None   # the home's own no to the last do()'s push (push's "refused")
+        self.contended = False      # the last do() lost the lease TRIES times while the home answered
 
     def git(self, *args, input=None, timeout=60):
         try:
@@ -252,7 +280,9 @@ class Fleet:
                     raise Unreachable("this host's queue clone is busy (another queue call held it %d s)" % wait)
                 time.sleep(0.2)
 
-    def fetch(self, timeout=60):
+    def fetch(self, timeout=30):
+        # 30 s, not a minute: a fetch of one small ref answers in a second or two, and a hanging home cost an
+        # enqueue its whole timeout (once: _DOWN; the first review's item 10)
         down = _DOWN.get(self.url)
         if down and time.monotonic() - down[0] < DOWN_S:
             self.offline = down[1]
@@ -292,22 +322,48 @@ class Fleet:
             raise Torn("the tree of %s does not list (%s)" % (sha[:10], (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]))
         names = [n for n in r.stdout.splitlines() if n.endswith(".json")]
         out = {}
+        if not names:
+            return out
+        # every entry through one `cat-file --batch`, not a process each (the fourth review's item 15):
+        # each answer is "<sha> blob <size>\n<bytes>\n", in the order asked, or "<name> missing"
+        try:
+            b = subprocess.run(["git", "--git-dir=%s" % self.clone, "cat-file", "--batch"], capture_output=True, env=_env(),
+                               input="".join("%s:%s\n" % (sha, n) for n in names).encode(), timeout=60)
+        except subprocess.TimeoutExpired:
+            raise Torn("the entries of %s did not read in 60 s" % sha[:10])
+        buf, i = b.stdout, 0
         for n in names:
-            r = self.git("cat-file", "blob", "%s:%s" % (sha, n))
             try:
-                e = json.loads(r.stdout)
-                assert isinstance(e, dict) and r.returncode == 0
-            except (ValueError, AssertionError):
+                assert b.returncode == 0
+                j = buf.index(b"\n", i)
+                head = buf[i:j].split()
+                assert len(head) == 3 and head[1] == b"blob"
+                size = int(head[2])
+                e = json.loads(buf[j + 1:j + 1 + size].decode("utf-8"))
+                assert isinstance(e, dict)
+            except (ValueError, AssertionError, UnicodeDecodeError):
                 raise Torn("%s in %s does not parse" % (n, sha[:10]))
+            i = j + 1 + size + 1
             out[n[len("queue/"):-len(".json")]] = e
         return out
 
     def write(self, entries, why):
         """The commit of ENTRIES, every step checked (_sha): Unreachable, never an empty sha."""
         lines = []
-        for k in sorted(entries):
-            blob = _sha(self.git("hash-object", "-w", "--stdin", input=json.dumps(entries[k], indent=1, sort_keys=True) + "\n"), "an entry")
-            lines.append("100644 blob %s\t%s.json" % (blob, k))
+        keys = sorted(entries)
+        if keys:
+            # one `hash-object --stdin-paths` for every entry, not a process each (the fourth review's item 15)
+            with tempfile.TemporaryDirectory(prefix="queue-write.") as d:
+                paths = []
+                for i, k in enumerate(keys):
+                    paths.append(os.path.join(d, "%d.json" % i))
+                    with open(paths[-1], "w") as f:
+                        f.write(json.dumps(entries[k], indent=1, sort_keys=True) + "\n")
+                r = self.git("hash-object", "-w", "--stdin-paths", input="\n".join(paths) + "\n")
+            blobs = r.stdout.split()
+            if r.returncode != 0 or len(blobs) != len(keys) or not all(SHA.fullmatch(x) for x in blobs):
+                raise Unreachable("the cache clone could not write the entries (%s)" % ((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]))
+            lines = ["100644 blob %s\t%s.json" % (b, k) for b, k in zip(blobs, keys)]
         if lines:
             sub = _sha(self.git("mktree", input="\n".join(lines) + "\n"), "the queue's tree")
             root = _sha(self.git("mktree", input="040000 tree %s\tqueue\n" % sub), "the root tree")
@@ -349,7 +405,7 @@ class Fleet:
         """A fresh read; Unreachable or Torn when there is none to be had."""
         return self.read(self.fetch())
 
-    def view(self, timeout=60):
+    def view(self, timeout=30):
         """(entries, offline-why): fresh when the home answers, else the last fetch with the outbox laid
         over it — for a local decision only, never for a claim of what others may hold. What this process
         itself wrote or read in a CAS round seconds ago counts as fresh: a claim re-reads in its own round."""
@@ -367,6 +423,7 @@ class Fleet:
         False, Unreachable instead — a claim never rests on a write the home has not taken."""
         last = ""
         self.write_refused = None
+        self.contended = False
         _FRESH.pop(self.url, None)
         for i in range(TRIES):
             try:
@@ -395,6 +452,12 @@ class Fleet:
                     self.write_refused = text
                 break
             time.sleep(random.uniform(0.2, 0.8) * (i + 1))
+        else:
+            # every round lost the lease while the home answered: the ops go to the outbox like an offline
+            # write's, and say so — enqueue read this as online and dispatch said "queued … no room"
+            # with no word of the outbox (the fourth review's item 11)
+            self.contended = True
+            self.offline = "the lease lost %d times (other hosts writing): %s" % (TRIES, (last.splitlines() or [""])[-1][:160])
         if not defer:
             raise Unreachable(last)
         view = apply_all(self.read(self.cached()), outbox_ops())
@@ -550,6 +613,8 @@ def apply_op(entries, op):
             return False, "busy on %s" % on
         cur.update(state="claimed", claimed_by=h, claimed_at=op["at"], running_on=h, seen_at=op["at"],
                    attempts=int(cur.get("attempts") or 0) + 1, session="")
+        if op.get("event_at"):
+            cur["event_at"] = op["event_at"]   # G3: what made it startable (claim()'s stamp)
         cur.pop("job", None)
         if op.get("job"):
             cur["job"] = op["job"]
@@ -629,10 +694,12 @@ def outbox_only(key):
 
 def flush(fleet):
     """The outbox in one CAS round, oldest first, each op as conditional as when it was written. A put
-    older than OUTBOX_TTL is dropped (logged), never written onto a branch that has moved on since."""
+    older than OUTBOX_TTL is dropped (logged), never written onto a branch that has moved on since.
+    [(op, result)] of the ops the home answered ([] when none was sent): an op that came back stale is
+    dropped, and a caller waiting on its own put reads why (S2a's landing review, item 5)."""
     files = outbox_files()
     if not files:
-        return
+        return []
     ops, keep = [], []
     for p in files:
         try:
@@ -647,15 +714,21 @@ def flush(fleet):
         ops.append(op)
         keep.append(p)
     if not ops:
-        return
+        return []
     try:
         res = fleet.do(ops, "outbox of %s" % host_name(), defer=False)
     except (Unreachable, Torn):   # a torn ref: the outbox waits, and the caller's own read says so
-        return
+        return []
     for p, op, r in zip(keep, ops, res):
         p.unlink(missing_ok=True)
-        if r in ("moved", "taken", "gone") or r.startswith(("busy", "clash", "claimed here")):
+        if stale(r):
             event("outbox-stale", key=op.get("key"), op=op.get("op"), result=r)
+    return list(zip(ops, res))
+
+
+def stale(r):
+    """An op's result that wrote nothing: what it was conditional on has moved on, or the key is held."""
+    return r in ("moved", "taken", "gone") or r.startswith(("busy", "clash", "claimed here"))
 
 
 # ---- this host ----------------------------------------------------------------------------------------
@@ -711,11 +784,29 @@ def reservations(launchctl="launchctl"):
             if any(x.get("queue") == r["qid"] and int(x.get("started") or 0) >= int(r.get("at") or 0) for x in recs):
                 p.unlink(missing_ok=True)
                 continue
-        if now() - int(r.get("at") or 0) < LEASE or job_running(launchctl, r.get("label")):
+        age = now() - int(r.get("at") or 0)
+        if job_running(launchctl, r.get("label")):
+            out[p.stem] = r
+        elif age < LEASE and not (age >= SPENT and r.get("label") and not (agents() / ("%s.plist" % r["label"])).exists()
+                                  and not claimer_alive(r)):
             out[p.stem] = r
         else:
+            # past the lease; or its job exited before its record (a stale job, a failure: its cleanup
+            # removes its plist), which held its slot until the lease (the first review's item 10)
             p.unlink(missing_ok=True)
     return out
+
+
+def claimer_alive(r):
+    """The process that wrote reservation R still runs: its claim is in flight. claim() stamps `at` before its
+    CAS round (a fetch, a push, up to three tries) and start_job writes the plist after it, so a slow round
+    passed SPENT with no plist yet, and another claimer gave the slot back and took one past the cap (S2a's
+    finish review). A reused pid holds the slot until the lease, never past it: the safe side."""
+    try:
+        pid = int(r.get("pid"))
+    except (TypeError, ValueError):
+        return False
+    return rc_mod().alive(pid)
 
 
 def _reswrite(qid, tag, r):
@@ -807,7 +898,7 @@ def start_lock(wait=150):
                 old = time.time() - d.stat().st_mtime > 120
             except OSError:
                 continue   # dropped meanwhile: take it
-            if (h and not alive(h)) or (not h and old):
+            if (h and not rc_mod().alive(h)) or (not h and old):
                 try:
                     cur = (d / "pid").read_text().strip()
                 except OSError:
@@ -941,6 +1032,24 @@ def job_label(ctx, e):
                                       time.strftime("%Y%m%d%H%M%S", time.localtime(now())))
 
 
+def agents():
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def program(ctx, args):
+    """dispatch ARGS as a launchd job of this host runs it: dispatch's own launchd path (ctx.jobbin, the
+    main checkout's or the overlay's), through its launcher where rc-hosts names one (ctx.rch)."""
+    out = [ctx.jobbin] + list(args)
+    if ctx.rch:
+        try:
+            lr = subprocess.run([ctx.rch, "--launcher", ctx.jobbin], capture_output=True, text=True, timeout=20)
+            if lr.returncode == 0 and lr.stdout.strip():
+                out = [lr.stdout.strip()] + out
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return out
+
+
 def start_job(ctx, store, key, e, label):
     """The claimed entry's fire path, as a launchd job that runs at load (RunAtLoad): dispatch BRANCH
     --repo R <the entry's flags> --from-queue STORE:KEY, its log and depth as a one-shot's. (label, log)."""
@@ -950,20 +1059,16 @@ def start_job(ctx, store, key, e, label):
     # dispatch's own log for the entry it just enqueued (its --next confirms from it), else the day's
     log = getattr(ctx, "log", None) if getattr(ctx, "own", None) == qid and getattr(ctx, "log", None) else \
         str(logdir() / ("%s-dispatch-%s.log" % (time.strftime("%Y-%m-%d"), topic)))
-    args = [ctx.jobbin, e["branch"], "--repo", repo] + list(e.get("args") or []) + ["--from-queue", qid]
-    if ctx.rch:
-        try:
-            lr = subprocess.run([ctx.rch, "--launcher", ctx.jobbin], capture_output=True, text=True, timeout=20)
-            if lr.returncode == 0 and lr.stdout.strip():
-                args = [lr.stdout.strip()] + args
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    env = {"DISPATCH_LABEL": label, "DISPATCH_LOG": log, "DISPATCH_YEAR": time.strftime("%Y"),
-           "DISPATCH_LOADED_AT": str(now())}
+    args = program(ctx, [e["branch"], "--repo", repo] + list(e.get("args") or []) + ["--from-queue", qid])
+    # no DISPATCH_YEAR: a RunAtLoad job runs at once, and the year guard failed a claim made in the last
+    # seconds of a year (the first review's item 6); a stale plist is `mine`'s to judge
+    env = {"DISPATCH_LABEL": label, "DISPATCH_LOG": log, "DISPATCH_LOADED_AT": str(now())}
+    if e.get("event_at"):
+        env["DISPATCH_EVENT_AT"] = str(int(e["event_at"]))   # G3's start, for the run's `started` line
     env.update({k: str(v) for k, v in (e.get("env") or {}).items()})
     plist = {"Label": label, "ProgramArguments": args, "EnvironmentVariables": env, "RunAtLoad": True,
              "StandardOutPath": log, "StandardErrorPath": log}
-    la = Path.home() / "Library" / "LaunchAgents"
+    la = agents()
     la.mkdir(parents=True, exist_ok=True)
     Path(log).parent.mkdir(parents=True, exist_ok=True)
     p = la / ("%s.plist" % label)
@@ -1020,7 +1125,11 @@ def claim(ctx, out=None):
     claims_dir().mkdir(parents=True, exist_ok=True)
     tag = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:8])
     full, no_room = None, []
-    open_topics = {r.get("topic") for r in records() if not r.get("ended")}
+    recs = records()
+    open_topics = {r.get("topic") for r in recs if not r.get("ended")}
+    # G3's event: when the slot this claim fills freed — the watcher's word (--event-at: its run turned
+    # parked or ended), else the last end recorded here; an entry queued later is its own event
+    freed = getattr(ctx, "event_at", None) or max([int(r.get("ended") or 0) for r in recs] or [0])
     for _, s, k, e, alone in cands:
         qid = "%s:%s" % (s.name, k)
         # a live run's own --next waits for that run, which its count leaves out, so it may fit where an
@@ -1054,7 +1163,7 @@ def claim(ctx, out=None):
             res = {"qid": qid, "at": t, "label": label, "pid": os.getpid(), "repo": rp, "topic": tp}
             # a --next of a live run is counted as waiting from the claim, not from its job's `waiting` word:
             # until then every other fire path counted the earlier run and this one both (the fourth review)
-            if own and rc_mod().unfinished(rp, tp):
+            if own and rc_mod().unfinished(rp, tp, reap=False):
                 res["waiting"] = True
             _reswrite(qid, tag, res)
         finally:
@@ -1063,7 +1172,8 @@ def claim(ctx, out=None):
         # claim holds only for the entry looked at (its id: a put that replaced it meanwhile has other flags
         # and pin), and only once the home took it — a claim parked in the outbox while another host's
         # landed started one entry twice (the review's item 2), bar the entry only this host has seen
-        op = {"op": "claim", "key": k, "host": h, "at": t, "job": label, "cond": {"id": e.get("id")}}
+        ev = max(int(e.get("queued_at") or 0), int(freed or 0)) or t
+        op = {"op": "claim", "key": k, "host": h, "at": t, "job": label, "cond": {"id": e.get("id")}, "event_at": ev}
         try:
             r = s.do([op], "claim %s by %s" % (k, h), defer=alone or not isinstance(s, Fleet))[0]
         except (Unreachable, Torn) as x:   # Torn: the ref torn between the view and the CAS (item 7)
@@ -1074,7 +1184,7 @@ def claim(ctx, out=None):
             unreserve(qid, tag)
             continue
         try:
-            label, log = start_job(ctx, s, k, e, label)
+            label, log = start_job(ctx, s, k, dict(e, event_at=ev), label)
         except (Refused, OSError, subprocess.SubprocessError) as x:
             unreserve(qid, tag)
             s.do([{"op": "refuse", "key": k, "host": h, "at": now(), "why": str(x), "cond": {"claimed_by": h, "claimed_at": t},
@@ -1083,7 +1193,7 @@ def claim(ctx, out=None):
             event("start-failed", key=qid, host=h, why=str(x))
             continue
         event("claimed", key=qid, host=h, label=label, priority=e.get("priority"), queued_at=e.get("queued_at"),
-              event_at=e.get("event_at") or e.get("queued_at"))
+              event_at=ev, claim_s=t - ev)
         out.append((qid, label, log))
     if no_room:
         event("no-room", host=h, keys=no_room, busy=full, cap=ctx.cap)
@@ -1184,19 +1294,44 @@ def flag_values(args, flag):
     return [args[i + 1] for i, f in enumerate(args[:-1]) if f == flag]
 
 
+def callers_mode(repo, branch):
+    """The mode the unattended caller's own run on BRANCH of REPO was started at, or None: a record here
+    of its session (dispatch gave the session its id) that names that branch and has not ended, read for
+    its `task_mode` (dispatch writes it from the mode it judged). No session id, no record, no mode: None,
+    so the hint is judged. Never the caller's DISPATCH_MODE: that is its own word, and a run that set it
+    could raise itself (S2a's finish review, its S1)."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if not sid:
+        return None
+    m = rc_mod()
+    for r in records():
+        if r.get("session") == sid and r.get("branch") == branch and not r.get("ended") and m.same_repo(r.get("repo"), repo):
+            return r.get("task_mode") or None
+    return None
+
+
 def raise_refusal(args, env, prio, repo, branch):
     """Why an unattended caller may not enqueue this, or None: dispatch's two raise checks, here too, since
     `dispatch-queue enqueue` is on the Bash PATH — a priority above normal, and a mode above the
     branch's (helmlib.raise_refusal, as dispatch asks it; without helm, the caller's DISPATCH_MODE,
     failing closed). The trap: a flag that stands for a person's yes refuses an unattended caller (the
     review's item 1). Every mode the line names is judged — each --mode, --yolo, the env's — never the
-    first alone (the third review's item 1)."""
+    first alone (the third review's item 1). The env's DISPATCH_MODE is the plist's hint, which a --next
+    inherits from its own run (dispatch passes --mode only when one was given): the caller's own mode, onto
+    the caller's own branch, is no raise, and judging it refused a dnd run's --next under a lowered ship,
+    which the one-shot runs at the lowered mode (the fourth review's item 12). Onto any other branch it is
+    judged, as main did: a dnd run could otherwise raise a sibling the owner lowered (S2a's landing review,
+    item 4). The caller's own mode is its run record's (the session's id), never its word: the env's
+    DISPATCH_MODE is the caller's to set (S2a's finish review, its S1). A hint unlike the record's, or yolo (never inherited), is judged as a --mode is."""
     if not os.environ.get("CLAUDE_UNATTENDED"):
         return None
     prios = [prio] + flag_values(args, "--priority")
     if any(p in ("high", "force") for p in prios):
         return "--priority %s is a raise, and an unattended caller never raises a run's priority" % next(p for p in prios if p in ("high", "force"))
-    modes = [m for m in flag_values(args, "--mode") + (["yolo"] if "--yolo" in args else []) + [env.get("DISPATCH_MODE") or ""] if m]
+    modes = flag_values(args, "--mode") + (["yolo"] if "--yolo" in args else [])
+    hint = env.get("DISPATCH_MODE") or ""
+    if hint and (hint == "yolo" or hint != callers_mode(repo, branch)):
+        modes.append(hint)
     for mode in modes:
         try:
             p = common.tool("helmlib.py")
@@ -1236,17 +1371,19 @@ def cmd_enqueue(a, ctx):
         env["DISPATCH_DEPTH"] = str(chain_depth(env))
     why = raise_refusal(args, env, a.priority, repo, a.branch)
     if why:
-        raise Refused("dispatch: %s" % why)
+        # the cap's waiting words, so a managed run that ends on it is not held at Stop for an ask it never
+        # relayed (AGENTS.md: a new dispatch refusal reuses them; the fourth review's item 12)
+        raise Refused("dispatch: %s — refused: end with the WAITING line — the next step waits for a run to end and for %s "
+                      "to raise it (a dispatch by hand)" % (why, getattr(common, "OWNER_NAME", "") or "the owner"))
     store, confined = route(a.repo, a.branch, a.cwd or os.getcwd())
     if isinstance(store, Fleet):
         flush(store)
     k = key_of(repo, a.branch)
     # the mode the claim's yolo/dnd rule reads: --mode's, else the plist's hint, else --yolo's
-    mode = next((args[i + 1] for i, f in enumerate(args[:-1]) if f == "--mode"), "") or env.get("DISPATCH_MODE") or \
-        ("yolo" if "--yolo" in args else "")
+    mode = (flag_values(args, "--mode") or [""])[0] or env.get("DISPATCH_MODE") or ("yolo" if "--yolo" in args else "")
     # a login label is one host's (dispatch's --next names this Mac's): another host cannot run it, and
     # its pick's "not set up on this machine" would end the step as failed (the review's item 20)
-    acct = next((args[i + 1] for i, f in enumerate(args[:-1]) if f == "--account"), "")
+    acct = (flag_values(args, "--account") or [""])[0]
     pin = (a.pin or "").lower() or (h if acct and acct not in ("auto", "bound") else "")
     t = now()
     e = {"id": uuid.uuid4().hex, "key": k, "repo": repo_word(repo), "branch": a.branch, "topic": topic_of(a.branch),
@@ -1277,6 +1414,17 @@ def cmd_enqueue(a, ctx):
                 p.unlink(missing_ok=True)
         event("write-refused", key="%s:%s" % (store.name, k), host=h, why=refused)
         raise Refused("dispatch-queue: the home refused this host's write (%s) — a one-shot, as before the queue" % refused, 1)
+    if getattr(store, "contended", False):
+        # a put that lost the lease three times while the home answered waited for the next flush, which
+        # in S1 was some later queue call (the first review's item 5): once more now, after a pause
+        time.sleep(random.uniform(0.5, 1.5))
+        for o, got in flush(store):
+            # the home answered for this put: as its first round would have. One dropped as stale (busy, a
+            # clash, claimed here) is said by the roads below, never "queued" over a put the outbox let go
+            if o.get("op") == "put" and o.get("key") == k and (o.get("entry") or {}).get("id") == e["id"]:
+                r = got
+        if not any(o.get("op") == "put" and o.get("key") == k and (o.get("entry") or {}).get("id") == e["id"] for o in outbox_ops()):
+            store.offline = None
     if r == "claimed here":
         # in hand, unless that claim is dead: then this put replaces it (the second review's item 10).
         # Any error in judging that is "not dead": an uncaught one exited 1, which dispatch reads as "the
@@ -1319,6 +1467,7 @@ def cmd_enqueue(a, ctx):
             out["log"] = next((lg for q, _, lg in got if q == out["qid"]), None)
             if out["qid"] not in out["claimed"]:
                 out["no_room"] = getattr(ctx, "no_room", None)
+            poll_tend(ctx)
     except Exception as x:   # any: an exit 1 here would read as "the queue refused it" (AGENTS.md's exit-1 trap)
         out["claimed"] = out["claimed"] or []
         out["error"] = "%s: %s" % (type(x).__name__, x)
@@ -1333,6 +1482,7 @@ def cmd_claim(a, ctx):
             flush(s)
     for qid, label, log in claim(ctx):
         print("claimed %s: job %s, log %s" % (qid, label, log))
+    poll_tend(ctx)
     return 0
 
 
@@ -1344,14 +1494,6 @@ def records():
         except (OSError, ValueError):
             continue
     return out
-
-
-def alive(pid):
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
 
 
 _RC = []
@@ -1366,6 +1508,7 @@ def rc_mod():
         ld = SourceFileLoader("dispatch_rc", str(HERE / "dispatch-rc"))
         m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
         ld.exec_module(m)
+        m.CLAIM_AT_END = False   # a run ended in this process is claimed for by this process (dispatch-rc's note)
         _RC.append(m)
     return _RC[0]
 
@@ -1382,7 +1525,7 @@ def rec_alive(r):
     m = rc_mod()
     if r.get("proc_start") and m.running(pid, r["proc_start"]):
         return True
-    if not r.get("proc_start") and alive(pid):
+    if not r.get("proc_start") and m.alive(pid):
         return True
     return isinstance(r.get("watcher"), int) and not m.watcher_gone(r)
 
@@ -1432,7 +1575,7 @@ def card(kind, qid, e, why):
 def cmd_sweep(a, ctx):
     """The outbox, this host's own entries reconciled against its records (the claimer alone returns its
     own claim), other hosts' silent claims carded (never re-claimed: an unmoved tip proves nothing), then
-    a claim. The 10-minute job that runs it on every host is S2's."""
+    a claim — every SWEEP seconds from the queue-sweep job (`jobs` installs it), by hand `dispatch --sweep`."""
     h = host_name()
     recs = records()
     for s in stores():
@@ -1451,8 +1594,7 @@ def cmd_sweep(a, ctx):
             st = e.get("state")
             mine = (e.get("running_on") or "").lower() == h
             if st in LIVE and mine:
-                rec = next((r for r in recs if (e.get("session") and r.get("session") == e.get("session"))
-                            or (r.get("queue") == qid and int(r.get("started") or 0) >= int(e.get("claimed_at") or 0))), None)
+                rec = run_of(qid, e, recs)
                 cond = {"running_on": e.get("running_on"), "claimed_at": e.get("claimed_at")}
                 if rec and rec.get("ended"):
                     ops.append({"op": "remove", "key": k, "cond": dict(cond, session=rec.get("session"))
@@ -1503,10 +1645,11 @@ def cmd_sweep(a, ctx):
                 s.git("-c", "gc.auto=1000", "gc", "--auto", "-q", timeout=120)
     for qid, label, log in claim(ctx):
         print("claimed %s: job %s, log %s" % (qid, label, log))
+    poll_tend(ctx)
     return 0
 
 
-def rows(all_=False, timeout=60):
+def rows(all_=False, timeout=30):
     """([(store, key, entry)], [unreadable why]) — every store's entries; unless ALL, those of a repo cloned
     here and those live on this host (what this host could ever run, and what it runs)."""
     h = host_name()
@@ -1534,7 +1677,7 @@ def ago(t):
 def cmd_list(a, ctx):
     try:
         # --status rides on every `dispatch --status`: an offline home costs it 10 s, not a minute
-        rs, bad = rows(a.all, 10 if a.status else 60)
+        rs, bad = rows(a.all, 10 if a.status else 30)
     except Torn as x:
         rs, bad = [], [str(x)]
     if a.json:
@@ -1586,7 +1729,7 @@ def boot_job(ctx, label):
     if not label:
         return
     subprocess.run([ctx.launchctl, "bootout", "gui/%d/%s" % (os.getuid(), label)], capture_output=True)
-    (Path.home() / "Library" / "LaunchAgents" / ("%s.plist" % label)).unlink(missing_ok=True)
+    (agents() / ("%s.plist" % label)).unlink(missing_ok=True)
 
 
 def cmd_cancel(a, ctx):
@@ -1711,7 +1854,10 @@ def cmd_fire(a, ctx):
         unreserve(a.qid, label=a.label)
         r = s.do([{"op": "set", "key": k, "cond": cond,
                    "fields": {"state": "running", "session": a.session or "", "started": now(), "seen_at": now()}}], "running %s on %s" % (k, h))[0]
-        event("started", key=a.qid, host=h, session=a.session, loaded_at=os.environ.get("DISPATCH_LOADED_AT"))
+        ev = os.environ.get("DISPATCH_EVENT_AT") or ""
+        # G3 in one line: the seconds from what made the entry startable to its run's record (S7 reads it)
+        event("started", key=a.qid, host=h, session=a.session, loaded_at=os.environ.get("DISPATCH_LOADED_AT"),
+              event_at=int(ev) if ev.isdigit() else None, wait_s=now() - int(ev) if ev.isdigit() else None)
     elif a.verb == "refused":
         unreserve(a.qid, label=a.label)
         r = s.do([{"op": "refuse", "key": k, "host": h, "at": now(), "why": a.why or "refused", "cond": cond,
@@ -1792,6 +1938,185 @@ def cmd_has(a, ctx):
     return 0
 
 
+# ---- the jobs: the sweep on every host with a home, the pending poll while entries pend (S2) ------------
+
+def job_labels(ctx):
+    return ctx.prefix + ".queue-sweep", ctx.prefix + ".queue-poll"
+
+
+def job_plist(ctx, label, verb, every):
+    """A StartInterval job running `dispatch --VERB` as this host's launchd runs dispatch (program()): the
+    queue context is dispatch's to give (the cap, the prefix, the launcher), so the job asks dispatch."""
+    log = str(logdir() / "queue-jobs.log")
+    return {"Label": label, "ProgramArguments": program(ctx, ["--" + verb]),
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin" % Path.home()},
+            "StartInterval": every, "ProcessType": "Background", "StandardOutPath": log, "StandardErrorPath": log}
+
+
+def job_loaded(ctx, label):
+    """launchd holds LABEL's job in this user's domain (`launchctl print` answers for it); None when it could
+    not tell (a launchctl past its 10 s on a loaded Mac): read as loaded, so a running sweep is never booted
+    out mid-pass for a slow answer (S2a's finish review)."""
+    try:
+        return subprocess.run([ctx.launchctl, "print", "gui/%d/%s" % (os.getuid(), label)],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def job_load(ctx, plist):
+    """PLIST's job loaded, rewritten only when its file differs or launchd does not hold it: True when it
+    loaded it now. False when nothing changed, or when the load failed: then the plist is removed, so the
+    next `jobs` or poll pass tries again and `regatta check` reports no job (S2a's landing review, item 3:
+    a plist left on disk unloaded was never retried, and the check read the file as the job). Never from
+    inside that job (a bootout of a running job ends it): `jobs` runs from dispatch, the poll's own pass
+    only ever boots the poll out, as its last act."""
+    label = plist["Label"]
+    if os.environ.get("XPC_SERVICE_NAME") == label:
+        return False   # launchd names the job a process runs in: never reload the job this pass runs in
+    p = agents() / ("%s.plist" % label)
+    try:
+        if p.exists() and plistlib.loads(p.read_bytes()) == plist and job_loaded(ctx, label) is not False:
+            return False
+    except Exception:
+        pass
+    agents().mkdir(parents=True, exist_ok=True)
+    logdir().mkdir(parents=True, exist_ok=True)
+    dom = "gui/%d" % os.getuid()
+    subprocess.run([ctx.launchctl, "bootout", "%s/%s" % (dom, label)], capture_output=True)
+    with open(p, "wb") as f:
+        plistlib.dump(plist, f)
+    for _ in range(2):
+        if subprocess.run([ctx.launchctl, "bootstrap", dom, str(p)], capture_output=True).returncode == 0:
+            return True
+        time.sleep(2)
+    if job_loaded(ctx, label) is not False:
+        return False   # another pass loaded it between this one's bootout and bootstrap: its plist stays (S2a's finish review)
+    p.unlink(missing_ok=True)
+    event("job-unloaded", label=label, why="launchctl bootstrap failed twice; its plist removed, retried at the next pass")
+    return False
+
+
+def job_out(ctx, label):
+    """LABEL's job booted out and its plist gone; True when there was either. The bootout runs with no plist
+    too (an absent label is a no-op): a job loaded while a racing pass removed its file was left running
+    every minute until logout (S2a's finish review)."""
+    p = agents() / ("%s.plist" % label)
+    had = p.exists()
+    p.unlink(missing_ok=True)
+    r = subprocess.run([ctx.launchctl, "bootout", "gui/%d/%s" % (os.getuid(), label)], capture_output=True)
+    return had or r.returncode == 0
+
+
+def cmd_jobs(a, ctx):
+    """The sweep where a home is, nothing where none is: dispatch runs this at each start beside the
+    tidier's refresh, so a host gets its sweep at its first dispatch once a home is set, and loses both
+    jobs once it is unset. Linux's systemd timer is S7's."""
+    if sys.platform != "darwin":
+        print("queue jobs: no launchd here (a systemd timer is S7's)")
+        return 0
+    sweep, poll = job_labels(ctx)
+    if not home():
+        gone = [l for l in (sweep, poll) if job_out(ctx, l)]
+        if gone:
+            print("queue jobs: no queue home here — removed %s" % ", ".join(gone))
+        return 0
+    if job_load(ctx, job_plist(ctx, sweep, "sweep", SWEEP)):
+        print("queue jobs: %s loaded, every %d min (log %s)" % (sweep, SWEEP // 60, logdir() / "queue-jobs.log"))
+    elif not (agents() / ("%s.plist" % sweep)).exists():
+        print("queue jobs: %s did not load (launchctl bootstrap failed twice); the next dispatch here tries again" % sweep)
+    return 0
+
+
+def reached(h):
+    """A kick road reaches host H: a `wharf-runs/kick-roads` line names it with a road (S2's second half
+    writes them). Absent, or `none`, nothing does, and the pending poll is H's way to hear of room."""
+    for line in common.config_lines("wharf-runs/kick-roads") or []:
+        name, _, roads = line.partition(":")
+        if name.strip().lower() == h and any(r.strip() not in ("", "none") for r in roads.split(",")):
+            return True
+    return False
+
+
+def may_take(e, h):
+    """E is an entry host H may yet take: queued, pinned nowhere else, its repo cloned here. What H cannot
+    take now (its hour's skip, the branch live elsewhere, no room) may become takeable without any event
+    that reaches it; an entry pinned to another host never does."""
+    return e.get("state") == "queued" and (e.get("host") or "").lower() in ("", h) \
+        and (repo_path(e.get("repo") or "/nonexistent") / ".git").exists()
+
+
+def poll_tend(ctx):
+    """The pending poll loaded, or booted out (the kick component's "The polls, bounded", (2)): loaded on a
+    host no road reaches, with room, while the fleet ref (as last fetched here, the outbox laid over it:
+    no network) holds an entry it may yet take; booted out otherwise — an empty queue, or a full host,
+    whose runs' ends claim. 'loaded', 'out', or None for no change. Never raises: a caller's claim stands."""
+    try:
+        if sys.platform != "darwin":
+            return None
+        _, poll = job_labels(ctx)
+        h = host_name()
+        url = home()
+        want = False
+        if url and not reached(h):
+            f = Fleet(url)
+            entries = apply_all(f.read(f.cached()), outbox_ops())
+            if any(may_take(e, h) for e in entries.values()):
+                want = busy(ctx.launchctl) < ctx.cap
+        if want:
+            if job_load(ctx, job_plist(ctx, poll, "poll", POLL)):
+                event("poll-loaded", host=h)
+                return "loaded"
+            return None
+        if (agents() / ("%s.plist" % poll)).exists():
+            event("poll-out", host=h)   # before: from the poll's own pass, the bootout ends this process
+            job_out(ctx, poll)
+            return "out"
+        return None
+    except Exception as x:   # Torn, Unreachable, a launchctl that will not run: the sweep is the bound
+        event("poll-unread", why="%s: %s" % (type(x).__name__, x))
+        return None
+
+
+def cmd_poll(a, ctx):
+    """One pass of the pending poll: `git ls-remote` of the ref (one round trip, no objects); a claim only
+    when the ref moved since this host's last fetch, or an entry it already holds is claimable here now
+    (its hour's skip over, the branch freed, memory back: claimable() and the claim's own room check
+    decide); then the poll kept or booted out (poll_tend). A home that does not answer: the pass does
+    nothing, and the sweep is the bound."""
+    url = home()
+    h = host_name()
+    if not url:
+        poll_tend(ctx)
+        return 0
+    f = Fleet(url)
+    f.ensure()
+    r = f.git("ls-remote", url, REF, timeout=20)
+    if r.returncode != 0:
+        print("queue unreachable: %s" % ((r.stderr.strip().splitlines() or ["ls-remote exit %d" % r.returncode])[-1][:200]))
+        event("poll-unreachable", host=h)
+        return 0
+    sha = (r.stdout.split() or [""])[0]
+    try:
+        seen = apply_all(f.read(f.cached()), outbox_ops())
+    except Torn:
+        seen = {}
+    if sha != f.cached() or outbox_files() or any(not claimable(e, h) for e in seen.values()):
+        flush(f)
+        for qid, label, log in claim(ctx):
+            print("claimed %s: job %s, log %s" % (qid, label, log))
+    poll_tend(ctx)
+    return 0
+
+
+def cmd_unreserve(a, ctx):
+    """A job that ran nothing (a stale claim, `mine` said no) gives its reservation back at once."""
+    if not a.label:
+        raise Refused("dispatch-queue unreserve: --label, so a stale job never frees a newer claim's slot")
+    unreserve(a.qid, label=a.label)
+    return 0
+
+
 def cmd_reserved(a, ctx):
     """The fire path's count beside its runs: held(), the one definition of a reservation that holds a slot."""
     print(len(held(ctx.launchctl, a.except_)))
@@ -1824,7 +2149,10 @@ def main(argv=None):
     e.add_argument("--refused")
     e.add_argument("--claim", action="store_true")
     e.add_argument("--log")
-    for v in ("claim", "sweep"):
+    c = sub.add_parser("claim")
+    ctxargs(c)
+    c.add_argument("--event-at", type=int)
+    for v in ("sweep", "poll", "jobs"):
         ctxargs(sub.add_parser(v))
     li = sub.add_parser("list")
     ctxargs(li)
@@ -1856,6 +2184,10 @@ def main(argv=None):
     ctxargs(m)
     m.add_argument("qid")
     m.add_argument("--label", default="")
+    u = sub.add_parser("unreserve")
+    ctxargs(u)
+    u.add_argument("qid")
+    u.add_argument("--label", default="")
     a = p.parse_args(argv)
     _HOST = (getattr(a, "host", None) or "").lower() or None
     if a.verb == "home":
@@ -1870,6 +2202,12 @@ def main(argv=None):
             return cmd_claim(a, a)
         if a.verb == "sweep":
             return cmd_sweep(a, a)
+        if a.verb == "poll":
+            return cmd_poll(a, a)
+        if a.verb == "jobs":
+            return cmd_jobs(a, a)
+        if a.verb == "unreserve":
+            return cmd_unreserve(a, a)
         if a.verb == "list":
             return cmd_list(a, a)
         if a.verb == "cancel":
