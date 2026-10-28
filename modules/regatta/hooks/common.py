@@ -523,9 +523,11 @@ def scope_paths(name, path=None, home=None):
 
 def scope_match(name, path=None, home=None):
     """A test path -> bool: is it one of scope `name`'s (scope_paths)? Under one of its folders by
-    the path as given or its real path, or a folder under any `projects/` whose name is one of its
-    slugs or starts with one and a `-` — a login dir scope_paths did not list, a worktree already
-    removed. The prefix over-reaches (a repo `<name>-x` beside `<name>`): for a fence that is the
+    the path as given or its real path, or any path part that is one of its slugs or starts with one
+    and a `-`, whatever folder holds it — a login dir scope_paths did not list, a worktree already
+    removed, a session's scratch folder (`<tmp>/claude-<uid>/<slug>/<session>/…`, whose parent is no
+    `projects/`: 11 of a scope's rows were quoted for it, trim-cross-host D2,
+    2026-10-28). The prefix over-reaches (a repo `<name>-x` beside `<name>`): for a fence that is the
     safe side. Never raises."""
     ps = scope_paths(name, path, home)
     roots = {os.path.normpath(str(p)) for p in ps} | {os.path.realpath(p) for p in ps}
@@ -536,9 +538,7 @@ def scope_match(name, path=None, home=None):
             s = os.path.normpath(os.path.expanduser(str(p)))
             if any(c == r or c.startswith(r + os.sep) for c in {s, os.path.realpath(s)} for r in roots):
                 return True
-            parts = Path(s).parts
-            return any(parts[i - 1] == "projects" and any(parts[i] == g or parts[i].startswith(g + "-") for g in slugs)
-                       for i in range(1, len(parts)))
+            return any(c == g or c.startswith(g + "-") for c in Path(s).parts for g in slugs)
         except (OSError, ValueError, TypeError):
             return False
     return match

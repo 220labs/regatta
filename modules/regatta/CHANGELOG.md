@@ -9,6 +9,10 @@
   sed range of helm's suite in a shell whose HOME was the real one, and its `rm -rf "$R"` emptied the build
   Mac's run records; every such delete, in nine suites, now goes through it. A single named file is not
   linted.
+- `scope_match` (so `gather_fence`) matches a scope's slug in any path part, whatever folder holds it, no
+  longer only one under a `projects/` folder: a session's scratch folder (`<tmp>/claude-<uid>/<slug>/…`)
+  is the scope's (trim-cross-host D2, 2026-10-28: 11 of a confidential scope's rows were quoted by the global
+  usage report for it).
 - `common.landed_pr(slug, branch, base=, timeout=5)`: the merged pull request from a head branch at
   any sha (into `base` when given, head.ref checked), while none from it is open (`merged_pr` matches
   one sha); wharf's checkpoint asks it before every push.
