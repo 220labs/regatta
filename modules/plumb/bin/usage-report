@@ -7,6 +7,7 @@
     usage-report branches [--days N]  # fill the branch column of this host's CSVs from the transcripts
                                       # still here (default: 30 days); nothing else in a row changes
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
+    usage-report push                 # copy this host's day CSVs, fenced, to the hosts that cannot pull it (config "push")
     usage-report render [--day D]     # the Markdown report for local day D (default: yesterday), and
                                       # each confidential scope's own in its node
     usage-report line [--day D]       # the one line that goes by iMessage and into the 07:30 digest
@@ -55,7 +56,13 @@ Hosts (D4): each Mac collects its own data into <data>/<host>/, host is a column
 one Mac renders. <data> is the NAS share (config "nas") when it is mounted, else the core's log dir
 (`regatta/log-dir`; outside every repo). Per-host settings — which Mac renders, what it pulls, how
 the line is sent — come from `plumb/usage.json` in the config dir ($USAGE_CONFIG wins), so nothing
-personal lives here (the sparks pattern).
+personal lives here (the sparks pattern). A host the others cannot reach by ssh sends its own folder
+instead (`push`, trim-cross-host, 2026-10-27): every tick, at most once an hour and only when the folder
+changed or the last push failed, so a host that renders elsewhere (trim's night) sees this one's rows.
+It sends the day CSVs alone, without a confidential scope's rows, and with its names blanked from the
+rest: those rows stay on this host. The push is a mirror: the target folder ends holding exactly what
+was sent, bar a day file this host could not read, whose last good copy there is kept; with no day file
+to send it sends nothing.
 
 The fence (the confidential stopgap, 2026-10-26; the full design is the confidential-reach set): a
 row whose project is a confidential scope's (the core's gather_fence, judged by the project's
@@ -178,6 +185,7 @@ def load_config():
         "render": os.environ.get("USAGE_RENDER", "1" if hcfg.get("render") else "0") == "1",
         "render_after": hcfg.get("render_after", "07:05"),
         "pull": hcfg.get("pull", []),
+        "push": hcfg.get("push", []),
         "notify": hcfg.get("notify"),
         "claude_projects": Path(os.environ.get("USAGE_CC", HOME / ".claude/projects")),
         "archive": Path(os.environ.get("USAGE_ARCHIVE", HOME / "projects/transcripts")),
@@ -727,6 +735,167 @@ def cmd_pull(c):
     return ok
 
 
+# ----------------------------------------------------------------------------- push
+
+PUSH_EVERY = dt.timedelta(hours=1)
+
+
+def push_due(c, marker):
+    """A push is due when none ran yet, or an hour has passed since the last one and it failed or the
+    folder changed since. The hour runs on the tick's clock (`at` in the marker); "changed" compares the
+    files' mtimes with the marker's own, both the filesystem's."""
+    try:
+        last = json.loads(marker.read_text())
+        at = dt.datetime.fromisoformat(last["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    if c["tz_now"] - at < PUSH_EVERY:
+        return False
+    if not last.get("ok"):
+        return True
+    since = marker.stat().st_mtime
+    # calls/ alone is sent, so only its change makes a push due (limits.jsonl grows every tick)
+    for root, _, names in os.walk(marker.parent / "calls"):
+        for n in names:
+            f = Path(root) / n
+            if f != marker and f.stat().st_mtime > since:
+                return True
+    return False
+
+
+def push_refused():
+    """Why a push may send nothing, or None. A registry that cannot be read judges no row; and with no
+    registry file at all every row reads as open, which is right for a stranger's install but not where
+    the overlay is installed, whose registry is a link that may simply be missing (trim-cross-host D2)."""
+    if common.registry_unreadable():
+        return "the scope registry cannot be read, so no row can be judged"
+    p = common.repos_json()
+    if common.overlay_installed() and not (p and (p.exists() or p.is_symlink())):
+        return "no scope registry here though the overlay is installed, so no row can be judged"
+    return None
+
+
+def push_copy(src, out):
+    """This host's day CSVs as a push sends them, written under `out`: calls/ alone (trim reads nothing
+    else; limits.jsonl, accounts.jsonl and review-gate.jsonl stay here, and a row's account label is
+    judged as its title is), and
+    each file without the rows the global report would fence (fence_rows: a confidential scope's
+    project, its scratch folder, its group folder, a row of no project while a scope is confidential), nor an
+    open row whose project holds a confidential word (fence_words) anywhere in it. An open row's branch,
+    skill, agent or title holding such a word is blanked, as a substring: names_one's word match misses
+    a hyphen-bounded token, and a branch is all of them (4 rows on one day carried the scope's word in
+    their branch, trim-cross-host D2). Over-reach is the safe side here: what is dropped only leaves trim
+    a row short. Dropped, not blanked: the copy leaves this Mac, and a scope's berth may be this host
+    alone. Each copy keeps its source's mtime, which rsync's quick check cannot trust: a
+    re-fenced day keeps its size when a 14-character title becomes `(confidential)`, so the push
+    compares content (--checksum; a few dozen small files). A dot file is skipped as load_rows' glob skips it (a copy through a NAS left AppleDouble
+    `._<day>.csv` files, 2026-09-22), and a day file that does not parse stays here, named, rather than
+    stopping the tick. Every day is judged in one fence_rows call, which is session-wide: a session
+    fenced on one row or one day is dropped on all of them, its worker's row after a cd included (the
+    landing review), and the registry is read once for the lot. Returns (rows dropped, files kept here), or None when the registry cannot be read
+    (the fence fails closed: nothing is sent)."""
+    if push_refused():
+        return None
+    reg = common.read_registry()
+    if reg[1]:
+        return None
+    fence, dropped, unread, days = common.gather_fence(), 0, [], []
+    words = sorted(w for w in fence_words(reg) if w)
+    hit = lambda v: any(w in (v or "").casefold() for w in words)
+    (out / "calls").mkdir(parents=True, exist_ok=True)
+    for f in sorted(x for x in (src / "calls").glob("*.csv") if not x.name.startswith(".")):
+        try:
+            with f.open(newline="", encoding="utf-8") as fh:
+                rd = csv.DictReader(fh)
+                days.append((f, rd.fieldnames or [], list(rd)))
+        except (OSError, UnicodeDecodeError, csv.Error):
+            unread.append(f.name)
+    # every day in one judgement, so a session fenced on one day is fenced on the others (fence_rows is
+    # session-wide), and a session whose project holds a confidential word goes whole
+    allrows = [r for _, _, rows in days for r in rows]
+    judged = fence_rows([dict(r) for r in allrows], fence)
+    hot = {r.get("session") for r, j in zip(allrows, judged) if r.get("session") and (j.get("project") == CONFIDENTIAL or hit(r.get("project")))}
+    if allrows and all(r.get("session") in hot for r in allrows):
+        return None  # a fence that drops every row reads the registry wrong: the target keeps its copy
+    judged = iter(judged)
+    for f, fields, rows in days:
+        dst = out / "calls" / f.name
+        with dst.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            w.writeheader()
+            for r in rows:
+                j = next(judged)
+                if r.get("session") in hot:
+                    dropped += 1
+                    continue
+                r = dict(r, title=j.get("title", r.get("title")))
+                for k in ("title", "skill", "agent", "branch", "account"):
+                    if k in r and hit(r[k]):
+                        r[k] = "" if k in ("branch", "account") else CONFIDENTIAL
+                w.writerow(r)
+        st = f.stat()
+        os.utime(dst, (st.st_atime, st.st_mtime))
+    return dropped, unread
+
+
+def cmd_push(c, force=False):
+    """rsync <data>/<host>/ to each configured target (`user@host:path/<host>/`), for a host that cannot
+    pull this one: its day CSVs, fenced (push_copy), from a scratch copy. The push is a mirror (--delete):
+    the target folder ends holding exactly what was sent, so a stale copy there from an old pull (limits,
+    accounts, calibration, AppleDouble and marker files, an unfenced day) is removed by the first push
+    (trim-cross-host D2). --delete reaches only the target folder, and a target must end in this host's
+    own folder name: one naming another host's folder would replace its rows and delete the rest. A day
+    file push_copy could not read is excluded, so --delete keeps its last good copy there; and a copy
+    with no day file at all (no calls/, an empty one, only unreadable days) is refused, or the mirror
+    would empty the target (the third review, 2026-10-28). A refusal (push_refused) returns before any rsync. A failure is reported, not retried until the next
+    due tick (an hour). Returns False on a failure."""
+    if not c["push"]:
+        return True
+    src = c["data"] / c["host"]
+    marker = src / ".pushed"
+    if not src.is_dir() or not (force or push_due(c, marker)):
+        return True
+    ok = False
+    try:
+        ok = push_send(c, src)
+    finally:
+        # written on a raise too, so a failing push waits its hour rather than retrying every tick
+        marker.write_text(json.dumps({"at": c["tz_now"].isoformat(), "ok": ok}) + "\n")
+    return ok
+
+
+def push_send(c, src):
+    """cmd_push's sending half: the fenced copy, its refusals, the rsync to each target. True when every
+    target took it."""
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="usage-push-") as tmp:
+        out = Path(tmp) / c["host"]
+        why = push_refused()
+        judged = None if why else push_copy(src, out)
+        if judged is None:
+            print(f"push: REFUSED — {why or 'the scope registry cannot be read, or it fences every row'}; nothing sent")
+            ok = False
+        dropped, unread = judged or (0, [])
+        if unread:
+            print(f"push: {len(unread)} day file(s) did not parse and stay here: {', '.join(unread[:5])}")
+        if ok and not any((out / "calls").glob("*.csv")):
+            print("push: REFUSED — no day file to send; the target keeps its copy")
+            ok = False
+        # anchored at the copy's root, a wildcard in a name escaped: rsync reads *, ? and [ as a pattern
+        keep = [a for n in unread for a in ("--exclude", "/calls/" + re.sub(r"([*?\[\\])", r"\\\1", n))]
+        for dst in c["push"] if ok else ():
+            if dst.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1] != c["host"]:
+                print(f"push {dst}: REFUSED — a target must end in /{c['host']}/, this host's own folder")
+                ok = False
+                continue
+            r = subprocess.run(["rsync", "-a", "--delete", "--checksum", "--timeout=30", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
+                                *keep, str(out) + "/", dst.rstrip("/") + "/"], capture_output=True, text=True)
+            kept = f" ({dropped} confidential row{'s' * (dropped != 1)} kept here)" if dropped else ""
+            print(f"push {dst}: {'ok' + kept if r.returncode == 0 else 'FAILED ' + r.stderr.strip()[:200]}")
+            ok = ok and r.returncode == 0
+    return ok
+
+
 # ----------------------------------------------------------------------------- read back
 
 def load_rows(c, first, last):
@@ -778,6 +947,13 @@ def confidential_names(parsed=None):
     return torn, {n.casefold() for n in scopes}, keys, [str(common.PROJECTS / k) for k in keys]
 
 
+def fence_words(parsed=None):
+    """The casefolded words a text may give a confidential scope away by: each confidential scope's
+    name, each member key and its last part (confidential_names)."""
+    _, hidden, keys, _ = confidential_names(parsed)
+    return hidden | {w.casefold() for k in keys for w in (k, k.rsplit("/", 1)[-1])}
+
+
 def names_one(title, words):
     """True when `title` holds any of `words` (casefolded) as a whole word or path part."""
     t = (title or "").casefold()
@@ -826,16 +1002,23 @@ def fence_rows(rows, fence=None):
     label_scopes(rows, reg or {})
     # a confidential scope by its place in the registry, never its name: a count per scope, no name
     order = [n.casefold() for n, sc in ((reg or {}).get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True]
-    words = hidden | {w.casefold() for k in keys for w in (k, k.rsplit("/", 1)[-1])}
+    words = fence_words((reg, torn))
     seen, nth = {}, {}
-    for r in rows:
+
+    def fenced(r):
         p = r.get("project")
         if p not in seen:
             path = project_path(p)
             seen[p] = fence(path) != "quote" or bool(
                 path and any(x.startswith(path.rstrip("/") + "/") for x in roots))
         # a glob member the registry does not list is a confidential scope's row too (open-quoted by the core)
-        if seen[p] or torn or r["scope"].casefold() in hidden:
+        return seen[p] or torn or r["scope"].casefold() in hidden
+
+    # session-wide: a session's title and branch ride on every row it has, so one fenced row (its main
+    # row in the scope's checkout) fences the rest, a worker's row after a cd included (the landing review)
+    hot = {r.get("session") for r in rows if r.get("session") and fenced(r)}
+    for r in rows:
+        if r.get("session") in hot or fenced(r):
             # numbered per session, so "By session" and the line's Biggest never sum several into one
             n = nth.setdefault(r.get("session"), len(nth) + 1)
             r.update(project=CONFIDENTIAL, title="(confidential #%d)" % n, scope=fenced_scope(r["scope"], order, torn))
@@ -1781,6 +1964,12 @@ def cmd_tick(c):
             filled.touch()
         except Exception as ex:  # the daily report goes out regardless; the next tick tries again
             print(f"branches: FAILED {ex}")
+    # after collect, so what it wrote goes with this push (collect itself may run once a day); a failure (rsync missing included) is
+    # the line it prints, never the tick's
+    try:
+        cmd_push(c)
+    except Exception as ex:
+        print(f"push: FAILED {ex}")
     if not c["render"]:
         print(f"tick {c['host']}: {n} new sample(s); this host does not render")
         return
@@ -1817,6 +2006,7 @@ def main(argv=None):
     p = sub.add_parser("branches")
     p.add_argument("--days", type=int, default=30)
     sub.add_parser("pull")
+    sub.add_parser("push")
     for name in ("render", "line"):
         p = sub.add_parser(name)
         p.add_argument("--day")
@@ -1838,6 +2028,8 @@ def main(argv=None):
         cmd_branches(c, a.days)
     elif a.cmd == "pull":
         return 0 if cmd_pull(c) else 1
+    elif a.cmd == "push":
+        return 0 if cmd_push(c, force=True) else 1
     elif a.cmd == "render":
         cmd_render(c, a.day or yesterday)
     elif a.cmd == "line":

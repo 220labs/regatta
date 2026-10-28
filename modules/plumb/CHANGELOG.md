@@ -3,6 +3,28 @@
 ## Unreleased
 
 - trim.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
+- `usage-report push` and a per-host `push` list in `plumb/usage.json` (trim-cross-host, 2026-10-27): a
+  host the others cannot reach by ssh rsyncs its own `<data>/<host>/` to each target (`user@host:path/<host>/`),
+  with pull's flags. The tick runs it after collect, at most once an hour, and only when the folder changed
+  since the last push or that push failed; a failure is a `push …: FAILED` line, never the tick's. A target
+  whose last folder is not this host's own name is refused (it would overwrite another host's day files).
+  `push` by hand runs at once and exits 1 on a failure. A host without the key does nothing.
+  It sends a scratch copy of the day CSVs alone (`calls/`; limits, accounts and the review gate's log stay),
+  each without a row the global report would fence — a confidential scope's project or its group folder —
+  and with an open title naming such a scope blanked; a torn registry sends nothing and fails the push. A dot
+  file or a day file that does not parse stays here, named (the D1 relay: a scope's berth may be this host alone).
+  The fence widened (the D2 relay, 2026-10-28): a row in a confidential scope's scratch folder is dropped (the core's
+  `scope_match`), so is an open row whose project holds a confidential word, and an open row's branch, skill,
+  agent or title holding one, as a substring, is blanked. The push is a mirror (`rsync --delete` into the
+  target folder alone), so a stale copy there is removed by the first push. Where the overlay is installed and
+  no registry file exists, the push refuses, as on a torn one. The third review (2026-10-28): a copy with no
+  day file to send (no `calls/`, an empty one, only days that do not parse) is refused, so the mirror never
+  empties the target; a day file that does not parse is excluded, so the target keeps its last good copy; and
+  rsync compares content (`--checksum`), since a re-fenced day may keep its size and mtime.
+  The landing review (2026-10-28): the fence is session-wide, in the push and in the global report alike
+  (`fence_rows`): a session with one fenced row is fenced on every row and every day, so a worker's row after a
+  `cd` to an open folder no longer carries the session's title and branch out. The push's due check reads
+  `calls/` alone, and a push that raises still writes its marker, so it waits its hour.
 - `crew-report` reads the core's attribution (attribution, 2026-10-27): a session, or every session
   under a folder glob (relative to `projects_root`, worktree part kept), attributed to another project by a row of
   the core's `attribution.jsonl` (`regatta attribution add|list`) moves its typed-prompt time and its model cost,

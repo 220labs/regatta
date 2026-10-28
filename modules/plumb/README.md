@@ -195,7 +195,7 @@ writes them. Each keeps the environment override it had; an override is never ex
 
 | Key | What | Read by | Override | Absent |
 | --- | --- | --- | --- | --- |
-| `plumb/usage.json` | usage-report's settings: per host the renderer, its pulls, the notifier, the data folder; the NAS share, the reports folder, the plan (a link) | `usage-report` | `USAGE_CONFIG` | every host collects, none renders, pulls or sends; where the overlay is installed, one line on stderr |
+| `plumb/usage.json` | usage-report's settings: per host the renderer, its pulls and pushes, the notifier, the data folder; the NAS share, the reports folder, the plan (a link) | `usage-report` | `USAGE_CONFIG` | every host collects, none renders, pulls, pushes or sends; where the overlay is installed, one line on stderr |
 | `plumb/dispatch-host` | `<host>:<ssh alias>`, the Mac dispatch runs on, whose logs G3 reads | `knowledge-numbers` | — | the first line of `wharf-runs/ssh`, said on stderr; neither: G3 not measured |
 | `plumb/tier-rules` | where the tier table lives, as the tier hint names it (its words, one per line) | `tier_check.py` | — | "your model-routing rules" |
 | `regatta/log-dir` | the core's log folder: usage data, the attention log, the benches' data | every tool | `USAGE_DATA`, `ATTENTION_LOG_DIR`, `BENCH` | `~/.local/state/regatta` |
