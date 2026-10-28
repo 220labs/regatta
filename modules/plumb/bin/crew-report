@@ -55,6 +55,15 @@ Time: one timeline per project; consecutive prompts no more than `gap_minutes` a
 longer gaps are not, no allowance per burst; `sensitivity` gaps printed beside. ISO weeks in the
 local zone (`tz` overrides), cut at Monday 00:00, so a gap across Sunday midnight splits there.
 
+Attribution: by default a prompt and a cost row belong to the project its working folder names. The
+core's attribution file (`regatta attribution add|list`; common.attribution, the one reader, whose
+rules and file the core's README gives) moves a session, or every session under a folder glob, to
+another project, time and cost together; a subagent's cost follows its parent's session. A glob is
+matched against projects_root here (this config's key). A cost row has only usage-report's project
+key, so a path row sees each folder its session's transcript worked in (the key itself, worktree part
+stripped, when that is not on disk). The report's `attributed:` line says what moved. The reader keeps no copy of the
+rules in this tool: it asks the core for each (session, folder).
+
 Config (the design's C3): $CREW_REPORT_CONFIG, else plumb/crew-report.json in the regatta config
 dir; no file means the defaults below. Login dirs come from the accounts registry
 ($ACCOUNTS_FILE, else lighthouse/accounts.json in the config dir) through the core's
@@ -390,11 +399,14 @@ class TranscriptCache:
             pass
 
 
-def collect(c, start, end, lead=dt.timedelta(0)):
+def collect(c, start, end, lead=dt.timedelta(0), stats=None):
     """Typed prompts by project (every one in the files read: a gap may reach back `lead` across
     Monday 00:00, and a session's first row decides it), deduped by uuid, machine starts dropped;
     plus the counts of what was not counted, over [start, end) alone so no line is in two weeks'
-    reports."""
+    reports. Each prompt goes to the project the core's attribution names (`stats` collects the
+    rows that moved one in [start, end)), and the prompts that stayed are returned by the project
+    their folder names, so the report can say what moved; the last value is each session's folders
+    in prompt order, which a cost row's path rule is matched against."""
     roots, files = transcript_files(c, start - lead - dt.timedelta(days=1))
     cache = TranscriptCache(c)
     seen, sessions = set(), {}
@@ -425,8 +437,8 @@ def collect(c, start, end, lead=dt.timedelta(0)):
             s["cwd"] = s["cwd"] or cwd
             s["rows"].append((t, kind, key, cwd or s["cwd"], cmd or f"(text #{lead})", mach, unatt))
     cache.save()
-    by_project, firsts = {}, {}
-    for s in sessions.values():
+    by_project, by_folder, stayed, firsts = {}, {}, {}, {}
+    for sid, s in sessions.items():
         rows = sorted(s["rows"], key=lambda r: r[0])
         typed = {r[2] for r in rows if r[1] == "typed"}
         rows = [r for r in rows if r[1] == "typed" or r[2] not in typed]
@@ -442,11 +454,42 @@ def collect(c, start, end, lead=dt.timedelta(0)):
                 if start <= t < end:
                     skipped["machine starts"] += 1
                 continue
-            by_project.setdefault(project_of(c, cwd), []).append(t)
-    return roots, files, by_project, skipped, firsts
+            home = project_of(c, cwd)
+            by_folder.setdefault(home, []).append(t)
+            to = home
+            hit = attributed(c, raw_session(sid), cwd)
+            if hit and hit[2] != home:
+                to = hit[2]
+                if stats is not None and start <= t < end:
+                    stats[hit[0]].add(hit[1])
+            else:
+                stayed.setdefault(home, []).append(t)
+            by_project.setdefault(to, []).append(t)
+    folders = {k: list(dict.fromkeys([s["cwd"]] + [r[3] for r in sorted(s["rows"], key=lambda r: r[0])]))
+               for k, s in sessions.items()}
+    return roots, files, by_project, skipped, firsts, (by_folder, stayed), folders
 
 
 _REPO = {}
+_RAW = {}
+
+
+def raw_session(sid):
+    """The sessionId behind a digest (the cache keeps digests only), among the ids the attribution
+    file names; None when it names no such session."""
+    idx = common.attribution_rows()
+    if str(idx["file"]) not in _RAW:
+        _RAW[str(idx["file"])] = {digest(k): k for k in idx["session"]}
+    return _RAW[str(idx["file"])].get(sid)
+
+
+def attributed(c, session, cwd):
+    """(kind, row number, project) for a session (raw id) in a folder, from the core's attribution
+    file, or None — the core resolves it; this tool keeps no rules of its own."""
+    if not common.attribution_rows()["rows"]:
+        return None
+    r = common.attribution_match(session, cwd, c["projects_root"])
+    return (r["kind"], r["n"], r["project"]) if r else None
 
 
 def project_of(c, cwd):
@@ -455,14 +498,10 @@ def project_of(c, cwd):
     (cost_by_project re-keys usage-report's rows through this, so the two agree). A path under the
     same root in another user's home (a reads file pulled from the other Mac) is read as this one's,
     as usage-report reads both Macs' paths."""
-    p = (cwd or "").split("/.claude/worktrees/")[0].rstrip("/")
     root = str(Path(c["projects_root"]).expanduser()).rstrip("/")
-    if not p.startswith(root + "/"):
-        rp, pp = Path(root).parts, Path(p).parts
-        if len(rp) >= 3 and len(pp) > len(rp) and pp[len(rp) - 1] == rp[-1] and pp[:len(rp) - 2] == rp[:-2]:
-            p = root + "/" + "/".join(pp[len(rp):])
-        else:
-            return "?"
+    p = common.under_projects((cwd or "").split("/.claude/worktrees/")[0], c["projects_root"])
+    if p is None:
+        return "?"
     if p not in _REPO:
         q = Path(p)
         while str(q) != root and not (q / ".git").exists() and str(q.parent).startswith(root + "/"):
@@ -508,13 +547,23 @@ def last_complete_week(tz):
     return f"{y}-W{w:02d}"
 
 
+def new_stats():
+    """What attribution moved: the session rows and path rows that moved a prompt or a cost row
+    (their line numbers), and the list cost moved."""
+    return {"session": set(), "path": set(), "cost": 0.0}
+
+
 # ---- cost (usage-report, optional) -------------------------------------------------------------
 
-def cost_by_project(c, start, end, this_host=False):
+def cost_by_project(c, start, end, this_host=False, cwds=None, stats=None):
     """List $ per project from usage-report's CSVs, or None when the tool is not found or fails.
     usage-report keys a row by its cwd under ~/projects, subfolder kept, or by the path itself;
     each key is mapped through this tool's project_of so a subfolder's cost joins its repo's row
-    and a path outside the root joins "?"."""
+    and a path outside the root joins "?". An attributed session's rows go to the project the core
+    names (`stats` collects the rows that moved one and their list cost); a path rule is matched
+    against each folder `cwds` has for the row's session, in prompt order (a session that starts in
+    the primary checkout and enters a worktree is matched on the worktree too), else the row's own
+    key, whose worktree part usage-report strips."""
     p = tool("usage-report")
     if not p:
         return None
@@ -531,9 +580,26 @@ def cost_by_project(c, start, end, this_host=False):
         rows = [r for r in rows if r.get("host") == common.host_name()]
     for r in rows:
         k = r.get("project") or "?"
+        key, cost = k, float(r.get("cost") or 0)
         if k != "?":
             k = project_of(c, os.path.expanduser(k) if k.startswith(("~", "/")) else root + "/" + k)
-        out[k] = out.get(k, 0.0) + float(r.get("cost") or 0)
+        if common.attribution_rows()["rows"]:
+            sid = r.get("session") or None
+            wheres = [w for w in (cwds or {}).get(digest(sid) if sid else None) or []
+                      if common.projects_rel(w, c["projects_root"]) is not None]
+            if not wheres and key != "?":
+                wheres = [os.path.expanduser(key) if key.startswith(("~", "/")) else root + "/" + key]
+            hit = None
+            for where in wheres or [None]:
+                hit = attributed(c, sid, where)
+                if hit:
+                    break
+            if hit and hit[2] != k:
+                k = hit[2]
+                if stats is not None:
+                    stats[hit[0]].add(hit[1])
+                    stats["cost"] += cost
+        out[k] = out.get(k, 0.0) + cost
     return out
 
 
@@ -1286,8 +1352,10 @@ def report(c, week, until=None, drain=("", None), this_host=False):
     tz = zone(c)
     start, end = week_bounds(week, tz)
     stop = min(end, until) if until else end
-    roots, files, by_project, skipped, firsts = collect(c, start, stop, dt.timedelta(minutes=max([c["gap_minutes"]] + list(c["sensitivity"]))))
-    cost = cost_by_project(c, start, end, this_host)
+    stats = new_stats()
+    roots, files, by_project, skipped, firsts, (by_folder, stayed), cwds = collect(
+        c, start, stop, dt.timedelta(minutes=max([c["gap_minutes"]] + list(c["sensitivity"]))), stats)
+    cost = cost_by_project(c, start, end, this_host, cwds, stats)
     rec, rec_note = recordings(c, start, stop, tz)
     if until:   # a replay's cut: a recording saved after it did not exist yet
         rec = {k: rec_entry([(a, b, h) for (a, b), h in zip(v["iv"], v["marks"]) if b < until]) for k, v in rec.items()}
@@ -1345,8 +1413,16 @@ def report(c, week, until=None, drain=("", None), this_host=False):
              + " / ".join(hm(tot[g]) for g in c["sensitivity"]) + " | "
              + (hm(sum(r[5] for r in rows if r[5] is not None)) if docs else EM) + " | "
              + (common.cost_text(sum(cost.values())) if cost else EM) + " |")
-    L += ["",
-          "Not counted: " + ", ".join(f"{k} {v}" for k, v in skipped.items()) + ".",
+    # gross, per source project: its folder's minutes less those of the prompts that stayed, so a
+    # swap of sessions between two projects counts both halves
+    moved = sum(minutes(runs([t for t in ts if not until or t < until], c["gap_minutes"]), start, stop)
+                - minutes(runs([t for t in stayed.get(p, []) if not until or t < until], c["gap_minutes"]), start, stop)
+                for p, ts in by_folder.items())
+    L.append("")
+    if stats["session"] or stats["path"]:
+        L.append(f"attributed: {plural(len(stats['session']), 'session')}, {plural(len(stats['path']), 'path rule')} — {moved:.0f} min"
+                 + (f", {common.cost_text(stats['cost'])}" if cost is not None else "") + " moved")
+    L += ["Not counted: " + ", ".join(f"{k} {v}" for k, v in skipped.items()) + ".",
           "Sessions by first prompt: " + (", ".join(f"{k} {v}" for k, v in sorted(opened.items(), key=lambda x: -x[1])[:5]) or "none") + "."]
     if rec_note and not rec:
         L.append(f"Recordings: {rec_note}.")
