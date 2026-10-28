@@ -1063,6 +1063,13 @@ grep -q 'would then route the repository variable CI_RUNS_ON that' "$T/out"; che
 "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "…a re-run of --to self-hosted"
 check "$(grep -cxF "    $FULLLINE" "$R/.github/workflows/check.yml")" "1" "…keeps the split form"
 grep -q "# A push, the nightly run and a hand start take CI_RUNS_ON_FULL's labels" "$R/.github/workflows/check.yml"; check "$?" "0" "…and says what it does"
+printf '    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || %s) }}\n' "'\"ubuntu-latest\"'" > "$R/.github/workflows/automerge.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'CI_RUNS_ON_AUTOMERGE' "$T/out"; check "$?" "1" "an automerge.yml without its own variable: status names none"
+printf '    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_AUTOMERGE || vars.CI_RUNS_ON || %s) }}\n' "'\"ubuntu-latest\"'" > "$R/.github/workflows/automerge.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q "runs-on variable CI_RUNS_ON_AUTOMERGE is unset: automerge.yml takes CI_RUNS_ON's runners" "$T/out"; check "$?" "0" "automerge.yml reads CI_RUNS_ON_AUTOMERGE, unset: status says it queues with the checks (ci-queue-health)"
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON_AUTOMERGE","value":"\"ubuntu-latest\""}' > "$T/gh/vars/CI_RUNS_ON_AUTOMERGE.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -qF 'runs-on variable CI_RUNS_ON_AUTOMERGE (automerge.yml): "ubuntu-latest"' "$T/out"; check "$?" "0" "…set: its value"
+rm -f "$T/gh/vars/CI_RUNS_ON_AUTOMERGE.json" "$R/.github/workflows/automerge.yml"
 setruns "$R" "\${{ fromJSON(github.event_name != 'pull_request' && vars.OTHER_FULL || vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}"
 "$CP" "$R" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "a split form whose two names differ: --runner install --dry-run"
 grep -q 'route the repository variable' "$T/out"; check "$?" "1" "…the repo's own form, its variable never this tool's"
@@ -1229,6 +1236,15 @@ jobs:
       - run: npm install -g some-cli
       - run: git config --global user.name CI
 EOF
+cat > "$W/am.yml" <<'EOF'
+name: am
+on: push
+jobs:
+  am:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_AUTOMERGE || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    steps:
+      - run: npm install -g some-cli
+EOF
 "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "other workflows: no refusal"
 grep -q '⚠ .github/workflows/release.yml:8 runs git config --global' "$T/out"; check "$?" "0" "…a runner-Mac workflow's git config --global without the guard: said"
 grep -q 'release.yml:10 runs sudo' "$T/out"; check "$?" "0" "…its sudo"
@@ -1236,6 +1252,7 @@ grep -q 'release.yml:10 runs apt-get' "$T/out"; check "$?" "0" "…its unguarded
 grep -q 'release.yml:15' "$T/out"; check "$?" "1" "…not an apt-get in a step that runs on Linux only"
 grep -q 'lint.yml' "$T/out"; check "$?" "1" "…nothing of an ubuntu workflow"
 grep -q 'node.yml' "$T/out"; check "$?" "1" "…nor of one with the guard and setup-node"
+grep -q 'am.yml:7 runs npm install -g' "$T/out"; check "$?" "0" "…an automerge.yml on its own runner variable is scanned as a runner-Mac workflow (ci-queue-health review)"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'release.yml:8 runs git config --global' "$T/out"; check "$?" "0" "status says them too"
 
 echo "a publishing repo's check.yml names no host (twin)"

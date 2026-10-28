@@ -174,7 +174,9 @@ self-hosted, and what it does not cover:
   - automerge.yml stays on ubuntu-latest, hosted, so no runner-Mac job runs with an
     authenticated `gh` it does not need (its script calls `gh`; the runner's user has one).
     It runs on every PR event (opened, push, label, ready), each billed as a hosted Linux minute:
-    the one Actions cost left. --to self-hosted says so when the repo has it.
+    the one Actions cost left. --to self-hosted says so when the repo has it. A repo whose own
+    automerge.yml reads <var>_AUTOMERGE, then <var> (regatta's, curl and jq for `gh`), runs it
+    where that names: unset, in the check's queue; status says which.
   - with no online runner carrying every label the job waits in the queue (GitHub drops it
     after 24 h) and `check` never reports: provision the runner, then land the switch.
   - the runner: one per repo on each runner Mac (more with --instance), never org-wide (an owner that is a GitHub User account has no org
@@ -681,11 +683,17 @@ APT_GUARD = re.compile(r"uname|command -v|which apt|runner\.os|RUNNER_OS|OSTYPE|
 GIT_GUARD = re.compile(r"GIT_CONFIG_GLOBAL=|\bHOME=\S*RUNNER_TEMP")
 
 
+# automerge.yml's own runner variable, then the check's, then hosted (ci-queue-health D1): it runs on a
+# runner Mac, so the scan reads it
+AUTOMERGE_FORM = re.compile(r"\$\{\{\s*fromJSON\(vars\.\w+_AUTOMERGE\s*\|\|\s*vars\.\w+\s*\|\|\s*'\"ubuntu-latest\"'\)\s*\}\}")
+
+
 def runs_on_runner_mac(text, labels):
     """For the scan only: on_runner_mac, or any runs-on naming self-hosted (`[self-hosted, macOS]`,
     an expression holding it), which the runner Mac takes too (landing review 2026-10-21, 4). A wider test
     than on_runner_mac, which decides a re-run's form and stays the tool's own."""
-    return on_runner_mac(text, labels) or any("self-hosted" in w.lower() for w, _ in runs_on_lines(text))
+    return (on_runner_mac(text, labels) or any("self-hosted" in w.lower() for w, _ in runs_on_lines(text))
+            or any(AUTOMERGE_FORM.fullmatch(v or "") for _, v in runs_on_lines(text)))
 
 
 def job_start(lines, i):
@@ -1714,6 +1722,7 @@ def wanted_labels(repo, s, labels):
                 print("  ⚠ no online runner labelled %s: a push, the nightly run and a hand start queue "
                       "until one is" % ", ".join(want))
     if var:
+        automerge_runner(repo, s, var)
         value, err = variable(s, var)
         if err:
             print("  runs-on variable %s: (unread: %s)" % (var, err))
@@ -1739,6 +1748,24 @@ def wanted_labels(repo, s, labels):
             return None
         return tuple(asked)
     return literal_labels(text, labels) or labels
+
+
+def automerge_runner(repo, s, var):
+    """Where automerge.yml runs, said when its runs-on reads <var>_AUTOMERGE: unset, it takes the
+    check's runners and waits in their queue behind hour-long checks (a 10-second job started 33 min
+    after its PR's check passed; docs/ci-queue-health-2026-10-27.md)."""
+    wf = p(repo, ".github", "workflows", "automerge.yml")
+    name = var + "_AUTOMERGE"
+    if not (os.path.isfile(wf) and ("vars." + name) in read(wf)):
+        return
+    value, err = variable(s, name)
+    if err:
+        print("  runs-on variable %s: (unread: %s)" % (name, err))
+    elif value is None:
+        print("  runs-on variable %s is unset: automerge.yml takes %s's runners, queued behind the checks"
+              % (name, var))
+    else:
+        print("  runs-on variable %s (automerge.yml): %s" % (name, value))
 
 
 def runners_of(s):
