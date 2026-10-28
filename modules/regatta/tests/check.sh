@@ -329,6 +329,29 @@ echo "$out" | grep -qx -- "  --  scope one yard: nowhere is not a host lighthous
 head -c 30 "$T/yd.json" > "$T/yd3.json"
 out=$(CLAUDE_REPOS_JSON="$T/yd3.json" "$RG" check); check "$?:$(echo "$out" | grep -c ' yard: ')" "1:0" "  a torn registry: exit 1, no row read from it"
 rm -r "$T/config/lighthouse"
+# the fleet queue's two rows (dispatch-queue S2): a home, and the queue-sweep job beside it
+mkdir -p "$T/config/wharf-runs"; echo off > "$T/config/wharf-runs/queue-repo"
+out=$("$RG" check); check "$?:$(echo "$out" | grep -c '  queue home: \|  queue-sweep: ')" "0:0" "  a queue home off: exit 0, no queue row"
+echo "$T/q.git" > "$T/config/wharf-runs/queue-repo"; echo org.example.claude > "$T/config/wharf-runs/label-prefix"
+LA="$HOME/Library/LaunchAgents"; SWEEP="$LA/org.example.claude.queue-sweep.plist"   # dispatch's own LA, the job's path once
+out=$("$RG" check); rc=$?
+if [ "$(uname)" = Darwin ]; then
+  check "$rc" 1 "  a queue home and no queue-sweep job: exit 1"
+  echo "$out" | grep -qx "  ok  queue home: $T/q.git"; check $? 0 "    the home's row"
+  echo "$out" | grep -q -- "--  queue-sweep: no job here ($SWEEP)"; check $? 0 "    the sweep's row names the job it looked for"
+  mkdir -p "$LA"; touch "$SWEEP"
+  # launchd stood in: it holds the job while $T/held exists (S2a's landing review, item 3: the file is not the job)
+  printf '#!/bin/sh\n[ "$1" = print ] && [ -f "%s/held" ]\n' "$T" > "$T/launchctl"; chmod +x "$T/launchctl"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  the plist but launchd does not hold it: exit 1"
+  echo "$out" | grep -q -- "--  queue-sweep: its plist is here but launchd does not hold it ($SWEEP)"; check $? 0 "    its row says so"
+  touch "$T/held"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with the job loaded: exit 0"
+  echo "$out" | grep -q "^  ok  queue-sweep: every 10 min"; check $? 0 "    its row ok"
+  rm -f "$SWEEP" "$T/held" "$T/launchctl"
+else
+  check "$rc" 0 "  a queue home off macOS: exit 0, the sweep a note (a systemd timer is S7's)"
+fi
+rm -r "$T/config/wharf-runs"
 # aurora/host against lighthouse/hosts (the weekly host rule's row): case-blind, as the rule compares
 mkdir -p "$T/config/lighthouse" "$T/config/aurora"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"; echo Studio > "$T/config/aurora/host"
 out=$("$RG" check); check "$?:$(echo "$out" | grep -c -- '--  aurora/host')" "0:0" "  aurora/host a host lighthouse/hosts lists (in capitals): exit 0, no finding"

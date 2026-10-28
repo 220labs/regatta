@@ -6,7 +6,7 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
     regatta has <module>        the module's path, or "<module> not installed" (exit 1)
     regatta which <tool>        a peer's path through common.tool(), or "<tool> not installed" (exit 1)
     regatta check               the config directory: home, the overlay, each link with its target, the private values,
-                                aurora/host against lighthouse/hosts, each scope's yard
+                                aurora/host against lighthouse/hosts, each scope's yard, the fleet queue's home and sweep
     regatta shim <path>         the shim an old path keeps for <path> (relative to the root): a
                                 source shim for a Python file, an exec shim for any other
     regatta shim --hook <path>  a hook's source shim: run with no core, one line and exit 0 (C4)
@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -262,6 +263,41 @@ def berth_problems():
     return out
 
 
+def queue_rows():
+    """The fleet queue's two rows (wharf-runs' dispatch-queue; S2 of the dispatch-queue design): its home,
+    and the queue-sweep job that claims what waits for this host. A home with no sweep is a finding: a
+    queued entry would wait for some unrelated dispatch here (any dispatch run here installs the job:
+    `dispatch-queue jobs`). No home, no rows: the queue is off and dispatch runs as before it. Read as
+    text, as hookwatch's pin is below: the core loads no module. → the number of findings."""
+    v = (common.config_line("wharf-runs/queue-repo") or "").strip()
+    if not v or v.lower() == "off":
+        return 0
+    print("  ok  queue home: %s" % v)
+    if sys.platform != "darwin":
+        print("  ..  queue-sweep: no launchd here (its systemd timer is dispatch-queue's S7)")
+        return 0
+    prefix = common.config_line("wharf-runs/label-prefix") or "org.regatta.claude"
+    job = Path.home() / "Library" / "LaunchAgents" / ("%s.queue-sweep.plist" % prefix)
+    if job.is_file():
+        # the file is not the job: launchd must hold it (S2a's landing review, item 3). DISPATCH_LAUNCHCTL
+        # is dispatch's own stand-in, which the suites set
+        lc = os.environ.get("DISPATCH_LAUNCHCTL") or "launchctl"
+        try:
+            held = subprocess.run([lc, "print", "gui/%d/%s.queue-sweep" % (os.getuid(), prefix)],
+                                  capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            held = False
+        if held:
+            print("  ok  queue-sweep: every 10 min (%s)" % job)
+            return 0
+        print("  --  queue-sweep: its plist is here but launchd does not hold it (%s) — any dispatch run here "
+              "reloads it (dispatch-queue jobs)" % job)
+        return 1
+    print("  --  queue-sweep: no job here (%s) — a queued entry waits for some dispatch on this host; any dispatch "
+          "run here installs it (dispatch-queue jobs)" % job)
+    return 1
+
+
 def check():
     """Each item of the config dir: ok, or what is wrong with it. Exit 1 on any finding."""
     bad = 0
@@ -326,6 +362,7 @@ def check():
     for problem in berth_problems():
         print("  --  %s" % problem)
         bad += 1
+    bad += queue_rows()
     print("core: %s" % (root or "not in a checkout"))
     return 1 if bad else 0
 
