@@ -535,7 +535,7 @@ has "$HOME/allow.log" "== background allow (--background)" "  the log says which
 check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("background"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "allow" "  so does the run's record"
 
 echo "--origin: the confidential scope a seed came out of (confidential-reach S5), carried and recorded"
-rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 has "$P" "<string>--origin</string><string>node</string>" "it travels to the scheduled job"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin node
@@ -551,7 +551,7 @@ has "$T/err" "--origin given twice" "  saying so"
 # the seed commit's marker (S5's landing review): read back by this host's registry, never pushed as a name
 printf '{"repos": {"k": {}, "o": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "pub": {"repos": ["o"]}}}\n' > "$T/origin-repos.json"
 NM="confidential:$(printf node | shasum -a 256 | cut -c1-8)"; PM="confidential:$(printf pub | shasum -a 256 | cut -c1-8)"
-rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 has "$P" "<string>--origin</string><string>$NM</string>" "a marker travels to the scheduled job as given"
 hasnt "$P" "<string>node</string>" "  the plist carries no name it was not given"
@@ -571,7 +571,7 @@ WEEKLY_RUN=sextant "$B/dispatch" $BR --repo "$T/repo" --at reset --if-room --ori
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin pub > /dev/null 2> "$T/err"; check "$?" "2" "an open scope's name: refused"
 has "$T/err" "names no confidential scope in this host's registry" "  saying so"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin nosuch > /dev/null 2> "$T/err"; check "$?" "2" "an unknown name: refused"
-rm -f "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1; check "$?" "2" "a fired job whose marker no longer reads: refused"
 check "$([ -e "$P" ] && echo left || echo gone)" "gone" "  and its plist removed (the trap is not set yet)"
