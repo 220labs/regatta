@@ -111,6 +111,13 @@ yard node first among them. The same tools and shapes as above, with its own ref
 variable (any expansion: `$X`, `${X:-…}`, `$(…)`, a backtick body) is caught when it spells the folder's tail after it (the part below the config dir,
 else its last two names); the tail alone, a grep pattern or a doc's mention, passes. An accident guard like the rest: the file stays readable by any process of its user.
 
+Also, since 2026-10-28 (confidential-reach S8): an open bridge lifts the fence between two confidential
+scopes for a session started in either (bridge_lifts), and the bridges file it reads is refused to every
+write but `scopes bridge`'s own — Edit, Write, MultiEdit and NotebookEdit of it, its lock or the writer's
+temp file, and a Bash command naming it (any case of the name) or placing a file in its folder (`cp`, `mv`, `ln`,
+`rsync`, `tar -x -C`…); a Read passes, and so does a walk over the config dir. `scopes bridge open` itself is refused
+in every agent's Bash (the S8 second stop's D1-A): the owner opens a bridge at a terminal or with `!`.
+
 Fails open: an error in here lets the call through rather than blocking every tool in every
 session. Tests: tests/hooks.sh, "secrets_guard" and "the fence".
 """
@@ -295,14 +302,138 @@ def guarded_rules():
     return Rules(GUARDED, literal, candidate, HARMLESS)
 
 
+# The bridges file (confidential-reach S8): wharf's `scopes bridge` is its one writer, and opening one stands
+# for the owner's yes, so an agent's own write would open a bridge no one granted (the S8 landing review: a
+# dispatched run wrote one with a Write call and the fence honoured it at the next). The file, its lock and
+# the writer's temp file; a Read passes (`scopes bridge audit` is the reading), a Bash command naming the
+# file does not, read or write: the hook cannot tell `cat` from `cat >` behind a pipe.
+BRIDGES = os.path.join(os.path.realpath(os.path.join(CONFIG, "lighthouse")), "bridges.json")
+# any case of the name: APFS opens `Bridges.json` as the file (the S8 second stop)
+BRIDGES_NAME = re.compile(r"^(?:bridges\.json(?:\.lock)?|\.bridges\.json\..*\.tmp)$", re.I)
+BRIDGES_REASON = ("⛔ {what}: the bridges file is `scopes bridge`'s alone, and a bridge stands for {owner}'s yes "
+                  "(confidential-reach S8) — an agent's write would open one nobody granted. `{scopes} bridge audit` "
+                  "reads it; {owner} opens or revokes one at their own terminal. Don't retry in another shape.")
+
+
+def _same_dir(a, b):
+    """Two real paths name one folder or file, by case too: APFS is case-insensitive (the safe side on Linux)."""
+    return os.path.normcase(a).casefold().rstrip(os.sep) == os.path.normcase(b).casefold().rstrip(os.sep)
+
+
+def bridges_file_hit(path, cwd):
+    """True when PATH is the bridges file, its lock or a temp file beside it, in any case of the name: by
+    its folder's real path and its own name unfollowed (a link there named so is a hit, wherever it points:
+    the S8 second stop found `dirname(realpath(p))` passed one), or by where it points."""
+    if not path:
+        return False
+    p = resolve(path, cwd, follow=False)
+    return _same_dir(os.path.dirname(p), os.path.dirname(BRIDGES)) and bool(BRIDGES_NAME.match(os.path.basename(p))) \
+        or any(_same_dir(resolve(path, cwd), f) for f in (BRIDGES, BRIDGES + ".lock"))
+
+
+# A copier, mover, linker or extractor whose destination is the lighthouse folder itself writes a file there
+# under its source's name, so the destination is judged, not the name (the S8 second stop: `cp <src>/bridges.json
+# <config>/lighthouse/`, `mv`, `rsync`, `tar -x -C`, `ln -s` all passed). A destination named for the file is
+# bridges_file_hit's, through inside().
+PLACERS = {"cp", "gcp", "mv", "gmv", "ln", "gln", "install", "ginstall", "ditto", "rsync", "scp", "rcp"}
+EXTRACTORS = {"tar", "gtar", "bsdtar", "unzip", "cpio", "7z", "7za", "7zz"}
+
+
+def _opt_values(rest, short, long=None):
+    """The values given to an option: `-C DIR`, `-CDIR`, `--directory=DIR`, `--directory DIR`."""
+    out = []
+    for i, w in enumerate(rest):
+        if w == short or (long and w == long):
+            out += rest[i + 1:i + 2]
+        elif long and w.startswith(long + "="):
+            out.append(w.split("=", 1)[1])
+        elif short and w.startswith(short) and len(w) > len(short) and not w.startswith("--"):
+            out.append(w[len(short):])
+    return out
+
+
+def placed_into(verb, rest, cwd):
+    """[path] — where a placer or an extractor writes: a target directory, the last operand, or the cwd."""
+    pos = [w for w in rest if not w.startswith("-")]
+    if verb in PLACERS:
+        out = (_opt_values(rest, "-t", "--target-directory") if verb != "rsync" else []) + pos[-1:]
+        return out + ([cwd] if verb in ("ln", "gln") and len(pos) == 1 else [])
+    if verb in ("tar", "gtar", "bsdtar"):
+        old = bool(rest) and not rest[0].startswith("-") and "x" in rest[0]   # `tar xf a.tar`
+        if not (old or any(re.match(r"^-[A-Za-z]*x", w) or w in ("--extract", "--get") for w in rest)):
+            return []
+        return _opt_values(rest, "-C", "--directory") or [cwd]
+    if verb == "unzip":
+        return _opt_values(rest, "-d") or [cwd]
+    if verb == "cpio":
+        if any(re.match(r"^-[A-Za-z]*p", w) or w == "--pass-through" for w in rest):
+            return pos[-1:]
+        return (_opt_values(rest, "-D", "--directory") or [cwd]) if any(
+            re.match(r"^-[A-Za-z]*i", w) or w == "--extract" for w in rest) else []
+    if verb in ("7z", "7za", "7zz"):
+        return (_opt_values(rest, "-o") or [cwd]) if rest[:1] in (["x"], ["e"]) else []
+    return []
+
+
+def bridges_dir_hit(path, cwd):
+    """True when PATH, as it resolves, is the folder that holds the bridges file."""
+    return bool(path) and _same_dir(resolve(path, cwd), os.path.dirname(BRIDGES))
+
+
+# `scopes bridge open` (the S8 second stop's D1, answered A by the manager, 2026-10-28): opening a bridge
+# stands for the owner's yes, so no agent's Bash runs it, attended or not; the owner opens one at their own
+# terminal or with `!` in the prompt, which never reaches PreToolUse (probed on Claude Code 2.1.312,
+# 2026-10-28: the `!` command ran, a SessionStart hook in the same settings fired, no PreToolUse Bash event).
+# Every spelling that ends in the tool's name: the module path, a worktree's copy, `regatta scopes`, a wrapper
+# or an interpreter in front, a shell's -c string, a heredoc's lines. `--revoke` and `audit` pass: ending
+# or reading a bridge is never refused. By command shape, like the rest: an accident guard.
+BRIDGE_OPEN_REASON = ("⛔ {what}: opening a bridge stands for {owner}'s yes (the S8 second stop's D1), so no "
+                      "agent runs it, attended or not. {owner} opens one at their own terminal, or with `!` in "
+                      "the prompt: `! {scopes} bridge open FROM TO --until +Nh --why …`. `--revoke` and `audit` "
+                      "stay open to you. Don't retry in another shape.")
+
+
+def bridge_open_hit(cmd, depth=0):
+    """The spelling of `scopes bridge open` CMD runs, or None."""
+    try:
+        segs = list(segments(cmd))
+    except ValueError:
+        m = re.search(r"\bscopes['\"`]?\s+bridge\s+open\b", cmd)
+        return f"`{m.group(0)}`, in a command this guard could not parse" if m else None
+    for words in segs:
+        runs = verb_of(words) in SHELL | {"eval", "ssh"} or INTERPRETER.match(verb_of(words))
+        for i, w in enumerate(words):
+            # a string a shell runs (`bash -c '…'`, `eval`, `ssh x '…'`, python's os.system), never a grep's pattern
+            if depth < 3 and runs and re.search(r"\s", w) and "bridge" in w:
+                hit = bridge_open_hit(w, depth + 1)
+                if hit:
+                    return hit
+            if os.path.basename(w.strip("'\"`(){}")) == "scopes" and words[i + 1:i + 3] == ["bridge", "open"]:
+                return f"`{' '.join(words[i:i + 3])}`"
+    return None
+
+
+def bridges_rules():
+    """A wall over the bridges file and its lock, for Bash: the paths as they resolve, a path behind a
+    variable that spells `lighthouse/bridges.json`, and code naming `bridges.json`."""
+    literal = re.compile(r"(?:\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)|[^\s`]*`|[^\s()]*\))/(?:[^\s'\"]*/)?"
+                         r"lighthouse/\.?bridges\.json(?:\.lock|\.[^/\s'\"]*\.tmp)?(?:$|[^\w.])", re.I)
+    candidate = re.compile(r"[^\s'\"()\[\]{},;=<>|&`]*bridges\.json[^\s'\"()\[\]{},;=<>|&`]*", re.I)
+    # a walk over the config dir (`grep -r`, a backup's `tar`) opens no bridge: only a path that names the
+    # file, in any case, or a placer's destination that is its folder (bash_hit, bridges=True)
+    return Rules([BRIDGES, BRIDGES + ".lock"], literal, candidate, HARMLESS, walks=False, bridges=True)
+
+
 class Rules:
     """What one wall refuses: its folders (real paths), the raw-text pattern for a path the hook
     cannot resolve, the token pattern code is judged by, the verbs that never open a file, and —
     the fence only — whether a command after a `cd` into a folder counts as touching it, git
     judged by the tree it runs in and a grep's pattern taken as text."""
 
-    def __init__(self, dirs, literal, candidate, harmless, fence=False):
+    def __init__(self, dirs, literal, candidate, harmless, fence=False, walks=True, bridges=False):
         self.dirs, self.literal, self.candidate, self.harmless, self.fence = dirs, literal, candidate, harmless, fence
+        self.walks = walks   # False: a recursive reader or remover over a folder that holds one is no hit (the bridges file)
+        self.bridges = bridges   # the bridges wall: a name in any case, and a placer's destination folder
         self.present = [d for d in dirs if os.path.lexists(d)] if fence else dirs
 
 
@@ -319,6 +450,8 @@ def inside(path, cwd, r, follow=True):
     if not path:
         return False
     if r.literal and r.literal.search(path):
+        return True
+    if r.bridges and bridges_file_hit(path, cwd):
         return True
     if r.fence and any(c in path for c in "*?["):   # a word the shell expands: `cat <projects>/*/memory/x.md`
         # a match below a fenced folder; the folder's own name is a name, as glob_reaches() lets a Glob
@@ -640,7 +773,12 @@ def bash_hit(cmd, cwd, r, depth=0):
                 continue
         if verb in r.harmless:
             continue
-        if verb == "ln" and any(re.match(r"^-[A-Za-z]*s|^--symbolic$", o) for o in opts):
+        if r.bridges and verb in PLACERS | EXTRACTORS:
+            for d in placed_into(verb, rest, cwd):
+                if bridges_dir_hit(d, cwd) or bridges_file_hit(d, cwd):
+                    return f"`{verb}` into {d}"
+        # a link is how the vault's files are reached; the bridges file's readers refuse one, and its wall refuses making one
+        if verb == "ln" and not r.bridges and any(re.match(r"^-[A-Za-z]*s|^--symbolic$", o) for o in opts):
             continue
         follow = verb not in LINK_ITSELF
         # a fence grep's pattern is text, `--regexp=<path>` and `'X=<path>'` too
@@ -655,7 +793,7 @@ def bash_hit(cmd, cwd, r, depth=0):
                 hit = code_hit("sh" if verb == "eval" else verb, c, cwd, r, depth)
                 if hit:
                     return hit
-        if not r.fence and (verb in RECURSIVE or (verb == "find" and {"-exec", "-execdir", "-ok", "-okdir"} & set(rest))):   # the fence: fence_hit
+        if not r.fence and r.walks and (verb in RECURSIVE or (verb == "find" and {"-exec", "-execdir", "-ok", "-okdir"} & set(rest))):   # the fence: fence_hit
             # a grep walks only with -r, and never its pattern: `ls -p ~ | grep -v /` holds nothing
             walked = ([] if not any(RECURSE_FLAG.match(o) for o in opts) and verb in ("grep", "egrep", "fgrep")
                       else args[1:] if verb in GREPS and not any(GREP_PATTERN_OPT.match(o) for o in opts) else args)
@@ -1058,16 +1196,145 @@ FENCE_REASON = ("⛔ {what}: that is `{scope}`'s, a confidential scope (the regi
                 "logged; don't retry in another shape.")
 
 
+# A bridge (confidential-reach S8): the core's open_bridges(), mirrored in the stdlib as scope_paths() is,
+# and the one rule both read it by, bridge_lifts() here and the core's bridge_active() for a single start
+# (tests/hooks.sh drives this hook beside the core on the same pairs). A session started in scope X (its
+# CLAUDE_PROJECT_DIR, else its cwd) holds X and each Y an open bridge runs X→Y; while every start of it is
+# in those scopes' paths, the fence of each is lifted — so a `cd` from X into Y reads both, and a session
+# started open reads neither. Every doubt — no file, a torn one or a torn registry, an entry past `until`,
+# ended, longer than BRIDGE_MAX, a scope missing or open, a chain — is no bridge: a bridge is a widening,
+# so here the fence fails closed, unlike its torn registry (kl-s2 D3-A). The file is read per call: a
+# bridge opened or revoked under a running session binds its next tool call.
+BRIDGE_MAX = 24 * 3600
+
+
+def _bridge_time(v):
+    import datetime
+    if not isinstance(v, str) or not v:
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)
+    except ValueError:
+        return None
+    return t.timestamp() if t.tzinfo else None
+
+
+def _registry_torn():
+    """The core's registry_unreadable(): a registry file there whose repos or scopes do not read."""
+    p = os.environ.get("CLAUDE_REPOS_JSON") or os.path.join(CONFIG, "wharf", "repos.json")
+    if not (os.path.exists(p) or os.path.islink(p)):
+        return False
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(d, dict) and isinstance(d.get("repos") or {}, dict) and isinstance(d.get("scopes") or {}, dict))
+
+
+def _bridges_text(p):
+    """(text, torn) — the core's read_bridges() gate: no file is (None, False); a link, anything but a regular
+    file, a second hard link, or a name that is not exactly `bridges.json` in the folder's listing (APFS
+    opens `Bridges.json` by this name) is torn (the S8 second stop: an agent's link there made the file theirs)."""
+    import stat
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        return None, False
+    except OSError:
+        return None, True
+    try:
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or os.path.basename(p) not in os.listdir(os.path.dirname(p)):
+            return None, True
+        fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as f:
+            if os.fstat(f.fileno()).st_ino != st.st_ino:   # replaced between the look and the open
+                return None, True
+            return f.read(), False
+    except (OSError, ValueError):
+        return None, True
+
+
+def bridge_directions(now=None):
+    """[(from, to)] — the core's bridge_directions(), its every rule: [] on any doubt."""
+    p = os.path.join(CONFIG, "lighthouse", "bridges.json")
+    try:
+        text, torn = _bridges_text(p)
+        if text is None or torn or _registry_torn():
+            return []
+        rows = json.loads(text).get("bridges")
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(rows, list) or not all(isinstance(e, dict) for e in rows):
+        return []
+    scopes, now = _registry()[1], time.time() if now is None else now
+    live = []
+    for e in rows:
+        a, b = e.get("from"), e.get("to")
+        if not (isinstance(a, str) and isinstance(b, str) and a and b) or a == b or "ended" in e:
+            continue
+        if not all(isinstance(scopes.get(s), dict) and scopes[s].get("confidential") is True for s in (a, b)):
+            continue
+        if "one_way" in e and not isinstance(e["one_way"], bool):
+            continue
+        opened, until = _bridge_time(e.get("opened")), _bridge_time(e.get("until"))
+        if opened is None or until is None or until - opened > BRIDGE_MAX or until <= now or opened > now + 60:
+            continue
+        live.append(e)
+    partners = {}
+    for e in live:
+        partners.setdefault(e["from"], set()).add(e["to"])
+        partners.setdefault(e["to"], set()).add(e["from"])
+    out = []
+    for e in live:
+        if len(partners[e["from"]]) == 1 and len(partners[e["to"]]) == 1:
+            out.append((e["from"], e["to"]))
+            if not e.get("one_way"):
+                out.append((e["to"], e["from"]))
+    return out
+
+
+def _scope_dirs(name, repos, scopes):
+    return _forms(scope_paths(name) + _gone_trees(name, repos, scopes))
+
+
+def bridge_lifts(starts, flagged, repos, scopes, dirs_of):
+    """{scope} whose fence an open bridge lifts for a session whose starts are STARTS (the cwd, then
+    CLAUDE_PROJECT_DIR when set): the confidential scopes holding the last start and each one an open
+    bridge runs to from them, when every start is in one of those scopes' paths; else none. DIRS_OF: a
+    scope's paths, memoised by the caller. Never raises (a doubt is no bridge)."""
+    try:
+        dirs = bridge_directions()
+        if not dirs or not starts:
+            return set()
+        home = {s for s in flagged if _within(starts[-1], dirs_of(s))}
+        held = home | {y for x, y in dirs if x in home and y in flagged}
+        if held == home:
+            return set()
+        union = [d for s in held for d in dirs_of(s)]
+        return held if all(_within(s, union) for s in starts) else set()
+    except Exception:
+        return set()
+
+
 def fences(cwd):
-    """[(scope, Rules)] for each confidential scope this session is outside of."""
+    """[(scope, Rules)] for each confidential scope this session is outside of, bar one a bridge lifts."""
     scopes = _registry()[1]
     flagged = [n for n, s in scopes.items() if isinstance(s, dict) and s.get("confidential") is True]
     starts = [cwd] + ([os.environ["CLAUDE_PROJECT_DIR"]] if os.environ.get("CLAUDE_PROJECT_DIR") else [])
     repos, out = _registry()[0], []
     fences.inner = []
+    got = {}
+
+    def dirs_of(s):
+        if s not in got:
+            got[s] = _scope_dirs(s, repos, scopes)
+        return got[s]
+    lifted = bridge_lifts(starts, flagged, repos, scopes, dirs_of) if flagged else set()
     for name in flagged:
-        dirs = _forms(scope_paths(name) + _gone_trees(name, repos, scopes))
-        if not dirs or all(_within(s, dirs) for s in starts):
+        dirs = dirs_of(name)
+        # inside the scope, or across an open bridge: its paths are the session's for the window
+        if not dirs or all(_within(s, dirs) for s in starts) or name in lifted:
             fences.inner += dirs
             continue
         keys = [k.rsplit("/", 1)[-1] for k in _members(scopes[name], repos)]
@@ -1179,6 +1446,29 @@ def main():
                 "permissionDecisionReason": SETTINGS_REASON.format(
                     tool=tool, owner=OWNER, cs=os.path.join(TOOLS, "bin", "claude-settings"))}}, ensure_ascii=False))
             return
+    try:   # opening a bridge (S8's D1): the owner's verb, whoever asks
+        what = bridge_open_hit(inp.get("command") or "") if tool == "Bash" else None
+    except Exception:
+        what = None
+    if what:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": BRIDGE_OPEN_REASON.format(what=what, owner=OWNER,
+                                                                  scopes=module_tool("wharf", "scopes"))}}, ensure_ascii=False))
+        return
+    try:   # the bridges file (S8): before the fence, which would honour what the write opens
+        what = (f"{tool} of {inp.get('file_path') or inp.get('notebook_path')}"
+                if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit")
+                and bridges_file_hit(inp.get("file_path") or inp.get("notebook_path") or "", cwd)
+                else bash_hit(inp.get("command") or "", cwd, bridges_rules()) if tool == "Bash" else None)
+    except Exception:
+        what = None
+    if what:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": BRIDGES_REASON.format(what=what, owner=OWNER,
+                                                              scopes=module_tool("wharf", "scopes"))}}, ensure_ascii=False))
+        return
     if tool == "Bash":   # before the vault lookup: a Mac without Drive mounted is guarded too
         hit = sessionpipe_hit(inp.get("command") or "")
         if hit:

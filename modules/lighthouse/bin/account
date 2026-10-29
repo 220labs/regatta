@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--bound] [--repo PATH|KEY] [--from CWD] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
     account limits [LABEL | --all [--parked] [--orca]] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
-    account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
+    account allowed PATH [--from CWD]                           exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's (an open bridge waives that for a start in either side)
     account refresh [--force]                                   the Drive-backed files' local copies, re-read (the usage tick's, through claude-host; exit 3 outside it)
     account tenant set NAME --repos KEY… --logins LABEL…        one tenant into the tenants file (a login in one tenant only), then its copy refreshed; a person's (exit 2 unattended)
     account tenant drop NAME                                    one tenant out of the tenants file, then its copy refreshed; a person's too
@@ -128,6 +128,15 @@ host or a drive away before its first read let the work seats into the vault onc
 went. Only `{}` ends tenancy, or no key at all; a deleted file or link leaves the copy holding.
 `tenant set` and `tenant drop` are its one writer (S7): a person's, refused under CLAUDE_UNATTENDED; they write through the
 link, read the file back and refresh the copy, and refuse rather than drop what they cannot read or give a login a second tenant.
+
+Bridges (confidential-reach S8, 2026-10-28): while an open bridge runs confidential scope X→Y (the config dir's
+`lighthouse/bridges.json`, which wharf's `scopes bridge` writes; the core's open_bridges() is the one reading of it,
+and reads every doubt as no bridge), X's logins may run Y's repos: a tenant covering Y's repos has its route waived
+for those rows on Y's repos alone, and Y's scope `login` takes them beside its own in pick, limits and a ship's pin.
+`--from CWD` (allowed, pick, limits) counts a bridge only for a start in X or Y; account_guard passes the session's.
+Deny lists and a closed tenancy are never waived; doctor lists each open bridge and the half it can waive. pick
+walks a scope's own rows first and a row only the bridge lets in after them (D1-A, 2026-10-28): a bridge lends a
+seat when the scope's own have no room, it never moves the scope's runs onto the other side's.
 
 Drive-backed reads are local (docs/orca-launcher-2026-10-24.md, S4, 2026-10-24: no unattended run may
 hang on a person). The tenants file and the logins file are
@@ -620,6 +629,155 @@ def apply_tenants(reg):
                       for n, t in raw.items() if isinstance(n, str) and isinstance(t, dict)}
     for a in reg.get("accounts") or []:
         a["routed"] = routes_for(reg, a)
+    apply_bridges(reg)
+
+
+# Bridges (confidential-reach S8; the core's open_bridges(), wharf's `scopes bridge` its one writer): while an
+# open bridge runs scope X→Y, X's logins — its scope `login` and the logins of the tenant whose repos cover
+# X's — may run Y's repos. Two halves, as Y is held: a tenant covering Y's repos routes them off every other
+# row, so its entries are waived for X's logins on Y's repos alone (`bridged` on the row, read by denied();
+# the entry stays, so the tenant's other repos stay off); a scope `login` on Y is waived by pick, limits and
+# a ship's pin (bridge_logins_for). A Y with a `login` and no tenant has nothing routed to waive: only the
+# second half applies (doctor says so). The deny lists are never waived, nor a closed tenancy (no tenant
+# covers a scope then). BRIDGE_FROM narrows both halves to a start in X or Y (`allowed --from`, `pick` and
+# `limits --from`: an open cwd on the same login reads neither side, as the fence has it).
+BRIDGE_FROM = None
+
+
+def covering_tenant(reg, keys):
+    """The tenant whose entries match every one of `keys` (a scope's repo keys), else None; never CLOSED."""
+    if not keys:
+        return None
+    for n, entries in (reg.get("tenants") or {}).items():
+        if n != CLOSED and all(any(k == e or (is_glob(e) and fnmatch.fnmatchcase(k, e)) for e in entries) for k in keys):
+            return n
+    return None
+
+
+def apply_bridges(reg):
+    """Each row's `bridged` {to scope: {from, keys, tenant, id}} and the registry's `bridges` [{id, from, to,
+    until, why, logins, tenant, login}] from the core's open bridges; nothing on any doubt (the core reads
+    every doubt as no bridge). Never raises: the guard reads this."""
+    rows = reg.get("accounts") or []
+    for a in rows:
+        a["bridged"] = {}
+    reg["bridges"] = []
+    try:
+        c = core()
+        # one read of the registry for every scope judged (the trap "a gate that judges several scopes reads the
+        # registry once"; the S8 second stop: bridge_directions, scope_registry and each scope_login read it apart)
+        creg, torn = c.read_registry()
+        if torn:
+            return
+        creg = creg or {}
+        dirs = c.bridge_directions(reg=creg)
+        repos, scopes = creg.get("repos") or {}, creg.get("scopes") or {}
+    except Exception:
+        return
+    reg["core_registry"] = creg   # scope_name_of's read, for bridge_logins_for and bridge_from_ok
+    for x, y, e in dirs:
+        kx = [k for k in c.scope_members(scopes.get(x) or {}, repos) if k in repos]
+        ky = [k for k in c.scope_members(scopes.get(y) or {}, repos) if k in repos]
+        tx, ty = covering_tenant(reg, kx), covering_tenant(reg, ky)
+        labels = {r["label"] for r in rows if tx and r.get("tenant") == tx}
+        if scope_login_in(creg, x):
+            labels.add(scope_login_in(creg, x))
+        for a in rows:
+            if a["label"] in labels:
+                a["bridged"].setdefault(y, {"from": x, "keys": ky, "tenant": ty, "id": e.get("id")})
+                a["core_registry"] = creg
+        reg["bridges"].append({"id": e.get("id"), "from": x, "to": y, "until": e.get("until"), "why": e.get("why"),
+                               "logins": sorted(labels), "tenant": ty, "login": scope_login_in(creg, y)})
+
+
+def path_keys(path):
+    """The registry keys the repo at `path` may stand under: its repo key, then its leading folders below the
+    projects folder, longest first (a folder that is no git repo is its path, as in denied())."""
+    keys = [repo_of(path)]
+    try:
+        rel = Path(path).expanduser().absolute().resolve().relative_to(projects_dir().resolve()).parts
+        keys += ["/".join(rel[:i]) for i in range(len(rel), 0, -1)]
+    except ValueError:
+        pass
+    return [k for k in keys if k]
+
+
+def scope_login_in(creg, name):
+    """Scope `name`'s `login` in the core registry CREG (one read_registry() parse), or None."""
+    s = ((creg or {}).get("scopes") or {}).get(name) if name else None
+    v = s.get("login") if isinstance(s, dict) else None
+    return v if isinstance(v, str) and v else None
+
+
+def scope_name_of(path, creg=None):
+    """The registry scope holding the repo at `path` (path_keys), or None — None too when the registry does not
+    read (a widening reads that doubt as no scope; scope_login_of reads it as a refusal). CREG: one
+    read_registry() parse, so a caller judging several paths reads one file."""
+    if not path:
+        return None
+    try:
+        c = core()
+        if creg is None:
+            creg, torn = c.read_registry()
+            if torn:
+                return None
+        repos, scopes = (creg or {}).get("repos") or {}, (creg or {}).get("scopes") or {}
+        for k in path_keys(path):
+            n = next((n for n, s in scopes.items() if isinstance(s, dict) and k in c.scope_members(s, repos)), None)
+            if n:
+                return n
+    except Exception:
+        return None
+    return None
+
+
+_FROM_OK = {}
+
+
+def bridge_from_ok(x, y, path, creg=None):
+    """True when BRIDGE_FROM is in scope Y itself (a start in the repo the bridge opens), or in X's paths with
+    `path` in Y's (the core's bridge_active). No BRIDGE_FROM lends nothing: a widening reads that doubt as no
+    bridge (the S8 second stop — skipperlib, autofinish-run and weekly-run asked with none and were lent one for
+    any start; they pass their cwd now). Memoised per (x, y, path): pick asks it for every row."""
+    if BRIDGE_FROM is None:
+        return False
+    k = (x, y, str(path), BRIDGE_FROM)
+    if k not in _FROM_OK:
+        try:
+            _FROM_OK[k] = scope_name_of(BRIDGE_FROM, creg) == y or bool(core().bridge_active(BRIDGE_FROM, path))
+        except Exception:
+            _FROM_OK[k] = False
+    return _FROM_OK[k]
+
+
+def bridge_waives(a, path, t):
+    """True when the tenant route `t` that keeps repo `path` off row `a` is waived by an open bridge."""
+    for y, b in (a.get("bridged") or {}).items():
+        if not (t and b.get("tenant") and t.get("tenant") == b["tenant"]):
+            continue
+        key = repo_of(path)
+        p = Path(path).expanduser().absolute()
+        if (key in b["keys"] or any(p == projects_dir() / k or (projects_dir() / k) in p.parents for k in b["keys"])) \
+                and bridge_from_ok(b["from"], y, path, a.get("core_registry")):
+            return True
+    return False
+
+
+def bridge_lent(a, path, own, also):
+    """True when only an open bridge lets row `a` run the repo at `path`: a bridged login beside the scope's
+    own `login` (ALSO, bridge_logins_for), or a tenant route the bridge waives (denied() None, _denied() not)."""
+    if own and own[1] and a["label"] != own[1] and a["label"] in also:
+        return True
+    return bool(a.get("bridged")) and bool(_denied(a, path)) and not denied(a, path)
+
+
+def bridge_logins_for(reg, path):
+    """{label: from scope} — the logins an open bridge lets run the repo at `path` beside its scope's own
+    `login` (the second half above)."""
+    creg = reg.get("core_registry")
+    y = scope_name_of(path, creg) if reg.get("bridges") else None
+    return {l: b["from"] for b in reg.get("bridges") or [] if y and b["to"] == y and bridge_from_ok(b["from"], y, path, creg)
+            for l in b["logins"]}
 
 
 def tenant_logins(t):
@@ -1127,13 +1285,31 @@ def repo_of(path):
 
 def denied(a, path, routes=True):
     """→ the repo key if this row's deny list names the repo at path — or, with `routes`, a tenant's
-    repo the row is not the tenant of (header) — else None. A glob entry matches repo keys only."""
-    deny = list(((a.get("repos") or {}).get("deny")) or []) + (list(a.get("routed") or {}) if routes else [])
+    repo the row is not the tenant of (header), unless an open bridge waives that route (apply_bridges) —
+    else None. A glob entry matches repo keys only."""
+    d = _denied(a, path, routes)
+    if d and routes and a.get("bridged") and not _denied(a, path, False):
+        # every tenant route that names the path, not the first: overlapping entries of two tenants (`acme-*`
+        # and `acme-z`) must not both be waived by a bridge into one of them (the S8 second stop's item 4)
+        routed = a.get("routed") or {}
+        ts = [routed[e] for e, _ in deny_hits(list(routed), path)]
+        if ts and all(bridge_waives(a, path, t) for t in ts):
+            return None
+    return d
+
+
+def _denied(a, path, routes=True):
+    hits = deny_hits(list(((a.get("repos") or {}).get("deny")) or []) + (list(a.get("routed") or {}) if routes else []), path)
+    return hits[0][1] if hits else None
+
+
+def deny_hits(deny, path):
+    """[(entry, key)] — each entry of DENY that names the repo at path, by the rules below in their order;
+    the first pair's key is _denied()'s answer."""
     if not deny or not path:
-        return None
+        return []
     key = repo_of(path)
-    if key is not None and any(key == d or (is_glob(d) and fnmatch.fnmatchcase(key, d)) for d in deny):
-        return key
+    out = [(d, key) for d in deny if key is not None and (key == d or (is_glob(d) and fnmatch.fnmatchcase(key, d)))]
     p = Path(path).expanduser().absolute().resolve()
     try:
         rel = p.relative_to(projects_dir().resolve()).parts
@@ -1145,12 +1321,13 @@ def denied(a, path, routes=True):
         if is_glob(d) and key is None:
             n = len(d.strip("/").split("/"))
             if len(rel) >= n and fnmatch.fnmatchcase("/".join(rel[:n]), d.strip("/")):
-                return "/".join(rel[:n])
+                out.append((d, "/".join(rel[:n])))
+                continue
         # then as a folder, so a literal name holding "[" or "*" still refuses its path, as before globs
         root = (projects_dir() / d).resolve()
         if p == root or root in p.parents:
-            return d
-    return None
+            out.append((d, d))
+    return out
 
 
 def known_key(key, reg):
@@ -1206,7 +1383,7 @@ def route_of(a, key):
 def routed_off(a, path):
     """→ (key, {tenant, logins}) when path is a tenant's repo row `a` may not run, else None: the one
     refusal the default dir has (its own deny list binds pick only, as before)."""
-    d = denied({"routed": a.get("routed")}, path)
+    d = denied({"routed": a.get("routed"), "bridged": a.get("bridged")}, path)
     t = d and route_of(a, d)
     return (d, t) if t else None
 
@@ -1257,18 +1434,12 @@ def scope_login_of(path):
     review of S1, 2026-10-22)."""
     if not path:
         return None
-    keys = [repo_of(path)]
     try:
-        rel = Path(path).expanduser().absolute().resolve().relative_to(projects_dir().resolve()).parts
-        keys += ["/".join(rel[:i]) for i in range(len(rel), 0, -1)]
-    except ValueError:
-        pass
-    try:
-        c = core()
-        if getattr(c, "registry_unreadable", lambda: False)():
+        creg, torn = core().read_registry()   # one read: the tear and the scope from the same file
+        if torn:
             return ("the registry does not read", "")
-        name = next((n for n in (c.scope_of_key(k) for k in keys if k) if n), None)
-        login = c.scope_login(name) if name else None
+        name = scope_name_of(path, creg or {})
+        login = scope_login_in(creg, name)
     except Exception:
         return None
     return (name, login) if login else None
@@ -1735,11 +1906,19 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
     own = scope_login_of(repo)
     if own and not own[1]:
         raise Short([("registry", f"{own[0]}: no run picks a seat until it does")])
-    if own and not any(a["label"] == own[1] for a in rows):
-        raise Short([(own[1], f"scope {own[0]} runs on {own[1]}, which is no enabled {prov} account in {REGISTRY}")])
+    also = bridge_logins_for(reg, repo) if own else {}   # an open bridge's logins, beside the scope's own (S8)
+    on = f"{own[1]}" + (f" (or {', '.join(sorted(also))}, bridged)" if also else "") if own else ""
+    if own and not any(a["label"] == own[1] or a["label"] in also for a in rows):
+        raise Short([(own[1], f"scope {own[0]} runs on {on}, which is no enabled {prov} account in {REGISTRY}")])
+    if reg.get("bridges"):
+        # D1-A (the manager, 2026-10-28): a scope's own logins first, a row only an open bridge lets in after
+        # them all — a bridge lends a seat for the window, it never moves the scope's own runs onto the
+        # other side's (the S8 landing review: first in the walk moved billing between employers)
+        lent = {a["label"] for a in rows if bridge_lent(a, repo, own, also)}
+        rows = [a for a in rows if a["label"] not in lent] + [a for a in rows if a["label"] in lent]
     for a in rows:
-        if own and a["label"] != own[1]:
-            skipped.append((a["label"], f"scope {own[0]} runs on {own[1]}"))
+        if own and a["label"] != own[1] and a["label"] not in also:
+            skipped.append((a["label"], f"scope {own[0]} runs on {on}"))
             continue
         d = denied(a, repo)
         if d:
@@ -2784,7 +2963,8 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             own = scope_login_of(repo)
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
                 or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
-                or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}")
+                or (d and f"denied for {d}") or (own and own[1] != a["label"] and a["label"] not in bridge_logins_for(reg, repo)
+                                                 and f"not scope {own[0]}'s login {own[1]}")
             if not gone:
                 t = now()
                 lim = None if cooldown(a, t) else limits(a, cached=cached)[0]
@@ -3415,6 +3595,8 @@ def doctor_local(reg, logins, peer=None, record=True):
         f(*t)
     for t in tenancy_roster(reg):
         f(*t)
+    for t in bridge_state(reg):   # the open bridges, and the halves each one can waive (S8)
+        f(*t)
     for t in stale_copies(peer):   # the hooks' copies of the Drive-backed files (S4)
         f(*t)
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
@@ -3423,6 +3605,28 @@ def doctor_local(reg, logins, peer=None, record=True):
     for d in sorted(HOME.glob(".claude-*")):
         if d.is_dir() and d.absolute() not in known:
             f("-", "info", f"{d} is in no registry row")
+    return out
+
+
+def bridge_state(reg):
+    """[(label, level, text, fix?)] — doctor's lines for the bridges file: each open direction, what it waives,
+    and a file that does not read (every bridge then reads as none, so nothing is widened; a fix all the same)."""
+    out = []
+    try:
+        c = core()
+        rows, torn = c.read_bridges()
+    except Exception:
+        return out
+    if torn:
+        out.append(("-", "fix", f"{c.bridges_file()} does not read: every bridge reads as none until it does",
+                    f"{c.tool('scopes') or 'scopes'} bridge audit"))
+    for b in reg.get("bridges") or []:
+        half = (f"{b['tenant']}'s route waived for {', '.join(b['logins']) or 'no login'}" if b.get("tenant") else
+                f"{b['to']} has a login ({b['login']}) and no tenant: pick's half only" if b.get("login") else
+                f"{b['to']} has no tenant and no login: nothing to waive here")
+        out.append(("-", "info" if b["logins"] else "fix",
+                    f"bridge {b['id']}: {b['from']} → {b['to']} until {b['until']} ({b.get('why') or 'no reason given'}) — {half}",
+                    None if b["logins"] else f"{b['from']} names no login and no tenant covers it: the bridge lets no login in"))
     return out
 
 
@@ -3500,13 +3704,13 @@ def fable_word(lim):
     return "yes" if f else ("no" if f is False else "unknown")
 
 
-def limits_json(a, lim, at, t, repo=None):
+def limits_json(a, lim, at, t, repo=None, reg=None):
     ok, why = judge(a, lim, t)
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)
     own = scope_login_of(repo)
-    if own and own[1] != a["label"]:  # in `denied` too: dispatch's --force never crosses that
+    if own and own[1] != a["label"] and a["label"] not in bridge_logins_for(reg or {}, repo):  # in `denied` too: dispatch's --force never crosses that
         ok, why, d = False, (f"scope {own[0]} runs on {own[1]}" if own[1] else own[0]), d or f"scope {own[0]}"
     if not a["enabled"]:  # only `limits --all --parked` lists one; never a pick. judge's reason kept: why no figures
         ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
@@ -3526,6 +3730,7 @@ def main(argv):
     p.add_argument("--provider")
     p.add_argument("--bound", action="store_true")
     p.add_argument("--repo")
+    p.add_argument("--from", dest="start", help="the caller's cwd: an open bridge's logins count only for a start in either side (S8)")
     p.add_argument("--ship")
     p.add_argument("--no-pin", action="store_true")
     p.add_argument("--cached", action="store_true")
@@ -3548,6 +3753,7 @@ def main(argv):
     p.add_argument("--parked", action="store_true", help="with --all: the rows accounts.json parks too, never an `orca off` one (the widget)")
     p.add_argument("--orca", action="store_true", help="with --all: a report-only row per other agent Orca reads limits for (the widget)")
     p.add_argument("--repo")
+    p.add_argument("--from", dest="start", help="as pick's --from")
     p.add_argument("--cached", action="store_true")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("env")
@@ -3564,6 +3770,7 @@ def main(argv):
     sub.add_parser("which")
     p = sub.add_parser("allowed")
     p.add_argument("path")
+    p.add_argument("--from", dest="start", help="the session's start: an open bridge waives a route only for a start in either side (S8)")
     p = sub.add_parser("refresh")
     p.add_argument("--force", action="store_true")
     p = sub.add_parser("tenant")
@@ -3586,6 +3793,9 @@ def main(argv):
     p.add_argument("--json", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if getattr(args, "start", None):   # an open bridge counts for a start in either side only (apply_bridges)
+        global BRIDGE_FROM
+        BRIDGE_FROM = str(Path(args.start).expanduser().absolute())
     if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
         ra = args.resets_at
         record_exhaustion(current_home(), args.window, float(ra) if ra.replace(".", "", 1).isdigit() else ra,
@@ -3799,7 +4009,7 @@ def main(argv):
         out = []
         for a in rows:
             lim, at = limits(a, cached=args.cached)
-            out.append(limits_json(a, lim, at, t, args.repo))
+            out.append(limits_json(a, lim, at, t, args.repo, reg))
         if args.orca and (args.all or not args.label):
             out += orca_reported({a["label"] for a in reg["accounts"]}, cached=args.cached)
         if args.json:

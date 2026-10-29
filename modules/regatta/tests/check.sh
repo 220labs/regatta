@@ -99,6 +99,78 @@ check "$(SP 'f = common.gather_fence(path="'"$T/torn.json"'"); print(f("'"$PJ/o/
 check "$(SP '
 try: common.gather_fence("half", path="'"$T/torn.json"'")
 except ValueError as e: print("refused")')" "refused" "  and a scope asked of it: ValueError"
+echo "bridges: two confidential scopes for a window (confidential-reach S8)"
+# three confidential scopes (A, B, C), one open (O); the bridges file is the config dir's, written per case
+printf '{"repos": {"ka": {}, "kb": {}, "kc": {}, "ko": {}},\n "scopes": {"A": {"file": "a", "repos": ["ka"], "confidential": true, "login": "la"},\n  "B": {"file": "b", "repos": ["kb"], "confidential": true, "login": "lb"},\n  "C": {"file": "c", "repos": ["kc"], "confidential": true},\n  "O": {"file": "o", "repos": ["ko"]}}}\n' > "$T/br.json"
+BF="$T/config/lighthouse/bridges.json"; mkdir -p "$T/config/lighthouse"
+# BW "from to hours [one_way] [ended]"…: one entry per argument, opened a minute ago, until HOURS from now
+BW() { python3 - "$BF" "$@" <<'PY'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc)
+iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+rows = []
+for n, spec in enumerate(sys.argv[2:]):
+    w = spec.split()
+    e = {"id": "b%d" % n, "from": w[0], "to": w[1], "opened": iso(now - datetime.timedelta(minutes=1)),
+         "until": iso(now + datetime.timedelta(hours=float(w[2]))), "why": "t", "by": "t"}
+    if "one_way" in w[3:]: e["one_way"] = True
+    if "ended" in w[3:]: e["ended"] = iso(now)
+    rows.append(e)
+open(sys.argv[1], "w").write(json.dumps({"bridges": rows}))
+PY
+}
+BP() { CLAUDE_REPOS_JSON="$T/br.json" ACCOUNTS_FILE="$T/acc.json" py "$1"; }
+BA() { BP "print(*(common.bridge_active(c, p) for c, p in [$1]))"; }
+PA="'$PJ/ka/x'"; PB="'$PJ/kb/x'"; PC="'$PJ/kc/x'"; PO="'$PJ/ko/x'"
+check "$(BA "($PA, $PB)")" "False" "no bridges file: no bridge"
+BW "A B 4"
+check "$(BA "($PA, $PB), ($PB, $PA), ($PA, $PC), ($PO, $PB), ($PA, $PA), ($PA, $PO)")" "True True False False False False" \
+  "an open bridge, both ways; never a third scope, an open cwd, the cwd's own scope or an open path"
+check "$(BA "('$HD/.claude-w/projects/$(printf '%s' "$PJ/ka" | sed 's/[^A-Za-z0-9]/-/g')/s.jsonl', '$PJ/transcripts/kb/s.jsonl')")" "True" \
+  "  a login's session folder of A (scope_within, exact) reaches B's transcripts"
+# the landing review's two over-reaches (S8): scope_match's slug-prefix rule granted from a scratch folder named
+# after A's slug, and into a third scope whose repo's slug starts with B's
+SL() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+sed 's/"ko": {}/"ko": {}, "kb-two": {}/; s/"O": {/"D": {"file": "d", "repos": ["kb-two"], "confidential": true},\n  "O": {/' "$T/br.json" > "$T/br3.json"
+check "$(BA "('$T/scratch/claude-501/$(SL "$PJ/ka")-tools/s1', $PB)") $(CLAUDE_REPOS_JSON="$T/br3.json" ACCOUNTS_FILE="$T/acc.json" py "print(common.bridge_active($PA, '$HD/.claude-w/projects/$(SL "$PJ/kb-two")/s.jsonl'))")" "False False" \
+  "  never from a scratch folder that only shares A's slug, nor into a third scope D whose slug starts with B's"
+check "$(CLAUDE_REPOS_JSON="$T/br3.json" ACCOUNTS_FILE="$T/acc.json" py "print(common.bridge_active($PA, '$HD/.claude-w/projects/$(SL "$PJ/kb")/s.jsonl'))")" "True" \
+  "  while B's own session folder beside it still is"
+BW "A B 4 one_way"
+check "$(BA "($PA, $PB), ($PB, $PA)")" "True False" "one-way: from reaches to, never back"
+BW "A B -1"
+check "$(BA "($PA, $PB)")" "False" "expired: no bridge"
+BW "A B 4 ended"
+check "$(BA "($PA, $PB)")" "False" "ended (revoked): no bridge"
+BW "A B 30"
+check "$(BA "($PA, $PB)")" "False" "an entry past 24 h: no bridge, whoever wrote it"
+BW "A B 4" "B C 4"
+check "$(BA "($PA, $PB), ($PB, $PC), ($PA, $PC), ($PC, $PB)")" "False False False False" \
+  "a chain (B bridged to A and C): every entry B is in is void, so nothing reaches a third scope"
+BW "A B 4" "A B 2"
+check "$(BA "($PA, $PB)")" "True" "  two entries of one pair are no chain"
+BW "A O 4" "A Z 4"
+check "$(BA "($PA, $PO)")" "False" "an open scope or one the registry lacks: no bridge"
+BW "A B 4"; printf '{"bridges": [' > "$BF"
+check "$(BA "($PA, $PB)")" "False" "a torn bridges file: no bridge (fails closed, unlike the fence's torn registry)"
+BW "A B 4"
+check "$(CLAUDE_REPOS_JSON="$T/torn.json" py "print(common.bridge_active($PA, $PB))")" "False" "a torn registry: no bridge"
+check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "False 1" "read_bridges(), open_bridges(): the entry as written"
+printf '{"bridges": {}}' > "$BF"
+check "$(BP 'print(common.read_bridges())')" "([], True)" "  a bridges key that is no list: torn"
+# the second finish stop: an agent's link there made the file its target's; scopes bridge writes none of these
+BW "A B 4"; mv "$BF" "$T/bsrc.json"; ln -s "$T/bsrc.json" "$BF"
+check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))') $(BA "($PA, $PB)")" "True 0 False" "a bridges file that is a link: torn, no bridge"
+rm -f "$BF"; cp "$T/bsrc.json" "$(dirname "$BF")/Bridges.json"
+check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "$([ -e "$BF" ] && echo True || echo False) 0" \
+  "  a file named Bridges.json: not the file (torn where the disk opens it by the name, absent where it does not)"
+rm -f "$(dirname "$BF")/Bridges.json"; cp "$T/bsrc.json" "$BF"; ln "$BF" "$T/bhard.json"
+check "$(BP 'print(common.read_bridges()[1])')" "True" "  a second hard link: torn"
+rm -f "$T/bhard.json"; mkdir -p "$T/bdir"; mv "$BF" "$T/bdir/x"; mkdir "$BF"
+check "$(BP 'print(common.read_bridges())')" "([], True)" "  a folder of the name: torn"
+rmdir "$BF"; mv "$T/bdir/x" "$BF"
+check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "False 1" "  the plain file again: read"
+rm -f "$BF"
 printf '{"repos": {"a": {}}, "scopes": {"y": {"repos": ["a"], "yard": "studio"}, "n": {"repos": [], "yard": null}, "x": {"repos": []}, "e": {"repos": [], "yard": ""}}}\n' > "$T/yards.json"
 check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yard("y"), common.scope_yard("n"), common.scope_yard("x"), common.scope_yard("e"), common.scope_yard("nope"))')" \
   "studio None None None None" "scope_yard() (skipper-resilience S2): a host; null, absent, empty or no such scope: None"

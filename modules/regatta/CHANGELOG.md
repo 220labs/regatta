@@ -12,6 +12,15 @@
   `check`, never a config site. `GATE_TABLE` resolves as one file, no fallback. `settings/` joins
   `autofinish_exclude`: every gate call on the Macs now reads it. Lighthouse's four `lighthouse.*` rows met "no row" on the Macs, whose config table links to the overlay's.
 
+- Bridges (confidential-reach S8, 2026-10-28): `bridges_file()`, `read_bridges()`, `open_bridges()`,
+  `bridge_directions()` and `bridge_active(cwd, path)` read the config dir's
+  `lighthouse/bridges.json`, failing closed: a missing or torn file, a torn registry, an entry past `until`,
+  ended, longer than 24 h (`BRIDGE_MAX`), naming a scope missing or open, or in a chain (a scope with two
+  partners) grants nothing. A bridge runs both ways unless `one_way`, and never past the two scopes.
+  `bridge_active` tests the cwd exactly (`scope_within`) and grants nothing for a path a confidential scope
+  outside the bridge matches; `scope_paths` and `scope_match` take one registry parse (`reg`; the landing review).
+  `read_bridges` reads a link, anything but a regular file, a second hard link or a name not exactly
+  `bridges.json` in its folder as torn (the second finish stop).
 - `scope_marker(name)` and `scope_of_marker(marker)` (confidential-reach S5's landing review, 2026-10-26):
   what text bound for an open repo says in place of a confidential scope's name, `confidential:<first 8
   hex of sha256(name)>`, and its reading back by this host's registry (None for an open scope, an unknown
