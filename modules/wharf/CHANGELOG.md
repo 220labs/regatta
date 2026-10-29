@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- checkpoint denies every session, attended or not, a hand write of the force mark
+  (`force/` in run-seed's cache folder, dispatch-queue S4): it stands for the owner saying "use the force";
+  only wharf-runs' `force_mark` hook writes it and only dispatch spends it. Reading it stays allowed.
+
 - `finish-stuck-rebase` says it needs git 2.40 or newer at its start (exit 1, nothing changed), and its
   suite fails once naming the floor on an older git: macOS 12's Apple git 2.37 failed it with
   `fatal: ref HEAD is not a symbolic ref` on a 2016 runner Mac (2026-10-28).

@@ -429,22 +429,20 @@ def poll_asks():
 QUEUE_TIMEOUT = 90
 
 
-def poll_queue():
-    """({(repo name, branch)} dispatch's queue holds, why-unreadable or None): one `dispatch-queue list --all
-    --json`. No dispatch-queue here (wharf-runs absent): nothing held, readable. STALLS_DISPATCH_QUEUE is the
-    tests' stand-in."""
+def queue_reader():
+    """wharf-runs' queue_holds.Holds over dispatch-queue, or None with no wharf-runs here (nothing held,
+    readable): the one "does the queue hold this branch" reader autofinish and sextant's soundings share
+    (dispatch-queue S4; S3's third landing review, item 7). STALLS_DISPATCH_QUEUE is the tests' stand-in."""
+    lib = helmlib.peer("queue_holds.py")
     q = os.environ.get("STALLS_DISPATCH_QUEUE") or helmlib.peer("dispatch-queue")
     if not q:
-        return set(), None
-    try:
-        r = subprocess.run([str(q), "list", "--all", "--json"], capture_output=True, text=True, timeout=QUEUE_TIMEOUT)
-        d = json.loads(r.stdout)
-    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
-        return set(), "dispatch-queue list: %s" % (e.__class__.__name__,)
-    if not isinstance(d, dict):
-        return set(), "dispatch-queue list: no answer"
-    held = {(repo_name(e.get("repo")), e.get("branch")) for e in d.get("entries") or [] if isinstance(e, dict)}
-    return held, ("; ".join(map(str, d.get("why") or [])) or "unreadable") if d.get("unreadable") else None
+        return None
+    if not lib:
+        raise RuntimeError("a dispatch-queue with no queue_holds.py beside it")   # could not tell: held
+    if str(lib.parent) not in sys.path:
+        sys.path.insert(0, str(lib.parent))
+    import queue_holds  # noqa: PLC0415 — wharf-runs', found through the core's tool()
+    return queue_holds.Holds(q, timeout=QUEUE_TIMEOUT)
 
 
 class QueueRead:
@@ -452,17 +450,30 @@ class QueueRead:
     on the pending line, `queued <branch> …; the next step waits for a run to end`, and its run then ends —
     which read alone is S1's "nothing woke it", a retry of a step the queue already holds, or, on the cap's
     words, S2's start beside it. So a branch the queue holds is `queued`, never a stall; a queue that cannot
-    be read holds every branch (the readers' rule: unreadable is "has an entry"). Read once per pass, and
-    only when a run's line asks: most passes judge no pending run, and a read fetches the home."""
+    be read holds every branch, and one store that cannot be read the branches routed to it (the readers'
+    rule, queue_holds). Read once per pass, and only when a run's line asks: most passes judge no pending
+    run, and a read fetches the home."""
 
     def __init__(self):
-        self.read, self.held, self.bad = False, set(), None
+        self.reader, self.made, self.bad, self.last_bad = None, False, None, None
 
     def __call__(self, repo, branch):
-        if not self.read:
-            self.read = True
-            self.held, self.bad = poll_queue()
-        return bool(self.bad) or (repo, branch) in self.held
+        """True when the queue holds BRANCH of REPO (a name). `last_bad`: this answer held only because the
+        queue (or the store the branch routes to) does not read, the card's why; `bad`: any answer of the pass
+        did, the pass's note."""
+        if not self.made:
+            self.made = True
+            try:
+                self.reader = queue_reader()
+            except Exception:   # wharf-runs present but its reader broken: could not tell, so held
+                self.reader = False
+        if self.reader is False:
+            self.bad = self.last_bad = "dispatch's queue reader failed"
+            return True
+        why = self.reader.why(repo, branch) if self.reader else None
+        self.last_bad = why if why and why.endswith("counts as there") else None
+        self.bad = self.bad or self.last_bad
+        return bool(why)
 
 
 WAITING_ON_OWNER = "waiting on the owner"
@@ -579,7 +590,7 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
         if pend and queued is not None and queued(repo, pend):
             if queued_out is not None:
                 queued_out.append({"host": host, "repo": repo, "branch": pend, "topic": st.get("topic"),
-                                   "run": name, "why": "unreadable queue" if queued.bad else "in dispatch's queue"})
+                                   "run": name, "why": "unreadable queue" if queued.last_bad else "in dispatch's queue"})
             continue
         if kind == WAITING_ON_OWNER:
             if CAP_RE.search(last):
@@ -1349,7 +1360,7 @@ def judge(peer=True, live_call=True, orca_held=None):
     for x in queued_runs:
         notes.append("queued: %s on %s — %s (%s); not a stall (dispatch --queue)" % (x.get("topic"), x["host"], x.get("branch"), x["why"]))
     if queued.bad:
-        notes.append("queue: unreadable (%s) — every run on the queue's closing line counts as queued" % queued.bad)
+        notes.append("queue: unreadable (%s) — every run on the queue's closing line whose branch the unread store may hold counts as queued" % queued.bad)
     return {"as_of": now, "host": me, "hosts": sorted(views), "stalls": stalls, "unsure": unsure, "notes": notes,
             "runs": runs, "waiting": waiting, "prompts": prompts, "live": live, "unread": unread, "orca_dead": dead,
             "self_judging": sorted(own), "registry_torn": torn, "queued": queued_runs}

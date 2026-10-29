@@ -1126,6 +1126,12 @@ PY
   qj=$(STALLS_DISPATCH_QUEUE="$T/dq-torn" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
   check "$(echo "$qj" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(x['topic'] for x in d['queued']), [s['class'] for s in d['stalls'] if s['topic'] in ('queued-step', 'cap-step')], any(n.startswith('queue: unreadable') for n in d['notes']))")" \
     "['queued-step'] ['S2'] True" "  a queue that does not read holds every branch on the pending line (the readers' rule), a note; the cap's words alone are S2, as before the queue"
+  # dispatch-queue S4: one confidential scope's node-local store torn holds that scope's branches only (queue_holds)
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [], \"unreadable\": true, \"why\": [\"local=vault: torn\"], \"bad_stores\": [{\"store\": \"local=vault\", \"why\": \"torn\", \"keys\": [\"vault--other\"]}]}'" > "$T/dq-local-torn"
+  chmod +x "$T/dq-local-torn"
+  qj=$(STALLS_DISPATCH_QUEUE="$T/dq-local-torn" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(x['topic'] for x in d['queued']), [(s['class'], s['action']) for s in d['stalls'] if s['topic']=='queued-step'])")" \
+    "[] [('S1', 'retry')]" "  S4: a torn node-local store holds only the keys its files name: this branch's is not among them"
   # dispatch-queue S3's third landing review, item 6: the exact pending line, judged by the branch it names
   say sid-queued-step "Queued.
 SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; the next step waits for a run to end"

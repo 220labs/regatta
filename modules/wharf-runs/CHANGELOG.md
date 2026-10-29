@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- dispatch-queue S4, priorities and the force (docs/dispatch-queue-2026-10-25.md, D2-A and D3-A): a `force`
+  entry is claimed one slot over the host's cap (at most one run ever above it; a second force entry waits
+  first in line) and on headroom's force floor, `headroom check --floor 5` (avail 5 %, swap and rate kept);
+  dispatch's fire path counts against the same cap (`dispatch-queue cap`). An unattended caller never
+  raises: `--priority force` is refused, `high` passes only when its own run's record is high, and a `--next`
+  with no `--priority` inherits its run's rank (force as high) — the record whose claude is an ancestor of
+  the dispatch (`dispatch-queue caller-prio`), never a session id; no DISPATCH_LABEL exception (a fired job carries no CLAUDE_UNATTENDED), and the
+  unattended refusal runs in dispatch's own bash before any queue verb. An attended session's `--priority force` needs the force mark, which
+  the new UserPromptSubmit hook `hooks/force_mark.py` writes when the owner's typed message says "use the
+  force" (a quoted, pasted, framed or subagent prompt never does) and dispatch spends on use; outside any
+  session the flag is the owner's typing. The hook is to be wired by one line in the overlay's `bootstrap.sh --hooks` (TODO.md, item 26).
+- One reader of "does the queue hold this branch", `bin/queue_holds.py`, for autofinish, helm's stalls and
+  sextant's soundings (one `list --all --json` each; soundings asked `has` per entry); `list --json` names the
+  stores that did not read (`bad_stores`), and a torn store holds only the branches routed to it.
+- From S3's reviews: a waiter from another host is live by its `put_at`, never a claim's `event_at`; the sweep
+  refreshes `by_seen` each sweep; a fire-time requeue (`enqueue --refused`) is guarded, and a live
+  session's queued step is kept ("queued again: … waits in the queue already"); `--if-room`'s refusal of a
+  claimed entry is an `if-room-skip` line, not a `queue-failed` card; `watch` follows its step re-put while
+  queued whatever its `queued_at`; a `--next`'s watch read from the last fetch is "could not tell"; a typed
+  `--on auto` beside `--wait`/`--replace` with a queue home is dropped, not refused; an unattended `--next`'s
+  one-shot fallback keeps its host pin. Cases: `tests/test_priority.sh`.
+
 - `autofinish-run` says what dispatch did, not "started" before it knows (autofinish-outcome, night-landings finding 1):
   after the detach it reads the run's dispatch log — `started: …` only once the `== claude … session …` header is
   there and names this run's session, `not started: <FAILED text>` when it refused and the waiter recorded the end

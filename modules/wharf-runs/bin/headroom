@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """headroom — whether this host has the memory for one more run; dispatch asks it beside the run cap.
 
-    headroom [check] [--json] [--no-log]
+    headroom [check] [--json] [--no-log] [--floor PCT]
 
 Why (2026-10-22): six runs took a 16 GB, 10-core host to load 65, 0.9 % idle and 58 % system time,
 251 MB free and 11.2 of 12 GB swap — thrashing — while dispatch would still have started four more:
@@ -25,6 +25,10 @@ run: dispatch leaves it queued, as it does at the cap, and a host with room clai
 docs/dispatch-queue-2026-10-25.md, which supersedes the 2026-10-08 "refused, not queued"); a host with no
 queue home (wharf-runs/queue-repo) still refuses it.
 
+`--floor PCT` is the force's line (dispatch-queue S4, D2-A of docs/dispatch-queue-2026-10-25.md): the
+host's own line with its `avail` lowered to PCT where it is higher, `swap` and `rate` kept — the rate is
+what told thrashing from busy on 2026-10-22, so a force run never passes a host that swaps. A line with
+no `avail` rule gains none: the floor only ever lowers a limit.
 Exit 0 room, 3 over a limit (the reason on stdout), 2 when it cannot read this host's memory or its
 limits, or fails in any other way: then dispatch goes ahead, saying so — a broken probe must not stop
 every run. Over is 3, never 1: 1 is what Python exits with on an uncaught error (review, 2026-10-22). Every check is a row in
@@ -150,11 +154,23 @@ def judge(sample, lim):
     return over
 
 
-def headroom(write_log=True):
+def floored(lim, floor):
+    """LIM with its `avail` lowered to FLOOR where it is higher; the other rules as they are."""
+    out = dict(lim)
+    if floor is not None and "avail" in out:
+        out["avail"] = min(out["avail"], floor)
+    return out
+
+
+def headroom(write_log=True, floor=None):
     host = here()
     row = {"t": int(time.time()), "host": host}
+    if floor is not None:
+        row["floor"] = floor
     try:
         lim, source = limits(host)
+        if floor is not None:
+            lim, source = floored(lim, floor), "%s, floor %g %%" % (source, floor)
         row.update(limits=lim, source=source)
         row["sample"] = sample = read()
         over = judge(sample, lim)
@@ -179,8 +195,12 @@ def main(argv=None):
     ap.add_argument("verb", nargs="?", default="check", choices=["check"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-log", action="store_true", help="write no headroom.jsonl row")
+    ap.add_argument("--floor", type=float, help="the force's line: avail lowered to this %%, swap and rate kept")
     a = ap.parse_args(argv)
-    row = headroom(write_log=not a.no_log)
+    if a.floor is not None and not 0 <= a.floor <= 100:
+        print("headroom: --floor takes a percentage, 0 to 100")
+        return 2
+    row = headroom(write_log=not a.no_log, floor=a.floor)
     print(json.dumps(row, sort_keys=True) if a.json else "%s: %s (%s)" % (row["host"], row["reason"], row.get("source", "")))
     return {True: 0, False: 3, None: 2}[row["room"]]
 

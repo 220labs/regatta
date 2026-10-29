@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `soundings refresh` reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4): one
+  `list --all --json` per refresh, not one `has` per entry, and a torn store holds only its own branches.
+
 - `pitch` (renders S6): the commodore, the deck that is sent and read alone, built from the same
   ```` ```deck ```` fence as the admiral: a slide may add `detail`, `links` (`{"text", "url"}`) and
   `"admiral": false`, which the admiral never shows. `build <doc> --deck admiral|commodore|all` (a

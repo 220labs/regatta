@@ -512,9 +512,9 @@ from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish", sys.argv[1]).load_module()
 root = Path(sys.argv[2]); (root / "shop").mkdir(parents=True, exist_ok=True)
 m.common.PROJECTS = root
-m._QUEUE["read"] = ([{"qid": "fleet:shop--a", "state": "queued", "repo": "shop", "branch": "claude/x/a"},
-                     {"qid": "fleet:shop--b", "state": "running", "repo": "shop", "branch": "claude/x/b", "running_on": m.host()},
-                     {"qid": "fleet:shop--c", "state": "running", "repo": "shop", "branch": "claude/x/c", "running_on": "elsewhere"}], None)
+m.queue_holds()._got = ([{"qid": "fleet:shop--a", "state": "queued", "repo": "shop", "branch": "claude/x/a"},
+                         {"qid": "fleet:shop--b", "state": "running", "repo": "shop", "branch": "claude/x/b", "running_on": m.host()},
+                         {"qid": "fleet:shop--c", "state": "running", "repo": "shop", "branch": "claude/x/c", "running_on": "elsewhere"}], [], None)
 print(bool(m.queue_hold(str(root / "shop"), "claude/x/a")), m.queue_hold(str(root / "shop"), "claude/x/b"),
       bool(m.queue_hold(str(root / "shop"), "claude/x/c")))
 QH

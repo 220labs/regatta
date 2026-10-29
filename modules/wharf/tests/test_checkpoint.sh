@@ -1489,6 +1489,28 @@ PYREC
 )
 ok "unattended: a hand edit of plan.json, branch-modes.json, a run record, /autofinish's marker or the yes at the brief by Bash is denied; a read is not (follow-ups item 7; autofinish-exclude landing review, finding 11)" \
   '[ "$rec" = "[] []" ]'
+fm=$(cd "$MOD/hooks" && env -u CLAUDE_UNATTENDED HOME="$T/rh" python3 - <<'PYFORCE'
+import importlib.util as u
+s = u.spec_from_file_location("cp_force", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+home = m.os.environ["HOME"]
+deny = ["touch ~/Library/Caches/run-seed/force/s1", "echo x > $HOME/Library/Caches/run-seed/force/s1",
+        "mkdir -p ${HOME}/Library/Caches/run-seed/force", "cp /tmp/m " + home + "/Library/Caches/run-seed/force/s1",
+        "python3 -c 'open(1)' ~/Library/Caches/run-seed/force/s1", "tee ~/Library/Caches/run-seed/force/s1 < /dev/null",
+        "python3 modules/wharf-runs/hooks/force_mark.py < /tmp/p", "cp /tmp/p " + home + "/Library/Caches/run-seed/queue/outbox/p.json",
+        "cp /tmp/e " + home + "/Library/Caches/run-seed/queue-local/vault/x.json"]
+allow = ["ls ~/Library/Caches/run-seed/force", "cat ~/Library/Caches/run-seed/force/s1", "ls ~/Library/Caches/run-seed/forceful",
+         "git commit -qm 'the force mark: ~/Library/Caches/run-seed/force'", "git add modules/wharf-runs/hooks/force_mark.py",
+         "grep -n PHRASE modules/wharf-runs/hooks/force_mark.py"]
+print([c for c in deny if not m.record_write(c, m.force_re())], [c for c in allow if m.record_write(c, m.force_re())],
+      [c for c in deny if "the force mark" not in str((m.handle_bash(c, m.Path("/tmp"), None) or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason"))])
+PYFORCE
+)
+ok "every session, attended too: a hand write of the force mark or the queue's folders, or a hand run of force_mark.py, by Bash is denied; a read is not (dispatch-queue S4)" \
+  '[ "$fm" = "[] [] []" ]'
+mkdir -p "$T/rh/Library/Caches/run-seed/force"
+FJ=$(jq -nc --arg p "$T/rh/Library/Caches/run-seed/force/s1" '{file_path:$p,content:"x"}')
+ok "  …and by the Write tool, attended or not" \
+  '[ "$(HOME="$T/rh" tool A Write "$FJ" "$UW")" = deny ] && [ "$(HOME="$T/rh" CLAUDE_UNATTENDED=dispatch tool A Write "$FJ" "$UW")" = deny ]'
 mkdir -p "$T/rh/Library/Logs/claude-weekly/plans/s1"
 RJ=$(jq -nc --arg p "$T/rh/Library/Logs/claude-weekly/plans/s1/plan.json" '{file_path:$p,content:"{}"}')
 ok "  …and by the Write tool, unattended only" \

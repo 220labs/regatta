@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- stalls reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4), the reader autofinish and
+  sextant share: a torn node-local store of another scope no longer holds every branch on the pending line.
+
 - stalls reads dispatch's queue before an S1 retry or an S2 start (dispatch-queue S3): a run that ended
   on the cap's waiting words whose branch the queue holds is `queued` (the result's `queued`, a line in
   its notes), never a stall; a queue that does not read holds every such branch. One `dispatch-queue list
