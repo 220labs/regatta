@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `trim collect` joins four more kinds of landing (trim-join-3, 2026-10-29): a run `NOT_BUILD` reads as landing
+  nothing (a `bench-` topic) builds its own branch when it was dispatched for it and nothing else built it; a run
+  whose CSV rows never name its record's branch landed the branches they name, with the record's arm (never a
+  branch another build run's record calls its own); a dispatched run with no record or log here (the other
+  Mac's) reads its arm from its CSV's main-chain model and effort; a `<branch>-<digit>` head joins like `-land`.
+  Either alias applies only while the head has no run of its own (a typed `/finish` that renamed it is none),
+  the base never landed and no other run-less head shares the base; `landed` is read from the 14 days before
+  the window too. A typed session's share is its rows in this repo alone (the CSV names the session's day branch
+  on its rows in every repo, so a session that crossed into another one was counted whole). A branch only its
+  transcript names joins as `seen`, typed only where nothing else ran on it, and the transcript counts a branch
+  only on a line whose cwd is this repo's checkout or a worktree of it. A tie goes to the later name in the CSV
+  and the transcript alike; a gate row is the newest of a head's names; rework's same-plan read finds a `-land`
+  head's plan through its builder.
 - trim.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - `usage-report push` and a per-host `push` list in `plumb/usage.json` (trim-cross-host, 2026-10-27): a
   host the others cannot reach by ssh rsyncs its own `<data>/<host>/` to each target (`user@host:path/<host>/`),
