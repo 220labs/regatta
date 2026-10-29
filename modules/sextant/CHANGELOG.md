@@ -19,6 +19,9 @@
   in the checker's process (an `extra_interpreters` entry still runs as a subprocess): the suite went
   from 12 s to 4 s with 19 more failing roots. The review fixture gains a sidecar and a commodore deck.
   The suite runs 338 cases.
+- `soundings refresh` leaves a scheduled entry whose branch dispatch's queue holds (`dispatch-queue
+  has`: queued at fire time, dispatch-queue S3); only one in no queue goes back to `queued`. Any answer
+  but 0 holds it, a crash's exit 5 included (S3's landing review, item 5).
 - `pitch` (renders S3): the document holds every render's words (D2-A). The admiral deck's slides live
   in one ```` ```deck ```` fence at the document's end, which `build <doc>` reads (a first build makes
   the deck folder and a `deck.json`); a `slides.json` deck still builds, and one with both is refused.
