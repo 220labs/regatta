@@ -19,6 +19,13 @@
 - The board's ops row (lighthouse-ops S2): one line under the header from lighthouse's `ops status --json`
   where this host has an `ops.jsonl`, amber once the row is an hour old; `board_sig` counts it by the
   row's sig alone, never its line, which carries the sample's age and the gauges.
+- `bin/ask listen` appends a REPORT once (helm-listen-replay, 2026-10-27): `talk listen --once` mints a new
+  link each call and carries no cursor, and the service handed one manager the same three REPORTs 1,729
+  times in 37 minutes, each an event and a render. A REPORT's body, keys sorted, is hashed into the event's
+  `wire` key (kept on a truncated line); a body the plan holds already is a replay, dropped and said once
+  in the first body of a run of them. A body with nothing new pauses the loop (5 s doubling to 60 s), and
+  more than `--replays N` (30) of them in a row end the listener with a re-arm line, as a stopped link's `--max` does. A plan with
+  events from before this has no `wire` keys, so each of its replayed bodies is appended once more.
 - `helm page [SHIP]`: the ship's page, published once, its space printed (peer-manager-relay S1, D1-A).
   No ship, it is made first (topic `skipper <id>`, the session as its skipper); a ship that has a page
   publishes nothing. Exit 3, one line on stderr, when no page may go: no sheep render, no CLI, key or Talk service named, an
