@@ -3327,7 +3327,7 @@ open(p, "w").write(s.replace("  ➤ Answer:\n", "  ➤ Answer:\n  Relayed from m
 PYX
 S=$(status rvm)
 check "$(field "$S" verdict) $(rv "$S" word) $(rv "$S" taken)" "taken unseen 3" \
-  "a manager's relayed answer is not Sam's: taken, so rule D never lands it (stray-manager B1 iii)"
+  "a skipper's relayed answer is not Sam's: taken, so rule D never lands it (stray-manager B1 iii)"
 # helm's asklib reads the owner's name from regatta/owner once helm's scrub lands; before it, the two
 # cases relaying the owner's own word would test helm's old literal, not keel, and skip
 AOWN=$(python3 - "$(peer asklib.py)" <<'PYX'

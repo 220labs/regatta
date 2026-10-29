@@ -44,6 +44,9 @@
   fallback is never tiered (it carries no address, so every comment read as the owner's), `harness stop`'s
   exit 2 settles in a card, a `no` under an offer is `no` whatever it names, and a brief's `Steps:` line reads
   the owner's words, never the quoted anchor.
+- paste-paths says "skipper" for the session role (helm-vocabulary H2, 2026-10-29): `skipper_findings`, the
+  ask finding's "a skipper (this Mac's standing one, skipper · <host>)" and "a skipper (DISPATCH_SKIPPER)", the
+  `paste-paths: skipper:` error line.
 
 - The lookout runs `pickup seed --beside` in the doc's repo, never the pass's cwd: a pass started inside a
   confidential scope no longer meets pickup's `confined_refusal` (confidential-reach S5). Routed S3's fix round 3.
