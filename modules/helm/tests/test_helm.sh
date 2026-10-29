@@ -1697,7 +1697,7 @@ PY
   check "$(og "print(sorted((s['rule'], s['key'][2], s['action']) for s in o if s['topic']=='p-ask'))")" \
     "[(\"question in the Run's mailbox\", 'msg_q2', 'raise'), (\"question in the Run's mailbox\", 'msg_q3', 'raise'), ('question: docs/q.md D1', 'msg_q1', 'relay')]" \
     "  S6 from the mailbox (from_handle dispatch:<id>): a D-item in its worktree relayed, a path outside it or none raised, one from a gone attempt dropped"
-  check "$(og "s=[x for x in o if x['class']=='S7'][0]; print(s['key'], s['orca_task'], s['raise_to'])")" "['testhost', 'b8p', 'pb'] p_b skipper" "  S7 from task-list --ready, quiet two hours since its dependency completed; to the live manager"
+  check "$(og "s=[x for x in o if x['class']=='S7'][0]; print(s['key'], s['orca_task'], s['raise_to'])")" "['testhost', 'b8p', 'pb'] p_b skipper" "  S7 from task-list --ready, quiet two hours since its dependency completed; to the live skipper"
   check "$(echo "$oj" | python3 -c "import json,sys; print([s['topic'] for s in json.load(sys.stdin)['stalls'] if s.get('plan') == 'b8p' and not s.get('harness')])")" "[]" \
     "  an Orca-backed plan's own planned tasks are not judged twice (judge_plans leaves them to task-list)"
   hasnt "$(cat "$X8/orca.calls")" "worker-start" "  the judge starts nothing"
