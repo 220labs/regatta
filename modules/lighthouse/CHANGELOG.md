@@ -26,6 +26,18 @@
   unchanged it is classified; every fetch counts against `CLASSIFY_MAX`; a named path loses a sentence's
   closing punctuation; an autofinish that exits at import is "unread", not the pass's end.
 
+- Bridges (confidential-reach S8): the fence lifts a confidential scope's fence for a session whose start is
+  in a scope bridged into it and whose every start is in the two (`bridge_lifts`, read per call; a `cd` across
+  reads both, hooks.sh drives `fence()` beside the core's `bridge_active()`), and refuses every agent write of
+  the bridges file, its lock or temp file (a Read and `scopes bridge` pass; the landing review). `account` waives a covering tenant's route for the other side's logins on
+  the bridged scope's repos alone, takes them beside a scope `login` in pick, limits and a ship's pin, and
+  narrows both to a start in either side with `--from` (allowed, pick, limits); account_guard passes the
+  session's start; doctor lists each open bridge and the half it can waive. The second finish stop: the wall
+  takes any case of the name on the real dirname and a copier's, mover's, linker's or extractor's destination
+  that is the lighthouse folder; its reader reads a link, a second hard link or another case of the name as torn;
+  `scopes bridge open` is refused in every agent's Bash (D1-A; the owner's `!` never reaches PreToolUse);
+  `account` lends nothing with no `--from`, waives a route only when every route on the path is the bridged
+  tenant's, and reads the registry once.
 - account.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The desk's intake (lighthouse-ops S4, 2026-10-27): `ops ingest` reads every fleet repo in the registry (its
   `github`) for issues and comments since that repo's cursor, with the machine account's `gh`, and each Project

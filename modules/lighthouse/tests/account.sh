@@ -1730,5 +1730,76 @@ check "$(echo "{\"cwd\": \"$PR/privy\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PR
 check "$(gentries "$ACCOUNTS_FILE.vt" | tail -1) $(env -u CLAUDE_CONFIG_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/closed.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" python3 -c '
 import sys; sys.path.insert(0, sys.argv[1]); import account_guard as g; print(g.tenant_entries())' "$B/../hooks" 2>/dev/null)" "['acme-*'] ['*']" "the guard's entries: a closed tenancy is ['*']"
 
+echo "bridges: two confidential scopes for a window (confidential-reach S8)"
+# ac: acme's repos, a tenant's (acme-*, on lab); be: beta-one, a scope login (work) and no tenant; op: an open repo
+BRD="$T/br"; mkdir -p "$BRD"; BRF="$REGATTA_CONFIG/lighthouse/bridges.json"
+for r in beta-one app; do [ -d "$PR/$r/.git" ] || { mkdir -p "$PR/$r"; git -C "$PR/$r" init -q; git -C "$PR/$r" commit -q --allow-empty -m init; }; done
+printf '{"repos": {"acme-one": {}, "acme-two": {}, "beta-one": {}, "app": {}, "cee": {}},\n "scopes": {"ac": {"file": "a", "repos": ["acme-*"], "confidential": true},\n  "be": {"file": "b", "repos": ["beta-one"], "confidential": true, "login": "work"},\n  "ce": {"file": "c", "repos": ["cee"], "confidential": true},\n  "op": {"file": "o", "repos": ["app"]}}}\n' > "$BRD/repos.json"
+BWA() { python3 - "$BRF" "$@" <<'PY'
+import datetime, json, sys
+now = datetime.datetime.now(datetime.timezone.utc)
+iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+rows = []
+for n, spec in enumerate(sys.argv[2:]):
+    w = spec.split()
+    e = {"id": "b%d" % n, "from": w[0], "to": w[1], "opened": iso(now - datetime.timedelta(minutes=1)),
+         "until": iso(now + datetime.timedelta(hours=float(w[2]))), "why": "joint review", "by": "t"}
+    if "one_way" in w[3:]: e["one_way"] = True
+    rows.append(e)
+open(sys.argv[1], "w").write(json.dumps({"bridges": rows}))
+PY
+}
+BRA() { CLAUDE_REPOS_JSON="$BRD/repos.json" TENANTS_FILE="$BRD/no-tenants.json" TA "$@"; }
+elig() { BRA limits --all --repo "$PR/beta-one" --json "$@" >/dev/null; python3 -c "import json;print(' '.join('%s:%s' % (r['label'], r['eligible']) for r in json.load(open('$T/out'))))"; }
+use "$F" "10 10"; use "$L" "10 10"; use "$P1" "10 10"; rm -f "$F/usage-probe.json" "$L/usage-probe.json" "$P1/usage-probe.json" "$L/exhaustion.jsonl" "$F/exhaustion.jsonl"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one") $(elig)" "1 work:True lab:False main:False" \
+  "no bridge: work is refused acme's repo; beta-one runs on its scope's login alone"
+BWA "ac be 4"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-two" --from "$PR/beta-one") $(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/acme-one")" "0 0" \
+  "a bridge ac↔be: be's login (work) may run acme's repos — from be, or started in acme's own repo"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one") $(elig) $(BRA pick --repo "$PR/beta-one" --json) $(field "['account']")" "1 work:True lab:False main:False 0 work" \
+  "  no --from: nothing lent, allowed, limits or pick (the second stop's item 3: a widening reads the doubt as none)"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/app")" 1 "  but not from an open start (allowed --from): the same login's open session reads neither side"
+check "$(BRA allowed "$PR/acme-one") $(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/privy")" "1 1" "  the default dir is no side's login; work's own deny list is never waived"
+check "$(elig --from "$PR/beta-one")" "work:True lab:True main:False" "  limits --repo beta-one: lab, acme's tenant login, beside be's own (be has a login, no tenant: pick's half)"
+check "$(BRA pick --repo "$PR/beta-one" --from "$PR/app" --json) $(field "['account']")" "0 work" "  pick --from an open cwd: be's own login only"
+check "$(BRA pick --repo acme-one --from "$PR/acme-one" --json) $(field "['account']")" "0 lab" "  pick --repo acme's repo: lab, its own tenant's login, before work (D1-A: own first, the bridge's seat after)"
+use "$L" "100 100"; rm -f "$L/usage-probe.json"
+check "$(BRA pick --repo acme-one --from "$PR/acme-one" --json) $(field "['account']")" "0 work" "  lab full: work, which the bridge lets in, takes it"
+check "$(BRA pick --repo acme-one --json) $(field "['skipped']" | grep -c 'acme')" "3 1" "  …and with no --from, work stays refused there: no login with room"
+use "$L" "10 10"; rm -f "$L/usage-probe.json" "$L/exhaustion.jsonl"
+# the second stop's item 4: two tenants' entries take acme-two (acme-* and acme-two); the bridge covers acme only
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["tenants"]["zed"]={"repos": ["acme-two"]}; json.dump(d, open(sys.argv[2], "w"))' "$ACCOUNTS_FILE.t" "$ACCOUNTS_FILE.tz"
+BRZ() { CLAUDE_CONFIG_DIR="$F" CLAUDE_REPOS_JSON="$BRD/repos.json" TENANTS_FILE="$BRD/no-tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tz" ACCOUNT_NOW=$WED A "$@"; }
+check "$(BRZ allowed "$PR/acme-one" --from "$PR/beta-one") $(BRZ allowed "$PR/acme-two" --from "$PR/beta-one")" "0 1" \
+  "overlapping tenants (acme-* and zed's acme-two): the bridge waives acme's route alone, never zed's on the same repo"
+# doctor's bridge lines, by its own function (a whole doctor wants a logins file this fixture has none of)
+bst() { CLAUDE_REPOS_JSON="$BRD/repos.json" TENANTS_FILE="$BRD/no-tenants.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.t" ACCOUNT_NOW=$WED python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("account", sys.argv[1]).load_module()
+for t in a.bridge_state(a.load_registry()): print(*t)' "$B/account" > "$T/out" 2>&1; }
+bst
+has "$T/out" "bridge b0: ac → be until" "doctor lists each open direction…"
+has "$T/out" "be has a login (work) and no tenant: pick's half only" "…the scope with a login and no tenant"
+has "$T/out" "acme's route waived for work" "…and the tenant route waived, for whom"
+BWA "be ac 4 one_way"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/beta-one") $(elig --from "$PR/beta-one")" "0 work:True lab:False main:False" \
+  "one-way be→ac: work runs acme's repos, lab never beta-one"
+BWA "ac be -1"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/beta-one") $(elig --from "$PR/beta-one")" "1 work:True lab:False main:False" "expired: nothing waived"
+BWA "ac be 4" "ac ce 4"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/beta-one") $(elig --from "$PR/beta-one")" "1 work:True lab:False main:False" "a chain (ac bridged to be and ce): nothing waived"
+BWA "ac be 4"; printf '{"bridges": [' > "$BRF"
+check "$(CLAUDE_CONFIG_DIR="$F" BRA allowed "$PR/acme-one" --from "$PR/beta-one") $(elig --from "$PR/beta-one")" "1 work:True lab:False main:False" "a torn bridges file: nothing waived…"
+bst
+has "$T/out" "bridges.json does not read: every bridge reads as none until it does" "…and doctor says so"
+BWA "ac be 4"
+gb() { echo "{\"cwd\": \"$1\"}" | env CLAUDE_CONFIG_DIR="$F" CLAUDE_PROJECT_DIR="$2" CLAUDE_REPOS_JSON="$BRD/repos.json" TENANTS_FILE="$BRD/no-tenants.json" \
+  ACCOUNTS_FILE="$ACCOUNTS_FILE.t" python3 "$B/../hooks/account_guard.py" 2>/dev/null | grep -c '"block"'; }
+check "$(gb "$PR/acme-one" "$PR/beta-one") $(gb "$PR/acme-one" "$PR/app")" "0 1" "the guard: a cd into acme's repo from a session started in be passes, from an open start it is refused"
+rm -f "$BRF"
+check "$(gb "$PR/acme-one" "$PR/beta-one")" 1 "  the bridge gone, the next prompt is refused again"
+
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
