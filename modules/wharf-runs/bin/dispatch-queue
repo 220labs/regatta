@@ -30,6 +30,14 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            (the readers' rule: an unreadable queue is "has an entry");
                                            --elsewhere: only one live on another host
     dispatch-queue reserved [--except QID] the slots this host's claims hold before their records (held())
+    dispatch-queue watch QID [--for MIN] [--until running|waiting]
+                                           block on an entry, its states printed: 0 at running, 3 gone, 1 --for
+                                           passed, 2 refused (S3: `dispatch --watch`; never dispatches or writes)
+  enqueue's S3 flags: --wait REASON names the waiter in the entry; --replace takes a claimed, waiting or
+  running entry (pinned to the host it is live on, unless the put carries a pin of its own) or another live session's queued one, which a put alone
+  refuses (exit 3, "busy queued by session …"); --queued-at EPOCH ages a fired one-shot's entry from WHEN;
+  --skip-hour (enqueue --refused, refused) skips it here an hour even when pinned here: a named login past
+  its limits, which the next claim here would meet again.
     dispatch-queue unreserve QID [--label L]   a stale job's reservation given back at its exit
     Every verb: exit 5 for a crash, never 1, which dispatch reads as "the queue alone refused it".
     dispatch-queue mine QID [--label L]    the fired job's check: still its claim? exit 0 yes, 3 no, 4 unreadable
@@ -571,6 +579,14 @@ def apply_op(entries, op):
             # and replacing it would lose that branch's run silently
             return False, "clash with %s" % cur.get("branch")
         if cur.get("state") == "queued":
+            # a queued entry another live session put is that session's step: replacing it unasked loses its
+            # waiter (the contract's Replacing). Judged here, inside the CAS round, against the entry the round
+            # read: judged before it from this host's view, two racing enqueues each passed and the later
+            # dropped the other's waiter (S3's second landing review, item 3). GUARD is the caller's session
+            # (cmd_enqueue sets it unless --replace or a fire-time refusal), replayed from the outbox as written
+            g = op.get("guard")
+            if g is not None and cur.get("by") and cur.get("by") != g and waiter_live(cur):
+                return False, "busy queued by session %s" % cur["by"][:8]
             # a later dispatch replaces a queued entry and keeps its place, its refusals and the host
             # whose run of the branch is live (the one-branch-one-host rule)
             new["queued_at"] = min(int(cur.get("queued_at") or new["queued_at"]), int(new["queued_at"]))
@@ -590,6 +606,18 @@ def apply_op(entries, op):
         # job of the replaced entry finds it no longer its claim at fire time (cmd_mine) and never runs. Only
         # a running entry is replaced: a claimed or waiting one's job is past that check ("claimed here")
         pin = (new.get("host") or "").lower()
+        if op.get("replace") and live_on:
+            # --replace (S3, the contract's Replacing): the caller's word over a claimed, waiting or running
+            # entry. The branch stays on the host it is live on, pinned there, so the claim there waits in
+            # after() for the run in hand; that run's job finds the entry no longer its claim at its next
+            # check (cmd_mine) and never runs the step beside it. A pin of its own stands — a typed --on here,
+            # a host-local --account (enqueue's pin): moved to the other host, that login was not set up there
+            # and the typed host was overridden (S3's second landing review, item 4). It is queued there with
+            # running_on kept, so no claim takes it until the run in hand ends (branch_word's free, the sweep's)
+            new["running_on"] = cur.get("running_on")
+            new["host"] = pin or live_on
+            entries[k] = new
+            return True, "replaced"
         mine = new.get("by") and new.get("by") == cur.get("session") and pin == live_on
         here = live_on and (new.get("from") or "").lower() == live_on and pin in ("", live_on)
         if here and not mine and cur.get("state") != "running" and not (op.get("dead") and _match(cur, op["dead"])):
@@ -636,8 +664,10 @@ def apply_op(entries, op):
         rb = dict(cur.get("refused_by") or {})
         # the hour's skip hands an entry to the other hosts; one pinned to this host has none, and the skip
         # cost a chain an hour per refusal on the only host it may run on (the third review's item 15).
-        # Its retry is the next claim here (a run's end), its attempts still counted toward the card
-        if (cur.get("host") or "").lower() != (op["host"] or "").lower():
+        # Its retry is the next claim here (a run's end), its attempts still counted toward the card. A
+        # refusal whose cause outlasts that claim (a named login past its limits) skips it here all the same,
+        # or the only host re-claims it at every sweep until the login resets (S3's landing review, item 4)
+        if op.get("skip") or (cur.get("host") or "").lower() != (op["host"] or "").lower():
             rb[op["host"]] = op["at"]
         for f in ("claimed_by", "claimed_at", "running_on", "job"):
             cur.pop(f, None)
@@ -725,6 +755,14 @@ def flush(fleet):
         p.unlink(missing_ok=True)
         if stale(r):
             event("outbox-stale", key=op.get("key"), op=op.get("op"), result=r)
+            if op.get("op") == "put" and r.startswith(("busy", "clash")):
+                # its caller was told `queued` when the put went to the outbox, and has ended since: the put
+                # it made is not in the queue, so a card says so, naming its session — an event alone dropped
+                # its priority, mode and note unseen (S3's third landing review, item 6)
+                e = op.get("entry") or {}
+                card("queue-dropped", "fleet:%s" % op.get("key"), e,
+                     "a put from %s held in the outbox (session %s), refused at its replay: %s"
+                     % (e.get("from") or host_name(), (e.get("by") or "none")[:8], r), mark=e.get("id"), say=False)
     return list(zip(ops, res))
 
 
@@ -1355,6 +1393,45 @@ def raise_refusal(args, env, prio, repo, branch):
     return None
 
 
+WAITER_S = 3 * SWEEP   # a waiter put from another host counts live this long past that host's last word of it
+
+
+_LIVE_IDS = None   # this process's one registry scan (session_live)
+
+
+def session_live(sid):
+    """SID is a live Claude Code session on this host: by every login's session registry and every Orca
+    profile's (dispatch-rc's sessions_live, its registry_dirs; S3's landing review, item 5). A registry that
+    cannot be read: live, the safe side. Scanned once per process: apply_op asks it in every replay of the
+    outbox (each view, each watch pass, each CAS retry), and each scan globbed every registry and checked
+    each record's pid (S3's third landing review, item 6); one answer per process also keeps a verb's
+    replays agreeing with each other."""
+    global _LIVE_IDS
+    if _LIVE_IDS is None:
+        try:
+            _LIVE_IDS = {r.get("sessionId") for r in rc_mod().sessions_live()}
+        except Exception:
+            _LIVE_IDS = False   # unreadable: every waiter live
+    return True if _LIVE_IDS is False else sid in _LIVE_IDS
+
+
+def waiter_live(e):
+    """E's waiter (`by`) is a live session, so its queued step is not replaced unasked (the contract's
+    Replacing; `--replace` takes it). Put on this host: session_live. Put from another host, whose registries
+    cannot be read from here: by that host's word — `by_seen`, which its sweep refreshes while the session is
+    live there (cmd_sweep) — or the put's own time, for WAITER_S. Never live forever: an entry whose host went
+    offline blocked its branch for good, and an unattended caller is refused --replace (S3's second landing
+    review, item 6).
+
+    No record of the session counts as gone: a deliberate exception to the registry trap (AGENTS.md: "no
+    record" is unknown, never ended). Here "gone" only lets a later dispatch replace a queued step, which
+    keeps its place in line and loses only the waiter's claim to it; read as live, every waiter whose record
+    went (a reboot, a profile removed) would block its branch until someone typed --replace."""
+    if (e.get("from") or "").lower() not in ("", host_name()):
+        return now() - max(int(e.get("by_seen") or 0), int(e.get("event_at") or 0)) < WAITER_S
+    return session_live(e.get("by"))
+
+
 def cmd_enqueue(a, ctx):
     h = host_name()
     repo = str(Path(a.repo).resolve())
@@ -1375,6 +1452,11 @@ def cmd_enqueue(a, ctx):
     if os.environ.get("CLAUDE_UNATTENDED") or "DISPATCH_DEPTH" in env:
         env["DISPATCH_DEPTH"] = str(chain_depth(env))
     why = raise_refusal(args, env, a.priority, repo, a.branch)
+    if not why and a.replace and (os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("AUTOFINISH_CALLER_UNATTENDED")):
+        # another session's step taken over is the owner's yes, as dispatch refuses it (S3's review, item 12).
+        # No caller is exempt, as autofinish-run's unattended_caller() judges --merge: DISPATCH_LABEL is any
+        # session's word, and no fired job carries --replace (FLAGS lacks it; S3's third landing review, item 3)
+        why = "--replace takes over another run's step, and an unattended caller is refused it"
     if why:
         # the cap's waiting words, so a managed run that ends on it is not held at Stop for an ask it never
         # relayed (AGENTS.md: a new dispatch refusal reuses them; the fourth review's item 12)
@@ -1391,19 +1473,27 @@ def cmd_enqueue(a, ctx):
     acct = (flag_values(args, "--account") or [""])[0]
     pin = (a.pin or "").lower() or (h if acct and acct not in ("auto", "bound") else "")
     t = now()
+    # --queued-at: a one-shot fired at its time enqueues aged from WHEN, its place in line since then (S3)
+    qat = min(t, a.queued_at) if a.queued_at and a.queued_at > 0 else t
     e = {"id": uuid.uuid4().hex, "key": k, "repo": repo_word(repo), "branch": a.branch, "topic": topic_of(a.branch),
          "priority": a.priority, "needs": [], "host": pin, "confined": confined, "state": "queued",
-         "queued_at": t, "event_at": t, "by": a.by or "", "from": h, "waiter": "", "attempts": 0, "session": "",
-         "args": args, "env": env, "mode": mode}
+         "queued_at": qat, "event_at": t, "by": a.by or "", "from": h, "waiter": (a.wait or "")[:200], "attempts": 0,
+         "session": "", "args": args, "env": env, "mode": mode}
     if a.refused:
         # no hour's skip on the only host the entry may use (item 15's rule, here too: the fourth review)
         e.update(last_refusal=a.refused, attempts=1)
-        if pin != h:
+        if pin != h or a.skip_hour:
             e["refused_by"] = {h: t}
     why = bad_args(e)
     if why:
         raise Refused("dispatch-queue: %s — a one-shot, as before the queue" % why, 1)
     put = {"op": "put", "key": k, "entry": e}
+    if a.replace:
+        put["replace"] = True
+    elif not a.refused:
+        # another live session's queued step is refused inside the put's own CAS round (apply_op's guard):
+        # "busy queued by session …", exit 3 below
+        put["guard"] = a.by or ""
     r = store.do([put], "enqueue %s by %s" % (k, h))[0]
     refused = getattr(store, "write_refused", None)
     if refused:
@@ -1560,11 +1650,14 @@ def cards_seen():
         return {}
 
 
-def card(kind, qid, e, why):
+def card(kind, qid, e, why, mark=None, say=True):
     """A card, once per entry and claim: `queue-silent` (its claimer quiet two sweeps), `queue-stuck`
-    (refused past three attempts). A line in queue.jsonl that helm's tick reads (S3 wires the reader)."""
+    (refused past three attempts), `queue-dropped` (an outbox put refused at its replay; MARK, its entry's
+    id, dedups it per put). A line in queue.jsonl, a record nothing reads yet: the queue's board cards are
+    S7's or a card of their own (the design doc's S3 as built, "Not built here"). SAY false keeps stdout clean for a flush inside
+    another verb's answer (list --json)."""
     seen = cards_seen()
-    mark = "%s %s %s" % (kind, e.get("claimed_at") or "", e.get("attempts") or "")
+    mark = "%s %s" % (kind, mark) if mark else "%s %s %s" % (kind, e.get("claimed_at") or "", e.get("attempts") or "")
     if seen.get(qid) == mark:
         return
     seen[qid] = mark
@@ -1574,7 +1667,8 @@ def card(kind, qid, e, why):
     except OSError:
         pass
     event("card", card=kind, key=qid, host=host_name(), why=why, branch=e.get("branch"), running_on=e.get("running_on"))
-    print("card %s: %s — %s" % (kind, qid, why))
+    if say:
+        print("card %s: %s — %s" % (kind, qid, why))
 
 
 def cmd_sweep(a, ctx):
@@ -1640,6 +1734,11 @@ def cmd_sweep(a, ctx):
                          % (st, e.get("running_on"), (t - last) // 60, e.get("running_on"), e.get("branch")))
             if st == "queued" and int(e.get("attempts") or 0) > 3:
                 card("queue-stuck", qid, e, "refused %s times (last: %s)" % (e.get("attempts"), e.get("last_refusal")))
+            if st == "queued" and e.get("by") and (e.get("from") or "").lower() == h \
+                    and t - int(e.get("by_seen") or 0) >= SWEEP // 2 and session_live(e["by"]):
+                # this host's word that the waiter it put still lives, which the other hosts read (waiter_live):
+                # each sweep while the session is in a registry here, so it stays fresh within WAITER_S
+                ops.append({"op": "set", "key": k, "fields": {"by_seen": t}, "cond": {"id": e.get("id"), "state": "queued"}})
         if ops:
             s.do(ops, "sweep by %s" % h)
         if isinstance(s, Fleet):
@@ -1866,7 +1965,7 @@ def cmd_fire(a, ctx):
     elif a.verb == "refused":
         unreserve(a.qid, label=a.label)
         r = s.do([{"op": "refuse", "key": k, "host": h, "at": now(), "why": a.why or "refused", "cond": cond,
-                   "keep_on": h if branch_live_here(k, records()) else None}], "refused %s on %s" % (k, h))[0]
+                   "skip": bool(a.skip_hour), "keep_on": h if branch_live_here(k, records()) else None}], "refused %s on %s" % (k, h))[0]
         event("refused", key=a.qid, host=h, why=a.why)
     else:
         unreserve(a.qid, label=a.label)
@@ -1941,6 +2040,85 @@ def cmd_has(a, ctx):
                 print("unreadable: %s (%s)" % (s.name, x))
                 return 4
     return 0
+
+
+WATCH_S = 15   # the home's read interval while watching (the contract: ls-remote every 15 s)
+
+
+def watch_read(store, timeout):
+    """(entries, offline-why) for one watch pass: a fleet ref is asked by `ls-remote` (the contract: one small
+    round-trip every 15 s) and fetched only when it moved past the last fetch here; a node-local store reads
+    as it is. A home that does not answer: the last fetch, said (S3's landing review, item 11 — each pass was a
+    full fetch under the clone's lock, beside every claim and sweep that wants it)."""
+    if not isinstance(store, Fleet):
+        return store.view()
+    try:
+        store.ensure()
+        r = store.git("ls-remote", store.url, REF, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as x:
+        return apply_all(store.read(store.cached()), outbox_ops()), str(x)
+    if r.returncode != 0:
+        why = (r.stderr.strip().splitlines() or ["ls-remote exit %d" % r.returncode])[-1][:200]
+        return apply_all(store.read(store.cached()), outbox_ops()), why
+    sha = (r.stdout.split() or [""])[0]
+    if sha == store.cached():
+        return apply_all(store.read(sha), outbox_ops()), None
+    return store.view(timeout)
+
+
+def cmd_watch(a, ctx):
+    """`dispatch --watch QID [--for MIN]` (S3, the contract's Waiting): block on one entry, printing each
+    state it passes, never dispatching, claiming or writing. Exit 0 once it is running (or, with --until
+    waiting, waiting or running: dispatch's confirm of a --next); 3 once it is gone — its run ended, it
+    failed with a card, or it was cancelled — or a newer step holds its key (below); 1 when --for minutes pass
+    first, apart from 2, a refusal (a bad QID, no home: S3's second landing review). This host's reservation is
+    read before the home (a claim here shows at once); an unreadable read is said and the watch goes on.
+    It follows the entry it first read, not the key: once that step ends, its --next may queue a newer one
+    under the same key, which is not the step this caller waited on (S3's second landing review, item 9). An
+    entry of another id with the same `queued_at` is that step re-dispatched while queued (a put keeps the
+    place), and is followed."""
+    store, key = split_qid(a.qid)
+    want = ("waiting", "running") if a.until == "waiting" else ("running",)
+    end = time.time() + a.for_min * 60 if a.for_min is not None else None   # --for 0: one read
+    step = float(os.environ.get("DISPATCH_WATCH_S") or WATCH_S)
+    last, seen = None, None   # seen: (id, queued_at) of the entry the watch follows
+    while True:
+        try:
+            held_here = any(r.get("qid") == a.qid for r in reservations(ctx.launchctl).values())
+        except Exception:
+            held_here = False
+        try:
+            entries, off = watch_read(store, int(step) + 15)
+            e = entries.get(key)
+            newer = None
+            if e and seen is None:
+                seen = (e.get("id"), int(e.get("queued_at") or 0))
+            elif e and e.get("id") != seen[0]:
+                if int(e.get("queued_at") or 0) == seen[1]:
+                    seen = (e.get("id"), seen[1])
+                else:
+                    newer, e = e, None
+            st = (e.get("state") or "?") if e else "gone"
+            say = st + (" on %s" % e["running_on"] if e and e.get("running_on") else "")
+            if newer:
+                say += " (a newer step of the branch holds its key now, %s)" % (newer.get("state") or "?")
+            if st == "queued" and held_here:
+                say += " (claimed here: its reservation holds a slot)"
+            if off:
+                say += " (the home did not answer: the last fetch)"
+        except Torn as x:
+            st, say = "unreadable", "unreadable: %s" % x
+        if say != last:
+            print("%s %s: %s" % (time.strftime("%H:%M:%S"), a.qid, say), flush=True)
+            last = say
+        if st in want:
+            return 0
+        if st == "gone":
+            return 3
+        if end is not None and time.time() >= end:
+            print("%s: still %s after %g min — it stays in the queue" % (a.qid, st, a.for_min), flush=True)
+            return 1
+        time.sleep(step if end is None else max(0.0, min(step, end - time.time())))
 
 
 # ---- the jobs: the sweep on every host with a home, the pending poll while entries pend (S2) ------------
@@ -2154,6 +2332,15 @@ def main(argv=None):
     e.add_argument("--refused")
     e.add_argument("--claim", action="store_true")
     e.add_argument("--log")
+    e.add_argument("--wait", default="")
+    e.add_argument("--replace", action="store_true")
+    e.add_argument("--queued-at", type=int, default=0)
+    e.add_argument("--skip-hour", action="store_true")
+    w = sub.add_parser("watch")
+    ctxargs(w)
+    w.add_argument("qid")
+    w.add_argument("--for", dest="for_min", type=float, default=None)
+    w.add_argument("--until", choices=("running", "waiting"), default="running")
     c = sub.add_parser("claim")
     ctxargs(c)
     c.add_argument("--event-at", type=int)
@@ -2182,6 +2369,7 @@ def main(argv=None):
         sp.add_argument("--session")
         sp.add_argument("--why")
         sp.add_argument("--label", default="")
+        sp.add_argument("--skip-hour", action="store_true")
     r = sub.add_parser("reserved")
     ctxargs(r)
     r.add_argument("--except", dest="except_")
@@ -2223,6 +2411,8 @@ def main(argv=None):
             return cmd_reserved(a, a)
         if a.verb == "mine":
             return cmd_mine(a, a)
+        if a.verb == "watch":
+            return cmd_watch(a, a)
         if a.verb == "ended" or (a.verb == "started" and not a.qid):
             if not (a.repo and a.branch):
                 raise Refused("dispatch-queue %s: a QID, or --repo and --branch" % a.verb)

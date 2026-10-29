@@ -2603,6 +2603,15 @@ def dispatched(root, b):
     return f"{ago(int(when))} to {host}" if branch == b["name"] and when.isdigit() else None
 
 
+# dispatch's words for a step the queue holds (dispatch-queue S3): "queued as <entry>", or an exit 2 that
+# names the branch's entry ("(queue entry <qid>)") — a step in hand, never one to open a tab for. An exit 2
+# saying "the queue does not read" counts as one too: the readers' rule, an unreadable queue is an entry,
+# and a tab beside an entry nobody can see may run the step twice (S3's landing review, item 5)
+QUEUED_AS = re.compile(r"queued as (\S+?:\S+?)[ ,(]")
+QUEUE_HOLDS = re.compile(r"\(queue entry \S+\)|queued as \S+:\S+|the queue does not read")
+
+
+
 def branch_origin(root, b):
     """The scope marker a `seed --from` left on branch B (its docs/handoff/*.review's `origin`), or None —
     so every start path (`seeds --open`, `open`, a retry) carries --origin and opens no tab, not only
@@ -2627,7 +2636,10 @@ def dispatch_fresh(root, b, args, origin=None):
     Only where dispatch takes the repo and the branch carries its brief (docs/handoff/<date>-<topic>.md,
     what the run reads; a seed always does); False otherwise, and the caller opens the tab or window
     as before. A local branch goes by `--next`, which pushes it and confirms the start from the run's
-    log. Explicit --new-tab, --vscode or --terminal keep theirs; a refusal (exit 2) falls back to them.
+    log. Explicit --new-tab, --vscode or --terminal keep theirs; a refusal (exit 2) falls back to them —
+    never one that names the branch's queue entry: the queue holds the step (claimed or live on another
+    host), and a tab beside it would run the step twice (dispatch-queue S3; the first S1 review's open item 1).
+    A queued step is exit 0 since S3, said as `queued as <entry>`.
     ORIGIN: the confidential scope a `seed --from` came out of, passed on as `--origin` (S5); its caller
     opens no tab or window, so a refusal here only says why."""
     derived = origin is None and branch_origin(root, b)
@@ -2649,21 +2661,28 @@ def dispatch_fresh(root, b, args, origin=None):
         return True
     r = run(cmd, timeout=330, env={**os.environ})   # --next blocks up to about 3 min
     said = "\n".join(l for l in (r.stdout + r.stderr).splitlines() if l.strip())
-    if r.returncode == 2 and origin:
+    held = r.returncode == 2 and bool(QUEUE_HOLDS.search(said))   # the queue holds the step: no tab, no retry line
+    if r.returncode == 2 and origin and not held:
         print(f"  dispatch refused it (exit 2), so it is not started:\n" + "\n".join(f"    {l}" for l in said.splitlines()))
         if derived:
             raise Stop(f"{b['name']} came out of a confidential scope: no tab\n{from_start_line(root, b['name'], origin)}")
         return False
-    if r.returncode and origin:   # the seed is pushed: the line that keeps its --origin, not a bare retry
+    if r.returncode and origin and not held:   # the seed is pushed: the line that keeps its --origin, not a bare retry
         raise Stop(f"dispatch failed (exit {r.returncode}) — nothing confirmed started:\n{said}\n{from_start_line(root, b['name'], origin)}")
-    if r.returncode == 2:
+    if r.returncode == 2 and not held:
         # a refusal checked before anything was scheduled (work after the brief, a lock another
-        # session holds, the run cap): the tab or window as before, with dispatch's reason (review 2026-10-13)
+        # session holds, no queue home and the run cap): the tab or window as before, with dispatch's
+        # reason (review 2026-10-13)
         print(f"  dispatch refused it (exit 2), so the tab or window instead:\n" + "\n".join(f"    {l}" for l in said.splitlines()))
         return False
+    if r.returncode == 2:
+        # the queue holds the branch already (claimed here, live on another host), or does not read: no tab beside it
+        raise Stop(f"dispatch: the queue holds {b['name']} already, or does not read — no tab beside it (dispatch --queue):\n{said}")
     if r.returncode:
         raise Stop(f"dispatch failed (exit {r.returncode}) — nothing confirmed started:\n{said}")
-    print(f"  dispatched {b['name']}: a fresh session runs it unattended, not a tab")
+    q = QUEUED_AS.search(said)
+    print(f"  dispatched {b['name']}: queued as {q.group(1)}, the queue starts it — not a tab" if q
+          else f"  dispatched {b['name']}: a fresh session runs it unattended, not a tab")
     print("\n".join(f"  {l}" for l in said.splitlines()))
     return True
 
@@ -2700,10 +2719,13 @@ def seed_next(me, args, where, branch, prompt, primary):
     r = run(cmd, timeout=330, env={**os.environ})
     said = "\n".join(l for l in (r.stdout + r.stderr).splitlines() if l.strip())
     if r.returncode:
+        held = " — the queue holds the branch already (dispatch --queue), so nothing more to start" \
+            if r.returncode == 2 and QUEUE_HOLDS.search(said) else "; nothing started"
         raise Stop(f"dispatch refused or failed (exit {r.returncode}) — the brief is committed at "
-                   f"{rel}; nothing started:\n{said}")
-    print(f"seeded {branch} — the next stage runs unattended (dispatch --next, its brief {rel}); "
-          f"this session writes nothing more there")
+                   f"{rel}{held}:\n{said}")
+    q = QUEUED_AS.search(said)
+    print(f"seeded {branch} — the next stage " + (f"is queued as {q.group(1)}; the queue starts it" if q else "runs unattended")
+          + f" (dispatch --next, its brief {rel}); this session writes nothing more there")
     print("\n".join(f"  {l}" for l in said.splitlines()))
 
 

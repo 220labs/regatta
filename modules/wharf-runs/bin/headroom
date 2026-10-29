@@ -21,7 +21,9 @@ The limits are per host, in `<config>/wharf-runs/headroom` (the overlay writes i
 `<host>:avail=<min %>,swap=<max GB>,rate=<max MB/s>`, any of the three left out to skip that rule,
 `*:` for a host without a line; neither, or no file, is DEFAULT. Host names compare lower-case. A line
 or a rule it cannot read, or a file it cannot open, is no reading (exit 2), never a dropped rule. A host over any limit gets no new
-run: dispatch refuses it, as it does at the cap — refused, not queued.
+run: dispatch leaves it queued, as it does at the cap, and a host with room claims it (S3 of
+docs/dispatch-queue-2026-10-25.md, which supersedes the 2026-10-08 "refused, not queued"); a host with no
+queue home (wharf-runs/queue-repo) still refuses it.
 
 Exit 0 room, 3 over a limit (the reason on stdout), 2 when it cannot read this host's memory or its
 limits, or fails in any other way: then dispatch goes ahead, saying so — a broken probe must not stop

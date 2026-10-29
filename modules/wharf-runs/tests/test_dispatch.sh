@@ -6,10 +6,10 @@
 set -u
 # A dispatch session runs this suite inside its own run: its depth, brief and marker would change
 # what is tested (re-review 2026-10-05: "a person's run is depth 1" failed under DISPATCH_DEPTH=1).
-unset WEEKLY_RUN CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS DISPATCH_DEPTH DISPATCH_BRIEF DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR \
+unset WEEKLY_RUN CLAUDE_UNATTENDED AUTOFINISH_CALLER_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS DISPATCH_DEPTH DISPATCH_BRIEF DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR \
       DISPATCH_MAX_DEPTH DISPATCH_MAX_RUNS DISPATCH_MAX_H \
       RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LOG RUN_SEED_YEAR \
-      DISPATCH_MANAGER DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_REPO DISPATCH_PIN CLAUDE_CODE_SESSION_ID \
+      DISPATCH_MANAGER DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_REPO DISPATCH_PIN DISPATCH_HOST_PIN CLAUDE_CODE_SESSION_ID \
       DISPATCH_SKIPPER DISPATCH_SKIPPER_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_SHIP DISPATCH_MODE \
       DISPATCH_ORIGIN DISPATCH_LOADED_AT DISPATCH_QUEUE_NOW DISPATCH_HOST DISPATCH_EVENT_AT
 # (the last two lines: a run's own manager — session-asks R1 — would name itself the manager of every test run)
@@ -100,6 +100,8 @@ export DISPATCH_DEFAULT_ON=
 # the runs below run here, as launchd would fire them (it sets DISPATCH_LABEL); without a label a run
 # goes through launchd a minute out ("a direct run" below)
 export DISPATCH_LABEL=org.example.claude.dispatch.repo.test-direct
+# an epoch as a date, BSD's -r or GNU's -d @ (AGENTS.md trap: bare `date -r` prints nothing on Linux)
+dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
 pst() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" | xargs; }   # what dispatch records as proc_start
 # what a peer is told to run: its own core, the checkout its config dir's `home` names, read there
 RBIN='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
@@ -139,6 +141,7 @@ case "\$1" in
           f) echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 10% < 90%", "skipped": []}';;
           acct-a) echo '{"account": "acct-a", "primary": true, "env": {}, "reason": "week 20% < 95%", "skipped": [["acct-c", "repo is on its deny list"]]}';;
           short) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"], ["acct-a", "week 99% ≥ 95%"]]}'; exit 3;;
+          never) echo '{"account": null, "skipped": [["acct-c", "extra usage on: work here may bill past the plan"], ["acct-a", "same login as acct-c (a@b)"]]}'; exit 3;;
           none) echo "account: no registry" >&2; exit 4;;
           junk) echo "account: probe timed out" >&2; echo "not json"; exit 1;;
         esac;;
@@ -146,6 +149,9 @@ case "\$1" in
           ok) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is on its deny list\", \"denied\": \"repo\"}]";;
           overage) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"extra usage on\", \"overage\": true}]";;
+          short) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"week 95% over its 90% ceiling\"}]";;
+          same) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"same login as acct-a (a@b), so its limits are acct-a\", \"same_as\": \"acct-a\"}]";;
+          unknown) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"limits unknown (no probe answered, none cached)\"}]";;
           fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
@@ -230,7 +236,7 @@ echo "the hosts are config: wharf-runs/ssh, wharf-runs/dispatch-host, wharf-runs
 KEYS="$REGATTA_CONFIG/wharf-runs"
 printf 'buildbox:buildbox-ssh\nStudio2:studio2-ssh\n' > "$KEYS/ssh"; : > "$T/ssh.calls"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on STUDIO2 --at "@$EP" >/dev/null 2>"$T/err"; check "$?" "0" "a second host the ssh key names is taken, case-blind"
-has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_DEPTH=0 $RBIN" "  over its own alias, to its own core"
+has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_HOST_PIN=1 DISPATCH_DEPTH=0 $RBIN" "  over its own alias, to its own core (a typed host: its one-shot pinned there, S3's review item 8)"
 has "$T/err" "scheduling on Studio2" "  named as the key spells it"
 : > "$T/ssh.calls"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on nowhere --at "@$EP" >/dev/null 2>"$T/err"; check "$?" "2" "a host the key does not name is refused"
@@ -1692,7 +1698,7 @@ has "$HOME/mode-dnd.log" "== mode dnd" "mode dnd from the plist: read at fire ti
 has "$T/claude.calls" "keel yolo --dnd <the doc>" "  the prompt's gate is keel yolo --dnd"
 has "$T/claude.calls" "relay each one as above (ask relay <doc> <Dn>)" "  …and its held items are relayed"
 has "$T/claude.calls" "when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "  …and, as the last step with nothing relayed, it ends on the hand-over line"
-has "$T/claude.calls" "A step that scheduled the next one waits for no launch: it ends on \`SAM, THIS SESSION IS WAITING FOR SOMETHING — <the next step, in one line>\`" "  …a step with a next one scheduled does not (review D4)"
+has "$T/claude.calls" "A step that scheduled the next one waits for no launch: it ends on the line dispatch --next told it to end on, when it printed one (the queue holds the step), else on \`SAM, THIS SESSION IS WAITING FOR SOMETHING — <the next step, in one line>\`" "  …a step with a next one scheduled does not (review D4); one the queue holds ends on dispatch's line (S3's third review)"
 grep -q "Taken unattended (Sam's dnd, " "$T/repo/.claude/worktrees/demo/docs/d.md"; check "$?" "0" "  a Reversible: no pick taken as the owner's dnd"
 grep -q "== yolo" "$HOME/mode-dnd.log"; check "$?" "1" "  …no yolo launch: dnd is not yolo"
 has "$HOME/mode-dnd.log" "== dnd: the build run ended clean — starting the launch: autofinish-run $T/repo/.claude/worktrees/demo --by dnd" \
@@ -2505,9 +2511,10 @@ FIRE=" " CLAUDE_UNATTENDED=dispatch nx > "$T/out" 2>&1; check "$?" "0" "an unatt
 has "$T/out" "started: claude is running $NB" "  said as before"
 check "$(qget repo--step state host by)" "claimed laptop sess-A" "  its entry pinned to this host, by the run's session"
 qreset; own sess-A
-FIRE=" " DISPATCH_MAX_RUNS=0 nx > "$T/out" 2>&1; check "$?" "2" "--next on a full host, the queue on: exit 2 as before…"
+FIRE=" " DISPATCH_MAX_RUNS=0 nx > "$T/out" 2>&1; check "$?" "0" "--next on a full host, the queue on: exit 0 (S3; S1 kept exit 2)…"
 has "$T/out" "queued as fleet:repo--step (normal)" "  …queued, not refused"
-has "$T/out" "the next step waits for a run to end" "  the cap's waiting words kept (CAP_RE, ASK_EXEMPT_RE key on them)"
+has "$T/out" "SESSION IS WAITING FOR SOMETHING — queued $NB (normal); the next step waits for a run to end; the skipper finishes it" \
+  "  the one closing line: the pending kind, the cap's waiting words in it (CAP_RE, ASK_EXEMPT_RE)"
 check "$(qget repo--step state)" "queued" "  the entry waits in the ref"
 qreset
 
@@ -2573,18 +2580,37 @@ has "$T/out" '"confined": true' "  …confined, until spawn_review_ok() checks i
 check "$(qtree)" "" "  never the fleet ref"
 qreset
 
-echo "  a fire-time refusal goes back into the queue (G1)"
+echo "  a one-shot enters the queue at its fire time (S3), aged from WHEN; a fire-time refusal goes back into it (G1)"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qcap.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless
-has "$HA/qcap.log" "FAILED: 0 other runs are busy" "a one-shot refused at its fire time by the cap…"
-has "$HA/qcap.log" "== queued: this Mac skips it for an hour" "  …is queued, not lost"
-check "$(qget repo--demo state refused_by)" "queued laptop" "  its entry names the host that refused it"
-python3 "$QB" claim "${QC[@]}" >/dev/null; check "$(qget repo--demo state)" "queued" "  that host skips it for the hour"
+check "$?" "0" "a one-shot at its fire time on a full host: exit 0…"
+has "$HA/qcap.log" "== into the queue at its time: queued as fleet:repo--demo (normal), rank 1" "  …it enters the queue, not lost"
+grep -q "^FAILED" "$HA/qcap.log"; check "$?" "1" "  no FAILED line (helm's follow-up reads one as a fire-time refusal, no spent retry, and would retry beside the entry)"
+check "$([ -f "$P" ] && echo kept || echo gone)" "gone" "  its plist gone, as any fired one-shot's"
+check "$(qget repo--demo state refused_by)" "queued None" "  no host's refusal: it was never claimed"
+qreset
+PAST=$(( $(date +%s) - 3600 )); PASTL="org.example.claude.dispatch.repo.demo.$(dateat "$PAST" +%Y%m%d%H%M)"
+DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qage.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(qget repo--demo queued_at)" "$(( PAST / 60 * 60 ))" "  its entry aged from WHEN, its label's minute (late by an hour, it keeps its place)"
+qreset
+# S3's landing review, item 8: a one-shot sent to a typed host stays pinned there when it enters the queue
+"$B/dispatch" $BR --repo "$T/repo" --on here --at "$FUT 04:10" >/dev/null; P=$(pl)
+check "$(qenv "$P" DISPATCH_HOST_PIN 2>/dev/null)" "1" "item 8 (S3 review): a typed --on's one-shot carries its pin…"
+rm -f "$P"
+DISPATCH_HOST_PIN=1 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qpin.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(qget repo--demo host)" "laptop" "  …and its fire-time entry is pinned to the host it fired on"
+qreset
+DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qnopin.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(qget repo--demo host)" "" "  one sent by default or a load pick stays unpinned"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR "${QC[@]}" >/dev/null
 HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null; check "$(qget repo--demo state claimed_by)" "claimed buildbox" "  a host with room claims it"
 QPB=$(qplists "$HB" | head -1); QLB=$(qenv "$QPB" DISPATCH_LOG)
 (export HOME="$HB" DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=0; qfire "$QPB")
-check "$(qget repo--demo state refused_by)" "queued buildbox,laptop" "a claimed job refused at fire time: back to queued, that host noted too"
-has "$QLB" "== queued again" "  said in its log"
+check "$(qget repo--demo state refused_by)" "queued buildbox" "a claimed job refused at fire time: back to queued, that host noted"
+has "$QLB" "queued again: the run cap (0 of 0 busy on buildbox)" "  said in its log, with why (S3's fire-time line)…"
+grep -q "^FAILED" "$QLB"; check "$?" "1" "  …in place of the FAILED one"
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null; check "$(qget repo--demo state)" "queued" "  that host skips it for the hour"
 
 echo "  --queue, --status, --cancel; the priority"
 env -u DISPATCH_LABEL "$B/dispatch" --queue --all > "$T/out"; has "$T/out" "fleet:repo--demo" "dispatch --queue lists it"
@@ -2755,7 +2781,7 @@ echo "  item 4: a one-shot refused at fire time queues where its caller's cwd sa
 has "$P" "<key>DISPATCH_ORIGIN</key>" "the one-shot records its caller's cwd"
 DISPATCH_ORIGIN="$(qenv "$P" DISPATCH_ORIGIN)" CLAUDE_REPOS_JSON="$T/reg-cwd.json" DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/q4.log" DISPATCH_LABEL=$PL \
   "$B/dispatch" $BR --repo "$T/repo" --headless
-has "$HA/q4.log" "== queued: this Mac skips it" "  refused by the cap at fire time, it is queued…"
+has "$HA/q4.log" "== into the queue at its time: queued as local=vault:repo--demo" "  at its fire time, on a full host, it is queued…"
 check "$(qlocal repo--demo state)" "queued" "  …in the caller's confidential scope"
 check "$(qtree)" "" "  never on the fleet ref"
 env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --cancel > /dev/null 2>&1
@@ -3138,7 +3164,7 @@ check "$(pl | wc -l | tr -d ' ')" "1" "  …one plist"
 grep -qF "no room on this Mac now" "$T/out"; check "$?" "1" "  never 'queued … no room'"
 rm -f $(pl); own sess-A
 FIRE=" " DISPATCH_MAX_RUNS=0 nx > "$T/out" 2>&1; check "$?" "2" "fourth review: a --next the queue cannot take, on a full host: refused…"
-has "$T/out" "and the queue could not take it — refused, not queued" "  …at the cap it skipped for the claim's, with the waiting words"
+has "$T/out" "and the queue could not take it (above) — refused: end with the WAITING line — the next step waits for a run to end" "  …at the cap it skipped for the claim's, with the waiting words"
 check "$(pl | wc -l | tr -d ' ')" "0" "  no one-shot the fire time would refuse and lose"
 rm -f "$T/queue.git/hooks/pre-receive" $(pl)
 check "$(qload 'q._env()["LC_ALL"]')" "C" "item 8: git runs under LC_ALL=C: its words are classed in English"
@@ -3156,7 +3182,7 @@ python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-27-m10 --c
 P10=$(qplists "$HA" | head -1); L10=$(qenv "$P10" DISPATCH_LOG)
 echo "$T/no-such.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 qfire "$P10" > /dev/null 2>&1
-has "$L10" "FAILED: the queue did not say whether fleet:repo--m10 is still this job's claim" "item 10: mine could not read at fire time: not run, said…"
+has "$L10" "queued again: the queue did not read at fire time on laptop (mine exit 4" "item 10: mine could not read at fire time: not run, said…"
 check "$(ls "$HA/Library/Caches/run-seed/queue/outbox" 2>/dev/null | wc -l | tr -d ' ')" "1" "  …and its claim handed back, waiting in the outbox"
 echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 python3 "$QB" claim "${QC[@]}" > /dev/null
@@ -3195,12 +3221,369 @@ HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null
 HOME="$HB" python3 "$QB" started fleet:repo--demo --session s22 --host buildbox "${QC[@]}" > /dev/null
 : > "$T/claude.calls"
 DISPATCH_LOG="$HA/q22.log" DISPATCH_LABEL=$PL22 "$B/dispatch" $BR --repo "$T/repo" --headless
-has "$HA/q22.log" "FAILED: $BR is live on another host through the queue" "item 22: a one-shot fired while its branch runs on another host through the queue: refused"
+has "$HA/q22.log" "FAILED: $BR is running on buildbox through the queue (fleet:repo--demo) — one branch, one host" "item 22: a one-shot fired while its branch runs on another host through the queue: refused (S3: its fire-time enqueue says so)"
 check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  no session"
 rm -f "$P22"
 qreset
 
+echo "S3, the caller's contract (docs/dispatch-queue-contract-2026-10-25.md): dispatch, hand off, close; wait only with a reason"
+# the caller's own branch, queued: its session is handed off (common.handed_off, as --on does), so its run ends
+rm_own "$HO"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-H env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+check "$?" "0" "a run of the caller's own branch on a full host: queued, exit 0"
+has "$T/out" "SESSION IS WAITING FOR SOMETHING — queued $NB (normal); the next step waits for a run to end; the skipper finishes it" "  the one closing line"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["to"], d["what"], d["target"])' "$HO/sess-H.json" 2>/dev/null)" "queue dispatch $NB" \
+  "  its session handed off to the queue (left_behind ends its run, tidy-soon its window)"
+qreset
+# --wait: the caller waits with a reason, named in the entry, and is told the one way to wait
+rm_own "$HO"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-W env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless --wait "the review reads its output" > "$T/out" 2>&1)
+check "$?" "0" "--wait REASON: queued, exit 0…"
+has "$T/out" "waiting (the review reads its output): \`dispatch --watch fleet:repo--step [--for MIN]\`" "  …naming dispatch --watch, the one way to wait"
+grep -qF "end your turn on this line" "$T/out"; check "$?" "1" "  no closing line: this session waits"
+check "$(qget repo--step waiter)" "the review reads its output" "  the waiter named in the entry"
+check "$([ -f "$HO/sess-W.json" ] && echo handed || echo kept)" "kept" "  and its session not handed off"
+# --watch: each state, never a dispatch; 0 at running, 1 once --for passes, 3 once gone, 2 a refusal
+env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--step --for 0 > "$T/out" 2>&1
+check "$?" "1" "--watch of a queued entry, --for 0: one read, exit 1 (S3's second review: 2 is a refusal's)…"
+has "$T/out" "fleet:repo--step: queued" "  …printing its state"
+has "$T/out" "it stays in the queue" "  …and that it stays queued"
+# an entry another host may claim: the --wait one above is pinned here (a typed --on here, item 21), and a
+# watch with no --for on an entry nobody claims never ends (--for 1 bounds the case, never the suite)
+qreset; python3 "$QB" enqueue --repo "$T/repo" --branch $NB "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" started fleet:repo--step --session s-w --host buildbox "${QC[@]}" >/dev/null
+env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--step --for 1 > "$T/out" 2>&1
+check "$?" "0" "  a running entry: exit 0 at once"
+has "$T/out" "fleet:repo--step: running on buildbox" "  …saying where"
+env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--nothing --for 0 > "$T/out" 2>&1
+check "$?" "3" "  an entry that is gone (ran and ended, failed, cancelled): exit 3"
+env -u DISPATCH_LABEL "$B/dispatch" --watch nokey --for 0 > /dev/null 2>&1
+check "$?" "2" "  a refusal (no STORE:KEY): exit 2, apart from --for's 1"
+check "$(sed -n '/^def watch_read/,/^# ---- the jobs/p' "$B/dispatch-queue" | grep -cE '\.do\(|claim\(|enqueue|outbox_add')" "0" \
+  "  watch never writes: no do(), claim(), enqueue or outbox in it"
+# --replace: a running entry elsewhere, queued behind it there; refused without
+CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$?" "2" "a run of a branch running on another host, no --replace: refused (one branch, one host)…"
+has "$T/out" "--replace queues this step behind it here, to start once it ends there" "  …naming --replace, which keeps the typed --on here"
+CLAUDE_UNATTENDED=dispatch CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$?" "2" "  an unattended caller: refused the same (S3's third landing review, item 6)…"
+grep -q -- "--replace" "$T/out"; check "$?" "1" "  …never offered --replace, which it is refused"
+has "$T/out" "one branch, one host" "  …the busy refusal itself, not an earlier one"
+CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > "$T/out" 2>&1
+check "$?" "0" "  with --replace: exit 0…"
+check "$(qget repo--step state host running_on by)" "queued laptop buildbox sess-R" \
+  "  …the step queued behind the run (running_on kept), pinned where the typed --on here pins it (S3's second review, item 4)"
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1; python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--step state)" "queued" "  no claim takes it while the run there is live: not there (its pin), not here (one branch, one host)"
+qreset; python3 "$QB" enqueue --repo "$T/repo" --branch $NB "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" started fleet:repo--step --session s-w --host buildbox "${QC[@]}" >/dev/null
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-R2 --replace "${QC[@]}" > /dev/null
+check "$(qget repo--step state host by)" "queued buildbox sess-R2" "  an unpinned --replace: pinned to the host it runs on, as before"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-R3 --replace --arg=--account --arg=acct-x "${QC[@]}" > /dev/null
+check "$(qget repo--step host by)" "laptop sess-R3" "  a host-local --account keeps its host: moved, its login was not set up there"
+qreset
+# another live session's queued entry: refused without --replace
+p=s3live; mkdir -p "$HOME/.claude/sessions"; printf '{"pid": %s, "sessionId": "sess-live"}' "$$" > "$HOME/.claude/sessions/$p.json"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-live "${QC[@]}" > /dev/null
+check "$(qget repo--step state by)" "queued sess-live" "a live session's step, queued"
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$?" "2" "  another session's dispatch of it: refused…"
+has "$T/out" "is queued by session sess-liv (queue entry fleet:repo--step)" "  …naming whose it is"
+has "$T/out" "--replace takes it over" "  …and --replace"
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > /dev/null 2>&1
+check "$(qget repo--step state by)" "queued sess-O" "  with --replace: taken over"
+rm -f "$HOME/.claude/sessions/$p.json"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-dead "${QC[@]}" > /dev/null
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > /dev/null 2>&1
+check "$(qget repo--step state by)" "queued sess-O" "  a gone session's queued entry is replaced without it, as before"
+qreset
+# S3's landing review, item 5: a session live only in an Orca profile's own registry (no accounts.json row) is live
+OD="$HA/Library/Application Support/orca"; OP="$OD/claude-profiles/prof-q/home"; OP="$OP/sessions"; mkdir -p "$OP"
+p=s3orca; printf '{"pid": %s, "sessionId": "sess-orca"}' "$$" > "$OP/$p.json"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-orca "${QC[@]}" > /dev/null
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$?" "2" "item 5 (S3 review): an Orca profile's live session's queued step, another session's dispatch: refused…"
+check "$(qget repo--step state by)" "queued sess-orca" "  …its entry kept"
+rm -rf "$OD"
+qreset
+# S3's landing review, item 12: --replace is the owner's yes; an unattended caller is refused it, both roads
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-dead "${QC[@]}" > /dev/null
+CLAUDE_UNATTENDED=dispatch CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > "$T/out" 2>&1
+check "$?" "2" "item 12 (S3 review): an unattended caller's --replace: refused…"
+has "$T/out" "an unattended caller is refused it: end with the WAITING line — the next step waits for a run to end" "  …in the cap's waiting words"
+CLAUDE_UNATTENDED=dispatch env -u DISPATCH_LABEL python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-U --replace "${QC[@]}" > /dev/null 2>&1
+check "$?" "2" "  dispatch-queue enqueue --replace under CLAUDE_UNATTENDED: refused too"
+check "$(qget repo--step by)" "sess-dead" "  the entry untouched"
+qreset
+# the first S1 review's open item 4: a named login past its limits at fire time is requeued, never failed
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QP4=$(qplists "$HA" | head -1); QL4=$(qenv "$QP4" DISPATCH_LOG); : > "$QL4"   # the day's log of $BR: earlier runs' FAILED lines
+(export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=short; qfire "$QP4")
+check "$(qget repo--demo state host)" "queued laptop" "item 4: a named login short at fire time: the entry back to queued, pinned to its host…"
+has "$QL4" "queued again: --account acct-x: week 95% over its 90% ceiling" "  …said with why"
+grep -q "^FAILED" "$QL4"; check "$?" "1" "  no FAILED line"
+# S3's landing review, item 4: pinned here, it still takes the hour's skip — or this Mac re-claims it at every
+# sweep until the login resets, and the same refusal starves the rest of the queue
+check "$(qget repo--demo refused_by)" "laptop" "item 4 (S3 review): the refusal skips it here an hour, pinned here or not…"
+python3 "$QB" claim "${QC[@]}" >/dev/null
+check "$(qget repo--demo state)" "queued" "  …so the next claim here leaves it queued"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QP4=$(qplists "$HA" | head -1); QL4=$(qenv "$QP4" DISPATCH_LOG); : > "$QL4"   # the day's log of $BR: earlier runs' FAILED lines
+(export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=denied; qfire "$QP4")
+check "$(qtree)" "" "  a login whose deny list holds the repo still fails it: a requeue would fail the same way"
+has "$QL4" "FAILED: --account acct-x: repo is on its deny list" "  …FAILED, as before"
+qreset
+
+echo "S3's second landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a case per fix"
+# item 1: a queued run carries --model and --effort only when given; the claimed job's brief decides the rest
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); rm -f "$P"
+DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/q1.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(qget repo--demo args | grep -cE -- '--(model|effort)')" "0" \
+  "item 1: a one-shot's fire-time entry carries no --model or --effort it was not given (tier_run decides at the claim)"
+qreset
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $BR --repo "$T/repo" --on here --headless --model sonnet > /dev/null 2>&1
+check "$(qget repo--demo args | grep -c -- "'--model', 'sonnet'"):$(qget repo--demo args | grep -c -- '--effort')" "1:0" \
+  "  a given --model rides alone; the effort it was not given stays the brief's"
+qreset
+
+# item 3: another session's queued step is judged inside the put's CAS round. This host's put waits in its
+# outbox (the home away) while another host queues the step for a live session; its replay meets that entry
+# and drops — judged before the round, from this host's view, it passed and took the other session's step
+python3 "$QB" list "${QC[@]}" > /dev/null 2>&1
+echo "$T/no-such.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-C "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" '"offline": "' "item 3: this host's put waits in its outbox…"
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+HOME="$HB" python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-A --host buildbox --pin buildbox "${QC[@]}" > /dev/null
+check "$(qget repo--step by from)" "sess-A buildbox" "  …while another host queues the step for its session, racing it"
+python3 "$QB" has --repo "$T/repo" --branch $NB "${QC[@]}" > /dev/null 2>&1   # any call here flushes the outbox
+check "$(qget repo--step by):$(ls "$HA/Library/Caches/run-seed/queue/outbox" 2>/dev/null | wc -l | tr -d ' ')" "sess-A:0" \
+  "  the replayed put meets that entry in its CAS round and is dropped: the other session's waiter stays"
+check "$(grep '"card": "queue-dropped"' "$HA/Library/Logs/claude-weekly/queue.jsonl" 2>/dev/null | grep -c 'session sess-C')" "1" \
+  "  …and a queue-dropped card names the put's session: its caller ended on \"queued\" (S3's third landing review, item 6)"
+qreset
+
+# item 6: a waiter put from another host is live by that host's word (by_seen) or a bounded age, never for good
+DISPATCH_QUEUE_NOW=$(( $(date +%s) - 7200 )) HOME="$HB" python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-F --host buildbox --pin laptop "${QC[@]}" > /dev/null
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > /dev/null 2>&1
+check "$?:$(qget repo--step by)" "0:sess-O" "item 6: another host's waiter silent two hours: its queued step is taken over without --replace"
+qreset
+DISPATCH_QUEUE_NOW=$(( $(date +%s) - 1500 )) HOME="$HB" python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-F --host buildbox --pin laptop "${QC[@]}" > /dev/null
+CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > /dev/null 2>&1
+check "$?:$(qget repo--step by)" "2:sess-F" "  one put there 25 min ago: live, refused without --replace"
+mkdir -p "$HB/.claude/sessions"; p=s3far; printf '{"pid": %s, "sessionId": "sess-F"}' "$$" > "$HB/.claude/sessions/$p.json"
+HOME="$HB" python3 "$QB" sweep --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--step by_seen | grep -c '^[0-9][0-9]*$')" "1" "  its host's sweep writes by_seen while the session is in a registry there…"
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 600 )) CLAUDE_CODE_SESSION_ID=sess-O env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > /dev/null 2>&1
+check "$?:$(qget repo--step by)" "2:sess-F" "  …which keeps it live past the put's own 30 minutes"
+rm -f "$HB/.claude/sessions/$p.json"
+qreset
+
+# item 5: the fire path's quiet refusals come before a one-shot enters the queue: no entry, no queue card
+DISPATCH_DEPTH=9 DISPATCH_MAX_DEPTH=2 DISPATCH_LOG="$HA/q5.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless > /dev/null 2>&1
+has "$HA/q5.log" "FAILED: dispatch: this would be run 9 of a chain" "item 5: a one-shot past the chain's depth: FAILED at fire time…"
+check "$(qtree)" "" "  …and never entered the queue"
+QJ="$HA/Library/Logs/claude-weekly/queue.jsonl"; c5=$(grep -c '"card": "queue-failed"' "$QJ" 2>/dev/null)
+STUB_ACCT=acct-a DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/noacct.json" ACCOUNT_CLAUDE=false \
+  DISPATCH_LOG="$HA/q5r.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless --if-room > /dev/null 2>&1
+has "$HA/q5r.log" "FAILED: --if-room: no account may run it" "  a fired --if-room with no week room: FAILED…"
+check "$(qtree):$(grep -c '"card": "queue-failed"' "$QJ" 2>/dev/null)" ":$c5" \
+  "  …no entry, so no queue-failed card (sextant's weekly slot filed one every tight week)"
+qreset
+
+# item 7 and the lesser items: a queue verb that crashes (DISPATCH_QUEUE_BIN, a stand-in exiting 5 for one verb)
+cat > "$T/qcrash.py" <<'PY'
+import os, runpy, sys
+if sys.argv[1:2] == [os.environ.get("QCRASH")]:
+    sys.exit(5)
+real = os.environ["QREAL"]
+sys.argv[0] = real
+runpy.run_path(real, run_name="__main__")
+PY
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QP7=$(qplists "$HA" | head -1); QL7=$(qenv "$QP7" DISPATCH_LOG); : > "$QL7"
+(export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=short DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=refused QREAL="$QB"; qfire "$QP7")
+has "$QL7" "== the queue did not take it back (dispatch-queue refused exit 5): not queued again" "item 7: the refusal's write crashed: said…"
+grep -q "^queued again" "$QL7"; check "$?" "1" "  …never \"queued again\""
+has "$QL7" "FAILED: --account acct-x" "  …and FAILED, as with no queue (the exit's failed then takes the entry off)"
+qreset
+: > "$T/claude.calls"
+DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=enqueue QREAL="$QB" DISPATCH_MAX_RUNS=5 DISPATCH_LOG="$HA/q12.log" DISPATCH_LABEL=$PASTL \
+  "$B/dispatch" $BR --repo "$T/repo" --headless > /dev/null 2>&1
+has "$HA/q12.log" "FAILED: the queue crashed at fire time (dispatch-queue exit 5) and may hold the step; not running" \
+  "item 12: a one-shot whose fire-time enqueue crashed: FAILED, as queue_dispatch refuses it…"
+check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  …no session beside a put that may have landed"
+qreset
+DISPATCH_PIN=bound DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qbound.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless > /dev/null 2>&1
+check "$(qget repo--demo host)" "" "  a bound run's DISPATCH_PIN=bound pins no host: the host pin is DISPATCH_HOST_PIN"
+qreset
+
+# item 8: the caller's own branch claimed here is handed off once its run shows started, never at the job's load
+rm_own "$HO"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-8 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=2 DISPATCH_LOG="$T/q8.log" \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+check "$?" "0" "item 8: the caller's own branch, claimed here with room: exit 0…"
+has "$T/out" "no run started in $T/q8.log yet — this session is not handed off: \`dispatch --watch fleet:repo--step\` follows the entry" "  …no run started yet: not handed off, told how to follow it"
+check "$([ -f "$HO/sess-8.json" ] && echo handed || echo kept)" "kept" "  its session kept"
+qreset
+( sleep 3; printf '%s\n' "== $(date) dispatch $NB (opus high) in $T/repo" "== started: $NB, session s8" >> "$T/q8.log" ) &
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-8b env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=30 DISPATCH_LOG="$T/q8.log" \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+wait
+check "$([ -f "$HO/sess-8b.json" ] && echo handed || echo kept)" "handed" "  once its run started (its == started: line): handed off"
+qreset
+
+# item 9: --watch follows the entry it first read; a newer step under its key is not the one watched
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --pin buildbox "${QC[@]}" >/dev/null
+( DISPATCH_WATCH_S=4 env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--step --for 1 > "$T/wout" 2>&1; echo "$?" > "$T/wrc" ) & WP=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/wout" ] && break; sleep 0.5; done
+"${QGIT[@]}" update-ref -d refs/regatta/queue   # the watched step ended, its entry gone…
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch $NB --pin buildbox "${QC[@]}" >/dev/null   # …and its --next queued a newer one
+wait "$WP"
+check "$(cat "$T/wrc")" "3" "item 9: a newer step under the watched key: the watched one is gone, exit 3…"
+has "$T/wout" "a newer step of the branch holds its key now" "  …saying so"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --pin buildbox --by s9 "${QC[@]}" >/dev/null
+( DISPATCH_WATCH_S=4 env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--step --for 0.15 > "$T/wout" 2>&1; echo "$?" > "$T/wrc" ) & WP=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/wout" ] && break; sleep 0.5; done
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --pin buildbox --by s9 --wait "re-sent" "${QC[@]}" >/dev/null   # a re-dispatch keeps the place
+wait "$WP"
+check "$(cat "$T/wrc")" "1" "  a re-dispatch of the queued step keeps its place: the same step, still watched (exit 1 at --for)"
+qreset
+
+# item 11: --wait and --replace are refused on a road with no entry for them, never dropped
+env -u DISPATCH_LABEL "$B/dispatch" $NB --repo "$T/repo" --at "$FUT 04:10" --wait "x" > "$T/out" 2>&1
+check "$?" "2" "item 11: --wait with --at: refused…"
+has "$T/out" "--at schedules a one-shot, which enters the queue at its time without them" "  …saying why"
+env -u DISPATCH_LABEL "$B/dispatch" $NB --repo "$T/repo" --on buildbox --replace > "$T/out" 2>&1
+check "$?" "2" "  --replace with --on HOST: refused…"
+has "$T/out" "--on buildbox schedules a one-shot there" "  …naming the road"
+check "$(pl)" "" "  nothing scheduled"
+own sess-A; FIRE=" " nx --wait "the review reads it" > "$T/out" 2>&1
+has "$T/out" "waiting (the review reads it): \`dispatch --watch fleet:repo--step" "  a --next claimed here that waits is told the way to wait, once…"
+check "$(grep -c '^waiting (the review reads it)' "$T/out")" "1" "  …once"
+qreset
+
+echo "S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a case per fix"
+# item 2: only a login refused for a limit a reset lifts stays in the queue; any other refusal fails plainly
+for k in overage same unknown; do
+  python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+  QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
+  (export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=$k; qfire "$QP2")
+  has "$QL2" "FAILED: --account acct-x: " "item 2: a named login refused for good ($k) at fire time: FAILED…"
+  grep -q "^queued again" "$QL2"; check "$?:$(qtree)" "1:" "  …never queued again, and the entry is gone ($k)"
+  qreset
+done
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
+(export DISPATCH_ACCOUNT="$T/acct" STUB_ACCT=never; qfire "$QP2")
+has "$QL2" "FAILED: no account may run this now — acct-c: extra usage on" "  the walk with every row refused for good: FAILED…"
+grep -q "^queued again" "$QL2"; check "$?" "1" "  …never queued again"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
+(export DISPATCH_ACCOUNT="$T/acct" STUB_ACCT=short; qfire "$QP2")
+has "$QL2" "queued again: no account may run this now — acct-c: week 95%" "  the walk with a row a reset frees: queued again"
+qreset
+# item 1: a --next claimed here and put back in the queue at its start reports queued, never started
+own sess-A; FIRE="queued again: the run cap (0 of 0 busy on laptop) — a host with room claims it" nx > "$T/out" 2>&1
+check "$?" "0" "item 1: a --next requeued at fire time: exit 0, the queued road's…"
+has "$T/out" "queued: the run of $NB went back into the queue at its start (queued again: the run cap" "  …said queued, with why…"
+has "$T/out" "end your turn on this line: " "  …and the closing line"
+grep -q "^started" "$T/out"; check "$?" "1" "  never \"started\""
+qreset
+# item 3: an unattended caller's --replace is refused whatever DISPATCH_LABEL it sets (any session's word)
+python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-dead "${QC[@]}" > /dev/null
+CLAUDE_UNATTENDED=dispatch DISPATCH_LABEL=made.up.label python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-U --replace "${QC[@]}" > "$T/out" 2>&1
+check "$?" "2" "item 3: dispatch-queue enqueue --replace, unattended, with a DISPATCH_LABEL set: refused…"
+check "$(qget repo--step by)" "sess-dead" "  …the entry untouched"
+AUTOFINISH_CALLER_UNATTENDED=1 env -u CLAUDE_UNATTENDED python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-U --replace "${QC[@]}" > /dev/null 2>&1
+check "$?" "2" "  a peer job's unattended caller (AUTOFINISH_CALLER_UNATTENDED): refused too"
+CLAUDE_UNATTENDED=dispatch DISPATCH_LABEL=made.up.label CLAUDE_CODE_SESSION_ID=sess-O DISPATCH_MAX_RUNS=0 \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > "$T/out" 2>&1
+check "$?" "2" "  dispatch --replace, unattended, with a DISPATCH_LABEL set: refused"
+has "$T/out" "an unattended caller is refused it" "  …saying why"
+qreset
+# item 4: the caller is handed off on the run's == started: line, never the header its job prints before refusing
+rm_own "$HO"
+# the stand-in job writes once the entry exists, which dispatch puts after it reads the log's size (size0)
+qjob() { ( for _ in $(seq 1 100); do [ -n "$(qget repo--step state)" ] && break; sleep 0.2; done; sleep 1; printf '%s\n' "$@" >> "$QJLOG" ) & }
+QJLOG="$T/q4.log"; qjob "== $(date) dispatch $NB (opus high) in $T/repo" "FAILED: $NB is not on origin"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-4 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=30 DISPATCH_LOG="$T/q4.log" \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+wait
+check "$([ -f "$HO/sess-4.json" ] && echo handed || echo kept)" "kept" "item 4: the job refused after its header: the caller is not handed off…"
+has "$T/out" "did not start — its job ended first (log $T/q4.log)" "  …told the run did not start, at once (not after the wait)"
+qreset
+QJLOG="$T/q4b.log"; qjob "== $(date) dispatch $NB (opus high) in $T/repo" "17:50:01 waiting for the run of step started 17:40" "== exit 0 at $(date)" "== started: $NB, session s4b"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-4b env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=30 DISPATCH_LOG="$T/q4b.log" \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+wait
+check "$([ -f "$HO/sess-4b.json" ] && echo handed || echo kept)" "handed" \
+  "  an earlier run's == exit after this job's header (its after() ended that run): handed off once it starts (second in-round review)"
+qreset
+QJLOG="$T/q4c.log"; qjob "== $(date) dispatch $NB (opus high) in $T/repo" "queued again: the run cap (0 of 0 busy on laptop) — a host with room claims it"
+(cd "$W" && CLAUDE_CODE_SESSION_ID=sess-4c env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=30 DISPATCH_LOG="$T/q4c.log" \
+  "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1)
+check "$?" "0" "  put back in the queue at its start: exit 0…"
+wait
+has "$T/out" "went back into the queue at its start" "  …said queued…"
+has "$T/out" "end your turn on this line: " "  …the closing line, never \"did not start\" (second in-round review)"
+qreset
+# item 5: with no --on typed, --wait and --replace keep the run in this Mac's queue, past the default host
+DISPATCH_DEFAULT_ON=buildbox CLAUDE_CODE_SESSION_ID=sess-5 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 \
+  "$B/dispatch" $NB --repo "$T/repo" --headless --wait "the review reads it" > "$T/out" 2>&1
+check "$?" "0" "item 5: --wait with the default host set and no --on: taken…"
+grep -q -- "--on buildbox" "$T/out"; check "$?" "1" "  …never refused naming an --on the caller did not type"
+check "$(qget repo--step state)" "queued" "  the step is in the queue, its waiter named"
+qreset
+DISPATCH_DEFAULT_ON=buildbox CLAUDE_CODE_SESSION_ID=sess-5 env -u DISPATCH_LABEL -u CLAUDE_UNATTENDED DISPATCH_MAX_RUNS=0 \
+  "$B/dispatch" $NB --repo "$T/repo" --headless --replace > "$T/out" 2>&1
+check "$?:$(qget repo--step state)" "0:queued" "  --replace the same: into this Mac's queue"
+qreset
+# item 6: a --next claimed here with no header: the entry's watch decides; one that crashes could not tell
+rm_own "$HO"; own sess-A
+FIRE="" DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=watch QREAL="$QB" nx > "$T/out" 2>&1
+check "$?" "2" "item 6: no header and the entry's watch crashed (exit 5): could not tell, exit 2…"
+has "$T/out" "could not tell whether the queue holds it (queue entry fleet:repo--step) — dispatch-queue watch exit 5" "  …said, naming the entry (pickup's QUEUE_HOLDS: never a tab beside it)…"
+has "$T/out" "the next step waits for a run to end" "  …in the cap's waiting words"
+check "$([ -f "$HO/sess-A.json" ] && echo handed || echo kept)" "kept" "  …and the session is not handed off"
+qreset
+own sess-A
+FIRE="" nx > "$T/out" 2>&1
+check "$?" "0" "  no header, the entry still claimed here (watch exit 1): the queue holds it, exit 0…"
+has "$T/out" "end your turn on this line: " "  …and the closing line"
+qreset
+# item 6: one registry scan per process, however many replays and waiters ask (apply_op in each outbox replay)
+cat > "$T/scan6.py" <<'PY6'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("dq", sys.argv[1]); q = u.module_from_spec(u.spec_from_loader("dq", l)); l.exec_module(q)
+n = [0]
+class RC:
+    def sessions_live(self):
+        n[0] += 1
+        return [{"sessionId": "s-live"}]
+q.rc_mod = lambda: RC()
+here = q.host_name()
+seen = [q.waiter_live({"by": b, "from": here}) for b in ("s-live", "s-gone", "s-live", "s-other")]
+print(n[0], seen)
+PY6
+check "$(python3 "$T/scan6.py" "$QB")" "1 [True, False, True, False]" "item 6: four waiters judged, one registry scan"
+
+
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
+# item 11: with no queue home, --wait and --replace are said and ignored
+env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --on here --headless --wait "x" --replace --dry-run > "$T/out" 2>&1
+has "$T/out" "--wait and --replace ignored — no queue home here (wharf-runs/queue-repo)" "item 11: no queue home: --wait and --replace said and ignored"
+# S3's third landing review, in-round: with no queue home the flags are dropped before the default road,
+# which then applies as it would without them (the run goes to the default host, never here)
+: > "$T/ssh.calls"
+DISPATCH_DEFAULT_ON=buildbox env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$HOME/projects/other" --headless --wait "x" --dry-run > "$T/out" 2>&1
+has "$T/out" "--wait ignored — no queue home here" "  no queue home, no --on: --wait said and dropped…"
+has "$T/ssh.calls" "ssh buildbox-ssh" "  …and the default host still takes the run"
 unset DISPATCH_HOST
 
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

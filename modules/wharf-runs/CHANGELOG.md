@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a `--next` put back in the queue at
+  its start says queued and the closing line, never `started`; only a login refused for a limit that resets
+  (the week, the 5-hour window, a cooldown, a lock) stays in the queue at fire time — extra usage on, same login
+  as, limits unknown fail plainly, and the walk too when no row would reset; `--replace` refuses every
+  unattended caller (`CLAUDE_UNATTENDED`, `AUTOFINISH_CALLER_UNATTENDED`), a `DISPATCH_LABEL` no exemption; a
+  caller is handed off on the run's `== started:` line (printed past every refusal), never its header;
+  `--wait`/`--replace` with no `--on` keep the run in this Mac's queue past the default host; a `--next`'s entry
+  watch that crashes is "could not tell" (exit 2, not handed off); the busy refusal names `--replace` to an
+  attended caller only; an outbox put refused at its replay files a `queue-dropped` card; the session registry
+  is scanned once per process; autofinish's `queue_hold` ignores the branch's own `running` entry.
+- The queue's caller contract (S3 of docs/dispatch-queue-2026-10-25.md; inert until `wharf-runs/queue-repo`
+  is set): a queued step is exit 0 and one closing line for a direct run and a `--next` alike
+  (`<the pending prefix>queued <branch> (<priority>); the next step waits for a run to end; the skipper
+  finishes it`), the caller's own branch handed off (`common.handed_off`, as `--on` does); a branch
+  claimed here already is exit 0 too. `--wait REASON` names the waiter in the entry and prints
+  `dispatch --watch <entry>`; `dispatch --watch QID [--for MIN]` (dispatch-queue's `watch`) blocks,
+  printing each state, 0 at running, 3 gone, 1 past `--for` (2 a refusal), and never writes. `--replace` takes a
+  claimed, waiting or running entry (queued behind it, pinned to its host) or another live session's
+  queued one, which a dispatch alone now refuses. A one-shot (`--at`) enters the queue at its fire
+  time, aged from WHEN. A fire-time refusal the queue keeps says `queued again: <why>` in place of the
+  FAILED line; a named `--account` past its limits at fire time is one of them (it was failed and its
+  entry removed). A `--next` claimed here with no run header by `DISPATCH_NEXT_WAIT` is confirmed by its
+  entry (waiting, running, or held by the queue), never NOT STARTED while the queue holds it. The
+  header's Limits and headroom's line name the 2026-10-08 "refused, not queued" rule superseded.
+- Readers read the queue first: autofinish holds a branch whose step is an entry, whatever its last reply
+  said (`queue_hold`, session or none; one `list --all --json` per sweep); pickup never opens a tab for a step the queue
+  holds, and says `queued as <entry>`; wharf's `runs_busy` counts the queue's reservations; `/later`
+  schedules `--at reset --priority low`.
+- S3's landing review fixes (docs/dispatch-queue-s3-review-2026-10-28.md): a named `--account` past its limits
+  at fire time takes the hour's skip here though pinned here (`--skip-hour`), so the host no longer re-claims it
+  every pass; autofinish asks the queue of every branch about to start, and holds on any answer but 0 and 3;
+  pickup stops on dispatch's "the queue does not read"; `registry_dirs` reads every Orca profile's `sessions/`,
+  so `--replace`'s live-session refusal sees them; a typed `--on`'s one-shot carries `DISPATCH_HOST_PIN` and enters
+  the queue pinned; `--replace` refuses an unattended caller (dispatch and `enqueue`); `watch` asks `ls-remote`
+  and fetches only when the ref moved; the "not queued" line says the real exit; keel's skill and `/later` say
+  the queue applies only where `wharf-runs/queue-repo` is set.
+- S3's second landing review fixes (the same doc, its second review): a queued run carries `--model`/`--effort`
+  only when given, so a claimed job's brief decides its tier; another live session's queued step is refused inside
+  the put's CAS round (`apply_op`'s guard), so racing enqueues keep its waiter; `--replace` keeps the put's own
+  pin (a typed `--on here`, a host-local `--account`); a waiter put from another host is live by that host's sweep
+  (`by_seen`) or for three sweeps, never for good; a one-shot meets the depth, physical and `--if-room` refusals
+  before it enters the queue, so they file no queue card; a crashed `refused` or fire-time `enqueue` is FAILED,
+  never "queued again" or a run beside the put; the caller's own branch claimed here is handed off once its run's
+  header shows; `watch` follows the entry it first read and exits 1 past `--for` (2 a refusal); autofinish reads
+  the queue once per sweep (`list --all --json`); `--wait`/`--replace` are refused with `--at` or `--on HOST` and
+  said ignored with no queue home; the host pin is `DISPATCH_HOST_PIN`, apart from a bound run's `DISPATCH_PIN`.
 - `pickup seed --from`, the landing re-review (2026-10-27): the target judged against one read of the registry,
   an unregistered repo a confidential glob takes, a tenancy file written but unreadable, and a repo dispatch
   does not take are refused before any write; a plain `seed` or `brief` out of a confidential scope is refused

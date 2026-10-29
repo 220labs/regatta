@@ -296,7 +296,10 @@ def registry_dirs(st=None):
     (RC.SESSIONS), then every login's (the core's login_dirs). A login dir links its sessions/ to
     ~/.claude's, but an Orca profile keeps its own where `account orca-sync` found Orca's dir there
     first ("⚠ left"): a run on that login had no record here, so its watcher read "no record" for
-    5 h and never ended it (S13 of the crosstalk design; trial B, 2026-10-23)."""
+    5 h and never ended it (S13 of the crosstalk design; trial B, 2026-10-23). Every Orca profile's own
+    sessions/ last, accounts.json row or none, as helm's PEER_PROBE reads them: a profile no row names kept
+    its live sessions out of `sessions_live`, and the queue's `--replace` refusal read them as gone
+    (dispatch-queue S3's landing review, item 5; AGENTS.md: a session registry is not one folder)."""
     cands = []
     if st and st.get("config_dir"):
         cands.append(os.path.join(st["config_dir"], "sessions"))
@@ -306,6 +309,7 @@ def registry_dirs(st=None):
             cands += [os.path.join(str(d), "sessions") for d in common.login_dirs(Path(HOME))]
         except Exception:  # noqa: BLE001 — a broken registry costs only the extra dirs
             pass
+    cands += sorted(glob.glob(os.path.join(HOME, "Library", "Application Support", "orca", "claude-profiles", "*", "home", "sessions")))
     out, seen = [], set()
     for d in cands:
         real = os.path.realpath(d)
@@ -1323,7 +1327,7 @@ def queue_home_set():
 
 # a fired job's own words, which a claim from inside its run must not carry: dispatch reads DISPATCH_LABEL
 # as "I am a launchd job", and the rest name that job's log, year and queue claim
-JOB_ENV = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "DISPATCH_LOADED_AT", "DISPATCH_EVENT_AT", "DISPATCH_ORIGIN")
+JOB_ENV = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "DISPATCH_LOADED_AT", "DISPATCH_EVENT_AT", "DISPATCH_ORIGIN", "DISPATCH_PIN", "DISPATCH_HOST_PIN")
 
 
 # False in the queue's own process (dispatch-queue's rc_mod()): a run its claim or sweep ends there is ended
