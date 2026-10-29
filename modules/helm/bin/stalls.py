@@ -98,6 +98,9 @@ LOGIN_RE = re.compile(r"Not logged in|/login\b|OAuth token|authentication_error"
 # dispatch's own words (bin/dispatch): the run-cap refusal a `--next` ends on (S2), and deep()'s
 # depth line (S6, never retried)
 CAP_RE = re.compile(r"the next step waits for a run to end", re.I)
+# dispatch's pending line once the queue holds a step (its queue_close): `queued <branch> (<priority>); the next
+# step waits for a run to end`, the branch it queued named in it (S3's third landing review, item 6)
+PENDING_RE = re.compile(r"\bqueued (\S+) \((?:low|normal|high|force)\); the next step waits for a run to end\b")
 DEEP_RE = re.compile(r"the next step waits for [\w' ]{1,40}? to start it", re.I)   # a person's name, or the owner
 # a record's end that is a person's decision or dispatch's own retry: never a stall (F11)
 NOT_STALLS = re.compile(r"^(?:ended by dispatch --end|never started)")
@@ -383,6 +386,20 @@ def _last_line(text):
     return lines[-1][:TEXT_LINE] if lines else ""
 
 
+def pending_branch(text):
+    """The branch dispatch's pending line names, when the reply ends on it, or None. The line is the reply's
+    closing line as the Stop hook reads it (the core's ending(): the last closing line, only link lines after
+    it, never inside a code fence), so a pending line quoted above another closing line, or in a fence, is no
+    queued step; and the exact line, never the cap's words alone (S3's third landing review, item 6, and its
+    in-round review). Without the core: the last line alone."""
+    try:
+        line = helmlib._common().ending(text)[1]
+    except Exception:   # noqa: BLE001 — no core here, or one without ending(): the last line, the strict side
+        line = _last_line(text)
+    m = PENDING_RE.search(line or "")
+    return m.group(1).strip("*`_") if m else None
+
+
 def _ago(t, now):
     if not t:
         return "?"
@@ -404,6 +421,48 @@ def poll_asks():
     except (OSError, ValueError):
         return set()
     return {(a.get("repo"), a.get("branch")) for a in (d.get("asks") or []) + (d.get("ended") or []) if isinstance(a, dict)}
+
+
+# one queue read per pass: a fetch of the queue's home, or its cache when the home is away. list's fetch may
+# wait 45 s for the clone's lock and then 30 s for the home, so 45 cut a slow read short and held every
+# branch as unreadable (dispatch-queue S3's landing review, item 10): autofinish's and soundings' 90
+QUEUE_TIMEOUT = 90
+
+
+def poll_queue():
+    """({(repo name, branch)} dispatch's queue holds, why-unreadable or None): one `dispatch-queue list --all
+    --json`. No dispatch-queue here (wharf-runs absent): nothing held, readable. STALLS_DISPATCH_QUEUE is the
+    tests' stand-in."""
+    q = os.environ.get("STALLS_DISPATCH_QUEUE") or helmlib.peer("dispatch-queue")
+    if not q:
+        return set(), None
+    try:
+        r = subprocess.run([str(q), "list", "--all", "--json"], capture_output=True, text=True, timeout=QUEUE_TIMEOUT)
+        d = json.loads(r.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return set(), "dispatch-queue list: %s" % (e.__class__.__name__,)
+    if not isinstance(d, dict):
+        return set(), "dispatch-queue list: no answer"
+    held = {(repo_name(e.get("repo")), e.get("branch")) for e in d.get("entries") or [] if isinstance(e, dict)}
+    return held, ("; ".join(map(str, d.get("why") or [])) or "unreadable") if d.get("unreadable") else None
+
+
+class QueueRead:
+    """The queue-first rule (dispatch-queue S3; the contract's readers): a session that queued its step ends
+    on the pending line, `queued <branch> …; the next step waits for a run to end`, and its run then ends —
+    which read alone is S1's "nothing woke it", a retry of a step the queue already holds, or, on the cap's
+    words, S2's start beside it. So a branch the queue holds is `queued`, never a stall; a queue that cannot
+    be read holds every branch (the readers' rule: unreadable is "has an entry"). Read once per pass, and
+    only when a run's line asks: most passes judge no pending run, and a read fetches the home."""
+
+    def __init__(self):
+        self.read, self.held, self.bad = False, set(), None
+
+    def __call__(self, repo, branch):
+        if not self.read:
+            self.read = True
+            self.held, self.bad = poll_queue()
+        return bool(self.bad) or (repo, branch) in self.held
 
 
 WAITING_ON_OWNER = "waiting on the owner"
@@ -450,12 +509,14 @@ def _stall(cls, host, st, name, rule, evidence, now, since=None, **kw):
     return rec
 
 
-def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, read=None):
+def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, read=None, queued=None, queued_out=None):
     """(stalls, unsure) of one host's run records. `all_records` is every record of both Macs, as
     (host, name, st), for the superseded test; `live_ids` every live session id on both; `read` the
     hosts this one has a road to (itself and its peers, read or not; None: no rule) — a manager on any
     other host cannot be seen from here, so its RELAYED run is never called orphaned (a yard reads no
-    laptop; skipper-resilience S8). A peer that did not answer this pass keeps the rule it had."""
+    laptop; skipper-resilience S8). A peer that did not answer this pass keeps the rule it had. `queued`
+    (a QueueRead) says whether dispatch's queue holds a branch: such a run is put in `queued_out` (a
+    `queued` line in the pass's notes), never an S1 or S2 stall (dispatch-queue S3)."""
     stalls, unsure = [], []
     raw = view.get("raw") or {}
     # a stall B3 may act on carries its worktree's lock as facts() read it on its host (`owner`):
@@ -510,6 +571,15 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
                                      owner=f.get("owner")))
             continue
         if kind == "done" or (kind or "").startswith("done"):
+            continue
+        # the queue-first rule on the exact pending line, judged by the branch it names: the run's own, or the
+        # one it queued (a run of X that queued Y waits on Y, which the queue holds; read for X, it was S1's
+        # retry of finished work) — S3's third landing review, item 6
+        pend = pending_branch(text) if kind in (WAITING_ON_OWNER, "waiting on its own work") else None
+        if pend and queued is not None and queued(repo, pend):
+            if queued_out is not None:
+                queued_out.append({"host": host, "repo": repo, "branch": pend, "topic": st.get("topic"),
+                                   "run": name, "why": "unreadable queue" if queued.bad else "in dispatch's queue"})
             continue
         if kind == WAITING_ON_OWNER:
             if CAP_RE.search(last):
@@ -1201,6 +1271,7 @@ def judge(peer=True, live_call=True, orca_held=None):
     all_records = [(h, n, st) for h, v in views.items() for n, st in (v.get("raw") or {}).items() if isinstance(st, dict)]
     live_ids = {x["session_id"] for v in views.values() for x in v.get("live") or []}
     asked = poll_asks()
+    queued, queued_runs = QueueRead(), []
     # a launch running now (a finish-* record not ended, alive on its host): autofinish's, not a stall
     live_branches = {(repo_name(st.get("repo")), st.get("branch")) for h, n, st in all_records
                      if launching(st.get("topic")) and not st.get("ended") and (views[h]["records"].get(n) or {}).get("alive")}
@@ -1220,7 +1291,7 @@ def judge(peer=True, live_call=True, orca_held=None):
     # left to the yard's own tick (stalls_tick, by `self_judging` below) — S8
     for h, v in views.items():
         s, u = judge_runs(h, v, all_records, live_ids, asked, now, live_count if h == me else None,
-                          read=set(views) | set(peers()) if peer else None)
+                          read=set(views) | set(peers()) if peer else None, queued=queued, queued_out=queued_runs)
         stalls += s
         unsure += u
     # what this pass could not read, by source: the stall road closes no issue on an absence it cannot vouch for
@@ -1274,9 +1345,14 @@ def judge(peer=True, live_call=True, orca_held=None):
     # card, an idle one a count (board-cleanup S1)
     live = [dict(x, host=h) for h, v in views.items() for x in v.get("live") or []]
     own, torn = self_judging()
+    # the queue's cards: a run that queued its step and ended, waiting on the queue, not a stall (S3)
+    for x in queued_runs:
+        notes.append("queued: %s on %s — %s (%s); not a stall (dispatch --queue)" % (x.get("topic"), x["host"], x.get("branch"), x["why"]))
+    if queued.bad:
+        notes.append("queue: unreadable (%s) — every run on the queue's closing line counts as queued" % queued.bad)
     return {"as_of": now, "host": me, "hosts": sorted(views), "stalls": stalls, "unsure": unsure, "notes": notes,
             "runs": runs, "waiting": waiting, "prompts": prompts, "live": live, "unread": unread, "orca_dead": dead,
-            "self_judging": sorted(own), "registry_torn": torn}
+            "self_judging": sorted(own), "registry_torn": torn, "queued": queued_runs}
 
 
 def main(argv=None):

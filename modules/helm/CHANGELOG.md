@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- stalls reads dispatch's queue before an S1 retry or an S2 start (dispatch-queue S3): a run that ended
+  on the cap's waiting words whose branch the queue holds is `queued` (the result's `queued`, a line in
+  its notes), never a stall; a queue that does not read holds every such branch. One `dispatch-queue list
+  --all --json` per pass, only when a run's line asks. Its timeout is 90 s, not 45: `list`'s fetch may wait
+  45 s for the clone's lock and 30 s for the home (S3's landing review, item 10). Since S3's third landing
+  review it keys on dispatch's exact pending line (`queued <branch> (<priority>); the next step waits for a
+  run to end`, a few link lines after it allowed), judged by the branch it names — the run's own, or one it
+  queued — so the cap's words alone are S2 again even with the queue unreadable.
 - The suite's two deletes of the run-records folder go through `rm_own` (the core's entry: a block of
   this suite, run in a shell with the real HOME, emptied a Mac's run records on 2026-10-25).
 - The board's Intake column (lighthouse-ops S4): a card per open issue of the desk's intake, from lighthouse's
