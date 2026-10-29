@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lighthouse's bin/ops (lighthouse-ops S1, S2, S4): the desk's token wall — read only in the desk's own job,
+# lighthouse's bin/ops (lighthouse-ops S1, S2, S4, S5): the desk's token wall — read only in the desk's own job,
 # from a local 0700 dir and a 0600 file, never a link — and `ops usage` against stubbed GitHub and
 # CircleCI answers (a driver replaces ops.http_get in-process: no network, no port). The pick's own
 # cases are wharf's tests/test_ci_provider.sh. Scratch HOME and config dir; every name made up.
@@ -312,14 +312,22 @@ cat > "$T/gh" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
 T = os.environ["OPS_T"]
-path = next((a for a in sys.argv[1:] if a.startswith("repos/")), "")
+path = next((a for a in sys.argv[1:] if a.startswith(("repos/", "search/"))), "")
 with open(os.path.join(T, "gh.calls"), "a") as f:
     f.write(path + "\n")
-for k, (rc, out) in json.load(open(os.path.join(T, "gh.json"))).items():
+with open(os.path.join(T, "gh.argv"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+# the longest key that the path holds wins: `issues/1` never answers for `issues/10`
+# an issue's own answer names its repo, as GitHub's does, unless the fixture says otherwise (a transfer)
+import re
+one = re.match(r"repos/([^/]+/[^/]+)/issues/\d+$", path)
+for k, (rc, out) in sorted(json.load(open(os.path.join(T, "gh.json"))).items(), key=lambda kv: -len(kv[0])):
     if k in path:
         if rc:
             sys.stderr.write(out + "\n"); sys.exit(rc)
         for o in out:
+            if one and isinstance(o, dict):
+                o.setdefault("repository_url", "https://api.github.com/repos/" + one.group(1))
             print(json.dumps(o))
         sys.exit(0)
 sys.stderr.write("gh: HTTP 404: Not Found\n"); sys.exit(1)
@@ -346,6 +354,7 @@ ghans '{"repos/acme/alpha/issues?state=open": [0, [
     "labels": [{"name": "Bug"}, {"name": "p1"}], "user": {"login": "owner1"}, "author_association": "OWNER", "body": "it breaks"},
    {"id": 103, "number": 3, "state": "open", "created_at": "2026-10-22T10:00:00Z", "updated_at": "2026-10-22T10:00:00Z", "pull_request": {"url": "x"},
     "labels": [], "user": {"login": "owner1"}, "author_association": "OWNER", "body": "a PR"}]],
+ "repos/acme/alpha/issues?sort=updated&direction=desc": [0, [{"id": 102, "number": 2, "state": "open", "updated_at": "2026-10-22T10:00:00Z"}]],
  "repos/acme/beta/": [1, "gh: HTTP 502: Bad Gateway"]}'
 
 echo "ops ingest: only the desk's job, only on the ops host"
@@ -395,8 +404,8 @@ check "$(new event number kind author state)" "closed 1 contact stranger closed
 opened 4 deadman self open
 comment 2 bug stranger open" "a third pass: a close, an issue opened by the machine account (self), a comment with its issue's kind; #2's only change a comment writes no issue row; a PR's comment none"
 check "$(new body_sha | tail -1)" "$(sha 'same here')" "…the comment's own body hash"
-check "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["repos"]; print(r["alpha"]["since"], r["alpha"]["comments_since"], "skip" in r["beta"], r["beta"]["since"] > "2026")' "$ST")" \
-  "2099-01-01T00:00:00Z 2099-01-01T00:00:00Z False True" "since advanced to the newest update, issues and comments each; beta's reason cleared once it reads, its first cursor set"
+check "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["repos"]; print(r["alpha"]["since"], r["alpha"]["comments_since"], "skip" in r["beta"], r["beta"].get("since"))' "$ST")" \
+  "2099-01-01T00:00:00Z 2099-01-01T00:00:00Z False None" "since advanced to the newest update, issues and comments each; beta's reason cleared once it reads, and with no issue read no cursor yet (S5: the first cursor is GitHub's newest updated_at, never this host's clock)"
 ing > "$T/out" 2>&1; check "$(new event | wc -l | tr -d ' ')" "0" "the same answers again (GitHub's since answers the edge again): no row"
 ghans '{"repos/acme/alpha/issues?state=all": [0, [
    {"id": 102, "number": 2, "state": "open", "created_at": "2026-10-22T10:00:00Z", "updated_at": "2099-01-02T00:00:00Z", "html_url": "https://github.com/acme/alpha/issues/2",
@@ -429,8 +438,8 @@ cat > "$T/repos.json" <<EOF
  "repos": {"alpha": {"github": "acme/alpha"}, "secret": {"github": "acme/secret"}},
  "scopes": {"lab": {"repos": ["alpha"]}, "conf": {"repos": ["secret"], "confidential": true, "yard": "$HOSTNAME_"}}}
 EOF
-ghans '{"repos/acme/alpha/": [0, []], "repos/acme/secret/issues?state=open": [0, []]}'
-ing > "$T/out" 2>&1; check "$(grep -c 'acme/secret' "$T/gh.calls")" "1" "a confidential scope whose yard is this host: read here, inside its node"
+ghans '{"repos/acme/alpha/": [0, []], "repos/acme/secret/": [0, []]}'
+ing > "$T/out" 2>&1; check "$(grep -c 'acme/secret' "$T/gh.calls")" "2" "a confidential scope whose yard is this host: read here, inside its node (its newest update, its open issues)"
 check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["repos"]))' "$ST")" "['alpha', 'secret']" "…and a repo gone from the registry (beta) leaves the state"
 
 echo "ops ingest: a Project's items"
@@ -493,6 +502,303 @@ LK=$!; i=0; while [ ! -e "$T/locked" ] && [ $i -lt 75 ]; do sleep 0.2; i=$((i + 
 ing > "$T/out" 2>&1; check "$? $(wc -l < "$T/gh.calls" | tr -d ' ')" "0 0" "another pass holds the lock: this one skipped, nothing read"
 has "$(cat "$T/out")" "another pass holds" "…saying so"
 kill "$LK" 2>/dev/null; wait "$LK" 2>/dev/null
+# ---- S5: the intake's fixes ---------------------------------------------------------------------
+echo "ops ingest (S5): the logbook and beacon's sink beside the registry, bots, the daily re-read, the first cursor"
+cat > "$T/repos.json" <<'EOF'
+{"machine_account": "acme-bot", "repos": {"alpha": {"github": "acme/alpha"}}, "scopes": {"lab": {"repos": ["alpha"]}}}
+EOF
+rm -f "$ST" "$T/logs/intake.jsonl"
+mkdir -p "$REGATTA_CONFIG/helm"; printf '%s\n' acme/logbook > "$REGATTA_CONFIG/helm/logbook-repo"
+mkdir -p "$REGATTA_CONFIG/beacon"; printf '%s\n' '{"sink": {"type": "github", "repo": "acme/inbox"}}' > "$REGATTA_CONFIG/beacon/config.json"
+printf '%s\n' 'Beacon-App[bot]' > "$REGATTA_CONFIG/lighthouse/ops-bots"
+ghans '{"repos/acme/alpha/issues?state=open": [0, [
+   {"id": 201, "number": 1, "state": "open", "created_at": "2026-10-20T10:00:00Z", "updated_at": "2026-10-21T10:00:00Z", "html_url": "https://github.com/acme/alpha/issues/1",
+    "labels": [{"name": "bug"}], "user": {"login": "owner1"}, "author_association": "OWNER", "body": "b1"},
+   {"id": 202, "number": 2, "state": "open", "created_at": "2026-10-20T10:00:00Z", "updated_at": "2026-10-23T09:00:00Z", "html_url": "https://github.com/acme/alpha/issues/2",
+    "labels": [{"name": "bug"}], "user": {"login": "owner1"}, "author_association": "OWNER", "body": "b2"}]],
+ "repos/acme/logbook/issues?state=open": [0, [
+   {"id": 301, "number": 5, "state": "open", "created_at": "2026-10-22T10:00:00Z", "updated_at": "2026-10-22T10:00:00Z", "html_url": "https://github.com/acme/logbook/issues/5",
+    "labels": [{"name": "deadman"}], "user": {"login": "deadman-acme[bot]"}, "author_association": "NONE", "body": "late"}]],
+ "repos/acme/inbox/issues?state=open": [0, [
+   {"id": 401, "number": 9, "state": "open", "created_at": "2026-10-22T10:00:00Z", "updated_at": "2026-10-22T10:00:00Z", "html_url": "https://github.com/acme/inbox/issues/9",
+    "labels": [], "user": {"login": "beacon-app[bot]"}, "author_association": "NONE", "body": "Hi, write to jane@example.com"},
+   {"id": 402, "number": 10, "state": "open", "created_at": "2026-10-22T10:00:00Z", "updated_at": "2026-10-22T10:00:00Z", "html_url": "https://github.com/acme/inbox/issues/10",
+    "labels": [{"name": "bug"}], "user": {"login": "beacon-app[bot]"}, "author_association": "NONE", "body": "your form is broken, call 555"}]],
+ "repos/acme/alpha/issues?sort=updated&direction=desc": [0, [{"id": 299, "number": 7, "state": "closed", "updated_at": "2026-10-25T08:00:00Z"}]],
+ "repos/acme/logbook/issues?sort=updated&direction=desc": [0, [{"id": 301, "number": 5, "state": "open", "updated_at": "2026-10-22T10:00:00Z"}]],
+ "repos/acme/inbox/issues?sort=updated&direction=desc": [0, [{"id": 402, "number": 10, "state": "open", "updated_at": "2026-10-22T10:00:00Z"}]]}'
+ing > "$T/out" 2>&1; check "$?" "0" "a first pass over the registry and the two configured repos"
+check "$(new event repo slug number kind author scope | sort)" "seen acme/inbox acme/inbox 10 contact bot None
+seen acme/inbox acme/inbox 9 contact bot None
+seen acme/logbook acme/logbook 5 deadman stranger None
+seen alpha acme/alpha 1 bug member lab
+seen alpha acme/alpha 2 bug member lab" "helm/logbook-repo and beacon's sink.repo read, keyed by their slug; every sink issue a contact, its labels whatever they say (a visitor's words never reach a model); a bot ops-bots names is \`bot\`, one it does not a stranger"
+check "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["repos"]; print(r["alpha"]["since"], r["alpha"]["edge"], r["acme/logbook"]["since"])' "$ST")" \
+  "2026-10-25T08:00:00Z ['299'] 2026-10-22T10:00:00Z" "the first cursor is the newest update of any issue (a closed one here), its id the edge: GitHub's clock, never this host's, and never the open set's newest, whose history the next pass would replay"
+check "$(grep -c 'per_page=1&' "$T/gh.calls") $(grep -c -- '--paginate.*per_page=1&' "$T/gh.argv")" "3 0" "…one unpaginated page a repo"
+check "$(smp intake --json | python3 -c 'import json,sys; print(sorted((c["repo"], c["number"]) for c in json.load(sys.stdin)["open"]))')" \
+  "[('acme/inbox', 9), ('acme/inbox', 10), ('acme/logbook', 5), ('alpha', 1), ('alpha', 2)]" "…their issues carded beside the registry's"
+check "$(grep -c 'jane@example.com' "$T/logs/intake.jsonl" "$ST" | awk -F: '{s+=$2} END {print s}')" "0" "…the contact's words in no row and no state"
+ghans '{"repos/acme/alpha/issues?state=all": [0, []], "repos/acme/alpha/issues/comments": [0, []],
+ "repos/acme/alpha/issues?state=open": [0, [{"id": 201, "number": 1, "state": "open", "updated_at": "2026-10-21T10:00:00Z", "labels": [{"name": "bug"}], "user": {"login": "owner1"}, "author_association": "OWNER", "body": "b1"}]],
+ "repos/acme/logbook/": [0, []], "repos/acme/inbox/": [0, []]}'
+ing > "$T/out" 2>&1; check "$(new event | wc -l | tr -d ' ') $(grep -c 'issues?state=open' "$T/gh.calls")" "0 0" "the next pass within a day: no state=open re-read"
+check "$(grep -c 'repos/acme/alpha/issues?state=all&.*since=2026-10-25T08%3A00%3A00Z' "$T/gh.calls") $(grep -c 'repos/acme/alpha/issues/comments?.*since=2026-10-25T08%3A00%3A00Z' "$T/gh.calls")" "1 1" \
+  "…the second pass reads from the first cursor, the newest update of any issue: no history replayed"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [r.update(reconciled=1) for r in d["repos"].values()]; json.dump(d, open(sys.argv[1], "w"))' "$ST"
+ing > "$T/out" 2>&1
+check "$(new event repo number kind | sort)" "dropped acme/inbox 10 contact
+dropped acme/inbox 9 contact
+dropped acme/logbook 5 deadman
+dropped alpha 2 bug" "a day on: the open set re-read, and a card GitHub no longer lists open is dropped (deleted, transferred, closed unseen)"
+check "$(smp intake --json | python3 -c 'import json,sys; print([(c["repo"], c["number"]) for c in json.load(sys.stdin)["open"]])')" "[('alpha', 1)]" "…its card gone from the board"
+check "$(python3 -c 'import json,sys,time; r=json.load(open(sys.argv[1]))["repos"]["alpha"]; print(time.time() - r["reconciled"] < 120)' "$ST")" "True" "…the re-read's time kept"
+ghans '{"repos/acme/": [1, "gh: HTTP 502: Bad Gateway"]}'
+ing > "$T/out" 2>&1; check "$?" "5" "a pass that read no repo at all: exit 5 (never 0, never 1)"
+has "$(cat "$T/out")" "no repo read at all" "…saying so"
+printf '%s\n' acme/inbox > "$REGATTA_CONFIG/helm/logbook-repo"
+cat > "$T/unit.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("ops", sys.argv[1])
+spec = importlib.util.spec_from_loader("ops", loader)
+ops = importlib.util.module_from_spec(spec)
+loader.exec_module(ops)
+print(ops.extra_repos({}))
+print(ops.named_paths("the crash is in modules/x/bin/tool. See ./modules/x/README.md, and a/b; v1.2 too"))
+PY
+check "$(python3 "$T/unit.py" "$OPS" | head -1)" "{'acme/inbox': ('acme/inbox', 'contact')}" "the sink and the logbook one repo: its issues contacts (the sink wins the slug)"
+check "$(python3 "$T/unit.py" "$OPS" | tail -1)" "['modules/x/bin/tool', 'modules/x/README.md', 'a/b']" "a named path loses a sentence's closing punctuation and a leading ./"
+rm -f "$REGATTA_CONFIG/helm/logbook-repo" "$REGATTA_CONFIG/beacon/config.json" "$REGATTA_CONFIG/lighthouse/ops-bots"
+
+# ---- S5: classify, logged -----------------------------------------------------------------------
+# The gate a stub (ops.gate_module replaced in-process): each item's labels read from an `L:<importance>,<urgency>,
+# <cost>,<clarity>` marker in its title, each call logged to $T/gate.calls with its site, source and text, a site
+# named in $T/gate.fail raising. gh answers the issue fetch and the PR search from gh.json, as above; autofinish a
+# stub module in $T/tools (MONEY_RE, repo_config, published). Every name made up.
+cat > "$T/cls.py" <<'PY'
+import importlib.machinery, importlib.util, json, os, re, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("ops", sys.argv[1])
+spec = importlib.util.spec_from_loader("ops", loader)
+ops = importlib.util.module_from_spec(spec)
+loader.exec_module(ops)
+T, tools = Path(os.environ["OPS_T"]), Path(sys.argv[2])
+ops.common.tool = lambda name: (tools / name) if (tools / name).is_file() else None
+class Gate:
+    @staticmethod
+    def resolve(site):
+        off = (T / "gate.off").read_text().split() if (T / "gate.off").exists() else []
+        if site in off:
+            raise RuntimeError("models.json: no row for %s — a call site needs its row before it runs" % site)
+        return {"site": site, "provider": "claude"}
+    @staticmethod
+    def classify(site, items, ask, labels, context=None, source=None, caller=None, **kw):
+        with open(T / "gate.calls", "a") as f:
+            f.write(json.dumps({"site": site, "source": source, "items": items}) + "\n")
+        fail = (T / "gate.fail").read_text().split() if (T / "gate.fail").exists() else []
+        if site in fail:
+            raise RuntimeError("%s: Claude's reply, twice: the reply is not JSON: 'ECHO %s'" % (site, list(items.values())[0][:40]))
+        dim = list(ops.SITES).index(site.split(".", 1)[1])
+        return {"items": {i: {"label": re.search(r"L:(\S+)", t).group(1).split(",")[dim], "p": None} for i, t in items.items()},
+                "cost_usd": 0.01, "provider": "claude", "model": "stub", "ms": 1}
+if not os.environ.get("OPS_REAL_GATE"):
+    ops.gate_module = lambda: Gate
+if os.environ.get("OPS_CLASSIFY_MAX"):
+    ops.CLASSIFY_MAX = int(os.environ["OPS_CLASSIFY_MAX"])
+sys.exit(ops.main(sys.argv[3:]))
+PY
+cls() { : > "$T/gh.calls"; : > "$T/gh.argv"; : > "$T/gate.calls"; v0=$(cat "$T/logs/ops-verdicts.jsonl" 2>/dev/null | wc -l | tr -d ' '); python3 "$T/cls.py" "$OPS" "$TL" "$@"; }
+# the verdicts the last pass appended, one per line: the fields named (a.b for a nested one), `-` for an absent one
+verd() { tail -n +"$((v0 + 1))" "$T/logs/ops-verdicts.jsonl" 2>/dev/null | python3 -c 'import json,sys
+for l in sys.stdin:
+    r = json.loads(l); out = []
+    for k in sys.argv[1:]:
+        v = r
+        for p in k.split("."):
+            v = v.get(p, "-") if isinstance(v, dict) else "-"
+        out.append(str(v))
+    print(" ".join(out))' "$@"; }
+cat > "$TL/autofinish" <<'PY'
+import re
+MONEY_RE = re.compile(r"[$]\s?\d|\binvoice\b", re.I)
+class branches:
+    main_branch = staticmethod(lambda repo: "main")
+def repo_config(repo, main):
+    return "all", [], None, ["modules/x/hooks/"]
+def published(repo, main):
+    return {"modules/x/bin/tool", "modules/x/README.md"}
+PY
+# a clone of alpha and beta in the scratch HOME's projects folder (common.PROJECTS), where repo_paths() looks
+python3 -c 'import os; [os.makedirs(os.path.join(os.environ["HOME"], "projects", n, ".git"), exist_ok=True) for n in ("alpha", "beta")]' 
+cat > "$T/repos.json" <<EOF
+{"machine_account": "acme-bot",
+ "repos": {"alpha": {"github": "acme/alpha"}, "beta": {"github": "acme/beta"}, "secret": {"github": "acme/secret"}},
+ "scopes": {"lab": {"repos": ["alpha", "beta"], "yard": "$HOSTNAME_"}, "conf": {"repos": ["secret"], "confidential": true, "yard": "elsewhere"}}}
+EOF
+# the intake as a pass would have left it: a row an open issue, and the open set (number: kind, author, label)
+intake() { python3 - "$T/logs" "$@" <<'PY'
+import json, sys
+logs, rows, st = sys.argv[1], [], {"repos": {}}
+for spec in sys.argv[2:]:
+    repo, n, kind, author, sha = spec.split(":")
+    rows.append({"seen": 1700000000 + int(n), "event": "seen", "repo": repo, "slug": "acme/" + repo, "scope": "lab", "number": int(n),
+                 "kind": kind, "label": kind if kind != "other" else None, "state": "open", "author": author, "body_sha": sha})
+    st["repos"].setdefault(repo, {"since": "2026-10-01T00:00:00Z", "open": {}})["open"][n] = {"number": int(n), "kind": kind}
+with open(logs + "/intake.jsonl", "a") as f:
+    f.write("".join(json.dumps(r) + "\n" for r in rows))
+old = json.load(open(logs + "/intake-state.json")) if __import__("os").path.exists(logs + "/intake-state.json") else {"repos": {}}
+for k, v in st["repos"].items():
+    old["repos"].setdefault(k, {"since": v["since"], "open": {}})["open"].update(v["open"])
+json.dump(old, open(logs + "/intake-state.json", "w"))
+PY
+}
+# an issue as GitHub answers the fetch: title (with the marker), labels, body
+iss() { printf '"repos/acme/%s/issues/%s": [0, [{"number": %s, "state": "%s", "title": "%s", "labels": [%s], "body": "%s"}]]' "$1" "$2" "$2" "${6:-open}" "$3" "$4" "$5"; }
+B='{"name": "bug"}'
+ghans "{$(iss alpha 1 'TITLE-ONE L:2,2,xs,clear' "$B" 'a typo in the help'),
+ $(iss alpha 2 'L:2,2,s,clear' "$B" 'off by one'),
+ $(iss beta 3 'L:3,3,m,clear' "$B" 'the export is slow'),
+ $(iss beta 4 'L:2,1,s,unclear' '' 'it does a thing'),
+ $(iss beta 5 'L:2,1,xs,unclear' "$B" 'broken'),
+ $(iss alpha 6 'L:1,1,xs,clear' '{"name": "contact"}' 'Hi, write to jane@example.com'),
+ $(iss beta 7 'L:5,5,s,clear' "$B" 'all data lost'),
+ $(iss alpha 8 'L:1,1,xs,clear' '' 'add a flag'),
+ $(iss beta 9 'L:2,2,xs,clear' "$B" 'a typo'),
+ $(iss alpha 10 'L:2,2,xs,clear' "$B" 'rotate the api key in the config'),
+ $(iss alpha 12 'L:2,2,xs,clear' "$B" 'modules/x/bin/tool prints the wrong line'),
+ $(iss secret 11 'L:2,2,xs,clear' "$B" 'a secret repo'),
+ \"search/issues\": [0, [{\"total_count\": 0}]]}"
+mkdir -p "$TL"; rm -f "$T/logs/intake.jsonl" "$T/logs/intake-state.json"
+intake alpha:1:bug:member:s1 alpha:2:bug:member:s2 beta:3:bug:member:s3 beta:4:other:member:s4 beta:5:bug:stranger:s5 \
+  alpha:6:contact:stranger:s6 beta:7:bug:member:s7 alpha:8:other:member:s8 beta:9:bug:member:s9 alpha:10:bug:member:s10 \
+  alpha:12:bug:member:s12 secret:11:bug:member:s11
+# a fresh sample: a login eligible, the week's list spend
+printf '{"as_of": %s, "host": "%s", "weeks": {"acct-a": {"weekly": 30, "eligible": true}}, "cost": {"week_list": 100.0}}\n' "$(date +%s)" "$HOSTNAME_" > "$T/logs/ops.jsonl"
+OJ="$REGATTA_CONFIG/lighthouse/ops.json"; rm -f "$OJ"
+
+echo "ops classify: off, refused, torn"
+unset LIGHTHOUSE_DESK; cls classify > "$T/out" 2>&1; check "$?" "2" "outside the desk's job: refused"
+export LIGHTHOUSE_DESK=1
+cls classify > "$T/out" 2>&1; check "$? $(test -e "$T/logs/ops-verdicts.jsonl" && echo there || echo absent) $(wc -l < "$T/gate.calls" | tr -d ' ')" "0 absent 0" "no lighthouse/ops.json: the desk is off — no verdict, no gate call"
+has "$(cat "$T/out")" "off: no" "…saying so"
+printf 'not json' > "$OJ"; cls classify > "$T/out" 2>&1; check "$?" "3" "a torn ops.json: exit 3, nothing classified"
+printf '%s\n' '{"dry": true, "max_auto_run_day": 9}' > "$OJ"; cls classify > "$T/out" 2>&1
+check "$? $(test -e "$T/logs/ops-verdicts.jsonl" && echo there || echo absent)" "3 absent" "an unknown key (a typo): refused whole, never a silent default"
+has "$(cat "$T/out")" "unknown key max_auto_run_day" "…naming it"
+printf '%s\n' '{"repos": ["alpha"]}' > "$OJ"
+printf 'not json' > "$T/repos.keep2"; cp "$T/repos.json" "$T/repos.good"; cp "$T/repos.keep2" "$T/repos.json"
+cls classify > "$T/out" 2>&1; check "$? $(wc -l < "$T/gate.calls" | tr -d ' ')" "3 0" "a torn registry: exit 3, nothing sent to the gate"
+cp "$T/repos.good" "$T/repos.json"
+
+echo "ops classify: a pass — a verdict per issue, a case per rung"
+cls classify > "$T/out" 2>&1; check "$?" "0" "the pass: exit 0"
+check "$(verd key rung would | sort -t'#' -k1,1 -k2,2n)" "alpha#1 1 lay
+alpha#2 1 none
+alpha#6 4 alarm
+alpha#8 0 none
+alpha#10 1 skipper
+alpha#12 1 none
+beta#3 2 skipper
+beta#4 3 ask
+beta#5 3 none
+beta#7 4 alarm
+beta#9 1 skipper" "rung 1 laid once (dry), a second in the repo held by the day's repo cap, one with a held class and one off the repos list to a skipper; rung 2 a skipper; rung 3 asks a member, never a stranger; rung 4 by kind and by importance 5; rung 0 none"
+check "$(verd key labels.importance labels.urgency labels.cost labels.clarity rung_why | grep '^alpha#1 ')" "alpha#1 2 2 xs clear a clear xs bug at importance 2 by a member" "the four labels and the rung's why"
+check "$(verd key caps.max_auto_runs_repo_day | grep '^alpha#2')" "alpha#2 1 laid in alpha in the last day, the cap 1" "a count cap counts this pass's lays"
+check "$(verd key caps.repos | grep '^beta#9')" "beta#9 beta is not in repos" "the repos cap"
+check "$(verd key held caps.held | grep '^alpha#10')" "alpha#10 ['credentials'] held: credentials" "the held-class scan: a credential named in the text"
+check "$(verd key caps | grep '^alpha#1 ' | python3 -c 'import sys,ast; d=ast.literal_eval(sys.stdin.read().split(" ",1)[1]); print(sorted(d), set(d.values()))')" \
+  "['cost_auto', 'held', 'importance_auto_max', 'labels', 'max_auto_runs_day', 'max_auto_runs_repo_day', 'max_open_auto_prs', 'place', 'repos', 'week_share'] {'ok'}" "every cap judged before a lay, each ok"
+check "$(verd key caps | grep '^beta#3 ')" "beta#3 {'week_share': 'ok'}" "rung 2: the week alone"
+check "$(verd key published | grep -E '^alpha#(1|12) ')" "alpha#1 unknown
+alpha#12 yes" "published: a path the issue names on the allowlist is yes; none named is unknown"
+check "$(verd key gate_cost_usd dry laid | grep '^alpha#1 ')" "alpha#1 0.008 True False" "…the gate's share, dry, nothing laid"
+check "$(grep -c 'secret' "$T/gh.calls") $(grep -c 'acme/secret\|"secret"' "$T/gate.calls") $(verd key | grep -c secret)" "0 0 0" "a confidential repo whose yard is elsewhere: never fetched, never sent to the gate, no verdict"
+check "$(grep -c 'jane@example.com' "$T/gate.calls") $(grep -c 'issues/6' "$T/gh.calls")" "0 0" "a contact never goes to a model, nor is its issue fetched"
+check "$(grep -c 'TITLE-ONE\|a typo in the help\|jane@example.com\|modules/x/bin/tool' "$T/logs/ops-verdicts.jsonl" "$T/logs/classify-state.json" | awk -F: '{s+=$2} END {print s}')" "0" "no title, body, path or address in a verdict or the state"
+check "$(grep -c 'TITLE-ONE' "$T/gate.calls") $(python3 -c 'import json,sys; print(sorted({json.loads(l)["site"] for l in open(sys.argv[1])}))' "$T/gate.calls")" \
+  "4 ['lighthouse.clarity', 'lighthouse.cost', 'lighthouse.importance', 'lighthouse.urgency']" "…the words went to the four gate rows, one call each"
+check "$(grep -Evc '^(repos/acme/[a-z]+/issues/[0-9]+|search/issues\?q=.*)$' "$T/gh.calls") $(grep -Ec -- '-X|--method|-f |--field|POST|PATCH' "$T/gh.argv") $(grep -c . "$T/gh.calls")" "0 0 11" "dry: gh only read an issue and searched — nothing commented, labelled or written"
+has "$(cat "$T/out")" "11 verdicts" "the job's one line"
+
+echo "ops classify: the next passes"
+cls classify > "$T/out" 2>&1; check "$(verd key | wc -l | tr -d ' ') $(wc -l < "$T/gate.calls" | tr -d ' ')" "0 0" "nothing new: no verdict, no gate call"
+python3 -c 'import json,sys; r={"seen": 1800000000, "event": "edited", "repo": "alpha", "number": 8, "kind": "bug", "label": "bug", "state": "open", "author": "member", "body_sha": "s8b"}; open(sys.argv[1], "a").write(json.dumps(r) + "\n")' "$T/logs/intake.jsonl"
+cls classify > "$T/out" 2>&1; check "$(verd key event | tr '\n' ' ')" "alpha#8 edited " "an edited issue (its body or label changed): classified again"
+echo lighthouse.cost > "$T/gate.fail"
+intake alpha:13:bug:member:s13 alpha:14:contact:stranger:s14
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/13"]=[0, [{"number": 13, "state": "open", "title": "L:2,2,xs,clear", "labels": [{"name": "bug"}], "body": "x"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+cls classify > "$T/out" 2>&1
+check "$? $(verd key would tries error | sort)" "0 alpha#13 none 1 gate: cost: lighthouse.cost: Claude's reply, twice
+alpha#14 alarm - -" "a gate row that fails: its reason on the item's row (never the reply's echo of the issue), would none, and the rest of the pass goes on"
+check "$(grep -c ECHO "$T/logs/ops-verdicts.jsonl")" "0" "…the reply's tail kept out of the log"
+rm -f "$T/gate.fail"; cls classify > "$T/out" 2>&1
+check "$(verd key rung tries | tr '\n' ' ')" "alpha#13 1 - " "…tried again next pass, and classified"
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s["pending"])' "$T/logs/classify-state.json" > "$T/pend"
+check "$(cat "$T/pend")" "{}" "…nothing left queued"
+
+echo "ops classify: a pass's limit, the week, a closed issue"
+intake alpha:15:bug:member:s15 alpha:16:bug:member:s16 alpha:17:bug:member:s17
+for n in 15 16 17; do python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/"+sys.argv[2]]=[0, [{"number": int(sys.argv[2]), "state": "open", "title": "L:3,3,m,clear", "labels": [{"name": "bug"}], "body": "x"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json" "$n"; done
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/17"][1][0]["state"]="closed"; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+printf '{"as_of": %s, "host": "%s", "weeks": {"acct-a": {"weekly": 99, "eligible": false}}, "cost": {"week_list": 100.0}}\n' "$(date +%s)" "$HOSTNAME_" >> "$T/logs/ops.jsonl"
+OPS_CLASSIFY_MAX=1 cls classify > "$T/out" 2>&1
+check "$(verd key would caps.week_share | tr '\n' ' ')" "alpha#15 none the week is over: no login is eligible " "the week over: rung 2 cards (none) instead of a skipper; one issue a pass at a limit of 1"
+has "$(cat "$T/out")" "2 queued for the next pass" "…the rest queued, never lost past the intake's offset"
+OPS_CLASSIFY_MAX=5 cls classify > "$T/out" 2>&1
+check "$(verd key | tr '\n' ' ')" "alpha#16 " "the next pass takes the queue; a closed issue (#17) gets no verdict"
+has "$(cat "$T/out")" "1 closed since" "…counted as closed"
+printf '{"as_of": %s, "host": "%s", "weeks": {"acct-a": {"eligible": true}}, "cost": {"week_list": 0.05}}\n' "$(date +%s)" "$HOSTNAME_" >> "$T/logs/ops.jsonl"
+python3 -c 'import json,sys; r={"seen": 1800000001, "event": "edited", "repo": "alpha", "number": 16, "kind": "bug", "label": "bug", "state": "open", "author": "member", "body_sha": "s16b"}; open(sys.argv[1], "a").write(json.dumps(r) + "\n")' "$T/logs/intake.jsonl"
+cls classify > "$T/out" 2>&1
+has "$(verd caps.week_share)" "the desk spent" "the desk's own gate spend over week_share of the week's list spend: refused"
+
+echo "ops classify: the core's real gate and its shipped rows, claude a stub"
+cat > "$T/claude" <<'PY'
+#!/usr/bin/env python3
+import json, re, sys
+prompt = sys.stdin.read()
+ids = re.findall(r"^(i\d+): ", prompt, re.M)
+pick = {"How much": "2", "How soon": "1", "How big": "xs", "Could a": "clear"}
+lab = next(v for k, v in pick.items() if k in prompt)
+print(json.dumps({"structured_output": {i: lab for i in ids}, "total_cost_usd": 0.002}))
+PY
+chmod +x "$T/claude"
+intake alpha:18:bug:member:s18
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/18"]=[0, [{"number": 18, "state": "open", "title": "the help has a typo", "labels": [{"name": "bug"}], "body": "x"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+printf '{"as_of": %s, "host": "%s", "weeks": {"acct-a": {"eligible": true}}, "cost": {"week_list": 1000.0}}\n' "$(date +%s)" "$HOSTNAME_" >> "$T/logs/ops.jsonl"
+OPS_REAL_GATE=1 GATE_TABLE="$C/../regatta/settings/models.json" GATE_LOG="$T/gate.jsonl" CLAUDE_BIN="$T/claude" cls classify > "$T/out" 2>&1
+check "$(verd key labels.importance labels.cost labels.clarity rung gate.model)" "alpha#18 2 xs clear 1 claude-sonnet-5-5" "the four lighthouse.* rows resolve and classify through the gate (Sonnet, as shipped)"
+check "$(python3 -c 'import json,sys; print(sorted({json.loads(l)["site"] for l in open(sys.argv[1])}), {json.loads(l)["source"] for l in open(sys.argv[1])})' "$T/gate.jsonl")" \
+  "['lighthouse.clarity', 'lighthouse.cost', 'lighthouse.importance', 'lighthouse.urgency'] {'alpha'}" "…the gate's log names each site and the repo as the source"
+
+echo "ops digest: the logged week, counted"
+cls digest --json > "$T/out" 2>&1
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["by_rung"], d["by_would"]["lay"], d["rung1_published"], d["errors"], d["refused"]["max_auto_runs_repo_day"], d["gate_usd"] > 0)' "$T/out")" \
+  "{'0': 1, '1': 8, '2': 4, '3': 2, '4': 3} 1 {'no': 0, 'unknown': 7, 'yes': 1} 1 6 True" "by rung, the lays, rung-1 candidates on published paths (D4's fact), errors, a cap's refusals, the gate's spend"
+cls digest > "$T/out" 2>&1
+has "$(cat "$T/out")" "rung 1 on published paths (D4's fact): 1 yes, 0 no, 7 unknown" "…readable"
+has "$(cat "$T/out")" "effective)" "…the spend with its effective figure"
+cls digest --days 0 --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["verdicts"])' > "$T/out"; check "$(cat "$T/out")" "0" "--days 0: an empty window"
+
+echo "ops classify: a gate that cannot classify, a transferred issue, a reopened one (S5's landing review)"
+echo lighthouse.urgency > "$T/gate.off"
+intake alpha:19:bug:member:s19
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/19"]=[0, [{"number": 19, "state": "open", "title": "L:2,2,xs,clear", "labels": [{"name": "bug"}], "body": "x"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+cls classify > "$T/out" 2>&1
+check "$? $(verd key | wc -l | tr -d ' ') $(grep -c . "$T/gh.calls") $(grep -c . "$T/gate.calls")" "3 0 0 0" "a row the gate cannot resolve: exit 3, no verdict, nothing fetched or sent"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pending"]["alpha#19"]["tries"])' "$T/logs/classify-state.json")" "0" "…the issue kept queued, no try spent"
+has "$(cat "$T/out")" "the gate cannot classify, 1 held, no try spent: models.json: no row for lighthouse.urgency" "…saying why"
+rm -f "$T/gate.off"; cls classify > "$T/out" 2>&1; check "$? $(verd key | tr '\n' ' ')" "0 alpha#19 " "…classified once the row is there"
+intake alpha:20:bug:member:s20
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/20"]=[0, [{"number": 20, "state": "open", "title": "L:2,2,xs,clear", "labels": [], "body": "x", "repository_url": "https://api.github.com/repos/acme/secret"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+cls classify > "$T/out" 2>&1
+check "$(verd key | wc -l | tr -d ' ') $(grep -c . "$T/gate.calls")" "0 0" "an issue GitHub answers from another repo (transferred, gh following the redirect): no verdict, nothing sent"
+intake alpha:17:bug:member:s17
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/17"][1][0]["state"]="open"; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+cls classify > "$T/out" 2>&1
+check "$(verd key | tr '\n' ' ')" "alpha#17 " "an issue found closed at its fetch, open again unchanged: classified (a close never marks it done)"
+rm -f "$OJ"
 unset LIGHTHOUSE_OPS_GH
 
 echo "install.sh --schedule: the job on the ops host only"

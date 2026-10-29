@@ -44,7 +44,7 @@ sys.path.insert(0, find_core.hooks())
 import common
 print("core:     %s" % common.__file__)
 for k in ("accounts.json", "tenants.json", "logins.json", "user.json", "env-keys.json", "hosts", "vault", "vaults",
-          "gated-tools", "ff", "design-host", "cc-prefix", "shares", "nas", "drive", "yabairc", "ops-host", "ops-projects"):
+          "gated-tools", "ff", "design-host", "cc-prefix", "shares", "nas", "drive", "yabairc", "ops-host", "ops-projects", "ops.json", "ops-bots"):
     p = common.CONFIG / "lighthouse" / k
     print("%-9s %s" % ("ok" if p.exists() else "--", "lighthouse/" + k + ("" if p.exists() else
           " (a link that reads nothing)" if p.is_symlink() else " (absent: its default)")))

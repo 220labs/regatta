@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- The desk's sense, logged (lighthouse-ops S5, 2026-10-28): `ops classify` takes each new open issue the intake
+  holds through four rows of the core's gate (`lighthouse.importance`, `.urgency`, `.cost`, `.clarity`; Sonnet in
+  the shipped table), derives the ladder's rung from the labels and the issue's kind and author, judges every cap
+  of `lighthouse/ops.json` before a lay (runs a day and a repo a day, open `ops:auto` PRs, the desk's share of
+  the week against S2's token weeks, importance, cost, labels, repos, the place, the held-class scan), and
+  appends one verdict row to `ops-verdicts.jsonl` — labels and metadata, never a title, a body or an address.
+  Nothing is laid, commented, labelled or seeded: S6's `ops send` does that. A contact, a stall or an alarm is
+  rung 4 by kind and never reaches a model; a confidential repo is classified only on its yard; a gate row that
+  fails writes its reason and the pass goes on, the issue retried next pass. No `ops.json`, the desk is off. It
+  runs in the 10-minute intake job after `ingest`. `ops digest [--days 7]` counts the logged week by rung, kind
+  and would, the caps' refusals, rung-1 candidates on published paths (D4's fact) and the gate's spend.
+- The intake, from S4's landing review (S5): `ingest` also reads `helm/logbook-repo` and beacon's `sink.repo`
+  (an unlabelled issue there a contact), keyed by slug; `lighthouse/ops-bots` names the Apps that file for the
+  issue road (author `bot`, not `stranger`); each repo's open set is re-read once a day, dropping a gone
+  issue's card (`event: dropped`); the first cursor is the newest `updated_at` read, not this host's clock;
+  and a pass that reads no repo at all exits 5.
+- From S5's landing review: the first cursor is the newest update of any issue (one unpaginated page, read
+  before the open set), so a second pass never replays a repo's history; every issue in beacon's sink is a
+  contact whatever its labels, and the sink keeps that kind when the logbook or the registry names its slug; a
+  gate that cannot resolve its four rows holds the queue and spends no try (exit 3); an issue GitHub answers
+  from another repo (a transfer) is never sent; an issue closed at its fetch is not marked done, so reopened
+  unchanged it is classified; every fetch counts against `CLASSIFY_MAX`; a named path loses a sentence's
+  closing punctuation; an autofinish that exits at import is "unread", not the pass's end.
+
 - account.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The desk's intake (lighthouse-ops S4, 2026-10-27): `ops ingest` reads every fleet repo in the registry (its
   `github`) for issues and comments since that repo's cursor, with the machine account's `gh`, and each Project
