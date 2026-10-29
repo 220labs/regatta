@@ -30,6 +30,13 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            (the readers' rule: an unreadable queue is "has an entry");
                                            --elsewhere: only one live on another host
     dispatch-queue reserved [--except QID] the slots this host's claims hold before their records (held())
+    dispatch-queue cap --priority P CTX    the cap a start of P meets here: force's one slot over it (S4, D2-A)
+    dispatch-queue floor                   the memory floor a force start must leave (headroom --floor; S4)
+    dispatch-queue force-ok                exit 0 when this caller may have --priority force (the owner's terminal,
+                                           or a session holding its force mark), else 2 and why (S4)
+    dispatch-queue caller-prio             the rank the caller inherits from its own run's record (force as
+                                           high; nothing with no record): the record whose claude is an
+                                           ancestor of this process, never a session id (S4)
     dispatch-queue watch QID [--for MIN] [--until running|waiting]
                                            block on an entry, its states printed: 0 at running, 3 gone, 1 --for
                                            passed, 2 refused (S3: `dispatch --watch`; never dispatches or writes)
@@ -115,6 +122,8 @@ SPENT = 120              # a reservation whose job's plist is gone, whose job is
                          # has exited is spent this long after its claim: the job exited before its record
 SKIP = 3600              # a host that refused an entry at fire time skips it this long
 LOW_AGE = 2 * 3600       # a `low` entry older than this ranks as normal
+FLOOR = 5                # a force entry's memory floor, % free: headroom --floor (D2-A); dispatch asks `floor`
+MARK_AGE = 30 * 60       # a force mark older than this is not this turn's words
 TRIES = 3
 OUTBOX_TTL = 24 * 3600   # a put still unsent after a day is dropped, never replayed onto a branch that moved on
 RANKS = {"force": 0, "high": 1, "normal": 2, "low": 3}
@@ -590,6 +599,11 @@ def apply_op(entries, op):
             # a later dispatch replaces a queued entry and keeps its place, its refusals and the host
             # whose run of the branch is live (the one-branch-one-host rule)
             new["queued_at"] = min(int(cur.get("queued_at") or new["queued_at"]), int(new["queued_at"]))
+            # and its better rank: a later plain put (a run's --next at its own rank, a /later) demoted an
+            # owner's force or high step silently; --replace is the caller's word over it (S4's second review)
+            if not op.get("replace") and RANKS.get(cur.get("priority") or "normal", 2) < RANKS.get(new.get("priority") or "normal", 2):
+                new["priority"] = cur["priority"]
+                new["args"] = [x for x in _rank_args(new.get("args"), cur["priority"])]
             for f in ("running_on", "refused_by", "attempts", "last_refusal"):
                 if cur.get(f) and not new.get(f):
                     new[f] = cur[f]
@@ -985,10 +999,20 @@ def mark_waiting(qid, label=""):
     return n
 
 
-def headroom_refuses():
-    """Why memory refuses a start here (headroom's exit 3), else None; a broken probe never refuses."""
-    r = subprocess.run([sys.executable, str(HERE / "headroom"), "check"], capture_output=True, text=True)
+def headroom_refuses(floor=None):
+    """Why memory refuses a start here (headroom's exit 3), else None; a broken probe never refuses. FLOOR:
+    the force's line (headroom --floor: avail lowered to it, swap and rate kept)."""
+    r = subprocess.run([sys.executable, str(HERE / "headroom"), "check"] + (["--floor", str(floor)] if floor is not None else []),
+                       capture_output=True, text=True)
     return (r.stdout.strip() or "headroom") if r.returncode == 3 else None
+
+
+def cap_for(cap, priority):
+    """The cap a start of PRIORITY meets here. Force (D2-A of docs/dispatch-queue-2026-10-25.md) may take one
+    slot over it: no other priority starts at CAP or more, and force never at CAP + 1, so at most one run is
+    ever above the cap, and a second force entry waits first in line (its rank). Judged by the claiming host,
+    from its own cap; dispatch's fire path asks the same (`cap`)."""
+    return cap + 1 if priority == "force" else cap
 
 
 _AF = []
@@ -1156,12 +1180,19 @@ def claim(ctx, out=None):
     if not cands:
         return out
     # memory once there is something to start: the sample sleeps 2 s, and every enqueue and run end paid it
-    # on an empty queue (the third review's item 18)
+    # on an empty queue (the third review's item 18). Over the host's line, a force entry reads the force's
+    # floor (D2-A): passed, the force entries alone go on; the rest wait as at any refusal
     why_mem = headroom_refuses()
     if why_mem:
-        ctx.no_room = "memory: %s" % why_mem
-        event("no-room", host=h, why=why_mem)
-        return out
+        forced = [c for c in cands if c[3].get("priority") == "force"]
+        why_force = headroom_refuses(FLOOR) if forced else why_mem
+        if why_force:
+            ctx.no_room = "memory: %s" % why_force
+            event("no-room", host=h, why=why_force)
+            return out
+        event("no-room", host=h, why=why_mem, keys=["%s:%s" % (c[1].name, c[2]) for c in cands if c not in forced], floor=FLOOR)
+        ctx.no_room = "memory: %s (only a force entry passes the force's floor)" % why_mem
+        cands = forced
     claims_dir().mkdir(parents=True, exist_ok=True)
     tag = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:8])
     full, no_room = None, []
@@ -1192,7 +1223,7 @@ def claim(ctx, out=None):
         rp, tp = str(repo_path(e["repo"])), topic_of(e["branch"])
         try:
             n = busy(ctx.launchctl, rp, tp)
-            if n >= ctx.cap:
+            if n >= cap_for(ctx.cap, e.get("priority")):
                 no_room.append(qid)
                 ctx.no_room = "the run cap (%d of %d busy on %s)" % (n, ctx.cap, h)
                 if not own:
@@ -1354,6 +1385,120 @@ def callers_mode(repo, branch):
     return None
 
 
+_ANC = []
+
+
+def ancestry():
+    """[(pid, command name)] of this process's ancestors, nearest first (one `ps` of every process): what a
+    caller's own run, and whether a session started it, are judged by. No seam stands in for it: a variable
+    naming the ancestors would be one more word a session could set (the tests give a record their own
+    shell's pid, a real ancestor, and start the "no session" case reparented away from theirs)."""
+    if _ANC:
+        return _ANC[0]
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        r = None
+    if r is None or r.returncode != 0:
+        _ANC.append(None)   # could not tell: under_claude() reads it as a session (fails closed)
+        return None
+    up = {}
+    for line in r.stdout.splitlines():
+        f = line.split(None, 2)
+        if len(f) >= 2 and f[0].isdigit() and f[1].isdigit():
+            up[int(f[0])] = (int(f[1]), f[2] if len(f) > 2 else "")
+    out, p, seen = [], os.getppid(), set()
+    while p > 1 and p not in seen and len(out) < 64:
+        seen.add(p)
+        ppid, comm = up.get(p, (0, ""))
+        out.append((p, comm))
+        p = ppid
+    _ANC.append(out)
+    return out
+
+
+def ancestors():
+    return [p for p, _ in ancestry() or []]
+
+
+def under_claude():
+    """True when a Claude Code session is among this process's ancestors: its argv[0] `claude`, or its binary
+    under a `claude/versions/` folder. A guard against accidents, not a fence: a session can unset CLAUDECODE
+    and its session id, and a double fork leaves its parent behind (S4's second review). A `ps` that fails or
+    hangs reads as a session: "could not tell" never grants the owner's word."""
+    anc = ancestry()
+    if anc is None:
+        return True
+    return any(os.path.basename(c.strip()) == "claude" or "/claude/versions/" in c for _, c in anc)
+
+
+def force_dir():
+    return cache() / "force"   # hooks/force_mark.py writes it, checkpoint denies a hand write to every session
+
+
+def force_refusal():
+    """Why this caller may not have `--priority force`, or None (D3-A: force only on the owner's words). An
+    unattended caller never. A caller a session started — its variables, or a claude among its ancestors —
+    only with that session's force mark, which hooks/force_mark.py writes from the owner's typed "use the
+    force". Anyone else is the owner at a terminal, or a fired job whose plist a guarded dispatch wrote."""
+    if os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("AUTOFINISH_CALLER_UNATTENDED"):
+        return ("--priority force is the owner's word for one run, and an unattended caller never raises to it (a "
+                "--next inherits force as high)")
+    if not (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or under_claude()):
+        return None
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    f = force_dir() / sid
+    try:
+        # the owner's words of this turn: a mark older than MARK_AGE is a turn long gone (a turn started by a
+        # notification clears nothing; S4's second review)
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid) and f.is_file() and time.time() - f.stat().st_mtime < MARK_AGE:
+            return None
+    except OSError:
+        pass
+    return ("--priority force is the owner's word: it needs \"use the force\" in the owner's own message this turn "
+            "(the force mark), and this session has none — dispatch it high, or ask the owner")
+
+
+def spend_force():
+    """The force mark spent once a force put or schedule landed: one phrase, one run."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid):
+        try:
+            (force_dir() / sid).unlink()
+        except OSError:
+            pass
+
+
+def callers_record():
+    """The caller's own run record, or None: the newest record here not ended whose claude (its `pid`) is an
+    ancestor of this process. Never by CLAUDE_CODE_SESSION_ID, which a session can set to another run's id and
+    so take that run's rank (S3's third landing review, item 3: never trust a variable a session can set)."""
+    up = set(ancestors())
+    if not up:
+        return None
+    best = None
+    for r in records():
+        try:
+            pid = int(r.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        # rec_alive: the pid with the start time the record holds — a crashed run's record never ended, its pid
+        # reused by a shell, would hand that shell its rank (the landing review)
+        if pid in up and not r.get("ended") and rec_alive(r) and (best is None or int(r.get("started") or 0) >= int(best.get("started") or 0)):
+            best = r
+    return best
+
+
+def callers_prio():
+    """The rank a caller inherits from its own run's record (callers_record): its `prio`, force read as high —
+    the owner's force buys one run, and the run's --next is high (D3-A). None with no record."""
+    r = callers_record()
+    if r is None:
+        return None
+    p = r.get("prio") or "normal"
+    return "high" if p == "force" else (p if p in RANKS else "normal")
+
+
 def raise_refusal(args, env, prio, repo, branch):
     """Why an unattended caller may not enqueue this, or None: dispatch's two raise checks, here too, since
     `dispatch-queue enqueue` is on the Bash PATH — a priority above normal, and a mode above the
@@ -1367,11 +1512,20 @@ def raise_refusal(args, env, prio, repo, branch):
     judged, as main did: a dnd run could otherwise raise a sibling the owner lowered (S2a's landing review,
     item 4). The caller's own mode is its run record's (the session's id), never its word: the env's
     DISPATCH_MODE is the caller's to set (S2a's finish review, its S1). A hint unlike the record's, or yolo (never inherited), is judged as a --mode is."""
+    # force: the owner's words, for every caller (force_refusal) — this verb is on the Bash PATH, so an attended
+    # session could put a force entry past dispatch's own check (the landing review)
+    prios = [prio] + flag_values(args, "--priority")
+    if "force" in prios:
+        why = force_refusal()
+        if why:
+            return why
     if not os.environ.get("CLAUDE_UNATTENDED"):
         return None
-    prios = [prio] + flag_values(args, "--priority")
-    if any(p in ("high", "force") for p in prios):
-        return "--priority %s is a raise, and an unattended caller never raises a run's priority" % next(p for p in prios if p in ("high", "force"))
+    # high only when the caller's own run is high, by its record, never its word (D3-A; S4)
+    if "high" in prios:
+        inh = callers_prio()
+        if inh != "high":
+            return "--priority high is a raise, and an unattended caller never raises a run's priority (its own run's record says %s)" % (inh or "none")
     modes = flag_values(args, "--mode") + (["yolo"] if "--yolo" in args else [])
     hint = env.get("DISPATCH_MODE") or ""
     if hint and (hint == "yolo" or hint != callers_mode(repo, branch)):
@@ -1427,9 +1581,14 @@ def waiter_live(e):
     No record of the session counts as gone: a deliberate exception to the registry trap (AGENTS.md: "no
     record" is unknown, never ended). Here "gone" only lets a later dispatch replace a queued step, which
     keeps its place in line and loses only the waiter's claim to it; read as live, every waiter whose record
-    went (a reboot, a profile removed) would block its branch until someone typed --replace."""
+    went (a reboot, a profile removed) would block its branch until someone typed --replace.
+
+    The put's own time is `put_at`, never `event_at`: a claim (and the refusal that returns it) restamps
+    event_at, which kept a gone waiter live another WAITER_S (S3's in-round review 2; S4). An entry put
+    before S4 has no put_at and reads its event_at, as it did."""
     if (e.get("from") or "").lower() not in ("", host_name()):
-        return now() - max(int(e.get("by_seen") or 0), int(e.get("event_at") or 0)) < WAITER_S
+        put = e.get("put_at") if e.get("put_at") is not None else e.get("event_at")
+        return now() - max(int(e.get("by_seen") or 0), int(put or 0)) < WAITER_S
     return session_live(e.get("by"))
 
 
@@ -1478,7 +1637,7 @@ def cmd_enqueue(a, ctx):
     qat = min(t, a.queued_at) if a.queued_at and a.queued_at > 0 else t
     e = {"id": uuid.uuid4().hex, "key": k, "repo": repo_word(repo), "branch": a.branch, "topic": topic_of(a.branch),
          "priority": a.priority, "needs": [], "host": pin, "confined": confined, "state": "queued",
-         "queued_at": qat, "event_at": t, "by": a.by or "", "from": h, "waiter": (a.wait or "")[:200], "attempts": 0,
+         "queued_at": qat, "event_at": t, "put_at": t, "by": a.by or "", "from": h, "waiter": (a.wait or "")[:200], "attempts": 0,
          "session": "", "args": args, "env": env, "mode": mode}
     if a.refused:
         # no hour's skip on the only host the entry may use (item 15's rule, here too: the fourth review)
@@ -1491,9 +1650,11 @@ def cmd_enqueue(a, ctx):
     put = {"op": "put", "key": k, "entry": e}
     if a.replace:
         put["replace"] = True
-    elif not a.refused:
+    else:
         # another live session's queued step is refused inside the put's own CAS round (apply_op's guard):
-        # "busy queued by session …", exit 3 below
+        # "busy queued by session …", exit 3 below. A fire-time refusal's put too (enqueue --refused, a fired
+        # one-shot's): unguarded, it replaced a live session's queued step of the branch (S3's in-round review 2;
+        # S4); dispatch's queue_refused reads the busy answer as the step queued already
         put["guard"] = a.by or ""
     r = store.do([put], "enqueue %s by %s" % (k, h))[0]
     refused = getattr(store, "write_refused", None)
@@ -1540,6 +1701,8 @@ def cmd_enqueue(a, ctx):
     if r.startswith("busy"):
         print(json.dumps(out))
         return 3
+    if a.priority == "force" and r in ("queued", "replaced") and not os.environ.get("CLAUDE_UNATTENDED"):
+        spend_force()   # one phrase, one run: spent once a force put landed (force_refusal let it in)
     if r == "claimed here":
         # this host's job of the branch is waiting already (the second review): the step is in hand
         out["claimed"] = []
@@ -1738,7 +1901,9 @@ def cmd_sweep(a, ctx):
             if st == "queued" and e.get("by") and (e.get("from") or "").lower() == h \
                     and t - int(e.get("by_seen") or 0) >= SWEEP // 2 and session_live(e["by"]):
                 # this host's word that the waiter it put still lives, which the other hosts read (waiter_live):
-                # each sweep while the session is in a registry here, so it stays fresh within WAITER_S
+                # each sweep while the session is in a registry here, so it stays fresh within WAITER_S. Batched
+                # with the sweep's other ops into its one write — one commit per sweep, never one per waiter; at
+                # every other sweep, one sweep missed (a Mac asleep) read a live waiter as gone (S4's review)
                 ops.append({"op": "set", "key": k, "fields": {"by_seen": t}, "cond": {"id": e.get("id"), "state": "queued"}})
         if ops:
             s.do(ops, "sweep by %s" % h)
@@ -1754,19 +1919,28 @@ def cmd_sweep(a, ctx):
     return 0
 
 
-def rows(all_=False, timeout=30):
+def rows(all_=False, timeout=30, bad_stores=None):
     """([(store, key, entry)], [unreadable why]) — every store's entries; unless ALL, those of a repo cloned
-    here and those live on this host (what this host could ever run, and what it runs)."""
+    here and those live on this host (what this host could ever run, and what it runs). BAD_STORES, a list,
+    gains {"store", "why"} per store that did not read, so a reader holds that store's branches alone."""
     h = host_name()
     out, bad = [], []
+    bad_stores = [] if bad_stores is None else bad_stores
     for s in stores():
         try:
             entries, off = s.view(timeout) if isinstance(s, Fleet) else s.view()
         except Torn as x:
             bad.append("%s: %s" % (s.name, x))
+            b = {"store": s.name, "why": str(x)}
+            if isinstance(s, Local):
+                # its keys, from the file names alone (readable when a file is not): a reader holds those
+                # branches, whatever their repo's scope — route()'s cwd road puts an open repo here too
+                b["keys"] = sorted(p.stem for p in s.dir.glob("*.json"))
+            bad_stores.append(b)
             continue
         if off:
             bad.append("%s: unreachable (%s), the last fetch shown" % (s.name, off))
+            bad_stores.append({"store": s.name, "why": "unreachable (%s)" % off})
         for k, e in entries.items():
             if all_ or (repo_path(e.get("repo") or "/nonexistent") / ".git").exists() or (e.get("running_on") or "").lower() == h:
                 out.append((s, k, e))
@@ -1782,11 +1956,15 @@ def ago(t):
 def cmd_list(a, ctx):
     try:
         # --status rides on every `dispatch --status`: an offline home costs it 10 s, not a minute
-        rs, bad = rows(a.all, 10 if a.status else 30)
+        bad_stores = []
+        rs, bad = rows(a.all, 10 if a.status else 30, bad_stores)
     except Torn as x:
-        rs, bad = [], [str(x)]
+        rs, bad, bad_stores = [], [str(x)], [{"store": "*", "why": str(x)}]
     if a.json:
-        print(json.dumps({"entries": [dict(e, qid="%s:%s" % (s.name, k)) for s, k, e in rs], "unreadable": bool(bad), "why": bad}, sort_keys=True))
+        # bad_stores: which store did not read (queue_holds.py holds only the branches that route there); a
+        # failure no store names ("*") holds every branch
+        print(json.dumps({"entries": [dict(e, qid="%s:%s" % (s.name, k)) for s, k, e in rs], "unreadable": bool(bad), "why": bad,
+                          "bad_stores": bad_stores}, sort_keys=True))
         return 0
     if not rs and not bad:
         if not a.status:
@@ -1972,7 +2150,12 @@ def cmd_fire(a, ctx):
         unreserve(a.qid, label=a.label)
         entries, _ = s.view()
         r = s.do([{"op": "remove", "key": k, "cond": cond}], "failed %s on %s" % (k, h))[0]
-        if r == "removed":
+        if r == "removed" and (a.why or "").startswith("FAILED: --if-room:"):
+            # --if-room's own outcome (no week room, no run), carried by the entry as the one-shot carried it:
+            # a skip, never a failure — a queue-failed card nothing reads would stand for it (S3's landing
+            # review, item 7; S4). queue.jsonl keeps the line
+            event("if-room-skip", key=a.qid, host=h, why=a.why)
+        elif r == "removed":
             # a stale job's word moves nothing, and its card would name the newer claim and, by its mark,
             # hide that claim's own (the second review's item 16)
             card("queue-failed", a.qid, entries.get(k) or {}, a.why or "the run failed before it started")
@@ -2076,8 +2259,10 @@ def cmd_watch(a, ctx):
     read before the home (a claim here shows at once); an unreadable read is said and the watch goes on.
     It follows the entry it first read, not the key: once that step ends, its --next may queue a newer one
     under the same key, which is not the step this caller waited on (S3's second landing review, item 9). An
-    entry of another id with the same `queued_at` is that step re-dispatched while queued (a put keeps the
-    place), and is followed."""
+    entry of another id no later in line (`queued_at` at or before the followed one's) is that step re-put while
+    queued, and is followed: a put into a queued entry keeps the earlier `queued_at` (apply_op), so a re-put —
+    a fired one-shot's older --queued-at included — never moves later, while a step queued once the followed
+    one ended always does (S3's second landing review, item 9; S4's second review: by place, not by state).""" 
     store, key = split_qid(a.qid)
     want = ("waiting", "running") if a.until == "waiting" else ("running",)
     end = time.time() + a.for_min * 60 if a.for_min is not None else None   # --for 0: one read
@@ -2095,8 +2280,8 @@ def cmd_watch(a, ctx):
             if e and seen is None:
                 seen = (e.get("id"), int(e.get("queued_at") or 0))
             elif e and e.get("id") != seen[0]:
-                if int(e.get("queued_at") or 0) == seen[1]:
-                    seen = (e.get("id"), seen[1])
+                if int(e.get("queued_at") or 0) <= seen[1]:
+                    seen = (e.get("id"), int(e.get("queued_at") or 0))
                 else:
                     newer, e = e, None
             st = (e.get("state") or "?") if e else "gone"
@@ -2301,6 +2486,48 @@ def cmd_unreserve(a, ctx):
     return 0
 
 
+def cmd_caller_prio(a, ctx):
+    """The rank this caller inherits (callers_prio): low, normal or high; nothing with no record of its own."""
+    p = callers_prio()
+    if p:
+        print(p)
+    return 0
+
+
+def cmd_force_ok(a, ctx):
+    """Exit 0 when this caller may have --priority force (force_refusal), else 2 with why: dispatch asks it
+    before any road, so the one rule judges a run now, a one-shot and a peer's alike."""
+    why = force_refusal()
+    if why:
+        print(why)
+        return 2
+    return 0
+
+
+def _rank_args(args, prio):
+    """ARGS with its --priority set to PRIO (added where the entry carried none: normal rides as no flag)."""
+    a, out, i = list(args or []), [], 0
+    while i < len(a):
+        if a[i] == "--priority" and i + 1 < len(a):
+            i += 2
+            continue
+        out.append(a[i])
+        i += 1
+    return out + (["--priority", prio] if prio != "normal" else [])
+
+
+def cmd_floor(a, ctx):
+    """The force's memory floor (FLOOR): dispatch's roomy reads it here, the one home of the number."""
+    print(FLOOR)
+    return 0
+
+
+def cmd_cap(a, ctx):
+    """The cap a start of --priority meets here (cap_for): dispatch's fire path counts against it."""
+    print(cap_for(ctx.cap, a.priority))
+    return 0
+
+
 def cmd_reserved(a, ctx):
     """The fire path's count beside its runs: held(), the one definition of a reservation that holds a slot."""
     print(len(held(ctx.launchctl, a.except_)))
@@ -2374,6 +2601,12 @@ def main(argv=None):
     r = sub.add_parser("reserved")
     ctxargs(r)
     r.add_argument("--except", dest="except_")
+    ctxargs(sub.add_parser("caller-prio"))
+    ctxargs(sub.add_parser("force-ok"))
+    sub.add_parser("floor")
+    cp = sub.add_parser("cap")
+    ctxargs(cp)
+    cp.add_argument("--priority", choices=sorted(RANKS), default="normal")
     m = sub.add_parser("mine")
     ctxargs(m)
     m.add_argument("qid")
@@ -2410,6 +2643,14 @@ def main(argv=None):
             return cmd_has(a, a)
         if a.verb == "reserved":
             return cmd_reserved(a, a)
+        if a.verb == "caller-prio":
+            return cmd_caller_prio(a, a)
+        if a.verb == "cap":
+            return cmd_cap(a, a)
+        if a.verb == "force-ok":
+            return cmd_force_ok(a, a)
+        if a.verb == "floor":
+            return cmd_floor(a, a)
         if a.verb == "mine":
             return cmd_mine(a, a)
         if a.verb == "watch":

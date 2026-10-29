@@ -1323,9 +1323,50 @@ def records_re():
     return re.compile("(?:" + "|".join(alts) + r")(?![\w.-])")
 
 
-def record_write(command):
-    """The part of `command` that writes a skipper's record by hand, or None (item 7)."""
-    rx = records_re()
+# The force mark (dispatch-queue S4, D3-A): wharf-runs' force_mark.py writes force/<session> in run-seed's
+# cache folder when the owner's typed message says "use the force", and dispatch spends it for one force run.
+# Unlike the records above, an attended session is the one that reads it, so a write there is denied to every
+# session, attended or not: a session that wrote one would be writing itself the owner's words.
+FORCE_DIR = "Library/Caches/run-seed/force"
+# the queue's own folders too: an outbox op or a node-local entry written by hand is a put dispatch never judged,
+# force or a mode included, which a fired job then runs (S4's second review); and force_mark.py run by hand,
+# which writes the mark from whatever prompt it is fed
+QUEUE_DIRS = ("Library/Caches/run-seed/queue", "Library/Caches/run-seed/queue-local")
+
+
+def force_root():
+    return os.path.join(os.environ.get("HOME") or str(Path.home()), FORCE_DIR)
+
+
+def in_force(path):
+    """True when `path` (a Write/Edit target) is under the force mark's folder, links resolved."""
+    if not path:
+        return False
+    p = os.path.realpath(os.path.expanduser(path))
+    home = os.environ.get("HOME") or str(Path.home())
+    for r in [force_root()] + [os.path.join(home, d) for d in QUEUE_DIRS]:
+        r = os.path.realpath(r)
+        if p == r or p.startswith(r.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def force_re():
+    home = os.environ.get("HOME") or str(Path.home())
+    alts = [h + "/" + re.escape(d) for d in (FORCE_DIR,) + QUEUE_DIRS for h in (re.escape(home), "~", r"\$HOME", r"\$\{HOME\}")]
+    alts.append(r"[^\s\"'<>|;&]*force_mark\.py")
+    return re.compile("(?:" + "|".join(alts) + r")(?:/[^\s\"'<>|;&]*)?(?![\w.-])")
+
+
+def force_reason(what):
+    return (f"⛔ `{what}` writes the force mark by hand ({FORCE_DIR} under HOME): it stands for the owner saying \"use the "
+            f"force\", so only wharf-runs' force_mark hook writes it, from the owner's typed message, and only dispatch "
+            f"spends it. Reading it is fine; to dispatch with force, ask the owner to say it.")
+
+
+def record_write(command, rx=None):
+    """The part of `command` that writes a skipper's record by hand (item 7), or under RX's folders, or None."""
+    rx = rx or records_re()
     if not rx.search(command):
         return None
     m = re.search(r"(?:&?>>?|>\|)\s*[\"']?(?:" + rx.pattern + ")", command)
@@ -1486,6 +1527,9 @@ def judge_bash(command, cwd, session):
     deleting = deletion_in(command)
     if deleting:
         return deny(f"{DELETE_REASON}\n(this command: {deleting})")
+    forced = record_write(command, force_re())
+    if forced:
+        return deny(force_reason(forced))
     unattended = unattended_live(command, cwd)
     if unattended:
         return deny(unattended)
@@ -2838,6 +2882,9 @@ def main():
             return
         if data.get("tool_name") in WRITE_TOOLS:
             ti = data.get("tool_input") or {}
+            if in_force(ti.get("file_path") or ti.get("notebook_path")):
+                print(json.dumps(deny(force_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
+                return
             if os.environ.get(UNATTENDED_ENV) and in_records(ti.get("file_path") or ti.get("notebook_path")):
                 print(json.dumps(deny(record_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
                 return

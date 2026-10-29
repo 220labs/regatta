@@ -2657,10 +2657,10 @@ check "$(qtree)" "" "  and nothing reaches the ref"
 env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --cancel > /dev/null 2>&1
 rm -f "$REGATTA_CONFIG/helm/logbook-repo"; echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 # item 1: an unattended caller cannot raise through the queue's own verb either
-# (DISPATCH_LABEL unset: the suite exports one, and a fired job — a guarded dispatch's — passes)
+# (DISPATCH_LABEL unset: the suite exports one; a label is no exemption since S4's landing review)
 CLAUDE_UNATTENDED=dispatch env -u DISPATCH_LABEL python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-raise --priority force "${QC[@]}" > /dev/null 2>"$T/err"
 check "$?" "2" "item 1: an unattended dispatch-queue enqueue --priority force is refused"
-has "$T/err" "never raises a run's priority" "  saying why"
+has "$T/err" "never raises" "  saying why (force: the owner's word, S4)"
 CLAUDE_UNATTENDED=dispatch env -u DISPATCH_LABEL python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-raise --arg=--priority --arg=high "${QC[@]}" > /dev/null 2>&1
 check "$?" "2" "  so is a priority carried as the entry's flag"
 CLAUDE_UNATTENDED=dispatch env -u DISPATCH_LABEL python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-raise --arg=--yolo "${QC[@]}" > /dev/null 2>&1

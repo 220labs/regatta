@@ -4,7 +4,8 @@
 #                 [--mode default|ask|dnd|yolo] [--priority low|normal|high|force] [--origin SCOPE|MARKER] [--wait REASON] [--replace]
 #                 [--probe] [--dry-run]
 # dispatch BRANCH --next [--repo DIR] [--on here] [--note TEXT] [--model M] [--effort E] [--headless]
-#                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo] [--origin SCOPE|MARKER] [--wait REASON] [--replace]
+#                 [--background allow|deny] [--yolo] [--mode default|ask|dnd|yolo] [--priority low|normal|high|force]
+#                 [--origin SCOPE|MARKER] [--wait REASON] [--replace]
 # dispatch --watch QID [--for MIN]
 # dispatch --status
 # dispatch --slots
@@ -156,8 +157,17 @@
 # needs — survives it. A branch live on another host is refused here (one branch, one host). Each claim
 # holds a slot until its record exists; the cap and --slots count it. A confidential scope's runs queue
 # node-local (the confidential note); a torn registry refuses. No home: every path is as before the queue.
-#   --priority  low|normal|high|force, default normal: the entry's rank, and `prio` in the record. An
-#               unattended caller is refused high and force (S4 adds the force's floor and a --next's inheritance).
+#   --priority  low|normal|high|force, default normal: the entry's rank, and `prio` in the record (S4 of
+#               docs/dispatch-queue-2026-10-25.md, D2-A and D3-A). Apart from --force, the account override.
+#               force: the claiming host starts it one slot over its cap (at most one run ever above it; a
+#               second force entry waits first in line) and on headroom's force floor (--floor 5: avail 5 %,
+#               swap and rate kept). Who may: an attended session high on its own judgement; force only on
+#               the owner's words — the session's force mark (hooks/force_mark.py: "use the force" in the
+#               owner's typed message), spent once the dispatch that uses it lands — or typed outside any
+#               session (no claude among dispatch's ancestors: dispatch-queue force-ok).
+#               An unattended caller never raises: a --next inherits its own run's rank from its record
+#               (the record whose claude is an ancestor of this dispatch, never a session id), force as
+#               high; a --priority high it names passes only when that record is high, force never.
 #   --queue     the entries this Mac could run, or every one (--all); --json for a reader, whose rule is that
 #               an unreadable queue counts as an entry (dispatch-queue has: exit 4).
 #   --sweep     the outbox, this Mac's own entries reconciled with its records, cards, then a claim — what the
@@ -447,6 +457,7 @@ fi
 # The queue (header, The queue): bin/dispatch-queue, handed the facts this file holds the one home of.
 # queue_on asks once whether a home is configured; without one, every path below is as before it.
 Q="${DISPATCH_QUEUE_BIN:-$here/bin/dispatch-queue}"   # the tests stand one in: a queue verb that crashes
+QG="$here/bin/dispatch-queue"   # the rank gates (force-ok, caller-prio) never take the stand-in: a variable is no gate
 qctx=(--host "$self_host" --cap "$max_runs" --jobbin "$jobbin" --prefix "$lprefix" --launchctl "$LC" --rch "$RCH")
 queue_on() {
   if [ -z "${qhome+x}" ]; then
@@ -487,11 +498,22 @@ handnext="${handover%% — *} — <the next step, in one line>"   # a dnd step t
 # is not 0 (unreadable, or a crash: Python's own exit 1) says so on stderr and passes, since a broken
 # probe must not stop every run. Sampled before the start lock: it sleeps 2 s.
 roomy() {
-  local why rc
-  why=$(python3 "$here/bin/headroom" check); rc=$?
+  local why rc fl=()
+  # the force's floor (D2-A): avail lowered to dispatch-queue's FLOOR, swap and rate kept
+  [ "$prio" = force ] && fl=(--floor "$(python3 "$QG" floor 2>/dev/null || echo 5)")
+  why=$(python3 "$here/bin/headroom" check ${fl[@]+"${fl[@]}"}); rc=$?
   [ "$rc" = 3 ] && { echo "$why"; return 1; }
   [ "$rc" = 0 ] || echo "dispatch: no memory reading ($why) — going ahead" >&2
   return 0
+}
+# The cap this run's start meets here: force's one slot over it (dispatch-queue's cap_for, the one home of
+# the rule, asked only for a force run: one python start where it matters)
+pcap() {
+  local c
+  if [ "$prio" = force ]; then
+    c=$(python3 "$QG" cap --priority force "${qctx[@]}" 2>/dev/null)
+    case "$c" in ''|*[!0-9]*) echo "$max_runs";; *) echo "$c";; esac
+  else echo "$max_runs"; fi
 }
 origin_re='^([A-Za-z0-9][A-Za-z0-9._-]*|confidential:[0-9a-f]{8})$'
 branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=""; origin=""; model="opus"; effort="high"; model_given=0; effort_given=0; probe=0; dry=0; headless=0; end=""; bg=""; yolo=0; mode=""; mode_given=0
@@ -631,7 +653,7 @@ if [ -n "$lresume" ] && [ "$lfork" = 0 ] && [ -n "$lsid" ]; then
   echo "dispatch: --resume keeps the session's own id; --session-id goes with --fork only" >&2; exit 2
 fi
 if [ "$start" = 1 ]; then
-  [ -z "$branch$at$on$note$mode$origin" ] && [ "$cancel$next$probe$yolo$ifroom" = 00000 ] || { echo "dispatch: --start takes no BRANCH, --at, --on, --note, --origin, --cancel, --next, --probe, --yolo, --if-room or --mode" >&2; exit 2; }
+  [ -z "$branch$at$on$note$mode$origin" ] && [ "$cancel$next$probe$yolo$ifroom$prio_given" = 000000 ] || { echo "dispatch: --start takes no BRANCH, --at, --on, --note, --origin, --cancel, --next, --probe, --yolo, --if-room, --mode or --priority" >&2; exit 2; }
   [ -n "$lprompt" ] && [ -n "$lname" ] || { echo "dispatch: --start needs a PROMPT and a NAME" >&2; exit 2; }
   ldir="$(cd "$ldir" 2>/dev/null && pwd -P)" || { echo "dispatch: --start: no such directory" >&2; exit 2; }
   branch=$(git -C "$ldir" symbolic-ref --quiet --short HEAD) || { echo "dispatch: --start: $ldir is on no branch" >&2; exit 2; }
@@ -734,11 +756,29 @@ PY
 ) || why="the mode's raise check failed"
   [ -z "$why" ] || { echo "dispatch: $why" >&2; exit 2; }
 fi
-# A priority above normal is a raise, and an unattended caller never raises one (the trap: a flag that
-# stands for a person's yes refuses an unattended caller; D3-A of docs/dispatch-queue-2026-10-25.md). S1
-# carries the rank only; S4 adds the force's floor and cap and a --next's inheritance from its record.
-if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -z "${DISPATCH_LABEL:-}" ] && [ "$prio_given" = 1 ]; then
-  case "$prio" in high|force) echo "dispatch: --priority $prio is a raise, and an unattended caller never raises a run's priority" >&2; exit 2;; esac
+# A --next inherits its own run's rank, never the environment: the record whose claude is this dispatch's
+# ancestor (dispatch-queue caller-prio), force read as high — the owner's force buys one run. An unattended
+# caller never raises (the trap: a flag that stands for a person's yes refuses an unattended caller): force
+# never, high only when that record is high.
+if [ "$prio_given" = 0 ] && [ "$next" = 1 ] && [ -z "${DISPATCH_LABEL:-}" ]; then
+  inh=$(python3 "$QG" caller-prio 2>/dev/null) || inh=""
+  case "$inh" in low|high) prio="$inh";; esac
+fi
+# force: one rule for every caller and road (dispatch-queue force-ok): never unattended; from a session (its
+# variables, or a claude among this dispatch's ancestors: a session can unset the variables, not its parent)
+# only with its force mark; else the owner's typing. No caller is exempt, a DISPATCH_LABEL's least: a real
+# fired job carries no CLAUDE_UNATTENDED and no session, and passes as the owner's own schedule (the landing review)
+# main's plain refusal first, before any python: an unattended caller never forces, whatever force-ok answers
+# (the final landing review: a DISPATCH_QUEUE_BIN stand-in made the check exit 0)
+if [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = force ]; then
+  echo "dispatch: --priority force is the owner's word for one run, and an unattended caller never raises to it: end with the WAITING line — the next step waits for a run to end" >&2; exit 2
+fi
+if [ "$prio" = force ] && [ "$prio_given" = 1 ]; then
+  why=$(python3 "$QG" force-ok 2>&1) || { echo "dispatch: ${why:-the force check failed}: end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
+fi
+if [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = high ]; then
+  inh=$(python3 "$QG" caller-prio 2>/dev/null) || inh=""
+  [ "$inh" = high ] || { echo "dispatch: --priority high is a raise, and an unattended caller never raises a run's priority (its own run's record says ${inh:-none}): end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
 fi
 # --replace takes over another session's queued step or a claimed or running one: a yes that is the owner's,
 # so an unattended caller is refused it (the same trap; S3's landing review, item 12). No caller is exempt, as
@@ -819,6 +859,12 @@ if [ "$on_default" = 1 ] && [ -n "$on" ]; then
     [ -n "${DISPATCH_DEFAULT_ON+x}" ] || [ -z "$dh_note" ] || echo "$dh_note" >&2
     dpeer="$peer"
   fi
+fi
+# --wait and --replace speak to this Mac's entry, and with a queue home any host with room claims it: a typed
+# `--on auto` adds nothing berth could pick, and was refused below naming the host berth picked, one the caller
+# never typed (S3's finish review; S4). Dropped instead, the queue places it
+if [ "$on_auto" = 1 ] && [ -z "$on" ] && [ "$cancel" = 0 ] && { [ -n "$waitwhy" ] || [ "$replace" = 1 ]; } && queue_on; then
+  on_auto=0; on_default=0
 fi
 [ "$on_auto" = 1 ] && [ "$cancel" = 0 ] && berth_pick
 # a named host: one the ssh key names (its spelling from here on), else refused, naming those it holds
@@ -1008,7 +1054,14 @@ mgr=""; macct=""; mplan=""; mspace=""; mhost=""; mtyped=0
 # would dispatch it a second time: a run on the peer opens its WIP PR only at its first push — review
 # 2026-10-13): <common git dir>/claude/dispatched/<topic>, "<epoch> <host> <branch>"
 mark_dispatched() {   # HOST
-  local d; d="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/claude/dispatched"
+  local d
+  # the force mark spent here, at each road's success (the queue's put, the plist, the peer's yes), never
+  # before a refusal: a refused dispatch kept costing the owner another "use the force" (AGENTS.md: a write
+  # that stands for a newer word goes after every refusal)
+  if [ "$prio" = force ] && [ -z "${CLAUDE_UNATTENDED:-}" ]; then
+    case "${CLAUDE_CODE_SESSION_ID:-}" in ''|*[!A-Za-z0-9_-]*) ;; *) rm -f "$cache/force/$CLAUDE_CODE_SESSION_ID";; esac
+  fi
+  d="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/claude/dispatched"
   mkdir -p "$d" 2>/dev/null && printf '%s %s %s\n' "$(date +%s)" "$1" "$branch" > "$d/$topic" 2>/dev/null
   return 0
 }
@@ -1043,7 +1096,7 @@ if [ "$next" = 1 ]; then
   # with the queue on, the claim judges room after the push (queue_dispatch), and a full host queues the step
   if [ -n "$on" ] || ! queue_on; then
     n=0; [ -n "$on" ] || n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
-    [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already (dispatch --status; warm or waiting ones not counted) — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
+    [ "$n" -lt "$(pcap)" ] || { echo "dispatch: $n runs are busy already (dispatch --status; warm or waiting ones not counted) — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
     [ -n "$on" ] || why=$(roomy) || { echo "dispatch: $why — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
   fi
   since=$(git -C "$repo" diff --name-only "$(git -C "$repo" log -1 --format=%H "refs/heads/$branch" -- "$brief")" "refs/heads/$branch" -- . ':!docs/handoff' | head -3)
@@ -1235,8 +1288,12 @@ queue_close() {
 queue_unstarted() {   # WAITED
   local out rc
   out=$(python3 "$Q" watch "$q_qid" --until waiting --for 0 "${qctx[@]}" 2>&1); rc=$?
-  # exit 1 whose one read was unreadable (a torn tree) is no answer, not "still claimed": could not tell
-  [ "$rc" = 1 ] && case "$(printf '%s\n' "$out" | head -1)" in *": unreadable"*) rc=4;; esac
+  # exit 1 whose one read was unreadable (a torn tree), or only the last fetch (the home did not answer), is
+  # no answer, not "still claimed": could not tell — a stale cache may hold an entry the home has dropped, and
+  # the caller would be handed off beside a step that is gone (S3's finish review; S4)
+  # the same for exit 0 read off the last fetch: "waiting" or "running" there may be a state the home has left, and exit 3:
+  # "gone" there may be a step the home still holds (the final landing review)
+  case "$rc:$(printf '%s\n' "$out" | head -1)" in 1:*": unreadable"*|[013]:*"(the home did not answer"*) rc=4;; esac
   case "$rc" in
     0) case "$(printf '%s\n' "$out" | head -1)" in
          *": waiting"*) echo "queued: the next run of $branch ($model $effort) waits for this run to end — end your turn now; queue entry $q_qid; log $log";;
@@ -1434,11 +1491,19 @@ queue_refused() {   # WHY [skip]
   manager_env; queue_args
   # the caller's cwd as its one-shot recorded it (DISPATCH_ORIGIN): launchd starts the job in /, and a run
   # sent from a confidential scope's checkout must queue in that scope, never the fleet ref (item 4)
-  local qrc
-  python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" --cwd "${DISPATCH_ORIGIN:-$repo}" "${qa[@]}" --refused "$1" ${sk[@]+"${sk[@]}"} "${qctx[@]}" >/dev/null; qrc=$?
+  local qrc out q_res="" q_qid="" q_ours=0 q_rank="" q_off="" q_why="" q_err=""
+  out=$(python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" --cwd "${DISPATCH_ORIGIN:-$repo}" "${qa[@]}" --refused "$1" ${sk[@]+"${sk[@]}"} "${qctx[@]}"); qrc=$?
   if [ "$qrc" = 0 ]; then
     echo "queued again: $1 — this Mac skips it for an hour; a host with room claims it (dispatch --queue)"
     return 0
+  fi
+  # the put is guarded as every other (S4): a live session's step of the branch, queued already, is kept, and
+  # this one-shot adds nothing — the queue holds the branch's step, so no FAILED (helm would start it again)
+  if [ "$qrc" = 3 ]; then
+    eval "$(qparse "$out")"
+    case "$q_res" in "busy queued by"*)
+      qdone=1; echo "queued again: $1 — a live session's step of $branch waits in the queue already (${q_res#busy }, $q_qid); this one-shot adds nothing (dispatch --queue)"
+      return 0;; esac
   fi
   # the code read before any other command runs: after an `if`, $? was the if's own 0 (S3's review, item 9)
   echo "== not queued (dispatch-queue exit $qrc): this run is lost, as before the queue"
@@ -1644,7 +1709,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     if [ "$next" = 1 ]; then   # the cap and the account --next would have taken here (with the queue, the claim's)
       if ! queue_on; then
         n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
-        [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already here, and the peer is unreachable — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line" >&2; exit 2; }
+        [ "$n" -lt "$(pcap)" ] || { echo "dispatch: $n runs are busy already here, and the peer is unreachable — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line" >&2; exit 2; }
         why=$(roomy) || { echo "dispatch: $why here, and the peer is unreachable — refused, with no queue home here (wharf-runs/queue-repo): end with the WAITING line" >&2; exit 2; }
       fi
       [ -n "$account" ] || account=$("$ACCT" which 2>/dev/null) || account=""
@@ -1664,7 +1729,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
       # host would schedule a one-shot the fire time refuses and loses (the fourth landing review)
       if [ "$next" = 1 ] && [ -z "$on" ]; then
         n=$(python3 "$here/bin/dispatch-rc" live "$repo" "$topic") || n=0
-        [ "$n" -lt "$max_runs" ] || { echo "dispatch: $n runs are busy already, and the queue could not take it (above) — refused: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
+        [ "$n" -lt "$(pcap)" ] || { echo "dispatch: $n runs are busy already, and the queue could not take it (above) — refused: end with the WAITING line — the next step waits for a run to end (dispatch --next once one has)" >&2; exit 2; }
         why=$(roomy) || { echo "dispatch: $why, and the queue could not take it (above) — refused: end with the WAITING line — the next step waits for a run to end and memory to free (dispatch --next once one has)" >&2; exit 2; }
       fi
       echo "dispatch: the queue could not take it — scheduling it as before, a one-shot" >&2
@@ -1710,7 +1775,10 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   ocwd="${DISPATCH_ORIGIN:-$PWD}"
   # pinned to this Mac: a typed `--on here`, or a peer's typed `--on <this host>` (DISPATCH_HOST_PIN from its ssh line;
   # its own name: DISPATCH_PIN is a bound run's account pin, `bound`, which its --next reads — S3's second review)
-  opin=""; { [ "$on_typed" = 1 ] || [ "${DISPATCH_HOST_PIN:-}" = 1 ]; } && opin=1
+  # and an unattended --next, pinned here on the queue road (queue_dispatch: after() waits for its run on this
+  # host): the one-shot it falls back to, should the queue not take it, keeps that pin at its fire-time enqueue
+  # (S3's finish review; S4)
+  opin=""; { [ "$on_typed" = 1 ] || [ "${DISPATCH_HOST_PIN:-}" = 1 ] || { [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ]; }; } && opin=1
   mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
     local k v
     for k in $SKIPPER_ENV; do
@@ -2575,7 +2643,7 @@ The owner's ask mode (mode ask, skipper-modes S1): nothing answers this run's qu
   take_lock || exit 1
   n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
   n=$((n + $(qreserved)))   # the queue's claims hold their slots before their records exist
-  if [ "$n" -ge "$max_runs" ]; then
+  if [ "$n" -ge "$(pcap)" ]; then   # force: one slot over (D2-A)
     drop_lock
     queue_refused "the run cap ($n of $max_runs busy on $self_host)" \
       || echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"

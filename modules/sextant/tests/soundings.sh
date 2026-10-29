@@ -130,15 +130,15 @@ out=$(SOUNDINGS_TODAY=2026-11-01 S refresh)
 has "$out" "j: done" "a branch landed by rebase (a new sha on main) is done"
 has "$out" "k: done" "  and one landed as a squash (every changed file the same on main)"
 case "$out" in *"l: queued"*) check "l requeued at 7 days" "l held" "a seed only, seven days on: still scheduled (the reset may be today)";; *) echo "  ok   a seed only, seven days on: still scheduled (the reset may be today)";; esac
-printf '#!/bin/sh\nexit 3\n' > "$T/dq-has"; chmod +x "$T/dq-has"
+printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"qid\": \"fleet:calm--l\", \"state\": \"queued\", \"repo\": \"$(cd "$T" && pwd -P)/calm\", \"branch\": \"claude/h/l\"}], \"unreadable\": false, \"why\": []}'" > "$T/dq-has"; chmod +x "$T/dq-has"
 out=$(SOUNDINGS_TODAY=2026-11-02 SOUNDINGS_DISPATCH_QUEUE="$T/dq-has" S refresh)
 case "$out" in *"l: queued"*) check "l requeued" "l held" "  eight days on, but dispatch's queue holds it (queued at fire time, dispatch-queue S3): still scheduled";; *) echo "  ok   eight days on, but dispatch's queue holds it (queued at fire time, dispatch-queue S3): still scheduled";; esac
 printf '#!/bin/sh\nexit 5\n' > "$T/dq-crash"; chmod +x "$T/dq-crash"
 out=$(SOUNDINGS_TODAY=2026-11-02 SOUNDINGS_DISPATCH_QUEUE="$T/dq-crash" S refresh)
 case "$out" in *"l: queued"*) check "l requeued on a crash" "l held" "  a queue that crashed (exit 5) holds it too, never read as no entry (S3's landing review, item 5)";; *) echo "  ok   a queue that crashed (exit 5) holds it too, never read as no entry (S3's landing review, item 5)";; esac
-printf '#!/bin/sh\nexit 0\n' > "$T/dq-none"; chmod +x "$T/dq-none"
+printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"qid\": \"fleet:other--l\", \"state\": \"queued\", \"repo\": \"elsewhere/calm\", \"branch\": \"claude/h/l\"}], \"unreadable\": true, \"why\": [\"local=vault: torn\"], \"bad_stores\": [{\"store\": \"local=vault\", \"why\": \"torn\", \"keys\": [\"vault--other\"]}]}'" > "$T/dq-none"; chmod +x "$T/dq-none"
 out=$(SOUNDINGS_TODAY=2026-11-02 SOUNDINGS_DISPATCH_QUEUE="$T/dq-none" S refresh)
-has "$out" "l: queued" "  eight days on, still a seed and in no queue: back to queued (refused at fire time, or never fired)"
+has "$out" "l: queued" "  eight days on, still a seed and in no queue: back to queued (one list read; its branch name in another repo, and another scope's store torn, hold nothing: dispatch-queue S4)"
 case "$out" in *"m: "*) check "m changed" "m scheduled" "a seed with a run's commit after it stays scheduled";; *) echo "  ok   a seed with a run's commit after it stays scheduled";; esac
 j=$(SOUNDINGS_TODAY=2026-11-02 S next --json)
 check "$(py "[o['commands'][0] for o in d['dispatch'] if o['slug'] == 'l']")" "['dispatch claude/h/l --repo $T/calm --at reset --if-room']" "  next dispatches its branch again, no second seed"

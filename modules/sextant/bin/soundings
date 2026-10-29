@@ -259,30 +259,43 @@ def never_started(repo, branch):
     return not log.returncode and bool(subjects) and all(l.startswith("Seed: ") for l in subjects)
 
 
+_HOLDS = []
+
+
 def in_dispatch_queue(repo, branch):
-    """True when dispatch's queue holds BRANCH: an entry, or a queue it cannot read (the queue's readers'
-    rule; `dispatch-queue has` exits 3 or 4, and any code but 0 is "could not tell": a crash's 5 read as no
-    entry sent the branch again beside its queued step, S3's landing review, item 5). Since dispatch-queue S3 a run refused at its fire time is
-    queued there, not lost, and so is any `--at` once it fires: queued at fire time, it waits for room, and
-    `refresh` must not send its branch again. False with no dispatch-queue here, or a read that saw none.
+    """True when dispatch's queue holds BRANCH: an entry, or a queue (or the store the branch routes to) it
+    cannot read — the readers' rule, any answer but a clean read counts as an entry (a crash read as none sent
+    the branch again beside its queued step, S3's landing review, item 5). Since dispatch-queue S3 a run
+    refused at its fire time is queued there, not lost, and so is any `--at` once it fires: queued at fire
+    time, it waits for room, and `refresh` must not send its branch again. wharf-runs' queue_holds, the one
+    reader autofinish and helm's stalls share, one `list --all --json` per refresh (dispatch-queue S4; S3's
+    third landing review, item 7: one `has` per entry was a fetch each). False with no dispatch-queue here.
     SOUNDINGS_DISPATCH_QUEUE is the tests' stand-in."""
-    q = os.environ.get("SOUNDINGS_DISPATCH_QUEUE")
-    if not q:
+    if not _HOLDS:
         try:
             sys.path.insert(0, str(HERE.parent / "lib"))
             import find_core  # noqa: PLC0415
             sys.path.insert(0, find_core.hooks())
             import common  # noqa: PLC0415
-            q = common.tool("dispatch-queue")
+            q = os.environ.get("SOUNDINGS_DISPATCH_QUEUE") or common.tool("dispatch-queue")
+            lib = common.tool("queue_holds.py")
         except (ImportError, SystemExit, AttributeError):
-            return False
-    if not q:
+            q, lib = os.environ.get("SOUNDINGS_DISPATCH_QUEUE"), None   # a stand-in named still counts: held
+        if not q:
+            _HOLDS.append(None)
+        elif not lib:
+            _HOLDS.append(False)   # a dispatch-queue with no reader beside it: could not tell
+        else:
+            try:
+                sys.path.insert(0, str(Path(lib).parent))
+                import queue_holds  # noqa: PLC0415 — wharf-runs', found through the core's tool()
+                _HOLDS.append(queue_holds.Holds(q))
+            except Exception:   # a broken reader: could not tell, so every branch held, never a crashed refresh
+                _HOLDS.append(False)
+    h = _HOLDS[0]
+    if h is None:
         return False
-    try:
-        r = subprocess.run([str(q), "has", "--repo", str(repo), "--branch", branch], capture_output=True, text=True, timeout=90)
-    except (OSError, subprocess.TimeoutExpired):
-        return True   # could not tell: an entry, the readers' rule
-    return r.returncode != 0
+    return h is False or bool(h.why(str(repo), branch))
 
 
 def counts(d):

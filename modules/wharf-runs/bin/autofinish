@@ -940,74 +940,36 @@ def reply_veto(text, live=True):
     return None
 
 
-_QUEUE = {}
-_QUEUE_LOCK = threading.Lock()
+_HOLDS = []
+_HOLDS_LOCK = threading.Lock()
 
 
-def queue_read():
-    """(entries, None) or (None, why): dispatch's queue as one `dispatch-queue list --all --json`, read once per
-    process — one sweep, every candidate answered from it (S3's second landing review, item 10: one `has` per
-    branch was a fetch each under the clone's lock, and a hung home waited out each timeout). Unreadable, a
-    crash (5, any non-zero code) or no answer: why, and every branch holds (the readers' rule). No
-    dispatch-queue here: no entries, as before the queue. AUTOFINISH_DISPATCH_QUEUE is the tests' stand-in."""
-    with _QUEUE_LOCK:
-        if "read" in _QUEUE:
-            return _QUEUE["read"]
-        q = os.environ.get("AUTOFINISH_DISPATCH_QUEUE") or common.tool("dispatch-queue") or BIN / "dispatch-queue"
-        if not Path(q).exists():
-            got = ([], None)
-        else:
-            try:
-                r = subprocess.run([str(q), "list", "--all", "--json"], capture_output=True, text=True, timeout=90)
-            except (OSError, subprocess.TimeoutExpired):
-                r = None
-            if r is None:
-                got = (None, "dispatch's queue gave no answer")
-            elif r.returncode != 0:
-                said = (r.stderr or r.stdout or "").strip().splitlines()[:1]
-                got = (None, "dispatch's queue could not tell (exit %d%s)" % (r.returncode, ": " + said[0] if said else ""))
-            else:
-                try:
-                    d = json.loads(r.stdout)
-                except ValueError:
-                    d = None
-                if not isinstance(d, dict):
-                    got = (None, "dispatch's queue gave no answer")
-                elif d.get("unreadable"):
-                    got = (None, "dispatch's queue does not read (%s)" % ("; ".join(map(str, d.get("why") or [])) or "unreadable"))
-                else:
-                    got = ([e for e in d.get("entries") or [] if isinstance(e, dict)], None)
-        _QUEUE["read"] = got
-        return got
+def queue_holds():
+    """dispatch's queue, one reader per process: bin/queue_holds.py, the reader helm's stalls and sextant's
+    soundings share (dispatch-queue S4; S3's third landing review, item 7). One `dispatch-queue list --all
+    --json` per sweep, every candidate answered from it (S3's second landing review, item 10: one `has` per
+    branch was a fetch each under the clone's lock, and a hung home waited out each timeout). A queue that
+    gives no answer holds every branch; one store that does not read holds the branches routed to it (the
+    readers' rule). No dispatch-queue here: nothing held, as before the queue. AUTOFINISH_DISPATCH_QUEUE is
+    the tests' stand-in."""
+    with _HOLDS_LOCK:
+        if not _HOLDS:
+            if str(BIN) not in sys.path:
+                sys.path.insert(0, str(BIN))
+            import queue_holds as qh  # noqa: PLC0415 — beside this file
+            _HOLDS.append(qh.Holds(os.environ.get("AUTOFINISH_DISPATCH_QUEUE") or common.tool("dispatch-queue") or BIN / "dispatch-queue"))
+        return _HOLDS[0]
 
 
 def queue_hold(repo, branch):
     """Why BRANCH waits on dispatch's queue, or None: its next step is an entry there, or the queue could not
-    tell (queue_read: unreadable, a crash, no answer — the readers' rule counts that as an entry; S3's
-    landing review, item 5). Asked of every branch about to start (dispatch-queue S3, item 6): a session that
-    queued its step ends on the pending line and its run then ends, and reply_veto, which holds a pending
-    reply only while a session lives, launched the branch under the step the queue still held. An entry is
-    the branch's by its branch and its repo as the entry names it (dispatch-queue's repo_word: relative to the
-    projects folder, else absolute): branch names repeat across repos by design (AGENTS.md)."""
-    entries, why = queue_read()
-    if entries is None:
-        return "%s: a queued step counts as there" % why
-    p = Path(repo).resolve()
-    words = {str(p)}
-    try:
-        words.add(str(p.relative_to(common.PROJECTS.resolve())))
-    except (ValueError, AttributeError):
-        pass
-    for e in entries:
-        # a `running` entry on this host is the branch's own run here, not a next step (a step queued behind a
-        # live run is `queued` with running_on): held on it, a run idle in its warm hour waited for its own end,
-        # and the log named a next step that did not exist; this host's session gates judge that run (S3's third
-        # landing review, item 6). One running on another host stays a hold: no gate here sees a run there, and
-        # its laptop tip may equal origin all through its first turn (the in-round review)
-        here = e.get("state") == "running" and (e.get("running_on") or "").lower() == (host() or "").lower()
-        if e.get("branch") == branch and e.get("repo") in words and not here:
-            return "its next step waits in dispatch's queue (%s %s)" % (e.get("qid") or "an entry", e.get("state") or "?")
-    return None
+    tell for it (queue_holds' readers' rule; S3's landing review, item 5). Asked of every branch about to
+    start (dispatch-queue S3, item 6): a session that queued its step ends on the pending line and its run
+    then ends, and reply_veto, which holds a pending reply only while a session lives, launched the branch
+    under the step the queue still held. A `running` entry on this host is the branch's own run here, not a
+    next step: held on it, a run idle in its warm hour waited for its own end (S3's third landing review,
+    item 6); one running on another host stays a hold (the in-round review)."""
+    return queue_holds().why(repo, branch, here=host())
 
 
 def mtime(p):
