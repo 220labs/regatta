@@ -20,6 +20,8 @@ unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_REPOS_J
 # a case that crossed local midnight read the new day's empty file (a CI run at 00:00 PDT, 2026-10-26, the
 # night-landings digest's finding 7). Set after the reset above, which unsets AUTOFINISH_*.
 export AUTOFINISH_DAY="$(date +%Y-%m-%d)"
+# dispatch speaks within seconds; a case that wants it silent shortens the wait itself (the verdict wait, AUTOFINISH_VERDICT_S)
+export AUTOFINISH_VERDICT_S=20
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 # the regatta core's hooks/ (common.py), found as the tools find it (lib/core_path.py); wharf's peers by its tool()
 CORE="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; print(core_path.hooks() or "")' "$B/../lib")"
@@ -120,7 +122,7 @@ printf 'Ran the check: all pass.\n\n⚠ step 4 — 2 open items before this bran
 TIP=$(git -C "$W" rev-parse HEAD)
 start=$(date +%s)
 STUB_REPLY="$T/stop.txt" af --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "started"
-check "$(( $(date +%s) - start <= 3 ))" "1" "  the caller returned at once (the wait is the child's)"
+check "$(( $(date +%s) - start <= 15 ))" "1" "  the caller returned once dispatch had spoken, inside the bound (the run's end is the child's)"
 has "$T/out" 'started: /finish claude/laptop/2026-10-05-demo --unattended — window and Remote Control "finish · demo"' "  and said where to watch"
 SID=$(field session)
 ended
@@ -300,7 +302,7 @@ check "$(field outcome)/$(field gate)" "never-started/refused" "  recorded as re
 check "$(wc -c < "$T/api.log" | tr -d ' ')" "0" "  nothing on the PR: nothing ran"
 read -r PG WP < "$T/crash.who"
 check "$([ "$PG" != "$(ps -o pgid= -p $$ | tr -d ' ')" ] && echo own || echo shared)" "own" "the waiter runs in its own process group (setsid), not the caller's"
-AUTOFINISH_DISPATCH="$T/dispatch-crash" af > "$T/out" 2>&1; check "$?" "0" "a tip that never started may start again"
+AUTOFINISH_DISPATCH="$T/dispatch-crash" af > "$T/out" 2>&1; check "$?" "5" "a tip that never started may start again (and says dispatch refused it: exit 5)"
 ended
 # a record written before S1 of docs/wharf-rename-2026-10-16.md says `not-launched`: still read as refused
 python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["gate"] = "not-launched"; json.dump(d, open(sys.argv[1], "w"))' "$STATE"
@@ -323,7 +325,7 @@ cat > "$T/dispatch-hang" <<EOF
 echo \$PPID > "$T/hang.waiter"; exec sleep 60
 EOF
 chmod +x "$T/dispatch-hang"
-AUTOFINISH_DISPATCH="$T/dispatch-hang" af > /dev/null 2>&1
+AUTOFINISH_VERDICT_S=2 AUTOFINISH_DISPATCH="$T/dispatch-hang" af > /dev/null 2>&1
 for _ in $(seq 1 50); do [ -s "$T/hang.waiter" ] && break; sleep 0.2; done
 check "$([ -f "$LOCK" ] && echo held || echo free)" "held" "the lock is held while the run goes"
 kill -TERM "$(cat "$T/hang.waiter")"
@@ -1187,6 +1189,66 @@ reg ', "confidential": true'
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"], d["fenced_now"] > 0)' "$T/out")" "0 True" "  a repo confidential now: its rows are passed over"
 rm -f "$ROT"; unset CLAUDE_REPOS_JSON
 
+echo "the verdict: what the caller prints is what dispatch reached, never predicted (night-landings finding 1)"
+# stand-ins for dispatch --start: (a) the run's header, its own --session-id ($6) in it, then it goes on; (b) FAILED for
+# room, exit 1; (c) silent (dispatch-hang); (d) another session's header and FAILED line in the shared log, then silent
+cat > "$T/dispatch-header" <<EOF
+#!/bin/bash
+echo \$PPID > "$T/hdr.waiter"
+echo "== claude 4242, session \$6, screen s, Remote Control \"finish · demo\"; state /x"
+exec sleep 60
+EOF
+cat > "$T/dispatch-sibling" <<EOF
+#!/bin/bash
+echo \$PPID > "$T/sib.waiter"
+echo "== claude 999, session aaaaaaaa-0000-4000-8000-000000000000, screen s, Remote Control \"finish · demo\"; state /x"
+echo "FAILED: buildbox: no room: 86 % free, under 101 % (wharf-runs/headroom buildbox:); not starting another"
+exec sleep 60
+EOF
+cat > "$T/dispatch-noroom" <<EOF
+#!/bin/bash
+echo "FAILED: buildbox: no room: 86 % free, under 101 % (wharf-runs/headroom buildbox:); not starting another"; exit 1
+EOF
+chmod +x "$T/dispatch-header" "$T/dispatch-sibling" "$T/dispatch-noroom"
+
+next_tip "verdict: header"; : > "$T/api.log"
+AUTOFINISH_DISPATCH="$T/dispatch-header" af > "$T/out" 2> "$T/err"; check "$?" "0" "a run's header in the log: started, exit 0"
+has "$T/out" 'started: /finish claude/laptop/2026-10-05-demo --unattended — window and Remote Control "finish · demo"' "  the line is the started one"
+check "$(field ended)" "null" "  the run goes on: not ended"
+check "$([ -f "$LOCK" ] && echo held || echo free)" "held" "  and holds the lock"
+kill -TERM "$(cat "$T/hdr.waiter")"; ended
+
+next_tip "verdict: a sibling's lines"; : > "$T/api.log"; rm -f "$T/sib.waiter"
+AUTOFINISH_VERDICT_S=2 AUTOFINISH_DISPATCH="$T/dispatch-sibling" af > "$T/out" 2> "$T/err"; check "$?" "0" "another session's header and FAILED line: not this run's verdict, exit 0"
+has "$T/out" "not confirmed after 2 s:" "  not confirmed, neither started nor refused"
+hasnt "$T/out" "started:" "  no \"started\" line for another session's header"
+hasnt "$T/err" "not started" "  no refusal for another session's FAILED line"
+check "$(field ended)" "null" "  the run is not ended: the waiter settles it"
+for _ in $(seq 1 50); do [ -s "$T/sib.waiter" ] && break; sleep 0.2; done
+kill -TERM "$(cat "$T/sib.waiter")"; ended
+
+next_tip "verdict: no room"; : > "$T/api.log"
+AUTOFINISH_DISPATCH="$T/dispatch-noroom" af > "$T/out" 2> "$T/err"; check "$?" "5" "dispatch refused for room: exit 5, not 0 and not 1"
+has "$T/err" "not started: buildbox: no room: 86 % free, under 101 % (wharf-runs/headroom buildbox:); not starting another" "  dispatch's own FAILED text"
+has "$T/err" "the next step waits for a run to end" "  in the cap's waiting words (CAP_RE, ASK_EXEMPT_RE)"
+hasnt "$T/out" "started" "  no \"started\" line"
+ended
+check "$(field outcome)/$(field gate)" "never-started/refused" "  the state: never-started at refused, ended"
+check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "  the lock given back"
+check "$(wc -c < "$T/api.log" | tr -d ' ')" "0" "  nothing on the PR: nothing ran"
+next_tip "verdict: refused, again"
+AUTOFINISH_DISPATCH="$T/dispatch-noroom" af > /dev/null 2>&1; check "$?" "5" "  the tip may start again, and is refused again as plainly"; ended
+
+next_tip "verdict: silent"; : > "$T/api.log"; rm -f "$T/hang.waiter"
+AUTOFINISH_VERDICT_S=2 AUTOFINISH_DISPATCH="$T/dispatch-hang" af > "$T/out" 2> "$T/err"; check "$?" "0" "dispatch silent past the bound: exit 0, as callers read a start that may begin"
+has "$T/out" "not confirmed after 2 s: dispatch has not said whether the run began" "  not confirmed, on stdout"
+has "$T/out" 'Remote Control "finish · demo"; read '"$LOGS/$AUTOFINISH_DAY-dispatch-finish-demo.log" "  naming the window and the log"
+hasnt "$T/out" "started:" "  no \"started\" line"
+check "$(field ended)" "null" "  the run is not ended: the waiter settles it"
+check "$([ -f "$LOCK" ] && echo held || echo free)" "held" "  the lock stays"
+for _ in $(seq 1 50); do [ -s "$T/hang.waiter" ] && break; sleep 0.2; done
+kill -TERM "$(cat "$T/hang.waiter")"; ended
+
 echo "Where: a run started on the laptop goes to its peer (the owner, 2026-10-22: the laptop is mobile)"
 # the peer is a second HOME and config dir; ssh runs the command there as a login would, with none of
 # this shell's variables a real ssh would not carry, and launchctl runs a bootstrapped job at once
@@ -1280,6 +1342,54 @@ python3 "$B/dispatch-rc" status > "$T/out" 2>&1
 has "$T/out" "finish-land" "dispatch --status here lists it…"
 has "$T/out" "on buildbox · ended" "  …on the peer, ended"
 has "$T/out" "launched #42" "  …launched #42"
+
+echo "Where: the verdict of the peer's job — started, refused, each read from there (night-landings finding 1)"
+# the peer's job runs the dispatch stand-in the ssh and launchctl stand-ins pass down; its verdict lands in its ticket
+peer_settle() { python3 - "$PGD/claude/autofinish.json" "$PGD/claude/owner.json" <<'PY'
+import datetime, json, os, sys
+if os.path.exists(sys.argv[1]):
+    d = json.load(open(sys.argv[1])); d.update(ended=datetime.datetime.now().astimezone().isoformat(timespec="seconds"), outcome="never-started", gate="refused")
+    json.dump(d, open(sys.argv[1], "w"))
+if os.path.exists(sys.argv[2]): os.remove(sys.argv[2])
+PY
+}
+python3 - "$B/autofinish-run" <<'PY' > "$T/out"
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+sid = "s-1"
+live = {"session": sid, "ended": None}
+print("crashed:", m.peer_verdict(sid, {"ticket": {"session": sid, "rc": 1, "said": "Traceback"}, "state": live}))
+print("refused:", m.peer_verdict(sid, {"ticket": {"session": sid, "rc": 5, "said": "not started: no room; state x; log y"}, "state": live})[0])
+print("unconfirmed:", m.peer_verdict(sid, {"ticket": {"session": sid, "rc": 0, "said": "not confirmed after 9 s: dispatch has not said"}, "state": live})[0])
+print("started:", m.peer_verdict(sid, {"ticket": {"session": sid, "rc": 0, "said": None}, "state": live})[0])
+import tempfile
+with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+    f.write("FAILED: a sibling's refusal\n== claude 7, session %s, screen s\n" % sid)
+print("order:", m.log_verdict(f.name, 0, sid)[0])
+PY
+has "$T/out" "order: started" "log_verdict: this run's header wins over a sibling's FAILED line before it"
+has "$T/out" "crashed: ('unconfirmed', 'Traceback')" "peer_verdict: a job that crashed after its detach, its run live there: unconfirmed, not refused"
+has "$T/out" "refused: refused" "  its refusal (rc 5) stays a refusal"
+has "$T/out" "unconfirmed: unconfirmed" "  rc 0 with the job's not-confirmed line: unconfirmed"
+has "$T/out" "started: started" "  rc 0 alone: started"
+lnext "peer verdict: no room"; : > "$T/api.log"
+AUTOFINISH_DISPATCH="$T/dispatch-noroom" laf --rule A --by sweep > "$T/out" 2> "$T/err"; check "$?" "5" "the peer's dispatch refused it for room: exit 5"
+has "$T/err" "not started: refused on buildbox: buildbox: no room: 86 % free, under 101 % (wharf-runs/headroom buildbox:); not starting another" "  its FAILED text, naming the peer"
+has "$T/err" "the next step waits for a run to end" "  in the cap's waiting words"
+hasnt "$T/out" "started" "  no \"started on\" line"
+check "$(lfield outcome)/$(lfield gate)" "never-started/refused" "  the state here: ended, never-started at refused"
+check "$([ -f "$LLOCK" ] && echo kept || echo gone)" "gone" "  the lock released"
+check "$(wc -c < "$T/api.log" | tr -d ' ')" "0" "  nothing on the PR"
+lnext "peer verdict: started"
+AUTOFINISH_DISPATCH="$T/dispatch-header" laf --rule A --by sweep > "$T/out" 2> "$T/err"; check "$?" "0" "the peer's run began: exit 0"
+has "$T/out" "started on buildbox: /finish $LB --unattended --from=laptop in $PW" "  the started-on line, only now"
+check "$(lfield ended)" "null" "  the run goes on there"
+kill -TERM "$(cat "$T/hdr.waiter")"; lended
+
+lnext "peer verdict: the end the next case reads"
+STUB_REPLY="$T/launch.txt" laf --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "the same send, left as the case below finds it: launched #42 there"
+lended
 
 echo "Where: the same tip, refused here from the record the peer's end left"
 STUB_REPLY="$T/launch.txt" laf > "$T/out" 2>&1; check "$?" "3" "refused"
@@ -1417,7 +1527,10 @@ check "$?" "2" "peer-start's --from from a skipper: refused (CR 1)"
 
 echo "Where: a peer that goes silent — the lock here kept fresh, then the run buried as died past its time"
 lnext "silent peer"; LTIP=$(git -C "$LW" rev-parse HEAD); : > "$T/api.log"
-SSH_SYNC_DOWN=1 AUTOFINISH_PEER_WAIT=20 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent"
+SSH_SYNC_DOWN=1 AUTOFINISH_PEER_WAIT=20 AUTOFINISH_VERDICT_S=2 STUB_REPLY="$T/stop.txt" laf > "$T/out" 2>&1; check "$?" "0" "sent, the peer silent: no verdict, exit 0 as a start that may begin"
+has "$T/out" "not confirmed after 2 s on buildbox: dispatch has not said" "  and says so"
+has "$T/out" "read its dispatch log on buildbox (dispatch --status there)" "  naming the peer's log, not this Mac's"
+hasnt "$T/out" "started on" "  never \"started\" for a run nothing has confirmed"
 LSID=$(lfield session)
 python3 - "$LLOCK" <<'EOF'
 import json, sys, time

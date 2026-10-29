@@ -2347,7 +2347,7 @@ PY
   fi
   echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $by"
   note_launch "started: autofinish-run --rule $rule --by $by"
-  # autofinish-run returns at once: its child is double-forked and setsid, out of this job's
+  # autofinish-run returns once dispatch's verdict is in (exit 0 started or not confirmed, 5 refused): its child is double-forked and setsid, out of this job's
   # process group, which launchd ends with the job: probed 2026-10-08 on the build Mac, a setsid grandchild
   # outlived a job that booted itself out (as cleanup does), a plain `( … ) &` child did not
   # without the build's login (pick_account exported it): autofinish-run picks its own, fresh, as
