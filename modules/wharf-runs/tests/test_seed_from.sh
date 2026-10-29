@@ -172,5 +172,46 @@ has "$T/out" "a seed out of it goes by --from" "  saying so"
 check "$(nothing plain)" "none" "  nothing written"
 check "$(CLAUDE_REPOS_JSON="$T/torn.json" S plain --repo "$P/demo" --file "$T/clean.md" --no-start)" 1 "  a torn registry: refused too"
 
+echo "keel's lookout seed, --beside a branch, under the same scope checks (routed comments S3 beside S5)"
+RB=claude/laptop/2026-10-27-run
+git -C "$P/demo" checkout -q -b "$RB"; echo work > "$P/demo/work.txt"; git -C "$P/demo" add work.txt
+git -C "$P/demo" commit -qm "the run's work"; git -C "$P/demo" checkout -q main
+brief look "an answer on the run's page"
+# the lookout's own form (keel's lookout_start), run in the doc's repo as it is: an open repo, a plain seed
+mark; check "$(CWD="$P/demo" S lookseed --file "$T/look.md" --beside "$RB" --repo "$P/demo" --no-start)" 0 "the lookout's seed in its open repo: seeded"
+LN=claude/laptop/$TODAY-lookseed
+check "$(git -C "$P/demo" rev-parse "$LN^") $(wc -l < "$T/claude.calls" | tr -d ' ')" "$(git -C "$P/demo" rev-parse "$RB") 0" \
+  "  off the run's tip, and no review: nothing leaves a scope"
+git -C "$P/demo" log -1 --format=%B "$LN" > "$T/msg"
+has "$T/msg" "Seeded-From: $RB" "  Seeded-From: names the run's branch"
+has "$T/msg" "Seeded-By: demo/" "  Seeded-By names the repo it runs in, no marker"
+# a confidential repo's own page: the lookout seeds beside its branch in that repo, in its scope
+git -C "$P/sec" checkout -q -b "$RB"; echo work > "$P/sec/work.txt"; git -C "$P/sec" add work.txt
+git -C "$P/sec" commit -qm "the run's work"; git -C "$P/sec" checkout -q main
+printf -- '- physical: none\n' > "$P/sec/AGENTS.md"; git -C "$P/sec" add -A; git -C "$P/sec" commit -qm contract
+check "$(CWD="$P/sec" S lookin --file "$T/look.md" --beside "$RB" --repo "$P/sec" --no-start)" 0 "the lookout's seed in a confidential repo, run there: seeded within its scope"
+check "$(git -C "$P/sec" rev-parse "claude/laptop/$TODAY-lookin^")" "$(git -C "$P/sec" rev-parse "$RB")" "  off that run's tip"
+# the cwd keel no longer inherits: a pass started inside a confidential scope, seeding an open repo
+mark; check "$(S lookout2 --file "$T/look.md" --beside "$RB" --repo "$P/demo" --no-start)" 1 "a --beside seed from a cwd in a confidential scope into an open repo: refused (why the lookout runs pickup in the doc's repo)"
+has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
+check "$(nothing lookout2)" "none" "  nothing written"
+mark; check "$(S lookout3 --from node --beside "$RB" --repo "$P/demo" --file "$T/clean.md")" 1 "--from SCOPE with --beside: refused (the review reads the brief alone, never a branch's commits)"
+has "$T/out" "--from takes no --beside" "  saying so"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ') $(nothing lookout3)" "0 none" "  no judge, nothing written"
+
+# a seed beside a spawn inherits its source's `.review` under the source's topic: the queue still confines it
+Q="$(cd "$(dirname "$0")/.." && pwd)/bin/dispatch-queue"
+git -C "$P/demo" checkout -q -b claude/laptop/2026-10-28-childtopic main
+mkdir -p "$P/demo/docs/handoff"; echo '{"origin":"confidential:x"}' > "$P/demo/docs/handoff/2026-10-28-spawntopic.review"
+git -C "$P/demo" add -A; git -C "$P/demo" commit -qm "a seed beside a spawn"; git -C "$P/demo" checkout -q main
+cat > "$T/hasrev.py" <<'PY'
+import sys, importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader("dq", sys.argv[1]); sp = importlib.util.spec_from_loader("dq", l)
+m = importlib.util.module_from_spec(sp); l.exec_module(m)
+print(m.has_review(sys.argv[2], sys.argv[3]))
+PY
+check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" claude/laptop/2026-10-28-childtopic)" "True" "dispatch-queue's has_review: a .review under another topic still marks the branch a spawn"
+check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" "$RB")" "False" "  and a branch with none is not"
+
 echo
 [ "$fails" -eq 0 ] && echo "all seed --from tests pass" || { echo "$fails seed --from test(s) FAILED"; exit 1; }

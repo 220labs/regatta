@@ -9,6 +9,9 @@
   `not confirmed after N s: …` on stdout past `AUTOFINISH_VERDICT_S` (120 s, less what the caller's own wait leaves).
   The peer road reads the same from the peer's job by peer-sync. Exit 5 refused; started and not confirmed exit 0,
   so cold_prompt still blocks a second /finish and dispatch still leaves the slot to the landing.
+- `pickup seed --beside BRANCH`, routed comments S3's base off a branch's tip, was `--from BRANCH` until
+  confidential-reach S5 took `--from SCOPE`; the two refuse together (scope-pass reviews the brief alone, never
+  the commits a base off another branch would carry out). Routed S3's fix round 3.
 - S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a `--next` put back in the queue at
   its start says queued and the closing line, never `started`; only a login refused for a limit that resets
   (the week, the 5-hour window, a cooldown, a lock) stays in the queue at fire time — extra usage on, same login
@@ -91,6 +94,15 @@
   peer); `ssh_alias` stays `wharf-runs/ssh` only, so clock never dials a node. A node folder or key that does not read
   (a link whose target moved included), an `orca-pair` line that is no bare host, or two folders giving one peer is
   an error naming it (node pairs, 2026-10-28).
+- `pickup seed --beside`: a branch gone from origin that this machine saw there (a tracking ref still here, or
+  a local branch whose upstream reads `[gone]`: landed and deleted, most likely) refuses rather than seeding
+  off the stale tip (S3's second landing review).
+
+- `pickup seed --beside`: a fetch of the branch that fails (bar the branch missing from origin) refuses,
+  "could not fetch … run it again", rather than seeding off a stale tracking ref (S3's landing review).
+- `pickup seed --beside <branch>` (routed comments S3): the seed bases on that branch's tip — fetched, the
+  local one when ahead, refused when the two diverged — names it in a `Seeded-From:` trailer and writes the
+  repo's carries pointer; such a seed is still listed as one.
 - `check`: a run that holds its slot but has not yet dropped its queue ticket no longer also counts as
   ahead, which made a third check wait with three slots for three on a slow runner Mac; the slot's pid
   is written right after its start (ci-fleet follow-ups, 2026-10-27).

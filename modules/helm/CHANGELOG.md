@@ -12,6 +12,8 @@
   queued — so the cap's words alone are S2 again even with the queue unreadable.
 - The suite's two deletes of the run-records folder go through `rm_own` (the core's entry: a block of
   this suite, run in a shell with the real HOME, emptied a Mac's run records on 2026-10-25).
+- The board drops a lookout card that says "that host's lookout acts" as it did "its own lookout acts"
+  (keel's host rule wording, routed comments S3).
 - The board's Intake column (lighthouse-ops S4): a card per open issue of the desk's intake, from lighthouse's
   `ops intake --json` where this host has an `intake-state.json`, grouped by kind (deadman, stall, contact,
   bug, other); titled by its kind and number, never the issue's own title, and linked to GitHub. Last of the

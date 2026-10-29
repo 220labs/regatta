@@ -45,7 +45,7 @@
                                                   # the taps, read from this session's transcript, into the doc
     keel lookout [--dry-run] [--if-due]           # one pass over the docs with open items: a Save, a GitHub answer, new
                                                   #   comments → the doc's session hailed once (15 min; crosstalk S3); none
-                                                  #   live → a brief and one run on the branch (`pickup brief`, `dispatch`; S5)
+                                                  #   live → a seed off the branch's tip and one run (`pickup seed --beside`, `dispatch`; S5, routed S3)
     keel lookout --arm | --disarm | --status [--json]  # whether a pass acts (off until the owner arms it); the last pass, the cards, the runs
                                                   #   armed, every Save is taken in and may start a run (Saved-By records who):
                                                   #   a course page shared with people lets each of them start runs — its
@@ -7051,9 +7051,9 @@ def talk_moves(rel, ids):
 def sheep_threads(memo, ids=()):
     """`sheep threads <doc> [<id>…]`: the page's open threads that hold the owner's words, each as
     `sheep wait` prints it — what a hailed session or a lookout run reads before `sheep reply`.
-    `ids`: only those threads. Reads only; takes nothing in."""
+    `ids`: only those threads. Reads only; takes nothing in, and writes no pin (item 9)."""
     p, top, branch, rel, slug, key, _ = sheep_where(memo)
-    pin = doc_page(key, p.read_text())
+    pin = doc_page(key, p.read_text(), write=False)
     if not pin or not pin.get("space"):
         raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it — %s sheep %s" % (rel, branch, keel_cmd(), p))
     k = sheep_key()
@@ -7300,7 +7300,7 @@ ROUTED_MARKS = {
     "would-start": ("would start: %(act)s (%(cls)s) — reply go to start, no to close", False),
     "closed": ("closed by %(who)s, %(date)s", True),
     "settled": ("settled by %(who)s, %(date)s: %(why)s", True),
-    "claiming": ("claiming for %(host)s, %(time)s", False),
+    "claiming": ("claiming for %(host)s, %(time)s%(run)s", False),   # run: ", run <session>" or "" (S3's lease)
     "not-started": ("not started — %(why)s", False),
     "stopped": ("stopped, %(date)s", False),
 }
@@ -7415,7 +7415,7 @@ def with_routed(text, at, space, branch):
 
 
 def without_routed(text):
-    """The doc with its `Routed:` line taken out (a refused start, lookout_release), and the blank
+    """The doc with its `Routed:` line taken out (a refused start: `pickup brief --unroute`), and the blank
     line with_routed put above it under a title."""
     r = routed_line(text)
     if not r:
@@ -7435,14 +7435,15 @@ PAGE_OF_SPACE = ("url", "sha", "fmt", "ss", "aliases", "dropped_with", "events_a
                  "opens_seen", "reads_seen", "receipt_shown")
 
 
-def line_first(key, pin, space):
+def line_first(key, pin, space, write=True):
     """`key`'s pin pointed at the `Routed:` line's page `space` when it holds another (S2's finding 1:
     a seeded run's first checkpoint mirrored the doc to a second, empty page, which every reader then
     read instead of the line's). The line is the routing's record, so it wins, as in routing_page; the
     page given up is kept in `gave_up_space` and said once. The pin keeps no address or commit, so this
     host's next deploy goes to the line's page (sheep: `--space`), and one page carries the doc. A space
     this pin lost (`old_space`: the server no longer had it) is never taken back, or every deploy
-    would make a page again."""
+    would make a page again. `write` false (a read: `sheep threads`, a dry lookout pass): the pin as it
+    would be, nothing written or said (the S2 landing review's item 9)."""
     pin = pin or {}
     if not space or pin.get("space") in (None, space) or pin.get("old_space") == space:
         return pin
@@ -7452,12 +7453,14 @@ def line_first(key, pin, space):
         p = {k: v for k, v in p.items() if k not in PAGE_OF_SPACE}
         p.update(space=space, gave_up_space=gone)
         return p
-    print("memo: %s's page is its Routed: line's (%s); this Mac's own page %s is left, unread"
-          % (key, space, gone), file=sys.stderr)
+    if not write:
+        return to_line(dict(pin))
+    print("memo: %s's page is its Routed: line's (%s); this Mac's own page %s is left; an owner's thread there "
+          "still raises a card (gave_up_space)" % (key, space, gone), file=sys.stderr)
     return update_pin(key, to_line)
 
 
-def doc_page(key, text):
+def doc_page(key, text, write=True):
     """The design's page_of(doc) (`page_of` here is the mirror's address map): the doc's `Routed:`
     line first — this host's pin for `key` pointed at it (line_first) — then the pin alone, else the
     line as a pin holding its space alone. A pin with no `url` comes back `from_line`: nothing here
@@ -7466,7 +7469,7 @@ def doc_page(key, text):
     pin = pins().get(key) or {}
     r = routed_line(text)
     if r:
-        pin = line_first(key, pin, r["space"])
+        pin = line_first(key, pin, r["space"], write=write)
     if pin.get("space"):
         return pin if pin.get("url") else dict(pin, from_line=True)
     if r:
@@ -7530,6 +7533,8 @@ def mark_kind(c):
 def mark_body(kind, **kw):
     if kind not in ROUTED_MARKS:
         raise Stop("no mark %r — one of %s" % (kind, ", ".join(ROUTED_MARKS)))
+    if kind == "claiming":   # a claim naming a run beats a bare one (claim_winner)
+        kw = dict(kw, run=", run %s" % kw["run"] if kw.get("run") else "")
     try:
         return "%s %s" % (ACK, ROUTED_MARKS[kind][0] % kw)
     except KeyError as e:
@@ -7611,7 +7616,8 @@ def judge_thread(t, repo):
     repo on the guarded list (refused without the owner's quote, which this never passes), or any
     failure leaves the thread held (`act-unclear`, by `held`) — the gate holds what it cannot judge."""
     cs = [t] + t["replies"]
-    marks = [c for c in t["replies"] if mark_kind(c)]
+    # a claim is a lease, not a reflection: the owner's words before it are still the ones judged
+    marks = [c for c in t["replies"] if mark_kind(c) and mark_kind(c) != "claiming"]
     last_mark = max(marks, key=lambda c: epoch(c["at"]) or 0) if marks else None
     said = [c for c in cs if c.get("owner") and own_words(c)
             and (last_mark is None or (epoch(c["at"]) or 0) > (epoch(last_mark["at"]) or 0))]
@@ -7660,14 +7666,28 @@ def routed_judge(threads, key, space, repo, routing=(), log=True):
             continue
         newest = max(epoch(c["at"]) or 0 for c in said)
         marks = sorted((c for c in t["replies"] if mark_kind(c)), key=lambda c: epoch(c["at"]) or 0)
-        if marks and (epoch(marks[-1]["at"]) or 0) >= newest:
-            kind = mark_kind(marks[-1])
+        last = marks[-1] if marks and (epoch(marks[-1]["at"]) or 0) >= newest else None
+        if last is not None and mark_kind(last) == "claiming":
+            # a claim holds only while its lease lives (claim_winner) and no session has replied since: a
+            # claim its run answered, or one whose lease died, leaves the owner's words judged as if
+            # unmarked (the S3 landing review's item 2: a claim counted as owed forever)
+            answered = any(c.get("own") and not c["text"].strip().startswith(ACK) and (epoch(c["at"]) or 0) >= (epoch(last["at"]) or 0)
+                           for c in t["replies"])
+            if not answered and claim_winner(t):
+                owed.append((t, "an act being claimed"))
+                continue
+            # the mark before the dead claim, when it too is newer than the owner's words, still says
+            # what the thread owes (an offer, a start that did not happen): never dropped with the claim
+            # (the S3 second landing review's item 5)
+            rest = [c for c in marks if mark_kind(c) != "claiming"]
+            last = rest[-1] if rest and (epoch(rest[-1]["at"]) or 0) >= newest else None
+        if last is not None:
+            kind = mark_kind(last)
             if kind == "would-start":
                 owed.append((t, "offered, neither go nor no"))
-            elif kind in ("not-started", "claiming", "stopped"):
+            elif kind in ("not-started", "stopped"):
                 # stopped counts as nothing, the thread stays open (the cutover's marks table): owed, never cleared
-                owed.append((t, {"not-started": "an act not started", "claiming": "an act being claimed",
-                                 "stopped": "an act stopped"}[kind]))
+                owed.append((t, {"not-started": "an act not started", "stopped": "an act stopped"}[kind]))
             continue
         if any(c.get("own") and not c["text"].strip().startswith(ACK) and (epoch(c["at"]) or 0) >= newest
                for c in t["replies"]):
@@ -7686,14 +7706,18 @@ def routed_judge(threads, key, space, repo, routing=(), log=True):
     return owed, judged
 
 
-def routed_check(key, text, space, pin=None, top=None, routing=(), log=True):
+def routed_check(key, text, space, pin=None, top=None, routing=(), log=True, new_work=False):
     """The gate on one doc: (refusal or None, notes). Exit 3's text names the threads and the Saves,
     and how each is cleared; it stays out of PICKUP_PASSING_RE, so the lookout cards it once. A page
     that does not read refuses with "run it again" (a pass through); a host with no key reads nothing
-    and judges nothing, and says so (the design's first case)."""
+    and judges nothing, and says so (the design's first case) — bar `new_work` (a seed's gate): there it
+    refuses, as a host that cannot see the page cannot know what the start would miss (S3)."""
     name, branch, rel = key_parts(key)
     k = sheep_key()
     if not k:
+        if new_work:   # a host that cannot see the page starts nothing on it (S2 landing review item 8, S3)
+            return ("no SPACESHEEP_KEY here — %s's page cannot be read, so new work on it is not started here: "
+                    "start it where a key is" % rel), []
         return None, ["no SPACESHEEP_KEY here — %s's page not read, nothing judged" % rel]
     try:
         mcp = Mcp(k)
@@ -7702,7 +7726,13 @@ def routed_check(key, text, space, pin=None, top=None, routing=(), log=True):
     except Stop as e:
         return "could not read %s's page (%s) — run it again" % (rel, str(e)[:120]), []
     owed, judged = routed_judge(threads, key, space, name, routing=routing, log=log)
-    lacking = [sv for sv in saves if save_owed(sv, text, top, rel)]
+    # `save:<space8>:<seq>` in routing: this page's Saves through that seq go with this start (the lookout's
+    # seed of a Save, S3) — scoped to its own page, so another doc the brief names keeps its own Saves owed
+    # (the S3 landing review: a bare `save:<seq>` waived every doc's)
+    pre = "save:%s:" % (space or "")[:8]
+    through = max([int(str(x)[len(pre):]) for x in routing
+                   if str(x).startswith(pre) and str(x)[len(pre):].isdigit()] or [0])
+    lacking = [sv for sv in saves if save_owed(sv, text, top, rel) and int(sv.get("seq") or 0) > through]
     notes = ["%s: %d thread%s read, %d judged here" % (rel, len(threads), "" if len(threads) == 1 else "s", judged)]
     if not (owed or lacking):
         return None, notes
@@ -7742,7 +7772,7 @@ def routed_last_step(rel):
 
 def routed_line_cmd(top, ref, branch, brief, check=False, drop=False, routing=(), dry=False):
     """`keel routed line`, pickup's call (seed --file, brief): for each doc the brief names that has a
-    page, the doc's new text — the `Routed:` line written (or, `drop`, taken out: lookout_release) —
+    page, the doc's new text — the `Routed:` line written (or, `drop`, taken out: `pickup brief --unroute`) —
     for the caller's own commit, before dispatch (finding D). `check` runs the gate on each first (seed
     is new work; brief is not gated, cutover's table), less the threads `routing` names — the ones this
     start routes (finding 7: a seed started from a comment refused on its own thread). `dry` (pickup's
@@ -7763,7 +7793,7 @@ def routed_line_cmd(top, ref, branch, brief, check=False, drop=False, routing=()
         else:
             if check:
                 why, more = routed_check(key, text, space, pin=pins().get(pkey) if pkey else None, top=top,
-                                         routing=routing, log=not dry)
+                                         routing=routing, log=not dry, new_work=True)
                 notes += more
                 if why:
                     refused.append(why)
@@ -7791,10 +7821,10 @@ def post_mark(key, pin, tid, body):
     return new
 
 
-def page_threads(memo):
-    """(p, key, pin, threads) of a doc in a checkout, its page by doc_page."""
+def page_threads(memo, write=True):
+    """(p, key, pin, threads) of a doc in a checkout, its page by doc_page (`write` false: a read)."""
     p, top, branch, rel, slug, key, _ = sheep_where(memo)
-    pin = doc_page(key, p.read_text())
+    pin = doc_page(key, p.read_text(), write=write)
     if not pin or not pin.get("space"):
         raise Stop("no page for %s on %s on this Mac, and no `Routed:` line in it" % (rel, branch))
     k = sheep_key()
@@ -9836,13 +9866,16 @@ def embark_print(rows, hours=EMBARK_HOURS):
 # ----------------------------------------------------------------------------- lookout (crosstalk S3)
 
 # docs/crosstalk-2026-10-20.md, "Lookout": one pass every LOOKOUT_EVERY on each Mac, from helm's ask
-# poll (its S6). Events: a Save drained from a page whose doc has open items and still lacks it (the
-# laptop's pins only — only the laptop holds a Save), an item the last pass did not see answered and
-# answered on origin since — by a commit no automation made, nor one taking in a Save (S12) — and
-# new comments on a page with open items. Each
-# finds the doc's session and hails it with a pointer, never the answer's words (K13); a working
-# session waits a pass; with none live, answers on the branch and an open step waiting on them, the
-# pass puts a brief on the branch and dispatches one run (S5, lookout_gone), else raises a card.
+# poll (its S6). Events: a Save drained from a page whose doc has open items and still lacks it (on
+# every host since routed comments S3: the room is read from 0 anywhere, the host rule says who acts),
+# an item the last pass did not see answered and answered on origin since — by a commit no automation
+# made, nor one taking in a Save (S12) — and new comments on a page with open items. The host rule
+# (routed comments S3, run_where; no host is special): a host acts on a branch whose run is here — a
+# live session harness names here, or the queue's running_on —, leaves one whose run is elsewhere to
+# that host, and for a branch with no run in sight claims, waits one full pass and seeds a new branch
+# off its tip, never writing it. A run here is hailed with a pointer, never the answer's words (K13);
+# a working session waits a pass; with none in sight, answers on the branch and an open step waiting
+# on them, `pickup seed --beside` and `dispatch` start one run (S5, lookout_gone), else a card.
 # No model call. Ships disarmed: arming per Mac is the owner's act (`--arm`), as the stand sweep's.
 LOOKOUT_EVERY = 15 * 60
 LOOKOUT_LOG = "lookout.jsonl"       # one row per act, keyed (doc, event id): the memory that hails once
@@ -9853,15 +9886,22 @@ LOOKOUT_DAYS = 14   # a doc acted on stays watched for its page's redeploy this 
 LIVE_STATES = ("submitted", "working", "input-required", "idle", "auth-required")   # harness's, bar the ended
 SETTLED = ("hailed", "left alone", "would dispatch", "card", "skipped", "own",     # an event done with
            "dispatching", "dispatched")   # once per answer: a run that failed to start is never retried
+# The host rule's rule 3 (routed comments S3, judge section 1): a branch no run in sight holds is claimed
+# first — a `claiming` mark on each of its threads, read again after CLAIM_WAIT — and seeded only after
+# one full pass (CLAIM_PASS) in which no run showed and no claim naming a run beat ours. Not settled.
+CLAIMED = "claimed"
+CLAIM_WAIT = 10
+CLAIM_PASS = LOOKOUT_EVERY - 60   # "one full pass": the next one, with a minute's slack for its start
+CLAIM_BARE_TTL = 15 * 60          # a bare claim dies after this; one naming a run after OWNER_TTL
 # A gate that clears by itself — a tight week, no login free, a missing tool, the peer not answering,
 # a pickup refusal that passes — raises a `gated` card, which is not settled: the event is tried
 # again each pass and gets its run once the gate clears (S11 item 2). A permanent gate stays a `card`.
 GATED = "gated"
 LOOKOUT_STARTS = "lookout-starts"   # a detached start's request, then its .out.json (S11 item 3)
-START_LIMIT = 15 * 60   # pickup brief's 180 s, dispatch's 300 s and the release's 180 s, with room: older and unanswered, it died
+START_LIMIT = 15 * 60   # pickup seed's 180 s and dispatch's 300 s, with room: older and unanswered, it died
 LOOKOUT_CARD_DAYS = 7   # a card older drops from --status and helm's board (S11 item 18)
 LOOKOUT_KEEP_DAYS = 30  # lookout.jsonl keeps this long: past LOOKOUT_DAYS, which redeploy reads
-# a pickup brief refusal that clears by itself: a fetch, a git operation, a session's lock or its uncommitted work
+# a pickup seed refusal that clears by itself: a fetch, a git operation, a session's lock or its uncommitted work
 PICKUP_PASSING_RE = re.compile(r"run it again|try again|could not fetch|let it finish first|must end, or idle|commits them first", re.I)
 TAKEN_BY = "Taken-By: keel sheep pull --plumb"
 SAVED_BY, SAVED_BY_NONE = "Saved-By:", "(no name)"   # a plumbed commit's trailer per Save's viewer
@@ -9878,7 +9918,7 @@ HAIL_TEXT = {"save": "a Save from the doc's page is on its branch: keel pull, th
 def lookout_tool(name):
     """A peer the lookout runs: LOOKOUT_<NAME> when set (the tests' stub; empty = none), else the
     core's tool() — hail is wharf-runs' (crosstalk S2), harness wharf-runs' too."""
-    v = os.environ.get("LOOKOUT_" + name.upper())
+    v = os.environ.get("LOOKOUT_" + name.upper().replace("-", "_"))
     if v is not None:
         return v or None
     try:
@@ -9944,6 +9984,21 @@ def origin_view(top, branch, fetch_first=True):
         return None
     ref = "refs/remotes/origin/" + branch
     return (top, ref) if git(top, "rev-parse", "-q", "--verify", ref, check=False).returncode == 0 else None
+
+
+def newer_tip(top, branch):
+    """(git dir, ref) of `branch`'s newer tip on this Mac: the local branch when origin's (origin_view, not
+    fetched here) is absent or an ancestor of it — a Save taken in here and not pushed yet — else origin's,
+    also when the two cannot be compared here (the poll mirror's tip not in this checkout)."""
+    local = "refs/heads/" + branch
+    view = origin_view(top, branch, fetch_first=False)
+    if not view:
+        return top, local
+    far = git(view[0], "rev-parse", "-q", "--verify", view[1], check=False).stdout.strip()
+    if far and git(top, "rev-parse", "-q", "--verify", local, check=False).returncode == 0 \
+            and git(top, "merge-base", "--is-ancestor", far, local, check=False).returncode == 0:
+        return top, local
+    return view
 
 
 def runs_dir():
@@ -10396,12 +10451,6 @@ def lookout_card(ev, why, action="card"):
         ev["doc"], ", ".join(ev["items"]) or ev["kind"], why, " (tried again each pass)" if action == GATED else "")}
 
 
-def branch_host(branch):
-    """The host a `claude/<host>/<date>-<topic>` branch names, or None (an older `claude/<date>-…` name)."""
-    m = re.match(r"^claude/([^/]+)/", branch or "")
-    return m.group(1) if m and not re.match(r"^%s$" % DATE_RE, m.group(1)) else None
-
-
 def waiting_steps(text, items, repo=None, sets=None, slug=None, given=()):
     """The open steps a run would build once `items` are answered, and the doc whose Action plan holds
     them: (step ids, "entry" or `slug`). A step is a run's when it is a session's (or a `project`
@@ -10499,28 +10548,301 @@ def held_branch(top, branch):
     return (held_by(wt, h, at=True), "session" in h or "no regatta core" in h.get("unknown", "")) if h else (None, False)
 
 
-def peer_live(branch):
-    """From the laptop a run goes to the peer by dispatch's Where, and held_branch reads this Mac's
-    worktrees only (S11 item 1): `harness list --host all` reads every host's live sessions, the
-    peer's over ssh (laptop → peer only; elsewhere `all` is this host). (why, passing): a live
-    session on `branch` anywhere (not passing: its session takes the answers), or a host that did
-    not answer (passing: tried again next pass); (None, False) when no host holds it."""
-    if "list" not in PEER_MEMO:   # one `harness list` a pass, not an ssh round trip per event (S11c item 28)
+def unstarted_seed(ref):
+    """Whether the branch at `ref` (git dir, ref) is a seed no session has committed on: walking back from
+    its tip past main, a `Seed:` commit with its `Seeded-By:` trailer (pickup seed's, branches.SEEDED_BY_RE)
+    comes before any commit carrying a `Claude-Session:` trailer. Rule 3 never seeds off one: its own run
+    has not started (a dispatch that failed, or one on its way), and a seed of it would be seeded again
+    every two passes, its page's events raised under each new key (the S3 second landing review's item 4)."""
+    gd, r = ref
+    nots = [x for x in ("refs/heads/main", "refs/remotes/origin/main")
+            if git(gd, "rev-parse", "-q", "--verify", x, check=False).returncode == 0]
+    out = git(gd, "log", "-n", "40", "--format=%s%x1f%B%x1e", r, *(["--not"] + nots if nots else []), check=False).stdout
+    for chunk in out.split("\x1e"):
+        subject, _, body = chunk.strip("\n").partition("\x1f")
+        if SESSION_TRAILER_RE.search(body):
+            return False
+        if subject.startswith("Seed: ") and re.search(r"^Seeded-By: \S", body, re.M):
+            return True
+    return False
+
+
+PEER_MEMO = {}   # one pass's `harness list --host all` answer (run_where), cleared with SESSION_MEMO
+QUEUE_MEMO = {}  # one pass's dispatch-queue answer per (repo, branch) (queue_on), cleared with it
+
+
+QUEUED = "(queued)"   # queue_on's host for an entry the queue holds but has placed nowhere yet
+
+
+def queue_on(top, branch):
+    """(host, why) of the fleet queue's entry for `branch` (dispatch-queue S1: `running_on`, its `has`
+    over every state, `queued` included — a run queued and not yet placed is a run coming, never one to
+    seed beside: the S3 landing review's item 4): (host, None) when one is placed, (QUEUED, None) when
+    one waits unplaced, (None, None) when none is or no dispatch-queue is here (no queue: dispatch runs
+    as before it), (None, why) when the queue could not be read — what it holds is then unknown (its
+    readers' rule: 4 is "has one")."""
+    k = (str(top), branch)
+    if k not in QUEUE_MEMO:
+        QUEUE_MEMO[k] = _queue_on(top, branch)
+    return QUEUE_MEMO[k]
+
+
+def _queue_on(top, branch):
+    q = lookout_tool("dispatch-queue")
+    if not q:
+        return None, None
+    try:
+        r = subprocess.run([q, "has", "--repo", str(top), "--branch", branch], capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "the queue could not be read (dispatch-queue has: %s)" % type(e).__name__
+    if r.returncode == 0:
+        return None, None
+    if r.returncode == 3:   # `<store>:<key> <state>[ on <host>]`
+        m = re.search(r" on (\S+)\s*$", (r.stdout.strip().splitlines() or [""])[-1])
+        return (m.group(1).lower() if m else QUEUED), None
+    return None, "the queue could not be read (dispatch-queue has exit %d: %s)" % (r.returncode, last_line(r))
+
+
+def moved_away(top, branch):
+    """Where `branch`'s worktree here says its session went (pickup move's marker, common.MOVED_FILE,
+    in the worktree's claude/ state folder), or None: the branch is then another host's (rule 2)."""
+    wt = next((w for w, b in worktrees(top) if b == branch), None)
+    gd = git(wt, "rev-parse", "--absolute-git-dir", check=False).stdout.strip() if wt else ""
+    try:
+        f = Path(gd) / "claude" / _common().MOVED_FILE if gd else None
+    except ImportError:
+        return None
+    if not (f and f.exists()):
+        return None
+    try:
+        return str(json.loads(f.read_text()).get("to") or "") or "another host"
+    except (OSError, ValueError, AttributeError):
+        return "another host"
+
+
+def run_where(top, branch, here, runs=None):
+    """The host rule (routed comments S3, judge section 1), the same on every host, no host named and the
+    branch's name proving nothing (finding A): (where, why, record) —
+      here       a live session on the branch that harness names on this host (record: harness's), or
+                 the queue's running_on naming this host; both, for good: the queue never names a typed
+                 or moved session;
+      elsewhere  the queue's running_on naming another host, a live session harness reads on another
+                 host (from a host that reads one: `--host all`, no reverse road assumed), or the moved
+                 marker (`pickup move`);
+      queued     the queue holds a run for it not placed yet: dispatch places it, tried again next pass;
+      unknown    the queue or a host could not be read: tried again next pass;
+      unseen     a session's push within OWNER_TTL that no host this one reads accounts for (pushed_unseen):
+                 a run elsewhere, or one that ended unrecorded here — never `elsewhere`, so the event is
+                 rule 3's once the push is OWNER_TTL old (the S3 second landing review's item 1);
+      none       no run in sight (rule 3: a claim, one pass, a seed off the tip)."""
+    if "list" not in PEER_MEMO:
         PEER_MEMO["list"] = _peer_list()
     r, recs, why = PEER_MEMO["list"]
+    live = [x for x in recs if isinstance(x, dict) and x.get("branch") == branch and x.get("state") in LIVE_STATES] \
+        if isinstance(recs, list) else []
+    mine = [x for x in live if str(x.get("machine") or "").lower() == here.lower()]
+    if mine:
+        return "here", "session %s is %s here" % (str(mine[0].get("session_id") or "?")[:8], mine[0]["state"]), mine[0]
+    on, qwhy = queue_on(top, branch) if top else (None, None)
+    if on == QUEUED:
+        return "queued", "the queue holds a run for it, not placed yet", None
+    if on and on == here.lower():
+        return "here", "the queue runs it here", None
+    if on:
+        return "elsewhere", "the queue runs it on %s" % on, None
+    if live:
+        x = live[0]
+        return "elsewhere", "session %s is %s on %s" % (str(x.get("session_id") or "?")[:8], x["state"], x.get("machine") or "?"), None
+    to = moved_away(top, branch) if top else None
+    if to:
+        return "elsewhere", "its session moved to %s (pickup move)" % to, None
+    if qwhy:
+        return "unknown", qwhy, None
     if why:
-        return why, True
-    for x in recs if isinstance(recs, list) else []:
-        if isinstance(x, dict) and x.get("branch") == branch and x.get("state") in LIVE_STATES:
-            return "session %s is %s on %s" % (str(x.get("session_id") or "?")[:8], x["state"], x.get("machine") or "?"), False
-    if r.returncode == 3:   # a host asked did not answer: what it holds is unknown
-        return "a host did not answer harness list (%s)" % last_line(r), True
-    if r.returncode or not isinstance(recs, list):
-        return "harness list exit %d (%s)" % (r.returncode, last_line(r)), True
-    return None, False
+        return "unknown", why, None
+    if r is not None and r.returncode == 3:
+        return "unknown", "a host did not answer harness list (%s)" % last_line(r), None
+    if r is not None and (r.returncode or not isinstance(recs, list)):
+        return "unknown", "harness list exit %d (%s)" % (r.returncode, last_line(r)), None
+    seen = pushed_unseen(top, branch, runs, recs if isinstance(recs, list) else []) if top else None
+    if seen:
+        return "unseen", "session %s pushed %s %dm ago, and no host this one reads names it" % (
+            seen[0], branch, seen[1] // 60), None
+    return "none", None, None
 
 
-PEER_MEMO = {}   # one pass's `harness list --host all` answer (peer_live), cleared with SESSION_MEMO
+CHECKPOINT_SID_RE = re.compile(r"^\w{8}$")   # the checkpoint hook's `session[:8]`
+UNSEEN_SLACK = 300   # a run's commit against its record's start and end: its last push, two clocks apart
+
+
+def run_spans(t, branch, runs, recs):
+    """Whether a run some record names on `branch` was alive at commit time `t`: harness list's records
+    over the hosts this one reads (ended runs included: started_at, updated_at) or this host's own run
+    records (started, ended, else the log's last write). A URL trailer names no session harness resolves,
+    so the run a commit falls inside accounts for it."""
+    for x in recs or []:
+        if isinstance(x, dict) and x.get("branch") == branch:
+            try:
+                a = float(x.get("started_at") or 0)
+                b = now_ts() if x.get("state") in LIVE_STATES else float(x.get("updated_at") or 0)
+            except (TypeError, ValueError):
+                continue
+            if a and b and a - UNSEEN_SLACK <= t <= b + UNSEEN_SLACK:
+                return True
+    for x in runs or []:
+        if not (isinstance(x, dict) and x.get("branch") == branch):
+            continue
+        try:
+            a = float(x.get("started") or 0)
+            b = float(x.get("ended") or 0) or (Path(x["log"]).stat().st_mtime if x.get("log") else 0)
+        except (TypeError, ValueError, OSError):
+            continue
+        if a and b and a - UNSEEN_SLACK <= t <= b + UNSEEN_SLACK:
+            return True
+    return False
+
+
+def pushed_unseen(top, branch, runs=None, recs=()):
+    """(session ref, age in seconds) when the newest commit on `branch` that carries a session's
+    `Claude-Session:` trailer — the checkpoint hook's 8 characters or a session URL's `session_…`, both
+    forms (the S3 second landing review's item 3: over three days origin held 45 short trailers against
+    167 URL ones, local sessions on the Macs, not web ones) — is on origin, not on main, pushed within
+    OWNER_TTL, and accounted for by no host this one reads; else None. Accounted for: a short id harness
+    status (over every host this one reads) or a run record here names, or a commit a run on the branch
+    spans (run_spans: what a URL trailer is judged by). The host-neutral sign of a run this host cannot
+    see (the S3 landing review's item 1: harness has no road from the build host to the laptop, so a live
+    laptop session read as no run, and a seed started beside it). A GitHub answer's or a Save's commit
+    carries no trailer, so the owner's own push is never the sign: the newest commit with one decides.
+    run_where reads it as `unseen`, a quiet gate (lookout_waits) that never marks the event another host's:
+    a session that ended unrecorded holds its branch until its push is OWNER_TTL old, then rule 3 acts
+    (the second landing review's item 1: read as elsewhere, the event was settled `skipped`, the owner's
+    answer lost). `runs`: the pass's run records (read here when None)."""
+    try:
+        ttl = _common().OWNER_TTL
+    except ImportError:
+        ttl = 7200
+    view = origin_view(top, branch, fetch_first=False)
+    if not view:
+        return None
+    gd, ref = view
+    nots = [x for x in ("refs/heads/main", "refs/remotes/origin/main")
+            if git(gd, "rev-parse", "-q", "--verify", x, check=False).returncode == 0]
+    out = git(gd, "log", "-n", "40", "--format=%ct%x1f%B%x1e", ref, *(["--not"] + nots if nots else []), check=False).stdout
+    for chunk in out.split("\x1e"):
+        ct, _, body = chunk.strip("\n").partition("\x1f")
+        try:
+            t = int(ct)
+        except ValueError:
+            continue
+        age = now_ts() - t
+        if age >= ttl:
+            return None   # newest first: the rest is older still
+        sids = [v for v in session_marks(body) if CHECKPOINT_SID_RE.match(v) or SESSION_URL_RE.fullmatch(v)]
+        if not sids:
+            continue
+        runs = run_records() if runs is None else runs
+        if run_spans(t, branch, runs, recs) or any(
+                CHECKPOINT_SID_RE.match(s) and (session_state(s) is not None or dispatched(s, runs)) for s in sids):
+            return None   # a host this one reads knows it: its record decides (resolve_session)
+        return sids[-1], age
+    return None
+
+
+CLAIM_RE = re.compile(r"^claiming for (?P<host>[^,\s]+), (?P<time>[^,\s]+)(?:, run (?P<run>\S+))?\s*$")
+
+
+def claim_winner(thread, now=None, ttl=None, keep=None):
+    """The claim that holds `thread` — the lease (judge section 1; finding G): this tool's own `claiming`
+    marks, alive (a bare one CLAIM_BARE_TTL, one naming a run OWNER_TTL); one naming a run beats a bare
+    one whatever its time; between two of a kind the earliest created_at, then the lower comment id.
+    {host, run, id, at}, or None when no claim lives. A mark typed by anyone else counts for nothing.
+    `keep`: a host whose own claims count whatever their age — the claimer reading its claim back a
+    pass later, when a bare claim of its own may have aged out while nobody else's came in. Only then:
+    another host's live claim beats every dead one of ours, or both hosts would win (the S3 second
+    landing review's item 7)."""
+    now = now_ts() if now is None else now
+    if ttl is None:
+        try:
+            ttl = _common().OWNER_TTL
+        except ImportError:
+            ttl = 7200
+    claims = []
+    for c in thread.get("replies") or []:
+        if mark_kind(c) != "claiming":
+            continue
+        m = CLAIM_RE.match(c["text"].strip()[len(ACK):].strip())
+        at = epoch(c.get("at")) or (epoch(m.group("time")) if m else None)
+        if not m or at is None:
+            continue
+        claims.append({"host": m.group("host"), "run": m.group("run"), "id": c["id"], "at": at})
+    num = lambda i: (0, int(i), "") if str(i).isdigit() else (1, 0, str(i))   # noqa: E731
+    lease = lambda x: ttl if x["run"] else CLAIM_BARE_TTL   # noqa: E731
+    holder = None
+    # a lease chain, oldest first: a claim takes over only from a holder whose lease had died when it was
+    # posted, or by naming a run where the holder names none. Ranking only the claims alive now made both
+    # hosts lose a two-host race on the second pass: the winner's bare claim had aged out by then and the
+    # loser's, posted in between, took over (the S3 landing review of the second fix round, item 1).
+    for x in sorted(claims, key=lambda x: (x["at"], num(x["id"]))):
+        if holder is None or x["at"] - holder["at"] >= lease(holder) or (x["run"] and not holder["run"]):
+            holder = x
+    if holder and (now - holder["at"] < lease(holder) or (keep and holder["host"].lower() == keep.lower())):
+        return holder
+    return None
+
+
+def claim_post(key, pin, tids, here, run=None):
+    """Every act claims first (judge section 1): one `claiming` mark on each thread `tids` names. The page
+    is read again after CLAIM_WAIT (claim_wait, then claim_holds): the pass posts every event's claim, waits
+    once, and reads each back (lookout_pass; the S3 second landing review's item 6: one wait per event, in
+    series, was ten seconds each). Never a resolve, never a delete: a lost claim dies by its lease."""
+    body = mark_body("claiming", host=here, run=run,
+                     time=dt.datetime.fromtimestamp(now_ts(), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    for tid in tids:
+        post_mark(key, pin, tid, body)
+
+
+def claim_wait():
+    import time
+    time.sleep(float(os.environ.get("LOOKOUT_CLAIM_WAIT", CLAIM_WAIT)))
+
+
+def claim_holds(key, pin, tids, here):
+    """(won, why), read now: the page again, each thread's lease. Won while this host's claim holds every
+    thread; else why not — a thread taken in since (its session had it), or another host's claim winning
+    (`claimed by …`)."""
+    k = sheep_key()
+    if not k:
+        return False, "no SPACESHEEP_KEY here to read the claim back"
+    sent = (pins().get(key) or pin or {}).get("sent")
+    byid = {t["id"]: t for t in comment_threads(sheep_comments(Mcp(k), k, pin["space"]), sent=sent)}
+    for tid in tids:
+        t = byid.get(tid)
+        if t is None:
+            return False, "thread [%s] is gone from the page" % tid
+        if any(is_mark(c) for c in t["replies"]):
+            return False, "thread [%s] was taken by its session" % tid
+        w = claim_winner(t, keep=here)
+        if not w or w["host"].lower() != here.lower():
+            return False, "thread [%s] claimed by %s%s" % (tid, w["host"] if w else "nobody", ", run %s" % w["run"] if w and w["run"] else "")
+    return True, None
+
+
+def event_pin(ev):
+    """The pin a claim posts through: this host's for the doc, its page the event's own (a routed page read
+    from its line has no pin here; post_mark keeps the claim's id in the `sent` cache all the same)."""
+    pin = dict(pins().get(ev["doc"]) or {})
+    if ev.get("space"):
+        pin["space"] = ev["space"]
+    return pin
+
+
+def seed_topic(branch, ev):
+    """The seed's topic for an event (rule 3): the branch's topic and a hash of the event, so two hosts
+    acting on one event name one topic, and the second `pickup seed` refuses it as already open."""
+    import hashlib
+    h = hashlib.sha1(("%s\0%s" % (ev["doc"], ev["id"])).encode()).hexdigest()[:6]
+    t = re.sub(r"[^a-z0-9-]+", "-", branch_topic(branch).lower())[:30].strip("-") or "run"
+    return "%s-r%s" % (t, h)
 
 
 def _peer_list():
@@ -10557,8 +10879,8 @@ def lookout_week(top):
 
 
 def brief_day():
-    """Today as `pickup brief` dates its file (datetime.date.today()): the brief's title and the
-    same-day guard read the one clock pickup writes by, never now_ts() (S11c item 15). KEEL_BRIEF_DAY
+    """Today as `pickup brief` dates its file (datetime.date.today()): the brief's title
+    reads the one clock pickup writes by, never now_ts() (S11c item 15). KEEL_BRIEF_DAY
     (YYYY-MM-DD) pins it for the tests: a suite that dated its fixtures by `date` before midnight
     and ran this after it failed four cases (regatta#217's CI, 2026-10-27)."""
     return os.environ.get("KEEL_BRIEF_DAY") or dt.date.today().isoformat()
@@ -10567,6 +10889,14 @@ def brief_day():
 def branch_topic(branch):
     """A `claude/<host>/<date>-<topic>` branch's topic, as pickup brief reads it."""
     return re.sub(r"^%s-" % DATE_RE, "", branch.rsplit("/", 1)[-1])
+
+
+def seeded_note(branch):
+    """The brief's line on how a seed lands (rule 3: the run's branch is a seed off `branch`'s tip, its
+    first commit's `Seeded-From:` trailer; pickup prints the same, which no session read until the S3
+    landing review)."""
+    return ("Landing: this branch is seeded off %s's tip, which it carries (its first commit's `Seeded-From:` trailer "
+            "names the sha); if %s lands first, this branch's `/finish` rebases `--onto origin/main <that sha>`." % (branch, branch))
 
 
 def run_brief(ev, steps, sha, plan=None):
@@ -10579,40 +10909,43 @@ def run_brief(ev, steps, sha, plan=None):
     k, ask, rel, items = home_rel(overlay_cmd("keel")), home_rel(overlay_cmd("ask")), ev["rel"], ", ".join(ev["items"])
     plan = plan or rel
     if ev["kind"] == "talk":
-        return talk_brief(ev, steps, plan, k, ask)
-    if ev["kind"] == "save":
-        what = "a Save from the doc's page, saved by %s, taken in as %s" % (", ".join(ev.get("saved_by") or [SAVED_BY_NONE]), sha[:7])
+        return talk_brief(ev, k, ask)
+    if ev["kind"] == "save":   # rule 3 never writes the branch: the run takes the Save in (routed comments S3)
+        what = "a Save from the doc's page, saved by %s, still on the page" % ", ".join(ev.get("saved_by") or [SAVED_BY_NONE])
+        first = "1. `%s sheep pull %s --write`, then commit — the Save's answers into the doc." % (k, rel)
     else:
         what = "an answer typed on GitHub, %s" % sha[:7]
+        first = "1. `%s pull %s` — the answers into the doc." % (k, rel)
     return "\n".join([
         "# %s — the lookout's run on %s, %s" % (branch_topic(ev["branch"]), rel, brief_day()),
         "Task: Take in the answers to %s on %s and build what they unblock: %s." % (items, rel, ", ".join(steps)),
         "Steps: %s of %s" % (", ".join(steps), plan),
-        "Why: %s. No session held the doc, so `keel lookout` started this run (crosstalk S5)." % what,
+        "Why: %s. No run held %s, so `keel lookout` seeded this branch off its tip and started this run "
+        "(crosstalk S5; routed comments S3)." % (what, ev["branch"]),
         "Do, in this worktree:",
-        "1. `%s pull %s` — the answers into the doc." % (k, rel),
+        first,
         "2. `%s checkin %s` — the crew's mark on its Status line." % (k, rel),
         "3. Reply under every hunk the answers changed (`> **Done.** …`, or Applied, Superseded, Revised, Checked).",
         "4. Build what the answers unblock — %s, each by its line in %s's Action plan; run its `gate:` and the repo's check."
         % (", ".join(steps), "the doc" if plan == rel else plan),
-        "5. `%s step %s <S> done --branch %s --stamp` for each step whose check is green." % (k, plan, ev["branch"]),
+        "5. `%s step %s <S> done --branch \"$(git branch --show-current)\" --stamp` for each step whose check is green." % (k, plan),
         "6. `%s checkin %s --done`, then commit." % (k, rel),
         "7. End on the line `%s` prints: a decision the answers leave open is a D-item in the doc, then `%s relay %s <Dn>`." % (ask, ask, rel),
+        seeded_note(ev["branch"]),
         "Not this: never `/finish`, `git push`, `gh` or `bin/pr` — dispatch denies them; the landing is the laptop's `/finish` or autofinish.",
         ""])
 
 
-def talk_brief(ev, steps, plan, k, ask):
+def talk_brief(ev, k, ask):
     """A lookout run's brief for new words in a thread a session talked in (part D, section 3): answer
-    each with `sheep reply`, the threads quoted below the fixed text as data. No `Steps:` line of its
-    own: a reply builds nothing, so it holds no landing back; an earlier run's held steps (`steps`,
-    the same-day brief's) are kept, and built, as run_brief keeps them."""
+    each with `sheep reply`, the threads quoted below the fixed text as data. No `Steps:` line: a reply
+    builds nothing, so it holds no landing back. The run is on a seed of its own (routed comments S3), so
+    no earlier brief's held steps come with it: stamping them here would stamp the branch it was seeded
+    off (the S3 second landing review's item 13)."""
     rel, n = ev["rel"], len(ev.get("threads") or [])
     out = ["# %s — the lookout's run on %s, %s" % (branch_topic(ev["branch"]), rel, brief_day()),
            "Task: Answer %s in %d thread%s on %s's course page with `%s sheep reply`."
            % (WHO, n, "" if n == 1 else "s", rel, k)]
-    if steps:
-        out.append("Steps: %s of %s" % (", ".join(steps), plan))
     out += ["Why: new words in a thread a session talked in, and no session held the doc, so `keel lookout` "
             "started this run (docs/sheep-listen-2026-10-24.md, part D).",
             "Do, in this worktree:",
@@ -10621,10 +10954,8 @@ def talk_brief(ev, steps, plan, k, ask):
             "2. Answer each: `%s sheep reply %s <thread id> -` with the reply on stdin. Add `--take` where the "
             "words answer a D-item or are a note the doc should hold, then commit the doc." % (k, rel),
             "3. A question only %s can settle is a D-item in the doc, then `%s relay %s <Dn>`." % (WHO, ask, rel)]
-    if steps:
-        out.append("4. Build what an earlier run here was briefed for — %s, each by its line in %s's Action plan; "
-                   "`%s step %s <S> done --branch %s --stamp` once its check is green." % (", ".join(steps), plan, k, plan, ev["branch"]))
-    out += ["%d. Commit, and end on the line `%s` prints." % (5 if steps else 4, ask),
+    out += ["4. Commit, and end on the line `%s` prints." % ask,
+            seeded_note(ev["branch"]),
             "Not this: never `/finish`, `git push`, `gh` or `bin/pr` — dispatch denies them; the landing is the laptop's `/finish` or autofinish.",
             "",
             "The threads, as the lookout read them:"]
@@ -10653,20 +10984,20 @@ def last_line(r):
     return next((l for l in reversed(lines) if re.search(r"\blog\s", l)), lines[-1] if lines else "exit %d" % r.returncode)[:240]
 
 
-def lookout_gone(ev, kind, row, laptop, dry):
-    """S5: no live session holds the doc. A run starts only when the answers are on the branch, the
-    branch is this host's to act on (the laptop leaves another host's GitHub answer to that host's
-    lookout: one start per answer across Macs), an open step waits on them (in a set's entry for a
-    component), no session holds the worktree here or the branch on any host (harness list: the
-    peer, S11 item 1), the repo is `physical: none`, the week is not tight and the tools are here;
-    then a dry or disarmed pass says it would (the preview after the gates, S11 item 6), and an
-    armed one writes a `dispatching` row and starts `pickup brief` and `dispatch` out of process
-    (S11 item 3: a pass returns in seconds; the next pass reads how it went, lookout_collect) —
-    from the laptop by dispatch's own Where default (the peer, else here; no host named in this
-    code), from another host `--on here`, and a talk run `--on here` from the laptop too: the pin it
-    replies through is this Mac's. Else a card; a GATED one, for a gate that clears by
-    itself, is tried again each pass (S11 item 2). Once per answer: the `dispatching` row settles
-    the event, so neither a second pass nor a failed dispatch starts it twice."""
+def lookout_gone(ev, kind, row, dry):
+    """S5, with the host rule's rule 3 (routed comments S3): no run is in sight for the doc's branch B.
+    A run starts only when the answers are on the branch (a Save still on the page goes with the run, which
+    takes it in), an open step waits on them (in a set's entry for a component), no session holds the
+    worktree here or the branch on any host harness reads, the repo is `physical: none`, the week is not
+    tight and the tools are here. Then the claim: a `claiming` mark on each thread the event has (a talk
+    event's; an answer's or a Save's claim is the seed's topic, seed_topic, which a second host's `pickup
+    seed` refuses as already open), read again after CLAIM_WAIT, and a `claimed` row; one full pass later,
+    no run having shown and no claim naming a run having beaten ours, a dry or disarmed pass says it would,
+    and an armed one writes a `dispatching` row and starts `pickup seed --beside B` (B never written) and
+    `dispatch` of the seed, with no `--on` (the owner's 2026-10-13 rule), out of process (S11 item 3: the
+    next pass reads how it went, lookout_collect). Else a card; a GATED one, for a gate that clears by
+    itself, is tried again each pass (S11 item 2). Once per answer: the `dispatching` row settles the
+    event, so neither a second pass nor a failed dispatch starts it twice."""
     talk = kind == "talk"   # new words in a thread a session talks in: a run answers them (part D, section 3)
     if kind not in RUN_KINDS and not talk:
         return lookout_card(ev, "the Save waits on the page (%s); no run starts from it" % row.get("plumb", "not taken in")
@@ -10674,11 +11005,9 @@ def lookout_gone(ev, kind, row, laptop, dry):
     top, branch = ev["top"], ev["branch"]
     if not top:
         return lookout_card(ev, "no checkout of %s on this Mac" % ev["doc"].partition("@")[0])
-    if kind == "answer" and laptop and branch_host(branch) not in (None, row["host"]):
-        return lookout_card(ev, "another host's branch: its own lookout starts the run")
     if kind in ("answer", "talk") and not branch.startswith("claude/"):   # main, a collaborator's: no run's (finish review, 2026-10-22)
         return lookout_card(ev, "not a claude/* branch: a run starts only on a session's own branch")
-    ref = ev["view"] if kind == "answer" and ev["view"] else (top, "refs/heads/" + branch)
+    ref = ev["view"] or newer_tip(top, branch)   # a Save fires from origin's newer tip too (item 9): read the same ref
     sha = git(ref[0], "rev-parse", ref[1], check=False).stdout.strip()
     if kind == "answer":   # the answer's own commit, not a tip that moved on since (S11c item 14)
         sha = ev["id"].split(":")[1] if ev["id"].count(":") else sha   # answer:<sha>[:<part>]
@@ -10688,9 +11017,10 @@ def lookout_gone(ev, kind, row, laptop, dry):
             return lookout_card(ev, "the thread's words were not read; no run starts without them")
     else:
         sets, slug, plan = set_at(ref[0], ref[1], ev["rel"])
-        # a dry pass never writes the Save onto the branch it reads: its items count as answered (S11c item 23)
+        # a Save is never written onto the branch it reads (rule 3: the seed's run takes it in; a dry pass,
+        # S11c item 23): its items count as answered
         steps, where = waiting_steps(git(ref[0], "show", "%s:%s" % (ref[1], ev["rel"]), check=False).stdout, ev["items"],
-                                     top.name, sets=sets, slug=slug, given=ev["items"] if kind == "save" and dry else ())
+                                     top.name, sets=sets, slug=slug, given=ev["items"] if kind == "save" else ())
         if where != "entry":   # a component's own Action plan (the older layout, S11c item 29)
             plan = ev["rel"]
         if not steps:
@@ -10698,6 +11028,9 @@ def lookout_gone(ev, kind, row, laptop, dry):
     why, passing = held_branch(top, branch)
     if why:
         return lookout_card(ev, "%s: its session takes the answers" % why, action=GATED if passing else "card")
+    if unstarted_seed(origin_view(top, branch, fetch_first=False) or ref):   # origin's tip: the seed may be another host's
+        return lookout_card(ev, "%s is a seed no session has started (its dispatch failed, or its run is on its way): "
+                            "`dispatch %s` starts it, and its run takes these in; no seed is cut off a seed" % (branch, branch))
     phys = contract_physical(top)
     if not (phys or "").startswith("- physical: none"):
         return lookout_card(ev, "%s's contract says %s, not `physical: none`: the skipper starts it"
@@ -10709,7 +11042,7 @@ def lookout_gone(ev, kind, row, laptop, dry):
     if not (pickup and dispatch):
         return lookout_card(ev, "no %s on this Mac (wharf-runs)" % ("pickup" if not pickup else "dispatch"), action=GATED)
     # one run a branch at a time: a second answer within the hour a run takes to start finds the
-    # first run's brief and job, one per branch, which `pickup brief` and `dispatch` would replace
+    # first run's seed and job, which a second `pickup seed` and `dispatch` would double
     # (S5 review; keyed on the branch, not the doc, since its landing review); the run pulls every
     # answer on the branch, and the card names the steps it was not briefed for. A start that
     # failed is no run (its event's later `start` row): it holds nothing back (S5 landing item 8);
@@ -10732,41 +11065,56 @@ def lookout_gone(ev, kind, row, laptop, dry):
                             "starts once it ends, at most 2 h after its start" % ((now_ts() - float(started[-1]["ts"])) // 60, ", ".join(steps) or ev["doc"]),
                             action=GATED)
     if started:
-        return lookout_card(ev, "a run started on its branch %dm ago (%s); it pulls these answers too, but was not briefed for %s"
-                            % ((now_ts() - float(started[-1]["ts"])) // 60, ", ".join(started[-1].get("steps") or []),
-                               ", ".join(steps)))
-    # `pickup brief` writes docs/handoff/<today>-<topic>.md: on a branch seeded today that is its own
-    # brief, and its Steps: hold would go with it (S5 review)
-    own = "docs/handoff/%s-%s.md" % (brief_day(), branch_topic(branch))
-    mine = git(ref[0], "show", "%s:%s" % (ref[1], own), check=False)
-    if not mine.returncode and "the lookout's run on" not in mine.stdout.split("\n", 1)[0]:
-        return lookout_card(ev, "the branch's own brief %s is from today and a run's brief would replace it" % own)
-    held = []
-    if not mine.returncode:   # an earlier run's brief from today: the new one keeps its Steps: hold
-        hm = list(BRIEF_STEPS_RE.finditer(mine.stdout))
-        if any(m.group("doc") != plan for m in hm):   # one Steps: line names one plan (finish review)
-            return lookout_card(ev, "the branch's brief %s holds steps of %s; a run for %s waits until it lands"
-                                % (own, ", ".join(sorted({m.group("doc") for m in hm})), plan),
-                                **({"action": GATED} if talk else {}))   # an unanswered reply is tried again
-        held = [s.strip() for m in hm for s in m.group("ids").split(",")]
-        steps = held + [s for s in steps if s not in held]
-    # the last gate asks the other hosts (an ssh round trip from the laptop): a live session there
-    # on the branch takes the answers, as a held worktree here does; a host that did not answer, again
-    why, passing = peer_live(branch)
-    if why:
-        return lookout_card(ev, "%s%s" % (why, "" if passing else ": its session takes the answers"),
-                            action=GATED if passing else "card")
+        # that run is on a seed cut from B's tip at its start (rule 3: B is never written), so it holds this
+        # answer only when the seed has its commit; a Save, or an answer pushed since, it never sees (the S3
+        # second landing review's item 8: the card said "it pulls these answers too")
+        seed, mins = started[-1].get("seeded"), (now_ts() - float(started[-1]["ts"])) // 60
+        sv = seed and (origin_view(top, seed, fetch_first=False) or (top, "refs/heads/" + seed))
+        if kind == "answer" and sv and git(sv[0], "merge-base", "--is-ancestor", sha, sv[1], check=False).returncode == 0:
+            return lookout_card(ev, "a run started on its branch %dm ago (%s); its seed %s holds these answers, but it was "
+                                "not briefed for %s" % (mins, ", ".join(started[-1].get("steps") or []), seed, ", ".join(steps)))
+        return lookout_card(ev, "a run started on its branch %dm ago (%s) on %s, cut from %s's tip before %s: it does not "
+                            "see them — tell it on the page, or start a run for %s once it lands"
+                            % (mins, ", ".join(started[-1].get("steps") or []), seed or "a seed", branch,
+                               "this Save" if kind == "save" else "this answer", ", ".join(steps)))
+    # the other hosts' live sessions were asked before this (run_where: one `harness list` a pass, S11c
+    # item 28); `peer_live`, which asked it again here, went with the S3 landing review
+    topic = seed_topic(branch, ev)
+    tids = list(ev.get("threads") or [])
     if dry:
-        return lookout_card(ev, "a run would start here%s" % ("" if lookout_armed() else " once armed (keel lookout --arm)"),
+        return lookout_card(ev, "a claim, then one pass later a seed off %s's tip (%s), would start a run%s"
+                            % (branch, topic, "" if lookout_armed() else " once armed (keel lookout --arm)"),
                             action="would dispatch")
+    claimed = claimed_row(ev)   # a start tried again after a gate keeps its claim: it waited its pass once
+    if not claimed:   # the claim, then one full pass (judge section 1, rule 3)
+        if tids:
+            try:
+                claim_post(ev["doc"], event_pin(ev), tids, row["host"])
+            except Exception as e:  # Stop, a refused call: the claim is tried again next pass
+                return lookout_card(ev, "the claim could not be posted (%s)" % str(e)[:120], action=GATED)
+        # read back by the pass once every claim is posted and CLAIM_WAIT has passed (claim_readback)
+        return {"action": CLAIMED, "why": "no run in sight: claimed for %s; the seed %s waits one full pass for a run to show"
+                % (row["host"], topic), "steps": steps, "readback": tids}
+    if now_ts() - float(claimed.get("ts") or 0) < float(os.environ.get("LOOKOUT_CLAIM_PASS", CLAIM_PASS)):
+        return {"action": CLAIMED, "why": "claimed %dm ago; the seed waits one full pass" % ((now_ts() - float(claimed.get("ts") or 0)) // 60),
+                "steps": steps}
+    if tids:   # a claim naming a run, or a session's take-in, beat ours meanwhile: withdrawn
+        try:
+            won, lost = claim_holds(ev["doc"], event_pin(ev), tids, row["host"])
+        except Exception as e:
+            return lookout_card(ev, "the claim could not be read back (%s)" % str(e)[:120], action=GATED)
+        if not won:
+            return {"action": "skipped", "why": "withdrawn: %s" % lost}
     # `why`, never `card`: a start on its way asks the owner nothing (helm's board makes every carded
     # row a card; S11c item 24)
-    start = dict(row, action="dispatching", steps=steps, ts=now_ts(),
-                 why="a run for %s %s is starting out of process; the next pass reads how it went (dispatch --status)"
-                 % (ev["doc"], ", ".join(ev["items"])))
+    start = dict(row, action="dispatching", steps=steps, ts=now_ts(), seed=topic,
+                 why="a run for %s %s is starting out of process, seeded off %s's tip as %s; the next pass reads how it went"
+                 % (ev["doc"], ", ".join(ev["items"]) or kind, branch, topic))
     lookout_log(start)
-    why = lookout_spawn({"row": start, "branch": branch, "top": str(top), "laptop": laptop, "text": run_brief(ev, steps, sha, plan=plan),
-                         "pending": pending_of(ev, row), "keep": held})
+    # the threads and Saves this start routes: the seed's gate passes them (pickup seed --routing)
+    routing = tids + ([ev["id"]] if kind == "save" else [])   # `save:<space8>:<seq>`: its own page's Saves alone
+    why = lookout_spawn({"row": start, "branch": branch, "top": str(top), "seed": topic, "routing": routing,
+                         "text": run_brief(ev, steps, sha, plan=plan), "pending": pending_of(ev, row)})
     if why:
         return dict(lookout_card(ev, "the start could not be launched (%s); no run started" % why), steps=steps, start="failed")
     return dict(start, logged=True)
@@ -10775,7 +11123,7 @@ def lookout_gone(ev, kind, row, laptop, dry):
 def pending_of(ev, row):
     """The fields an event is carried to the next pass with: a Save taken in keeps its plumb line,
     so a retried event does not read the emptied page as a Save still waiting (S11 item 2)."""
-    out = {k: ev.get(k) for k in ("doc", "kind", "id", "items", "skip", "sessions", "saved_by", "branch", "rel", "threads", "talk")}
+    out = {k: ev.get(k) for k in ("doc", "kind", "id", "items", "skip", "sessions", "saved_by", "branch", "rel", "threads", "talk", "space")}
     if row.get("plumb"):
         out["plumb"] = row["plumb"]
     return out
@@ -10811,35 +11159,25 @@ START_ENV_DROP = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "CLAUDE_COD
                   "DISPATCH_SHIP", "DISPATCH_PLAN", "DISPATCH_PLAN_SPACE", "DISPATCH_SKIPPER_HOST", "DISPATCH_MANAGER_HOST",
                   # a run's chain and task, as dispatch's runner unsets them: the lookout's run starts a chain of its own
                   "DISPATCH_DEPTH", "DISPATCH_PIN", "DISPATCH_BRIEF", "DISPATCH_TASK", "DISPATCH_REPO", "ASK_ACCOUNT")
-RELEASED = "Released:"   # a brief's `Steps:` line once its run did not start: BRIEF_STEPS_RE reads it no more
-
-
-def released_brief(text, why, keep=()):
-    """The brief with its `Steps:` hold turned into a `Released:` line naming why (S11c item 9). `keep`:
-    an earlier run's steps this brief carried (the same-day brief), still held (finish review)."""
-    def sub(m):
-        sm, line = BRIEF_STEPS_RE.match(m.group(0)), m.group(1).strip()
-        kept = [s.strip() for s in sm.group("ids").split(",") if s.strip() in keep] if sm else []
-        if kept:
-            line = "%s of %s" % (", ".join(s.strip() for s in sm.group("ids").split(",") if s.strip() not in kept),
-                                 sm.group("doc"))
-        out = "%s %s — no run started (%s); `keel landing` holds nothing for it" % (RELEASED, line, " ".join(why.split())[:160])
-        return ("Steps: %s of %s\n" % (", ".join(kept), sm.group("doc")) + out) if kept else out
-    return re.sub(r"^Steps:\s*(.*)$", sub, text, count=1, flags=re.M)
-
-
 def start_err(e):
     """A tool's failure, short: a timeout's own text is the whole command line, the brief and this Mac's
     paths with it, and the release commits it (finish review)."""
     return "timed out after %ss" % e.timeout if isinstance(e, subprocess.TimeoutExpired) else str(e)[:160]
 
 
+ROUTED_REFUSAL_RE = re.compile(r"unreflected on \S+'s page")   # routed_check's refusal, through pickup seed's gate
+SEED_TAKEN_RE = re.compile(r"is already open as (\S+)")   # pickup seed's refusal: another host's seed has the topic
+
+
 def lookout_start(path):
-    """`keel lookout --start <request>`, the detached half of a start: `pickup brief` puts the brief on
-    the branch, `dispatch` starts the run; the result goes to <request>.out.json for the next pass.
-    A pickup refusal that clears by itself (PICKUP_PASSING_RE) is GATED, its event tried again. A
-    brief that went on but whose run did not start (dispatch failed, or pickup timed out) is
-    briefed again released, so its `Steps:` hold keeps no branch from landing (S11c item 9)."""
+    """`keel lookout --start <request>`, the detached half of a start (routed comments S3, rule 3): `pickup
+    seed <topic> --file <brief> --beside B` makes a new branch off B's tip — B is never written — with the
+    brief and the docs' `Routed:` line in one commit, and `dispatch` starts its run, no `--on`: dispatch
+    places it (the owner's 2026-10-13 rule). The result goes to <request>.out.json for the next pass. A
+    pickup refusal that clears by itself (PICKUP_PASSING_RE) is GATED, its event tried again; one naming
+    the topic already open is another host's seed of the same event (seed_topic): skipped. A seed whose
+    run did not start is left as a seed: its brief holds only its own landing, and the reaper archives
+    a seed no session started (branches.empty)."""
     f = Path(path).resolve()
     if f.parent != (state_dir() / LOOKOUT_STARTS).resolve():
         print("keel lookout --start: %s is not under %s" % (path, state_dir() / LOOKOUT_STARTS), file=sys.stderr)
@@ -10848,79 +11186,62 @@ def lookout_start(path):
     # the tools are this Mac's, never the request's (a file anyone here can write; finish review, 2026-10-22)
     req["pickup"], req["dispatch"] = lookout_tool("pickup"), lookout_tool("dispatch")
     ev = {"doc": req["row"]["doc"], "items": req["row"].get("items") or [], "kind": req["row"].get("event") or ""}
-    steps, branch, top = req["row"].get("steps") or [], req["branch"], req["top"]
+    steps, branch, top, topic = req["row"].get("steps") or [], req["branch"], req["top"], req.get("seed") or ""
     env = {k: v for k, v in os.environ.items() if k not in START_ENV_DROP}
-    held = False   # the brief, with its hold, may be on the branch
+    brief = f.with_name(f.stem + ".brief.md")
     try:
         if not lookout_armed():
             raise FileNotFoundError("disarmed before it started")
         if not (req["pickup"] and req["dispatch"]):
             raise FileNotFoundError("no pickup or dispatch on this Mac")
-        try:
-            r = subprocess.run([req["pickup"], "brief", branch, "--repo", top, "--text", req["text"]],
-                               capture_output=True, text=True, timeout=180, env=env)
-        except subprocess.TimeoutExpired:
-            held = True   # whether pickup committed is unknown: released all the same
-            raise
-        held = not r.returncode   # pickup refuses before it commits, or takes the brief back (its push)
-        # whether this brief wrote a doc's `Routed:` line (pickup names only the lines it changed): a re-brief
-        # leaves an earlier routing's line as it was, and the release must not take that run's record out
-        # (S2 landing review, 2026-10-26); a timed-out brief leaves it unknown, so nothing is unrouted
-        req["routed"] = held and bool(re.search(r"^  routed: ", r.stdout or "", re.M))
-        if r.returncode:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,39}", topic):   # the request is data: a topic pickup takes, or none
+            raise FileNotFoundError("no seed topic in the request")
+        brief.write_text(req["text"])
+        # pickup runs in the doc's repo, never the pass's cwd: a plain seed from a cwd inside a confidential
+        # scope is refused (pickup's confined_refusal, confidential-reach S5), and the lookout writes the
+        # doc's own repo from its own data, never out of the caller's scope (routed S3's merge with S5)
+        r = subprocess.run([req["pickup"], "seed", topic, "--file", str(brief), "--beside", branch, "--repo", top, "--no-start"]
+                           + (["--routing"] + [str(x) for x in req.get("routing") or []] if req.get("routing") else []),
+                           capture_output=True, text=True, timeout=180, env=env, cwd=top)
+        seeded = re.search(r"^seeded (claude/\S+) in ", r.stdout or "", re.M)
+        if r.returncode or not seeded:
             why = last_line(r)
-            res = lookout_card(ev, "pickup brief refused: %s; no run started" % why,
-                               action=GATED if PICKUP_PASSING_RE.search(why) else "card")
+            other = SEED_TAKEN_RE.search((r.stdout or "") + (r.stderr or ""))
+            if other:
+                res = {"action": "skipped", "why": "another host seeded it as %s" % other.group(1)}
+            else:
+                # the routed gate's refusal (an owner's thread or a Save unreflected on a page the seed names)
+                # clears once the owner settles it: a card tried again each pass, never one that ends the
+                # answer's run for good (the S3 landing review's code-review item)
+                gate = ROUTED_REFUSAL_RE.search((r.stdout or "") + (r.stderr or ""))
+                res = lookout_card(ev, "pickup seed refused: %s; no run started" % why,
+                                   action=GATED if gate or PICKUP_PASSING_RE.search(why) else "card")
         else:
-            brief = last_line(r)
+            name = seeded.group(1)
             try:
-                # a talk run replies through this Mac's pin (sheep.json is per Mac), so it runs here (finish review)
-                here = not req["laptop"] or ev["kind"] == "talk"
-                r = subprocess.run([req["dispatch"], branch, "--repo", top] + (["--on", "here"] if here else []),
-                                   capture_output=True, text=True, timeout=300, env=env)
+                r = subprocess.run([req["dispatch"], name, "--repo", top], capture_output=True, text=True, timeout=300, env=env)
                 if r.returncode:
-                    res = lookout_card(ev, "the brief is on %s; dispatch failed: %s" % (branch, last_line(r)))
+                    res = lookout_card(ev, "seeded %s off %s; dispatch failed: %s — the seed stays unstarted" % (name, branch, last_line(r)))
                 else:
-                    res, held = {"action": "dispatched", "run": last_line(r)}, False
-            except subprocess.TimeoutExpired as e:   # the peer may have the job: held, as a lost start is (finish review)
-                res, held = lookout_card(ev, "the brief is on %s; dispatch %s, so whether a run started is unknown: "
-                                         "dispatch --status says" % (branch, start_err(e))), False
+                    res = {"action": "dispatched", "run": last_line(r)}
+            except subprocess.TimeoutExpired as e:   # the job may be there: dispatch --status says
+                res = lookout_card(ev, "seeded %s off %s; dispatch %s, so whether a run started is unknown: "
+                                   "dispatch --status says" % (name, branch, start_err(e)))
             except OSError as e:
-                res = lookout_card(ev, "the brief is on %s; dispatch did not run (%s)" % (branch, start_err(e)))
-            res["brief"] = brief
+                res = lookout_card(ev, "seeded %s off %s; dispatch did not run (%s)" % (name, branch, start_err(e)))
+            res["seeded"] = name
     except FileNotFoundError as e:
-        res = lookout_card(ev, "pickup brief did not run (%s); no run started" % e, action=GATED)
+        res = lookout_card(ev, "pickup seed did not run (%s); no run started" % e, action=GATED)
     except (OSError, subprocess.TimeoutExpired) as e:
-        res = lookout_card(ev, "pickup brief did not run (%s); no run started" % start_err(e))
-    if held:
-        res["released"] = lookout_release(req, env, res.get("card") or "no run started")
-        res["card"] = "%s; %s" % (res["card"], res["released"])
+        res = lookout_card(ev, "pickup seed did not run (%s); no run started" % start_err(e))
+    finally:
+        brief.unlink(missing_ok=True)
     res = dict(res, steps=steps, start="dispatched" if res["action"] == "dispatched" else "failed")
     tmp = f.with_name(f.stem + ".out.tmp")
     tmp.write_text(json.dumps(dict(req, result=res), ensure_ascii=False, sort_keys=True))
     tmp.replace(f.with_name(f.stem + ".out.json"))
     f.unlink()
     return 0
-
-
-def lookout_release(req, env, why):
-    """Brief the branch again with its hold released (released_brief), so `keel landing` and
-    autofinish are not held for a run that is not coming; the line saying how it went. A timed-out
-    pickup may have committed nothing: the released brief then goes on in its place, a hold of none."""
-    text = released_brief(req["text"], re.sub(r"^no live session for .*? — ", "", why), keep=req.get("keep") or ())
-    try:
-        # --unroute: the doc's `Routed:` line, written in the start's brief commit, comes out with the hold
-        # (routed comments, finding D) — the run it named is not coming; only a line this start wrote
-        r = subprocess.run([req["pickup"], "brief", req["branch"], "--repo", req["top"], "--text", text]
-                           + (["--unroute"] if req.get("routed") else []),
-                           capture_output=True, text=True, timeout=180, env=env)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        r = None
-        err = start_err(e)
-    if r is not None and not r.returncode:
-        return "its brief's Steps: hold released (%s)" % RELEASED
-    return ("its brief's Steps: hold may still be on the branch (the release failed: %s) — `keel landing` names it"
-            % (last_line(r) if r is not None else err))
 
 
 def lookout_collect(now, pending):
@@ -11071,7 +11392,7 @@ def lookout_arm(on):
     return 0
 
 
-def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
+def lookout_events(asks, prev, pinned, runs, mcp_box, dry, notes):
     """The pass's events, and the new state. mcp_box: [Mcp or None, calls], filled lazily."""
     tops = repo_tops(pinned)
     events, new_open, new_comments = [], {}, dict(prev["comments"])
@@ -11145,7 +11466,8 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
             events.append(dict({"doc": key, "kind": "answer", "id": "answer:" + a["sha"] + (":" + a["part"] if a["part"] else ""),
                                 "items": a["items"], "skip": a["skip"], "sessions": a["sessions"], "top": top,
                                 "branch": branch, "rel": rel, "view": view}, **({"card": a["card"]} if a.get("card") else {})))
-    # the pages of docs with open items: Saves (the laptop's), then comments; the drain's breaker —
+    # the pages of docs with open items: Saves (every host's since S3: the host rule says who acts), then
+    # comments; the drain's breaker —
     # three spacesheep failures in a row end the pages for this pass (each can wait 30 s). A page with a
     # thread a session talks in is read too, for its talk events only: a `--take` that answered the doc's
     # last item leaves the conversation going (finish review, 2026-10-26)
@@ -11171,20 +11493,36 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
                                % (len(routed), "" if len(routed) == 1 else "s", lookout_host()[0])})
         routed = {}
     fails = 0
+    # one key per page: a page a newer `Routed:` line gave to another branch (a seed off this one, rule 3)
+    # is read under that key alone — else each Save on it raised one event per key, and the old branch's,
+    # with no run in sight, was seeded again beside the first seed (the S3 landing review's item 6)
+    page_key = {}
+    for k, v in routed.items():
+        try:
+            page_key[(key_parts(k)[0], key_parts(k)[2], v["space"])] = k
+        except Stop:
+            pass
     for key in sorted(set(asks) | talked | set(routed)):
         pin = pinned.get(key)
         if key in routed:   # the line's page first (finding 1): a run's own mirror is a second page
-            pin = line_first(key, pin, routed[key]["space"])
+            pin = line_first(key, pin, routed[key]["space"], write=not dry)   # a dry pass writes no pin (item 9)
             if not pin.get("space"):
                 pin = dict(pin, space=routed[key]["space"], from_line=True)
         if not (pin and pin.get("space")):
+            continue
+        try:
+            owner = page_key.get((key_parts(key)[0], key_parts(key)[2], pin["space"]))
+        except Stop:
+            owner = None
+        if owner and owner != key:
+            notes.append("%s: its page %s is routed to %s, read under that key" % (key, pin["space"], owner))
             continue
         if fails >= 3:
             notes.append("spacesheep: 3 failures in a row — the other pages wait for the next pass")
             break
         name, branch, rel = key_parts(key)
         top = tops.get(name)
-        if laptop and key in asks:   # a page read for its talk alone is never written to (re-review)
+        if key in asks:   # a page read for its talk alone is never written to (re-review)
             try:  # a dry run drains too: it moves the room's Saves into the pin, as the 6-hour drain does
                 drain_saves(mcp(), key, pin["space"], row=pin_row(key, pin))
                 mcp_box[1] += 1
@@ -11193,7 +11531,11 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
             except Exception as e:  # Stop, a refused call: this page waits for the next pass
                 notes.append("%s: not drained (%s)" % (key, str(e)[:120]))
                 fails += 1
-            text = git(top, "show", "refs/heads/%s:%s" % (branch, rel), check=False).stdout if top else ""
+            # the newer of origin's tip and the local branch: every host raises Save events, and a host's
+            # local branch may be behind origin's, or absent (the S3 second landing review's item 9); a
+            # Save taken in here and not pushed yet leaves it ahead
+            gd, tip = newer_tip(top, branch) if top else (None, None)
+            text = git(gd, "show", "%s:%s" % (tip, rel), check=False).stdout if top else ""
             lacking = [sv for sv in pin.get("saves") or [] if text and save_lacks(sv, text)]
             if lacking:
                 # every Save is taken in, whoever saved it; who did is recorded with it (the owner on S3's
@@ -11213,6 +11555,26 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
             notes.append("%s: comments not read (%s)" % (key, str(e)[:120]))
             fails += 1
             continue
+        gone = pin.get("gave_up_space")
+        if key in routed and gone and gone != pin.get("space"):
+            # the page this host's pin gave up for the line's (line_first): an owner's thread typed there
+            # since is read and carded once, never lost unread (the S2 landing review's item 10)
+            try:
+                import hashlib
+                old = open_words(comment_threads(sheep_comments(mcp(), mcp().key, gone), sent=pin.get("sent")), pin)
+                mcp_box[1] += 1
+                gk = key + "#gave-up"
+                was_old, new_comments[gk] = prev["comments"].get(gk) or {}, old
+                fresh_old = sorted(t for t, n in old.items() if was_old.get(t) != n)
+                if fresh_old:
+                    events.append({"doc": key, "kind": "gave-up", "id": "gave-up:" + hashlib.sha1(json.dumps(
+                        sorted(old.items())).encode()).hexdigest()[:12], "items": [], "skip": None, "sessions": [],
+                        "top": top, "branch": branch, "rel": rel, "view": None,
+                        "card": "%s: %d thread%s with the owner's words on the page given up (%s, %s); this doc's page is "
+                                "its Routed: line's (%s) — answer there" % (key, len(fresh_old), "" if len(fresh_old) == 1 else "s",
+                                                                           gone, ", ".join(fresh_old[:5]), pin["space"])})
+            except Exception as e:  # the old page may be gone from the server: said, never fatal
+                notes.append("%s: the page given up (%s) not read (%s)" % (key, gone, str(e)[:120]))
         words = open_words(threads, pin)
         before = prev["comments"].get(key)
         new_comments[key] = words
@@ -11238,46 +11600,113 @@ def lookout_events(asks, prev, pinned, laptop, runs, mcp_box, dry, notes):
             text = git(top, "show", "refs/heads/%s:%s" % (branch, rel), check=False).stdout if top else ""
             events.append({"doc": key, "kind": "talk", "id": "talk:" + hashlib.sha1(
                 json.dumps(sorted(talk.items())).encode()).hexdigest()[:12], "items": [], "skip": None, "sessions": [],
-                "top": top, "branch": branch, "rel": rel, "view": None, "threads": ids,
+                "top": top, "branch": branch, "rel": rel, "view": None, "threads": ids, "space": pin["space"],
                 "talk": talk_quote([t for t in threads if t["id"] in ids], pin, text)})
     for key in list(new_comments):
-        if key not in asks and key not in talked and key not in routed:
+        k = key.partition("#")[0]   # a page given up keeps its words while its doc's line stands
+        if k not in asks and k not in talked and k not in routed:
             del new_comments[key]
     return events, {"open": new_open, "comments": new_comments, "pending": []}
 
 
-def lookout_act(ev, here, laptop, runs, dry):
-    """One event → its row: the host rule, the wait lock, the Save taken in, the session, the act."""
+def claimed_row(ev):
+    """This host's oldest `claimed` row for the event, or {}: its time starts the one-pass wait, and a
+    start tried again after a gate keeps it (an event that dispatched is settled, never claimed again)."""
+    return next((r for r in pass_rows() if r.get("doc") == ev["doc"] and r.get("id") == ev["id"]
+                 and r.get("action") == CLAIMED), {})
+
+
+def last_row(ev):
+    """This host's newest lookout.jsonl row for the event, or {} — carrying the earliest `elsewhere_since`
+    any of its rows holds (once its run was seen on another host, the event stays that host's) and the
+    earliest `gated_since` of the GATED rows since its last other row: a quiet gate's clock runs from its
+    first row (lookout_quiet), and starts again after a row that was not a gate (the S3 second landing
+    review's item 2)."""
+    out, since = {}, {}
+    for r in pass_rows():
+        if r.get("doc") == ev["doc"] and r.get("id") == ev["id"]:
+            out = r
+            since["elsewhere_since"] = since.get("elsewhere_since") or r.get("elsewhere_since")
+            since["gated_since"] = (since.get("gated_since") or r.get("gated_since")) if r.get("action") == GATED else None
+    return dict(out, **{k: v for k, v in since.items() if v})
+
+
+def log_sig(r):
+    """What a pass logs a row again on (lookout_pass: one row per change): its act, its target, whether it
+    carries a card, and the clocks the host rule keeps — a quiet gate turning into its late card, or an
+    `elsewhere_since` set on a GATED-to-GATED change, is a change (the S3 second landing review's item 2:
+    the late card never reached the board, and queued → elsewhere → none seeded beside the queue's run)."""
+    return (r.get("action"), r.get("target"), bool(r.get("card")), r.get("elsewhere_since"), r.get("gated_since"))
+
+
+def owner_ttl():
+    try:
+        return _common().OWNER_TTL
+    except ImportError:
+        return 7200
+
+
+def lookout_quiet(ev, why, since, late, late_action="card"):
+    """A gate another host's run or a passing read holds (the host rule's GATED rows): tried again each
+    pass with a `why` and no card, so helm's board shows the owner nothing that clears by itself (the S3
+    landing review's item 3), until OWNER_TTL has passed since `since`; then a card saying `late`."""
+    if now_ts() - since >= owner_ttl():
+        return lookout_card(ev, late, action=late_action)
+    return {"action": GATED, "why": lookout_card(ev, why, action=GATED)["card"]}
+
+
+def lookout_elsewhere(ev, why, was):
+    """Rule 2: the branch's run is on another host, whose lookout acts — tried again each pass, never a
+    start here, no card; a card once OWNER_TTL has passed since this host first saw it so (that host may
+    be asleep). Once elsewhere, the event stays that host's: its run's end is no reason to start one here."""
+    since = float(was.get("elsewhere_since") or now_ts())
+    if why is None:
+        return {"action": "skipped", "why": "its run on another host ended; that host's lookout had it", "elsewhere_since": since}
+    return dict(lookout_quiet(ev, "%s: that host's lookout acts" % why, since,
+                              "%s, and nothing took it in %dh: its host may be asleep" % (why, owner_ttl() // 3600)),
+                elsewhere_since=since)
+
+
+def lookout_waits(ev, why, was):
+    """A gate that clears by itself (a queue or a host not read, a queued run not live yet): quiet, then
+    after OWNER_TTL a card still tried again each pass."""
+    since = float(was.get("gated_since") or now_ts())
+    return dict(lookout_quiet(ev, why, since, "%s, for %dh now" % (why, owner_ttl() // 3600), late_action=GATED),
+                gated_since=since)
+
+
+def lookout_act(ev, here, runs, dry):
+    """One event → its row: the host rule (run_where), the wait lock, the Save taken in, the session, the act."""
     row = {"doc": ev["doc"], "id": ev["id"], "event": ev["kind"], "items": ev["items"], "host": here}
     if ev.get("saved_by"):
         row["saved_by"] = ev["saved_by"]
     if ev["skip"]:
         return dict(row, action="skipped", why=ev["skip"])
-    if ev["kind"] == "nokey":   # this host's own state, no branch's: before the host rule
+    if ev["kind"] in ("nokey", "gave-up"):   # this host's own state (its key, its pin's old page): before the host rule
         return dict(row, action="card", card=ev["card"])
-    if not laptop and not ev["branch"].startswith("claude/%s/" % here):
-        # A host other than the laptop acts on its own branches; another host's lookout owns the rest. One
-        # pushed lately is the owner's to know about (the laptop may be asleep); an older one is left to that host.
-        view = ev["view"] or (origin_view(ev["top"], ev["branch"], fetch_first=False) if ev["top"] else None)
-        ct = git(view[0], "log", "-1", "--format=%ct", view[1], check=False).stdout.strip() if view else ""
-        try:
-            fresh = now_ts() - int(ct) < _common().OWNER_TTL
-        except (ValueError, ImportError):
-            fresh = False
-        if fresh:
-            return dict(row, action="card", card="%s %s on another host's branch, pushed within %dh — its lookout acts"
-                        % (ev["doc"], ", ".join(ev["items"]) or ev["kind"], _common().OWNER_TTL // 3600))
-        return dict(row, action="skipped", why="another host's branch")
-    if laptop and ev["kind"] == "answer" and branch_host(ev["branch"]) not in (None, here):
-        # another host's GitHub answer is that host's lookout's, to hail as to start (S11 item 17: each
-        # Mac's lookout.jsonl is its own, so both would hail); a Save or a comment is only the laptop's
-        return dict(row, action="skipped", why="another host's branch: its own lookout acts on a GitHub answer")
+    # the host rule (routed comments S3): the laptop's branch and the branch-name rule are gone; a branch
+    # is acted on where its run is, left to the host its run is on, and seeded beside when none is in sight
+    where, why, live = run_where(ev["top"], ev["branch"], here, runs) if ev["top"] and ev["branch"] else ("none", None, None)
+    was = last_row(ev)
+    if where == "elsewhere" or (where == "none" and was.get("elsewhere_since")):
+        return dict(row, **lookout_elsewhere(ev, why, was))
+    if where in ("unknown", "queued", "unseen"):
+        return dict(row, **lookout_waits(ev, why, was))
     if ev.get("card"):   # an answer the lookout cannot judge (S12): the owner's to look at, once
         return dict(row, action="card", card="%s %s %s" % (ev["doc"], ", ".join(ev["items"]), ev["card"]))
     # origin's history first (the newest trailer is there), else the local branch
     ref = ev["view"] or ((ev["top"], "refs/heads/" + ev["branch"]) if ev["top"] and git(
         ev["top"], "rev-parse", "-q", "--verify", "refs/heads/" + ev["branch"], check=False).returncode == 0 else None)
     how, rec, src = resolve_session(ev["doc"], ev["top"], ev["branch"], ref, runs)
+    away = rec and str(rec.get("machine") or here).lower() != here.lower()
+    if live and how != "left alone" and (rec is None or away):
+        # harness names a live session on the branch here: the run is here, whatever a ref named
+        how, rec, src, away = ("idle" if live["state"] == "idle" else "working"), live, "harness list: its session on the branch here", False
+    if away:   # a session harness reads on another host (from a host that reads one): its own host hails it
+        return dict(row, **lookout_elsewhere(ev, "session %s is %s on %s" % (str(rec.get("session_id") or "?")[:8],
+                                                                             rec.get("state"), rec.get("machine")), was))
+    if how == "none" and where == "here":   # the queue's run is here but no session shows yet: never one beside it
+        return dict(row, **lookout_waits(ev, "%s, its session not live yet; it pulls the answers when it starts" % why, was))
     if how == "left alone":
         if ev["kind"] == "answer":   # a sheep wait wakes on the page, never on a commit: the answer waits for the wait
             return dict(row, action="waiting", why="%s; it never wakes on a commit — next pass" % src)
@@ -11291,7 +11720,7 @@ def lookout_act(ev, here, laptop, runs, dry):
     import contextlib
     import io
     kind = ev["kind"]
-    if kind == "save":
+    if kind == "save" and how != "none":   # rule 3 never writes the branch: the seed's run takes the Save in
         if dry:
             row["plumb"] = "would take it in"
         elif str(ev.get("plumb") or "").startswith("committed ") and "not pushed" not in ev["plumb"]:
@@ -11310,7 +11739,7 @@ def lookout_act(ev, here, laptop, runs, dry):
             if not row["plumb"].startswith("committed ") or "not pushed" in row["plumb"]:
                 kind = "save-held"
     if how == "none":
-        return dict(row, **lookout_gone(ev, kind, row, laptop, dry))
+        return dict(row, **lookout_gone(ev, kind, row, dry))
     about = "%s:%s:%s%s" % (ev["doc"].partition("@")[0], ev["branch"], ev["rel"], "#" + ev["items"][0] if ev["items"] else "")
     if dry:
         return dict(row, action="would hail", about=about)
@@ -11326,7 +11755,7 @@ def lookout_act(ev, here, laptop, runs, dry):
 
 
 def lookout_redeploy(asks, pinned, dry):
-    """The laptop's pages follow origin: a pinned doc with open items, or one the lookout acted on
+    """This host's pages follow origin (every host's since routed comments S3): a pinned doc with open items, or one the lookout acted on
     within LOOKOUT_DAYS, whose page shows a commit origin has moved past on the doc — a run's
     check-in, a GitHub answer — is redeployed from origin's blob, so the page the owner reads carries it.
     Never back: a page ahead of origin (a session's unpushed commit) is the checkout's to deploy."""
@@ -11380,9 +11809,9 @@ def lookout(dry=False, if_due=False):
     except OSError:
         print("lookout: another pass is running")
         return []
-    here, laptop_name = lookout_host()
-    laptop = here == laptop_name
+    here = lookout_host()[0]
     SESSION_MEMO.clear()
+    QUEUE_MEMO.clear()
     PEER_MEMO.clear()
     carried = []
     try:
@@ -11392,7 +11821,7 @@ def lookout(dry=False, if_due=False):
         # the detached starts' results (S11 item 3); a blind pass writes no state, so it leaves them on
         # disk, or a GATED one's event would be carried nowhere (finish review, 2026-10-22)
         collected = [] if dry or blind else lookout_collect(now, carried)
-        return lookout_pass(t0, now, stamp, dry, here, laptop, asks, blind, collected, carried)
+        return lookout_pass(t0, now, stamp, dry, here, asks, blind, collected, carried)
     except BaseException:
         # the results are consumed: a GATED start's event goes back into the state, or nothing would
         # bring it back (S11c item 30)
@@ -11411,7 +11840,7 @@ def lookout(dry=False, if_due=False):
 GATED_RELOG = 86400   # a GATED card still retried is logged again this often, so its age stays its last try
 
 
-def lookout_pass(t0, now, stamp, dry, here, laptop, asks, blind, collected, carried):
+def lookout_pass(t0, now, stamp, dry, here, asks, blind, collected, carried):
     """The pass after its starts are collected: the events, each one's act, the state."""
     import time
     for row in collected:
@@ -11422,7 +11851,7 @@ def lookout_pass(t0, now, stamp, dry, here, laptop, asks, blind, collected, carr
         asks = {}
     prev, pinned, runs, notes = lookout_state(), pins(), run_records(), []
     box = [None, 0]
-    events, new_state = lookout_events(asks, prev, pinned, laptop, runs, box, dry, notes)
+    events, new_state = lookout_events(asks, prev, pinned, runs, box, dry, notes)
     events = list({(ev["doc"], ev["id"]): ev for ev in events}.values())   # a carried event found again is one
     last = {}
     for r in pass_rows():
@@ -11430,12 +11859,9 @@ def lookout_pass(t0, now, stamp, dry, here, laptop, asks, blind, collected, carr
     # settled by its latest row: a start that came back GATED follows its `dispatching` row, and its
     # event is tried again (S11 item 2)
     done = {k for k, r in last.items() if r.get("action") in SETTLED}
-    rows = []
-    for ev in events:
-        if (ev["doc"], ev["id"]) in done:
-            continue
-        row = dict(lookout_act(ev, here, laptop, runs, dry), ts=now)
-        logged = row.pop("logged", False)   # lookout_gone wrote its dispatching row before the start
+    rows, posted = [], []
+
+    def finish(ev, row, logged):
         rows.append(row)
         print("lookout: %s %s %s — %s%s" % (row["event"], row["doc"], ", ".join(row["items"]) or row["id"], row["action"],
                                            "".join(" · %s" % row[k] for k in ("target", "verdict", "plumb", "why", "card", "run") if row.get(k))))
@@ -11443,13 +11869,38 @@ def lookout_pass(t0, now, stamp, dry, here, laptop, asks, blind, collected, carr
         # one row per change of act; a GATED card still retried once a day too, or its card ages out
         # of --status while the pass still tries it (S11c item 26)
         again = row["action"] == GATED and now - float(was.get("ts") or 0) >= GATED_RELOG
-        if not dry and not logged and ((was.get("action"), was.get("target")) != (row["action"], row.get("target")) or again):
+        if not dry and not logged and (log_sig(was) != log_sig(row) or again):
             lookout_log(row)
         if row["action"] not in SETTLED:
             new_state["pending"].append(pending_of(ev, row))
+
+    for ev in events:
+        if (ev["doc"], ev["id"]) in done:
+            continue
+        row = dict(lookout_act(ev, here, runs, dry), ts=now)
+        logged = row.pop("logged", False)   # lookout_gone wrote its dispatching row before the start
+        if row.get("readback") is not None:   # a claim just posted: read back once every event's is (item 6)
+            posted.append((ev, row))
+            continue
+        finish(ev, row, logged)
+    if any(row["readback"] for _, row in posted):
+        claim_wait()
+    for ev, row in posted:
+        tids = row.pop("readback")
+        if tids:
+            try:
+                won, lost = claim_holds(ev["doc"], event_pin(ev), tids, here)
+            except Exception as e:  # the read-back failed: the claim waits its pass, read again before the seed
+                won, lost = True, None
+                row["why"] += " (not read back: %s)" % str(e)[:80]
+            if not won:
+                row = dict(row, action="skipped", why=lost)
+                row.pop("steps", None)
+        finish(ev, row, False)
     new_state["pending"] += [p for p in carried if (p.get("doc"), p.get("id")) not in
                              {(q.get("doc"), q.get("id")) for q in new_state["pending"]}]
-    redeployed = lookout_redeploy(asks, pins(), dry) if laptop else []
+    # every host redeploys the pages it holds a pin for (finding J: the host holding the pin; S3: no host is special)
+    redeployed = lookout_redeploy(asks, pins(), dry)
     for l in redeployed + notes:
         print("  " + l)
     secs = time.time() - t0

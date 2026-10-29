@@ -2,10 +2,40 @@
 
 ## Unreleased
 
+- The lookout runs `pickup seed --beside` in the doc's repo, never the pass's cwd: a pass started inside a
+  confidential scope no longer meets pickup's `confined_refusal` (confidential-reach S5). Routed S3's fix round 3.
+- Routed comments S3's last review: a claim takes over only from a holder whose lease had died when it was
+  posted (a lease chain), so a two-host race has one winner on every pass; a Save's doc is read from the newer
+  tip, as its event is.
+- Routed comments S3's second landing review: a session's push no host here accounts for is `unseen`, a quiet
+  gate that never marks the event another host's, so an ended session's push holds the branch only until it is
+  2 h old and the owner's answer is then rule 3's (it was settled `skipped`); both trailer forms count, the
+  checkpoint's 8 characters and a session URL's `session_…`, which a run on the branch spans when its record
+  says so. A pass logs a row again when its card or the host rule's clocks change, so a quiet gate's late card
+  reaches the board and `elsewhere_since` survives a gated-to-gated change; a quiet gate's clock restarts after
+  another row. Rule 3 never seeds off a seed no session started; a dead claim leaves the mark before it judged;
+  this host's aged claim never beats another host's live one; claims are posted through the pass and read back
+  after one wait; the 2 h guard's card says whether the started seed holds the answer; Save events read the
+  newer of origin's tip and the local branch; the talk brief stamps no held steps.
+- Routed comments S3's landing review: a checkpoint pushed to the branch within 2 h by a session no host
+  here reads is a run elsewhere (the build host has no road to the laptop); a `claiming` mark holds the
+  gate only while its lease lives and no session replied under it; the host rule's gated rows are no card
+  until 2 h; a queued, unplaced entry is a run coming; one key per routed page, so a seed's page raises no
+  second event on the old branch; the routed gate's refusal of a seed is retried; the `save:` waiver names
+  its page; the run's brief says how a seed lands (`Seeded-From:`). `peer_live` and `branch_host` are gone.
+- Routed comments, S3 (the host rule, docs/routed-comments-2026-10-26.md): the lookout acts on a branch where
+  its run is — a live session harness names here, or the queue's `running_on` — and leaves one whose run is
+  elsewhere (the queue, a session on another host, `pickup move`'s marker) to that host, a card after 2 h;
+  with no run in sight it claims (a `claiming` mark on the event's threads, read back after 10 s; the lease:
+  a claim naming a run first, then the earliest, then the lower id; a bare claim dies after 15 min), waits
+  one pass and starts `pickup seed --beside <branch>` and `dispatch`, never writing the branch and never
+  `--on`. The Save drain and the redeploy run on every host. A seed's gate refuses where no key reads the
+  page; `sheep threads` and a dry pass write no pin; the page a pin gave up is read for an owner's thread.
+  `lookout_release` and `released_brief` are gone: a refused start leaves nothing on the branch.
 - The keel skill's `seeded` path: a full host queues the step (dispatch-queue S3), so the session ends on
   dispatch's closing line with nothing to relay; paste-paths' suite proves that line passes the Stop
   lint as the pending kind.
-- `KEEL_BRIEF_DAY` (YYYY-MM-DD) pins the day `pickup brief`'s same-day guard reads, for suites that cross midnight.
+- `KEEL_BRIEF_DAY` (YYYY-MM-DD) pins the day the run brief's title carries, for suites that cross midnight.
 - Codex and Antigravity sessions reach spacesheep through the same privacy gate as Claude Code's:
   `sheep gate` writes sessionpipe's entries, gated, into Codex's `hooks.json` and Antigravity's
   `config/hooks.json` beside Orca's, seeded from Claude Code's command (no

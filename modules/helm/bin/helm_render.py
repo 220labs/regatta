@@ -566,7 +566,8 @@ sys.exit(r.returncode)
 # a lookout's card that only says another host's own lookout acts: once that host's cards are read,
 # the board shows its card instead (S6 landing review, 19). Keel's wording, matched loosely; a
 # rewording shows both cards again, never hides one.
-OTHER_LOOKOUT_RE = re.compile(r"\bits (own )?lookout (acts|starts the run)\b")
+# Since routed comments S3 the words are "that host's lookout acts" (the host rule names no branch's host).
+OTHER_LOOKOUT_RE = re.compile(r"(?:\bits (?:own )?|\bthat host's )lookout (?:acts|starts the run)\b")
 
 
 def peer_lookout_rows():

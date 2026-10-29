@@ -18,7 +18,7 @@ lacks() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; fails=$((
 
 S="$T/ss"; mkdir -p "$S"
 export MEMO_STATE_DIR="$T/state" MEMO_SHEEP_STATE="$T/sheep" MEMO_SHEEP_BIN="" SPACESHEEP_CONFIG_DIR="$T/ss-config"
-export SPACESHEEP_KEY=ss_test LOOKOUT_HOST=testhost SHEEP_T="$S"
+export SPACESHEEP_KEY=ss_test LOOKOUT_HOST=testhost SHEEP_T="$S" LOOKOUT_DISPATCH_QUEUE= LOOKOUT_HARNESS=
 # the gate's table: keel.comment off and skipped, so an unjudged free-text thread is held, never sent anywhere
 printf '{"defaults": {}, "sites": {"keel.comment": {"kind": "classify", "provider": "off", "when_off": "skip"}}}\n' > "$T/models.json"
 export GATE_TABLE="$T/models.json"
@@ -253,6 +253,40 @@ check "$rc" "3" "an offer neither go nor no: held"
 has "$T/r5e.out" "[c1] offered, neither go nor no" "…named as such"
 K routed check "$D" --routing c1 > /dev/null 2>&1; rc=$?
 check "$rc" "0" "…unless it is the thread this start routes"
+# a claim is a lease (the S3 landing review's item 2): owed while it lives and no session replied since
+comments <<'EOF'
+c20|||sam@example.com||2026-10-26T08:00:00Z|drop G2 — the bare version needs to be written
+c21|c20||sam@example.com|claude|2026-10-26T08:30:00Z|memo: claiming for testhost, 2026-10-26T08:30:00Z
+EOF
+MEMO_NOW=2026-10-26T08:40:00Z K routed check "$D" > "$T/r5f.out" 2>&1; rc=$?
+check "$rc" "3" "a bare claim 10 min old, no reply: held"
+has "$T/r5f.out" "[c20] an act being claimed" "…as an act being claimed"
+MEMO_NOW=2026-10-26T08:46:00Z K routed check "$D" > "$T/r5g.out" 2>&1; rc=$?
+check "$rc" "3" "a bare claim 16 min old, no reply: the lease is dead, the owner's words judged again"
+has "$T/r5g.out" "[c20] act-unclear" "…as if unmarked (the call off: held as unjudged)"
+lacks "$T/r5g.out" "being claimed" "…never as a claim"
+comments <<'EOF'
+c20|||sam@example.com||2026-10-26T08:00:00Z|drop G2 — the bare version needs to be written
+c21|c20||sam@example.com|claude|2026-10-26T08:30:00Z|memo: claiming for testhost, 2026-10-26T08:30:00Z
+c22|c20||sam@example.com|claude|2026-10-26T08:35:00Z|Dropped G2 and wrote the bare version.
+EOF
+MEMO_NOW=2026-10-26T08:40:00Z K routed check "$D" > "$T/r5h.out" 2>&1; rc=$?
+check "$rc" "0" "a claim its run replied under, the lease still alive: clear"
+comments <<'EOF'
+c30|||sam@example.com||2026-10-26T08:00:00Z|yes
+c31|c30||sam@example.com|claude|2026-10-26T08:30:00Z|memo: claiming for testhost, 2026-10-26T08:30:00Z
+EOF
+MEMO_NOW=2026-10-26T08:46:00Z K routed check "$D" > /dev/null 2>&1; rc=$?
+check "$rc" "0" "a dead claim over a bare yes: clear, a pickup seed naming the doc no longer refused"
+# item 5 (the S3 second landing review): a dead claim after our offer leaves the offer, never nothing
+comments <<'EOF'
+c40|||sam@example.com||2026-10-26T08:00:00Z|drop G2 — the bare version needs to be written
+c41|c40||sam@example.com|claude|2026-10-26T08:10:00Z|memo: would start: drop G2 (act-plain) — reply go to start, no to close
+c42|c40||sam@example.com|claude|2026-10-26T08:20:00Z|memo: claiming for testhost, 2026-10-26T08:20:00Z
+EOF
+MEMO_NOW=2026-10-26T08:50:00Z K routed check "$D" > "$T/r5i.out" 2>&1; rc=$?
+check "$rc" "3" "a dead claim after a would-start offer, no go yet: held"
+has "$T/r5i.out" "[c40] offered, neither go nor no" "…by the offer before the claim (item 5: the dead claim dropped it)"
 
 echo "R6 — Saves: one the doc lacks holds; one git answered after the page's commit does not"
 comments <<'EOF'
@@ -319,6 +353,9 @@ echo "R9 — no key here: nothing read, nothing judged, said so"
 SPACESHEEP_KEY= MEMO_SHEEP_APP=http://127.0.0.1:9 REGATTA_CONFIG="$T/nokey" K routed check "$D" > "$T/r9.out" 2>&1; rc=$?
 check "$rc" "0" "the check passes"
 has "$T/r9.out" "no SPACESHEEP_KEY here" "…saying the page was not read"
+SPACESHEEP_KEY= MEMO_SHEEP_APP=http://127.0.0.1:9 REGATTA_CONFIG="$T/nokey" K routed line --repo "$R" --ref HEAD --branch claude/testhost/2026-10-27-nk --brief "$T/brief.md" --check > "$T/r9b.out" 2>&1; rc=$?
+check "$rc" "3" "…but new work (a seed's --check) on a paged doc, with no key here: refused (S2 landing review item 8, S3)"
+has "$T/r9b.out" "start it where a key is" "…saying where it can start"
 
 echo "R10 — the lookout: a routed page read on a host with no pin, every open thread new; the no-key card"
 comments <<'EOF'
@@ -331,13 +368,13 @@ from importlib.machinery import SourceFileLoader as L
 m = L("k", sys.argv[1]).load_module()
 m.repo_tops = lambda pinned: {"demo": sys.argv[2]}
 st = {"open": {}, "comments": {}, "pending": []}
-evs, new = m.lookout_events({}, st, {}, True, [], [None, 0], True, [])
+evs, new = m.lookout_events({}, st, {}, [], [None, 0], True, [])
 print([(e["doc"], e["kind"]) for e in evs], sorted(new["comments"]))
-evs2, _ = m.lookout_events({}, new, {}, True, [], [None, 0], True, [])
+evs2, _ = m.lookout_events({}, new, {}, [], [None, 0], True, [])
 print(len(evs2))
 os.environ["SPACESHEEP_KEY"] = ""; os.environ["REGATTA_CONFIG"] = os.environ["SHEEP_T"] + "/nocfg"
-evs3, _ = m.lookout_events({}, st, {}, True, [], [None, 0], True, [])
-row = m.lookout_act(evs3[0], "testhost", True, [], True)
+evs3, _ = m.lookout_events({}, st, {}, [], [None, 0], True, [])
+row = m.lookout_act(evs3[0], "testhost", [], True)
 print(evs3[0]["kind"], row["action"], row["card"])
 EOF
 )" "[('$RK', 'comment')] ['$RK']
@@ -359,20 +396,8 @@ the routing commit's
 a review stamp's
 None" "seed, brief and a Routed-By trailer, a review stamp: no person's answer; anything else still judged"
 
-echo "R12 — lookout_release takes the line back: pickup brief --unroute, only for a line this start wrote"
-printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/pickup.args"\n' "$T" > "$T/pickup"; chmod +x "$T/pickup"
-cat > "$T/r12.py" <<'EOF'
-import sys
-from importlib.machinery import SourceFileLoader as L
-m = L("k", sys.argv[1]).load_module()
-m.lookout_release({"pickup": sys.argv[2] + "/pickup", "branch": "claude/x", "top": "/tmp", "routed": sys.argv[3] == "1",
-                   "text": "Task: t\nSteps: docs/d.md S1\n"}, {}, "no run started")
-EOF
-python3 "$T/r12.py" "$B/keel" "$T" 1 > /dev/null
-check "$(tail -1 "$T/pickup.args")" "--unroute" "the release's pickup brief carries --unroute"
-python3 "$T/r12.py" "$B/keel" "$T" 0 > /dev/null
-check "$(grep -c -- '--unroute' "$T/pickup.args")" "0" "…never when the brief wrote no line: an earlier routing's line stays (S2 landing review)"
-
+# R12 (lookout_release's --unroute) left with routed comments S3: the lookout seeds beside a branch and
+# never briefs it, so a refused start has no line on the branch to take back (test_lookout.sh's seed cases)
 echo "R13 — pickup seed, end to end: refused while the thread is open, then the line in the seed's commit"
 PK="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common; print(common.tool("pickup") or "")' "$B/../lib")"
 if [ -n "$PK" ]; then
@@ -447,7 +472,7 @@ import json, sys
 from importlib.machinery import SourceFileLoader as L
 m = L("k", sys.argv[1]).load_module()
 m.repo_tops = lambda pinned: {"two": m.Path(sys.argv[2])}
-evs, _ = m.lookout_events({}, {"open": {}, "comments": {}, "pending": []}, m.pins(), True, [], [None, 0], True, [])
+evs, _ = m.lookout_events({}, {"open": {}, "comments": {}, "pending": []}, m.pins(), [], [None, 0], True, [])
 print(json.dumps([[e["doc"], e["kind"], e.get("threads")] for e in evs]))
 EOF
 
@@ -460,14 +485,57 @@ K sheep threads "$ED" > "$T/r14a.out" 2>&1; rc=$?
 check "$rc" "0" "sheep threads, a pin holding another page than the line's: read"
 has "$T/r14a.out" "[e1]" "…the owner's thread on the line's page listed"
 check "$(reads sp-e):$(reads sp-mirror)" "1:0" "…read from the line's page, never the mirror's"
-has "$T/r14a.out" "this Mac's own page sp-mirror is left, unread" "…saying which page it left"
-check "$(pinof)" "sp-e sp-mirror None" "…the pin pointed at the line's page, no address kept, so the next deploy goes there"
+lacks "$T/r14a.out" "is left" "…and, a read, says nothing of the pin (S2 landing review item 9, S3)"
+check "$(pinof)" "sp-mirror None https://example.invalid/mirror" "…nor writes it"
 mirror; : > "$S/web.log"
 K sheep pull "$ED" > "$T/r14b.out" 2>&1; rc=$?
 check "$rc:$(reads sp-e):$(reads sp-mirror)" "0:1:0" "sheep pull: the line's page too"
+has "$T/r14b.out" "this Mac's own page sp-mirror is left" "…saying which page it left"
+check "$(pinof)" "sp-e sp-mirror None" "…the pin pointed at the line's page, no address kept, so the next deploy goes there"
 mirror; : > "$S/web.log"
 check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"comment\", null]]" "the lookout: the owner's thread on the line's page is the event"
-check "$(reads sp-e):$(reads sp-mirror)" "1:0" "…read from the line's page"
+check "$(reads sp-e):$(reads sp-mirror)" "1:1" "…read from the line's page, and the page given up read for an owner's thread typed there (item 10)"
+printf '{"comments": [{"id": "m1", "body": "typed on the old page", "author_email": "sam@example.com", "created_at": "2026-10-26T09:00:00Z"}]}\n' > "$S/comments-sp-mirror.json"
+mirror
+check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"gave-up\", null], [\"$EK\", \"comment\", null]]" "item 10: an owner's thread on the page given up raises its own event"
+check "$(py "$E" <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+m.repo_tops = lambda pinned: {"two": m.Path(sys.argv[2])}
+evs, _ = m.lookout_events({}, {"open": {}, "comments": {}, "pending": []}, m.pins(), [], [None, 0], True, [])
+ev = [e for e in evs if e["kind"] == "gave-up"][0]
+r = m.lookout_act(ev, "testhost", [], True)
+print(r["action"], "m1" in r["card"], "sp-mirror" in r["card"], "answer there" in r["card"])
+EOF
+)" "card True True True" "…a card naming the thread, the page given up and where to answer, before any host rule"
+printf '{"comments": []}\n' > "$S/comments-sp-mirror.json"
+# item 6 (the S3 landing review): a seed off the branch routes the doc's page to its own key; the old
+# branch, still in asks, raises no second event for the page
+E2=claude/testhost/2026-10-27-e-seed; E2K="two@$E2:docs/e.md"
+git -C "$E" checkout -q -b "$E2"
+python3 - "$E/docs/e.md" "$(ago 1)" "$E2" <<'EOF'
+import re, sys
+p = sys.argv[1]; t = open(p).read()
+open(p, "w").write(re.sub(r"(?m)^Routed: .*$", "Routed: %s · page sp-e · %s" % (sys.argv[2], sys.argv[3]), t))
+EOF
+git -C "$E" commit -qam "the seed's routing"; git -C "$E" checkout -q claude/testhost/2026-10-27-e
+python3 - "$MEMO_SHEEP_STATE/sheep.json" "$EK" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1])); d[sys.argv[2]] = {"space": "sp-e", "url": "https://example.invalid/sp-e", "sha": "0" * 40, "fmt": 1, "sent": []}
+json.dump(d, open(sys.argv[1], "w"))
+EOF
+check "$(py "$E" "$EK" "$E2K" <<'EOF'
+import json, sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+m.repo_tops = lambda pinned: {"two": m.Path(sys.argv[2])}
+notes = []
+evs, _ = m.lookout_events({sys.argv[3]: ["D1"], sys.argv[4]: ["D1"]}, {"open": {}, "comments": {}, "pending": []}, m.pins(), [], [None, 0], True, notes)
+print(sorted({e["doc"] == sys.argv[4] for e in evs if e["kind"] in ("save", "comment", "talk")}), any("is routed to " + sys.argv[4] in n for n in notes))
+EOF
+)" "[True] True" "item 6: a page routed on to a seed raises its events under the seed's key alone, the old branch's key said and skipped"
+git -C "$E" update-ref -d "refs/heads/$E2"
 
 echo "R14b — …and the doc's first deploy on a routed branch goes to the line's page (sheep)"
 mkdir -p "$S/bin"; cat > "$S/bin/spacesheep" <<'EOF'
@@ -504,6 +572,12 @@ printf '[{"seq": 7, "at": "2026-10-26T08:00:00Z", "name": "memo-save", "data": {
 K routed check "$ED" > "$T/r16a.out" 2>&1; rc=$?
 check "$rc" "3" "a Save whose commit no host can read: refused"
 has "$T/r16a.out" "[save:7] 2026-10-26T08:00:00Z" "…naming it as settle takes it"
+K routed check "$ED" --routing save:sp-e:6 > /dev/null 2>&1; rc=$?
+check "$rc" "3" "--routing save:sp-e:6 (a start taking the page's Saves through seq 6): the Save 7 still refuses"
+K routed check "$ED" --routing save:sp-e:7 > /dev/null 2>&1; rc=$?
+check "$rc" "0" "--routing save:sp-e:7: the Save goes with the start (the lookout's seed of a Save, S3)"
+K routed check "$ED" --routing save:sp-other:7 save:7 > /dev/null 2>&1; rc=$?
+check "$rc" "3" "…another page's waiver, or a bare seq, waives nothing here (the S3 landing review: scoped to its own page)"
 CLAUDE_UNATTENDED=1 K settle "$ED" save:7 --why "x" > /dev/null 2>&1; rc=$?
 check "$rc" "3" "settle save: unattended, refused"
 K settle "$ED" save:9 --why "x" > "$T/r16b.out" 2>&1; rc=$?

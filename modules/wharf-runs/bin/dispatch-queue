@@ -1262,8 +1262,9 @@ def has_review(repo, branch):
     for ref in ("refs/heads/%s" % branch, "refs/remotes/origin/%s" % branch):
         r = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", ref, "--", "docs/handoff/"], capture_output=True, text=True)
         if r.returncode == 0:
-            t = re.escape(topic_of(branch))
-            return any(re.fullmatch(r"docs/handoff/([0-9]{4}-[0-9]{2}-[0-9]{2}-)?%s\.review" % t, n) for n in r.stdout.splitlines())
+            # Any `.review` on the branch, as pickup's branch_origin scans: a seed made beside a spawn
+            # (`pickup seed --beside`) inherits its source's `.review` under the source's topic, not its own.
+            return any(re.fullmatch(r"docs/handoff/([0-9]{4}-[0-9]{2}-[0-9]{2}-)?[^/]+\.review", n) for n in r.stdout.splitlines())
     return False
 
 
