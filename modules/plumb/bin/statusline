@@ -121,7 +121,7 @@ def open_asks() -> int:
 
 
 def stalled() -> int:
-    """Stalls the chain manager's tick found on both Macs (orchestration B4): the count `bin/ask poll`
+    """Stalls the tick found on both Macs (orchestration B4): the count `bin/ask poll`
     cached at the end of its last run, ~/Library/Caches/ask/stalls.json {t, n}, beside asks.json. Ask-covered waits (an
     open D-item) are not in it: the tick leaves those to `asks N`. Hidden once older than 15 min, three
     missed polls — a number nobody is refreshing is worse than none. Never ssh, never the classifier."""
