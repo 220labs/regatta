@@ -1045,7 +1045,7 @@ def stop_findings(text: str) -> list[str]:
     return found
 
 
-# session-asks R2 (docs/session-asks-2026-10-09.md, B4): a dispatched run with a manager never hands
+# session-asks R2 (docs/session-asks-2026-10-09.md, B4): a dispatched run with a skipper never hands
 # the owner an interruption — the WAITING line, or a Do-this-now step (a paste, a login, a press-Enter:
 # the owner, 2026-10-10, "asking me to log in and do something counts too") — it relays it. Allowed when
 # bin/ask recorded that nobody was there to relay to (ask.json, verdict none or unreachable).
@@ -1069,16 +1069,16 @@ def _ask_cmd():
 
 
 def _asklib():
-    """asklib.py as a module: standing_manager() is the one "this Mac runs a manager" test."""
+    """asklib.py as a module: standing_skipper() is the one "this Mac runs a skipper" test."""
     return _peer("asklib.py", "asklib")
 
 
 def standing(env=None):
-    """This Mac's standing manager's ctx fields (manager_host, manager_name …) when a relay from this
+    """This Mac's standing skipper's ctx fields (manager_host, manager_name …) when a relay from this
     run goes to it, else None (stray-manager M5, B1 ii): a run with no DISPATCH_MANAGER, or one whose
-    manager has ended. asklib.resolve decides, the one resolution bin/ask relay and relay() use, so
+    skipper has ended. asklib.resolve decides, the one resolution bin/ask relay and relay() use, so
     this hook and the relay never disagree (review gate, 2026-10-16: this returned None whenever
-    DISPATCH_MANAGER was set, though relay sent a gone manager's run to the standing one). Never
+    DISPATCH_MANAGER was set, though relay sent a gone skipper's run to the standing one). Never
     raises: no record is today's behaviour."""
     import os
     env = os.environ if env is None else env
@@ -1091,7 +1091,7 @@ def standing(env=None):
            "session": env.get("ASK_SESSION") or env.get("CLAUDE_CODE_SESSION_ID") or None}
     try:
         lib = _asklib()
-        if lib is None:  # no helm: no standing manager to relay to (G24)
+        if lib is None:  # no helm: no standing skipper to relay to (G24)
             return None
         out = lib.resolve(ctx)[0]
     except Exception:
@@ -1102,7 +1102,7 @@ def standing(env=None):
 def autofinish_start(cwd: str, session: str) -> bool:
     """This session is autofinish's own `/finish <branch> --unattended` start: the worktree's run
     record (<git dir>/claude/autofinish.json, which bin/autofinish-run writes before the start, with
-    the session id it starts under) names it. dispatch --start gives such a run no manager and
+    the session id it starts under) names it. dispatch --start gives such a run no skipper and
     no mark in its environment (CLAUDE_UNATTENDED=dispatch, as any run), so the record is the mark;
     checkpoint.py's prompt note tells its runner apart the same way."""
     import os
@@ -1119,7 +1119,7 @@ def autofinish_start(cwd: str, session: str) -> bool:
 def ask_verdict(cwd: str, session: str = "", standing_name=None):
     """bin/ask's verdict for THIS session (ask.json's `session`), or None: a verdict an earlier run
     of the same worktree left would let a later run hand the owner its ask (finding 9). A `none` recorded
-    while no manager ran is void once the Mac's standing manager runs (M5): the run relays again."""
+    while no skipper ran is void once the Mac's standing skipper runs (M5): the run relays again."""
     import os
     gd = _git(cwd, "rev-parse", "--absolute-git-dir").strip() if cwd else ""
     try:
@@ -1149,8 +1149,8 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
     kind, line, _ = _common().ending(reply if last is None else last)
     if what == "the WAITING line" and kind == "waiting" and owed_nothing(line or "") and not _common().do_this_now_block(reply):
         return []
-    # autofinish's start is no manager's run (stray-manager M1 c, M3): its asks are landings, which
-    # a manager never performs, so they go to the owner as before the seam
+    # autofinish's start is no skipper's run (stray-manager M1 c, M3): its asks are landings, which
+    # a skipper never performs, so they go to the owner as before the seam
     own = env.get("DISPATCH_SKIPPER") or env.get("DISPATCH_MANAGER")
     if not own and autofinish_start(cwd, session):
         return []
@@ -1161,10 +1161,10 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
         return []
     # named as bin/ask relay's RELAYED line names it when that is where the ask goes
     who = (f"a skipper ({sm.get('manager_name')}, its scope's)" if sm and sm.get("scope") else
-           f"a manager (this Mac's standing one, manager · {sm.get('manager_host')})" if sm
-           else "a manager (DISPATCH_MANAGER)")
+           f"a skipper (this Mac's standing one, skipper · {sm.get('manager_host')})" if sm
+           else "a skipper (DISPATCH_SKIPPER)")
     return [f"this run has {who}, so what it would hand the owner — {what} — goes "
-            f"to the manager instead: write it in the doc as an item (a D-item, or a Do-this-now item "
+            f"to the skipper instead: write it in the doc as an item (a D-item, or a Do-this-now item "
             f"naming what it unblocks), commit, run `{_ask_cmd()} relay <doc> <Dn>`, park what rests "
             f"on it, build the rest, and end on the line it prints (RELAYED TO …, or the WAITING line "
             f"when it finds nobody)"]
@@ -1175,7 +1175,7 @@ def _rc():
     return _peer("dispatch-rc", "dispatch_rc")
 
 
-def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str = "", alive=None,
+def skipper_findings(session: str, env=None, runs=None, listening=None, cwd: str = "", alive=None,
                      listen_row=None, peer_runs=None) -> list:
     """A watched session with a live dispatched run that can reach it over Talk, and no listener:
     start one — a process a hook spawns wakes nobody; only the model's own background shell does
@@ -1184,10 +1184,10 @@ def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str
 
     Once per listener gap, not per turn: a marker (in the git dir, else under the asks queue dir)
     says the reminder was given; a listener seen running clears it. So when a listener exits on a
-    wake and the turn ends with none restarted while a run is still live, the manager is told once
-    more (second review, 2026-10-11) — and a manager that never starts one hears it once.
+    wake and the turn ends with none restarted while a run is still live, the skipper is told once
+    more (second review, 2026-10-11) — and a skipper that never starts one hears it once.
 
-    A run on a peer Mac counts too (peer-manager-relay, 2026-10-26: a laptop manager of a build-box run
+    A run on a peer Mac counts too (peer-manager-relay, 2026-10-26: a laptop skipper of a build-box run
     was never told to listen): asklib.peer_runs() reads every peer `wharf-runs/ssh` names, one ssh a
     peer, cached 10 minutes, its liveness judged there. Only on the hook's own read (no `runs` given)
     or when PEER_RUNS is handed in (tests)."""
@@ -1196,7 +1196,7 @@ def manager_findings(session: str, env=None, runs=None, listening=None, cwd: str
     if env.get("CLAUDE_UNATTENDED") or not session:
         return []
     # The id `bin/ask listen` accepts is CLAUDE_CODE_SESSION_ID (it refuses any other, M1 b), and
-    # dispatch records that same variable as a run's manager; the hook's session_id can differ from
+    # dispatch records that same variable as a run's skipper; the hook's session_id can differ from
     # it after /clear, a continue or a fork. So a run is this session's under either id, and the
     # reminder names the one listen takes (review gate, 2026-10-16).
     listen_id = env.get("CLAUDE_CODE_SESSION_ID") or session
@@ -1320,9 +1320,9 @@ def stop_hook() -> int:
     # Its own try (regatta-modules G9): a peer that raises costs this reminder, never the hand-over
     # line or the relay check above.
     try:
-        found = manager_findings(str(data.get("session_id") or ""), cwd=cwd) + found
+        found = skipper_findings(str(data.get("session_id") or ""), cwd=cwd) + found
     except Exception as err:
-        print(f"paste-paths: manager: {err}", file=sys.stderr)
+        print(f"paste-paths: skipper: {err}", file=sys.stderr)
     links = []
     try:
         links = link_findings(reply, root, cwd)
@@ -1347,7 +1347,7 @@ def block_reason(reply: str, found: list, links: list, env=None) -> str:
     WAITING line, the hand-over line: most blocks are). Resent whole: a fix at the TOP — a paste
     block or a Do-this-now block, as the owner copies the block at the top, not a patch below it
     (review of the first version) — and every block in a run nobody watches (CLAUDE_UNATTENDED,
-    set by bin/dispatch): the lander and a manager's relay read the last message alone, and a
+    set by bin/dispatch): the lander and a skipper's relay read the last message alone, and a
     repeat there costs no attention (review of this change). The correction itself is not
     re-checked (stop_hook_active)."""
     import os

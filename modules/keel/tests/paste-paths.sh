@@ -653,7 +653,7 @@ check "$(sd_ "$T/ovp-wt")" "True" "seedable from a worktree reads the primary's 
 rm "$OVP/.claude/workflow.json"
 check "$(sd_ "$T/ovp-wt")" "False" "  and without one, not seedable"
 
-# session-asks R2/B4: a managed run relays what it would hand Sam; a manager keeps a listener
+# session-asks R2/B4: a skippered run relays what it would hand Sam; a skipper keeps a listener
 af_() {  # af_ <reply> <cwd> [ENV=VAL …]: ask_findings' count; SID=… is this session's id
   python3 - "$B/paste-paths" "$@" <<'PY'
 import sys
@@ -666,11 +666,11 @@ PY
 }
 AG="$T/askrepo"; git init -q "$AG"
 W='done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1, the cadence'
-check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "ask: a managed run's WAITING line naming a D-item is refused once"
+check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "ask: a skippered run's WAITING line naming a D-item is refused once"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1)" 1 "  the same under the skipper's new name alone (rename S5: both names read)"
 check "$(af_ 'Do this now\n\n```\nssh buildbox-ssh login\n```\n\nthen I go on.' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a Do-this-now step (Sam: a login counts too)"
 check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — log in to gh on buildbox, then dispatch --next' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a WAITING line naming a manual step"
-check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a run with no manager may end on it (R6)"
+check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a run with no skipper may end on it (R6)"
 check "$(af_ "$W" "$AG" DISPATCH_MANAGER=m1)" 0 "  an attended session is untouched"
 check "$(af_ 'RELAYED TO coding-7 — D1, the cadence' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the RELAYED line passes"
 echo "  finding 7: dispatch's own refusals end a run on the WAITING line, and are not asks"
@@ -696,22 +696,22 @@ check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  bi
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1 SID=s-2)" 1 "  an earlier run's verdict is stale: refused"
 echo '{"verdict": "unreachable"}' > "$AG/.git/claude/ask.json"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  a verdict with no session proves nothing"
-echo "  stray-manager B1 ii: no DISPATCH_MANAGER, and this Mac runs a standing manager"
+echo "  stray-manager B1 ii: no DISPATCH_MANAGER, and this Mac runs a standing skipper"
 SMD="$T/manager"; SSD="$T/smsess"; mkdir -p "$SMD" "$SSD"
-printf '{"session": "sm-1", "name": "manager · testmac", "pid": %d, "space": "sp-m"}' $$ > "$SMD/testmac.json"
-printf '{"pid": %d, "sessionId": "sm-1", "name": "manager", "updatedAt": 2}' $$ > "$SSD/sm-1.json"
+printf '{"session": "sm-1", "name": "skipper · testmac", "pid": %d, "space": "sp-m"}' $$ > "$SMD/testmac.json"
+printf '{"pid": %d, "sessionId": "sm-1", "name": "skipper", "updatedAt": 2}' $$ > "$SSD/sm-1.json"
 smenv() { ASK_MANAGER_DIR="$SMD" ASK_SESSIONS_DIR="$SSD" PLAN_HOST=testmac "$@"; }
 rm "$AG/.git/claude/ask.json"
 check "$(ASK_MANAGER_DIR="$T/no-manager" af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  no record: the WAITING line passes, as before the seam"
-check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 1 "  a live record: the run is managed, its WAITING line refused"
-check "$(smenv python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m=L("pp", sys.argv[1]).load_module(); print("standing one, manager · testmac)" in m.ask_findings(sys.argv[2], None, sys.argv[3], {"CLAUDE_UNATTENDED": "x"}, session="s-1")[0])' "$B/paste-paths" "$(printf "$W")" "$AG")" \
-  "True" "  the finding names the Mac's manager"
+check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 1 "  a live record: the run is skippered, its WAITING line refused"
+check "$(smenv python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m=L("pp", sys.argv[1]).load_module(); print("standing one, skipper · testmac)" in m.ask_findings(sys.argv[2], None, sys.argv[3], {"CLAUDE_UNATTENDED": "x"}, session="s-1")[0])' "$B/paste-paths" "$(printf "$W")" "$AG")" \
+  "True" "  the finding names the Mac's skipper"
 echo '{"verdict": "none", "session": "s-1"}' > "$AG/.git/claude/ask.json"
-check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 1 "  a 'none' recorded before the manager ran is void: relay again"
+check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 1 "  a 'none' recorded before the skipper ran is void: relay again"
 echo '{"verdict": "unreachable", "session": "s-1"}' > "$AG/.git/claude/ask.json"
 check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  'unreachable' (every road refused) still lets the WAITING line through"
 rm "$AG/.git/claude/ask.json"
-echo "  review gate 2026-10-16: the hook resolves as the relay does (asklib.resolve), and autofinish's start is no manager's"
+echo "  review gate 2026-10-16: the hook resolves as the relay does (asklib.resolve), and autofinish's start is no skipper's"
 afw_() {  # afw_ <ENV=VAL …>: the finding's text for the WAITING line, or "none"
   python3 - "$B/paste-paths" "$(printf "$W")" "$AG" "$@" <<'PY'
 import sys
@@ -722,14 +722,14 @@ f = m.ask_findings(sys.argv[2], None, sys.argv[3], env, session=env.pop("SID", "
 print(f[0] if f else "none")
 PY
 }
-has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=gone-1)" "a manager (this Mac's standing one, manager · testmac)" \
-  "  its own manager ended (no record): relay sends it to the standing one, and the finding names manager · testmac"
+has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=gone-1)" "a skipper (this Mac's standing one, skipper · testmac)" \
+  "  its own skipper ended (no record): relay sends it to the standing one, and the finding names skipper · testmac"
 printf '{"pid": %d, "sessionId": "own-1", "name": "coding-1", "updatedAt": 2}' $$ > "$SSD/own-1.json"
-has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=own-1)" "a manager (DISPATCH_MANAGER)" "  its own manager live: that one, not the standing one"
+has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=own-1)" "a skipper (DISPATCH_SKIPPER)" "  its own skipper live: that one, not the standing one"
 rm "$SSD/own-1.json"
 echo '{"session": "s-1", "by": "sweep", "started": 1}' > "$AG/.git/claude/autofinish.json"
-check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  autofinish's /finish --unattended start (its run record names this session): no manager's, the WAITING line passes (M1 c, M3)"
-check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch SID=s-2)" 1 "  another session in that worktree is still the standing manager's"
+check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  autofinish's /finish --unattended start (its run record names this session): no skipper's, the WAITING line passes (M1 c, M3)"
+check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch SID=s-2)" 1 "  another session in that worktree is still the standing skipper's"
 rm "$AG/.git/claude/autofinish.json"
 check "$(python3 - "$B/paste-paths" "$AG" <<'PY'
 import sys
@@ -741,15 +741,15 @@ print(len(m.ask_findings("all done, nothing asked", None, sys.argv[2], {"CLAUDE_
 PY
 )" "0 0" "  a turn that asks nothing: standing() is never called (no asklib load, no scutil on every Stop)"
 sleep 0 & SMDEAD=$!; wait $SMDEAD
-printf '{"pid": %d, "sessionId": "sm-1", "name": "manager", "updatedAt": 2}' $SMDEAD > "$SSD/sm-1.json"
-check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a record whose session has ended: no manager, as before"
-mf_() {  # mf_ <session> <listening> <alive> <listen row> [cwd]: manager_findings' count over a scratch runs dir
+printf '{"pid": %d, "sessionId": "sm-1", "name": "skipper", "updatedAt": 2}' $SMDEAD > "$SSD/sm-1.json"
+check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a record whose session has ended: no skipper, as before"
+mf_() {  # mf_ <session> <listening> <alive> <listen row> [cwd]: skipper_findings' count over a scratch runs dir
   python3 - "$B/paste-paths" "$1" "$2" "$T/runs" "$3" "$4" "${5:-}" <<'PY'
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("pp", sys.argv[1]).load_module()
 alive = None if sys.argv[5] == "real" else (lambda st: sys.argv[5] == "yes")
-print(len(m.manager_findings(sys.argv[2], env={"ASK_QUEUE_DIR": sys.argv[4] + "-q"}, runs=sys.argv[4], listening=sys.argv[3] == "yes",
+print(len(m.skipper_findings(sys.argv[2], env={"ASK_QUEUE_DIR": sys.argv[4] + "-q"}, runs=sys.argv[4], listening=sys.argv[3] == "yes",
                              cwd=sys.argv[7], alive=alive, listen_row=sys.argv[6])))
 PY
 }
@@ -761,12 +761,12 @@ check "$(python3 - "$B/paste-paths" "$T/runs" <<'PY'
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("pp", sys.argv[1]).load_module()
-f = m.manager_findings("hook-2", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q2", "CLAUDE_CODE_SESSION_ID": "mgr-1"}, runs=sys.argv[2],
+f = m.skipper_findings("hook-2", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q2", "CLAUDE_CODE_SESSION_ID": "mgr-1"}, runs=sys.argv[2],
                        listening=False, alive=lambda st: True, listen_row="talk")
 print(len(f), "--session mgr-1\x60" in f[0] if f else "-", "hook-2" in f[0] if f else "-")
 PY
-)" "1 True False" "manager, review gate 2026-10-16: the hook's id differs (after /clear): the run is found by CLAUDE_CODE_SESSION_ID, and listen is told that id, the one it accepts"
-check "$(mf_ mgr-1 no yes talk)" 1 "manager: a live run with a plan page and no listener — start one"
+)" "1 True False" "skipper, review gate 2026-10-16: the hook's id differs (after /clear): the run is found by CLAUDE_CODE_SESSION_ID, and listen is told that id, the one it accepts"
+check "$(mf_ mgr-1 no yes talk)" 1 "skipper: a live run with a plan page and no listener — start one"
 check "$(mf_ mgr-1 yes yes talk)" 0 "  a listener runs: nothing"
 check "$(mf_ mgr-2 no yes talk)" 0 "  a session that manages nothing: nothing"
 check "$(python3 - "$B/paste-paths" "$T/runs-empty" <<'PY'
@@ -774,23 +774,23 @@ import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("pp", sys.argv[1]).load_module()
 far = [{"manager": "mgr-9", "topic": "build", "host": "buildbox"}, {"manager": "other", "topic": "x", "host": "buildbox"}]
-f = m.manager_findings("mgr-9", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
+f = m.skipper_findings("mgr-9", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
                        alive=lambda st: True, listen_row="talk", peer_runs=far)
-g = m.manager_findings("mgr-8", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
+g = m.skipper_findings("mgr-8", env={"ASK_QUEUE_DIR": sys.argv[2] + "-q"}, runs=sys.argv[2], listening=False,
                        alive=lambda st: True, listen_row="talk", peer_runs=far)
 print(len(f), "(build)" in f[0] if f else "-", len(g))
 PY
-)" "1 True 0" "  peer-manager-relay: a live run on a peer (asklib.peer_runs) is told to listen too; another manager's is not"
+)" "1 True 0" "  peer-manager-relay: a live run on a peer (asklib.peer_runs) is told to listen too; another skipper's is not"
 echo "  finding 8: only runs that can use a listener, once a session"
 check "$(mf_ mgr-3 no yes talk)" 0 "  a run with no plan_space (no Talk address): nothing"
 check "$(mf_ mgr-1 no yes none)" 0 "  ask.listen is not talk: nothing"
 check "$(mf_ mgr-1 no no talk)" 0 "  the run's claude is gone: nothing"
-MG="$T/mgrepo"; git init -q "$MG"
-check "$(mf_ mgr-1 no yes talk "$MG")" 1 "  the first turn is told"
-check "$(mf_ mgr-1 no yes talk "$MG")" 0 "  the second is not (a marker in the git dir)"
-check "$(mf_ mgr-1 yes yes talk "$MG")" 0 "  second review, finding 4: a listener runs — the marker clears"
-check "$(mf_ mgr-1 no yes talk "$MG")" 1 "  it exited on a wake and none restarted: told once more"
-check "$(mf_ mgr-1 no yes talk "$MG")" 0 "  and only once"
+SKR="$T/skrepo"; git init -q "$SKR"
+check "$(mf_ mgr-1 no yes talk "$SKR")" 1 "  the first turn is told"
+check "$(mf_ mgr-1 no yes talk "$SKR")" 0 "  the second is not (a marker in the git dir)"
+check "$(mf_ mgr-1 yes yes talk "$SKR")" 0 "  second review, finding 4: a listener runs — the marker clears"
+check "$(mf_ mgr-1 no yes talk "$SKR")" 1 "  it exited on a wake and none restarted: told once more"
+check "$(mf_ mgr-1 no yes talk "$SKR")" 0 "  and only once"
 check "$(mf_ mgr-1 no yes talk)" 1 "  no git dir (the listener above cleared its marker): told once"
 check "$(ls "$T/runs-q" 2>/dev/null | grep -c '^listen-nagged.mgr-1$')" 1 "  …the marker under the queue dir"
 check "$(mf_ mgr-1 no yes talk)" 0 "  …so a cwd-less turn is not told every time"
@@ -804,13 +804,13 @@ kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
 # regatta-modules G9, G24: helm (asklib, surfaces, bin/ask) and wharf-runs (dispatch-rc) absent —
 # run from a scratch tree of the core and keel alone, since
 # wharf-runs lives in this repo since B7 (the AGENTS.md trap: a peer that moves in is found by
-# tool()'s modules/*/ search). The hand-over finding still blocks, the manager reminder and the
-# standing-manager test are skipped, never a traceback.
+# tool()'s modules/*/ search). The hand-over finding still blocks, the skipper reminder and the
+# standing-skipper test are skipped, never a traceback.
 NP="KEEL_NO_PEERS=1"   # no variable the code reads: the scratch tree hides the peers
 G24="$T/g24tree"; mkdir -p "$G24/.claude-plugin" "$G24/modules"; : > "$G24/.claude-plugin/marketplace.json"
 cp -R "$B/../../regatta" "$G24/modules/regatta"; cp -R "$B/.." "$G24/modules/keel"
 check "$(printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$T/b7.jsonl" "$R" | env "$NP" python3 "$G24/modules/keel/bin/paste-paths" --stop-hook | grep -c 'hand-over line is not right')" 1 "G9: peers absent — the hand-over finding still blocks"
-check "$(env "$NP" python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pp", sys.argv[1]).load_module(); print(m._asklib(), m._rc(), m.standing({"DISPATCH_MANAGER": "m"}), m.manager_findings("s", env={}, runs=sys.argv[2]))' "$G24/modules/keel/bin/paste-paths" "$T/runs" 2>&1)" "None None None []" "G24: no asklib, no dispatch-rc, no surfaces — None, and no manager reminder"
+check "$(env "$NP" python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pp", sys.argv[1]).load_module(); print(m._asklib(), m._rc(), m.standing({"DISPATCH_MANAGER": "m"}), m.skipper_findings("s", env={}, runs=sys.argv[2]))' "$G24/modules/keel/bin/paste-paths" "$T/runs" 2>&1)" "None None None []" "G24: no asklib, no dispatch-rc, no surfaces — None, and no skipper reminder"
 check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pp", sys.argv[1]).load_module(); print(m._asklib() is not None, m._rc() is not None, m._ask_cmd().endswith("/bin/ask"))' "$B/paste-paths")" "True True True" "  with them: each found through the core's tool()"
 
 

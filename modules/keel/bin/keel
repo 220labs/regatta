@@ -307,7 +307,7 @@ CHAT_ANSWER_RE = re.compile(r"^\s*Taken in chat \(%s, " % OWNER_RE)
 # light refused: …` by `--check --record`; the corpus reads the mode from it
 GATE_RE = re.compile(r"^Gate:\s*(?P<mode>light|memo|yolo|stood|relayed)\b\s*(?:—\s*(?P<tail>.*))?$")
 # bin/ask answer's line, RELAYED_ANSWER `Relayed from <who> (<source>, <date>): <text>`, with a source
-# that is not one of the owner's routes (`yes item`, `manager`, a pick): a relay a manager answered, never
+# that is not one of the owner's routes (`yes item`, `skipper` or `manager`, a pick): a relay a skipper answered, never
 # the owner's word, so it is taken like a yolo pick and rule D never launches the doc (stray-manager B1 iii;
 # session-listen L7). `(the owner's form, …)`, `(the owner, Session tab (signed), …)` are the owner's answer carried,
 # and stay answers. The test is asklib's relayed_by_owner (taken_answer), bin/ask's too, and it fails closed: a
@@ -5599,7 +5599,7 @@ def branch_landed(top, b, rel, pin, mine, ref):
     (page_fork; for a pin from before forks were kept, the merge base of `ref` and that commit, which
     a fast-forwarded branch fails: it keeps its page, the safe side). Where the branch's ref still
     exists here or on origin, it holds `mine` too: a branch at work on the doc since keeps its page.
-    Whether a worktree has the branch out does not count. The manager's picks of 2026-10-24 for the
+    Whether a worktree has the branch out does not count. The skipper's picks of 2026-10-24 for the
     second landing review: R3 (`--is-ancestor` alone passed a branch with no commits of its own, the
     vacuous proof of AGENTS.md's trap), R4 (a gone ref alone passed a branch deleted unmerged) and R10
     (a landed branch's live worktree split the page in two)."""
@@ -5644,7 +5644,7 @@ def adopt_page(top, branch, rel, key, repo, ref="HEAD", deadline=None):
        branch landed (branch_landed). The page made on the branch would otherwise be left behind,
        and `main` would get a second, empty one.
     On `main`, 2 is asked before 1 (finding 12). Only 2 runs for a doc that has a page already: `main`'s
-    own page, made before the landing was seen, gives way when no thread is on it (the manager's pick
+    own page, made before the landing was seen, gives way when no thread is on it (the skipper's pick
     for R10); one with threads keeps them and records the branch in `kept_over`, so its page is read once.
     The new pin takes the page (ADOPT_ALWAYS and ADOPT_SAME_DOC); the old one gets `moved_to` and
     loses its space, so the drain and the lookout pass it by and a deploy of it is moved_page. A doc
@@ -12109,7 +12109,7 @@ def lookout_events(asks, prev, pinned, runs, mcp_box, dry, notes):
     # the last pass, or never seen (S12: opened and answered between two passes, or before the first).
     # The docs read: those open now or at the last pass, and this Mac's pins on a session's branch
     # deployed or seen within LOOKOUT_DAYS — a doc whose only item opened and closed between two
-    # passes has no open item at either (lookout-echo, finding 1; the managing session's call:
+    # passes has no open item at either (lookout-echo, finding 1; the skipper's call:
     # "recent course docs" are docs with a page, helm's poll stays as it is). A pin alone is read
     # from helm's mirror or the last fetch, never fetched for: a landed branch is pruned there.
     after, horizon = lookout_after(), now_ts() - LOOKOUT_DAYS * 86400
