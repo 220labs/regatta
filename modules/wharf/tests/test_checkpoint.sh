@@ -1094,7 +1094,7 @@ out=$(fev "Wrote another.")
 ok "  a path with a space: the block names keel line on the quoted path, no TAB" \
   'echo "$out" | jq -r .reason | grep -qF "keel line '"'"'$WD/docs/a b.md'"'"'" && ! echo "$out" | jq -r .reason | grep -q "$(printf "\t")"'
 printf -- '# Relayed\n\n- **D1 — Land it?** Body.\n  ➤ Answer:\n' > "$WD/docs/r.md"
-git -C "$WD" add docs/r.md && git -C "$WD" commit -q -m "Docs: D1 (relayed)"; fev "RELAYED TO the manager." >/dev/null
+git -C "$WD" add docs/r.md && git -C "$WD" commit -q -m "Docs: D1 (relayed)"; fev "RELAYED TO the skipper." >/dev/null
 ok "  a D-item the session committed itself (bin/ask relay) is pushed at once, inside the push spacing" \
   '[ "$(fotip)" = "$(git -C "$WD" rev-parse HEAD)" ]'
 echo plain > "$WD/plain.txt"; git -C "$WD" add plain.txt && git -C "$WD" commit -q -m "plain"; fev "Done." >/dev/null
