@@ -465,6 +465,13 @@ for l in "keel's suite (paste-paths.sh) to pass" "the review of D3's build" "the
   tf_ "$T/kw6.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
   check "$(quiet "$T/kw6.jsonl")" 0 "  a name ('$l') is no ask (code review, 2026-10-20)"
 done
+# dispatch-queue S3: the queue's closing line, as dispatch prints it — the pending kind, no ask (its cap
+# words are ASK_EXEMPT_RE's), and the branch name and its priority read as names, never a pick
+tf_ "$T/kwq.jsonl" "plain prompt" 'ls' $'Queued (dispatch: queued as fleet:regatta--queue-s4 (normal), rank 2).\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (normal); the next step waits for a run to end; the skipper finishes it'
+check "$(quiet "$T/kwq.jsonl")" 0 "  the queue's closing line passes the Stop lint (dispatch-queue S3)"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.ending(sys.argv[2])[0])' "$B/../../regatta/hooks" \
+  "SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (high); the next step waits for a run to end; the skipper finishes it")" \
+  "pending" "  …read as the pending kind (dispatch-rc's said_its_end: no end; the run ends by its hand-off)"
 tf_ "$T/kw7.jsonl" "plain prompt" 'ls' $'Two options above.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do but pick option A or B.'
 check "$(quiet "$T/kw7.jsonl")" 0 "  'nothing to do but <an ask>' stays WAITING FOR YOU"
 WF="SAM, THIS SESSION IS WAITING FOR YOU — \`/finish\` to launch it, then look at the list."

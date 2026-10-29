@@ -121,8 +121,12 @@ interface"). The doc stays the source; GitHub and the page are the other ways in
   - `seeded <branch>` (over 120k, in a repo dispatch takes — `physical: none`): the prompt is
     committed as the branch's brief and `dispatch --next` started it unattended; end the turn
     with one line, `Started <branch> unattended (dispatch); its window is titled run · <topic>`, and
-    write nothing more there. Its "then run /finish" is the run's to follow. A refusal (a chain
-    of five, the run cap reached, a lock handed to a tab) stops with dispatch's reason: relay it.
+    write nothing more there. Its "then run /finish" is the run's to follow. Where the queue is on
+    (`wharf-runs/queue-repo` set), a full host is no refusal: dispatch queues the step (`queued as
+    <entry>`, exit 0) and prints the one closing line — end the turn on it, with nothing to relay and
+    nothing to dispatch again (dispatch-queue S3). Without a queue home the run cap refuses as before.
+    A refusal (a chain of five, the run cap with no queue, a lock handed to a tab, the branch live on
+    another host) stops with dispatch's reason: relay it.
   - `tab` (only where dispatch refuses): the lock is handed over and a fresh tab holds the
     prompt — end the turn with the WAITING line ("press Enter in the new tab") and write nothing
     more; in that tab the line, pressed Enter on by the owner, is the owner's word for the launch.
