@@ -563,7 +563,7 @@ has "$T/claude.calls" "bin/ask relay <doc> <Dn>" "the prompt carries the three s
 has "$T/claude.calls" "bin/helm report --task demo" "  and the ship's reports (the stand-in helm)"
 has "$T/claude.calls" "bin/keel step <doc> <S> done --branch" "  and a brief's Steps: are marked done by the run (entry S7, the done prompt)"
 has "$T/claude.calls" "AskUserQuestion" "AskUserQuestion is on the denied list (R2's belt)"
-check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its manager, plan and page"
+check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its skipper, plan and page"
 # no stand-ins for the paths: with an overlay installed the prompt still names helm's module paths,
 # which tool() finds and the overlay's allow rules name since B14a — never the overlay's shims, as it
 # did until then. The overlay is a stand-in a config dir of the case's own marks, so the case runs on

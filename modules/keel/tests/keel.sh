@@ -3360,7 +3360,7 @@ PYX
   S=$(status "$1"); echo "$(rv "$S" taken) $([ "$(field "$S" verdict)" = taken ] && echo taken || echo not-taken)"
 }
 check "$(rvx rvp 'Relayed from manager (buildbox) (yes item, 2026-10-16): A')" "3 taken" \
-  "  a 'who' with a parenthesis, --from \"manager (buildbox)\": still the manager's, taken (it failed open)"
+  "  a 'who' with a parenthesis, --from \"manager (buildbox)\": still the skipper's, taken (it failed open)"
 if [ "$AOWN" = yes ]; then
   check "$(rvx rvf "Relayed from manager (buildbox) (sam's form, 2026-10-16): A")" "0 not-taken" "  \"sam's form\", any case, behind that 'who': Sam's"
 else skip_aown "\"sam's form\" behind a 'who'"; fi
