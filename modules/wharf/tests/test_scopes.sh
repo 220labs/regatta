@@ -324,6 +324,74 @@ else echo "  FAIL scopes set should refuse a primary main (rc $rc): $out"; fails
 REGATTA_CONFIG="$F/cfg" CLAUDE_REPOS_JSON="$T/gitreg-wt/repos.json" python3 "$B/scopes" set sec --open >/dev/null 2>&1 \
   && ! git -C "$T/gitreg-wt" diff --quiet && echo "  ok   …a claude/* worktree's copy is written" \
   || { echo "  FAIL scopes set on a worktree copy"; fails=$((fails+1)); }
+# scopes bridge (confidential-reach S8): open, the refusals, --revoke, audit, concern — on a fixture
+# config dir, with CLAUDE_UNATTENDED unset but where a case sets it (a dispatched run carries it)
+BR="$T/br"; mkdir -p "$BR/cfg/regatta" "$BR/projects"; echo "$BR/projects" > "$BR/cfg/regatta/projects"
+for r in ka kb kc ko; do git init -q -b main "$BR/projects/$r"; done
+git -C "$BR/projects/ka" remote add origin https://github.com/acct-x/ka.git
+printf '{"repos": {"ka": {}, "kb": {}, "kc": {}, "ko": {}},\n "scopes": {"A": {"file": "a", "repos": ["ka"], "confidential": true},\n  "B": {"file": "b", "repos": ["kb"], "confidential": true},\n  "C": {"file": "c", "repos": ["kc"], "confidential": true},\n  "O": {"file": "o", "repos": ["ko"]}}}\n' > "$BR/repos.json"
+BRF="$BR/cfg/lighthouse/bridges.json"
+SB() { env -u CLAUDE_UNATTENDED -u WEEKLY_RUN -u AUTOFINISH_CALLER_UNATTENDED REGATTA_CONFIG="$BR/cfg" CLAUDE_REPOS_JSON="${SBREG:-$BR/repos.json}" python3 "$B/scopes" bridge "$@"; }
+bcase() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
+nb() { python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['bridges']))" "$BRF" 2>/dev/null || echo 0; }
+out=$(env CLAUDE_UNATTENDED=1 REGATTA_CONFIG="$BR/cfg" CLAUDE_REPOS_JSON="$BR/repos.json" python3 "$B/scopes" bridge open A B --until +2h --why x 2>&1); rc=$?
+bcase "$rc $(nb) $(printf '%s' "$out" | grep -c 'unattended')" "2 0 1" "bridge open under CLAUDE_UNATTENDED: exit 2, nothing written (it stands for the owner's yes)"
+SB open A O --until +2h --why x >/dev/null 2>&1; r1=$?; SB open A A --until +2h --why x >/dev/null 2>&1; r2=$?
+SB open A B --until +25h --why x >/dev/null 2>&1; r3=$?; SB open A B --until +2h --why ' ' >/dev/null 2>&1; r4=$?
+SB open A Z --until +2h --why x >/dev/null 2>&1; r5=$?; SB open A B --until tomorrow --why x >/dev/null 2>&1; r6=$?
+bcase "$r1 $r2 $r3 $r4 $r5 $r6 $(nb)" "1 1 1 1 1 1 0" "  refused: an open scope, one scope twice, past 24 h, no why, a scope the registry lacks, no time"
+out=$(SB open A B --until +4h --why "joint review" 2>&1); rc=$?
+ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['bridges'][0]['id'])" "$BRF" 2>/dev/null)
+bcase "$rc $(nb) $(printf '%s' "$out" | grep -c "opened bridge $ID: A ↔ B until")" "0 1 1" "bridge open A B: one entry written, said both ways"
+bcase "$(python3 -c "import json,sys; e=json.load(open(sys.argv[1]))['bridges'][0]; print(e['from'], e['to'], e['why'], 'one_way' in e, sorted(e))" "$BRF")" \
+  "A B joint review False ['by', 'from', 'id', 'opened', 'to', 'until', 'why']" "  the entry: from, to, until, why, by, opened, id"
+SB open B C --until +2h --why x >/dev/null 2>&1; rc=$?
+bcase "$rc $(nb)" "1 1" "  a second partner for B would chain: refused, nothing written"
+SB open B A --until +1h --why again >/dev/null 2>&1; rc=$?
+bcase "$rc $(nb)" "0 2" "  the same pair again is no chain (a longer or shorter window beside it)"
+out=$(SB audit 2>&1); rc=$?
+bcase "$rc $(printf '%s' "$out" | grep -c '^  open ')" "0 2" "bridge audit lists each open entry"
+out=$(SB --revoke "$ID" 2>&1); rc=$?
+bcase "$rc $(python3 -c "import json,sys; print([bool(e.get('ended')) for e in json.load(open(sys.argv[1]))['bridges']])" "$BRF")" "0 [True, False]" \
+  "bridge --revoke ID: ended written on that entry alone, the history kept"
+out=$(env CLAUDE_UNATTENDED=1 REGATTA_CONFIG="$BR/cfg" CLAUDE_REPOS_JSON="$BR/repos.json" python3 "$B/scopes" bridge --revoke A 2>&1); rc=$?
+bcase "$rc $(SB audit 2>&1 | grep -c '^  ended ')" "0 2" "  --revoke SCOPE ends every open entry it is in, unattended too (ending narrows)"
+python3 - "$BRF" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); e = dict(d["bridges"][0]); e.pop("ended"); e.pop("ended_why", None)
+e.update(id="old", opened="2026-01-01T00:00:00Z", until="2026-01-01T02:00:00Z"); d["bridges"].append(e)
+json.dump(d, open(sys.argv[1], "w"))
+PY
+out=$(SB audit 2>&1); rc=$?
+bcase "$rc $(printf '%s' "$out" | grep -c 'old: A ↔ B.*ended 2026-01-01T02:00:00Z (expired)') $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['bridges'][-1].get('ended_why'))" "$BRF")" "0 1 expired" \
+  "bridge audit: an expired entry is named, and gets its ended (the clock ended it)"
+bcase "$(SB audit --since 2026-06-01T00:00:00Z 2>&1 | grep -c 'old:')" "0" "  --since leaves out what opened before"
+cp "$BRF" "$BRF.good"; printf '{"bridges": [' > "$BRF"
+SB audit >/dev/null 2>&1; r1=$?; SB open A B --until +1h --why x >/dev/null 2>&1; r2=$?
+bcase "$r1 $r2 $(cat "$BRF")" '1 1 {"bridges": [' "a torn file: audit exit 1, open refused — the history is never overwritten"
+cp "$BRF.good" "$BRF"; SB open A B --until +1h --why x >/dev/null 2>&1
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/gh-args"; echo https://github.com/acct-x/ka/issues/7\n' "$BR" > "$BR/gh"; chmod +x "$BR/gh"
+out=$(cd "$BR/projects/ka" && SCOPES_GH="$BR/gh" SB concern 0123abcd-ffff --text "it read too much" 2>&1); rc=$?
+bcase "$rc $(printf '%s' "$out" | grep -c 'issues/7') $(sed -n 4p "$BR/gh-args") $(grep -c 'with B' "$BR/gh-args") $(grep -c 'joint\|kb' "$BR/gh-args")" "0 1 acct-x/ka 1 0" \
+  "bridge concern: an issue in the anchor's own repository naming the session and the other scope only"
+out=$(cd "$BR/projects/ko" && SCOPES_GH="$BR/gh" SB concern 0123abcd --text x 2>&1); rc=$?
+bcase "$rc" "1" "  from an open scope's checkout: refused"
+# the S8 landing review's items 6-9
+sed 's/"ko": {}}/"ko": {}, "kgone": {}}/; s/"repos": \["ka"\]/"repos": ["kgone", "ka"]/' "$BR/repos.json" > "$BR/repos-anchor.json"
+out=$(cd "$BR/projects/ka" && SCOPES_GH="$BR/gh" SBREG="$BR/repos-anchor.json" SB concern 0123abcd --text x 2>&1); rc=$?
+bcase "$rc $(sed -n 4p "$BR/gh-args")" "0 acct-x/ka" "  the issue goes to the scope's anchor as the other verbs read it (its first repo present here), not its first entry"
+for v in WEEKLY_RUN AUTOFINISH_CALLER_UNATTENDED; do
+  n0=$(nb); out=$(env -u CLAUDE_UNATTENDED -u WEEKLY_RUN -u AUTOFINISH_CALLER_UNATTENDED "$v=1" REGATTA_CONFIG="$BR/cfg" CLAUDE_REPOS_JSON="$BR/repos.json" python3 "$B/scopes" bridge open A B --until +1h --why x 2>&1); rc=$?
+  bcase "$rc $(( $(nb) - n0 )) $(printf '%s' "$out" | grep -c "$v")" "2 0 1" "bridge open under $v: exit 2, nothing written (an unattended caller, as soundings reads one)"
+done
+bcase "$(SB audit --since 2026-06-01 2>&1 | grep -c 'old:') $(SB audit --since 2025-12-31 2>&1 | grep -c 'old:')" "0 1" "bridge audit --since takes a plain date (UTC midnight)"
+SB audit --since yesterday >/dev/null 2>&1; bcase "$?" "2" "  and refuses what is no date, rather than list everything"
+printf '{"repos": {' > "$BR/torn.json"
+RID=$(python3 -c "import json,sys; print([e['id'] for e in json.load(open(sys.argv[1]))['bridges'] if not e.get('ended')][-1])" "$BRF")
+out=$(SBREG="$BR/torn.json" SB --revoke "$RID" 2>&1); r1=$?
+out2=$(SBREG="$BR/torn.json" SB open A B --until +1h --why x 2>&1); r2=$?
+bcase "$r1 $r2 $(printf '%s' "$out$out2" | grep -c Traceback) $(printf '%s' "$out2" | grep -c 'registry does not read')" "0 1 0 1" \
+  "a torn registry: --revoke still ends a bridge, open refuses in words — no traceback"
 LIVE="${CLAUDE_REPOS_JSON:-${REGATTA_CONFIG:-$HOME/.config/regatta}/wharf/repos.json}"
 # the registry's first scope, read back from the file, never named here
 SCOPE=$( [ -f "$LIVE" ] && python3 -c "import json,sys; print(next(iter(json.load(open(sys.argv[1])).get('scopes') or {}), ''))" "$LIVE" 2>/dev/null)
