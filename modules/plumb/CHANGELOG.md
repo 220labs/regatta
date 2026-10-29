@@ -19,6 +19,9 @@
   that still hold them under a lock shared with `collect`, and retries a failed or empty run the next day. The push
   keeps a known target's older days, matches a short fence word as a token only, and escapes an rsync name only
   when it holds a wildcard; the global report fences what the push strips. (trim-usage-key)
+- trim's G2 line and statusline's and interruptions' prose say "skipper" (helm-vocabulary H2, 2026-10-29); the
+  ledger's `driver.manager`, `manager_cost` and `manager_design` keys keep their names.
+
 - `trim collect` joins four more kinds of landing (trim-join-3, 2026-10-29): a run `NOT_BUILD` reads as landing
   nothing (a `bench-` topic) builds its own branch when it was dispatched for it and nothing else built it; a run
   whose CSV rows never name its record's branch landed the branches they name, with the record's arm (never a

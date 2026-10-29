@@ -492,7 +492,7 @@ def ship_records(plans):
                     if ev["task"] not in last or ev["t"] >= last[ev["task"]][1]:
                         last[ev["task"]] = (ev["status"], ev["t"])
             # a ship worker's session: one that reported on a build block. `helm report` stamps whoever ran
-            # it, so the skipper (`by`, the plan's manager) and a launch block's lander are left out (review, 2026-10-19)
+            # it, so the skipper (`by`, or the plan's `manager` record) and a launch block's lander are left out (review, 2026-10-19)
             skipper = {str(x)[:8] for x in (bp.get("by"), (plan.get("manager") or {}).get("session")) if x}
             sessions = {str(e["session"])[:8] for e in events
                         if e.get("task") in tasks and e.get("session") and not str(e["task"]).startswith("launch-")} - skipper

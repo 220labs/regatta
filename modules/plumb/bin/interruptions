@@ -609,7 +609,7 @@ def main(argv=None):
         kinds = ", ".join("%s %d" % (k, n) for k, n in list(c["kinds"].items())[:6]) or "–"
         print("| %s | %d | %s | %s |" % (names[ch], c["n"], "–" if c["per_week"] is None else c["per_week"], kinds))
     r = s["channels"]["relay"]
-    print("| relayed to a manager, not in the total: answered without the owner · escalated | %d | %s | %d · %d |" % (
+    print("| relayed to a skipper, not in the total: answered without the owner · escalated | %d | %s | %d · %d |" % (
         r["n"], "–" if r["per_week"] is None else r["per_week"],
         r["kinds"].get("answered", 0), r["kinds"].get("escalated", 0)))
     t = s["trust_waiting"]
