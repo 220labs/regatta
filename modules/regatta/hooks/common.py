@@ -1852,7 +1852,7 @@ def ending_mark(text):
     return mark_for(line), mark_of(raw)
 
 
-# session-asks R2 (docs/session-asks-2026-10-09.md): what a managed run hands the owner past its
+# session-asks R2 (docs/session-asks-2026-10-09.md): what a skippered run hands the owner past its
 # skipper. Every WAITING line counts, bar dispatch's own refusals, which tell a run to end on one
 # (bin/dispatch: the chain's depth, the run cap, an account with no room) and say a fact for the
 # board, not an ask — and "nothing to do", which asks nothing. A first cut (finding 7 of the
@@ -1890,7 +1890,7 @@ def do_this_now_block(text):
 
 
 def unrelayed_ask(reply, last=None):
-    """What a reply hands the owner that a managed run must relay instead: 'the WAITING line' when it
+    """What a reply hands the owner that a skippered run must relay instead: 'the WAITING line' when it
     ends on one — unless the line is one of dispatch's refusals or "nothing to do" and names no
     D-item or manual step; 'a Do-this-now step' for a Do-this-now heading with a fenced block
     under it; else None."""

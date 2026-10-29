@@ -448,8 +448,8 @@ Landscape, its Verdict, `keel lint --strict`, `reviewer-high`, and its D1, **Bui
 · yolo · no**, `Reversible: no`, never standing.
 
 - The path is full. `--light` and `--yolo` are the owner's words only; neither is given here.
-- Nobody is watching: the hand-over is `ask relay <doc> D1` (no manager of its own: this Mac's
-  standing manager takes it, else the board), and the run ends on the line it prints.
+- Nobody is watching: the hand-over is `ask relay <doc> D1` (no skipper of its own: this Mac's
+  standing skipper takes it, else the board), and the run ends on the line it prints.
 - The doc stays on this branch until answered, never on main.
 - `Verdict: disproved`: set the proposal's `status: parked` with a `## Log` line, and end; the queue
   parks its entry at its next `refresh`.
