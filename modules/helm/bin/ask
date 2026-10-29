@@ -33,10 +33,13 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         the run's side: write and commit this worktree's pending answers (dispatch's prompt runs it
         at the start; a run's listener keeps an ANSWER it hears there too). With --plan, fenced by
         that ship's lease as answer is; without it, never (the run is no holder of its ship's lease).
-    ask listen [--session ID] [--plan ID] [--max N]
+    ask listen [--session ID] [--plan ID] [--max N] [--replays N]
         the manager's wake: the Talk CLI's `talk listen --once` in a loop that appends each REPORT line
         to the plan and listens again, and exits — waking the session — on ASK, ANSWER or an
         unprefixed line. Run it as the session's own background shell (a hook's process wakes nobody).
+        A REPORT the plan holds already is a replay, never a second event (said in the first body of a
+        run of them); a body with nothing new pauses the loop (5 s doubling to 60 s), and one more than
+        --replays (30) of them in a row ends it.
         Inside a session, --session must be that session's own id (stray-manager M1 b).
     ask poll [--dry-run] [--repos DIR...]
         the laptop's bell (R6): fetch each repo's claude/* branches into a cache mirror, find D-items
@@ -682,23 +685,49 @@ def cmd_apply(a):
     return 0
 
 
+def wire_key(ev):
+    """A REPORT's identity: its body, keys sorted, hashed. `helm report` sends no timestamp, but its
+    cost and ETA move between two reports, so the same key twice is one message heard twice. The limit:
+    a body sent twice on purpose (running, blocked, running, no --eta or --cost) is one event."""
+    import hashlib
+    return hashlib.sha256(json.dumps(ev, ensure_ascii=True, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def append_report(rest):
+    """(appended, line). A body the plan holds already (its `wire` key on a talk event) is a replay,
+    never a second event: `talk listen --once` mints a new link each call and carries no cursor, and
+    the service handed one manager the same three REPORTs 1,729 times in 37 minutes (helm-listen-replay,
+    2026-10-27), each an event and a render."""
     try:
         ev = json.loads(rest)
     except ValueError:
-        return "a REPORT line that is not JSON: dropped"
+        return False, "a REPORT line that is not JSON: dropped"
     if not isinstance(ev, dict):  # `REPORT [1]` or `REPORT "x"`: a line, never a traceback
-        return "a REPORT whose JSON is not an object (%s): dropped" % type(ev).__name__
+        return False, "a REPORT whose JSON is not an object (%s): dropped" % type(ev).__name__
+    key = wire_key(ev)
     pid = ev.pop("plan", None) or helmlib.env("ship") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not isinstance(pid, str) or not pid or not helmlib.load_plan(pid):
-        return "a REPORT for plan %s, which is not on this Mac: dropped" % pid
-    helmlib.append_event(pid, dict(ev, via="talk"))
+        return False, "a REPORT for plan %s, which is not on this Mac: dropped" % pid
+    if any(e.get("wire") == key for e in helmlib.events(pid)):
+        return False, "a REPORT %s already holds: a replay, dropped" % pid
+    helmlib.append_event(pid, dict(ev, via="talk", wire=key))
     try:
         import helm_render
         helm_render.render(pid, deploy=None)
     except Exception:
         pass
-    return "appended to %s" % pid
+    return True, "appended to %s" % pid
+
+
+def replay_pause(n):
+    """Seconds before listening again after the n-th body in a row that held only replays: 5, 10, 20,
+    40, then 60 — the link still hears an ASK, about once a minute at worst. ASK_LISTEN_PAUSE scales
+    it (the suite's 0)."""
+    try:
+        scale = float(os.environ.get("ASK_LISTEN_PAUSE", "1"))
+    except ValueError:
+        scale = 1.0
+    return min(60.0, 5.0 * 2 ** min(n - 1, 4)) * max(scale, 0.0)
 
 
 CHAT_LABEL = ("CHAT (unverified — the account owner or any keyed session; confirm in this session's own "
@@ -746,7 +775,7 @@ def cmd_listen(a):
               % (a.session, me))
         return 2
     ctx = {"session": a.session or me}
-    stops = 0
+    stops = replays = 0
     while True:
         msgs = b.receive(ctx)
         if msgs is None:
@@ -758,11 +787,14 @@ def cmd_listen(a):
                 print("ask listen: the listen link stopped %d times — re-arm it next turn" % stops)
                 return 0
             continue  # K10: the link lasts a day; re-arm
-        wake = False
+        wake = fresh = False
         for msg in msgs:  # every line of the body (finding 13): a second message is never dropped
             kind, rest = asklib.classify(msg.get("text") or "")
             if kind == "REPORT":
-                print("REPORT: %s" % append_report(rest), flush=True)
+                appended, line = append_report(rest)
+                fresh = fresh or appended
+                if appended or not replays or not line.endswith("a replay, dropped"):  # a replay is not said again once a run of them has begun; any other drop always is
+                    print("REPORT: %s" % line, flush=True)
                 continue
             wake = True
             if kind == "CHAT":
@@ -777,6 +809,17 @@ def cmd_listen(a):
                     print("  kept in %s — run `%s/bin/ask apply` to write and commit it" % (p, HERE.parent))
         if wake:
             return 0
+        if fresh:
+            replays = 0
+            continue
+        # a body of REPORTs heard before (or dropped): the link replays rather than waits, so a
+        # pause, and after --replays of them in a row the listener ends rather than spins
+        replays += 1
+        if replays > a.replays:
+            print("ask listen: the listen link handed back only REPORTs heard before, %d times in a row — "
+                  "re-arm it next turn" % replays)
+            return 0
+        time.sleep(replay_pause(replays))
 
 
 # ---------------------------------------------------------------------------- poll (R6)
@@ -1397,6 +1440,7 @@ def main(argv=None):
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--force", action="store_true")
     s.add_argument("--send-only", action="store_true"); s.add_argument("--gen", type=int)
     s = sp.add_parser("listen"); s.add_argument("--session"); s.add_argument("--plan"); s.add_argument("--max", type=int, default=3)
+    s.add_argument("--replays", type=int, default=30)
     s = sp.add_parser("poll"); s.add_argument("--dry-run", action="store_true"); s.add_argument("--repos", nargs="*")
     sp.add_parser("status")
     s = sp.add_parser("apply"); s.add_argument("--no-commit", action="store_true")

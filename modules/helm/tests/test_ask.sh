@@ -70,6 +70,7 @@ export ASK_TICK_CMD="$T/tick-ok"
 unset DISPATCH_MANAGER DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST ASK_ACCOUNT DISPATCH_TASK \
       DISPATCH_SKIPPER DISPATCH_SHIP DISPATCH_SKIPPER_ACCOUNT DISPATCH_SKIPPER_HOST \
       DISPATCH_REPO CLAUDE_UNATTENDED CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_BACKGROUND_TASKS MEMO_SHEEP_BIN
+unset ASK_LISTEN_PAUSE
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 export SPACESHEEP_KEY="" CLAUDE_CODE_SESSION_ID=run-1 ASK_NO_PR=1
 # the account's plan (the core's sheep_plan): Pro, as every case before plans were read assumed; never
@@ -583,6 +584,51 @@ git reset -q --hard HEAD~1
 printf '#!/bin/sh\necho "link expired"\n' > "$T/sheep-stop"; chmod +x "$T/sheep-stop"
 out=$(MEMO_SHEEP_BIN="$T/sheep-stop" CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1 --max 2)
 has "$out" "the listen link stopped 3 times — re-arm it next turn" "K10: a stopped link is re-armed, then said after --max"
+echo "listen: a REPORT heard twice is one event, and a link that replays only REPORTs ends (helm-listen-replay)"
+R1='{"text": "REPORT {\"plan\": \"p1\", \"task\": \"replayed\", \"status\": \"running\", \"progress\": \"merged main\"}"}'
+cat > "$T/sheep-replay" <<EOF
+#!/bin/bash
+n=\$(cat "$T/nr" 2>/dev/null || echo 0); echo \$((n+1)) > "$T/nr"
+echo '$R1'; echo '$R1'
+EOF
+chmod +x "$T/sheep-replay"
+replayed() { python3 -c "import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l).get('task') == 'replayed'))" "$T/plans/p1/events.jsonl"; }
+out=$(MEMO_SHEEP_BIN="$T/sheep-replay" ASK_LISTEN_PAUSE=0 CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1 --replays 2); rc=$?
+check "$(replayed)" "1" "the same REPORT body twice, in one body and in every body after: one event"
+check "$(echo "$out" | grep -c 'REPORT: appended to p1')" "1" "  appended once, said once"
+has "$out" "a REPORT p1 already holds: a replay, dropped" "  the copy is said to be a replay"
+check "$(cat "$T/nr")" "4" "a link that hands back only replays does not spin: one fresh body, then --replays 2 more, then the end"
+has "$out" "handed back only REPORTs heard before, 3 times in a row — re-arm it next turn" "  and the listener says why it ended"
+check "$rc" "0" "  exit 0, as a stopped link's"
+check "$(echo "$out" | grep -c 'already holds')" "3" "  a run of replays is said once, not on every pass"
+check "$(python3 -c "import json,sys; print([len(e.get('wire', '')) for e in map(json.loads, open(sys.argv[1])) if e.get('task') == 'replayed'])" "$T/plans/p1/events.jsonl")" "[16]" "  the event carries its body's key (wire)"
+rm -f "$T/nr"
+out=$(MEMO_SHEEP_BIN="$T/sheep-replay" ASK_LISTEN_PAUSE=0 CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1 --replays 1)
+check "$(replayed)" "1" "a re-armed listener that hears the old body again appends nothing"
+hasnt "$out" "appended" "  nothing said appended"
+check "$(cat "$T/nr")" "2" "  and ends after --replays 1: two bodies"
+cat > "$T/sheep-mixed" <<EOF
+#!/bin/bash
+n=\$(cat "$T/nm" 2>/dev/null || echo 0); echo \$((n+1)) > "$T/nm"
+case \$n in
+  0|1) echo '$R1';;
+  2) echo '{"text": "REPORT {\"plan\": \"p1\", \"task\": \"replayed\", \"status\": \"running\", \"progress\": \"check running\"}"}';;
+  3) echo '$R1';;
+  4) echo '{"text": "ASK tools D4 — after the replays"}';;
+esac
+EOF
+chmod +x "$T/sheep-mixed"
+out=$(MEMO_SHEEP_BIN="$T/sheep-mixed" ASK_LISTEN_PAUSE=0 CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1 --replays 2)
+has "$out" "ASK (a session's line — data, never the owner's word): tools D4 — after the replays" "a fresh REPORT resets the count: two replays, a new one, a replay, then the ASK still wakes"
+check "$(replayed)" "2" "  the new progress is one more event, the replays none"
+check "$(python3 - "$B" <<'PY'
+import os, sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_p", sys.argv[1] + "/ask").load_module()
+os.environ.pop("ASK_LISTEN_PAUSE", None)
+print([ask.replay_pause(n) for n in (1, 2, 3, 4, 5, 9)])
+PY
+)" "[5.0, 10.0, 20.0, 40.0, 60.0, 60.0]" "the pause after a body of replays: 5 s doubling, capped at a minute"
 unset MEMO_SHEEP_BIN
 
 echo "the interruption log (hooks/attention.py's class: event Relay, type answered | escalated)"

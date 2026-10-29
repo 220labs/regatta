@@ -303,7 +303,7 @@ SEND_ONLY = set(SENT_FIELDS) | {"task", "t", "lease_gen", "plan"}   # every key 
 SHRINK = ("progress", "summary", "recommended", "title", "waiting_for", "by", "owner", "branch", "pr", "check")
 # What a line keeps when shrinking the free text was not enough (long lists of owned paths, say)
 ESSENTIAL = ("task", "status", "t", "session", "host", "harness", "ask", "answered", "from", "plan", "repo",
-             "eta", "cost", "parked", "via") + SENT_FIELDS
+             "eta", "cost", "parked", "via", "wire") + SENT_FIELDS
 
 
 def plans_root():
