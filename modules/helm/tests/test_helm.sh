@@ -985,7 +985,7 @@ PY
   # a stubbed ssh that runs the probe against a second HOME standing in for buildbox.
   now=$(date +%s); R="$HOME/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$R" "$HOME/.claude/projects/-t"
   D="$T/repos/demo"; mkdir -p "$D"; git -C "$D" init -q -b main; git -C "$D" commit -q --allow-empty -m x
-  for b in gone-step pending-step cap-step parked-step asked-step done-step relay-step ended-step lifetime-step live-wait live-work unsure-step gate-launch quote-launch; do
+  for b in gone-step pending-step queued-step cap-step parked-step asked-step done-step relay-step ended-step lifetime-step live-wait live-work unsure-step gate-launch quote-launch; do
     git -C "$D" branch "claude/t/2026-10-14-$b"; done
   git -C "$D" worktree add -q "$D/.claude/worktrees/net" -b claude/t/2026-10-14-net-launch 2>/dev/null
   git -C "$D" worktree add -q "$D/.claude/worktrees/moved" -b claude/t/2026-10-14-moved-launch 2>/dev/null
@@ -1046,6 +1046,16 @@ SAM, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING."
   # S1: ended on WAITING FOR SOMETHING and nothing picked it up again (2026-10-20)
   rec 13-pending.json pending-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min"
   say sid-pending-step "SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers"
+  # dispatch-queue S3: a run that queued its step and ended on the queue's closing line — dispatch's queue
+  # holds its branch (the stand-in below), so it is `queued`, never S1's retry of the step the queue holds
+  rec 14-queued.json queued-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min"
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued-step (normal); the next step waits for a run to end; the skipper finishes it"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"$(basename "$D")\", \"branch\": \"claude/t/2026-10-14-queued-step\", \"state\": \"queued\"}], \"unreadable\": false, \"why\": []}'" > "$T/dq-list"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [], \"unreadable\": false, \"why\": []}'" > "$T/dq-empty"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [], \"unreadable\": true, \"why\": [\"fleet: unreachable\"]}'" > "$T/dq-torn"
+  chmod +x "$T/dq-list" "$T/dq-empty" "$T/dq-torn"
+  export STALLS_DISPATCH_QUEUE="$T/dq-list"
   # unsure: ended idle, no closing line — B3's classifier's input, never a card
   rec 12-unsure.json unsure-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min"
   say sid-unsure-step "- I didn't run dispatch --next, because the brief names no next step."
@@ -1108,6 +1118,41 @@ PY
   check "$(got "print([(u['topic'], u['action'], u['class']) for u in d['unsure']])")" "[('unsure-step', 'classify', None)]" \
     "  no closing line: unsure, shaped for B3's classifier, never a stall"
   hasnt "$sj" "IBAN 5555" "  a guarded run's reply is never read"
+  check "$(got "print([(x['topic'], x['why']) for x in d['queued']], any(n.startswith('queued: queued-step on testhost') for n in d['notes']))")" \
+    "[('queued-step', \"in dispatch's queue\")] True" "dispatch-queue S3: a run on the queue's closing line, its branch in the queue: a queued card, not a stall"
+  qj=$(STALLS_DISPATCH_QUEUE="$T/dq-empty" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; print([(s['class'], s['action']) for s in json.load(sys.stdin)['stalls'] if s['topic']=='queued-step'])")" "[('S1', 'retry')]" \
+    "  its entry gone from the queue (ran and ended, or failed): S1 as before"
+  qj=$(STALLS_DISPATCH_QUEUE="$T/dq-torn" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(x['topic'] for x in d['queued']), [s['class'] for s in d['stalls'] if s['topic'] in ('queued-step', 'cap-step')], any(n.startswith('queue: unreadable') for n in d['notes']))")" \
+    "['queued-step'] ['S2'] True" "  a queue that does not read holds every branch on the pending line (the readers' rule), a note; the cap's words alone are S2, as before the queue"
+  # dispatch-queue S3's third landing review, item 6: the exact pending line, judged by the branch it names
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; the next step waits for a run to end"
+  qj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='queued-step'])")" "['S1']" \
+    "item 6: the cap's words on another line, its branch in the queue: no pending line, so S1, never queued"
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued-step (normal); the next step waits for a run to end; the skipper finishes it
+[the doc](https://example.invalid/doc)"
+  qj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; print([x['topic'] for x in json.load(sys.stdin)['queued']])")" "['queued-step']" \
+    "  the pending line with a link line after it (the Stop hook's ending): queued"
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued-step (normal); the next step waits for a run to end; the skipper finishes it
+Then a question came up.
+$WAIT — D2 in docs/x.md"
+  qj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['topic'] for x in d['queued']], [s['class'] for s in d['stalls'] if s['topic']=='queued-step'])")" "[] ['S6']" \
+    "  the pending line quoted above an owner's WAITING line: that line is the closing one, S6, never queued (the in-round review)"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"$(basename "$D")\", \"branch\": \"claude/t/2026-10-14-other-step\", \"state\": \"queued\"}], \"unreadable\": false, \"why\": []}'" > "$T/dq-other"; chmod +x "$T/dq-other"
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-other-step (normal); the next step waits for a run to end; the skipper finishes it"
+  qj=$(STALLS_DISPATCH_QUEUE="$T/dq-other" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$qj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([(x['topic'], x['branch']) for x in d['queued']], [s['class'] for s in d['stalls'] if s['topic']=='queued-step'])")" \
+    "[('queued-step', 'claude/t/2026-10-14-other-step')] []" "  a run that queued another branch, which the queue holds: queued on that branch, never S1's retry of finished work"
+  say sid-queued-step "Queued.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued-step (normal); the next step waits for a run to end; the skipper finishes it"
   # skipper-resilience S8: a peer some scope's yard names is read and judged (the board shows its stalls),
   # and acted on only by its own tick; a torn registry: no peer's stall acted on (fail closed)
   echo '{"repos": {}, "scopes": {"dock": {"repos": [], "yard": "buildbox"}}}' > "$T/yard-bb.json"
