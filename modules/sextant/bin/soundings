@@ -20,7 +20,8 @@ Sextant's step 2c reads `next`: it seeds each candidate (`pickup seed`) and sche
 reads the week when the run fires (`--if-room`: autofinish's week_tight; `tight` or `none` refuses),
 since a run at the reset spends the next week, not this one. A run refused then leaves its branch a
 seed: once the week it was scheduled for is past, `refresh` puts the entry back to `queued` with its
-branch, and `next` then gives only the dispatch (the seed is made once). A launch runs three peers,
+branch, and `next` then gives only the dispatch (the seed is made once). A run queued at fire time —
+dispatch's queue holds it, waiting for room (dispatch-queue S3) — is not refused: `refresh` leaves it. A launch runs three peers,
 `pickup` and `dispatch` (wharf-runs) and `keel`: with one not installed, or SOUNDINGS_BY_HAND set
 (sextant's own runner, which schedules nothing), `next` gives each candidate one `by hand` line instead
 of commands — the `/sounding` the owner would type and the `mark … launched` that records it (G27).
@@ -256,6 +257,32 @@ def never_started(repo, branch):
     log = git(repo, "log", "--format=%s", f"{got[0]}..{got[1]}")
     subjects = [l for l in log.stdout.splitlines() if l.strip()]
     return not log.returncode and bool(subjects) and all(l.startswith("Seed: ") for l in subjects)
+
+
+def in_dispatch_queue(repo, branch):
+    """True when dispatch's queue holds BRANCH: an entry, or a queue it cannot read (the queue's readers'
+    rule; `dispatch-queue has` exits 3 or 4, and any code but 0 is "could not tell": a crash's 5 read as no
+    entry sent the branch again beside its queued step, S3's landing review, item 5). Since dispatch-queue S3 a run refused at its fire time is
+    queued there, not lost, and so is any `--at` once it fires: queued at fire time, it waits for room, and
+    `refresh` must not send its branch again. False with no dispatch-queue here, or a read that saw none.
+    SOUNDINGS_DISPATCH_QUEUE is the tests' stand-in."""
+    q = os.environ.get("SOUNDINGS_DISPATCH_QUEUE")
+    if not q:
+        try:
+            sys.path.insert(0, str(HERE.parent / "lib"))
+            import find_core  # noqa: PLC0415
+            sys.path.insert(0, find_core.hooks())
+            import common  # noqa: PLC0415
+            q = common.tool("dispatch-queue")
+        except (ImportError, SystemExit, AttributeError):
+            return False
+    if not q:
+        return False
+    try:
+        r = subprocess.run([str(q), "has", "--repo", str(repo), "--branch", branch], capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        return True   # could not tell: an entry, the readers' rule
+    return r.returncode != 0
 
 
 def counts(d):
@@ -495,11 +522,13 @@ def cmd_refresh(a):
                 changed.append((e["slug"], "done"))
                 continue
         # scheduled more than a week ago (`--at reset` is at most seven days out, the slots an hour more)
-        # and still a seed: the run was refused at fire time (--if-room) or never fired
+        # and still a seed: the run was refused at fire time (--if-room) or never fired — unless dispatch's
+        # queue holds it, queued at fire time and waiting for room (dispatch-queue S3): sent again, the
+        # step would sit in line twice
         if e.get("state") == "scheduled" and e.get("scheduled") and e.get("branch") and e.get("repo") \
                 and datetime.date.fromisoformat(e["scheduled"]) <= today() - datetime.timedelta(days=8) \
-                and never_started(e["repo"], e["branch"]):
-            requeue(e, "its run never started (refused at fire time, or never fired)")
+                and never_started(e["repo"], e["branch"]) and not in_dispatch_queue(e["repo"], e["branch"]):
+            requeue(e, "its run never started (refused at fire time with --if-room, or never fired)")
             changed.append((e["slug"], "queued"))
     if changed:
         save(d)
