@@ -44,7 +44,7 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   owes and did not write is refused, never read as absent.
 - **Private config**: every file keeps its environment override (for a test suite or one shell,
   never exported), and its default is `${REGATTA_CONFIG}/<module>/<file>`. For the core:
-  `regatta/models.json` (the gate's table; the defaults beside the gate otherwise),
+  `regatta/models.json` (the gate's table; a site it lacks runs the module's row beside the gate),
   `regatta/cost-ratio.json`, `regatta/.env` and `regatta/.env.fallback` (Jev's key; the second read
   only where no first exists), `regatta/laptop` (the host that types every cross-machine leg),
   `regatta/secrets` (the shared `.env` folder), `wharf/repos.json` (the registry, read by

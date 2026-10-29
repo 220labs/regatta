@@ -3,7 +3,7 @@
 
     gate show                          one line per site, defaults applied, and the table's commit
     gate set <site> <key>=<value>…     validate and write one row (value `none` removes the key)
-    gate check                         the file validates, overrides ignored (the overlay's check runs it)
+    gate check                         the table (and the module's beside it) validates, overrides ignored
 
 From Python (the same loader bin/jev uses):
 
@@ -33,6 +33,12 @@ The table: `defaults.<provider>` gives model, effort, threshold; `sites.<site>` 
 - bench, note   pointers for people; `set` prints the bench.
 A threshold left on a row after a flip to claude is kept and ignored, so flipping back restores
 the tuned value.
+Two tables: the config dir's (on the owner's Macs a link into the overlay) and the module's beside
+the gate. A site the config table lacks runs the module's row with the module's defaults; `show`,
+resolve()'s `table` and classify's log line name it with "(module default)"; `set` copies it into
+the config table before changing it (GATE_TABLE's copy too); `check` validates both. A broken
+module row, or one whose override variables clash with a config site's, refuses that fallback site,
+show and check, never a config site. GATE_TABLE resolves as one file, no fallback.
 Overrides, one variable per site and key: GATE_<SITE>_<KEY>, the site upper-cased with `.` and
 `-` as `_`, KEY one of PROVIDER, MODEL, EFFORT, THRESHOLD, BATCH, WHEN_OFF (GATE_SPARKS_SHAPE_MODEL=
 sonnet, GATE_REVIEW_GATE_MERGE_EFFORT=low; `none` removes the key, as in `set`). load() applies them
@@ -85,6 +91,12 @@ CONFIG_TABLE = os.path.join(os.path.expanduser(os.environ.get("REGATTA_CONFIG") 
 DEFAULT_TABLE = os.path.normpath(os.path.join(HERE, "..", "settings", "models.json"))
 # lexists: a dangling config link fails as "cannot read" there, never silently the defaults.
 TABLE = CONFIG_TABLE if os.path.lexists(CONFIG_TABLE) else DEFAULT_TABLE
+# A site the config table lacks runs the module's own row, filled from the module's own defaults:
+# a module ships the rows its call sites need, and its data lives in the module or the config dir,
+# never in an overlay file the owner's table links to (the owner, 2026-10-27; lighthouse's four rows
+# met "no row" on the Macs, 2026-10-29). A site in both runs the config row whole, and a site in
+# neither is refused. GATE_TABLE or an explicit table is that file alone: a suite sees its own rows.
+DEFAULT_MARK = " (module default)"
 PROVIDERS = {
     "generate": ("claude", "codex", "off"),
     "review": ("claude", "codex", "off"),
@@ -110,6 +122,15 @@ class GateOff(GateError):
 
 def _path(table=None):
     return table or os.environ.get("GATE_TABLE") or TABLE
+
+
+def _fallback_path(table=None):
+    """The module's table when it backs the config table up, else None."""
+    if table or os.environ.get("GATE_TABLE") or TABLE != CONFIG_TABLE:
+        return None
+    if os.path.realpath(CONFIG_TABLE) == os.path.realpath(DEFAULT_TABLE):
+        return None  # the config table is the module's own: nothing to fall back to
+    return DEFAULT_TABLE
 
 
 @functools.lru_cache(maxsize=None)
@@ -249,34 +270,79 @@ def _blame(err, name, over):
     return err
 
 
-def _load(table=None, env=True):
-    path = _path(table)
-    name = _rel(path)
+def _read(path, name):
     try:
         raw = open(path).read()
     except OSError as e:
         raise GateError("%s: cannot read: %s" % (name, e.strerror))
     try:
-        t = json.loads(raw)
+        return json.loads(raw)
     except ValueError as e:
         raise GateError("%s: not valid JSON: %s" % (name, e))
-    over = _apply_env(t, name) if env else {}
-    errs = validate(t, name)
+
+
+def _module_rows(t, tname, fpath, fname):
+    """The module's table as a fallback for config table `t`: {name, path, defaults, sites (only
+    those `t` lacks), count, errors, doc}; a module file with no sites map is all errors."""
+    d = _read(fpath, fname)
+    dsites = d.get("sites") if isinstance(d, dict) else None
+    if not isinstance(dsites, dict):
+        return {"name": fname, "path": fpath, "count": 0, "defaults": {}, "sites": {},
+                "errors": validate(d, fname) or ["%s: sites is a non-empty map site -> row" % fname]}
+    mine = {env_name(s, "provider"): s for s in t["sites"]}
+    clash = [s for s in dsites if s not in t["sites"] and env_name(s, "provider") in mine]
+    # the module's rows themselves, so an override on a fallback site lands where resolve reads it
+    return {"name": fname, "path": fpath, "count": len(dsites), "doc": d,
+            "defaults": d.get("defaults") if isinstance(d.get("defaults"), dict) else {},
+            "sites": {s: r for s, r in dsites.items() if s not in t["sites"] and s not in clash},
+            "errors": ["%s: sites.%s shares its override variables with %s's sites.%s — rename one"
+                       % (fname, s, tname, mine[env_name(s, "provider")]) for s in clash]}
+
+
+def _load(table=None, env=True):
+    """(table, overrides, fallback). fallback, while the config table is in use: the module's table
+    as _module_rows gives it, else None. The config table validates whole and fails closed. The
+    module's problems (a bad row, a site whose override variables clash with the config table's,
+    which is dropped) are kept in fallback["errors"]: they refuse a fallback site and `check`, never
+    a site the config table carries, so a core edit cannot stop the owner's own rows."""
+    path = _path(table)
+    name = _rel(path)
+    t = _read(path, name)
+    fpath, fb, view = _fallback_path(table), None, t
+    if fpath and isinstance(t, dict) and isinstance(t.get("sites"), dict):
+        fb = _module_rows(t, name, fpath, _rel(fpath) + DEFAULT_MARK)
+        view = {"sites": dict(fb["sites"], **t["sites"])}
+    over = _apply_env(view, name + (" or " + fb["name"] if fb else "")) if env else {}
+    errs = [_blame(e, name, over) for e in validate(t, name)]
     if errs:
-        raise GateError("; ".join(_blame(e, name, over) for e in errs))
-    return t, over
+        raise GateError("; ".join(errs))
+    if fb and "doc" in fb:
+        fb["errors"] += [_blame(e, fb["name"], over) for e in validate(fb.pop("doc"), fb["name"])]
+    return t, over, fb
+
+
+def _strict(fb):
+    """Raise the module table's problems: for a fallback site, show and check."""
+    if fb and fb["errors"]:
+        raise GateError("; ".join(fb["errors"]))
 
 
 def load(table=None, env=True):
-    """The table, the environment's overrides applied (env=False: the file alone, as `set` writes)."""
+    """The table, the environment's overrides applied (env=False: the file alone, as `set` writes).
+    The config table alone: the module's rows it lacks are resolve()'s and show's to add."""
     return _load(table, env)[0]
 
 
 def resolve(site, table=None):
-    """The row with defaults applied (plus `site`), None for off + skip; GateOff for off + fail."""
-    t, over = _load(table)
+    """The row with defaults applied (plus `site`), None for off + skip; GateOff for off + fail.
+    A row from the module's table carries `table`, that table's name and DEFAULT_MARK."""
+    t, over, fb = _load(table)
     name = _rel(_path(table))
-    row = t["sites"].get(site)
+    row, defaults = t["sites"].get(site), t.get("defaults", {})
+    if row is None and fb:
+        _strict(fb)  # a broken or clashing module table refuses what would fall through to it
+        if site in fb["sites"]:
+            row, defaults, name = fb["sites"][site], fb["defaults"], fb["name"]
     if row is None:
         raise GateError("%s: no row for %s — a call site needs its row before it runs" % (name, site))
     if row["kind"] == "media":
@@ -285,9 +351,11 @@ def resolve(site, table=None):
         if row.get("when_off", "fail") == "skip":
             return None
         raise GateOff("%s: sites.%s is off (when_off: fail)" % (name, site))
-    out = dict(t.get("defaults", {}).get(row["provider"], {}))
+    out = dict(defaults.get(row["provider"], {}))
     out.update(row)
     out["site"] = site
+    if site not in t["sites"]:
+        out["table"] = name
     if over.get(site):
         out["env"] = {v: os.environ[v] for v in over[site].values()}
     return out
@@ -372,6 +440,8 @@ def classify(site, items, ask, labels, context=None, source=None, approved=None,
            "model": row.get("model"), "source": source, "items": len(items)}
     if quote:
         rec["approved"] = quote
+    if row.get("table"):
+        rec["table"] = row["table"]
     if row.get("env"):
         rec["overrides"] = row["env"]
     t0 = time.time()
@@ -578,14 +648,25 @@ def main(argv=None):
     path = _path()
     try:
         if cmd == "check":
-            t = load(env=False)  # the file alone: an override in this shell must not hide or fake a bad row
+            # the files alone: an override in this shell must not hide or fake a bad row
+            t, _, fb = _load(env=False)
+            _strict(fb)
             print("gate: %s validates, %d sites" % (_rel(path), len(t["sites"])))
+            if fb:
+                print("gate: %s validates, %d sites, %d of them the table lacks"
+                      % (fb["name"], fb["count"], len(fb["sites"])))
             return 0
         if cmd == "show":
-            t, over = _load()
+            t, over, fb = _load()
+            _strict(fb)
             for s, row in t["sites"].items():
                 print(_line(s, row, t.get("defaults", {}), over.get(s, {})))
+            for s, row in (fb["sites"] if fb else {}).items():
+                print(_line(s, row, fb["defaults"], over.get(s, {})) + DEFAULT_MARK)
             print("table: %s @ %s" % (_rel(path), _commit(path)))
+            if fb and fb["sites"]:
+                print("rows marked%s: %s @ %s, sites the table lacks"
+                      % (DEFAULT_MARK, _rel(fb["path"]), _commit(fb["path"])))
             if over:
                 print("overridden here: %s" % ", ".join(sorted(v for o in over.values() for v in o.values())))
             return 0
@@ -599,26 +680,53 @@ def main(argv=None):
                                 capture_output=True, text=True).stdout.strip()
             if not os.environ.get("GATE_TABLE") and not br and path == os.path.realpath(DEFAULT_TABLE):
                 # A plugin cache: the next update reverts the edit, and the user thinks it flipped.
-                raise GateError("not written: %s is the module's shipped defaults — copy it to %s "
+                raise GateError("not written: %s is the module's shipped defaults — write %s holding "
+                                "only the rows you change (a site it lacks keeps the module's row) "
                                 "and set it there" % (path, CONFIG_TABLE))
             if not os.environ.get("GATE_TABLE") and br == "main":
                 raise GateError("not written: %s is on main, live at save — flip from a worktree "
                                 "(open one, then GATE_TABLE=<its path>/settings/models.json "
                                 "<its path>/bin/gate set …)" % _rel(path))
-            t = load(env=False)  # the file alone: an override is never written into it
+            t, _, fb = _load(env=False)  # the files alone: an override is never written into them
+            if fb is None and os.path.realpath(path) != os.path.realpath(DEFAULT_TABLE):
+                # GATE_TABLE names a worktree's copy of the config table, as the on-main refusal
+                # says to: its missing sites still copy from the module's table, or `set` could
+                # never reach a row `show` lists on the Macs
+                fb = _module_rows(t, _rel(path), DEFAULT_TABLE, _rel(DEFAULT_TABLE) + DEFAULT_MARK)
             site, before = argv[1], dict(t["sites"].get(argv[1], {}))
+            copied = not before and fb and site in fb["sites"]
+            if copied:
+                _strict(fb)
+                # Only the config table is written: the module's row is copied into it first, so the
+                # site keeps running as the module shipped it bar the keys this set names.
+                before = dict(fb["sites"][site])
             if not before and not any(a.startswith("kind=") for a in argv[2:]):
                 raise GateError("%s: no such row — a new one needs kind= and provider=" % site)
-            row = dict(before)
+            row, named = dict(before), set()
             for a in argv[2:]:
                 if "=" not in a:
                     raise GateError("%r: each change is key=value" % a)
                 k, v = a.split("=", 1)
+                named.add(k)
                 v = _value(v)
                 if v is None:
                     row.pop(k, None)
                 else:
                     row[k] = v
+            if copied:
+                # the module's defaults travel with its row; the config table's would change the model
+                prov = row.get("provider")
+                for k, v in (fb["defaults"].get(prov, {}) if isinstance(prov, str) else {}).items():
+                    if k not in row and k not in named:
+                        row[k] = v
+                # a key only the config table's defaults set would fill the copied row and change it,
+                # and a row cannot say "absent": refuse, naming the key to set
+                extra = sorted(k for k in (t.get("defaults", {}).get(prov, {}) if isinstance(prov, str) else {})
+                               if k not in row and k not in named)
+                if extra:
+                    raise GateError("not written: %s's defaults set %s for %s, which sites.%s in %s never had "
+                                    "— name %s in this set" % (_rel(path), ", ".join(extra), prov, site,
+                                                               fb["name"], " ".join(k + "=" for k in extra)))
             t["sites"][site] = row
             errs = validate(t, _rel(path))
             if errs:
@@ -627,6 +735,8 @@ def main(argv=None):
             with open(tmp, "w") as f:
                 f.write(dump(t))
             os.replace(tmp, path)
+            if copied:
+                print("copied sites.%s from %s" % (site, fb["name"]))
             print(_line(site, row, t.get("defaults", {})))
             if row.get("bench"):
                 print("bench: %s — a flip changes the classifier; rerun it before trusting the new row"

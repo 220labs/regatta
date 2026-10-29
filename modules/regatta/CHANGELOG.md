@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The gate's module rows (gate-module-rows, 2026-10-29): a site the config table lacks runs the row in
+  `settings/models.json` beside the gate, filled from that table's own defaults, so a module ships its call
+  sites' rows and the owner's table names only what it changes. A site in both runs the config row whole; a
+  site in neither is refused as before. `show` marks such a row `(module default)`, `resolve()` gives it a
+  `table` key and classify logs it; a `GATE_<SITE>_<KEY>` override reaches it; `set` copies it into the
+  config table before changing it, `GATE_TABLE`'s copy too; `check` validates both tables. A broken module
+  row, or one whose override variables clash with a config site's, refuses fallback sites, `show` and
+  `check`, never a config site. `GATE_TABLE` resolves as one file, no fallback. `settings/` joins
+  `autofinish_exclude`: every gate call on the Macs now reads it. Lighthouse's four `lighthouse.*` rows met "no row" on the Macs, whose config table links to the overlay's.
+
 - `scope_marker(name)` and `scope_of_marker(marker)` (confidential-reach S5's landing review, 2026-10-26):
   what text bound for an open repo says in place of a confidential scope's name, `confidential:<first 8
   hex of sha256(name)>`, and its reading back by this host's registry (None for an open scope, an unknown

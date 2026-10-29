@@ -133,8 +133,8 @@ note is still filed.
 
 The model for each call is a row in the core's gate table (`sparks.shape`, `sparks.route`,
 `sparks.redact`). The core's default table has none of them, so a pass waits ("no row for
-sparks.shape") until your own table — `regatta/models.json` in the config dir, which replaces the
-default whole — carries them, for example:
+sparks.shape") until your own table — `regatta/models.json` in the config dir, which wins over the
+default row by row (a site it lacks runs the core's row) — carries them, for example:
 
 ```json
 "sparks.shape":  {"kind": "generate", "provider": "claude", "when_off": "fail"},

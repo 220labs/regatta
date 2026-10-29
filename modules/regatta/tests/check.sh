@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The core's check: where the core, a peer and the private config are found (C2, C3), the private
 # values with and without their keys (neutral stand-ins only), the regatta
-# CLI, the weekly jobs' host rule (common.weekly_host) and its check row, the gate's table order and
+# CLI, the weekly jobs' host rule (common.weekly_host) and its check row, the gate's table order, its module rows and
 # its write through a config symlink, jev's key files, and the shim `regatta shim` makes, under every
 # way a caller loads a file (the design's P5), and the transcript reader's last main-chain call.
 # Scratch paths only (a copy of the module where a test writes); nothing under ~/.config or ~/.claude is written,
@@ -13,7 +13,7 @@ ROOT="$(cd "$M/../.." && pwd)"
 # the caller's config dir, read before the scratch one replaces it: the autofinish_exclude case names the overlay by it
 REAL_RC="${REGATTA_CONFIG:-}" REAL_HOME="$HOME"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset GATE_TABLE JEV_ENV_FILE JEV_LOG TYPESAFE_API_KEY TYPESAFE_BASE_URL COST_RATIO SECRETS_DIR SECRETS_REPOS SECRETS_PROJECTS SECRETS_HOST
 # The interpreter itself, for the two cases that must not start any other process: python3 may be a
 # shim script (pyenv's is bash), and bash started in a removed cwd prints "shell-init: error retrieving
@@ -457,6 +457,66 @@ mv "$T/config/regatta/models.json" "$T/models.link"; ln -s "$T/gone.json" "$T/co
 rm "$T/config/regatta/models.json"; mv "$T/models.link" "$T/config/regatta/models.json"
 cp -R "$M" "$T/gcopy"
 out=$(REGATTA_CONFIG="$T/none" "$T/gcopy/bin/gate" set example.classify provider=off 2>&1); check "$?" 1 "  outside git, no config table: set refuses the shipped defaults"
+
+echo "the gate's module rows: a site the config table lacks runs the module's own"
+# A copy of the module, so its table holds synthetic sites; a config table of its own, on a branch for set.
+GC="$T/gcopy/bin/gate"; C3="$T/c3"; R3="$T/cfg3"; mkdir -p "$C3/regatta" "$R3"
+printf '%s\n' '{"defaults": {"claude": {"model": "mod-model", "effort": "low"}},' \
+  ' "sites": {"mod.only": {"kind": "classify", "provider": "claude"}, "both.site": {"kind": "generate", "provider": "claude", "model": "mod-both"}}}' \
+  > "$T/gcopy/settings/models.json"
+printf '%s\n' '{"defaults": {"claude": {"model": "cfg-model"}},' \
+  ' "sites": {"both.site": {"kind": "generate", "provider": "claude", "effort": "high"}, "cfg.only": {"kind": "generate", "provider": "claude"}}}' \
+  > "$R3/models.json"
+git -C "$R3" init -q -b main && git -C "$R3" add -A && git -C "$R3" -c user.name=t -c user.email=t@t commit -qm t
+git -C "$R3" checkout -q -b claude/w
+ln -s "$R3/models.json" "$C3/regatta/models.json"
+gc() { REGATTA_CONFIG="$C3" python3 -I -c "from importlib.machinery import SourceFileLoader as L; g = L('gate', '$GC').load_module()
+$1"; }
+check "$(gc 'r = g.resolve("mod.only"); print(r["model"], r["effort"], r["table"])')" \
+  "mod-model low settings/models.json (module default)" "a site only in the module's table: its row, its defaults, named"
+check "$(gc 'r = g.resolve("both.site"); print(r["model"], r["effort"], "table" in r)')" "cfg-model high False" \
+  "  a site in both: the config row whole, the config's defaults"
+check "$(gc 'try: g.resolve("nope.site")
+except g.GateError as e: print(e)')" "models.json: no row for nope.site — a call site needs its row before it runs" \
+  "  a site in neither: refused, as before (the config table, named as its repo names it)"
+check "$(GATE_MOD_ONLY_MODEL=haiku gc 'r = g.resolve("mod.only"); print(r["model"], r["env"]["GATE_MOD_ONLY_MODEL"])')" "haiku haiku" \
+  "  an override on a module row applies, never 'names no site'"
+check "$(GATE_TABLE="$R3/models.json" gc 'try: g.resolve("mod.only")
+except g.GateError as e: print(e)')" "models.json: no row for mod.only — a call site needs its row before it runs" \
+  "  GATE_TABLE: that file alone, no fallback"
+out=$(REGATTA_CONFIG="$C3" "$GC" show 2>&1)
+echo "$out" | grep -q '^mod.only .*mod-model.* (module default)$'; check $? 0 "show marks a module row"
+echo "$out" | grep -q '^rows marked (module default): settings/models.json @ '; check $? 0 "  and names the table it came from"
+echo "$out" | grep -q '^both.site .*(module default)'; check $? 1 "  a site in both is the config's, unmarked"
+check "$(REGATTA_CONFIG="$C3" "$GC" check 2>&1 | tail -1)" "gate: settings/models.json (module default) validates, 2 sites, 1 of them the table lacks" \
+  "check validates the module's table too"
+cp "$T/gcopy/settings/models.json" "$T/mod.keep"; printf '{"sites": {"bad": {"kind": "x"}}}\n' > "$T/gcopy/settings/models.json"
+REGATTA_CONFIG="$C3" "$GC" check >/dev/null 2>&1; check $? 1 "  a broken module table fails check, never skipped"
+check "$(gc 'print(g.resolve("cfg.only")["model"])')" "cfg-model" "  and a config site still runs: the core's edit never stops the owner's rows"
+check "$(gc 'try: g.resolve("mod.only")
+except g.GateError as e: print("refused" if "module default" in str(e) else e)')" "refused" "  while a module site is refused, naming the module's table"
+printf '%s\n' '{"sites": {"mod.only": {"kind": "classify", "provider": "claude"}, "cfg-only": {"kind": "generate", "provider": "claude"}}}' \
+  > "$T/gcopy/settings/models.json"
+check "$(gc 'print(g.resolve("cfg.only")["model"])')" "cfg-model" "a module site whose override variables clash with a config site's: the config site runs"
+check "$(gc 'try: g.resolve("cfg-only")
+except g.GateError as e: print("clash" if "shares its override variables" in str(e) else e)')" "clash" "  the clashing module site is refused, saying why"
+REGATTA_CONFIG="$C3" "$GC" check >/dev/null 2>&1; check $? 1 "  and check fails on it"
+cp "$T/mod.keep" "$T/gcopy/settings/models.json"
+cp "$R3/models.json" "$T/gt.json"
+GATE_TABLE="$T/gt.json" REGATTA_CONFIG="$C3" "$GC" set mod.only effort=medium >/dev/null 2>&1; check $? 0 "set with GATE_TABLE (a worktree's copy) on a module row: written"
+check "$(python3 -c "import json; r = json.load(open('$T/gt.json'))['sites']['mod.only']; print(r['model'], r['effort'])")" "mod-model medium" \
+  "  the module's row copied into that file"
+out=$(REGATTA_CONFIG="$C3" "$GC" set mod.only effort=huge 2>/dev/null); check "$?" 1 "a refused set on a module row"
+case "$out" in *copied*) check "copied" "" "  says nothing was copied";; *) check "" "" "  says nothing was copied";; esac
+printf '%s\n' '{"defaults": {"claude": {"model": "cfg-model", "batch": 3}}, "sites": {"cfg.only": {"kind": "generate", "provider": "claude"}}}' > "$T/gx.json"
+out=$(GATE_TABLE="$T/gx.json" REGATTA_CONFIG="$C3" "$GC" set mod.only model=m 2>&1); check "$?" 1 "a copy the config table's defaults would change: refused"
+echo "$out" | grep -q "name batch= in this set"; check $? 0 "  naming the key to set"
+REGATTA_CONFIG="$C3" "$GC" set mod.only effort=medium >/dev/null 2>&1; check $? 0 "set on a module row: written"
+check "$(python3 -c "import json; r = json.load(open('$R3/models.json'))['sites']['mod.only']; print(r['kind'], r['provider'], r['model'], r['effort'])")" \
+  "classify claude mod-model medium" "  into the config table: the module's row, its model kept, the key changed"
+check "$(python3 -c "import json; print(sorted(json.load(open('$T/gcopy/settings/models.json'))['sites']))")" "['both.site', 'mod.only']" \
+  "  the module's table untouched"
+check "$(gc 'r = g.resolve("mod.only"); print(r["effort"], "table" in r)')" "medium False" "  and the site now resolves from the config table"
 
 echo "jev's key"
 J="$M/bin/jev"
