@@ -8,6 +8,12 @@
   most once per 10 minutes per branch), not at `done`; a human task's, and one on a superseded step, keep `done`. `helm compile` reads each step's branch from its status line and maps `after: S<n>` to it
   (`after_branches`, never in the public copy). stalls raises the queue's `after-gone` and `after-overdue` cards
   as one S6 naming both branches, while the queue holds the step.
+- "manager" is "skipper" in helm's words and names (helm-vocabulary H2, 2026-10-29): asklib's `standing_skipper`,
+  `skipper_dir`, `peer_skipper`, `skipper_state`; ask's `skipper_name` and `--source` default `skipper`; stalls_tick's
+  `skipper_road`; `new_plan(skipper=…)`; messages such as "no live skipper", "the skipper's session has ended",
+  "closing line: RELAYED, its skipper gone", and a standing record's default name `skipper · <host>`. Env names,
+  plan.json and run-record keys, `manager_road` in the tick log and the `manager` dir keep their old word; the
+  readers of "waiting on manager" and `raise_to: manager` stay.
 
 - stalls reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4), the reader autofinish and
   sextant share: a torn node-local store of another scope no longer holds every branch on the pending line.

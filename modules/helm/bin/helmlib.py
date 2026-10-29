@@ -487,11 +487,11 @@ def save_plan(plan):
     tmp.replace(d / "plan.json")
 
 
-def new_plan(pid, topic, manager=None, space=None, repo=None, due=None, cost=None):
+def new_plan(pid, topic, skipper=None, space=None, repo=None, due=None, cost=None):
     # salt: keys the guarded tasks' tokens in public() — kept in plan.json, never in a copy that leaves.
     # `manager` keeps its key on disk (the skipper's session); `due` and `cost` are the ship's (H1),
     # `started` is set by its first `wharf apply` — all three absent on a plan from before rename S5
-    plan = {"id": pid, "topic": topic, "created": now(), "manager": manager or {}, "space": space,
+    plan = {"id": pid, "topic": topic, "created": now(), "manager": skipper or {}, "space": space,
             "repo": repo, "tasks": {}, "milestones": [], "salt": os.urandom(8).hex()}
     if due is not None:
         plan["due"] = due
@@ -1013,7 +1013,7 @@ def state(pid, at=None):
             "as_of": at, "host": host(), "updated": max([t["updated"] or 0 for t in tasks.values()] + [plan.get("updated") or 0]),
             "tasks": [tasks[k] for k in _order(plan, tasks)], "milestones": ms, "totals": totals,
             # public() keys the guarded tokens with it and drops it; a plan from before the salt
-            # falls back to its id until the manager's next write adds one (save_plan)
+            # falls back to its id until the skipper's next write adds one (save_plan)
             "guard_salt": plan.get("salt") or plan["id"]}
 
 
@@ -1036,7 +1036,7 @@ def _order(plan, tasks):
 
 
 def _estimate(t, at):
-    """(dollars to completion, 'manager' | 'est.' | None): the manager's estimate when set, else burn
+    """(dollars to completion, 'manager' | 'est.' | None): the skipper's estimate when set, else burn
     rate × the time left to the ETA (cost so far ÷ elapsed × remaining), marked est."""
     if t["status"] in ENDED:
         return 0.0, None

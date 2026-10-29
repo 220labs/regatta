@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stalls: work that stopped without saying so, sorted into the chain manager's classes S1–S7
+"""Stalls: work that stopped without saying so, sorted into the stall classes S1–S7
 (docs/chain-manager-2026-10-11.md section 4 and its launch review; orchestration B1).
 
     stalls.py [--json] [--no-peer]   every stall on this Mac and each peer that is no yard, one line each
@@ -132,7 +132,7 @@ SUGGESTED = {
     "relaunch": "autofinish-run <worktree> --by chain, once on this tip (A2)",
     "raise": "raise it (A3)",
     "classify": "ask B3's classifier (bin/gate classify)",
-    "relay": "bin/ask relay <doc> <Dn>, once, to the run's manager (an Orca worker's question, B8)",
+    "relay": "bin/ask relay <doc> <Dn>, once, to the run's skipper (an Orca worker's question, B8)",
 }
 
 
@@ -335,7 +335,7 @@ def probe_source(rc):
 def peers():
     """{host: ssh alias} to read, this Mac left out. STALLS_PEERS overrides: `name=alias,…`, empty for none.
     Every peer is read, a yard too: its records and live sessions are the facts both Macs share (the
-    superseded test, a manager live over there). Which of them are judged is self_judging()'s."""
+    superseded test, a skipper live over there). Which of them are judged is self_judging()'s."""
     if "STALLS_PEERS" in os.environ:
         spec = os.environ["STALLS_PEERS"].strip()
         out = dict(x.split("=", 1) for x in spec.split(",") if "=" in x)
@@ -559,7 +559,7 @@ def _stall(cls, host, st, name, rule, evidence, now, since=None, **kw):
            "depth": _num(st.get("depth")), "brief": st.get("brief"), "manager": st.get("manager"),
            "plan": st.get("plan"), "tip": None, "guarded": helmlib.guarded(repo)}
     # what B3's re-dispatch needs to start the same step again, as dispatch recorded it (B2): the
-    # repo's path on its host, the worktree, the run's mode and its manager's road
+    # repo's path on its host, the worktree, the run's mode and its skipper's road
     rec["dispatch"] = {k: st.get(k) for k in DISPATCH_KEYS if st.get(k) not in (None, "")}
     rec.update(kw)
     return rec
@@ -568,7 +568,7 @@ def _stall(cls, host, st, name, rule, evidence, now, since=None, **kw):
 def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, read=None, queued=None, queued_out=None):
     """(stalls, unsure) of one host's run records. `all_records` is every record of both Macs, as
     (host, name, st), for the superseded test; `live_ids` every live session id on both; `read` the
-    hosts this one has a road to (itself and its peers, read or not; None: no rule) — a manager on any
+    hosts this one has a road to (itself and its peers, read or not; None: no rule) — a skipper on any
     other host cannot be seen from here, so its RELAYED run is never called orphaned (a yard reads no
     laptop; skipper-resilience S8). A peer that did not answer this pass keeps the rule it had. `queued`
     (a QueueRead) says whether dispatch's queue holds a branch: such a run is put in `queued_out` (a
@@ -613,7 +613,7 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
             ev.append("last reply: %s" % last)
         since = s.get("last_at") or s.get("last_message_at") or started
         ended, alive = bool(st.get("ended")), bool(f.get("alive"))
-        managed = st.get("manager")
+        skipper = st.get("manager")
 
         if reason.startswith("max lifetime"):
             stalls.append(_stall("S3", host, st, name, "max lifetime", ev, now, since))
@@ -658,12 +658,12 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
             continue
         # session_status.RELAYED, and its word from a peer whose checkout predates rename S5
         if kind in ("waiting on skipper", "waiting on manager"):
-            if managed and managed in live_ids:
-                continue   # A4: RELAYED, and its manager is live
+            if skipper and skipper in live_ids:
+                continue   # A4: RELAYED, and its skipper is live
             far = st.get("manager_host")
-            if managed and read is not None and far and far not in read:
-                continue   # its manager runs on a host with no road from here (a yard to the laptop): unknown, never "gone" (S8)
-            stalls.append(_stall("S6", host, st, name, "closing line: RELAYED, its manager gone", ev, now, since))
+            if skipper and read is not None and far and far not in read:
+                continue   # its skipper runs on a host with no road from here (a yard to the laptop): unknown, never "gone" (S8)
+            stalls.append(_stall("S6", host, st, name, "closing line: RELAYED, its skipper gone", ev, now, since))
             continue
         # session_status.HANDED: a yolo or dnd run handed its landing to dispatch's launch, and no launch
         # record superseded it (`later`, above) — dispatch declined, and says why in the record's `launch`.
@@ -852,7 +852,7 @@ def judge_after_cards(host, now, queued=None):
 
 def judge_plans(host, live_ids, all_records, now):
     """S7: a planned task whose dependencies are all done, nothing reported on it or them for
-    S7_QUIET, and no live run of it. A task with no dependency is the manager's own to start: not one."""
+    S7_QUIET, and no live run of it. A task with no dependency is the skipper's own to start: not one."""
     stalls = []
     # an Orca-backed plan (`plan apply`'s one Run); a wharf ship's plan keeps S7 here for its other tasks
     owned = {p["id"] for p in plan_runs().values() if not p.get("wharf")} if orca_on() else set()
@@ -864,7 +864,7 @@ def judge_plans(host, live_ids, all_records, now):
         except (FileNotFoundError, ValueError):
             continue
         tasks = {t["id"]: t for t in st["tasks"]}
-        mgr = (st.get("manager") or {}).get("session")
+        skipper = (st.get("manager") or {}).get("session")
         for t in st["tasks"]:
             if t.get("kind") == "human" or t["status"] != "planned" or not t["deps"] or t["blockers"]:
                 continue
@@ -878,14 +878,14 @@ def judge_plans(host, live_ids, all_records, now):
                        and (o.get("topic") == t["id"] or (t.get("branch") and o.get("branch") == t.get("branch")))]
             if running:
                 continue
-            to = "skipper" if mgr and mgr in live_ids else "owner"
+            to = "skipper" if skipper and skipper in live_ids else "owner"
             rec = {"repo": t.get("repo") or st.get("repo"), "topic": t["id"], "branch": t.get("branch"), "plan": pid}
             ev = ["plan %s (%s)" % (st.get("topic") or pid, pid[:8]), "deps done: %s" % ", ".join(t["deps"]),
                   "quiet %s" % _ago(quiet_since, now)]
             s = _stall("S7", host, rec, None, "ready, nobody started it", ev, now, quiet_since, raise_to=to,
                        key=[host, pid, t["id"]], key_kind="task", task=t["id"])
             s["guarded"] = bool(t.get("guarded"))
-            s["manager"] = mgr
+            s["manager"] = skipper
             stalls.append(s)
     return stalls
 
@@ -906,7 +906,7 @@ def judge_plans(host, live_ids, all_records, now):
 #       or a failure with no process exit → raised, never retried
 #   S6  the worker waits on a prompt (`input-required`, from the registry); and a `question` row in
 #       the Run's mailbox (`check --peek`) from a Task's newest unfinished attempt: one naming a
-#       `<doc> Dn` inside its worktree, in a plan whose manager is live, is relayed by `bin/ask relay
+#       `<doc> Dn` inside its worktree, in a plan whose skipper is live, is relayed by `bin/ask relay
 #       <doc> <Dn>` (action relay, the tick's); any other raised with its message id
 #   S7  a Task `task-list --ready` names, quiet S7_QUIET, in a Run a plan owns — such a plan's
 #       planned tasks are Orca's to report, so judge_plans() leaves them alone
@@ -1026,7 +1026,7 @@ def _owner_of(wt):
 def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
     """(stalls, unsure, runs, notes) of this Mac's Orca workers (the block above). `live_states` is
     {session id: state} of this Mac's live Claude Code sessions, `live_ids` every live session on
-    both Macs (a plan's manager may be on the build box), `asked` ask poll's open D-items by (repo,
+    both Macs (a plan's skipper may be on the build box), `asked` ask poll's open D-items by (repo,
     branch), `read` the adapter whose tasks()/coordinator()/questions()/times() are called (tests
     pass one), `recs` the list (else read)."""
     stalls, unsure, runs, notes = [], [], [], []
@@ -1058,10 +1058,10 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
             continue
         tmap = {t.get("id"): t for t in tasks}
         plan = owned.get(run) or {}
-        pid, mgr = plan.get("id"), plan.get("manager") or {}
-        to = "skipper" if mgr.get("session") and mgr["session"] in live_ids else "owner"
-        road = {"plan": pid, "manager": mgr.get("session"), "manager_host": mgr.get("host"),
-                "manager_account": mgr.get("account"), "plan_space": plan.get("space")}
+        pid, sk = plan.get("id"), plan.get("manager") or {}
+        to = "skipper" if sk.get("session") and sk["session"] in live_ids else "owner"
+        road = {"plan": pid, "manager": sk.get("session"), "manager_host": sk.get("host"),
+                "manager_account": sk.get("account"), "plan_space": plan.get("space")}
 
         def ours(r):
             t = tmap.get((r.get("native") or {}).get("task"))
@@ -1159,7 +1159,7 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
                                      q.get("since"), action="relay", relay={"doc": doc, "item": m.group("item"), "task": topic},
                                      **kw))
             else:
-                rule = "question: %s %s, no manager to relay to" % (m.group("doc"), m.group("item")) if doc else "question in the Run's mailbox"
+                rule = "question: %s %s, no skipper to relay to" % (m.group("doc"), m.group("item")) if doc else "question in the Run's mailbox"
                 stalls.append(_stall("S6", host, st, q["id"], rule, ev, now, q.get("since"), **kw))
         if not pid or plan.get("wharf"):
             continue
@@ -1170,7 +1170,7 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
             deps = [str(d) for d in t.get("deps") or []]
             quiet_since = max([t.get("created") or 0] + [done.get(d) or 0 for d in deps])
             if not deps or now - quiet_since < S7_QUIET:
-                continue   # a first step is the manager's own to start, as in judge_plans()
+                continue   # a first step is the skipper's own to start, as in judge_plans()
             title = str(t.get("task_title") or t.get("id"))
             ev = ["orca task %s ready in run %s (plan %s)" % (t.get("id"), run, pid), "deps done: %s" % ", ".join(deps),
                   "quiet %s" % _ago(quiet_since, now)]
@@ -1391,7 +1391,7 @@ def title(s, now):
     elif s["class"] == "S5":
         what += " at %s" % (s.get("gate") or "?")
     elif s["class"] == "S6" and "RELAYED" in (s.get("rule") or ""):
-        what = "relayed to a manager that is gone"
+        what = "relayed to a skipper that is gone"
     elif s["class"] == "S6" and "hand-over" in (s.get("rule") or ""):
         what = "handed over, its launch never started"
     elif s["class"] == "S6" and s.get("key_kind") == "question":
@@ -1403,7 +1403,7 @@ def title(s, now):
 
 def column(s):
     """The board's column: Blocked for a class the tick acts on (A1/A2) or a raise to a live
-    manager, the owner's column (helmlib.columns()) for every other raise (chain-manager E1)."""
+    skipper, the owner's column (helmlib.columns()) for every other raise (chain-manager E1)."""
     if s["action"] in ("retry", "start", "relaunch", "relay") or s.get("raise_to") in RAISE_TO_SKIPPER:
         return "Blocked"
     return helmlib.columns()[0]

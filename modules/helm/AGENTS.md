@@ -60,11 +60,11 @@ Read `README.md` first. For an agent:
   No scope `login` key is read or written (S3: `account pick` pins one hard); the runner chooses a
   login every repo of the scope allows (`account allowed`). The leases' and events' clock is
   `helmlib.now()`; `STALLS_NOW` pins only the record's age, the belt and the 04:00 hour. A relay
-  goes to the scope's skipper (`asklib.standing_manager(host, scope)`) only for a ship that scope
+  goes to the scope's skipper (`asklib.standing_skipper(host, scope)`) only for a ship that scope
   leases (`asklib.scope_skipper`: the ship's skipper.json, never a path) and only when the run has
   no live skipper of its own; one that names a live `DISPATCH_SKIPPER` keeps it, lease holder or
   not. A scope's skipper never reads the file queue: `asklib.relay` skips that road when `resolve()`
-  hands it a relay in place of a missing manager (the ctx's `stand_in`; the re-hail keeps the road,
+  hands it a relay in place of a missing skipper (the ctx's `stand_in`; the re-hail keeps the road,
   as a try). Test a relay rule through `bin/ask relay` too: it passes relay() a ctx already resolved,
   which a raw-ctx case never exercises (the fifth finish review's fix review). A skipper's own relay (`SKIPPER_SCOPE`) goes to no skipper and writes no ship event: its
   escalation is the owner's. The

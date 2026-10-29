@@ -21,7 +21,7 @@ fixture_config() {
   printf 'Sam\nAlex\n' > "$1/helm/people"
   echo buildbox:buildbox-ssh > "$1/wharf-runs/ssh"
   unset REGATTA_LAPTOP CLAUDE_REPOS_JSON
-  # a dispatched run's own DISPATCH_* (its manager, ship, task) would reach a case that asserts none is
+  # a dispatched run's own DISPATCH_* (its skipper, ship, task) would reach a case that asserts none is
   # handed down (test_helm's skipper start): the suite is run from such runs, so they go here
   for v in $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 }

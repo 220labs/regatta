@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The chain manager's tick: what is done about each stall bin/stalls.py finds (orchestration B3;
+"""The tick: what is done about each stall bin/stalls.py finds (orchestration B3;
 docs/chain-manager-2026-10-11.md section 4 and E3; D4 = C, the owner 2026-10-14, as revised there).
 
     helm tick [--json]                judge every stall on both Macs, gate it, and act when armed
@@ -14,12 +14,12 @@ What it may do (A1/A2), everything else raised (A3, a card and a line, nothing c
          Orca's `worker-start --task --retry-of` with the same placement — the Task's spec is its
          brief, so there is no note; the same two retries, keys and gates (B8)
     S6   an Orca worker's `question` naming `<doc> Dn`: `bin/ask relay <doc> <Dn>` once, with the
-         plan's manager road; after it the stall waits on the answer, which goes back to the worker
+         plan's skipper road; after it the stall waits on the answer, which goes back to the worker
          by `orca orchestration reply --id <msg>` (not this tick's; B8)
     ?    a run the rules cannot tell (stalls.py's `unsure`, action `classify`): `bin/gate classify`
          at site plan.stall answers yes (retry it as S1) or no (raise it). S3, S5, S6 and S7 are
          never classified: their class already says a person decides (a gate, a WAITING line, a
-         lifetime cap, a manager's next move) — D4's "outside S1, S2 and S4" read as the brief does
+         lifetime cap, a skipper's next move) — D4's "outside S1, S2 and S4" read as the brief does
 Two retries per step (D4 = C), keyed as stalls.py keys them: (host, repo, topic, brief blob) for a
 step — every checkpoint moves the tip — and (host, branch, tip) for a launch. Backoff BACKOFF:
 the first retry 10 min after the stall was first seen, the second 40 min after the first. Why
@@ -46,11 +46,11 @@ classifier added; the cheap and permanent ones first, the live reads last):
                    (the week), "none" refuses (`account pick` found no login with room)
     the tools      dispatch and autofinish-run keep every guard of their own; a refusal is a
                    line, never a loop: it moves the backoff, and REFUSALS of them raise the stall
-A re-dispatch keeps the run's manager (the five DISPATCH_MANAGER*/DISPATCH_PLAN* values from its
+A re-dispatch keeps the run's skipper (the five DISPATCH_MANAGER*/DISPATCH_PLAN* values from its
 record), its depth (an S1 or classified re-run passes depth - 1: the same step, dispatch adds
 one; S2 passes it as recorded), model, effort, yolo and a bound pin; it runs where it ran — the
 laptop's worktree may hold commits its gone session never pushed — so `--on here` here and
-`--on <peer> --at @<now+120> --fallback here` for a peer's (never a bare ssh). A managed run
+`--on <peer> --at @<now+120> --fallback here` for a peer's (never a bare ssh). A skippered run
 gets `helm report --status blocked`, then `running` once its retry's record appears; `failed`
 never (helmlib.ENDED would close its asks and let S7 fire on its successors).
 
@@ -112,8 +112,8 @@ LOG_WARN = 5 * 1024 * 1024       # R6
 DISPATCH_KEYS = {"manager": helmlib.ENV_NAMES["skipper"], "manager_host": helmlib.ENV_NAMES["skipper_host"],
                  "manager_account": helmlib.ENV_NAMES["skipper_account"], "plan": helmlib.ENV_NAMES["ship"],
                  "plan_space": ("DISPATCH_PLAN_SPACE",)}
-# a caller's chain and manager must never become the retry's: launchd's tick has none, a session
-# typing `helm tick` has its own (dispatch would name that session the retry's manager)
+# a caller's chain and skipper must never become the retry's: launchd's tick has none, a session
+# typing `helm tick` has its own (dispatch would name that session the retry's skipper)
 STRIP_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE") + tuple(
     "DISPATCH_" + v for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF", "MANAGER", "MANAGER_ACCOUNT",
                               "MANAGER_HOST", "PLAN", "SKIPPER", "SKIPPER_ACCOUNT", "SKIPPER_HOST", "SHIP",
@@ -431,7 +431,7 @@ def decide(s, mem, t, mode_now, label=None):
         # a relay bin/ask found no road for is raised for good, never tried every tick
         nowhere = [ln for ln in mem.by_key.get(_k(s["key"]), []) if ln.get("undelivered")]
         if nowhere:
-            return {"action": "raise", "why": "bin/ask relay found no road to the manager at %s (%s) — raised" % (
+            return {"action": "raise", "why": "bin/ask relay found no road to the skipper at %s (%s) — raised" % (
                 hm(nowhere[-1]["t"]), (nowhere[-1].get("verdict") or "?"))}
         if n:
             return {"action": "wait", "why": "relayed at %s — the answer goes back by `orca orchestration reply --id %s`" % (
@@ -495,13 +495,13 @@ def tool_env(drop=()):
     return env
 
 
-def manager_road(s):
+def skipper_road(s):
     d = s.get("dispatch") or {}
     return {k: d[k] for k in DISPATCH_KEYS if d.get(k)}
 
 
 def dispatch_cmd(s, what, attempt, t):
-    """(argv, env) of the re-dispatch (header): where it ran, its depth, its manager, its mode."""
+    """(argv, env) of the re-dispatch (header): where it ran, its depth, its skipper, its mode."""
     d = s.get("dispatch") or {}
     exe = os.environ.get("STALLS_DISPATCH") or peer_exe("dispatch")
     cls = s.get("class") or "an unsure end the classifier said to retry"
@@ -530,7 +530,7 @@ def dispatch_cmd(s, what, attempt, t):
     env = tool_env()
     # S1 and a classified retry are the same step again: dispatch adds one to DISPATCH_DEPTH
     env["DISPATCH_DEPTH"] = str(max(0, s["depth"] - 1) if what == "redispatch" else s["depth"])
-    for k, v in manager_road(s).items():
+    for k, v in skipper_road(s).items():
         env.update((name, str(v)) for name in DISPATCH_KEYS[k])
     return argv, env
 
@@ -543,11 +543,11 @@ def orca_retry_cmd(s):
 
 def relay_cmd(s):
     """(argv, env) of an Orca question's relay: `bin/ask relay <doc> <Dn> --task <step>`, the plan's
-    manager road in the environment as a dispatched run has it."""
+    skipper road in the environment as a dispatched run has it."""
     exe = os.environ.get("STALLS_ASK") or str(HERE / "ask")
     r = s.get("relay") or {}
     env = tool_env()
-    for k, v in manager_road(s).items():
+    for k, v in skipper_road(s).items():
         env.update((name, str(v)) for name in DISPATCH_KEYS[k])
     if s.get("session"):
         env["ASK_SESSION"] = str(s["session"])   # the asking worker's claude: the ASK's from: and its reply --to
@@ -608,7 +608,7 @@ def act(s, dec, t):
         verdict = m.group(1) if m else "?"
         if verdict in ("none", "unreachable", "?") or "call SendMessage" in (out or ""):
             return {"action": "raise", "undelivered": True, "verdict": verdict, "cmd": shown,
-                    "why": "bin/ask relay found no road to the manager (verdict %s) — raised" % verdict}
+                    "why": "bin/ask relay found no road to the skipper (verdict %s) — raised" % verdict}
     if s.get("harness") == "orca" and what == "redispatch":
         try:
             new = json.loads(out or "{}").get("session_id")
@@ -618,7 +618,7 @@ def act(s, dec, t):
         line["why"] = "worker-start: dispatch %s ready" % (new or "(no id read back)")
         if new:
             line["orca_new"] = new
-    road = manager_road(s)
+    road = skipper_road(s)
     if road:
         line["manager_road"] = dict(road, session=s.get("session"))
     m = re.search(r"; log (\S+)\s*$", out or "", re.M)
@@ -631,7 +631,7 @@ def act(s, dec, t):
 
 
 def report(road, topic, status, progress):
-    """`helm report` for a managed run, as any child reports (chain-manager section 4); its exit."""
+    """`helm report` for a skippered run, as any child reports (chain-manager section 4); its exit."""
     if not road or not road.get("plan") or not topic:
         return None
     env = tool_env()
@@ -855,7 +855,7 @@ def tick(dry_run=False, peer=True):
             new = last is None or (last.get("action"), last.get("would"), last.get("why")) != (line.get("action"), line.get("would"), line.get("why"))
         line.update(extra)
         if write and new and m == "armed" and s.get("key_kind") == "step":
-            road = dict(manager_road(s), session=s.get("session"))
+            road = dict(skipper_road(s), session=s.get("session"))
             if line["action"] == "retry":
                 line["report"] = report(road, s.get("topic"), "blocked", "stalled %s — retry %d of %d at %s" % (
                     s.get("class") or "?", line["attempt"], RETRIES, hm(t)))

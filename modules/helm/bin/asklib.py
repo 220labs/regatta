@@ -7,14 +7,14 @@ tried, in which order, is `ask.relay` in settings/surfaces.json. Stdlib only, Py
 of Claude's imported (R8): CLAUDE_CODE_SESSION_ID is read only as one of the ids accepted.
 
 The context (`ctx`) a backend reads, all optional:
-    manager          the manager's session id (DISPATCH_SKIPPER, or the older DISPATCH_MANAGER)
-    manager_host     the Mac the manager runs on (DISPATCH_SKIPPER_HOST, or DISPATCH_MANAGER_HOST)
-    manager_account  the manager's login: its config dir, or a registry label ('' = ~/.claude)
+    manager          the skipper's session id (DISPATCH_SKIPPER, or the older DISPATCH_MANAGER)
+    manager_host     the Mac the skipper runs on (DISPATCH_SKIPPER_HOST, or DISPATCH_MANAGER_HOST)
+    manager_account  the skipper's login: its config dir, or a registry label ('' = ~/.claude)
     account          this session's login, in either form — account_home() makes both one
-    space            the manager's plan page (uuid or link; DISPATCH_PLAN_SPACE) — the Talk address
+    space            the skipper's plan page (uuid or link; DISPATCH_PLAN_SPACE) — the Talk address
     session          this session's id
     plan             the ship id (DISPATCH_SHIP, or DISPATCH_PLAN)
-    standing         set by with_standing(): the manager is the Mac's standing one (stray-manager M5)
+    standing         set by with_standing(): the skipper is the Mac's standing one (stray-manager M5)
 """
 import json
 import os
@@ -199,18 +199,18 @@ def this_host():
 
 
 def elsewhere(ctx):
-    """True when ctx's manager runs on another Mac than this one (manager_host names it)."""
+    """True when ctx's skipper runs on another Mac than this one (manager_host names it)."""
     mh, here = ctx.get("manager_host"), this_host()
     return bool(mh and here and mh.lower() != here.lower())
 
 
-# ---------------------------------------------------------------------------- a manager on a peer Mac
+# ---------------------------------------------------------------------------- a skipper on a peer Mac
 
-# A run on one Mac whose manager is a session on another has no registry here to read, and builds go
-# to the build box while typed sessions run on the laptop. Before this, such a manager was `remote`,
-# Talk's alone, and a manager with no plan page had no road at all: board-cleanup's D2 parked as "no
-# skipper live" on the build box while its manager on the laptop was live (peer-manager-relay,
-# 2026-10-26). Now one ssh to the manager's host reads its registry there: the hosts this Mac reaches
+# A run on one Mac whose skipper is a session on another has no registry here to read, and builds go
+# to the build box while typed sessions run on the laptop. Before this, such a skipper was `remote`,
+# Talk's alone, and a skipper with no plan page had no road at all: board-cleanup's D2 parked as "no
+# skipper live" on the build box while its skipper on the laptop was live (peer-manager-relay,
+# 2026-10-26). Now one ssh to the skipper's host reads its registry there: the hosts this Mac reaches
 # are the config dir's `wharf-runs/ssh` (`<host>:<alias>`, as stalls and harness read them). ssh runs
 # one way: a host with no alias here stays `remote`, as before.
 PEER_CONNECT = 6    # ssh's ConnectTimeout, seconds (hail uses 6; stalls 10)
@@ -220,7 +220,7 @@ _PEER_SEEN = {}     # (alias, session) → (answer, why): resolve(), File and th
 # Runs on the peer under its own python3, stdlib only: the newest registry record of argv[1] and whether
 # its pid lives. It reads the ssh login's registries: `~/.claude/sessions` and every Orca profile's own
 # `sessions/` (lighthouse's `account` links one only where it can). A pid that answers EPERM belongs to
-# another user, so it is not the manager's (the registry is this login's): dead, as pid_alive reads it.
+# another user, so it is not the skipper's (the registry is this login's): dead, as pid_alive reads it.
 PEER_PROBE = r'''
 import glob, json, os, sys
 from pathlib import Path
@@ -296,7 +296,7 @@ def peer_hosts():
     return out
 
 
-# Runs on a peer: its live dispatched runs that relay over Talk (a manager, a plan page, not ended, a pid
+# Runs on a peer: its live dispatched runs that relay over Talk (a skipper, a plan page, not ended, a pid
 # that lives), as {manager, topic}. dispatch-rc's same() also checks the pid's start time; this probe does
 # not, so a reused pid can cost one extra listen reminder, never a missed relay.
 PEER_RUNS_PROBE = r'''
@@ -323,7 +323,7 @@ PEER_RUNS_WAIT = 10   # …and waits at most this long for one, once a TTL
 
 def peer_runs(cache_dir):
     """[{manager, topic, host}] of the live runs on every peer that relay over Talk, for keel's listen
-    reminder (paste-paths manager_findings): a manager on the laptop of a run on the build box is told to
+    reminder (paste-paths skipper_findings): a skipper on the laptop of a run on the build box is told to
     listen as one of a local run is (peer-manager-relay). Cached PEER_RUNS_TTL in
     CACHE_DIR/peer-runs.json, shared by every session here; a peer that does not answer counts as none
     until the cache ages. Never raises."""
@@ -375,8 +375,8 @@ def _peer_runs_read(p):
     return runs
 
 
-def peer_manager(ctx):
-    """(alias, answer, why) for a manager on a peer this Mac reaches, or None when ctx's manager is not
+def peer_skipper(ctx):
+    """(alias, answer, why) for a skipper on a peer this Mac reaches, or None when ctx's skipper is not
     elsewhere or its host has no alias here. answer is the peer's {"record", "alive"}, None when the peer
     did not answer (why says so). One ssh per (alias, session) a process."""
     m = ctx.get("manager")
@@ -399,25 +399,25 @@ def peer_manager(ctx):
     return (alias,) + _PEER_SEEN[(alias, m)]
 
 
-def manager_state(ctx):
+def skipper_state(ctx):
     """('live' | 'gone' | 'remote', why) for ctx['manager'] (finding 4 of the launch review,
     2026-10-10): a record in this Mac's registry with a live pid is live, with a dead pid gone; no
-    record on the manager's own Mac is gone too — a leftover plan dir is not a manager. A manager
+    record on the skipper's own Mac is gone too — a leftover plan dir is not a skipper. A skipper
     on another Mac (DISPATCH_MANAGER_HOST names it) is judged by that Mac's registry, read over the
     ssh alias `wharf-runs/ssh` names (peer-manager-relay): live, or gone on a dead pid. With no alias, a
     peer that does not answer, or no record there, it is 'remote', and only Talk can reach it. No host recorded and no
     record here reads as gone."""
     m = ctx.get("manager")
     if not m:
-        return "gone", "no manager (DISPATCH_SKIPPER unset)"
+        return "gone", "no skipper (DISPATCH_SKIPPER unset)"
     rec = registry(m)
     if rec:
         if pid_alive(rec.get("pid")):
             return "live", "pid %s" % rec.get("pid")
-        return "gone", "the manager's session has ended (pid %s is gone)" % rec.get("pid")
+        return "gone", "the skipper's session has ended (pid %s is gone)" % rec.get("pid")
     mh = ctx.get("manager_host")
     if elsewhere(ctx):
-        peer = peer_manager(ctx)
+        peer = peer_skipper(ctx)
         if not peer:
             return "remote", "on %s: its registry is not readable here (no ssh road to it in wharf-runs/ssh)" % mh
         alias, ans, why = peer
@@ -429,20 +429,20 @@ def manager_state(ctx):
             # changed) is no proof of an end: Talk keeps the road it had (finish review)
             return "remote", "on %s: no record of it in the registries there" % mh
         if not ans.get("alive"):
-            return "gone", "the manager's session has ended (pid %s on %s is gone)" % (prec.get("pid"), mh)
+            return "gone", "the skipper's session has ended (pid %s on %s is gone)" % (prec.get("pid"), mh)
         return "live", "on %s, pid %s (its registry, over ssh %s)" % (mh, prec.get("pid"), alias)
-    return "gone", "the manager's session has ended (no record in %s)" % sessions_dir()
+    return "gone", "the skipper's session has ended (no record in %s)" % sessions_dir()
 
 
-def manager_dir():
+def skipper_dir():
     return Path(os.environ.get("ASK_MANAGER_DIR") or _home() / "Library/Logs/claude-weekly/manager")
 
 
-def standing_manager(host=None, scope=None):
-    """This Mac's standing manager as the ctx fields relay() needs, or None (stray-manager M5, B1).
-    With a scope, the scope's skipper instead (skipper-resilience S5): `<manager_dir>/<host>-<scope>.json`,
+def standing_skipper(host=None, scope=None):
+    """This Mac's standing skipper as the ctx fields relay() needs, or None (stray-manager M5, B1).
+    With a scope, the scope's skipper instead (skipper-resilience S5): `<skipper_dir>/<host>-<scope>.json`,
     which bin/skipperlib.py's runner writes just before it execs claude (or claude-host). Without, the record is
-    `<manager_dir>/<host>.json`, `{session, name, plan, space, account, host, started, pid}`, which
+    `<skipper_dir>/<host>.json`, `{session, name, plan, space, account, host, started, pid}`, which
     bin/manager's runner was to write (stray-manager B2, superseded by the scope skippers: read, never
     written). Either is live when its pid is alive and the registry's record of its session has a live
     pid too — a crashed one leaves a record that reads as none. No record: None, and every caller does
@@ -451,7 +451,7 @@ def standing_manager(host=None, scope=None):
     if not h:
         return None
     try:
-        rec = json.loads((manager_dir() / ("%s-%s.json" % (h, scope) if scope else "%s.json" % h)).read_text())
+        rec = json.loads((skipper_dir() / ("%s-%s.json" % (h, scope) if scope else "%s.json" % h)).read_text())
     except (OSError, ValueError):
         return None
     sid = rec.get("session") if isinstance(rec, dict) else None
@@ -462,7 +462,7 @@ def standing_manager(host=None, scope=None):
         return None
     out = {"manager": sid, "manager_host": h, "space": rec.get("space"), "plan": rec.get("plan"),
            "manager_account": rec.get("account") or "",
-           "manager_name": rec.get("name") or ("skipper · %s" % scope if scope else "manager · %s" % h), "standing": True}
+           "manager_name": rec.get("name") or ("skipper · %s" % (scope or h)), "standing": True}
     if scope:
         out["scope"] = scope
     return out
@@ -487,33 +487,33 @@ def ship_scope(plan):
 
 def scope_skipper(plan=None):
     """The live skipper of the scope whose lease PLAN (else $DISPATCH_SHIP / $DISPATCH_PLAN) holds, as
-    standing_manager() gives it, or None. Only a leased ship's relay goes to a scope skipper: its
+    standing_skipper() gives it, or None. Only a leased ship's relay goes to a scope skipper: its
     lifetime, its re-hail and its deaf rule all count leased ships' questions, so a relay for any
-    other run stays the Mac's standing manager's, or nobody's (the third review of S5). No path is
+    other run stays the Mac's standing skipper's, or nobody's (the third review of S5). No path is
     read for a scope: a scope's glob would take a worktree whose name it matches."""
     plan = plan or os.environ.get("DISPATCH_SHIP") or os.environ.get("DISPATCH_PLAN")
     scope = ship_scope(plan)
-    return standing_manager(scope=scope) if scope else None
+    return standing_skipper(scope=scope) if scope else None
 
 
 def resolve(ctx):
     """(ctx, (state, why)): where a relay from this run goes, decided once — ctx with the Mac's
-    standing manager in place of a manager that is unset or gone (M1: a run with no live manager of
-    its own is the standing manager's), and manager_state of the result. A remote or live manager
-    stays. The run's own plan, if any, keeps its events; the Talk address is the standing manager's
+    standing skipper in place of a skipper that is unset or gone (M1: a run with no live skipper of
+    its own is the standing skipper's), and skipper_state of the result. A remote or live skipper
+    stays. The run's own plan, if any, keeps its events; the Talk address is the standing skipper's
     page. bin/ask relay resolves once and hands both to relay(), so the registry is read once a
-    manager and the host once a run (review gate, 2026-10-16: it was twice and up to four times).
+    skipper and the host once a run (review gate, 2026-10-16: it was twice and up to four times).
     The scope's skipper comes first (skipper-resilience S5) for a relay about a ship its scope leases
-    (ctx["plan"]); the Mac's standing manager after it. A skipper's own relay (SKIPPER_SCOPE, which its
+    (ctx["plan"]); the Mac's standing skipper after it. A skipper's own relay (SKIPPER_SCOPE, which its
     runner sets) goes to neither: its escalation is the owner's, and a skipper relaying to itself
     would wake only itself."""
     if ctx.get("standing"):
-        return ctx, ("live", "this Mac's standing manager" if not ctx.get("scope") else "the scope's skipper")
-    st = manager_state(ctx) if ctx.get("manager") else ("gone", "no manager (DISPATCH_SKIPPER unset)")
+        return ctx, ("live", "this Mac's standing skipper" if not ctx.get("scope") else "the scope's skipper")
+    st = skipper_state(ctx) if ctx.get("manager") else ("gone", "no skipper (DISPATCH_SKIPPER unset)")
     if st[0] != "gone":
-        peer = peer_manager(ctx) if st[0] == "live" and not ctx.get("manager_name") else None
+        peer = peer_skipper(ctx) if st[0] == "live" and not ctx.get("manager_name") else None
         if peer and peer[1] and (peer[1].get("record") or {}).get("name"):
-            # the RELAYED line names a peer's manager as a local one is named: its registry name
+            # the RELAYED line names a peer's skipper as a local one is named: its registry name
             ctx = dict(ctx, manager_name=peer[1]["record"]["name"])
         return ctx, st
     if os.environ.get("SKIPPER_SCOPE"):
@@ -522,14 +522,14 @@ def resolve(ctx):
     sk = scope_skipper(ctx.get("plan"))
     if sk and sk.get("manager") == ctx.get("session"):
         sk = None
-    sm = sk or standing_manager()
+    sm = sk or standing_skipper()
     if not sm:
         return ctx, st
     out = dict(ctx)
     out.update({k: v for k, v in sm.items() if k != "plan"})
     out["plan"] = ctx.get("plan") or sm.get("plan")
-    out["stand_in"] = True   # put in for the caller's missing manager: relay() reads it (the file road)
-    return out, ("live", "the scope's skipper" if sm.get("scope") else "this Mac's standing manager")
+    out["stand_in"] = True   # put in for the caller's missing skipper: relay() reads it (the file road)
+    return out, ("live", "the scope's skipper" if sm.get("scope") else "this Mac's standing skipper")
 
 
 def with_standing(ctx):
@@ -541,10 +541,10 @@ def with_standing(ctx):
 # <text>` (bin/ask RELAYED_ANSWER). One predicate for bin/keel (taken_answer: an answer the owner
 # never gave is `taken`, which rule D never launches) and bin/ask (log_relay: escalated vs answered),
 # so the two never disagree (review gate, 2026-10-16: memo's own pattern failed open on a `who`
-# holding a parenthesis, `--from "manager (buildbox)"`, and ask tested for the name anywhere in the
+# holding a parenthesis, `--from "skipper (buildbox)"`, and ask tested for the name anywhere in the
 # source). The owner's only when the source names the owner (`regatta/owner`) AND one of the routes
 # the owner's own word arrives on — the form, GitHub, chat, the Session tab signed on the owner's
-# device; anything else (`manager`, `yes item`, the bare name, an unsigned tab line, a line this
+# device; anything else (`skipper`, `yes item`, the bare name, an unsigned tab line, a line this
 # cannot parse) is somebody else's, so it fails closed.
 OWNER_ROUTES = r"(?:'s|\u2019s|,)?\s+(?:form|github|chat|session tab(?:,\s*|\s+)\(?signed\)?)$"
 RELAYED_HEAD_RE = re.compile(r"^\s*Relayed from (.*?), \d{4}-\d{2}-\d{2}\): ")
@@ -558,7 +558,7 @@ def owner_source(source):
 
 def relayed_by_owner(line):
     """None when line is not a `Relayed from` answer; else True when its source is the owner's.
-    `who` may hold a parenthesis of its own (`manager (buildbox)`), the source too (`<owner>,
+    `who` may hold a parenthesis of its own (`skipper (buildbox)`), the source too (`<owner>,
     Session tab (signed)`), so the text after every " (" of the head is tried as the source, and only
     one that runs whole to the date counts; a line with no date is not the owner's."""
     if not re.match(r"^\s*Relayed from ", line or ""):
@@ -586,7 +586,7 @@ def __getattr__(name):
 
 
 def account_home(value):
-    """One vocabulary for a login (finding 6): dispatch wrote the manager's from `account which`
+    """One vocabulary for a login (finding 6): dispatch wrote the skipper's from `account which`
     (nothing for the default dir) and the run's from `account pick` (a label, `claude-a`), so one
     account looked like two. A config dir or a label → the config dir's real path ('' → ~/.claude;
     a label through the account registry, ACCOUNTS_FILE in tests). A label the registry does not
@@ -647,7 +647,7 @@ class Talk:
 
     def available(self, ctx):
         if not ctx.get("space") or not ctx.get("manager"):
-            return False, "no plan space or manager id to address"
+            return False, "no plan space or skipper id to address"
         if not sheep_key():
             if not sheep_cli():
                 return False, "no SPACESHEEP_KEY and no spacesheep CLI: no spacesheep on this Mac — the file backend still relays here"
@@ -732,7 +732,7 @@ class Talk:
                 "-A 'curl/8.7.1' --data %s" % (url, _shq(json.dumps(body, ensure_ascii=False))))
 
     def describe(self):
-        return "talk — the Talk service's POST /api/talk/send to the manager's plan page; any Mac, login or harness"
+        return "talk — the Talk service's POST /api/talk/send to the skipper's plan page; any Mac, login or harness"
 
 
 class SendMessage:
@@ -743,14 +743,14 @@ class SendMessage:
     def available(self, ctx):
         m = ctx.get("manager")
         if not m:
-            return False, "no manager id"
+            return False, "no skipper id"
         rec = registry(m)
         if not rec:
-            return False, "the manager has no record in %s (another Mac, or it ended)" % sessions_dir()
+            return False, "the skipper has no record in %s (another Mac, or it ended)" % sessions_dir()
         if not pid_alive(rec.get("pid")):
-            return False, "the manager's process %s is gone" % rec.get("pid")
+            return False, "the skipper's process %s is gone" % rec.get("pid")
         if not rec.get("messagingSocketPath"):
-            return False, "the manager binds no inbox (a -p session)"
+            return False, "the skipper binds no inbox (a -p session)"
         theirs, mine = account_home(ctx.get("manager_account")), account_home(ctx.get("account"))
         if theirs != mine:
             return False, "a different login (%s vs %s): no road across accounts" % (theirs, mine)
@@ -772,7 +772,7 @@ class SendMessage:
 
 
 class File:
-    """A JSON line in ~/Library/Logs/claude-weekly/asks/<manager>.jsonl, printed into the manager's
+    """A JSON line in ~/Library/Logs/claude-weekly/asks/<skipper>.jsonl, printed into the skipper's
     context by its UserPromptSubmit hook at its next prompt. Nothing wakes it."""
     name = "file"
 
@@ -780,26 +780,26 @@ class File:
         return queue_dir() / ("%s.jsonl" % ctx["manager"])
 
     def available(self, ctx):
-        """A live manager on this Mac: its registry record with a live pid (finding 4). A plan dir
+        """A live skipper on this Mac: its registry record with a live pid (finding 4). A plan dir
         left behind by a session that ended is not one — the queue would wait for a prompt that
-        never comes. Or a live manager on a peer this Mac reaches over ssh (peer-manager-relay): its
+        never comes. Or a live skipper on a peer this Mac reaches over ssh (peer-manager-relay): its
         own queue there, which its prompt hook prints as it prints a local one."""
         if not ctx.get("manager"):
-            return False, "no manager id"
+            return False, "no skipper id"
         rec = registry(ctx["manager"])
         if rec is None:
-            peer = peer_manager(ctx)
+            peer = peer_skipper(ctx)
             if peer and peer[1] and peer[1].get("alive"):
                 return True, "%s over ssh %s, pid %s" % (ctx.get("manager_host"), peer[0], (peer[1].get("record") or {}).get("pid"))
-            return False, "the manager is not on this Mac" + (" (%s)" % peer[2] if peer and peer[2] else "")
+            return False, "the skipper is not on this Mac" + (" (%s)" % peer[2] if peer and peer[2] else "")
         if not pid_alive(rec.get("pid")):
-            return False, "the manager's process %s is gone" % rec.get("pid")
+            return False, "the skipper's process %s is gone" % rec.get("pid")
         return True, "this Mac, pid %s" % rec.get("pid")
 
     def send(self, ctx, text):
         line = json.dumps({"t": int(time.time()), "from": ctx.get("session"), "text": text}, ensure_ascii=False)
-        if registry(ctx["manager"]) is None and peer_manager(ctx):
-            alias = peer_manager(ctx)[0]
+        if registry(ctx["manager"]) is None and peer_skipper(ctx):
+            alias = peer_skipper(ctx)[0]
             # ascii(): a literal Python 3.9 reads from stdin whatever the line holds (hail's bundle())
             out, why = peer_ssh(alias, [ctx["manager"]], "LINE = %s\n%s" % (ascii(line), PEER_QUEUE))
             if out is None:
@@ -823,7 +823,7 @@ class File:
         return [json.loads(x) for x in lines if x.strip().startswith("{")]
 
     def describe(self):
-        return "file — a line the manager's next prompt prints; this Mac, or a peer `wharf-runs/ssh` reaches"
+        return "file — a line the skipper's next prompt prints; this Mac, or a peer `wharf-runs/ssh` reaches"
 
 
 BACKENDS = {b.name: b for b in (Talk(), SendMessage(), File())}
@@ -832,18 +832,18 @@ BACKENDS = {b.name: b for b in (Talk(), SendMessage(), File())}
 def relay(ctx, text, order, dry=False, resolved=None):
     """Try each backend of `order` until one delivers. Returns (backend, verdict, detail, tried):
     verdict is sent | live | busy | queued | none | unreachable; `tried` lists each skip with why.
-    A run whose manager is unset or gone relays to the Mac's standing manager when one runs (M5).
+    A run whose skipper is unset or gone relays to the Mac's standing skipper when one runs (M5).
     `resolved` is resolve(ctx) when the caller has it already (bin/ask relay); else it runs here."""
     tried = []
     ctx, (alive, why) = resolved or resolve(ctx)
     if not ctx.get("manager"):
-        return None, "none", "no live manager (DISPATCH_SKIPPER unset)", tried
-    # finding 4: a dead or gone manager is `none` — the run takes the WAITING path — whatever
+        return None, "none", "no live skipper (DISPATCH_SKIPPER unset)", tried
+    # finding 4: a dead or gone skipper is `none` — the run takes the WAITING path — whatever
     # backend would carry the message (a Talk send to an ended session goes to a thread nobody
     # reads, and the file queue in a prompt that never comes). A remote one: Talk alone.
     if alive == "gone":
-        return None, "none", "no live manager: %s" % why, tried
-    # a scope's skipper resolve() put in for a caller's missing manager never reads the file queue
+        return None, "none", "no live skipper: %s" % why, tried
+    # a scope's skipper resolve() put in for a caller's missing skipper never reads the file queue
     # (it hears its `ask listen` and a SendMessage): a file line waits for a prompt it never gets and
     # is marked relayed, so that road is skipped for it, and a caller that pinned no other road gets
     # `none` — the board (the fifth finish review of S5: wharf's file road for a yard-held scope
@@ -882,9 +882,9 @@ def _shq(s):
 def log_relay(kind, detail, session=None, cwd=None):
     """One interruption row per settled relay, in the class hooks/attention.py defines (DESIGN.md
     number 6 of the interruptions design, owned by session coding-d1): event "Relay",
-    type "answered" (the manager settled it without the owner — an interruption avoided) or "escalated"
+    type "answered" (the skipper settled it without the owner — an interruption avoided) or "escalated"
     (it went on to the owner). bin/interruptions counts relay apart from the total, since an escalation
-    reaches the owner again as an ask or a handoff; a managerless WAITING line is already a handoff row.
+    reaches the owner again as an ask or a handoff; a skipperless WAITING line is already a handoff row.
     attention.record() when that module is here; until it launches, the same row by hand, to the same
     file, so the shape stays one (coding-d1, 2026-10-10: a new field is agreed with it first).
     Never raises."""
@@ -923,7 +923,7 @@ PREFIXES = ("ASK", "ANSWER", "REPORT")
 
 def classify(text):
     """(kind, rest): ASK | ANSWER | REPORT from a session; CHAT for an unprefixed line — unverified:
-    the account owner's page, or any session holding the key, sends one (K13). Shown to the manager
+    the account owner's page, or any session holding the key, sends one (K13). Shown to the skipper
     as that, never taken as an answer to a D-item, never as the owner's word."""
     t = (text or "").strip()
     for p in PREFIXES:

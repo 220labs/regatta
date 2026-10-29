@@ -2139,7 +2139,7 @@ def cmd_enqueue(a, ctx):
         # session's word, and no fired job carries --replace (FLAGS lacks it; S3's third landing review, item 3)
         why = "--replace takes over another run's step, and an unattended caller is refused it"
     if why:
-        # the cap's waiting words, so a managed run that ends on it is not held at Stop for an ask it never
+        # the cap's waiting words, so a skippered run that ends on it is not held at Stop for an ask it never
         # relayed (AGENTS.md: a new dispatch refusal reuses them; the fourth review's item 12)
         raise Refused("dispatch: %s — refused: end with the WAITING line — the next step waits for a run to end and for %s "
                       "to raise it (a dispatch by hand)" % (why, getattr(common, "OWNER_NAME", "") or "the owner"))

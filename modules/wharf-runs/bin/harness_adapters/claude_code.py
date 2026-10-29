@@ -386,7 +386,7 @@ def _attention(rec):
 def _end_state(st):
     """completed, failed or canceled for a run that is over, from dispatch's own words: watch()'s,
     end()'s, end_warm()'s, tidy()'s and run_headless()'s end_reason. A run that handed the owner an ask
-    past its manager failed (dispatch-rc's ask_guard). A reason not known here is no success."""
+    past its skipper failed (dispatch-rc's ask_guard). A reason not known here is no success."""
     if st.get("ask_guard"):
         return "failed"
     reason = str(st.get("end_reason") or "")

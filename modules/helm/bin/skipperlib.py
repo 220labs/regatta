@@ -23,10 +23,10 @@ runs while the tick is disarmed, and a host with no lease file sees no line of i
 Both verbs refuse under CLAUDE_CODE_SESSION_ID: a session may not load a plist (the tick is launchd's
 own child), and the allow rule that names the session verbs one by one never names these.
 
-Files, all beside the record leaselib.record_path names (asklib.manager_dir(), `<host>-<scope>.*`):
+Files, all beside the record leaselib.record_path names (asklib.skipper_dir(), `<host>-<scope>.*`):
     <host>-<scope>.json            the record the runner writes just before it execs claude (or claude-host): {session,
                                    name: "skipper · <scope>", scope, account, host, started, pid, space,
-                                   gen: null, start, job, screen, anchor}; asklib.standing_manager(host,
+                                   gen: null, start, job, screen, anchor}; asklib.standing_skipper(host,
                                    scope) reads it, and `space` is the Talk page relays reach it on
     <host>-<scope>.starts.jsonl    one line per start event — launched, refused, failed, took, stopped —
                                    the memory the tick counts failed starts in (three in a row raise the
@@ -136,13 +136,13 @@ def job_label(scope, start_id):
 
 # ---------------------------------------------------------------------------- where things are
 
-def manager_dir():
+def skipper_dir():
     import asklib
-    return asklib.manager_dir()
+    return asklib.skipper_dir()
 
 
 def _side(scope, suffix, host=None):
-    return manager_dir() / ("%s-%s%s" % (host or helmlib.host(), scope, suffix))
+    return skipper_dir() / ("%s-%s%s" % (host or helmlib.host(), scope, suffix))
 
 
 def starts_path(scope, host=None):
@@ -154,7 +154,7 @@ def space_path(scope, host=None):
 
 
 def log_path(scope):
-    return manager_dir() / ("skipper-%s.log" % scope)
+    return skipper_dir() / ("skipper-%s.log" % scope)
 
 
 def launch_dir():
@@ -447,7 +447,7 @@ def make_space(scope, sid):
     only ear is `ask listen` on Talk, and nothing a script sends by the file road wakes an idle
     session — a skipper with no page would hear nothing (round 2 of the finish review)."""
     import helm_render
-    src = manager_dir() / "pages" / scope
+    src = skipper_dir() / "pages" / scope
     src.mkdir(parents=True, exist_ok=True)
     (src / "index.html").write_text(PAGE % (scope, scope))
     try:
@@ -863,7 +863,7 @@ def start(scope, dry=False, by="hand"):
     # would refuse to start the job's session (it cannot make the socket directory)
     screen_env(create=True)
     launch_dir().mkdir(parents=True, exist_ok=True)
-    manager_dir().mkdir(parents=True, exist_ok=True)
+    skipper_dir().mkdir(parents=True, exist_ok=True)
     path = launch_dir() / ("%s.plist" % label)
     with open(str(path), "wb") as f:
         plistlib.dump(plist, f)
@@ -947,7 +947,7 @@ def stop(scope, why, by="hand", dry=False):
 
 
 def pid_alive(pid):
-    import asklib   # the one "is this pid alive" test, standing_manager's
+    import asklib   # the one "is this pid alive" test, standing_skipper's
     return asklib.pid_alive(pid)
 
 
@@ -1066,7 +1066,7 @@ def same_process(pid, reg):
 
 def record_alive(rec):
     """The record's pid lives, and so does its session's registry pid, the very process the registry
-    names (asklib.standing_manager's test, and the process's start against the registry's)."""
+    names (asklib.standing_skipper's test, and the process's start against the registry's)."""
     if not rec or not pid_alive(rec.get("pid")):
         return False
     reg = registry_of(rec.get("session"))
@@ -1237,7 +1237,7 @@ def rehail(pid, lease, act):
     due = due_rehail(pid, lease)
     if not due:
         return []
-    ctx = asklib.standing_manager(scope=scope)
+    ctx = asklib.standing_skipper(scope=scope)
     if not ctx or ctx.get("manager") != lease.get("session"):
         return []   # the holder has no live record here: the deaf rule and the lapse decide
     roads = [b for b in surfaces.row("ask.relay") if b in REHAIL_ROADS]
@@ -1383,7 +1383,7 @@ def scopes_here():
     out = {rec.get("scope") for _, rec in leaselib.leases() if isinstance(rec, dict) and rec.get("scope")}
     pre = "%s-" % helmlib.host()
     try:
-        for p in manager_dir().glob(pre + "*.json"):
+        for p in skipper_dir().glob(pre + "*.json"):
             out.add(p.name[len(pre):-len(".json")])
     except OSError:
         pass
@@ -1637,7 +1637,7 @@ def wont_start_stalls(host=None):
     pre = "%s-" % host
     out = []
     try:
-        files = sorted(manager_dir().glob(pre + "*.starts.jsonl"))
+        files = sorted(skipper_dir().glob(pre + "*.starts.jsonl"))
     except OSError:
         return []
     for p in files:

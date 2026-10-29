@@ -168,8 +168,8 @@ def cmd_ship(a):
         print(pid)
         return
     # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6)
-    manager = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
-    helmlib.new_plan(pid, a.topic, manager=manager, space=a.space, repo=a.repo, due=due, cost=cost)
+    skipper = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
+    helmlib.new_plan(pid, a.topic, skipper=skipper, space=a.space, repo=a.repo, due=due, cost=cost)
     print(pid)
 
 
@@ -179,7 +179,7 @@ PAGE_REFUSED = 3   # a probe's refusal is never 1, which any uncaught error also
 def cmd_page(a):
     """`helm page [SHIP]`: the ship's page, published once, its space printed (peer-manager-relay S1, D1-A).
     A ship that has a page prints it and publishes nothing. One that has none, or no ship at all (a typed
-    skipper's first dispatch: dispatch's manager_env asks this), gets its ship made and its page deployed
+    skipper's first dispatch: dispatch's skipper_env asks this), gets its ship made and its page deployed
     once, under the plan's lock, so two dispatches never publish two pages. Exit 3 with one line on stderr
     when no page may go: no sheep render on this Mac, no CLI or key, an account without Talk (a page would
     carry no ask, and cost a publish), or helm's publish budget held (helm_render.budget_hold). A refusal
@@ -225,7 +225,7 @@ def cmd_page(a):
         if not helmlib.load_plan(pid):
             # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6), as cmd_ship's
             skipper = {"session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": helmlib.host(), "harness": helmlib.harness()}
-            helmlib.new_plan(pid, a.topic or "skipper %s" % pid[:8], manager=skipper)
+            helmlib.new_plan(pid, a.topic or "skipper %s" % pid[:8], skipper=skipper)
         p = need(pid)
         if not p.get("space"):   # another dispatch may have published it while this one waited for the lock
             lines = helm_render.render(pid, deploy=True)
@@ -460,7 +460,7 @@ def cmd_report(a):
     wire = dict(ev, plan=pid)
     if helmlib._guarded_repo(ev.get("repo")):
         # K6: a guarded repo's text never rides Talk — spacesheep's server sees it. The repo stays,
-        # so the manager's state() guards the task; the status, ETA and cost are not text.
+        # so the skipper's state() guards the task; the status, ETA and cost are not text.
         for k in ("progress", "summary", "recommended", "branch", "owns", "live"):
             wire.pop(k, None)
     text = "REPORT " + json.dumps(wire, ensure_ascii=False, sort_keys=True)
@@ -798,7 +798,7 @@ def cmd_tick(a):
     switch (~/.local/state/stalls/armed); arming is refused under CLAUDE_UNATTENDED."""
     import stalls_tick
     if a.arm or a.disarm:
-        # only arming is the owner's: disarming is the safe direction, open to a manager that sees a runaway tick
+        # only arming is the owner's: disarming is the safe direction, open to a skipper that sees a runaway tick
         why = stalls_tick.unattended_refusal("arm") if a.arm else None
         if why:
             raise SystemExit(why)

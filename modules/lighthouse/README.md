@@ -51,8 +51,15 @@ registry's `tenants` and rows' `tenant` are ignored:
 
 `account tenant set acme --repos 'acme-*' --logins acme` writes one entry and `account tenant drop acme`
 removes one: through the link, read back, the hooks' copy refreshed at once. They refuse a login already
-in another tenant (each login is one tenant's), a repo another tenant holds, a label no claude row has, a
+in another tenant (each login is one tenant's), a repo another tenant holds, a label no claude or codex row has, a
 file that does not read (writing would drop the rest), and an unattended caller (`CLAUDE_UNATTENDED`).
+
+A tenant's `logins` may also name a Codex row: `account pick --provider codex --repo` then routes the tenant's
+repos to it, and refuses every other Codex row. That makes the row `owns` them, the core's vendor fence's yes for
+the tenant's confidential and guarded repos, while every Codex road runs on `CODEX_HOME` (or the default Codex home), not on the
+row pick names: `tenant set` refuses a Codex label whose home is not that one. Nothing guards a Codex session by hook, so for Codex tenancy
+is routing only; a tenant with a Codex login and no Claude one leaves its Claude sessions nowhere to start:
+`tenant set` refuses one, and `account doctor` names one written by hand.
 
 Your own private repos can be a tenant too: name your vault and its siblings, on your own logins, and
 every other seat — an organisation's, one Orca holds that no row names — is refused them without a deny

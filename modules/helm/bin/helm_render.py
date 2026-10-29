@@ -15,7 +15,7 @@ Targets (settings/surfaces.json `helm.render`, `helm.live`; the `plan` row befor
               in plan.json `space` — the Talk address a run relays to (R4). Live: `stream` when a
               `spacesheep stream plans/<id>` process runs here; else `redeploy`, at most one deploy
               a minute, on each report
-    artifact  a line for the manager to act on, only where this login is known to have the tool
+    artifact  a line for the skipper to act on, only where this login is known to have the tool
               (B0h's fact file, ~/Library/Caches/plan/artifact-<login>.json); absent = unknown = no
               line, nothing owed
 
@@ -294,7 +294,7 @@ def deploy_plan(pid, st, d):
 
 
 def artifact_line(d):
-    """B8: the manager's own step — only where this login is known to have the Artifact tool (B0h)."""
+    """B8: the skipper's own step — only where this login is known to have the Artifact tool (B0h)."""
     login = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").name
     try:
         known = json.loads((cache_root() / ("artifact-%s.json" % login)).read_text()).get("artifact")
@@ -707,7 +707,7 @@ def _alive(same, st):
 
 
 def run_cards():
-    """Orphan runs (no manager — every autofinish run), runs the ask guard failed, and sessions at a
+    """Orphan runs (no skipper — every autofinish run), runs the ask guard failed, and sessions at a
     permission prompt (`waitingFor` in the registry): the same unwatched ask by another door."""
     out = []
     runs = Path(os.environ.get("HOME") or Path.home()) / "Library/Logs/claude-weekly/run-seed-runs"
@@ -886,7 +886,7 @@ def stall_gone(s, states):
 def stall_cards(states=None):
     """(cards, judged): one card per stall bin/stalls.py finds on both Macs (chain-manager E1) —
     titled `<topic> · S1 gone 40h`, Blocked for a class the tick acts on (A1/A2) or a raise to a
-    live manager, the owner's column for every other raise, with the evidence line and the rule that
+    live skipper, the owner's column for every other raise, with the evidence line and the rule that
     decided. A classifier that fails costs its cards, never the board: judged carries the error.
     The board's view only (board-cleanup S1): a stall whose work landed is no card, and one older than
     STALL_DAYS is counted in judged["hidden"] with the oldest's start; stalls.py --json and the tick

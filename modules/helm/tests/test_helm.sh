@@ -550,7 +550,7 @@ EOF
 st=$("$HM" state)
 check "$(echo "$st" | python3 -c "import json,sys; t=[t for t in json.load(sys.stdin)['tasks'] if t['id']=='build'][0]; print(round(t['est_to_go'],1), t['est_kind'])")" "1.0 est." "burn rate × time left, marked est."
 "$HM" eta mgr-1 build 2h --cost 3 > /dev/null
-check "$("$HM" state | python3 -c "import json,sys; t=[t for t in json.load(sys.stdin)['tasks'] if t['id']=='build'][0]; print(t['est_to_go'], t['est_kind'])")" "2.0 manager" "the manager's estimate wins when set"
+check "$("$HM" state | python3 -c "import json,sys; t=[t for t in json.load(sys.stdin)['tasks'] if t['id']=='build'][0]; print(t['est_to_go'], t['est_kind'])")" "2.0 manager" "the skipper's estimate wins when set"
 "$HM" report --task build --status relayed --ask docs/x.md#D1 --summary "which cadence" --parked D1 > /dev/null
 st=$("$HM" state)
 check "$(echo "$st" | python3 -c "import json,sys; t=[t for t in json.load(sys.stdin)['tasks'] if t['id']=='build'][0]; print(t['parked'], t['blockers'])")" "['D1'] ['open ask docs/x.md#D1']" "parked and the open ask block it"
@@ -1042,7 +1042,7 @@ SAM, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING."
   # S6 live: a run at a permission prompt (the registry's `waiting`) — its permission card gives way to the stall's
   rec 10-wait.json live-wait mode=headless pid=$$ started=$((now-600))
   printf '{"pid": %s, "sessionId": "sid-live-wait", "status": "waiting", "waitingFor": "permission to run Bash", "statusUpdatedAt": %s000}' "$$" "$now" > "$T/sess/wait.json"
-  # S6 orphaned relay: RELAYED, its manager not in any registry
+  # S6 orphaned relay: RELAYED, its skipper not in any registry
   rec 11-relay.json relay-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min" manager=mgr-gone
   say sid-relay-step "RELAYED TO mgr-gone — D1 in docs/x.md"
   # S1: ended on WAITING FOR SOMETHING and nothing picked it up again (2026-10-20)
@@ -1113,10 +1113,10 @@ PY
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S4'][0]; print(s['action'], s['key'][1], s['key'][2] == '$tip', s['worktree'].endswith('/net'))")" \
     "relaunch claude/t/2026-10-14-net-launch True True" "  S4: relaunch, keyed (host, branch, tip), the last stop of its branch counts"
   check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S5'))")" "['S4 stop, but the tip moved since (1111111 → ${tip:0:7})', 'WAITING line', 'gate G4']" "  S5: a gate; a WAITING line that quotes an API error is no S4 (R4); nor a network stop on a tip that moved"
-  check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S6'))")" "['closing line: RELAYED, its manager gone', 'closing line: WAITING', 'live: waiting']" \
+  check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S6'))")" "['closing line: RELAYED, its skipper gone', 'closing line: WAITING', 'live: waiting']" \
     "  S6: a parked WAITING line, a permission prompt, an orphaned relay"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S7'][0]; print(s['key'], s['raise_to'], s['column'])")" "['testhost', 's7', 'b'] owner Needs Sam" \
-    "  S7: keyed (host, plan, task), to the owner while its manager is not live"
+    "  S7: keyed (host, plan, task), to the owner while its skipper is not live"
   check "$(got "print([(u['topic'], u['action'], u['class']) for u in d['unsure']])")" "[('unsure-step', 'classify', None)]" \
     "  no closing line: unsure, shaped for B3's classifier, never a stall"
   hasnt "$sj" "IBAN 5555" "  a guarded run's reply is never read"
@@ -1208,17 +1208,17 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued
   yt=$(CLAUDE_REPOS_JSON="$T/yard-torn.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" STALLS_LOG="$T/yard-tick.jsonl" "$HM" tick --dry-run)
   has "$yt" "S8: the stalls of buildbox are left to nobody this pass — the registry does not read (1)" "a torn registry: no peer's stall acted on"
   has "$yt" "S1 testhost demo gone-step" "  this host's own still are"
-  # …and a RELAYED run whose manager is on a host this one has no road to is unknown, never orphaned
+  # …and a RELAYED run whose skipper is on a host this one has no road to is unknown, never orphaned
   git -C "$D" branch claude/t/2026-10-14-relay-far-step
   rec 11-relay-far.json relay-far-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 60 min" manager=mgr-far manager_host=farhost
   say sid-relay-far-step "RELAYED TO mgr-far — D1 in docs/x.md"
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-far-step'])")" \
-    "[]" "S8: RELAYED to a manager on a host with no road from here (a yard's to the laptop): no stall"
+    "[]" "S8: RELAYED to a skipper on a host with no road from here (a yard's to the laptop): no stall"
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-step'])")" \
-    "['S6']" "  one whose manager has no host recorded is still orphaned"
+    "['S6']" "  one whose skipper has no host recorded is still orphaned"
   sed -i.bak 's/"manager_host": "farhost"/"manager_host": "buildbox"/' "$R/11-relay-far.json"; rm -f "$R/11-relay-far.json.bak"
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='relay-far-step'])")" \
-    "['S6']" "  and one on a peer read here, its manager not live there, is orphaned as before"
+    "['S6']" "  and one on a peer read here, its skipper not live there, is orphaned as before"
   rm -f "$R/11-relay-far.json" "$HOME/.claude/projects/-t/sid-relay-far-step.jsonl"   # the branch alone judges nothing
   # yolo-launch review D1-B: a run that ended on the hand-over line and whose launch dispatch declined is
   # raised with dispatch's reason, never retried (it read as S1's "nothing woke it"); one whose launch started is no card
@@ -1348,7 +1348,7 @@ PY
          AUTOFINISH_ACCOUNT="$S/account" STUB_ACCT="$X/acct" STUB_CALLS="$X/calls" STUB_LOGDIR="$X/dlogs" AUTOFINISH_STATE_DIR="$X/af" \
          GATE_PLAN_STALL_PROVIDER=claude CLAUDE_BIN="$S/claude" STUB_CLAUDE_CALLS="$X/claude-calls" GATE_LOG="$X/gate.jsonl" \
          DISPATCH_MAX_RUNS=9 STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" PLAN_NO_RENDER=1
-  # a managed S1 (its manager's road on the record), a gone step whose worktree another session's
+  # a skippered S1 (its skipper's road on the record), a gone step whose worktree another session's
   # lock holds, and a second unsure run, this one with a depth: the classifier's one item
   "$HM" $SHIP b3 --id b3p > /dev/null
   rec 2-gone.json gone-step started=$((now-7200)) pid=99999999 proc_start=x depth=1 brief_blob='"b10b"' \
@@ -1434,13 +1434,13 @@ PY
     "[('autofinish-run', 'wt:net'), ('dispatch', 'cap-step'), ('dispatch', 'gone-step'), ('dispatch', 'unsure-two')]" \
     "the acting tick: S1, S2 and the classified run re-dispatched, S4 relaunched — the locked step not"
   check "$(call "x=[x for x in c if nm(x) == 'gone-step'][0]; e=x['env']; print(e['DISPATCH_DEPTH'], e['DISPATCH_MANAGER'], e['DISPATCH_MANAGER_HOST'], e['DISPATCH_MANAGER_ACCOUNT'], e['DISPATCH_PLAN'], e['DISPATCH_PLAN_SPACE'], 'CLAUDE_CODE_SESSION_ID' in e)")" \
-    "0 mgr-b3 testhost /x/acct b3p b3-space False" "  S1: the same step again (depth 1 → DISPATCH_DEPTH 0), its manager's five values, never the caller's session"
+    "0 mgr-b3 testhost /x/acct b3p b3-space False" "  S1: the same step again (depth 1 → DISPATCH_DEPTH 0), its skipper's five values, never the caller's session"
   check "$(call "x=[x for x in c if nm(x) == 'gone-step'][0]; e=x['env']; print(e['DISPATCH_SKIPPER'], e['DISPATCH_SKIPPER_HOST'], e['DISPATCH_SKIPPER_ACCOUNT'], e['DISPATCH_SHIP'])")" \
     "mgr-b3 testhost /x/acct b3p" "    and under the new names too (rename S5: both written until S8)"
   check "$(call "x=[x for x in c if nm(x) == 'gone-step'][0]['argv']; print(x[1:3] == ['--repo', '$D'], x[-2:], x[x.index('--note') + 1].split(' — ')[0])")" \
     "True ['--on', 'here'] stalls: re-dispatched (retry 1 of 2) after S1" "  where it ran (--on here), with a note"
   check "$(call "x=[x for x in c if nm(x) == 'cap-step'][0]; print(x['env']['DISPATCH_DEPTH'], 'DISPATCH_MANAGER' in x['env'], x['argv'][x['argv'].index('--note') + 1][:34])")" \
-    "2 False stalls: started (retry 1 of 2) aft" "  S2: the next step, so its depth as recorded (dispatch adds one); no manager it never had"
+    "2 False stalls: started (retry 1 of 2) aft" "  S2: the next step, so its depth as recorded (dispatch adds one); no skipper it never had"
   check "$(call "print([x['argv'][1:] for x in c if x['tool'] == 'autofinish-run'][0])")" "['--by', 'chain', '--rule', 'C']" \
     "  S4: autofinish-run --by chain, the stopped run's rule"
   check "$(call "x=[x for x in c if nm(x) == 'unsure-two'][0]; print(x['env']['DISPATCH_DEPTH'], 'an unsure end the classifier said to retry' in x['argv'][x['argv'].index('--note') + 1])")" \
@@ -1454,7 +1454,7 @@ PY
     "the strict lock rule: a lock not handed over, inside OWNER_TTL, refuses"
   has "$out" "classifier: retry" "  the classifier's answer is on the line"
   check "$("$HM" state b3p | python3 -c "import json,sys; print([(t['id'], t['status']) for t in json.load(sys.stdin)['tasks']])")" "[('gone-step', 'blocked')]" \
-    "a managed run's plan hears it: blocked, never failed"
+    "a skippered run's plan hears it: blocked, never failed"
   check "$(logq "print(sorted(set((l['topic'], l['action']) for l in L if l['t'] == $ta and l['action'] in ('retry', 'refused'))))")" \
     "[('cap-step', 'retry'), ('gone-step', 'retry'), ('locked-step', 'refused'), ('net-launch', 'retry'), ('unsure-two', 'retry')]" \
     "  every action and refusal is a line in stalls.jsonl"
@@ -1662,7 +1662,7 @@ PY
   for w in unv:waiting busy:busy late:waiting; do
     printf '{"pid": %s, "sessionId": "sid-orca-%s", "cwd": "%s", "status": "%s", "waitingFor": "permission to run Bash", "statusUpdatedAt": %s000}' \
       "$$" "${w%%:*}" "$X8/ws/${w%%:*}" "${w##*:}" "$now" > "$T/sess/orca-${w%%:*}.json"; done
-  # the plan's manager, live in the registry: a question naming a D-item is relayed to it
+  # the plan's skipper, live in the registry: a question naming a D-item is relayed to it
   printf '{"pid": %s, "sessionId": "mgr-1", "cwd": "%s", "status": "busy", "statusUpdatedAt": %s000}' "$$" "$T" "$now" > "$T/sess/orca-mgr.json"
   "$HM" $SHIP b8 --id b8p > /dev/null
   "$HM" task b8p x > /dev/null; "$HM" task b8p y > /dev/null; "$HM" dep b8p y --on x > /dev/null
@@ -1715,7 +1715,7 @@ PY
   has "$out" "S1 testhost orcademo gone-step: waits — redispatch 1 of 2 due" "tick: an Orca S1 waits out the backoff as any S1"
   has "$out" "S6 testhost orcademo p-ask: relayed: backend: talk" "  a question naming docs/q.md D1 is relayed at once"
   check "$(python3 -c "import json,os; c=[json.loads(l) for l in open('$X8/ask.calls')]; print(len(c), c[0]['argv'][1] == os.path.realpath('$X8/ws/ask/docs/q.md'), c[0]['argv'][2:], c[0]['env'].get('DISPATCH_PLAN'), c[0]['env'].get('DISPATCH_MANAGER'), c[0]['env'].get('ASK_SESSION'))")" \
-    "1 True ['D1', '--task', 'p-ask'] b8p mgr-1 ctx_ask" "  bin/ask relay <doc> <Dn> --task <step>, with the plan's manager road and the worker as the asker"
+    "1 True ['D1', '--task', 'p-ask'] b8p mgr-1 ctx_ask" "  bin/ask relay <doc> <Dn> --task <step>, with the plan's skipper road and the worker as the asker"
   out=$(orca_tick "$((now+700))")
   has "$out" "S6 testhost orcademo p-ask: waits — relayed at" "  relayed once: then it waits on the answer (orchestration reply --id)"
   check "$(wc -l < "$X8/ask.calls" | tr -d ' ')" "1" "  never relayed twice"
@@ -1927,7 +1927,7 @@ unset ASK_MANAGER_DIR
 echo "the scope skipper (skipper-resilience S5): --start, the runner, the tick's pass, the hand-overs"
 # Stubs only: launchctl, screen, claude, account, dispatch-rc, trust-projects and the spacesheep CLI
 # record what they were asked; nothing loads a real job, starts a real claude or screen, or leaves
-# the Mac. A fresh store, registry and manager dir, so S4's leases above are not this block's.
+# the Mac. A fresh store, registry and skipper dir, so S4's leases above are not this block's.
 S5="$T/s5"; mkdir -p "$S5/bin" "$S5/la" "$S5/mgr" "$S5/st" "$S5/q" "$S5/cfg/acct-a" "$S5/cfg/acct-b" "$S5/cfg/acct-c"
 export PLANS_DIR="$S5/plans" ASK_MANAGER_DIR="$S5/mgr" STALLS_STATE_DIR="$S5/st" STALLS_LOG="$S5/stalls.jsonl" \
        ASK_QUEUE_DIR="$S5/q" ASK_NO_KEY_FILES=1 HELM_LAUNCH_DIR="$S5/la" HELM_LAUNCHCTL="$S5/bin/launchctl" \

@@ -133,7 +133,7 @@ git -C "$PR_" commit -q --allow-empty -m x; git -C "$PR_" worktree add -q "$T/pr
 mkdir -p "$T/primary-wt/settings"; cp "$T/surfaces.json" "$T/primary-wt/settings/surfaces.json"
 SURFACES_FILE="$T/primary-wt/settings/surfaces.json" "$B/ask" backends --set relay=file > /dev/null 2>&1; check "$?" "0" "  a worktree may flip it"
 
-echo "relay: no manager (R6)"
+echo "relay: no skipper (R6)"
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: none" "no DISPATCH_MANAGER: none"
 has "$out" "🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1 in docs/demo-2026-10-10.md" "…and the WAITING line to end on, marked 🛑"
@@ -144,48 +144,48 @@ echo "x" >> docs/demo-2026-10-10.md
 "$B/ask" relay docs/demo-2026-10-10.md D1 > /dev/null 2>&1; check "$?" "1" "commit first"
 git checkout -q -- docs/demo-2026-10-10.md
 
-echo "finding 4: a dead or gone manager is none — the plan dir it left is not a manager"
+echo "finding 4: a dead or gone skipper is none — the plan dir it left is not a skipper"
 mkdir -p "$T/plans/gone-1"; echo '{"id": "gone-1"}' > "$T/plans/gone-1/plan.json"
 out=$(env "$E_SKIP"=gone-1 "$E_SHIP"=gone-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: none" "no record on its own Mac: none, not the file queue"
 check "$(ls "$T/q" 2>/dev/null | wc -l | tr -d ' ')" "0" "  nothing queued for a prompt that never comes"
 printf '{"pid": %d, "sessionId": "dead-1", "name": "coding-9", "status": "idle", "messagingSocketPath": "/tmp/z.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/dead-1.json"
 out=$(env SPACESHEEP_KEY=k "$E_SKIP"=dead-1 DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "verdict: none · no live manager: the manager's session has ended (pid $DEAD is gone)" "a dead pid: none, Talk not tried either"
+has "$out" "verdict: none · no live skipper: the skipper's session has ended (pid $DEAD is gone)" "a dead pid: none, Talk not tried either"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
 
-echo "stray-manager B1 i: no manager of its own → the Mac's standing manager, when its record is live"
+echo "stray-manager B1 i: no skipper of its own → the Mac's standing skipper, when its record is live"
 SMD="$T/home/Library/Logs/claude-weekly/manager"; mkdir -p "$SMD"
-printf '{"session": "sm-1", "name": "manager · testhost", "pid": %d, "space": "sp-m", "account": ""}' $$ > "$SMD/testhost.json"
-live sm-1 manager
+printf '{"session": "sm-1", "name": "skipper · testhost", "pid": %d, "space": "sp-m", "account": ""}' $$ > "$SMD/testhost.json"
+live sm-1 skipper
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "verdict: live" "no DISPATCH_MANAGER, a live standing manager: relayed to it"
-has "$out" "⏳ RELAYED TO manager · testhost — D1" "  the RELAYED line names the Mac's manager, marked ⏳"
+has "$out" "verdict: live" "no DISPATCH_MANAGER, a live standing skipper: relayed to it"
+has "$out" "⏳ RELAYED TO skipper · testhost — D1" "  the RELAYED line names the Mac's skipper, marked ⏳"
 out=$(env "$E_SKIP"=dead-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "RELAYED TO manager · testhost — D1" "  a run whose own manager ended: the standing one takes it too (M1)"
-printf '{"pid": %d, "sessionId": "sm-1", "name": "manager", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/sm-1.json"
+has "$out" "RELAYED TO skipper · testhost — D1" "  a run whose own skipper ended: the standing one takes it too (M1)"
+printf '{"pid": %d, "sessionId": "sm-1", "name": "skipper", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/sm-1.json"
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: none" "  a record whose session has ended: none, the WAITING line as before"
 rm -f "$SMD/testhost.json" "$T/sess/sm-1.json"
 
-echo "skipper-resilience S5: a leased ship's ask goes to its scope's skipper before the Mac's standing manager"
+echo "skipper-resilience S5: a leased ship's ask goes to its scope's skipper before the Mac's standing skipper"
 printf '{"session": "sk-d", "name": "skipper · dock", "scope": "dock", "pid": %d, "space": null, "account": ""}' $$ > "$SMD/testhost-dock.json"
-printf '{"session": "sm-1", "name": "manager · testhost", "pid": %d, "space": "sp-m", "account": ""}' $$ > "$SMD/testhost.json"
-live sk-d skipper-dock; live sm-1 manager
-check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; s = asklib.standing_manager(scope='dock'); print(s['manager'], s['manager_name'], s['scope'], s['standing'])")" "sk-d skipper · dock dock True" \
-  "standing_manager(host, scope): the scope's record, <host>-<scope>.json"
-check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.standing_manager()['manager'], asklib.standing_manager(scope='nosuch'))")" "sm-1 None" "  without a scope, <host>.json as before; a scope with no record: None"
+printf '{"session": "sm-1", "name": "skipper · testhost", "pid": %d, "space": "sp-m", "account": ""}' $$ > "$SMD/testhost.json"
+live sk-d skipper-dock; live sm-1 skipper
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; s = asklib.standing_skipper(scope='dock'); print(s['manager'], s['manager_name'], s['scope'], s['standing'])")" "sk-d skipper · dock dock True" \
+  "standing_skipper(host, scope): the scope's record, <host>-<scope>.json"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.standing_skipper()['manager'], asklib.standing_skipper(scope='nosuch'))")" "sm-1 None" "  without a scope, <host>.json as before; a scope with no record: None"
 # the road is the ship's lease, never a path: the scope a ship's skipper.json names
 "$HM" $SHIP s5 --id s5p > /dev/null; "$HM" $SHIP s5x --id s5q > /dev/null
 python3 -c "import sys; sys.path.insert(0, '$B'); import leaselib; leaselib.write_yard('s5p', 'dock', 'testhost', 'laid by the suite')"
 out=$(env "$E_SHIP"=s5p "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "RELAYED TO skipper · dock — D1" "a run of a ship leased in the scope, no manager of its own: relayed to the scope's skipper"
+has "$out" "RELAYED TO skipper · dock — D1" "a run of a ship leased in the scope, no skipper of its own: relayed to the scope's skipper"
 check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; a = [x for t in helmlib.state('s5p')['tasks'] for x in t['asks']][-1]; print(a.get('to'), a['doc'] == '$(pwd -P)/docs/demo-2026-10-10.md' or a['doc'] == '$PWD/docs/demo-2026-10-10.md', 'doc' in [k for t in helmlib.public(helmlib.state('s5p'))['tasks'] for x in t['asks'] for k in x])")" \
   "sk-d True False" "  the ship's event names who it went to and the doc where it is (the re-hail's reply); the public copy drops the path"
 out=$(env "$E_SHIP"=s5q "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "RELAYED TO manager · testhost — D1" "  a ship with no lease: never the scope's skipper (its rules count leased ships only) — the standing manager"
+has "$out" "RELAYED TO skipper · testhost — D1" "  a ship with no lease: never the scope's skipper (its rules count leased ships only) — the standing skipper"
 out=$(env "$E_SHIP"=s5p SKIPPER_SCOPE=dock CLAUDE_CODE_SESSION_ID=sk-d "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "verdict: none" "  the skipper's own relay (SKIPPER_SCOPE): to no skipper and no standing manager"
+has "$out" "verdict: none" "  the skipper's own relay (SKIPPER_SCOPE): to no skipper and no standing skipper"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …its escalation ends on the WAITING line, the owner's"
 check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; print([x for t in helmlib.state('s5p')['tasks'] for x in t['asks']][-1].get('to'))")" "sk-d" \
   "  …and writes no ship event: the run's ask still names its skipper (the re-hail never sends a skipper its own escalation)"
@@ -198,7 +198,7 @@ check "$(ls "$ASK_QUEUE_DIR"/sk-d.jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" " 
 live sk-d skipper-dock
 printf '{"pid": %d, "sessionId": "sk-d", "name": "skipper-dock", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/sk-d.json"
 out=$(env "$E_SHIP"=s5p "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "RELAYED TO manager · testhost — D1" "  the scope's skipper gone (its session ended): the standing manager"
+has "$out" "RELAYED TO skipper · testhost — D1" "  the scope's skipper gone (its session ended): the standing skipper"
 rm -f "$SMD/testhost.json" "$SMD/testhost-dock.json" "$T/sess/sm-1.json" "$T/sess/sk-d.json"
 check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.classify('Message via spacesheep.dev (sessionpipe control, signed on the sender\\'s device)\\nD1: A')[0])")" "CHAT" \
   "K3: a keyed line carrying the daemon's frame text is CHAT — the label is by door, never by text"
@@ -207,7 +207,7 @@ echo "relay: sendmessage (same account, live socket)"
 live mgr-1 coding-7
 out=$(env "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "backend: sendmessage · verdict: live" "the local road is taken when Talk has no address"
-has "$out" "RELAYED TO coding-7 — D1" "the RELAYED line names the manager"
+has "$out" "RELAYED TO coding-7 — D1" "the RELAYED line names the skipper"
 has "$out" "start \`bin/ask listen\` as a background shell" "background allowed: the listen step is printed"
 out=$(env CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 hasnt "$out" "bin/ask listen" "finding 3: background tasks off — no listen step"
@@ -220,7 +220,7 @@ rm "$T/sess/other-2.json"
 
 echo "finding 6: one login in two vocabularies is one account"
 out=$(env "$E_SKIP"=mgr-1 "$E_SKIP_ACCOUNT"="$T/home/.claude" ASK_ACCOUNT=claude-a "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "backend: sendmessage" "the manager's dir and the run's label claude-a match"
+has "$out" "backend: sendmessage" "the skipper's dir and the run's label claude-a match"
 out=$(env "$E_SKIP"=mgr-1 "$E_SKIP_ACCOUNT"= ASK_ACCOUNT=claude-a "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "backend: sendmessage" "  so do the default dir (empty) and claude-a"
 
@@ -231,21 +231,21 @@ has "$out" "backend: file · verdict: queued" "the file queue takes it on this M
 check "$("$B/ask" queue --session mgr-1 | grep -c '^..:.. ASK ')" "1" "the queue holds one ASK line"
 "$B/ask" queue --session mgr-1 --clear > /dev/null; check "$("$B/ask" queue --session mgr-1 | wc -l | tr -d ' ')" "0" "--clear empties it"
 
-echo "relay: the manager on another Mac and no key → unreachable, never silence"
+echo "relay: the skipper on another Mac and no key → unreachable, never silence"
 out=$(env "$E_SKIP"=far-away "$E_SKIP_HOST"=buildbox DISPATCH_PLAN_SPACE=abc "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "talk: skipped — no SPACESHEEP_KEY" "no key: Talk skips and says why"
 has "$out" "verdict: unreachable" "nothing delivered is said"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "…and the run falls to the WAITING path"
-has "$out" " --send-only" "a manager on another Mac: the reply sends without reading the doc (second review, finding 6)"
-has "$out" "file: skipped — the manager is not on this Mac (ssh buildbox-ssh: ssh: connect to host" \
+has "$out" " --send-only" "a skipper on another Mac: the reply sends without reading the doc (second review, finding 6)"
+has "$out" "file: skipped — the skipper is not on this Mac (ssh buildbox-ssh: ssh: connect to host" \
   "  a peer that does not answer over ssh: remote, as before, and the file road says why"
 
-echo "peer-manager-relay: a manager live on a peer is judged by its registry there, over the ssh wharf-runs/ssh names"
+echo "peer-manager-relay: a skipper live on a peer is judged by its registry there, over the ssh wharf-runs/ssh names"
 PH="$T/peers/buildbox-ssh"; mkdir -p "$PH/.claude/sessions"
 printf '{"pid": %d, "sessionId": "far-1", "name": "coding-far", "status": "idle", "cwd": "/a", "updatedAt": 2}' $$ > "$PH/.claude/sessions/far-1.json"
-echo "  …a run with no page of its own: the manager could hear it and never answer, so it parks (finish review)"
+echo "  …a run with no page of its own: the skipper could hear it and never answer, so it parks (finish review)"
 out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "verdict: unreachable · the manager is live on buildbox, but this run has no page of its own" "  unreachable, said why"
+has "$out" "verdict: unreachable · the skipper is live on buildbox, but this run has no page of its own" "  unreachable, said why"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
 check "$(ls "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …nothing queued there"
 echo "  …a run with its own page (a keel pin): relayed, and the answer comes back over Talk"
@@ -254,16 +254,16 @@ out=$(env MEMO_SHEEP_STATE="$T/ms" "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/a
 has "$out" "talk: skipped — no plan space" "no plan page: Talk has no address (board-cleanup's D2, 2026-10-26)"
 has "$out" " --space space-own" "  the reply sends to the run's own page"
 has "$out" "backend: file · verdict: queued · file: $PH/Library/Logs/claude-weekly/asks/far-1.jsonl on buildbox" \
-  "  relayed, not parked: the file road writes the manager's own queue on its Mac"
+  "  relayed, not parked: the file road writes the skipper's own queue on its Mac"
 has "$out" "RELAYED TO coding-far — D1" "  the RELAYED line names it by its registry name there"
 has "$out" " --send-only" "  its reply sends without reading the doc, which is not on its Mac"
 check "$(grep -c 'ASK repo D1 ' "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "1" "  the queue there holds the ASK line"
 check "$(ls "$T/q"/far-1.jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and nothing waits in this Mac's queue"
 check "$(python3 -c "import json; print(json.load(open('.git/claude/ask.json'))['verdict'])")" "queued" "  ask.json says queued, which the Stop hook reads as relayed"
-echo "  the same manager gone there: parked for the owner, as a gone manager here is"
+echo "  the same skipper gone there: parked for the owner, as a gone skipper here is"
 printf '{"pid": %d, "sessionId": "far-1", "name": "coding-far", "status": "idle", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$PH/.claude/sessions/far-1.json"
 out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
-has "$out" "verdict: none · no live manager: the manager's session has ended (pid $DEAD on buildbox is gone)" "  a dead pid on the peer: none"
+has "$out" "verdict: none · no live skipper: the skipper's session has ended (pid $DEAD on buildbox is gone)" "  a dead pid on the peer: none"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
 rm -f "$PH/.claude/sessions/far-1.json"
 out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
@@ -322,7 +322,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import socket; socket.create_conne
 export SPACESHEEP_URL="http://127.0.0.1:$port"
 out=$(env SPACESHEEP_KEY=k-test "$E_SKIP"=mgr-1 DISPATCH_PLAN_SPACE=https://spacesheep.dev/s/space-9 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "backend: talk · verdict: sent · talk: 7" "Talk first when it has an address and a key"
-check "$(python3 -c "import json; d=[json.loads(l) for l in open('$T/posts.jsonl')][-1]; print(d['space'], d['session_id'], d['auth'], d['ua'].split()[0], d['text'][:6])")" "space-9 mgr-1 Bearer k-test curl/8.7.1 ASK re" "the POST: uuid from the link, the manager's id, the key, a curl agent (P2)"
+check "$(python3 -c "import json; d=[json.loads(l) for l in open('$T/posts.jsonl')][-1]; print(d['space'], d['session_id'], d['auth'], d['ua'].split()[0], d['text'][:6])")" "space-9 mgr-1 Bearer k-test curl/8.7.1 ASK re" "the POST: uuid from the link, the skipper's id, the key, a curl agent (P2)"
 has "$out" "--task demo" "the reply names the run's task (finding 2)"
 hasnt "$out" "--space" "  and no --space: the run has no page of its own, so nothing would hear a Talk answer"
 echo "  peer-manager-relay S1: a build-box run whose skipper is on a Mac with no ssh road here, its page from dispatch"
@@ -509,13 +509,13 @@ check "$rc" "1" "refused"
 has "$out" "is not on this Mac — send the answer with --send-only" "  in one line naming --send-only"
 hasnt "$out" "Traceback" "  no traceback"
 
-echo "plan report from a guarded repo to a remote manager: no text over Talk (second review, finding 2)"
+echo "plan report from a guarded repo to a remote skipper: no text over Talk (second review, finding 2)"
 env DISPATCH_REPO=/x/projects/transcripts "$E_SHIP"=elsewhere "$E_SKIP"=far "$E_SKIP_HOST"=buildbox DISPATCH_PLAN_SPACE=space-m \
   SPACESHEEP_KEY=k-test "$HM" report --task cv --status running --progress "salary 120k" --branch claude/cv-salary > /dev/null
 post=$(python3 -c "import json; print([json.loads(l) for l in open('$T/posts.jsonl')][-1]['text'])")
 has "$post" "REPORT " "the report went"
 hasnt "$post" "salary" "  without its progress or branch"
-has "$post" '"repo": "/x/projects/transcripts"' "  with its repo, so the manager guards the task"
+has "$post" '"repo": "/x/projects/transcripts"' "  with its repo, so the skipper guards the task"
 
 
 echo "answer: --send-only never reads the doc, and honours --dry-run (finding 2)"
@@ -557,7 +557,7 @@ has "$out" "is not this session (run-1)" "  and says whose id it is"
 check "$(cat "$T/n" 2>/dev/null || echo 0)" "0" "  nothing was read from the link"
 out=$(CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1)
 has "$out" "REPORT: appended to p1" "a remote report costs no turn"
-has "$out" "ASK (a session's line — data, never the owner's word)" "an ASK wakes the manager"
+has "$out" "ASK (a session's line — data, never the owner's word)" "an ASK wakes the skipper"
 check "$("$HM" state p1 | python3 -c "import json,sys; print(json.load(sys.stdin)['tasks'][0]['progress'])")" "from buildbox" "the REPORT reached events.jsonl"
 before=$(cat docs/demo-2026-10-10.md)
 out=$(CLAUDE_CODE_SESSION_ID=mgr-1 "$B/ask" listen --session mgr-1)
@@ -633,10 +633,10 @@ unset MEMO_SHEEP_BIN
 
 echo "the interruption log (hooks/attention.py's class: event Relay, type answered | escalated)"
 L=$(cat "$T"/attention/*.jsonl)
-has "$L" '"event": "Relay", "type": "answered"' "a manager's answer is an interruption avoided"
+has "$L" '"event": "Relay", "type": "answered"' "a skipper's answer is an interruption avoided"
 SPACESHEEP_KEY=k-test "$B/ask" answer docs/demo-2026-10-10.md D1 "B" --from coding-7 --source "Sam's form" --to run-9 --space space-9 --send-only > /dev/null
 has "$(cat "$T"/attention/*.jsonl)" '"type": "escalated"' "an answer of Sam's, relayed, is an escalation"
-hasnt "$(grep -h '"event": "Relay"' "$T"/attention/*.jsonl | grep -v '"type": "answered"' | grep -v '"type": "escalated"')" "Relay" "only settled relays are rows: a managerless WAITING line is already a handoff"
+hasnt "$(grep -h '"event": "Relay"' "$T"/attention/*.jsonl | grep -v '"type": "answered"' | grep -v '"type": "escalated"')" "Relay" "only settled relays are rows: a skipperless WAITING line is already a handoff"
 echo "  review gate 2026-10-16: one predicate (asklib.owner_source) for the log row and memo's taken"
 check "$(python3 - "$B" <<'PY'
 import sys, types
@@ -654,12 +654,12 @@ print(" ".join(kinds), "|", ask.asklib.relayed_by_owner(line("manager (buildbox)
       ask.asklib.relayed_by_owner(line("manager · buildbox", "Sam, Session tab (signed)")))
 PY
 )" "answered answered answered escalated escalated escalated answered answered escalated | False True False True" \
-  "  escalated only for Sam's routes (bare 'Sam', an unsigned tab line, a manager's are answered); a 'who' with a parenthesis is read right"
+  "  escalated only for Sam's routes (bare 'Sam', an unsigned tab line, a skipper's are answered); a 'who' with a parenthesis is read right"
 
 echo "--print-curl for a cloud brief"
 out=$(env "$E_SKIP"=mgr-1 DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1 --print-curl)
 has "$out" 'Authorization: Bearer $SPACESHEEP_KEY' "the key stays a variable in a committed brief"
-has "$out" '"session_id": "mgr-1"' "…addressed to the manager"
+has "$out" '"session_id": "mgr-1"' "…addressed to the skipper"
 
 echo "poll: the laptop's bell"
 O="$T/origin.git"; git init -q --bare "$O"; git -C "$R" remote add origin "$O"

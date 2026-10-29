@@ -72,12 +72,12 @@ inbox() {   # inbox NAME MODE TRANSCRIPT: a server on $T/s/NAME.sock, logging to
   echo "  FAIL inbox $1 never bound"; fails=$((fails+1))
 }
 cat > "$T/asklib.py" <<'PY'
-# helm's asklib, cut to what bin/hail calls: BACKENDS talk and file, standing_manager()
+# helm's asklib, cut to what bin/hail calls: BACKENDS talk and file, standing_skipper()
 import os
 class Talk:
     name = "talk"
     def available(self, ctx):
-        return (True, "key and address") if ctx.get("space") else (False, "no plan space or manager id to address")
+        return (True, "key and address") if ctx.get("space") else (False, "no plan space or skipper id to address")
     def send(self, ctx, text):
         with open(os.environ["STUB_TALK"], "a") as f:
             f.write("%s %s %s\n" % (ctx["space"], ctx["manager"], text))
@@ -85,13 +85,13 @@ class Talk:
 class File:
     name = "file"
     def available(self, ctx):
-        return (True, "this Mac") if os.environ.get("STUB_FILE_OK") else (False, "the manager is not on this Mac")
+        return (True, "this Mac") if os.environ.get("STUB_FILE_OK") else (False, "the skipper is not on this Mac")
     def send(self, ctx, text):
         with open(os.environ["STUB_FILE"], "a") as f:
             f.write("%s %s\n" % (ctx["manager"], text))
         return "queued", "file: asks/%s.jsonl" % ctx["manager"]
 BACKENDS = {"talk": Talk(), "file": File()}
-def standing_manager(host=None):
+def standing_skipper(host=None):
     return None
 PY
 cat > "$T/codex" <<'SH'
@@ -360,11 +360,11 @@ hasnt "$T/ack.log" "secret-word" "the answer's words are not in it"
 : > "$T/ack.log"
 H s-idle-0001 --text "➤ Answer: B" --json > "$T/r.json"; check "$?" 2 "an answer in the text: exit 2"
 has "$T/r.json" "never ride in a hail (K13)" "refused by K13"
-H s-idle-0001 --text "Relayed from manager (talk, 2026-10-21): yes" --json > /dev/null; check "$?" 2 "a relayed answer: refused"
+H s-idle-0001 --text "Relayed from skipper (talk, 2026-10-21): yes" --json > /dev/null; check "$?" 2 "a relayed answer: refused"
 H s-idle-0001 --text "$(python3 -c 'print("x" * 401)')" --json > /dev/null; check "$?" 2 "over 400 characters: refused"
 check "$(wc -c < "$T/ack.log" | tr -d ' ')" "0" "none of them was posted"
 CLAUDE_CODE_SESSION_ID=s-idle-0001 H s-idle-0001 --text look --json > "$T/r.json"; check "$?" 2 "a session does not hail itself"
-H s-idle-0001 --text "fyi Relayed from manager (talk, 2026-10-21): yes" --json > /dev/null; check "$?" 2 "a relay quoted mid-line: refused"
+H s-idle-0001 --text "fyi Relayed from skipper (talk, 2026-10-21): yes" --json > /dev/null; check "$?" 2 "a relay quoted mid-line: refused"
 H s-idle-0001 --text look --about "r:b:docs/x.md ➤ Answer: B" --json > /dev/null 2>&1; check "$?" 1 "an --about that is not a path: refused"
 H --peer-half s-idle-0001 --frame "➤ Answer: B, not a frame" > "$T/r.json"; check "$?" 2 "--peer-half: a frame that is not a hail's, exit 2"
 has "$T/r.json" "not a HAIL frame" "said why"

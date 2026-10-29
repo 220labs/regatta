@@ -30,10 +30,10 @@ deny=$(echo '{"tool_name":"AskUserQuestion","tool_input":{}}' | CLAUDE_UNATTENDE
 case "$deny" in *"mode ask: nobody answers it but the owner"*) echo "  ok   mode ask: the denial says nobody answers but the owner";; *) echo "  FAIL mode ask's denial: $deny"; fails=$((fails+1));; esac
 # stray-manager B1 ii: no DISPATCH_MANAGER — the deny names this Mac's standing skipper when its record is live
 AGM="$T/agm"; mkdir -p "$AGM/mgr" "$AGM/sess"
-printf '{"session": "sm-1", "name": "manager · testmac", "pid": %d}' $$ > "$AGM/mgr/testmac.json"
+printf '{"session": "sm-1", "name": "skipper · testmac", "pid": %d}' $$ > "$AGM/mgr/testmac.json"
 printf '{"pid": %d, "sessionId": "sm-1", "updatedAt": 2}' $$ > "$AGM/sess/sm-1.json"
 agr() { echo '{"tool_name":"AskUserQuestion","tool_input":{}}' | env -u DISPATCH_MANAGER -u DISPATCH_SKIPPER CLAUDE_UNATTENDED=dispatch ASK_SESSIONS_DIR="$AGM/sess" PLAN_HOST=testmac "$@" python3 "$H/ask_guard.py" pretool \
-  | python3 -c "import json,sys; r=json.load(sys.stdin)['hookSpecificOutput']['permissionDecisionReason']; print('manager · testmac' in r, 'nobody (no skipper)' in r)"; }
+  | python3 -c "import json,sys; r=json.load(sys.stdin)['hookSpecificOutput']['permissionDecisionReason']; print('skipper · testmac' in r, 'nobody (no skipper)' in r)"; }
 check "$(agr ASK_MANAGER_DIR="$AGM/mgr")" "True False" "  no DISPATCH_MANAGER, a live standing skipper: the deny says the ask goes to it"
 check "$(agr ASK_MANAGER_DIR="$AGM/none")" "False True" "  no record: 'nobody', as before"
 # skipper-resilience S5: a run whose ship its scope leases, the scope's skipper record live — the deny names that skipper
@@ -44,7 +44,7 @@ printf '{"session": "sk-1", "name": "skipper · dock", "scope": "dock", "pid": %
 printf '{"pid": %d, "sessionId": "sk-1", "updatedAt": 2}' $$ > "$AGM/sess/sk-1.json"
 ags() { echo '{"tool_name":"AskUserQuestion","tool_input":{}}' | env -u DISPATCH_MANAGER -u DISPATCH_SKIPPER -u DISPATCH_PLAN CLAUDE_UNATTENDED=dispatch ASK_SESSIONS_DIR="$AGM/sess" PLAN_HOST=testmac \
   ASK_MANAGER_DIR="$AGM/mgr" PLANS_DIR="$AGM/plans" "$@" python3 "$H/ask_guard.py" pretool \
-  | python3 -c "import json,sys; r=json.load(sys.stdin)['hookSpecificOutput']['permissionDecisionReason']; print('scope\'s skipper (skipper · dock)' in r, 'manager · testmac' in r)"; }
+  | python3 -c "import json,sys; r=json.load(sys.stdin)['hookSpecificOutput']['permissionDecisionReason']; print('scope\'s skipper (skipper · dock)' in r, 'skipper · testmac' in r)"; }
 check "$(ags DISPATCH_SHIP=shp)" "True False" "  a run whose ship the scope leases, its skipper live: the deny names skipper · <scope>"
 check "$(ags DISPATCH_SHIP=free)" "False True" "  a ship with no lease: this Mac's standing skipper, as before"
 check "$(ags DISPATCH_SHIP=shp SKIPPER_SCOPE=dock)" "False False" "  the skipper itself asking: no skipper named (its ask is the owner's)"

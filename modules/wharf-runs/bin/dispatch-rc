@@ -59,7 +59,7 @@
                                it after 1 min idle instead of 10; FAILED after DISPATCH_PREV_WAIT s
     dispatch-rc ask-guard STATE
                                a headless run's end (bin/dispatch run_headless): store on its record
-                               whether it handed the owner an ask past a live manager (session-asks R2)
+                               whether it handed the owner an ask past a live skipper (session-asks R2)
     dispatch-rc arrange        even out the tiles on the claude desktop (yabai's --balance)
     dispatch-rc status         every run of the last 7 days: running/ended, last activity, session id,
                                the VS Code link (what `dispatch --status` prints); ends an orphan
@@ -359,7 +359,7 @@ def session_record(st):
 # Claude Code reports a session holding any background shell as `shell`, not `idle` — every session
 # with the waiter, so a finished run read busy (the shell note in bin/autofinish-run's header). A tuple
 # is a command's basename and the words after it; a command line with a shell operator in it is never
-# a listener. Not `ask listen`: a relayed run holds it for its manager's answer, and nothing
+# a listener. Not `ask listen`: a relayed run holds it for its skipper's answer, and nothing
 # re-dispatches the parked work if the run is ended meanwhile, so it stays busy as before S13
 # (the S13 landing review, 2026-10-23).
 LISTENERS = (("sessionpipe", "wait"), ("spacesheep", "talk", "listen"))
@@ -551,7 +551,7 @@ _ENDS = {}   # transcript path → (size, said its end?): the watcher asks every
 def said_its_end(st, rec):
     """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
     fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
-    outcome from (read_outcome). A RELAYED line is no end: that run waits for its manager's answer
+    outcome from (read_outcome). A RELAYED line is no end: that run waits for its skipper's answer
     (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
     hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher. So is
     WAITING FOR NOTHING (`idle`, 2026-10-29): nothing goes on and nothing is owed. A mark before any of
@@ -1463,11 +1463,11 @@ def last_answer(sid):
 
 
 def ask_guard(st):
-    """R2's harness-neutral guard (docs/session-asks-2026-10-09.md, B1): a run with a manager that
+    """R2's harness-neutral guard (docs/session-asks-2026-10-09.md, B1): a run with a skipper that
     ended its last turn on the WAITING line, with no `bin/ask` record saying nobody was there to
-    relay to (`ask.json`, verdict none or unreachable), asked the owner past its manager. That is a
+    relay to (`ask.json`, verdict none or unreachable), asked the owner past its skipper. That is a
     `failed` run, not an idle one — a Codex or cloud run has no Stop hook to refuse the line, so
-    the record is the guard. None when the run is fine or has no manager."""
+    the record is the guard. None when the run is fine or has no skipper."""
     if not st.get("manager") or not st.get("session"):
         return None
     text = last_answer(st["session"])
@@ -1494,7 +1494,7 @@ def ask_guard(st):
         pass
     if verdict in ("none", "unreachable"):
         return None
-    return "failed: ended on %s with manager %s live and no bin/ask relay" % (what, st["manager"][:8])
+    return "failed: ended on %s with skipper %s live and no bin/ask relay" % (what, st["manager"][:8])
 
 
 def store_ask_guard(path):
@@ -2137,7 +2137,7 @@ def status():
         print("    started %s, last activity %s, session %s" % (
             time.strftime("%m-%d %H:%M", time.localtime(st.get("started", 0))), ago(last), st.get("session")))
         if st.get("manager"):
-            print("    manager %s, plan %s%s" % (st["manager"][:8], (st.get("plan") or "-")[:8],
+            print("    skipper %s, plan %s%s" % (st["manager"][:8], (st.get("plan") or "-")[:8],
                                                (", page " + st["plan_space"]) if st.get("plan_space") else ""))
         if st.get("mode") == "headless":
             print("    headless (claude -p): the side panel hides it; log %s" % st.get("log"))
