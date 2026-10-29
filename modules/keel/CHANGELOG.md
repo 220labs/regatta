@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The keel skill's `seeded` path: a full host queues the step (dispatch-queue S3), so the session ends on
+  dispatch's closing line with nothing to relay; paste-paths' suite proves that line passes the Stop
+  lint as the pending kind.
 - `KEEL_BRIEF_DAY` (YYYY-MM-DD) pins the day `pickup brief`'s same-day guard reads, for suites that cross midnight.
 - Codex and Antigravity sessions reach spacesheep through the same privacy gate as Claude Code's:
   `sheep gate` writes sessionpipe's entries, gated, into Codex's `hooks.json` and Antigravity's
