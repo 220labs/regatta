@@ -25,8 +25,11 @@ the branch to read it.
   pickup list`, match by meaning, ask when several fit. A branch with no
   brief cannot be scheduled: say so and offer `/todo handoff` instead.
 - **When:** `reset` unless the owner names a time. "after the reset", "when my tokens are back",
-  nothing said → `--at reset` (the next weekly reset + 10 min; `reset+MIN` for another gap;
-  a Fable seed `reset+60`, under Tier).
+  nothing said → `--at reset --priority low` (the next weekly reset + 10 min; `reset+MIN` for another
+  gap; a Fable seed `reset+60`, under Tier). Where the queue is on (`wharf-runs/queue-repo` set), at
+  its time the one-shot enters dispatch's queue, aged from then (dispatch-queue S3): `low` lets a run
+  the owner sent since go first, and an entry waiting past two hours ranks as `normal`. Without a
+  queue home the one-shot runs at its time as before, and `low` is only its record's. A named time keeps `normal` unless the owner says so.
   A named time → `--at "YYYY-MM-DD HH:MM"` in the *target host's* local time; with `--on` the
   engine takes only `reset` or an epoch, so turn the clock time into `@EPOCH` first.
 - **Where:** the dispatch host by default since 2026-10-13 (`wharf-runs/dispatch-host` in the
@@ -63,7 +66,7 @@ Stop and ask when one of these holds:
 ## 3. Schedule it, then prove it
 
 ```
-dispatch '<branch>' --at reset [--repo ~/projects/<repo>] [--on HOST|here] [--model opus --effort high] [--note '…']
+dispatch '<branch>' --at reset --priority low [--repo ~/projects/<repo>] [--on HOST|here] [--model opus --effort high] [--note '…']
 ```
 
 `--repo` is required for a branch outside the default repo (the overlay's checkout where one is

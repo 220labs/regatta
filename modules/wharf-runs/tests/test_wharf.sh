@@ -1323,7 +1323,7 @@ out=$(L env WHARF_WATCH_PASSES=1 STUB_GH_MERGED=claude/testhost/2026-10-17-lb1 "
 check "$(wc -l < "$WS/afrun.calls" | tr -d ' ')" "2" "  and never started again on that tip"
 python3 -c "import json; p='$G2/claude/autofinish.json'; d=json.load(open(p)); d.update(ended='x', outcome='never-started', gate='refused'); json.dump(d, open(p, 'w'))"
 out=$(L env WHARF_WATCH_PASSES=1 STUB_BUSY=3 STUB_GH_MERGED=claude/testhost/2026-10-17-lb1 "$WH" apply --watch --launch --every 0 "$LB" --plan wp)
-has "$out" "raised: queued — its last start was refused by the run cap; 3 runs busy, dispatch's cap is 3" "a launch the run cap refused (never-started at gate refused): queued, not stopped"
+has "$out" "raised: held — its last start was refused by the run cap (a landing is dispatch --start, which never queues); 3 runs busy, dispatch's cap is 3" "a launch the run cap refused (never-started at gate refused): held, not stopped"
 check "$(wc -l < "$WS/afrun.calls" | tr -d ' ')" "2" "  not started while dispatch's runs are all busy"
 out=$(L env WHARF_WATCH_PASSES=1 STUB_BUSY=1 STUB_GH_MERGED=claude/testhost/2026-10-17-lb1 "$WH" apply --watch --launch --every 0 "$LB" --plan wp)
 check "$(wc -l < "$WS/afrun.calls" | tr -d ' ')" "3" "  started again once a run ended (the skipper's addition, 2026-10-19)"

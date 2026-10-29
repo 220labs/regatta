@@ -96,6 +96,18 @@ export AUTOFINISH_NOW=$NOW AUTOFINISH_HOST=laptop AUTOFINISH_REPOS="$T/repos.jso
        AUTOFINISH_PROJECTS="$T/projects" AUTOFINISH_MEMO="$T/memo" AUTOFINISH_GITHUB="$T/gh.json" \
        AUTOFINISH_LOG_DIR="$T/logs" CLAUDE_TIER_CLAUDE_JSON="$T/claude-normal.json" \
        CLAUDE_TIER_APP_HISTORY="$T/no-app-history.json"
+# dispatch's queue (dispatch-queue S3, queue_hold): two branches' steps are entries, every other has none. One
+# `list --all --json` per run answers all (S3's second landing review, item 10); each call is logged. a-ok's
+# branch name is an entry in another repo only: branch names repeat across repos, so it is not held
+cat > "$T/dq-list" <<'SH'
+#!/bin/sh
+echo "$*" >> "$DQ_CALLS"
+case "${DQ_STUB:-}" in crash) exit 5;; unread) echo '{"entries": [], "unreadable": true, "why": ["fleet: torn"]}'; exit 0;; esac
+R=$(cd "$DQ_REPO" 2>/dev/null && pwd -P)
+b=claude/laptop/2026-10-05
+printf '{"entries": [{"qid": "fleet:x--queued", "state": "queued", "repo": "%s", "branch": "%s-pending-queued"}, {"qid": "fleet:x--queued", "state": "queued", "repo": "%s", "branch": "%s-plain-queued"}, {"qid": "fleet:y--a-ok", "state": "queued", "repo": "elsewhere/demo", "branch": "%s-a-ok"}], "unreadable": false, "why": []}\n' "$R" "$b" "$R" "$b" "$b"
+SH
+chmod +x "$T/dq-list"; export AUTOFINISH_DISPATCH_QUEUE="$T/dq-list" DQ_CALLS="$T/dq.calls" DQ_REPO="$T/projects/demo"
 
 # newrepo <name> <workflow.json>: a primary on main, pushed to a bare origin
 newrepo() {
@@ -243,6 +255,13 @@ session pending idle "$(wtp $D pending)"
 mk $D pending-gone docs/pgone.md "x"; reply pending-gone "Reviewers started.
 
 SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; it continues by itself"
+# dispatch-queue S3: the queue's closing line, no session on the branch, its step an entry in the queue
+mk $D pending-queued docs/pqueued.md "x"; reply pending-queued "Queued.
+
+SAM, THIS SESSION IS WAITING FOR SOMETHING — queued $(br pending-queued) (normal); the next step waits for a run to end; the skipper finishes it"
+# S3's landing review, items 5 and 6: a plain reply whose step the queue holds, and a queue that crashed
+mk $D plain-queued docs/plqueued.md "x"; reply plain-queued "Done."
+mk $D queue-crash docs/qcrash.md "x"; reply queue-crash "Done."
 mk $D unknown docs/unknown.md "x"; rm "$(gd $D unknown)/claude/owner.json" "$HOME/.claude/projects/fixture/$(sid unknown).jsonl"
 mk $D unpushed docs/unpushed.md "x" "Deployed: no" nopush
 mk $D ahead docs/ahead.md "x"; echo y >> "$(wtp $D ahead)/docs/ahead.md"; git -C "$(wtp $D ahead)" commit -qam more
@@ -478,6 +497,29 @@ check "$(line $O asks)" "skip: last reply asks (ends in ?)" "the last reply asks
 check "$(line $O waiting)" "skip: waiting for Sam (last reply ends in the WAITING line)" "the WAITING line"
 check "$(line $O pending)" "skip: waiting on its own work (last reply ends in the WAITING FOR SOMETHING line)" "  and WAITING FOR SOMETHING: never launched under its live session"
 check "$(line $O pending-gone)" "start (A)" "  …but with its session gone nothing picks it up: no veto"
+check "$(line $O pending-queued)" "skip: its next step waits in dispatch's queue (fleet:x--queued queued)" \
+  "  …unless its step waits in dispatch's queue, session or none (dispatch-queue S3: the queue-first rule)"
+check "$(line $O plain-queued)" "skip: its next step waits in dispatch's queue (fleet:x--queued queued)" \
+  "  …whatever the last reply said: every branch about to start asks the queue (S3's landing review, item 6)"
+check "$(grep -c '^list --all --json$' "$T/dq.calls"):$(wc -l < "$T/dq.calls" | tr -d ' ')" "1:1" \
+  "  one queue read for the whole run, every candidate answered from it (S3's second landing review, item 10)"
+# S3's third landing review: queue_hold over entries as dispatch-queue writes them — a repo under the projects
+# folder named relative to it (repo_word), and the branch's own running entry, which is its run, not a next step
+cat > "$T/qhold.py" <<'QH'
+import sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish", sys.argv[1]).load_module()
+root = Path(sys.argv[2]); (root / "shop").mkdir(parents=True, exist_ok=True)
+m.common.PROJECTS = root
+m._QUEUE["read"] = ([{"qid": "fleet:shop--a", "state": "queued", "repo": "shop", "branch": "claude/x/a"},
+                     {"qid": "fleet:shop--b", "state": "running", "repo": "shop", "branch": "claude/x/b", "running_on": m.host()},
+                     {"qid": "fleet:shop--c", "state": "running", "repo": "shop", "branch": "claude/x/c", "running_on": "elsewhere"}], None)
+print(bool(m.queue_hold(str(root / "shop"), "claude/x/a")), m.queue_hold(str(root / "shop"), "claude/x/b"),
+      bool(m.queue_hold(str(root / "shop"), "claude/x/c")))
+QH
+check "$(python3 "$T/qhold.py" "$B/autofinish" "$T/qprojects" 2>&1)" "True None True" \
+  "S3's third review: an entry whose repo is relative to the projects folder holds its branch (item 7); its own running entry here does not (item 6); one running on another host does"
 check "$(line $O unknown)" "skip: last reply unknown (session $(sid unknown | cut -c1-8))" "no transcript: never a guess"
 check "$(line $O unpushed)" "skip: not pushed" "never pushed"
 check "$(line $O ahead)" "skip: not pushed (local is ahead of origin)" "local ahead of origin"
@@ -557,6 +599,16 @@ check "$(line $O d-halfdue)" "skip: asks (docs/halfdue-design.md: memo due, but 
   "  due, but a stand would leave it part-stood: refused before anything is written"
 check "$(grep -c -- '^status --json --no-fetch docs/due-design.md$' "$T/memo.calls")" "1" "the dry run asks memo with --no-fetch"
 check "$(grep -cv -- '--no-fetch' "$T/memo.calls")" "0" "  every time: a dry run fetches nothing"
+# a queue that cannot be read, once per run (after the memo cases: each dry run asks memo again)
+: > "$T/dq.calls"
+DQ_STUB=crash python3 "$B/autofinish" --dry-run demo > "$T/out-dq" 2>/dev/null
+check "$(line "$T/out-dq" queue-crash)" "skip: dispatch's queue could not tell (exit 5): a queued step counts as there" \
+  "a queue that crashed (exit 5) holds too, never read as no entry (S3's landing review, item 5)"
+check "$(line "$T/out-dq" pending-gone):$(wc -l < "$T/dq.calls" | tr -d ' ')" "skip: dispatch's queue could not tell (exit 5): a queued step counts as there:1" \
+  "  …every branch about to start, from one read"
+DQ_STUB=unread python3 "$B/autofinish" --dry-run demo > "$T/out-dq" 2>/dev/null
+check "$(line "$T/out-dq" pending-gone)" "skip: dispatch's queue does not read (fleet: torn): a queued step counts as there" \
+  "  a list that says unreadable holds them too"
 
 echo "a run that stopped waits for a prompt (code review F6)"
 check "$(line $O st-stop)" "skip: stopped at G4 ($ESTOP) — waits for a prompt" "stopped, nobody spoke since: skip"

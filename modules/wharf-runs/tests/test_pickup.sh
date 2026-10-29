@@ -745,6 +745,10 @@ cat > "$T/dispatch" <<SH
 echo "\$* | session \$CLAUDE_CODE_SESSION_ID" >> "$T/dispatch.calls"
 [ -n "\${STUB_RS_FAIL:-}" ] && { echo "dispatch: 3 runs are live already — refused" >&2; exit 2; }
 [ -n "\${STUB_RS_DIE:-}" ] && { echo "dispatch: NOT STARTED — no run header" >&2; exit 1; }
+[ -n "\${STUB_RS_UNREAD:-}" ] && { echo "dispatch: the queue does not read (dispatch-queue exit 4) — refused, not scheduled: a one-shot beside an entry it cannot see could run \$1 twice. End with the WAITING line" >&2; exit 2; }
+[ -n "\${STUB_RS_UNTOLD:-}" ] && { echo "dispatch: could not tell whether the queue holds it (queue entry fleet:demo--stage) — dispatch-queue watch exit 5: x — and no run header in log after 0 s — not handed off. End with the WAITING line — the next step waits for a run to end and for the queue to read" >&2; exit 2; }
+[ -n "\${STUB_RS_HELD:-}" ] && { echo "dispatch: \$1 is claimed on buildbox (queue entry fleet:demo--stage) — one branch, one host: end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
+[ -n "\${STUB_RS_QUEUED:-}" ] && { echo "queued as fleet:demo--stage (normal), rank 2: no room on this Mac now — it starts once a slot frees"; echo "end your turn on this line: THIS SESSION IS WAITING FOR SOMETHING — queued \$1 (normal); the next step waits for a run to end; the skipper finishes it"; exit 0; }
 echo "started: claude is running \$1 (opus high) in screen run-demo-stage; dispatch --status"
 SH
 chmod +x "$T/dispatch"
@@ -762,6 +766,8 @@ check "$([ -f "$(git -C "$WS" rev-parse --absolute-git-dir)/claude/owner.json" ]
 check "$(STUB_RS_FAIL=1 NS "stage three" --tab)" "1" "dispatch refusing: a stop…"
 has "$T/out" "dispatch refused or failed (exit 2)" "…naming dispatch"
 has "$T/out" "3 runs are live already" "…and its reason"
+check "$(STUB_RS_HELD=1 NS "stage three b" --tab)" "1" "  the queue holding the branch elsewhere: a stop too…"
+has "$T/out" "the queue holds the branch already (dispatch --queue), so nothing more to start" "  …naming the queue, not \"nothing started\""
 echo dirt > "$WS/scratch"
 check "$(NS "stage four" --tab)" "1" "uncommitted work: refused before any commit"
 has "$T/out" "commit the stage's work first" "…and why"
@@ -912,6 +918,16 @@ has "$T/out" "dispatch refused it (exit 2), so the tab or window instead" "…th
 has "$T/out" "not opened (PICKUP_NO_START)" "…and the window opens"
 check "$(STUB_RS_DIE=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" P open "$SP" --fresh --no-fetch)" 1 "dispatch failing after scheduling (exit 1): a stop"
 has "$T/out" "dispatch failed (exit 1) — nothing confirmed started" "…naming dispatch"
+check "$(STUB_RS_QUEUED=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 0 "dispatch queuing it (exit 0, dispatch-queue S3)…"
+has "$T/out" "dispatched $SP: queued as fleet:demo--stage, the queue starts it — not a tab" "…said as queued, naming its entry"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "…and no window opens"
+check "$(STUB_RS_HELD=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 1 "an exit 2 naming the branch's queue entry: a stop (the first S1 review's item 1)…"
+has "$T/out" "the queue holds $SP already, or does not read — no tab beside it" "…never a tab beside the claimed step"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "…no window"
+check "$(STUB_RS_UNREAD=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 1 "an exit 2 saying the queue does not read: a stop too (S3's landing review, item 5)…"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "…no tab beside an entry nobody can see"
+check "$(STUB_RS_UNTOLD=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 1 "an exit 2 that could not tell whether the queue holds it: a stop (S3's third landing review, in-round)…"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "…no tab beside an entry that may still be claimed"
 mkdir -p "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)/claude/dispatched"
 echo "$(date +%s) buildbox $SP" > "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)/claude/dispatched/psi"
 : > "$T/dispatch.calls"
