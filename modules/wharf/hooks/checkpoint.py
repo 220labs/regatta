@@ -2517,7 +2517,10 @@ AUTOFINISH_OFF_ENV = "CLAUDE_HOOK_NO_AUTOFINISH"  # the suites: no launcher chil
 LAST_REPLY = "last-reply"
 LAST_REPLY_KEEP = 4000  # the reply's tail: its last lines are all the reply veto reads
 AUTOFINISH_AFTER = 60   # SessionEnd's child waits this long, then judges (design E3)
-AUTOFINISH_CHECK_TIMEOUT = 45  # ls-remote and four GitHub reads, under the hook's own 60 s
+# ls-remote, dispatch's queue (one `dispatch-queue list --all --json`, a fetch of the home) and four GitHub reads,
+# under the hook's own 60 s. A slow queue home (its read waits up to 90 s) runs past it: the check then reads
+# None, "could not judge", never a start (S3's third landing review, item 7)
+AUTOFINISH_CHECK_TIMEOUT = 45
 AUTOFINISH_SAID = "autofinish.said"
 SAID_KEEP = 50  # sessions remembered per worktree
 
