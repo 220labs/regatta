@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""A dispatched session never asks the owner: it writes the D-item, relays it to its manager, and ends on
+"""A dispatched session never asks the owner: it writes the D-item, relays it to its skipper, and ends on
 the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
 
     ask relay <doc> <Dn> [--task T] [--plan ID [--gen N]] [--dry-run] [--print-curl]
         the item is read from the committed doc; the message goes through the first backend of
         settings/surfaces.json `ask.relay` whose road exists (talk, sendmessage, file); ask.json and
-        the plan event record it. A manager whose session has ended (no live pid in this Mac's
-        registry) is `none` — unless this Mac runs a standing manager (asklib.standing_manager,
+        the plan event record it. A skipper whose session has ended (no live pid in this Mac's
+        registry) is `none` — unless this Mac runs a standing skipper (asklib.standing_skipper,
         docs/stray-manager-2026-10-14.md M5), which then takes the ask. Prints the backend, the target, the verdict
         (sent | live | busy | queued | none | unreachable) and the line to end the turn on.
         --plan names the ship the relay is for (else $DISPATCH_SHIP's), and is fenced by its lease
@@ -16,7 +16,7 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
     ask answer <doc> <Dn> "<text>" --from <name> [--source "yes item"] [--to SESSION] [--task T]
                [--to-account DIR] [--space PAGE] [--plan ID] [--no-commit] [--no-send] [--dry-run]
                [--send-only] [--gen N]
-        the manager's (or the owner's relayed) answer into the item's ➤ Answer: block, committed (R5),
+        the skipper's (or the owner's relayed) answer into the item's ➤ Answer: block, committed (R5),
         recorded under the run's task in the plan, and sent back only where the run listens (its
         page with a key — the relay gives --space only then — or a live same-login SendMessage).
         A worktree the run holds gets the answer sent; with no road it waits as a pending answer
@@ -24,7 +24,7 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         --source is who answered: only one of the owner's routes ("<owner>'s form", "<owner>'s
         GitHub", "<owner>, chat", "<owner>, Session tab (signed)", the name `regatta/owner`'s;
         asklib.owner_source) keeps it the owner's — anything else, the bare name too, is the
-        manager's, and keel status reads it as taken.
+        skipper's, and keel status reads it as taken.
         With --plan, the ship it names is fenced by its lease, when it has one: a caller at a stale
         generation is refused before anything is written. Without it, never: the plan an answer is
         recorded under falls back to $DISPATCH_SHIP and this session's id, and a ship of the
@@ -34,7 +34,7 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         at the start; a run's listener keeps an ANSWER it hears there too). With --plan, fenced by
         that ship's lease as answer is; without it, never (the run is no holder of its ship's lease).
     ask listen [--session ID] [--plan ID] [--max N] [--replays N]
-        the manager's wake: the Talk CLI's `talk listen --once` in a loop that appends each REPORT line
+        the skipper's wake: the Talk CLI's `talk listen --once` in a loop that appends each REPORT line
         to the plan and listens again, and exits — waking the session — on ASK, ANSWER or an
         unprefixed line. Run it as the session's own background shell (a hook's process wakes nobody).
         A REPORT the plan holds already is a replay, never a second event (said in the first body of a
@@ -215,11 +215,11 @@ def leased(plan):
         return True
 
 
-def manager_name(ctx):
+def skipper_name(ctx):
     if ctx.get("manager_name"):
         return ctx["manager_name"]
     rec = asklib.registry(ctx["manager"]) if ctx.get("manager") else None
-    return (rec or {}).get("name") or (ctx.get("manager") or "")[:8] or "the manager"
+    return (rec or {}).get("name") or (ctx.get("manager") or "")[:8] or "the skipper"
 
 
 def own_space(top, rel):
@@ -251,7 +251,7 @@ def cmd_relay(a):
         raise SystemExit("ask: commit %s first — the ask is a file before it is a message (R3)" % rel)
     if it.get("answer"):
         raise SystemExit("ask: %s is answered already (%s)" % (a.item, it["answer"][:80]))
-    # where it goes, decided once: no live manager of its own → the Mac's standing one (M5)
+    # where it goes, decided once: no live skipper of its own → the Mac's standing one (M5)
     base = context()
     if a.plan:
         base["plan"] = a.plan
@@ -274,13 +274,13 @@ def cmd_relay(a):
     order = surfaces.row("ask.relay")
     # Whether this run will hear an answer over Talk (finding 2): its own doc page is the address,
     # and its listener is a background shell, which CLAUDE_CODE_DISABLE_BACKGROUND_TASKS forbids
-    # (finding 3). Only then does the reply carry --space, so the manager's `answer` sends only
+    # (finding 3). Only then does the reply carry --space, so the skipper's `answer` sends only
     # to a run that is listening and otherwise writes the answer as a commit.
     listens = bool(space) and "talk" in order and surfaces.row("ask.listen") == "talk" and background_ok()
-    # A manager on another Mac cannot open this path: its reply sends without reading the doc
+    # A skipper on another Mac cannot open this path: its reply sends without reading the doc
     # (second review, finding 6). With no page here there is no road back at all; R5 says so.
-    # A live manager on a peer (read over ssh, peer-manager-relay) cannot open it either, and its
-    # `answer --send-only` needs this run's page to send to: with none, the manager could hear the ask
+    # A live skipper on a peer (read over ssh, peer-manager-relay) cannot open it either, and its
+    # `answer --send-only` needs this run's page to send to: with none, the skipper could hear the ask
     # and never answer it, so the run parks for the owner as before (finish review).
     peer_live = mstate[0] == "live" and asklib.elsewhere(ctx) and not asklib.registry(ctx["manager"])
     remote = mstate[0] == "remote" or peer_live
@@ -302,7 +302,7 @@ def cmd_relay(a):
         return 0
     if peer_live and not listens:
         name, verdict, tried = None, "unreachable", []
-        detail = "the manager is live on %s, but this run has no page of its own to hear its answer on" % ctx.get("manager_host")
+        detail = "the skipper is live on %s, but this run has no page of its own to hear its answer on" % ctx.get("manager_host")
     else:
         name, verdict, detail, tried = asklib.relay(ctx, text, order, dry=a.dry_run, resolved=resolved)
     for b, why in tried:
@@ -335,10 +335,10 @@ def cmd_relay(a):
                                            "to_host": ctx.get("manager_host") or None, "reply_flags": reply_flags})
     if verdict in ("none", "unreachable"):
         pr_asks(top, branch, data["asks"])
-        print("no live manager: the ask waits for the owner. Park what rests on %s, build the rest, then end on:" % a.item)
+        print("no live skipper: the ask waits for the owner. Park what rests on %s, build the rest, then end on:" % a.item)
         print("  " + WAITING_LINE % ("%s in %s (%s)" % (a.item, rel, it["title"][:60])))
     else:
-        who = manager_name(ctx)
+        who = skipper_name(ctx)
         # finding 3: a run whose background tasks are off cannot keep a listener; telling it to
         # start one sends it into a refusal. It ends on the RELAYED line, and the answer comes as
         # a commit (or a pending answer it applies at its next start).
@@ -353,7 +353,7 @@ def cmd_relay(a):
 
 def held_by_other(top):
     """The worktree's checkpoint lock names another session, seen within OWNER_TTL: one writer per
-    worktree, so the manager sends the answer and the run writes it when its listener wakes it."""
+    worktree, so the skipper sends the answer and the run writes it when its listener wakes it."""
     try:
         o = json.loads((Path(git(top, "rev-parse", "--absolute-git-dir")) / "claude" / "owner.json").read_text())
     except (OSError, ValueError):
@@ -458,7 +458,7 @@ def pending_file(top):
 
 def add_pending(top, rel, item, line, frm):
     """An answer for a worktree its run holds: the run writes it with `bin/ask apply` (dispatch's
-    prompt runs it first; the prompt hook names it). The same answer twice — the manager's row and
+    prompt runs it first; the prompt hook names it). The same answer twice — the skipper's row and
     the run's listener hearing the ANSWER — is one row."""
     p = pending_file(top)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -612,7 +612,7 @@ def cmd_answer(a):
 
 
 def log_answer(a, rel, run_session=None, cwd=None):
-    """answered: the manager settled it from the item or its context (R5) — an interruption avoided;
+    """answered: the skipper settled it from the item or its context (R5) — an interruption avoided;
     escalated: the answer is the owner's, relayed — --source names one of the owner's routes
     ("<owner>'s form", "<owner>, Session tab (signed)" …; asklib.owner_source, the test keel's
     taken_answer uses too)."""
@@ -626,7 +626,7 @@ APPLY_HINT = " — then run bin/ask apply"
 
 def send_answer(a, rel, line, road, guarded=False, pending=False):
     """The ANSWER line through the road answer_road found — straight to that backend: relay()'s
-    manager check reads the run as a manager and would refuse a run on another Mac. A guarded
+    skipper check reads the run as a skipper and would refuse a run on another Mac. A guarded
     run's answer goes over Talk as a pointer only (K6): the text is in the pending row or the
     commit, both on the run's own Mac."""
     if guarded and road == "talk":
@@ -684,7 +684,7 @@ def cmd_apply(a):
             print("%s %s: answered already — dropped" % (rel, r["item"]))
             continue
         try:
-            write_answer(doc, r["item"], r["line"], m, top, rel, r.get("from") or "manager", commit=not a.no_commit)
+            write_answer(doc, r["item"], r["line"], m, top, rel, r.get("from") or "skipper", commit=not a.no_commit)
             print("applied %s %s: %s" % (rel, r["item"], r["line"]))
         except (SystemExit, OSError) as e:
             print("%s %s: not applied (%s) — kept for the next bin/ask apply" % (rel, r["item"], e))
@@ -706,7 +706,7 @@ def wire_key(ev):
 def append_report(rest):
     """(appended, line). A body the plan holds already (its `wire` key on a talk event) is a replay,
     never a second event: `talk listen --once` mints a new link each call and carries no cursor, and
-    the service handed one manager the same three REPORTs 1,729 times in 37 minutes (helm-listen-replay,
+    the service handed one skipper the same three REPORTs 1,729 times in 37 minutes (helm-listen-replay,
     2026-10-27), each an event and a render."""
     try:
         ev = json.loads(rest)
@@ -747,7 +747,7 @@ CHAT_LABEL = ("CHAT (unverified — the account owner or any keyed session; conf
 def take_answer(rest):
     """An ANSWER line heard by a run's listener: kept as a pending answer of this worktree when its
     doc is here, so `bin/ask apply` writes it as the run's own commit (R5) — the run is the one
-    writer of its worktree, and the manager only sent it. Kept only for an ask this worktree
+    writer of its worktree, and the skipper only sent it. Kept only for an ask this worktree
     relayed and still holds open (ask.json), and only an answer in the fixed form ("Relayed
     from …"): any keyed session can send an ANSWER line, so an unasked one writes nothing (K13)."""
     m = re.match(r"(.+?)#(D\d+) — (.+)$", rest, re.S)
@@ -771,7 +771,7 @@ def take_answer(rest):
     if not doc.is_file() or not any(x.get("rel") == key and x.get("item") == item and not x.get("answered")
                                     for x in read_asks(top).get("asks", [])):
         return None
-    return add_pending(top, key, item, line, "manager")
+    return add_pending(top, key, item, line, "skipper")
 
 
 def cmd_listen(a):
@@ -1444,7 +1444,7 @@ def main(argv=None):
     s.add_argument("--plan"); s.add_argument("--gen", type=int)
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--print-curl", action="store_true")
     s = sp.add_parser("answer"); s.add_argument("doc"); s.add_argument("item"); s.add_argument("text")
-    s.add_argument("--from", dest="frm", required=True); s.add_argument("--source", default="manager")
+    s.add_argument("--from", dest="frm", required=True); s.add_argument("--source", default="skipper")
     s.add_argument("--to"); s.add_argument("--space"); s.add_argument("--to-account"); s.add_argument("--plan"); s.add_argument("--task")
     s.add_argument("--no-commit", action="store_true"); s.add_argument("--no-send", action="store_true")
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--force", action="store_true")

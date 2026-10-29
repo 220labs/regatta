@@ -1620,7 +1620,7 @@ has "$T/ts" "info old old, in the \"logins\" of beta, gamma in miss.json, is no 
 has "$T/ts" "fix - gamma's repos run nowhere" "…a fix for the tenant it was the only login of"
 check "$(grep -c "beta's repos run nowhere" "$T/ts")" 0 "…none for beta, which has lab"
 TENANTS_FILE="$TN/miss.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.th" A allowed "$PR/acme-one" >/dev/null
-has "$T/out" "acme's \"logins\" in miss.json (lba) give it no enabled login" "the refusal names the listed label, never asks to add it again"
+has "$T/out" "acme's \"logins\" in miss.json (lba) give it no enabled Claude login" "the refusal names the listed label, never asks to add it again"
 has "$T/out" "(account doctor names why)" "…and sends the reader to doctor"
 echo '{"beta": {"repos": ["app"], "logins": ["old", "lab"]}}' > "$TN/park.json"
 tstate "$TN/park.json" "$ACCOUNTS_FILE.th" > "$T/ts"
@@ -1660,8 +1660,8 @@ has "$T/out" "lab is acme's login already: a login is in one tenant only" "…sa
 check "$(VT tenant set other --repos privy --logins work)" 1 "a repo another tenant holds: refused"
 has "$T/out" "privy is owner's already" "…saying whose"
 check "$(VT tenant set other --repos acme-two --logins work)" 1 "…a key another tenant's glob takes too"
-check "$(VT tenant set other --repos zed --logins nobody)" 1 "a label no claude row has: refused"
-has "$T/out" "nobody is no claude row of accounts.json.vt" "…naming the registry"
+check "$(VT tenant set other --repos zed --logins nobody)" 1 "a label no claude or codex row has: refused"
+has "$T/out" "nobody is no claude or codex row of accounts.json.vt" "…naming the registry"
 check "$(VT tenant set other --repos /abs --logins work; grep -c other "$T/vt/tenants.json")" "1
 0" "an absolute repo entry: refused, nothing written"
 ln -sfn "$T/vt/nowhere.json" "$T/vt/gone.json"
@@ -1822,6 +1822,58 @@ check "$(echo "{\"cwd\": \"$PR/privy\"}" | env -u CLAUDE_CONFIG_DIR -u CLAUDE_PR
   "True False" "…its reason passed on as it is: the read that opens it, never the deny list's way out"
 check "$(gentries "$ACCOUNTS_FILE.vt" | tail -1) $(env -u CLAUDE_CONFIG_DIR REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/closed.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.vt" python3 -c '
 import sys; sys.path.insert(0, sys.argv[1]); import account_guard as g; print(g.tenant_entries())' "$B/../hooks" 2>/dev/null)" "['acme-*'] ['*']" "the guard's entries: a closed tenancy is ['*']"
+
+echo "a tenant's logins may name a Codex row: routing only (the owner, 2026-10-30)"
+CXH="$HOME/.codex-own"; CXO="$HOME/.codex-other"; mkdir -p "$CXH" "$CXO"
+for h in "$CXH" "$CXO"; do echo c@example.com > "$h/stub-email"; echo "13 10080" > "$h/stub-limits"; done
+cat > "$T/mkvx.py" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["accounts"] += [{"label": "codex-own", "provider": "codex", "home": "~/.codex-own"},
+                  {"label": "codex-other", "provider": "codex", "home": "~/.codex-other"}]
+json.dump(d, open(sys.argv[2], "w"))
+PYEOF
+python3 "$T/mkvx.py" "$ACCOUNTS_FILE.vt" "$ACCOUNTS_FILE.vx"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/cx.json"
+VX() { CODEX_HOME="${CXRUN:-$CXH}" VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vx" ACCOUNT_CODEX="$T/codex" VT "$@"; }
+check "$(CXRUN="$CXO" VX tenant set owner --repos privy --logins main codex-own)" 1 "a Codex label whose home is not the one a Codex run uses: refused"
+has "$T/out" "codex-own is a codex row whose home is not" "…the vendor fence would pass a run on another login"
+check "$(VX tenant set owner --repos privy --logins main codex-own)" 0 "tenant set with a Codex label: written"
+has "$T/out" "runs on main, codex-own only" "…naming it"
+hasnt "$T/out" "refused to codex-own" "…and the label is not among those it refuses"
+has "$T/out" "refused to work, lab, spare, codex-other" "…the other Claude and Codex rows are"
+check "$(VX pick --provider codex --repo "$PR/privy" --json) $(field "['account']")" "0 codex-own" "pick --provider codex --repo a tenant's repo → the tenant's Codex login"
+check "$(VX pick --provider codex --repo "$PR/privy" --json) $(field "['owns']")" "0 True" "…and it owns the repo (the vendor fence's yes)"
+check "$(VX pick --provider codex --repo "$PR/acme-one" --json)" 3 "a Codex pick in another tenant's repo: every Codex row refused (acme has none)"
+has "$T/out" "codex-own" "…codex-own among the rows skipped"
+has "$T/out" "acme-one is acme's: it runs on no codex login only (tenants)" "…with that tenant's line, naming Codex rows alone"
+hasnt "$T/out" "runs on lab" "…never the tenant's Claude login"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}, "owner": {"repos": ["privy"], "logins": ["main"]}}' > "$T/vt/cx.json"
+check "$(VX pick --provider codex --repo "$PR/privy" --json)" 3 "a Codex row left out of the tenant's logins: refused the repo, no Codex login runs it"
+has "$T/out" "privy is owner's: it runs on no codex login only (tenants)" "…the line naming no Codex login"
+check "$(VX tenant set owner --repos privy --logins main codex-own)" 0 "…written again"
+check "$(VX tenant set beta --repos zed --logins codex-own)" 1 "a Codex login in another tenant already: refused (one tenant per login)"
+has "$T/out" "codex-own is owner's login already" "…saying whose"
+check "$(VX tenant set beta --repos zed --logins lab)" 1 "a Claude label in another tenant: still refused"
+check "$(VX tenant set beta --repos zed --logins nobody)" 1 "an unknown label: still refused"
+has "$T/out" "nobody is no claude or codex row of accounts.json.vx" "…naming claude or codex"
+echo "  doctor: a Codex login alone leaves a tenant's Claude sessions nowhere"
+check "$(CXRUN="$CXO" VX tenant set solo --repos zed --logins codex-other)" 1 "tenant set with Codex labels alone: refused"
+has "$T/out" "codex-other names no claude row" "…saying the Claude sessions would have nowhere to start"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["solo"]={"repos":["zed"],"logins":["codex-other"]}; json.dump(d,open(p,"w"))' "$T/vt/cx.json"
+VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vx" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ts"
+has "$T/ts" "solo's repos run nowhere: no enabled claude login is solo's (only codex-other, a codex login" "a tenant with only a Codex login: a fix saying so"
+hasnt "$T/ts" "owner's repos run nowhere" "…and the tenant with a Claude login too is not flagged"
+hasnt "$T/ts" "is no enabled login" "…a Codex label is no longer 'no enabled login'"
+VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vx" vpy "$roster" > "$T/roster"
+has "$T/roster" "tenant owner: privy — runs on main only (cx.json); codex: codex-own (routing only" "the roster names the Codex login apart from the Claude ones"
+echo "  a Claude session is not widened: allowed, run and the guard read Claude rows alone"
+check "$(CLAUDE_CONFIG_DIR="$F" VX allowed "$PR/privy")" 1 "allowed: work still refused the tenant's repo with a Codex login named"
+has "$T/out" "privy is off work: it is owner's, which runs on main only (cx.json)" "…its line names the Claude login alone"
+check "$(CLAUDE_CONFIG_DIR="$S1" VX allowed "$PR/privy")" 1 "…spare too (not the tenant's login)"
+check "$(VX run codex-own)" 1 "run still refuses a Codex row"
+check "$(VX pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "a Claude pick in the tenant's repo → its Claude login"
+hasnt "$T/out" "codex-own only" "…and its skip line names no Codex login"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }

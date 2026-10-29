@@ -172,7 +172,7 @@ refusals and both write:
     a run still going is not started twice. One exception: a run dispatch refused before any
     session existed (the run cap, its start lock: gate `refused`, `not-launched` before 2026-10-17 and
     read both ways) never ran, so it may start.
-    `--by chain` (the chain manager's tick, orchestration B3) is judged by chain_refusal() instead:
+    `--by chain` (the tick, orchestration B3) is judged by chain_refusal() instead:
     it relaunches only a tip whose last run stopped at `no-landing` with the network or sleep as the
     branch's last autofinished line (S4), at most CHAIN_RELAUNCHES times per tip (counted in
     `<git dir>/claude/autofinish-chain.json`), and a yolo launch it relaunches stays a yolo one;
@@ -431,7 +431,7 @@ DROP_DISPATCH = tuple(p + v for p in ("DISPATCH_", "RUN_SEED_") for v in ("LABEL
 # every suite and sibling launch it runs (fourth landing review, CR 5)
 DROP_JOB = ("AUTOFINISH_JOB", "AUTOFINISH_CALLER_UNATTENDED")
 NAME_RE = re.compile(r"^claude/(?:[a-z0-9-]+/)?\d{4}-\d{2}-\d{2}-(?P<topic>.+)$")  # pickup's NAME_RE
-# --by chain (the chain manager's tick, orchestration B3): which stops it may relaunch, and how often.
+# --by chain (the tick, orchestration B3): which stops it may relaunch, and how often.
 # The patterns are bin/stalls.py's NET_RE and LOGIN_RE, character for character (test_helm.sh compares
 # them): the tick judges S4 with one copy and this file lifts its refusal with the other.
 S4_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNREFUSED\b)")
@@ -649,7 +649,7 @@ def chain_spent(t, prev):
 
 
 def chain_refusal(t, prev):
-    """Why the chain manager's tick may not relaunch this tip, or None (orchestration B3, chain-manager
+    """Why the tick may not relaunch this tip, or None (orchestration B3, chain-manager
     E3, D4 = C). The one refusal it lifts — no retry on the same tip — only for the one cause it is
     for: the last run on this very tip stopped at `no-landing` and the branch's last autofinished
     line says the network or sleep stopped it (S4_RE, anchored at the stop text's start, as
@@ -959,7 +959,7 @@ def await_verdict(t, sid, log_from, bound):
 
 def not_started_text(why):
     """`not started: <why>`; a refusal for room or the cap is a wait for a run to end, and says so in the cap's
-    words (CAP_RE, ASK_EXEMPT_RE key on them: a managed run that ends on it asks nothing, AGENTS.md)."""
+    words (CAP_RE, ASK_EXEMPT_RE key on them: a skippered run that ends on it asks nothing, AGENTS.md)."""
     low = why.lower()
     wait = " — the next step waits for a run to end (the sweep starts this tip again)" if (
         "waits for a run to end" not in low and

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A tenant's logins may name a Codex row (the owner, 2026-10-30: the vault's tenant "should also allow my codex"):
+  `account tenant set` takes any claude or codex label (the refusal reads "no claude or codex row"), so
+  `pick --provider codex --repo` runs a tenant's repo on its own Codex login and skips the others with the
+  tenant's line, each vendor's pick naming its own vendor's rows. A Codex label is the vendor fence's yes for the
+  tenant's confidential and guarded repos, and every Codex road runs on `CODEX_HOME` (or the default Codex home), so `tenant set`
+  takes one only while its home is that one. Routing only: the guard, `allowed`, `run`,
+  VS Code profiles and every line telling a Claude session where to go still read the Claude rows alone, `tenant set` refuses Codex labels alone, and doctor
+  says when a tenant has a Codex login and no Claude one (its Claude sessions have nowhere to start). Cases in `tests/account.sh`.
 - Free below (the owner, 2026-10-30: "if the window is under 70% then the pace rule doesn't apply. Under 70% we can run anything."): a 5-hour spend under a row's `rules.free_below`
   runs whatever `window_max`, the margin after an exhaustion or the pace say; those judge only from 70% up, and the
   week ceiling as before. Off by default (0); the owner's registry is to set 70 per row (the overlay's own free-below change; until it lands, off everywhere). The reason reads `5h 60% under 70% (runs whatever the pace)`. 6 cases in `tests/account.sh`.

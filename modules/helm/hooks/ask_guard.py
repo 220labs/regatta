@@ -36,7 +36,7 @@ def queue_dir():
 def standing_name():
     """(name, of a scope?) of the skipper an ask from here goes to, or (None, False): the live skipper
     of the scope whose lease the run's ship holds (skipper-resilience S5: $DISPATCH_SHIP's lease), else
-    this Mac's standing one (bin/asklib.standing_manager, stray-manager M5) — the order asklib.resolve
+    this Mac's standing one (bin/asklib.standing_skipper, stray-manager M5) — the order asklib.resolve
     relays in, which never relays a skipper's own ask to a skipper. Read only here, on an unattended
     run's AskUserQuestion; any fault is today's text."""
     if os.environ.get("SKIPPER_SCOPE"):
@@ -47,7 +47,7 @@ def standing_name():
         sk = lib.scope_skipper()
         if sk:
             return sk.get("manager_name"), True
-        sm = lib.standing_manager()
+        sm = lib.standing_skipper()
         return (sm and sm.get("manager_name")), False
     except Exception:
         return None, False

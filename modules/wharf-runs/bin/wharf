@@ -3058,7 +3058,7 @@ def yard_compile(pin, laid, pid, a):
             raise Refused("%s is ship %s of plan %s — rejoin it with --plan %s" % (pin_label(pin), other[1], other[0], other[0]))
         if helmlib.load_plan(pid) is None:
             # the plan is the yard's: made here, its skipper record the caller's, as `helm ship` would make it
-            helmlib.new_plan(pid, name, manager={"session": laid.get("session"), "host": laid.get("host"), "harness": "wharf --yard"},
+            helmlib.new_plan(pid, name, skipper={"session": laid.get("session"), "host": laid.get("host"), "harness": "wharf --yard"},
                              repo=key)
         copy = helmlib.plan_dir(pid) / ("blueprint-%s.md" % name)
         with helmlib.locked(pid):

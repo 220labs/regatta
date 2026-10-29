@@ -341,10 +341,10 @@ def leases(scope=None, include_ended=False):
 
 
 def record_path(scope, host=None):
-    """S5's per-scope skipper record, `<manager_dir>/<host>-<scope>.json` (the proposal's seam beside
-    asklib.standing_manager's `<host>.json`): S4 reads and deletes it, S5's runner writes it."""
+    """S5's per-scope skipper record, `<skipper_dir>/<host>-<scope>.json` (the proposal's seam beside
+    asklib.standing_skipper's `<host>.json`): S4 reads and deletes it, S5's runner writes it."""
     import asklib   # lazily: ask poll and keel's Stop lint never load this file
-    return asklib.manager_dir() / ("%s-%s.json" % (host or helmlib.host(), scope))
+    return asklib.skipper_dir() / ("%s-%s.json" % (host or helmlib.host(), scope))
 
 
 def read_record(scope, host=None):

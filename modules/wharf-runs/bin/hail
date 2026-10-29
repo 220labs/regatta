@@ -28,8 +28,8 @@ The roads, in this order, the first whose preconditions hold:
               the vendor fence judges the thread's repo and the sender's (vendor-fence, 2026-10-29)
     orca      an Orca worker: its mailbox, or its terminal when idle
     talk      helm's asklib: spacesheep Talk to the target's page — any Mac, any harness, any login.
-              The page is HAIL_SPACE, else this run's manager page when the target is its manager
-              (DISPATCH_PLAN_SPACE), else the Mac's standing manager's. A `--when idle` row keeps
+              The page is HAIL_SPACE, else this run's skipper page when the target is its skipper
+              (DISPATCH_PLAN_SPACE), else the Mac's standing skipper's. A `--when idle` row keeps
               the HAIL_SPACE it was made under, so the tick's fulfil posts to that page, not to
               whatever its own environment names (skipper-resilience S6: wharf hails a scope's
               skipper on the page its record names). Sender unverified
@@ -313,7 +313,7 @@ def adapter_road(rec, msg):
 
 def talk_space(sid, space=None):
     """The Talk page a hail to SID posts on: SPACE (a subscription's, recorded from the HAIL_SPACE it
-    was made under), else HAIL_SPACE, else the manager pages below; None when none names one."""
+    was made under), else HAIL_SPACE, else the skipper pages below; None when none names one."""
     if space:
         return space
     if os.environ.get("HAIL_SPACE"):
@@ -321,7 +321,7 @@ def talk_space(sid, space=None):
     if sid and sid in (os.environ.get("DISPATCH_SKIPPER"), os.environ.get("DISPATCH_MANAGER")):
         return os.environ.get("DISPATCH_PLAN_SPACE")
     ask = asklib()
-    sm = ask.standing_manager() if ask and hasattr(ask, "standing_manager") else None
+    sm = ask.standing_skipper() if ask and hasattr(ask, "standing_skipper") else None
     if sm and sm.get("manager") == sid:
         return sm.get("space")
     return None

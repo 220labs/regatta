@@ -168,7 +168,7 @@ name and the Seeded-By line (a topic names the node as well as a brief can). Its
 verdict's lines on stderr, inside the node. The seed commit then carries docs/handoff/<date>-<topic>.review
 beside the brief: JSON with the brief's sha256, both verdicts, the site, provider, model, cost and time —
 what dispatch will ask before it runs a seed of confidential origin (S6). Nothing pushed names the scope
-(the manager's rule from the owner's words, 2026-10-26: a confidential scope's name never reaches an open
+(the skipper's rule from the owner's words, 2026-10-26: a confidential scope's name never reaches an open
 repo): Seeded-By and the .review's origin carry the core's scope_marker(), `confidential:<8 hex>`, which
 only a host's registry reads back (scope_of_marker), never the cwd's repo; a brief or topic naming the
 scope is refused before the bundle is built. The run starts by `dispatch --next --origin <marker>` where

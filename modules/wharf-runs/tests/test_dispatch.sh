@@ -12,7 +12,7 @@ unset WEEKLY_RUN CLAUDE_UNATTENDED REGATTA_UNATTENDED AUTOFINISH_CALLER_UNATTEND
       DISPATCH_MANAGER DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_REPO DISPATCH_PIN DISPATCH_HOST_PIN CLAUDE_CODE_SESSION_ID \
       DISPATCH_SKIPPER DISPATCH_SKIPPER_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_SHIP DISPATCH_MODE \
       DISPATCH_ORIGIN DISPATCH_LOADED_AT DISPATCH_QUEUE_NOW DISPATCH_HOST DISPATCH_EVENT_AT
-# (the last two lines: a run's own manager — session-asks R1 — would name itself the manager of every test run)
+# (the last two lines: a run's own skipper — session-asks R1 — would name itself the skipper of every test run)
 # and every other DISPATCH_* a run carries, by pattern: a fixed list goes stale (AGENTS.md's trap; a stray
 # DISPATCH_QUEUE_NOW shifted every rank and lease case: the queue's second review, item 19)
 unset $(compgen -v | grep '^DISPATCH_')
@@ -475,20 +475,20 @@ grep -q "^DISPATCH_BRIEF=$BLOB$" "$T/env.calls"; check "$?" "0" "  and the blob 
 grep -q "^CLAUDE_UNATTENDED=dispatch$" "$T/env.calls"; check "$?" "0" "  and so does --probe --headless, which must run in the same environment"
 grep -q "^CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1$" "$T/env.calls"; check "$?" "0" "    the switch included"
 
-echo "session-asks R1: the manager travels from the scheduling session to the run"
+echo "session-asks R1: the skipper travels from the scheduling session to the run"
 mkdir -p "$HOME/.claude" "$HOME/.acct-c"; RH=$(cd "$HOME" && pwd -P)
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=mgr-x DISPATCH_ACCOUNT="$T/acct" STUB_WHICH=acct-a DISPATCH_HOST=laptop "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
-has "$(pl)" "<key>DISPATCH_MANAGER</key><string>mgr-x</string>" "a watched session that schedules a run is its manager"
+has "$(pl)" "<key>DISPATCH_MANAGER</key><string>mgr-x</string>" "a watched session that schedules a run is its skipper"
 has "$(pl)" "<key>DISPATCH_MANAGER_ACCOUNT</key><string>$RH/.claude</string>" "  with its login as the config dir's real path (finding 6: one vocabulary)"
 has "$(pl)" "<key>DISPATCH_MANAGER_HOST</key><string>laptop</string>" "  and the Mac it runs on (finding 4: no record there = ended)"
 # rename S5 (H1): each value under the new name too, until S8 drops the old as a writer
-# the manager family only (the plist also carries DEPTH, LABEL, LOG, YEAR), sorted bytewise: a UTF-8 locale's sort skips the punctuation
+# the skipper family only (the plist also carries DEPTH, LABEL, LOG, YEAR), sorted bytewise: a UTF-8 locale's sort skips the punctuation
 check "$(grep -oE '<key>DISPATCH_(MANAGER|SKIPPER|PLAN|SHIP)[A-Z_]*</key>' "$(pl)" | grep -v PLAN_SPACE | LC_ALL=C sort | tr '\n' ' ')" \
   "<key>DISPATCH_MANAGER</key> <key>DISPATCH_MANAGER_ACCOUNT</key> <key>DISPATCH_MANAGER_HOST</key> <key>DISPATCH_PLAN</key> <key>DISPATCH_SHIP</key> <key>DISPATCH_SKIPPER</key> <key>DISPATCH_SKIPPER_ACCOUNT</key> <key>DISPATCH_SKIPPER_HOST</key> " \
   "  the plist exports both names: SKIPPER*, SHIP beside MANAGER*, PLAN"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=mgr-x CLAUDE_CONFIG_DIR="$HOME/.acct-c" DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
-has "$(pl)" "<key>DISPATCH_MANAGER_ACCOUNT</key><string>$RH/.acct-c</string>" "  a manager on ~/.acct-c: that dir"
-has "$(pl)" "<key>DISPATCH_PLAN</key><string>mgr-x</string>" "  and its plan, one per manager"
+has "$(pl)" "<key>DISPATCH_MANAGER_ACCOUNT</key><string>$RH/.acct-c</string>" "  a skipper on ~/.acct-c: that dir"
+has "$(pl)" "<key>DISPATCH_PLAN</key><string>mgr-x</string>" "  and its plan, one per skipper"
 mkdir -p "$HOME/Library/Logs/claude-weekly/plans/mgr-x"; echo '{"space": "sp-1"}' > "$HOME/Library/Logs/claude-weekly/plans/mgr-x/plan.json"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=mgr-x DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
 has "$(pl)" "<key>DISPATCH_PLAN_SPACE</key><string>sp-1</string>" "  and the plan's page, the Talk address"
@@ -539,9 +539,9 @@ env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=sk-on DISPATCH_HOST=laptop "$B/disp
 has "$T/ssh.calls" "DISPATCH_PLAN_SPACE=sp-new" "--on a peer: the page published here crosses with the run, so the peer's run has the address"
 rm -f "$T/peer/bin/helm" "$T/helm.calls"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=run-y CLAUDE_UNATTENDED=dispatch "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
-grep -q DISPATCH_MANAGER "$(pl)"; check "$?" "1" "an unattended caller with no manager (autofinish) names none"
+grep -q DISPATCH_MANAGER "$(pl)"; check "$?" "1" "an unattended caller with no skipper (autofinish) names none"
 env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=run-y CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null
-has "$(pl)" "<key>DISPATCH_MANAGER</key><string>mgr-x</string>" "a run's --next keeps its manager"
+has "$(pl)" "<key>DISPATCH_MANAGER</key><string>mgr-x</string>" "a run's --next keeps its skipper"
 env -u DISPATCH_LABEL DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_DEPTH=1 "$B/dispatch" $BR --repo "$HOME/projects/other" --on buildbox --at "@$EP" >/dev/null 2>&1
 has "$T/ssh.calls" "DISPATCH_MANAGER=mgr-x" "  and it crosses to the peer"
 has "$T/ssh.calls" "DISPATCH_SKIPPER=mgr-x" "    under the new name too (a peer's older checkout reads the old)"
@@ -552,11 +552,11 @@ check "$(grep -o '<key>DISPATCH_[A-Z]*</key><string>[a-z-]*-n</string>' "$(pl)" 
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 : > "$T/env.calls"; : > "$T/claude.calls"
 DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_PLAN_SPACE=sp-1 DISPATCH_MANAGER_HOST=laptop DISPATCH_MANAGER_ACCOUNT=/x/.acct-c DISPATCH_LOG="$HOME/mgr.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless
-grep -q "^DISPATCH_MANAGER=mgr-x$" "$T/env.calls"; check "$?" "0" "the run's session has its manager"
+grep -q "^DISPATCH_MANAGER=mgr-x$" "$T/env.calls"; check "$?" "0" "the run's session has its skipper"
 grep -q "^DISPATCH_TASK=demo$" "$T/env.calls"; check "$?" "0" "  and its task name for bin/helm report"
 check "$(grep -cE '^(DISPATCH_SKIPPER=mgr-x|DISPATCH_SHIP=mgr-x|DISPATCH_SKIPPER_HOST=laptop|DISPATCH_SKIPPER_ACCOUNT=/x/\.acct-c)$' "$T/env.calls")" "4" \
   "  a plist from before S5 (only the old names): the session gets the new names too"
-grep -q "^ASK_ACCOUNT=$RH/.claude$" "$T/env.calls"; check "$?" "0" "  its login in the manager's vocabulary: the default dir's real path (finding 6)"
+grep -q "^ASK_ACCOUNT=$RH/.claude$" "$T/env.calls"; check "$?" "0" "  its login in the skipper's vocabulary: the default dir's real path (finding 6)"
 grep -q "^DISPATCH_REPO=$T/repo$" "$T/env.calls"; check "$?" "0" "  and its repo, which bin/helm report records (K6, finding 5)"
 has "$T/claude.calls" "bin/ask apply" "  the prompt applies a pending answer first (finding 2)"
 has "$T/claude.calls" "bin/ask relay <doc> <Dn>" "the prompt carries the three steps instead of an ask"
@@ -583,13 +583,13 @@ ovl_cfg; env -u DISPATCH_ASK -u DISPATCH_HELM REGATTA_CONFIG="$T/config-ovl" DIS
 has "$T/claude.calls" "modules/helm/bin/ask apply" "  the real lookup: helm's bin/ask, which the allow rules name since B14a"
 has "$T/claude.calls" "modules/helm/libexec/helm report --task demo" "  and helm's console for the reports"
 grep -q "$OVL/bin/" "$T/claude.calls"; check "$?" "1" "  never the overlay's shims (B14a)"
-# orchestration B2: what a retry needs to start the same step again, under the same manager
+# orchestration B2: what a retry needs to start the same step again, under the same skipper
 check "$(python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
 print(d.get("depth"), d.get("manager_host"), d.get("manager_account"), d.get("brief"), len(d.get("brief_blob", "")), d.get("model"), d.get("yolo"))
 print(" ".join("%s:%s" % (k, type(d.get(k)).__name__) for k in ("depth", "pid", "started", "watcher", "ended")))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)" | tr '\n' '|')" \
-  "1 laptop /x/.acct-c docs/handoff/2026-10-02-demo.md 40 opus 0|depth:int pid:int started:int watcher:int ended:int|" "  its depth, the manager's host and login, the brief's repo path and blob, model and yolo; the numbers as numbers (B2)"
+  "1 laptop /x/.acct-c docs/handoff/2026-10-02-demo.md 40 opus 0|depth:int pid:int started:int watcher:int ended:int|" "  its depth, the skipper's host and login, the brief's repo path and blob, model and yolo; the numbers as numbers (B2)"
 
 # G22 (regatta-modules B7): helm not installed — its ask and helm leave the prompt, and a decision
 # the run cannot make ends it on the WAITING line; the Steps: line stays (keel's)
@@ -601,7 +601,7 @@ grep -q "helm report" "$T/claude.calls"; check "$?" "1" "  nor a helm report"
 has "$T/claude.calls" "end on the WAITING line naming it" "  a decision it cannot make ends it on WAITING"
 has "$T/claude.calls" "step <doc> <S> done --branch" "  the Steps: line stays"
 
-echo "a plan with no manager (wharf's tick seeds a block from launchd): the run still reports to it"
+echo "a plan with no skipper (wharf's tick seeds a block from launchd): the run still reports to it"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 : > "$T/env.calls"
 DISPATCH_PLAN=wp DISPATCH_LOG="$HOME/plan.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
@@ -1021,7 +1021,7 @@ print("gone", m.listening_only("no-such-session"))
 PY
 has "$T/out" "ended True" "  a shell whose task-notification came before the status is no longer open"
 has "$T/out" "fresh False" "  a task that ended after the status: work about to start, busy"
-has "$T/out" "ask False" "  ask listen waits on a manager's answer: busy"
+has "$T/out" "ask False" "  ask listen waits on a skipper's answer: busy"
 has "$T/out" "moved False" "  a call moved to the background at its timeout: busy"
 has "$T/out" "odd True" "  odd transcript shapes are skipped, not raised"
 has "$T/out" "noid True" "  a record with no session id is returned, not raised"
@@ -2004,7 +2004,7 @@ said(d.common.PENDING_PREFIX + "the two reviewers"); out.append(int(d.idle_limit
 said(d.common.HANDOVER_LINE); out.append(int(d.idle_limit(a, st)))
 print(*out)
 PY2
-)" "600 60 600 3600 600 600 60" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its manager (RELAYED) or its own work, as before (skipper, 2026-10-19); the hand-over line: 1 min (review D2)"
+)" "600 60 600 3600 600 600 60" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its skipper (RELAYED) or its own work, as before (skipper, 2026-10-19); the hand-over line: 1 min (review D2)"
 kill $ENDP 2>/dev/null
 
 echo "an API-error end is nudged once, not ended as idle (the dropped connection of 2026-10-22)"
@@ -2427,13 +2427,13 @@ PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" unschedule-tidy > "$T/out" 2>&1
 check "$([ -f "$SP2" ] || [ -f "$OTP" ] || echo gone)" "gone" "  unschedule-tidy removes the tidier under either prefix"
 rm -f "$REGATTA_CONFIG/wharf-runs/label-prefix-previous" "$TS2"
 
-echo "session-asks R2: a managed run that ends on the WAITING line without bin/ask is failed"
+echo "session-asks R2: a skippered run that ends on the WAITING line without bin/ask is failed"
 GW="$T/gw"; mkdir -p "$GW" "$HOME/.claude/projects/-g"; git -C "$GW" init -q
 wl() { printf '{"type":"assistant","message":{"content":[{"type":"text","text":"done.\\n\\n%s"}]}}\n' "$1" > "$HOME/.claude/projects/-g/$2.jsonl"; }
 wl "SAM, THIS SESSION IS WAITING FOR YOU — D1, the cadence" g1
 guard() { python3 -c "import importlib.machinery as m, sys; rc=m.SourceFileLoader('rc', '$B/dispatch-rc').load_module(); print(rc.ask_guard(dict(session=sys.argv[1], manager=sys.argv[2], wt='$GW')))" "$@"; }
-has <(guard g1 mgr-12345678) "failed: ended on the WAITING line with manager mgr-1234 live" "no ask.json: failed"
-check "$(guard g1 '')" "None" "  a run with no manager may end on it (R6)"
+has <(guard g1 mgr-12345678) "failed: ended on the WAITING line with skipper mgr-1234 live" "no ask.json: failed"
+check "$(guard g1 '')" "None" "  a run with no skipper may end on it (R6)"
 mkdir -p "$GW/.git/claude"; echo '{"verdict": "none", "session": "g1"}' > "$GW/.git/claude/ask.json"
 check "$(guard g1 mgr-1)" "None" "  bin/ask said nobody was there, for this session: allowed"
 echo '{"verdict": "none", "session": "an-earlier-run"}' > "$GW/.git/claude/ask.json"
@@ -2460,7 +2460,7 @@ EOF
 chmod +x "$T/askclaude"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 DISPATCH_CLAUDE="$T/askclaude" STUB_LAST="SAM, THIS SESSION IS WAITING FOR YOU — D2, the region" DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_LOG="$HOME/hl.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless
-check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("ask_guard", "none")[:46])' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "failed: ended on the WAITING line with manager" "  a managed headless run that asked the owner: failed, on its record"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("ask_guard", "none")[:46])' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "failed: ended on the WAITING line with skipper" "  a skippered headless run that asked the owner: failed, on its record"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
 DISPATCH_CLAUDE="$T/askclaude" STUB_LAST="RELAYED TO coding-7 — D2, the region" DISPATCH_MANAGER=mgr-x DISPATCH_PLAN=mgr-x DISPATCH_LOG="$HOME/hl2.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless
 check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("ask_guard", "none"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "none" "  one that relayed: nothing stored"
@@ -3090,7 +3090,7 @@ src = open(sys.argv[2]).read()
 def road(start, end):
     m = re.search(start + r".*?" + end, src, re.S)
     return set(re.findall(r"--[a-z][a-z-]*", m.group(0))) if m else set()
-on = road(r'cmd="\$\{menv# \}', r'cmd="\$cmd --dry-run"')
+on = road(r'cmd="\$\{skenv# \}', r'cmd="\$cmd --dry-run"')
 pl = road(r'args="<string>\$jobbin</string>', r'<string>--priority</string>')
 print("on: %s; plist: %s" % (" ".join(sorted(set(q.FLAGS) - on)) or "-", " ".join(sorted(set(q.FLAGS) - {"--mode"} - pl)) or "-"))
 PY

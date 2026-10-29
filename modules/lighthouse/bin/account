@@ -784,6 +784,9 @@ def cmd_refresh(force=False):
     return rc
 
 
+# The providers a tenant's `logins` may name. A Claude row is a seat (the guard, `run`, VS Code profiles); a Codex row
+# only routes: `pick --provider codex --repo` reads it as the tenant's own, and no hook stands in a Codex session.
+TENANT_PROVIDERS = ("claude", "codex")
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -793,7 +796,8 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
     decides which seat may open which repo, and the link it writes may put a privacy prompt on a run nobody
     watches. It refuses rather than writes when the key is a last good copy only (bootstrap.sh --config
     relinks it), when the file does not read or parse (writing would drop every tenant it holds), when a
-    label is no claude row of the registry, when a login is in another tenant's `logins` already (one tenant
+    label is no claude or codex row of the registry (a Codex row is routing only: pick --provider codex reads it,
+    no hook guards a Codex session), when a login is in another tenant's `logins` already (one tenant
     per login: the later would take it silently, as apply_tenants reads two), and when a repo entry is
     another tenant's (both would refuse it, and it would run nowhere). It writes through the link to its
     target, reads the file back, and refreshes the hooks' copy (refresh's tenants half), so the guard holds
@@ -834,13 +838,25 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
                 bad.append(r)
             elif e not in entries:
                 entries.append(e)
-        labels = {a["label"]: a for a in reg["accounts"] if a.get("provider") == "claude"}
+        labels = {a["label"]: a for a in reg["accounts"] if a.get("provider") in TENANT_PROVIDERS}
         unknown = [l for l in logins if l not in labels]
         why = []
         if bad:
             why.append(f"repos {', '.join(map(repr, bad))} are no repo keys (a key is relative to {projects_dir()})")
         if unknown:
-            why.append(f"{', '.join(unknown)} is no claude row of {REGISTRY.name} ({', '.join(labels) or 'none'})")
+            why.append(f"{', '.join(unknown)} is no claude or codex row of {REGISTRY.name} ({', '.join(labels) or 'none'})")
+        # A Codex label makes `pick --provider codex` say the row `owns` the tenant's repos, the core's vendor fence's
+        # yes for its confidential and guarded ones; every Codex road runs on the caller's CODEX_HOME (or the default Codex home),
+        # never on the row pick names. So a label is taken only while its home is that one (tenant-codex's review).
+        if logins and not unknown and not any(labels[l].get("provider", "claude") == "claude" for l in logins):
+            why.append(f"{', '.join(logins)} names no claude row: the tenant's Claude sessions would have nowhere to start "
+                       "(name its Claude login beside the Codex one)")
+        run_home = Path(os.path.expanduser(os.environ.get("CODEX_HOME") or str(HOME / ".codex"))).resolve()
+        elsewhere = [l for l in dict.fromkeys(logins) if l in labels and labels[l].get("provider") == "codex"
+                     and Path(os.path.expanduser(str(labels[l].get("home") or ""))).resolve() != run_home]
+        if elsewhere:
+            why.append(f"{', '.join(elsewhere)} is a codex row whose home is not {run_home}, the one a Codex run here uses: "
+                       "the vendor fence would pass a run on another login")
         for n, t in raw.items():
             if n == name:
                 continue
@@ -900,7 +916,7 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
           + f" ({target})")
     print(f"refresh: {TENANTS.name} → {tenants_last().name}")
     if what == "set":
-        off = [a["label"] for a in reg["accounts"] if a.get("provider") == "claude" and a["label"] not in logins]
+        off = [a["label"] for a in reg["accounts"] if a.get("provider") in TENANT_PROVIDERS and a["label"] not in logins]
         print(f"  refused to {', '.join(off) or 'no other row'}, the default dir unless it is one of its logins, "
               "and every Orca login no row names")
     return 0
@@ -952,7 +968,7 @@ def no_login(name):
         listed = tenant_logins(read_tenants_file(quiet=True).get(name))   # `allowed` prints this: local first (S4)
         if listed:
             # parked, a typo, or a label another tenant lists too (the later one takes it): doctor names which
-            return (f"{name}'s \"logins\" in {TENANTS.name} ({', '.join(listed)}) give it no enabled login (account doctor names why)",
+            return (f"{name}'s \"logins\" in {TENANTS.name} ({', '.join(listed)}) give it no enabled Claude login (account doctor names why)",
                     f"{BIN / 'account'} doctor --local")
         return (f"no enabled login is {name}'s in {TENANTS.name}", f"add its login's label to {name}'s \"logins\" in {TENANTS}")
     return (f"no enabled login has tenant {name!r} in {REGISTRY.name}", f"add \"tenant\": \"{name}\" to its login's row")
@@ -989,7 +1005,9 @@ def owns_repo(reg, a, path):
 
 
 def routes_for(reg, a):
-    """{entry: {tenant, logins}} for every tenant repo entry row `a` is not the tenant of."""
+    """{entry: {tenant, logins, default, codex}} for every tenant repo entry row `a` is not the tenant of. `logins`
+    are the tenant's enabled Claude rows: every line that tells a Claude session where to go (the guard's,
+    `run`'s, doctor's) reads them alone. `codex` are its enabled Codex rows, which only pick's skip line names."""
     out = {}
     for name, repos in (reg.get("tenants") or {}).items():
         if a.get("tenant") == name:
@@ -997,10 +1015,12 @@ def routes_for(reg, a):
         rows = [r for r in reg.get("accounts") or [] if r.get("tenant") == name
                 and r.get("enabled", True) and r.get("provider", "claude") == "claude"]
         logins = [r["label"] for r in rows]
+        codex = [r["label"] for r in reg.get("accounts") or [] if r.get("tenant") == name
+                 and r.get("enabled", True) and r.get("provider") == "codex"]
         # the default dir has no VS Code profile of its own name: use_line names the default profile for it (S7)
         default = next((r["label"] for r in rows if r.get("home") == DEFAULT_DIR.absolute()), None)
         for e in repos:
-            out.setdefault(e, {"tenant": name, "logins": logins, "default": default})
+            out.setdefault(e, {"tenant": name, "logins": logins, "default": default, "codex": codex})
     return out
 
 
@@ -1290,7 +1310,9 @@ def off_reason(a, key):
     if t and t["tenant"] == CLOSED:
         return f"{key}: tenancy does not read and has no last good copy (closed until it reads)"
     if t:
-        return f"{key} is {t['tenant']}'s: it runs on {', '.join(t['logins']) or 'no login'} only (tenants)"
+        codex = a.get("provider") == "codex"   # each vendor's pick is told its own vendor's rows
+        on = list(t.get("codex") or []) if codex else list(t["logins"])
+        return f"{key} is {t['tenant']}'s: it runs on {', '.join(on) or ('no codex login' if codex else 'no login')} only (tenants)"
     return f"{key} is on its deny list"
 
 
@@ -3235,8 +3257,12 @@ def tenancy_state(reg, peer=None):
                         f"(got {json.dumps(repos)[:80]}) — every login may run its repos",
                         f"give {n} a \"repos\" list of repo keys or globs in {TENANTS}"))
         elif not any(r.get("tenant") == n and r.get("enabled") and r.get("provider") == "claude" for r in rows.values()):
-            out.append(("-", "fix", f"{n}'s repos run nowhere: no enabled claude login is {n}'s",
-                        f"name its login in {n}'s \"logins\" in {TENANTS}"))
+            codex = [r["label"] for r in rows.values() if r.get("tenant") == n and r.get("enabled") and r.get("provider") == "codex"]
+            # a Codex login routes `pick --provider codex` only: Claude sessions in the tenant's repos have no seat to start on
+            out.append(("-", "fix", f"{n}'s repos run nowhere: no enabled claude login is {n}'s"
+                        + (f" (only {', '.join(codex)}, a codex login: it routes `pick --provider codex`, and no Claude session can start on it)"
+                           if codex else ""),
+                        f"name its claude login in {n}'s \"logins\" in {TENANTS}"))
     keys = None
     tenants = [(n, e) for n, e in (reg.get("tenants") or {}).items() if n != CLOSED]
     for i, (n, mine) in enumerate(tenants):
@@ -3254,7 +3280,7 @@ def tenancy_state(reg, peer=None):
                 named[l].append(n)
     for l, names in named.items():
         a = rows.get(l)
-        if a and a.get("enabled") and a.get("provider") == "claude":
+        if a and a.get("enabled") and a.get("provider") in TENANT_PROVIDERS:
             if len(names) > 1:
                 owner = a.get("tenant")
                 others = [n for n in names if n != owner]
@@ -3269,7 +3295,7 @@ def tenancy_state(reg, peer=None):
         elif not a.get("enabled"):
             why, fix = "its row is parked", f"enable {l} in {REGISTRY}, or take it out of {TENANTS}"
         else:
-            why, fix = f"its row is a {a.get('provider')} login, not claude", f"take {l} out of {TENANTS}"
+            why, fix = f"its row is a {a.get('provider')} login, not claude or codex", f"take {l} out of {TENANTS}"
         # info: whether its tenant still has a login is the per-tenant line above
         out.append((l, "info", f"{l}, in the \"logins\" of {', '.join(names)} in {TENANTS.name}, is no enabled login: {why}", fix))
     return out
@@ -3286,8 +3312,10 @@ def tenancy_roster(reg):
     out = []
     for n, entries in (reg.get("tenants") or {}).items():
         logins = [a["label"] for a in rows if a.get("tenant") == n and a["enabled"]]
+        codex = [a["label"] for a in reg["accounts"] if a["provider"] == "codex" and a.get("tenant") == n and a["enabled"]]
         if entries and logins:
-            out.append(("-", "ok", f"tenant {n}: {', '.join(entries)} — runs on {', '.join(logins)} only ({tenants_source()})"))
+            out.append(("-", "ok", f"tenant {n}: {', '.join(entries)} — runs on {', '.join(logins)} only ({tenants_source()})"
+                        + (f"; codex: {', '.join(codex)} (routing only, no hook guards a Codex session)" if codex else "")))
     implicit = set()
     for a in rows:
         for d in ((a.get("repos") or {}).get("deny")) or []:

@@ -1097,9 +1097,9 @@ physical_ok() {
 }
 
 # session-asks R1 (docs/session-asks-2026-10-09.md): who a run relays its asks to. A run started by
-# another run keeps that run's manager; a run a watched session starts names that session. Read
+# another run keeps that run's skipper; a run a watched session starts names that session. Read
 # where the job is scheduled — launchd and the runner strip the caller's CLAUDE_* — and carried in
-# the plist beside DISPATCH_DEPTH. An unattended caller with no manager (autofinish) passes none.
+# the plist beside DISPATCH_DEPTH. An unattended caller with no skipper (autofinish) passes none.
 # A login as one word both sides agree on: the config dir's real path (the default login's is
 # ~/.claude). `account which` printed nothing for the default dir while the run's pick said
 # the primary login, so one account read as two and SendMessage refused (launch review, finding 6).
@@ -1110,44 +1110,44 @@ acct_dir() {
 # The skipper's road and its ship (rename S5, helm-vocabulary H1): read under the new name, else the
 # old one (a launchd plist or a run from before S5 has only the old), and written under both until S8.
 # SKIPPER_ENV pairs each value with its names, new first.
-SKIPPER_ENV="mgr:DISPATCH_SKIPPER mgr:DISPATCH_MANAGER macct:DISPATCH_SKIPPER_ACCOUNT macct:DISPATCH_MANAGER_ACCOUNT mplan:DISPATCH_SHIP mplan:DISPATCH_PLAN mspace:DISPATCH_PLAN_SPACE mhost:DISPATCH_SKIPPER_HOST mhost:DISPATCH_MANAGER_HOST"
+SKIPPER_ENV="skipper:DISPATCH_SKIPPER skipper:DISPATCH_MANAGER skacct:DISPATCH_SKIPPER_ACCOUNT skacct:DISPATCH_MANAGER_ACCOUNT skplan:DISPATCH_SHIP skplan:DISPATCH_PLAN skspace:DISPATCH_PLAN_SPACE skhost:DISPATCH_SKIPPER_HOST skhost:DISPATCH_MANAGER_HOST"
 SKIPPER_UNSET=(-u DISPATCH_SKIPPER -u DISPATCH_MANAGER -u DISPATCH_SKIPPER_ACCOUNT -u DISPATCH_MANAGER_ACCOUNT -u DISPATCH_SHIP -u DISPATCH_PLAN -u DISPATCH_PLAN_SPACE -u DISPATCH_SKIPPER_HOST -u DISPATCH_MANAGER_HOST)
-manager_env() {
-  mgr="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; macct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"
-  mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
-  mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
-  if [ -z "$mgr" ] && [ -z "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir); mtyped=1
-    # where the manager runs: bin/ask reads "no record here" as an ended manager only on its own Mac
-    mhost="${DISPATCH_HOST:-$(local_host)}"
+skipper_env() {
+  skipper="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; skacct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"
+  skplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"; skspace="${DISPATCH_PLAN_SPACE:-}"
+  skhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
+  if [ -z "$skipper" ] && [ -z "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    skipper="$CLAUDE_CODE_SESSION_ID"; skacct=$(acct_dir); sktyped=1
+    # where the skipper runs: bin/ask reads "no record here" as an ended skipper only on its own Mac
+    skhost="${DISPATCH_HOST:-$(local_host)}"
   fi
-  [ -n "$mgr" ] || return 0
-  [ -n "$mplan" ] || mplan="$mgr"   # one ship per skipper by default (bin/helm ship)
-  # the plan's page, when the manager published one: the Talk address (R4)
-  [ -n "$mspace" ] || mspace=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("space") or "")' \
-    "${PLANS_DIR:-$HOME/Library/Logs/claude-weekly/plans}/$mplan/plan.json" 2>/dev/null) || mspace=""
+  [ -n "$skipper" ] || return 0
+  [ -n "$skplan" ] || skplan="$skipper"   # one ship per skipper by default (bin/helm ship)
+  # the plan's page, when the skipper published one: the Talk address (R4)
+  [ -n "$skspace" ] || skspace=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("space") or "")' \
+    "${PLANS_DIR:-$HOME/Library/Logs/claude-weekly/plans}/$skplan/plan.json" 2>/dev/null) || skspace=""
   return 0
 }
 # peer-manager-relay S1 (D1-A): a typed skipper with no page gets one at its first dispatch, so a run on a
 # peer Mac always has a Talk address — on 2026-10-26 a build-box run parked 3 h, every road refused, for a
 # laptop skipper that had published none. `helm page` makes the ship and publishes once, under helm's
-# publish budget; later dispatches read the space in manager_env and publish nothing. A refusal (exit 3,
+# publish budget; later dispatches read the space in skipper_env and publish nothing. A refusal (exit 3,
 # its line on stderr) or a failure still starts the run, as before, and says so in one line. Only the
-# skipper's own dispatch publishes (manager_env's mtyped): a run passing its skipper on has the page in
+# skipper's own dispatch publishes (skipper_env's sktyped): a run passing its skipper on has the page in
 # DISPATCH_PLAN_SPACE, or never will here (the ship lives on the skipper's Mac). A dry run publishes
-# nothing. Called once the refusals have run, never from manager_env: a publish and a ship are a write
+# nothing. Called once the refusals have run, never from skipper_env: a publish and a ship are a write
 # that goes after every refusal (AGENTS.md's Traps; the S1 landing review).
 skipper_page() {
   local perr
-  if [ -z "$mspace" ] && [ "$mtyped" = 1 ] && [ "$dry" = 0 ] && [ -x "$p_helm" ]; then   # no helm here: no page, as before
+  if [ -z "$skspace" ] && [ "$sktyped" = 1 ] && [ "$dry" = 0 ] && [ -x "$p_helm" ]; then   # no helm here: no page, as before
     perr=$(mktemp)
-    mspace=$("$p_helm" page "$mplan" 2>"$perr" | tail -n 1) || mspace=""
-    [ -n "$mspace" ] || echo "dispatch: no plan page for the skipper, so the run has no Talk road to it — $(tail -n 1 "$perr" 2>/dev/null | cut -c1-200)" >&2
+    skspace=$("$p_helm" page "$skplan" 2>"$perr" | tail -n 1) || skspace=""
+    [ -n "$skspace" ] || echo "dispatch: no plan page for the skipper, so the run has no Talk road to it — $(tail -n 1 "$perr" 2>/dev/null | cut -c1-200)" >&2
     rm -f "$perr"
   fi
   return 0
 }
-mgr=""; macct=""; mplan=""; mspace=""; mhost=""; mtyped=0
+skipper=""; skacct=""; skplan=""; skspace=""; skhost=""; sktyped=0
 # what pickup reads to tell a seed already sent off from one never started (`seeds --open` at /finish
 # would dispatch it a second time: a run on the peer opens its WIP PR only at its first push — review
 # 2026-10-13): <common git dir>/claude/dispatched/<topic>, "<epoch> <host> <branch>"
@@ -1292,10 +1292,10 @@ fi
 # on this Mac — plan.json is the authority every reader reads at its decision. A ship elsewhere, or none,
 # keeps DISPATCH_MODE alone (the hint). Never fails the schedule.
 ship_mode() {
-  [ "$mode_given" = 1 ] && [ -n "$mplan" ] && [ "$dry" = 0 ] || return 0
+  [ "$mode_given" = 1 ] && [ -n "$skplan" ] && [ "$dry" = 0 ] || return 0
   # an unattended raise of the ship's own task is refused here too (exit 3, the reason on stdout): the
   # early check read the branch, and the ship's task may name another (landing review 5)
-  python3 - "$core" "$mplan" "$topic" "$mode" <<'PY' 2>/dev/null
+  python3 - "$core" "$skplan" "$topic" "$mode" <<'PY' 2>/dev/null
 import sys
 sys.path.insert(0, sys.argv[1])
 import common
@@ -1595,7 +1595,7 @@ queue_refused() {   # WHY [skip]
     return 0
   fi
   [ -n "${DISPATCH_LABEL:-}" ] && queue_on || return 1
-  manager_env; queue_args
+  skipper_env; queue_args
   # the caller's cwd as its one-shot recorded it (DISPATCH_ORIGIN): launchd starts the job in /, and a run
   # sent from a confidential scope's checkout must queue in that scope, never the fleet ref (item 4)
   local qrc out q_res="" q_qid="" q_ours=0 q_rank="" q_off="" q_why="" q_err=""
@@ -1631,7 +1631,7 @@ queue_fire() {
   when=$(date -j -f %Y%m%d%H%M%S "${DISPATCH_LABEL##*.}00" +%s 2>/dev/null) \
     || { m="${DISPATCH_LABEL##*.}"; case "$m" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
          when=$(epochof "${m:0:4}-${m:4:2}-${m:6:2} ${m:8:2}:${m:10:2}");; *) false;; esac; } || when=""
-  manager_env; queue_args
+  skipper_env; queue_args
   # a one-shot sent to a typed host stays there (DISPATCH_HOST_PIN, its plist's): unpinned, any host's claim took it
   out=$(python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" ${when:+--queued-at "$when"} \
         $([ "${DISPATCH_HOST_PIN:-}" = 1 ] && echo "--pin $self_host") ${needs:+--needs "$needs"} \
@@ -1714,7 +1714,7 @@ queue_claim() {
   queue_on && python3 "$Q" claim "${qctx[@]}"
 }
 if [ -n "$at" ]; then
-  [ "$probe" = 1 ] || manager_env
+  [ "$probe" = 1 ] || skipper_env
   [ "$probe" = 1 ] || ship_mode >&2 || exit 2
   [ "$probe" = 1 ] || [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
   [ -n "$on" ] || physical_ok >&2 || exit 2   # with --on, the peer's dispatch checks its own copy
@@ -1771,13 +1771,13 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     [ "$at_default" = 1 ] || [ "$next" = 1 ] && at="@$(( $(date +%s) + ${DISPATCH_NEXT_DELAY:-90} + 15 ))"
     # the peer's checkout of this repo; its own clock turns the epoch into its local time
     # the peer adds one to the depth, as this script would
-    menv=""; for v in $SKIPPER_ENV; do
-      val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && menv="$menv ${v#*:}=$(printf '%q' "$val")"
+    skenv=""; for v in $SKIPPER_ENV; do
+      val="${v%%:*}"; val="${!val}"; [ -n "$val" ] && skenv="$skenv ${v#*:}=$(printf '%q' "$val")"
     done
     # a host the caller typed (not the dispatch host's default, nor berth's load pick) is a pin: the one-shot
     # there carries it, and its fire-time enqueue keeps it there (S3's landing review, item 8)
     pinv=""; [ "$on_default$on_auto" = 00 ] && pinv="DISPATCH_HOST_PIN=1 "
-    cmd="${menv# }${menv:+ }${pinv}DISPATCH_DEPTH=$d0 $rbin $(printf '%q' "$branch") --at $at"
+    cmd="${skenv# }${skenv:+ }${pinv}DISPATCH_DEPTH=$d0 $rbin $(printf '%q' "$branch") --at $at"
     # only the flags given: the peer's fire-time read of the brief's Tier: line decides the rest (tier_run)
     [ "$model_given" = 1 ] && cmd="$cmd --model $(printf '%q' "$model")"
     [ "$effort_given" = 1 ] && cmd="$cmd --effort $(printf '%q' "$effort")"
@@ -1894,7 +1894,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   [ $((when - $(date +%s))) -lt 31536000 ] || { echo "dispatch: $at is a year or more ahead; launchd's calendar has no year" >&2; exit 2; }
   # here, the page after every refusal; a publish that outlasted the margin to the fire minute is refused
   # as any past time is, and the page stays for the next dispatch, which publishes nothing (the S1 review)
-  if [ "$probe" = 0 ] && [ -z "$mspace" ] && [ "$mtyped" = 1 ]; then
+  if [ "$probe" = 0 ] && [ -z "$skspace" ] && [ "$sktyped" = 1 ]; then
     skipper_page
     [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at passed while the skipper's page published; dispatch again — the page is kept" >&2; exit 2; }
   fi
@@ -1931,7 +1931,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   # host): the one-shot it falls back to, should the queue not take it, keeps that pin at its fire-time enqueue
   # (S3's finish review; S4)
   opin=""; { [ "$on_typed" = 1 ] || [ "${DISPATCH_HOST_PIN:-}" = 1 ] || { [ "$next" = 1 ] && [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ]; }; } && opin=1
-  mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
+  skipper_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
     local k v
     for k in $SKIPPER_ENV; do
       v="${k%%:*}"; v="${!v}"; [ -n "$v" ] && printf '<key>%s</key><string>%s</string>' "${k#*:}" "$(printf '%s' "$v" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
@@ -1942,7 +1942,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
 <plist version=\"1.0\"><dict>
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key><array>$args</array>
-  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$ocwd" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${opin:+<key>DISPATCH_HOST_PIN</key><string>1</string>}${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(mgr_plist)</dict>
+  <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$ocwd" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${opin:+<key>DISPATCH_HOST_PIN</key><string>1</string>}${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}$(skipper_plist)</dict>
   <key>StartCalendarInterval</key><dict><key>Month</key><integer>$((10#$mo))</integer><key>Day</key><integer>$((10#$dy))</integer><key>Hour</key><integer>$((10#$hr))</integer><key>Minute</key><integer>$((10#$mi))</integer></dict>
   <key>StandardOutPath</key><string>$log</string>
   <key>StandardErrorPath</key><string>$log</string>
@@ -2168,26 +2168,26 @@ rname="$(basename "$repo")"
 runs="$HOME/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$runs"
 # what the session inherits from the run: the chain guards (header, "Limits")
 chain=(DISPATCH_DEPTH="$depth" DISPATCH_REPO="$repo")   # the repo: bin/helm report records it for the guard (K6)
-# a seeded run's manager (R1), from the plist; a --start run (autofinish) has none
-manager_chain() {
+# a seeded run's skipper (R1), from the plist; a --start run (autofinish) has none
+skipper_chain() {
   local v
   [ "$start" = 0 ] || return 0
-  # a plan with no manager (wharf's tick from launchd seeds a ship's block): the session still
+  # a plan with no skipper (wharf's tick from launchd seeds a ship's block): the session still
   # reports to its plan, so its block ends; nothing to relay to
-  # the plist's values, read under either name (manager_env), passed on under both until S8
-  local mgr macct mplan mspace mhost
-  mgr="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"
-  if [ -z "$mgr" ]; then
-    [ -n "$mplan" ] && chain+=(DISPATCH_SHIP="$mplan" DISPATCH_PLAN="$mplan" DISPATCH_TASK="$topic")
+  # the plist's values, read under either name (skipper_env), passed on under both until S8
+  local skipper skacct skplan skspace skhost
+  skipper="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; skplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"
+  if [ -z "$skipper" ]; then
+    [ -n "$skplan" ] && chain+=(DISPATCH_SHIP="$skplan" DISPATCH_PLAN="$skplan" DISPATCH_TASK="$topic")
     return 0
   fi
-  macct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
-  mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
+  skacct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"; skspace="${DISPATCH_PLAN_SPACE:-}"
+  skhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
   for v in $SKIPPER_ENV; do
     local val="${v%%:*}"; val="${!val}"
     [ -n "$val" ] && chain+=("${v#*:}=$val")
   done
-  # the run's login in the manager's vocabulary (acct_dir: pick_account has exported or unset
+  # the run's login in the skipper's vocabulary (acct_dir: pick_account has exported or unset
   # CLAUDE_CONFIG_DIR by now)
   chain+=(DISPATCH_TASK="$topic" ASK_ACCOUNT="$(acct_dir)")
 }
@@ -2239,8 +2239,8 @@ sess_args() {
 }
 # The record's chain fields, into $crec: the run's depth, model, effort, yolo, note and bound pin, the
 # brief it started from (path relative to the repo, as on every host, and blob; a --start run has
-# none) and its manager's id, plan, page, host and login — what a retry needs to start the same step
-# again under the same manager (orchestration B2, chain-manager E2).
+# none) and its skipper's id, plan, page, host and login — what a retry needs to start the same step
+# again under the same skipper (orchestration B2, chain-manager E2).
 chain_record() {
   local a
   crec=(depth="$depth" model="$model" effort="$effort" yolo="$yolo")
@@ -2299,7 +2299,7 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   pkill -TERM -P "$dog" sleep 2>/dev/null; kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
   # an end already recorded (dispatch --end) stays
   python3 -c 'import json, sys, time; p = sys.argv[1]; s = json.load(open(p)); s.get("ended") or s.update(ended=int(time.time()), end_reason="exit " + sys.argv[2]); json.dump(s, open(p, "w"), indent=1)' "$state" "$rc"
-  # session-asks R2: an ask handed past a live manager is stored on the record, as dispatch-rc's
+  # session-asks R2: an ask handed past a live skipper is stored on the record, as dispatch-rc's
   # finish() does for a visible run — a headless one never reaches finish()
   python3 "$here/bin/dispatch-rc" ask-guard "$state" || true
   echo "== exit $rc at $(date)"
@@ -2937,7 +2937,7 @@ fi
   fi
   if ! why=$(principal_flags); then echo "FAILED: $rel — $why; not running at $model $effort"; exit 1; fi
   case "$tier" in principal-*) echo "== tier $tier: $model $effort$([ "$model_given$effort_given" != 00 ] && echo " (--model/--effort given win for their half)")";; esac
-  manager_chain
+  skipper_chain
   resolve_mode
   # the brief's blob: a --next from this run's session on an unchanged brief is refused
   chain+=(DISPATCH_BRIEF="$(git -C "$wt" rev-parse "HEAD:$rel")")
@@ -2956,7 +2956,7 @@ fi
   if [ -n "$p_ask" ] && [ -n "$p_helm" ]; then
     prompt="$prompt
 
-First run \`$p_ask apply\`: it writes and commits any answer your manager sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. $land Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a manager has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
+First run \`$p_ask apply\`: it writes and commits any answer your skipper sent while this worktree was yours and nothing listened. When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, and run \`$p_ask relay <doc> <Dn>\`. $land Park what rests on that item, build the rest, and end on the line bin/ask prints: RELAYED TO … when a skipper has it (start \`$p_ask listen\` as your background shell first, if the brief allows background work), the WAITING line when nobody does. Report to the plan at your start, at each relay and at your end: \`$p_helm report --task $topic --status running|relayed|parked|done --progress '<one line>' --eta <40m> --cost auto\`; \`$p_helm show\` at the start names the sibling tasks and who owns which files. A report that fails never stops the work."
   else
     prompt="$prompt
 

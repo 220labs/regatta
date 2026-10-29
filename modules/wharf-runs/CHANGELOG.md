@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Every node guest gets sessionpipe (the owner, 2026-10-30: "keep sessionpipe installed, and update the machine
+  builders"): `sessionpipe-install` puts Node v22.23.4 (checked against a committed sha256) and sessionpipe 0.5.0
+  into `/usr/local` at first boot, and a named node's clone unit installs sessionpipe's hooks with no backfill and
+  gates them at once with keel's `sheep gate` (a failed install or gate takes them out again). With no key, no sink
+  is written: the node's sessions reach spacesheep once the owner puts `SPACESHEEP_SESSIONS_KEY` in the config dir's
+  `regatta/.env` and runs `sheep gate` again, now one of the hands `yard-node` names after a launch or an apply.
+
 - A named node's clone unit writes the core's `home` file, best effort (TODO 25 (b)): from a clone the clones list
   carried that holds the core whole, else the marketplace clone `known_marketplaces.json` records; a home that names
   a core is kept, and a node with no core still finishes rather than retrying every minute.
@@ -77,6 +84,10 @@
   the old tidier and its tidy-soon) only once the new one is loaded and the old one is not running;
   `--restart NAME` relabels NAME first, and `--agents --fix` never reloads a job under the previous prefix;
   `dispatch-queue jobs` that drops the old poll tends the new one at once.
+- "manager" is "skipper" in wharf-runs' words and names (helm-vocabulary H2, 2026-10-29): dispatch's
+  `skipper_env`, `skipper_chain`, `skipper_plist` and its `skipper`/`sk*` variables, the prompt's "your skipper",
+  dispatch-rc's "failed: ended on … with skipper … live" and its status line, hail's `standing_skipper` call,
+  "the tick" for "the chain manager's tick" in autofinish-run. Env names and run-record keys keep theirs.
 - dispatch-queue S4, priorities and the force (docs/dispatch-queue-2026-10-25.md, D2-A and D3-A): a `force`
   entry is claimed one slot over the host's cap (at most one run ever above it; a second force entry waits
   first in line) and on headroom's force floor, `headroom check --floor 5` (avail 5 %, swap and rate kept);

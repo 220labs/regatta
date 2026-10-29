@@ -580,7 +580,7 @@ PY
   DISPATCH_SHIP=lp af > "$T/out" 2>&1; check "$?" "4" "  a real start: refused"
   check "$(grep -c '"lease": "refused"' "$T/plans/lp/events.jsonl")" "1" "    one 'refused' event in the ship"
   check "$(cat "$STATE" 2>/dev/null)" "$st0" "    and nothing written: its state is as it was"
-  DISPATCH_SHIP= DISPATCH_PLAN=lp af --dry > /dev/null 2>&1; check "$?" "4" "  the older name, DISPATCH_PLAN, the same (DISPATCH_SHIP cleared: a managed run exports it)"
+  DISPATCH_SHIP= DISPATCH_PLAN=lp af --dry > /dev/null 2>&1; check "$?" "4" "  the older name, DISPATCH_PLAN, the same (DISPATCH_SHIP cleared: a skippered run exports it)"
   DISPATCH_SHIP=lp SKIPPER_GEN=1 af --dry > /dev/null 2>&1; check "$?" "$rc0" "  SKIPPER_GEN at the lease's gen: the launch goes ahead"
   DISPATCH_SHIP=lp SKIPPER_GEN=0 af --dry > /dev/null 2>&1; check "$?" "4" "  SKIPPER_GEN stale: refused"
   unset PLANS_DIR
@@ -711,7 +711,7 @@ rm -f "$LOCK" "$GD/claude/finishing"
 STUB_REPLY="$T/stop.txt" af --rule D --by sweep > "$T/out" 2>&1; check "$?" "0" "a died tip is no same-tip refusal: it starts again"
 ended
 
-echo "--by chain: the chain manager's tick relaunches an S4 stop only, twice per tip (orchestration B3)"
+echo "--by chain: the tick relaunches an S4 stop only, twice per tip (orchestration B3)"
 CHAINF="$GD/claude/autofinish-chain.json"
 af --dry --by chain > "$T/out" 2>&1; check "$?" "3" "the G4 stop just above: no chain relaunch"
 has "$T/out" "ended stopped at G4, not stopped by the network — no chain relaunch" "  saying why"
