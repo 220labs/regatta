@@ -1081,7 +1081,9 @@ def main_lines(repo, tgt, timeout=120):
 
 def merge_adds(repo, tip, tgt):
     """The paths where merging the branch into main would change main — `git merge-tree
-    --write-tree` (git ≥ 2.38), a three-way merge in the object store that touches no ref, index
+    --write-tree -X` (git ≥ 2.43; `--write-tree` 2.38, `-X` 2.43, per git's release notes; an
+    older git prints merge-tree's usage and this is None, so neither C1 nor C2 fires there: safe,
+    nothing reaped, but silent), a three-way merge in the object store that touches no ref, index
     or worktree — or None on any failure. [] means launching the branch is a no-op. The signal
     that tells position apart: the review's "second of two identical stanzas" (2026-09-24)
     passes cherry, line containment and the per-file test alike, and fails here (the build of

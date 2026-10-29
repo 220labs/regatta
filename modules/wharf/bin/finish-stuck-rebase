@@ -30,6 +30,15 @@ G=$(git rev-parse --absolute-git-dir)
 [ -z "$(git diff --cached --name-only)" ] || { echo "staged changes not yet committed — stopped, nothing changed"; exit 1; }
 other=$(grep -vE '^[[:space:]]*(#|$)' "$G/rebase-merge/git-rebase-todo" | grep -vE '^pick ' || true)
 [ -z "$other" ] || { echo "the todo has more than picks ($other) — stopped, nothing changed"; exit 1; }
+# The replay is `merge-tree --write-tree` (git 2.38) with `--merge-base` (2.40). An older git prints
+# merge-tree's usage and the replay stops at its first pick; said here instead (macOS 12's newest Apple git is
+# 2.37: a 2016 runner Mac, 2026-10-28). A version this cannot read runs on: the replay still stops
+# safely if merge-tree refuses.
+read -r gmaj gmin < <(git --version | sed -nE 's/^git version ([0-9]+)\.([0-9]+).*/\1 \2/p') || true
+if [ -n "${gmin:-}" ] && { [ "$gmaj" -lt 2 ] || { [ "$gmaj" -eq 2 ] && [ "$gmin" -lt 40 ]; }; }; then
+  echo "finish-stuck-rebase needs git 2.40 or newer (merge-tree --write-tree --merge-base); this is $(git --version) — stopped, nothing changed"
+  exit 1
+fi
 
 bak=$(mktemp -d "${TMPDIR:-/tmp}/finish-stuck-rebase.XXXXXX")
 echo "working copy and backups: $bak"
