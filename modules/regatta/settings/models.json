@@ -1,5 +1,5 @@
 {
-  "_": "The defaults beside the gate. Your own table goes in ${REGATTA_CONFIG:-~/.config/regatta}/regatta/models.json and wins over this one, whole. bin/gate show | set | check.",
+  "_": "The defaults beside the gate. Your own table goes in ${REGATTA_CONFIG:-~/.config/regatta}/regatta/models.json and wins over this one row by row: a site it lacks runs its row here, with these defaults. bin/gate show | set | check.",
   "defaults": {
     "claude": {"model": "opus"},
     "jev": {"model": "jev-latest", "threshold": 0.5}
