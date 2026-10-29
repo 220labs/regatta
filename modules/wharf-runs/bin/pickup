@@ -32,11 +32,15 @@ part — matching the owner's vague description to one branch, and asking when i
         A seed no session has started is accepted too, with SEED_DROPPED as its reason.
         --confirmed records the owner's confirmation, so the checkpoint hook refuses it to agents.
   pickup seed TOPIC --file BRIEF [--repo PATH] [--start | --no-start] [--account auto|LABEL]
-                  [--no-blueprint] [--routing THREAD…] [--dry-run] [--no-fetch]
+                  [--no-blueprint] [--routing THREAD…] [--beside BRANCH] [--dry-run] [--no-fetch]
         a follow-up for a session that does not exist yet (see "Seeds" below). A doc the brief names
         that has a spacesheep page gets its `Routed:` line in the seed's commit, after keel's gate
         (`keel routed check`) passes on its page — refused while a thread there is unreflected, bar
         the threads --routing names (a seed started from a comment routes its own thread).
+        --beside BRANCH: on BRANCH's tip (fetched; the local one if it is ahead; refused if they
+        diverged), not local main — the lookout's seed beside a run it cannot see (routed comments
+        S3). The commit names it (`Seeded-From: BRANCH <sha>`) and the repo's carries pointer gets a
+        line, so whichever lands second is proved against the first.
   pickup seed TOPIC --from SCOPE --repo PATH --file BRIEF [--no-start] [--account auto|LABEL]
                   [--no-blueprint] [--dry-run] [--no-fetch]
         the one write out of a confidential scope: the brief reviewed first (see "Out of a
@@ -300,7 +304,8 @@ HOOK_PR = re.compile(r"Agent work in progress on \*\*(?P<host>[^*]+)\*\*, sessio
 # design belongs in docs/ with a two-line brief pointing at it.
 # What a seed commit is lives in hooks/branches.py, which reaps the empty ones (R7 of
 # docs/record/branch-reaping-2026-10-04.md: one definition, so the list and the reaper never disagree).
-from branches import BLUEPRINT_DIR, HANDOFF_DIR, SEED_SUBJECT, SEEDED_BY_RE as SEEDED_BY, seed_paths_ok  # noqa: E402
+from branches import (BLUEPRINT_DIR, HANDOFF_DIR, SEED_SUBJECT, SEEDED_BY_RE as SEEDED_BY,  # noqa: E402
+                      SEEDED_FROM_RE as SEEDED_FROM, CARRIED_NAME, common_dir, seed_base, seed_paths_ok)
 BRIEF_LINES, BRIEF_CHARS = 60, 4000
 TOPIC_RE = re.compile(r"^(?!.*-raw$)[a-z0-9][a-z0-9-]{2,39}$")  # -raw: /finish's backups, skipped everywhere
 # machine → the ssh alias this one reads it with: the lines of `wharf-runs/ssh` (`<peer>:<alias>`, the
@@ -1071,14 +1076,19 @@ def branch_info(root, main, name, loc, rem, wt, pr, transcripts, live, me, verdi
     # branches.seed_task()'s test, on pickup's own commit list: every path under docs/handoff/ too,
     # so a "seed" the reaper would not call one is never listed as a seed here (review, 2026-10-04)
     # (the diff only for a branch whose commits are all Seed: ones — one git call per branch otherwise)
-    seed_paths = out(root, "diff", "--name-only", f"{main}...{tip}").splitlines() if commits and all(
-        c["subject"].startswith(SEED_SUBJECT) and c["seeded_by"] for c in commits) else []
+    # a seed made off another branch's tip (`seed --beside`, Seeded-From:) is its one commit after that tip
+    sbase = seed_base(root, None, tip) if commits and SEEDED_FROM.search(commits[0]["body"]) else None
+    own = commits[:1] if sbase else commits
+    seed_paths = out(root, "diff", "--name-only", f"{sbase or main}...{tip}").splitlines() if own and all(
+        c["subject"].startswith(SEED_SUBJECT) and c["seeded_by"] for c in own) else []
     # a routed doc whose diff is its `Routed:` line alone counts too (branches.seed_paths_ok)
-    if seed_paths and seed_paths_ok(root, out(root, "merge-base", main, tip), tip, seed_paths,
-                                    [c["body"] for c in commits]):
-        files = out(root, "diff-tree", "--no-commit-id", "--name-only", "-r", commits[-1]["sha"]).splitlines()
+    if seed_paths and seed_paths_ok(root, sbase or out(root, "merge-base", main, tip), tip, seed_paths,
+                                    [c["body"] for c in own]):
+        files = out(root, "diff-tree", "--no-commit-id", "--name-only", "-r", own[-1]["sha"]).splitlines()
         b["seed"] = {"brief": next((f for f in files if f.startswith(HANDOFF_DIR + "/") and f.endswith(".md")), None),
-                     "by": commits[-1]["seeded_by"]}
+                     "by": own[-1]["seeded_by"]}
+        if sbase:
+            b["seed"]["from"] = SEEDED_FROM.search(commits[0]["body"]).group(1)
     if wt and not wt["missing"]:
         b["dirty"] = len([l for l in out(wt["path"], "status", "--porcelain").splitlines() if l.strip()])
         state = Path(out(wt["path"], "rev-parse", "--absolute-git-dir")) / "claude"
@@ -1087,7 +1097,9 @@ def branch_info(root, main, name, loc, rem, wt, pr, transcripts, live, me, verdi
         b["moved"] = common.moved(state)  # /move's marker: the branch goes on elsewhere
 
     trailers = []  # session prefixes, newest commit first
-    for c in commits:
+    # a `--beside` seed carries its source's commits: their sessions are the source's, not the seed's
+    # (the S3 landing review of the second fix round, item 4)
+    for c in (own if sbase else commits):
         trailers += [p for p in c["sessions"] if p not in trailers]
     hint = HOOK_PR.search(pr["body"]) if pr else None
     if hint and hint.group("sid") not in trailers:
@@ -4125,6 +4137,44 @@ def with_last_step(text, last, notes):
     return new
 
 
+def seed_beside_tip(root, src, fetch=True):
+    """The tip of branch `src` a `seed --beside` bases on (routed comments S3: a host that cannot see the
+    run on `src` never writes it, it seeds beside it): origin's, fetched first, unless the local branch is
+    ahead of it; refused when the two have diverged (nothing here rebases) or neither exists, and when
+    origin no longer has a branch this machine saw there (landed and deleted, most likely)."""
+    if src.startswith("-") or ".." in src or not re.fullmatch(r"[\w./-]{1,200}", src):
+        raise Stop(f"--beside takes a branch name: {src!r}")
+    if fetch and git(root, "remote", "get-url", "origin").returncode == 0:
+        r = git(root, "fetch", "-q", "origin", f"+refs/heads/{src}:refs/remotes/origin/{src}", timeout=60)
+        # a fetch that failed for any reason but the branch being absent from origin would seed from a stale
+        # tracking ref, behind the run it seeds beside (the S3 landing review): refused in words the lookout
+        # retries (keel's PICKUP_PASSING_RE: "could not fetch")
+        gone = r.returncode and re.search(r"couldn't find remote ref", r.stderr or "", re.I)
+        if r.returncode and not gone:
+            err = ((r.stderr or "").strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]
+            raise Stop(f"could not fetch {src} from origin ({err}) — run it again; --no-fetch seeds from what this machine has")
+        # gone from origin, though this machine saw it there — its tracking ref is still here, or the local
+        # branch's upstream reads [gone] once collect()'s `fetch --prune` dropped that ref: a branch that landed
+        # and was deleted, whose tip main holds already, is never a seed's base, stale tracking ref or stale
+        # local branch alike (the S3 second landing review's item 10). A branch never pushed has neither, and
+        # seeds from the local one as before
+        if gone and (out(root, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{src}^{{commit}}")
+                     or out(root, "for-each-ref", "--format=%(upstream:track)", f"refs/heads/{src}") == "[gone]"):
+            raise Stop(f"{src} is gone from origin (landed and deleted?) — nothing to seed from; "
+                       f"--no-fetch seeds from what this machine has")
+    remote = out(root, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{src}^{{commit}}")
+    local = out(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{src}^{{commit}}")
+    if not (remote or local):
+        raise Stop(f"no branch {src} here or on origin to seed from")
+    if remote and local and remote != local:
+        if git(root, "merge-base", "--is-ancestor", local, remote).returncode == 0:
+            return remote
+        if git(root, "merge-base", "--is-ancestor", remote, local).returncode == 0:
+            return local
+        raise Stop(f"{src} here and on origin have diverged — nothing to seed from until they agree")
+    return remote or local
+
+
 # ---- seed --from: the one write out of a confidential scope (confidential-reach S5) -------------
 
 REVIEW_SUFFIX = ".review"   # docs/handoff/<date>-<topic>.review, beside the brief it vouches for
@@ -4309,9 +4359,14 @@ def cmd_seed(data, me, args):
     taken = [b["name"] for b in data["branches"] if b["name"] == name or (b["status"] == "open" and b["topic"] == topic)]
     if taken or git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0:
         raise Stop(f"{topic} is already open as {(taken or [name])[0]} — pick that up, or choose another topic")
-    base = out(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")
-    if not base:
-        raise Stop(f"no local {main} in {root} to seed from")
+    src = args.beside
+    if src and src != main:
+        base = seed_beside_tip(root, src, fetch=not args.no_fetch)
+    else:
+        src = None
+        base = out(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")
+        if not base:
+            raise Stop(f"no local {main} in {root} to seed from")
     path = f"{HANDOFF_DIR}/{today}-{topic}.md"
     scope = getattr(args, "from_scope", None)
     # the docs the brief names that have a page: the gate first (new work), then their `Routed:` line
@@ -4327,7 +4382,8 @@ def cmd_seed(data, me, args):
     mark = common.scope_marker(scope) if scope else None
     by = f"{mark or (me['repo'].name if me.get('repo') else '?')}/{me['id'][:8] or 'shell'} on {data['host']}"
     msg = (f"{SEED_SUBJECT}{topic}\n\nPrompt:\n> {task}\n\n"
-           f"Seeded-By: {by}\n" + (f"Routed-By: pickup seed ({', '.join(r for r, _ in routed)})\n" if routed else "")
+           f"Seeded-By: {by}\n" + (f"Seeded-From: {src} {base}\n" if src else "")
+           + (f"Routed-By: pickup seed ({', '.join(r for r, _ in routed)})\n" if routed else "")
            + "Co-Authored-By: Claude <noreply@anthropic.com>\n")
     behind = out(root, "rev-list", "--count", f"{main}..origin/{main}") if out(
         root, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}") else "0"
@@ -4344,7 +4400,8 @@ def cmd_seed(data, me, args):
         print(f"would seed {name} in {root}: commit {path} ({len(text.splitlines())} lines)"
               + (f" and {bpath}" if bpath else "") + (f" and {rpath}" if rpath else "")
               + "".join(f", {r}'s Routed: line" for r, _ in routed)
-              + f" on local {main} ({base[:7]}), then push it" + "".join(f"\n  {n}" for n in rnotes))
+              + (f" on {src}'s tip ({base[:7]})" if src else f" on local {main} ({base[:7]})")
+              + ", then push it" + "".join(f"\n  {n}" for n in rnotes))
         return
 
     def g(*a, **kw):
@@ -4369,6 +4426,14 @@ def cmd_seed(data, me, args):
         raise Stop(f"{path} is already on {main} as written — nothing to seed")
     commit = g("commit-tree", tree, "-p", base, "-F", "-", input=msg)
     g("update-ref", f"refs/heads/{name}", commit, "0" * len(commit))  # refuses if another seed won the race
+    if src and src.startswith("claude/"):
+        # the carries pointer, in the repo's `carried` file: the seed has no worktree yet, and this file
+        # outlives one (branches.CARRIED_NAME). `bin/pr carried` and branches.py read it: the seed takes
+        # src whole, so a seed that lands first closes src's PR once src's content is proved on main
+        rec = common_dir(root) / "claude" / CARRIED_NAME
+        rec.parent.mkdir(parents=True, exist_ok=True)
+        with open(rec, "a") as f:
+            f.write(f"{name} seed {base} {src}\n")
     if git(root, "remote", "get-url", "origin").returncode:
         state = "no origin: on this machine only"
     elif git(root, "push", "-q", "-u", "origin", f"refs/heads/{name}:refs/heads/{name}", timeout=60).returncode:
@@ -4378,6 +4443,12 @@ def cmd_seed(data, me, args):
     print(f"seeded {name} in {root.name} — {path}, {len(text.splitlines())} lines; {state}")
     if rpath:
         print(f"  and its review {rpath} (origin {mark}, which is {scope} here: the brief's sha256, both verdicts)")
+    if src:
+        # how its carried commits land: whichever of the two lands second rebases past the first.
+        # src first (its /finish rewrites them): this branch's /finish rebases its own commits only,
+        # `git rebase --onto origin/main <sha>`, the sha its Seeded-From: line names
+        print(f"  off {src}'s tip {base[:7]}, which it carries (Seeded-From:); if {src} lands first, this "
+              f"branch's /finish rebases --onto origin/{main} {base[:7]}")
     for rel, _ in routed:
         print(f"  routed: {rel} carries its Routed: line in this commit")
     for n in rnotes:
@@ -4815,6 +4886,7 @@ def main(argv):
         ap.add_argument("--dry-run", action="store_true")
         ap.add_argument("--no-blueprint", action="store_true")
         ap.add_argument("--routing", nargs="+", default=[])   # the page threads this seed routes: keel's gate passes them
+        ap.add_argument("--beside")   # base on that branch's tip, fetched, not on local main (routed S3; was --from until main's S5 took it)
         when = ap.add_mutually_exclusive_group()
         # --launch / --no-launch: the old names, aliases for a week (S8 of docs/wharf-rename-2026-10-16.md)
         when.add_argument("--start", "--launch", dest="start", action="store_true")
@@ -4864,6 +4936,10 @@ def main(argv):
         if args.from_scope:   # judged before anything reads the target's origin, let alone writes
             if args.start:
                 raise Stop("--from takes no --start: the run goes by dispatch, with its --origin, or not at all")
+            if args.beside:
+                # scope-pass reviews the brief alone; a base off another branch's tip would carry that
+                # branch's commits out beside it, unreviewed (routed S3's merge with S5)
+                raise Stop("--from takes no --beside: a seed out of a confidential scope bases on local main")
             why = from_scope_refusal(root, args.from_scope, repo_given)
             if why:
                 raise Stop(f"seed --from {args.from_scope}: {why}")

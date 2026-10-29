@@ -20,10 +20,15 @@ Read `README.md` first: it is the chart. For an agent:
 - The lookout (crosstalk S3, `docs/crosstalk-2026-10-20.md`) never takes a `sheep wait` lock to test
   it: a `LOCK_EX|LOCK_NB` take ends a wait starting that instant. `lock_held` reads it (F_GETLK on
   macOS, which sees a flock; /proc/locks on Linux; lsof elsewhere). Its run (S5, `lookout_gone`) writes a `dispatching`
-  row before `pickup brief`, so a pass that dies mid-start or a failed dispatch never starts the
-  same answer twice; from the laptop it names no host (dispatch's own Where default), and it leaves
-  another host's GitHub answer to that host's lookout. `tests/test_lookout.sh` stubs hail, harness,
-  pickup, dispatch, autofinish and spacesheep; nothing there may reach a real one.
+  row before `pickup seed`, so a pass that dies mid-start or a failed dispatch never starts the
+  same answer twice. Since routed comments S3 no host is special (`run_where`): a branch is acted on
+  where its run is (harness list, the queue's `running_on`), left to the host its run is on, and with
+  none in sight claimed, then a pass later seeded off its tip (`pickup seed --beside`), never written;
+  dispatch places the run (no `--on`). A rule-3 start therefore takes two passes in a case: the claim's,
+  then the start's (`LOOKOUT_CLAIM_PASS=0` drops only the wait between them). `tests/test_lookout.sh`
+  stubs hail, harness, pickup, dispatch, dispatch-queue, autofinish and spacesheep; nothing there may
+  reach a real one, and a suite that runs the lookout without `LOOKOUT_DISPATCH_QUEUE` set asks the
+  Mac's real queue.
 - `skills/figure/` is private-first, off the allowlist until its scrub: its example names a host and a
   person. `bin/keel`'s figures section (render, safe_svg, restyle) is public; the skill loads keel as a
   module for the style table and the text measure, so the two never disagree.

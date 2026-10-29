@@ -73,10 +73,16 @@ def carried(slug, tok, launched_via=None):
     names are printed; sync.py archives them at the next session start."""
     gitdir = Path(git("rev-parse", "--absolute-git-dir"))
     records = [branches.parse_record(l) for l in branches.read_lines(gitdir / "claude" / branches.CARRIES_NAME)]
-    if not records:
-        return ["Carries: nothing (no content taken from another claude/* branch)"]
     repo = Path(git("rev-parse", "--show-toplevel"))
     branch = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    # a seed made off another branch's tip (`pickup seed --beside`) had no worktree to record in: its
+    # pointer is the repo's `carried` line, `<carrier> <kind> <sha> <branch>` (routed comments S3)
+    for line in branches.read_lines(branches.common_dir(repo) / "claude" / branches.CARRIED_NAME):
+        carrier, _, rest = line.partition(" ")
+        if carrier == branch and rest.strip() and branches.parse_record(rest) not in records:
+            records.append(branches.parse_record(rest))
+    if not records:
+        return ["Carries: nothing (no content taken from another claude/* branch)"]
     if launched_via:
         st, merged = common.api("GET", f"/repos/{slug}/pulls/{launched_via}", tok=tok)
         if st != 200 or not (merged or {}).get("merged_at") or (merged.get("head") or {}).get("ref") != branch:

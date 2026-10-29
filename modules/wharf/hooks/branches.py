@@ -111,7 +111,7 @@ ARCHIVE_TTL_DAYS = 7  # the owner, 2026-09-26: "stick around as an archive for a
 # words as before the scrub on the owner's Macs), else "the owner".
 WHO = common.OWNER_NAME or "the owner"   # the person the lists and the archive reason name
 CONFIRMED = f"Probably launched, confirmed by {WHO}"
-WHOLE_KINDS = {"merge", "rebase"}  # the carry kinds that meant to take a whole branch
+WHOLE_KINDS = {"merge", "rebase", "seed"}  # the carry kinds that meant to take a whole branch (seed: pickup seed --beside)
 # --ignore-submodules=none: with diff.ignoreSubmodules=all set, a gitlink the branch added
 # would vanish from the changed paths and an empty list reads as "no net change" (review).
 DIFF_FLAGS = ("--no-ext-diff", "--no-color", "--no-textconv", "--ignore-submodules=none",
@@ -145,6 +145,9 @@ DONE_REPLY_RE = re.compile(r"^\s*>\s*\*\*(?:Done|Applied|Superseded|Revised|Chec
 # bin/pickup imports these (docs/record/branch-reaping-2026-10-04.md E1, R7).
 SEED_SUBJECT = "Seed: "
 SEEDED_BY_RE = re.compile(r"^Seeded-By: (.+?)\s*$", re.M)  # "<repo>/<session id8> on <host>"
+# `pickup seed --beside <branch>` (routed comments S3): the seed bases on that branch's tip, not main, and
+# names it — "<branch> <sha>"; the seed is then the commits after <sha>, and the branch carries <branch>
+SEEDED_FROM_RE = re.compile(r"^Seeded-From: (\S+) ([0-9a-f]{40})\s*$", re.M)
 HANDOFF_DIR = "docs/handoff"
 # A seed also carries the handoff as a one-block blueprint, docs/blueprints/<date>-<topic>.md, beside
 # its brief (wharf-on-orca S5, B9): a path there is still "nothing a session wrote" in a seed.
@@ -856,7 +859,9 @@ def seed_task(repo, base, tip):
     with a `Seeded-By:` trailer, every changed path under docs/handoff/ (or the seed's blueprint
     beside it, docs/blueprints/, with a brief under docs/handoff/ all the same) — as the first `> ` line
     of the oldest commit's body ("" when it has none); None for anything else, and for any git
-    failure: only a certain seed is ever reaped as one."""
+    failure: only a certain seed is ever reaped as one. A seed made off another branch's tip
+    (`Seeded-From:`, seed_base) is judged from that tip, not from main."""
+    base = seed_base(repo, base, tip)
     if not base or base == tip:
         return None
     r = git(repo, "log", "--reverse", "--format=%s%x1f%b%x1e", f"{base}..{tip}")
@@ -878,6 +883,20 @@ def seed_task(repo, base, tip):
 
 def seed_only(repo, base, tip):
     return seed_task(repo, base, tip) is not None
+
+
+def seed_base(repo, base, tip):
+    """Where a seed's own commits start: the sha its tip's `Seeded-From:` trailer names when that is
+    the tip's parent (one Seed: commit off another branch's tip, `pickup seed --beside`), else `base`.
+    The source's own commits are then never read as the seed's (routed comments S3)."""
+    if not tip:
+        return base
+    r = git(repo, "log", "-1", "--format=%P%x1f%s%x1f%b", tip)
+    parents, subject, body = (r.stdout.split("\x1f", 2) + ["", ""])[:3] if not r.returncode else ("", "", "")
+    m = SEEDED_FROM_RE.search(body)
+    if m and subject.startswith(SEED_SUBJECT) and parents.split()[:1] == [m.group(2)]:
+        return m.group(2)
+    return base
 
 
 def empty(repo, b, tgt, worktree=None):

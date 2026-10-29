@@ -1023,6 +1023,54 @@ check "$(st "claude/x/$TODAY-routedmore")" "None" "…one that changes more of t
 check "$(P seeds --repo "$SR" --no-fetch)" 0 "pickup seeds over the routed seeds"
 has "$T/out" "routedok" "…lists the routed seed"
 hasnt "$T/out" "routedmore" "…never the one that wrote more than its line"
+echo "seed --beside: on another branch's tip, never on the branch (routed comments S3, the host rule)"
+FB=claude/$HN/$TODAY-fromb
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed fromb --file "$SB" --beside $BB --dry-run)" 0 "--beside --dry-run"
+has "$T/out" "on $BB's tip ($(git rev-parse --short=7 origin/$BB))" "…names the tip it would seed on (fetched: $BB is on origin only)"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed fromb --file "$SB" --beside $BB)" 0 "--beside another host's branch, fetched: seeded"
+check "$(git rev-parse $FB^)" "$(git rev-parse origin/$BB)" "…its one commit's parent is the branch's tip"
+check "$(git log --format=%s origin/$BB..$FB)" "Seed: fromb" "…one commit beyond it"
+check "$(git rev-parse origin/$BB)" "$(git -C "$T/buildbox" rev-parse $BB)" "…and the branch itself is untouched"
+git log -1 --format=%B $FB > "$T/msg"
+has "$T/msg" "Seeded-From: $BB $(git rev-parse origin/$BB)" "…its trailer names the branch and the tip"
+has "$(git rev-parse --git-common-dir)/claude/carried" "$FB seed $(git rev-parse origin/$BB) $BB" "…the carries pointer in the repo's carried file"
+has "$T/out" "if $BB lands first, this branch's /finish rebases --onto origin/main" "…and says how its carried commits land"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import branches as b
+base = b.out(sys.argv[2], "merge-base", "main", sys.argv[3]); print(b.seed_task(sys.argv[2], base, sys.argv[3]) is not None)' "$WHOOKS" "$R" "$FB")" "True" "branches.seed_task: still a seed, though main..tip holds the branch's commits"
+check "$(P seeds --no-fetch)" 0 "pickup seeds"
+has "$T/out" "fromb" "…lists it"
+check "$(cd "$WHOOKS" && python3 -c 'import sys, branches as b
+recs = [(c, b.parse_record(r)) for c, _, r in (l.partition(" ") for l in b.read_lines(b.common_dir(sys.argv[1]) / "claude" / b.CARRIED_NAME))]
+print([(c, k in b.WHOLE_KINDS) for c, (k, _, src) in recs if src == sys.argv[2]])' "$R" "$BB")" "[('$FB', True)]" "branches.py's survey reads the pointer as the branch carried whole by the seed"
+# the branch lands first, rewritten by its /finish (a squash): the seed's own commits go --onto main.
+# A local clone stands in for origin's main; nothing is sent back
+git clone -q "$O" "$T/land" && git -C "$T/land" merge -q --squash origin/$BB >/dev/null && git -C "$T/land" commit -qm "Land beta"
+git -C "$T/land" rebase -q --onto main "$(git rev-parse origin/$BB)" origin/$FB 2>/dev/null
+check "$(git -C "$T/land" log --format=%s main..HEAD)" "Seed: fromb" "after the branch landed rewritten: --onto main <Seeded-From sha> keeps the seed's commit alone"
+check "$(git -C "$T/land" diff --name-only main HEAD)" "docs/handoff/$TODAY-fromb.md" "…and the landed branch's content is main's"
+check "$(P seed fromc --file "$SB" --beside claude/x/nope --no-fetch)" 1 "--beside a branch neither here nor on origin: refused"
+has "$T/out" "no branch claude/x/nope here or on origin" "…saying so"
+DV=claude/x/$TODAY-divb
+git -C "$T/buildbox" checkout -q -b $DV && commit "$T/buildbox" dv.txt bbbbbbbb "remote side"
+git -C "$T/buildbox" push -q origin $DV
+git update-ref refs/heads/$DV "$(git commit-tree "main^{tree}" -p main -m 'local side')"
+check "$(P seed fromd --file "$SB" --beside $DV)" 1 "--beside a branch whose local and origin tips diverged: refused"
+has "$T/out" "have diverged" "…nothing here rebases"
+check "$(git branch --list "*-fromd" | wc -l | tr -d ' ')" "0" "…and no branch made"
+check "$(GIT_ALLOW_PROTOCOL=ext P seed frome --file "$SB" --beside $BB)" 1 "--beside a branch whose fetch fails: refused, never seeded from a stale tracking ref"
+has "$T/out" "could not fetch $BB from origin" "…in words the lookout tries again (PICKUP_PASSING_RE)"
+check "$(git branch --list "*-frome" | wc -l | tr -d ' ')" "0" "…and no branch made"
+# a branch this machine saw on origin, gone from it since (landed and deleted): pickup's own `fetch --prune`
+# drops the tracking ref, and the local branch, its upstream [gone], is stale
+GB=claude/x/$TODAY-goneb
+git -C "$T/buildbox" fetch -q origin && git -C "$T/buildbox" checkout -q -b $GB origin/main && commit "$T/buildbox" gb.txt bbbbbbbb "gone side"
+git -C "$T/buildbox" push -q origin $GB && git fetch -q origin "+refs/heads/$GB:refs/remotes/origin/$GB" && git branch -q --track $GB origin/$GB
+git -C "$O" update-ref -d "refs/heads/$GB"
+check "$(P seed fromg --file "$SB" --beside $GB)" 1 "--beside a branch gone from origin since this machine had it: refused (the S3 second landing review's item 10)"
+has "$T/out" "$GB is gone from origin" "…never seeded from the stale local branch"
+check "$(git branch --list "*-fromg" | wc -l | tr -d ' ')" "0" "…and no branch made"
+check "$(P seed fromg --file "$SB" --beside $GB --dry-run --no-fetch) $(grep -c 'gone from origin' "$T/out")" "0 0" "…while --no-fetch seeds from what this machine has, as the refusal says"
+git update-ref -d "refs/heads/$GB"
 check "$(P seed export-raw --file "$SB" --no-fetch)" 1 "a topic ending in -raw (a /finish backup name): refused"
 check "$(P seed kappa --file "$SB" --repo "$SIB" --no-fetch)" 1 "a repo not on the worktree workflow: refused"
 has "$T/out" "sib is not on the worktree workflow" "…and says where it goes instead"
