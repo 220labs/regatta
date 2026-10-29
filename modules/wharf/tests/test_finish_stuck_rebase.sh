@@ -32,6 +32,26 @@ stuck() {
 }
 state() { [ -d "$(git -C "$1" rev-parse --absolute-git-dir)/rebase-merge" ] && echo left || echo gone; }
 
+# The tool needs git 2.40 (merge-tree --write-tree --merge-base). On an older one every case below
+# fails in a way that names nothing (`fatal: ref HEAD is not a symbolic ref`, a 2016 runner Mac's
+# git on macOS 12, 2026-10-28), so the suite says it once and fails: never a skip.
+gv=$(git --version)
+if printf '%s\n' "$gv" | grep -qE '^git version (1\.|2\.([0-9]|[1-3][0-9])\.)'; then
+  echo "  FAIL $gv here: finish-stuck-rebase needs git 2.40 or newer (merge-tree --write-tree --merge-base) — put a newer git first on this PATH"
+  echo "1 finish-stuck-rebase test(s) failed"; exit 1
+fi
+
+echo "an older git (a stand-in that says 2.37.1): refused at once, nothing changed"
+R="$T/oldgit"; stuck "$R"; old=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
+mkdir -p "$T/oldgit-bin"; real=$(command -v git)
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo "git version 2.37.1 (Apple Git-137.1)"; exit 0; }\nexec "%s" "$@"\n' "$real" > "$T/oldgit-bin/git"
+chmod +x "$T/oldgit-bin/git"
+out=$(PATH="$T/oldgit-bin:$PATH" "$B/finish-stuck-rebase" "$R" 2>&1); check "$?" 1 "exits 1, as every refusal"
+check "$(echo "$out" | grep -c 'needs git 2.40 or newer .* this is git version 2.37.1 .* stopped, nothing changed')" "1" "  names the floor and this git"
+check "$(git -C "$R" rev-parse main)" "$old" "  main where it was"
+check "$(git -C "$R" rev-parse HEAD)" "$head" "  HEAD where it was"
+check "$(state "$R")" "left" "  the rebase state left"
+
 echo "the real shape: bulletin.md appended in place after the same line the picks append to"
 R="$T/ok"; stuck "$R"; old=$(git -C "$R" rev-parse main)
 echo "a post written in place" >> "$R/bulletin.md"

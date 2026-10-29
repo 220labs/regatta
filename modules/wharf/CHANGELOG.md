@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `finish-stuck-rebase` says it needs git 2.40 or newer at its start (exit 1, nothing changed), and its
+  suite fails once naming the floor on an older git: macOS 12's Apple git 2.37 failed it with
+  `fatal: ref HEAD is not a symbolic ref` on a 2016 runner Mac (2026-10-28).
 - `/finish` step 5 removes a seed's `.review` with its brief (confidential-reach S5).
 - `ci-provider --runner install`: a runner whose frozen LANG is no locale on its Mac (C.UTF-8 from a
   newer Mac's ssh, on macOS 12) takes an installed UTF-8 one and restarts, so its jobs no longer run
