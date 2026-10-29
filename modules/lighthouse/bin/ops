@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ops — the operations desk's own verbs (docs/lighthouse-ops-2026-10-26.md; S1 built usage and pick, S2
-the sampler: sample, status, is-host; S4 the intake: ingest, intake).
+the sampler: sample, status, is-host; S4 the intake: ingest, intake; S5 the sense, logged: classify, digest).
 
     ops sample [--print]             one row of the desk's metrics appended to the log dir's ops.jsonl
                                      (docs/lighthouse-ops-metrics-2026-10-26.md): the queue, the run slots,
@@ -16,7 +16,15 @@ the sampler: sample, status, is-host; S4 the intake: ingest, intake).
                                      `lighthouse/ops-projects` names, appended to the log dir's intake.jsonl,
                                      a row an event, metadata and the body's hash only; a confidential scope
                                      whose yard is not this host skipped (`skipped: fenced`), a torn registry
-                                     nothing (exit 3). Only in the desk's job on the ops host (exit 2 elsewhere)
+                                     nothing (exit 3), a pass that read no repo at all exit 5. Then `classify`'s
+                                     pass, in the same job. Only in the desk's job on the ops host (exit 2 elsewhere)
+    ops classify                     each new open issue the intake holds through four gate rows, a rung of the
+                                     ladder and every cap, one verdict row each appended to the log dir's
+                                     ops-verdicts.jsonl; nothing laid, commented, labelled or seeded (S5 is log-only).
+                                     Off without `lighthouse/ops.json`; exit 3 when it or the registry will not read;
+                                     the desk's job on the ops host only, as ingest (exit 2 elsewhere)
+    ops digest [--days 7] [--json]   the logged days' verdicts counted by rung, kind and would, the caps' refusals,
+                                     rung-1 candidates on published paths (D4's fact), errors and the gate's spend
     ops intake [--json]              the open issues the intake holds, each judged against the registry as it
                                      reads now; --json: {open, why, sig} for helm's board, a card each
     ops is-host                      exit 0 on `lighthouse/ops-host`, 3 on another host, 4 when the key
@@ -88,7 +96,17 @@ author (self: the registry's `machine_account`; member: an owner, member or coll
 body_sha (16 hex of the body's sha256, never the body), url, scope (the registry's); a Project item adds
 project, item, type and fields (single-select, number, date and iteration values: never a text field). A
 skip is a row once per change of reason: {scope, skipped: fenced} or {repo|project, skipped: unread, why}.
+Beside the registry the intake reads the two repos the issue road files into (S5): `helm/logbook-repo` and beacon's
+`sink.repo` (an issue there with no kind label is a contact), each keyed by its slug; `lighthouse/ops-bots` names the
+GitHub Apps that file for the road (author `bot`, self-like); a repo's open set is re-read once a day (`event:
+dropped` for a card GitHub no longer lists open); the first cursor is the newest `updated_at` read.
 LIGHTHOUSE_OPS_GH replaces `gh` (the suite's stub).
+
+The verdict row (S5), one an issue classified: ts, key (`<repo>#<number>`), repo, number, kind, author, scope, event,
+labels {importance, urgency, cost, clarity}, rung (0-4) and rung_why, caps {cap: ok | why}, would (lay, skipper, ask,
+alarm, none), held (the classes the text names), published (yes, no, unknown: D4's fact), dry, laid (false in S5),
+gate {provider, model, cost_usd, items} and gate_cost_usd (this issue's share), or error and tries. Never a title, a
+body, a path the text names or an address: the issue's words reach the gate and nothing else.
 
 Tests: tests/ops.sh; the pick's own cases are wharf's tests/test_ci_provider.sh; the board's row is
 helm's tests/test_helm.sh.
@@ -896,6 +914,8 @@ def cmd_is_host(a):
 # S9's `ops kick <repo>` calls ingest(only={key}): one repo, no Projects, under the same lock.
 
 INTAKE_DEADLINE = 300    # s a whole pass; a repo still out then is unread and keeps its cursor
+RECONCILE = 86400        # s between a repo's `state=open` re-reads (S5: a gone issue's card dropped)
+NO_READ = 5              # ingest's exit when the pass read no repo at all (never 1, a crash's; 2 and 3 are taken)
 GH_TIMEOUT = 60          # s one `gh api --paginate` read
 GH_WORKERS = 6           # repos read side by side: 39 repos x 2 reads well inside 10 minutes
 PROJECT_PAGES = 10       # 100 items a page: a Project's read is bounded
@@ -940,12 +960,15 @@ def kind_of(labels):
     return "other", (names[0] if names else None)
 
 
-def author_of(item, me):
-    """`self` for the machine account (the desk's own comments are never re-triaged), `member` for an owner,
-    member or collaborator, else `stranger`."""
+def author_of(item, me, bots=()):
+    """`self` for the machine account (the desk's own comments are never re-triaged), `bot` for a login
+    `lighthouse/ops-bots` names (beacon's and deadman's GitHub Apps: self-like, never a stranger), `member` for
+    an owner, member or collaborator, else `stranger`."""
     login = ((item.get("user") or item.get("author") or {}).get("login") or "") if isinstance(item, dict) else ""
     if me and login.lower() == me.lower():
         return "self"
+    if login and login.lower() in bots:
+        return "bot"
     assoc = item.get("author_association") or item.get("authorAssociation") or ""
     return "member" if str(assoc).upper() in MEMBER else "stranger"
 
@@ -969,12 +992,45 @@ def repo_fenced(key, reg, host):
     return None
 
 
-def gh_lines(path):
+def bots():
+    """The lowercased logins `lighthouse/ops-bots` names, one a line: the GitHub Apps that file the desk's own
+    kinds (beacon's contacts, deadman's alarms, as `<app>[bot]`)."""
+    return {l.strip().lower() for l in common.config_lines("lighthouse/ops-bots") or [] if l.strip()}
+
+
+def beacon_sink():
+    """beacon's `sink.repo` (owner/name) from its config (bin/beacon's path: $BEACON_CONFIG, else the config
+    dir's beacon/config.json), or None: read for the slug alone, never validated here."""
+    p = Path(os.environ.get("BEACON_CONFIG") or common.CONFIG / "beacon" / "config.json").expanduser()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    r = (d.get("sink") or {}).get("repo") if isinstance(d, dict) and isinstance(d.get("sink"), dict) else None
+    return r if isinstance(r, str) and r.count("/") == 1 else None
+
+
+def extra_repos(repos):
+    """{key: (slug, default kind)} for the two config keys the issue road files into beside the registry (AGENTS.md,
+    "Where an issue goes"): `helm/logbook-repo` (bugs, stalls, alarms) and beacon's `sink.repo` (contacts only, so
+    an issue there with no kind label is a contact). The key is the slug itself; a slug the registry already
+    reads is skipped. Never in a scope: they are the owner's own private repos, named by the owner's config."""
+    have = {e.get("github", "").lower() for e in repos.values() if isinstance(e, dict) and isinstance(e.get("github"), str)}
+    out = {}
+    log = (common.config_lines("helm/logbook-repo") or [None])[0]
+    # the sink first: a slug it shares with the logbook stays a contact (strangers' words never reach a model)
+    for slug, kind in ((beacon_sink(), "contact"), (log, "other")):
+        if isinstance(slug, str) and slug.count("/") == 1 and slug.lower() not in have and slug not in out:
+            out[slug] = (slug, kind)
+    return out
+
+
+def gh_lines(path, paginate=True):
     """[object] from `gh api --paginate PATH --jq '.[]'` — one JSON object a line — or raise Refused with
     the reason. The machine account's gh; the desk's marker never reaches it. ops.gh_lines is the suite's seam."""
     gh = os.environ.get("LIGHTHOUSE_OPS_GH") or "gh"
     try:
-        cp = subprocess.run([gh, "api", "--paginate", "-H", "Accept: application/vnd.github+json", path, "--jq", ".[]"],
+        cp = subprocess.run([gh, "api"] + (["--paginate"] if paginate else []) + ["-H", "Accept: application/vnd.github+json", path, "--jq", ".[]"],
                             capture_output=True, text=True, timeout=GH_TIMEOUT, env=child_env(), stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise Refused("gh took over %d s" % GH_TIMEOUT)
@@ -995,18 +1051,27 @@ def gh_lines(path):
     return out
 
 
-def read_repo(slug, since, csince=None):
-    """(issues, comments) of `slug`: issues updated since `since`, comments since `csince` (ISO; `since` when
-    none), pull requests left out; with no cursor yet, the open issues alone and no comments (a first pass
-    cards what is open, never the repo's history)."""
+def read_repo(slug, since, csince=None, reconcile=False):
+    """(issues, comments, open numbers) of `slug`: issues updated since `since`, comments since `csince` (ISO;
+    `since` when none), pull requests left out; with no cursor yet, the open issues alone and no comments (a first
+    pass cards what is open, never the repo's history). `reconcile` (once a day a repo) reads the open set whole
+    as well, so a deleted, transferred or closed-unseen issue's card is dropped; else the third is None. The fourth,
+    on a first pass only, is the repo's most recently updated issue (any state), the first cursor's source."""
     q = "sort=updated&direction=asc&per_page=100"
     if not since:
-        return [i for i in gh_lines("repos/%s/issues?state=open&%s" % (slug, q)) if "pull_request" not in i], []
+        # the first cursor is the newest update of any issue, open or closed, one page and read first: the open
+        # set's newest may be months old, and a cursor there replays the history since (S5's landing review); an
+        # update after this read is past the cursor, one before it is in the open read
+        head = gh_lines("repos/%s/issues?sort=updated&direction=desc&per_page=1&state=all" % slug, paginate=False)
+        return [i for i in gh_lines("repos/%s/issues?state=open&%s" % (slug, q)) if "pull_request" not in i], [], None, head
     issues = [i for i in gh_lines("repos/%s/issues?state=all&%s&since=%s" % (slug, q, urllib.parse.quote(since)))
               if "pull_request" not in i]
     comments = [c for c in gh_lines("repos/%s/issues/comments?%s&since=%s" % (slug, q, urllib.parse.quote(csince or since)))
                 if "/pull/" not in str(c.get("html_url") or "")]
-    return issues, comments
+    still = None
+    if reconcile:
+        still = {str(i.get("number")) for i in gh_lines("repos/%s/issues?state=open&%s" % (slug, q)) if "pull_request" not in i}
+    return issues, comments, still, None
 
 
 def load_intake_state():
@@ -1050,16 +1115,21 @@ def advance(items, since, edge):
     return new, top or None, sorted(edge)
 
 
-def repo_rows(key, slug, scope, rs, issues, comments, me, now, t0):
-    """The rows of one repo's read, and its state after: the cursor moved, the open set kept."""
+def repo_rows(key, slug, scope, rs, issues, comments, me, now, still=None, bots=(), default_kind="other", head=None):
+    """The rows of one repo's read, and its state after: the cursor moved, the open set kept. `still`: the open
+    numbers a reconcile read (read_repo's third), whose absence from it drops a card (`event: dropped`)."""
     first = not rs.get("since")
     since, csince = rs.get("since"), rs.get("comments_since")
     opened = dict(rs.get("open") or {})
     rows = []
     base = {"seen": int(now), "repo": key, "slug": slug, "scope": scope}
     if first:
-        # the first cursor is the read's start, not the newest open issue: the next pass starts where this one looked
-        after = {"since": iso(t0), "edge": [], "comments_since": iso(t0), "comments_edge": []}
+        # the first cursor is the newest `updated_at` read, GitHub's clock, never this host's: a clock running
+        # ahead would lose an update made in the gap (S4's landing review). No issue read leaves no cursor: the
+        # next pass is a first pass again, the open issues alone
+        _, top, edge = advance(list(issues) + list(head or []), None, [])   # `head`: read_repo's fourth
+        # a first pass read the open set whole: it counts as the day's re-read
+        after = {"since": top, "edge": edge, "comments_since": top, "comments_edge": [], "reconciled": int(now)}
     else:
         # issues and comments each keep their own cursor: one shared `since` would skip a label change made
         # between the two reads whenever a comment landed after it
@@ -1067,12 +1137,16 @@ def repo_rows(key, slug, scope, rs, issues, comments, me, now, t0):
         comments, top_c, edge_c = advance(comments, csince or since, rs.get("comments_edge"))
         after = {"since": top_i, "edge": edge_i, "comments_since": top_c, "comments_edge": edge_c}
     kinds = {n: (o.get("kind"), o.get("label")) for n, o in opened.items()}
+    touched = set()
     for i in issues:
         n = str(i.get("number"))
+        touched.add(n)
         kind, label = kind_of(i.get("labels"))
+        # the sink's issues are contacts whatever a label says: a label never sends a visitor's words to a model
+        kind = "contact" if default_kind == "contact" else default_kind if kind == "other" else kind
         kinds[n] = (kind, label)
         meta = {"number": i.get("number"), "kind": kind, "label": label, "created": epoch(i.get("created_at")),
-                "author": author_of(i, me), "body_sha": body_sha(i.get("body")), "url": i.get("html_url")}
+                "author": author_of(i, me, bots), "body_sha": body_sha(i.get("body")), "url": i.get("html_url")}
         prev = opened.get(n)
         if i.get("state") == "open":
             if first:
@@ -1090,6 +1164,16 @@ def repo_rows(key, slug, scope, rs, issues, comments, me, now, t0):
             opened.pop(n, None)
         if event:
             rows.append(dict(base, event=event, state=i.get("state"), updated=epoch(i.get("updated_at")), **meta))
+    if still is not None:
+        # an open card GitHub no longer lists as open, untouched by this pass's read: deleted, transferred, or closed
+        # where `since` never showed it. Its row keeps the card's metadata; the card goes
+        for n in sorted(set(opened) - still - touched, key=lambda x: int(x) if x.isdigit() else 0):
+            o = opened.pop(n)
+            rows.append(dict(base, event="dropped", state=None, updated=None,
+                             **{k: o.get(k) for k in ("number", "kind", "label", "created", "author", "body_sha", "url")}))
+        after["reconciled"] = int(now)
+    elif rs.get("reconciled"):
+        after["reconciled"] = rs["reconciled"]
     for c in comments:
         m = str(c.get("issue_url") or "").rstrip("/").rsplit("/", 1)
         n = m[-1] if len(m) == 2 and m[-1].isdigit() else None
@@ -1097,7 +1181,7 @@ def repo_rows(key, slug, scope, rs, issues, comments, me, now, t0):
         rows.append(dict(base, event="comment" if (c.get("created_at") or "") > (csince or since or "") else "comment-edited",
                          number=int(n) if n else None, comment=c.get("id"), kind=kind, label=label,
                          state="open" if n in opened else None, created=epoch(c.get("created_at")),
-                         updated=epoch(c.get("updated_at")), author=author_of(c, me), body_sha=body_sha(c.get("body")),
+                         updated=epoch(c.get("updated_at")), author=author_of(c, me, bots), body_sha=body_sha(c.get("body")),
                          url=c.get("html_url")))
     return rows, dict(after, open=opened)
 
@@ -1168,16 +1252,18 @@ def ingest(now=None, only=None):
     now = time.time() if now is None else now
     reg, torn = common.read_registry()
     if torn:
-        return [], None, "the registry %s cannot be read: nothing ingested (a torn registry is no fence)" % common.repos_json()
+        return [], None, "the registry %s cannot be read: nothing ingested (a torn registry is no fence)" % common.repos_json(), 0
     reg = reg or {}
     repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
     me = reg.get("machine_account") if isinstance(reg.get("machine_account"), str) else None
     host = common.host_name()
+    bot_logins = bots()
     st = load_intake_state()
     st_repos = st.setdefault("repos", {})
     fenced_before = set(st.get("fenced") or [])
     fenced_now, rows, unread, todo = set(), [], {}, {}
     base = {"seen": int(now)}
+    sink = beacon_sink()
     for key, entry in sorted(repos.items()):
         if only is not None and key not in only:
             continue
@@ -1190,14 +1276,20 @@ def ingest(now=None, only=None):
             fenced_now.add(fence)
             st_repos.pop(key, None)   # a fenced repo's cursor and open set never stay on this host
             continue
-        todo[key] = (slug, name)
+        # a registered repo that is also beacon's sink keeps the sink's kind: contact, whatever its labels
+        todo[key] = (slug, name, "contact" if sink and slug.lower() == sink.lower() else "other")
+    for key, (slug, kind) in sorted(extra_repos(repos).items()):
+        if only is None or key in only:
+            todo[key] = (slug, None, kind)
     for name in sorted(fenced_now - fenced_before):
         rows.append(dict(base, scope=name, skipped="fenced"))
     st["fenced"] = sorted(fenced_now | (fenced_before if only is not None else set()))
-    t0 = time.time()
     pool = ThreadPoolExecutor(max_workers=GH_WORKERS)
-    futs = {k: pool.submit(read_repo, slug, (st_repos.get(k) or {}).get("since"), (st_repos.get(k) or {}).get("comments_since"))
-            for k, (slug, _) in todo.items()}
+    def due(k):
+        rs = st_repos.get(k) or {}
+        return bool(rs.get("since")) and now - (rs.get("reconciled") or 0) >= RECONCILE
+    futs = {k: pool.submit(read_repo, slug, (st_repos.get(k) or {}).get("since"), (st_repos.get(k) or {}).get("comments_since"), due(k))
+            for k, (slug, _, _) in todo.items()}
     done, _ = wait(list(futs.values()), timeout=INTAKE_DEADLINE)
     # the queued reads are cancelled: the interpreter joins a pool's threads at exit, so a repo still queued
     # would be read after the pass gave it up (a running one ends within twice GH_TIMEOUT: two reads a repo)
@@ -1206,14 +1298,14 @@ def ingest(now=None, only=None):
         for gone in set(st_repos) - set(todo):
             st_repos.pop(gone)   # a repo gone from the registry, or with no github any more
     for key, f in sorted(futs.items()):
-        slug, scope = todo[key]
+        slug, scope, dkind = todo[key]
         rs = st_repos.get(key) or {}
         why = None
         if f not in done:
             why = "not read within the pass's %d s" % INTAKE_DEADLINE
         else:
             try:
-                issues, comments = f.result()
+                issues, comments, still, head = f.result()
             except Refused as e:
                 why = str(e)
             except Exception as e:   # noqa: BLE001 — one repo's crash is its reason, never the pass's end
@@ -1224,7 +1316,7 @@ def ingest(now=None, only=None):
                 rows.append(dict(base, repo=key, slug=slug, scope=scope, skipped="unread", why=why))
             st_repos[key] = dict(rs, skip=why)
             continue
-        got, after = repo_rows(key, slug, scope, rs, issues, comments, me, now, t0)
+        got, after = repo_rows(key, slug, scope, rs, issues, comments, me, now, still, bot_logins, dkind, head)
         rows += got
         st_repos[key] = after
     projects, punread, ptrunc = 0, {}, {}
@@ -1274,7 +1366,7 @@ def ingest(now=None, only=None):
                                  repo=key, slug=rslug or None, scope=name, number=c.get("number"), kind=kind, label=label,
                                  state=state, created=epoch(it.get("createdAt")),
                                  updated=epoch(it.get("updatedAt")),
-                                 author=author_of(c, me) if c.get("__typename") == "Issue" else None,
+                                 author=author_of(c, me, bot_logins) if c.get("__typename") == "Issue" else None,
                                  body_sha=body_sha(c.get("body")), url=url, fields=item_fields(it)))
                 projects += 1
             st_proj[spec] = {"since": top or ps.get("since"), "edge": edge}
@@ -1292,7 +1384,7 @@ def ingest(now=None, only=None):
         "; unread: %s" % "; ".join("%s (%s)" % kv for kv in sorted(unread.items())) if unread else "",
         "; Projects unread: %s" % "; ".join("%s (%s)" % kv for kv in sorted(punread.items())) if punread else "",
         "; Projects cut at their first %s" % "; ".join("%s (%d items)" % kv for kv in sorted(ptrunc.items())) if ptrunc else "")
-    return rows, summary, None
+    return rows, summary, None, len(todo) - len(unread)
 
 
 def intake_lock():
@@ -1325,14 +1417,18 @@ def open_items(now=None):
         return [], "%s unreadable (%s)" % (intake_state_file(), type(e).__name__)
     host = common.host_name()
     repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
+    extras = extra_repos(repos)
     out = []
     for key, rs in sorted(((st.get("repos") or {}) if isinstance(st, dict) else {}).items()):
-        if key not in repos or not isinstance(rs, dict):
+        if (key not in repos and key not in extras) or not isinstance(rs, dict):
             continue
-        name, _ = common.scope_of_repo(key, reg=reg)
-        if repo_fenced(key, reg, host):
-            continue
-        slug = (repos.get(key) or {}).get("github")
+        if key in extras:
+            name, slug = None, extras[key][0]
+        else:
+            name, _ = common.scope_of_repo(key, reg=reg)
+            if repo_fenced(key, reg, host):
+                continue
+            slug = (repos.get(key) or {}).get("github")
         for n, o in sorted((rs.get("open") or {}).items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0):
             if isinstance(o, dict):
                 out.append({"repo": key, "slug": slug, "number": o.get("number"), "kind": o.get("kind") or "other",
@@ -1354,14 +1450,19 @@ def cmd_ingest(a):
         print("ops ingest: another pass holds %s; this one skipped" % (common.LOG_DIR / "intake.lock"))
         return 0
     try:
-        rows, summary, refused = ingest()
+        rows, summary, refused, read = ingest()
     finally:
         lock.close()
     if refused:
         print("ops ingest: %s" % refused, file=sys.stderr)
         return 3
     print("ops ingest: %s — %s" % (intake_file(), summary))
-    return 0
+    # the classifier runs in the same job, after the pass (S5): off without lighthouse/ops.json
+    crc = run_classify()
+    if not read:
+        print("ops ingest: no repo read at all — the fleet has none with a `github` key, or every read failed", file=sys.stderr)
+        return NO_READ
+    return crc
 
 
 def cmd_intake(a):
@@ -1380,6 +1481,688 @@ def cmd_intake(a):
         print("ops intake: no open issue in the fleet's intake")
     return 0
 
+# ---- sense, logged (S5; docs/lighthouse-ops-sense-2026-10-26.md) ----------------------------------------
+# `ops classify` takes each new open issue the intake holds through four rows of the core's gate
+# (lighthouse.importance, .urgency, .cost, .clarity), derives a rung of the ladder from the labels and the
+# issue's facts (ladder(), a pure function), judges every cap before a lay (judge_caps()), and appends one
+# verdict row to the log dir's ops-verdicts.jsonl. S5 lays nothing, comments nothing, labels nothing, seeds
+# nothing, whatever `dry` says: `ops send` is S6's, and reads `dry` there. The issue's title and body are
+# fetched with the machine account's gh at classify time, handed to the gate, and never written anywhere; a
+# verdict row holds the key, labels and metadata. A contact, a stall or a dead-man alarm is rung 4 by its kind
+# alone and never goes to a model (strangers' words stay on GitHub; the desk never answers a contact).
+#
+# The ladder (the component's table; ladder()): 4 alarm — kind contact, stall or deadman, or importance 5;
+# 3 ask — unclear, or cost l at importance 2 or less; 1 just happens — a bug by a member, the machine account or
+# a configured bot, clear, cost xs or s, importance 3 or less; 2 a skipper's ship — any other clear bug, or
+# importance 4; 0 none — the rest (a clear feature request, say): its card stands. The table's place conditions
+# (the repo not confidential, its scope's yard this host, no held class in the text) are caps here, so the
+# logged week counts rung-1 candidates the place alone keeps back (D4's fact).
+# `would`: lay (rung 1, every cap passes) · skipper (rung 1 refused by an issue cap — labels, repos, importance,
+# cost, place, held class — or rung 2) · ask (rung 3, a member's issue; never a stranger's) · alarm (rung 4) ·
+# none (rung 0, a stranger's rung 3, a count or week cap refusing rung 1 or 2: the card waits).
+# lighthouse/ops.json: OPS_DEFAULTS' keys only (one unknown is a refusal, never a silent default); no file, the
+# desk is off. A cap only tightens the ladder: importance_auto_max 4 still stops rung 1 at 3.
+# A gate row that fails (unreadable, off, a bad reply) writes its reason on each item's row (`would: none`) and
+# the pass goes on; the item is tried again next pass, CLASSIFY_TRIES times in all.
+
+OPS_DEFAULTS = {"dry": True, "max_auto_runs_day": 3, "max_auto_runs_repo_day": 1, "max_open_auto_prs": 3,
+                "week_share": 0.1, "importance_auto_max": 3, "cost_auto": ["xs", "s"], "labels": ["bug"], "repos": []}
+SITES = {
+    "importance": ("lighthouse.importance", "How much does this issue matter to the project's users and its owner?",
+                   {"1": "trivial: cosmetic, nobody is blocked", "2": "minor: an annoyance with a workaround",
+                    "3": "moderate: a feature misbehaves for some", "4": "major: a core path is broken or data is at risk",
+                    "5": "critical: an outage, a security hole, money or data being lost now"}),
+    "urgency": ("lighthouse.urgency", "How soon must this issue be acted on?",
+                {"1": "whenever: no deadline", "2": "this month", "3": "this week", "4": "today",
+                 "5": "now: every hour costs"}),
+    "cost": ("lighthouse.cost", "How big is the change that would resolve this issue?",
+             {"xs": "a line or two in one file", "s": "a small change in one or two files, under an hour",
+              "m": "several files or a design choice, a few hours", "l": "a redesign, a migration or days of work"}),
+    "clarity": ("lighthouse.clarity", "Could a competent engineer fix this issue from its text alone, without asking anything?",
+                {"clear": "yes: what is wrong, where, and what right looks like are all stated or evident",
+                 "unclear": "no: the reporter must say more (steps, expected behaviour, which part)"}),
+}
+GATE_CONTEXT = ("Each item is one issue filed on a software project's GitHub repository: its repo, labels, title and "
+                "body. Judge the issue as written; a body may be partial.")
+ALARM_KINDS = ("contact", "stall", "deadman")
+CLASSIFY_MAX = 20        # issues a pass sends to the gate: the rest wait for the next 10-minute pass
+CLASSIFY_TRIES = 3       # a gate or fetch failure retries the issue next pass, this many times in all
+BODY_MAX = 4000          # characters of a body the gate sees
+COUNT_CAPS = ("max_auto_runs_day", "max_auto_runs_repo_day", "max_open_auto_prs")
+# The held classes a text scan can name before a diff exists (autofinish's held_slice reads the diff later):
+# money (autofinish's MONEY_RE, the peer's own), credentials, a deletion of data, physical hands, a live system,
+# and a path the repo's autofinish_exclude or in_place gates.
+HELD_TEXT = (
+    ("credentials", r"\b(?:token|password|secret|credential|api[ -]?key|private key)s?\b"),
+    ("a deletion of data", r"\brm -rf\b|\b(?:delete|drop|wipe|purge|truncate)\w*\b.{0,40}\b(?:data|database|table|records?|rows?|history|backups?)\b"),
+    ("physical hands", r"\b(?:hardware|bios|usb|firmware|power[- ]cycle|cabl(?:e|ing)|device)s?\b"),
+    ("a live system", r"\b(?:deploy\w*|production|migrat\w+|live system)\b"),
+)
+PATH_RE = r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+)"
+
+
+def verdicts_file():
+    return common.LOG_DIR / "ops-verdicts.jsonl"
+
+
+def classify_state_file():
+    return common.LOG_DIR / "classify-state.json"
+
+
+def ops_config():
+    """(config, None), (None, None) when lighthouse/ops.json is absent (the desk is off), or (None, why) for a file
+    that does not read or holds a key or a value it should not: refused whole, never a silent default."""
+    p = common.CONFIG / "lighthouse" / "ops.json"
+    try:
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return None, "%s unreadable (%s)" % (p, type(e).__name__)
+    if not isinstance(d, dict):
+        return None, "%s is not a JSON object" % p
+    bad = sorted(k for k in d if k not in OPS_DEFAULTS and k != "_")
+    if bad:
+        return None, "%s: unknown key %s (%s)" % (p, ", ".join(bad), ", ".join(OPS_DEFAULTS))
+    cfg = dict(OPS_DEFAULTS, **{k: v for k, v in d.items() if k != "_"})
+    if not isinstance(cfg["dry"], bool):
+        return None, "%s: dry is true or false" % p
+    for k in COUNT_CAPS + ("importance_auto_max",):
+        if isinstance(cfg[k], bool) or not isinstance(cfg[k], int) or cfg[k] < 0:
+            return None, "%s: %s is a whole number" % (p, k)
+    if isinstance(cfg["week_share"], bool) or not isinstance(cfg["week_share"], (int, float)) or not 0 <= cfg["week_share"] <= 1:
+        return None, "%s: week_share is a fraction from 0 to 1" % p
+    for k in ("cost_auto", "labels", "repos"):
+        if not isinstance(cfg[k], list) or not all(isinstance(x, str) and x for x in cfg[k]):
+            return None, "%s: %s is a list of names" % (p, k)
+    if not set(cfg["cost_auto"]) <= set(SITES["cost"][2]):
+        return None, "%s: cost_auto takes %s" % (p, ", ".join(SITES["cost"][2]))
+    return cfg, None
+
+
+def ladder(labels, facts):
+    """(rung, why) from the four labels ({importance: "1".."5", urgency, cost: xs|s|m|l, clarity}) and the
+    issue's facts ({kind, author}): the component's table, the place conditions left to the caps. Pure."""
+    kind, author = facts.get("kind"), facts.get("author")
+    if kind in ALARM_KINDS:
+        return 4, "kind %s" % kind
+    imp = int(labels["importance"])
+    if imp == 5:
+        return 4, "importance 5"
+    if labels["clarity"] == "unclear":
+        return 3, "unclear"
+    if labels["cost"] == "l" and imp <= 2:
+        return 3, "cost l at importance %d" % imp
+    if kind == "bug" and labels["cost"] in ("xs", "s") and imp <= 3 and author in ("member", "self", "bot"):
+        return 1, "a clear %s bug at importance %d by a %s" % (labels["cost"], imp, author)
+    if kind == "bug":
+        return 2, "a clear bug, cost %s, importance %d%s" % (labels["cost"], imp,
+                                                             "" if author in ("member", "self", "bot") else ", by a stranger")
+    if imp >= 4:
+        return 2, "importance %d" % imp
+    return 0, "clear, no bug label, importance %d" % imp
+
+
+def would_of(rung, caps, facts):
+    """The action a verdict names: the header's `would` from the rung and the caps' refusals."""
+    refused = [k for k, v in caps.items() if v != "ok"]
+    if rung == 4:
+        return "alarm"
+    if rung == 3:
+        return "none" if facts.get("author") == "stranger" else "ask"
+    if rung in (1, 2) and "week_share" in refused:
+        return "none"
+    if rung == 1:
+        if not refused:
+            return "lay"
+        return "none" if set(refused) <= set(COUNT_CAPS) else "skipper"
+    return "skipper" if rung == 2 else "none"
+
+
+_AF = []
+
+
+def autofinish():
+    """wharf-runs' autofinish loaded once (its MONEY_RE, repo_config, published, branches.main_branch), or None."""
+    if not _AF:
+        from importlib.machinery import SourceFileLoader
+        p = common.tool("autofinish")
+        try:
+            _AF.append(SourceFileLoader("autofinish_for_ops", str(p)).load_module() if p else None)
+        # SystemExit too: autofinish's header exits when wharf's branches.py is missing (S5's landing review)
+        except (Exception, SystemExit):   # noqa: BLE001 — an unloadable peer is "unread", a hold, never the pass's end
+            _AF.append(None)
+    return _AF[0]
+
+
+def repo_paths(key):
+    """(exclude prefixes, published paths) of registry repo `key` from its clone on this host, as origin's main
+    holds them (autofinish's own readers), or None when there is no clone or no autofinish."""
+    af, clone = autofinish(), common.PROJECTS / key
+    if af is None or not (clone / ".git").exists():
+        return None
+    try:
+        main = af.branches.main_branch(clone) if hasattr(af, "branches") else "main"
+        _, _, problem, exclude = af.repo_config(clone, main)
+        if problem and not problem.startswith(("no .claude/workflow.json", "unknown autofinish value")):
+            return None
+        return list(exclude), af.published(clone, main)
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def held_classes(text, paths):
+    """The held classes the issue's text names ([word]); `paths` repo_paths()' answer. A class it cannot read
+    (no autofinish for money, no clone for the gated paths) is named as unread: a hold, never a pass."""
+    import re
+    out = [name for name, pat in HELD_TEXT if re.search(pat, text, re.I)]
+    af = autofinish()
+    if af is None or not hasattr(af, "MONEY_RE"):
+        out.append("money unread (no autofinish)")
+    elif af.MONEY_RE.search(text):
+        out.append("money")
+    named = named_paths(text)
+    if paths is None:
+        if named:
+            out.append("gated paths unread (no clone here)")
+    elif any(p.startswith(tuple(paths[0])) for p in named if paths[0]):
+        out.append("a gated path")
+    return out
+
+
+def named_paths(text):
+    """The repo paths an issue's text names: PATH_RE's matches, a sentence's closing punctuation and a leading
+    `./` cut, so `modules/x/bin/ops.` reads as the file (S5's landing review)."""
+    import re
+    out = []
+    for p in re.findall(PATH_RE, text):
+        p = p.rstrip(".,;:")
+        while p.startswith("./"):
+            p = p[2:]
+        if "/" in p:
+            out.append(p)
+    return out
+
+
+def published_of(text, paths):
+    """D4's fact for the digest: `yes` when a path the issue names is on the repo's allowlist (or under a listed
+    folder), `no` when it names paths and none is, `unknown` when it names none or the allowlist was not read."""
+    import re
+    named = named_paths(text)
+    if not named or paths is None:
+        return "unknown"
+    pub = paths[1]
+    return "yes" if any(p in pub or any(x.startswith(p.rstrip("/") + "/") for x in pub) for p in named) else "no"
+
+
+def gh_json(path):
+    """One `gh api PATH` answer, parsed (no pagination), or Refused naming why. The machine account's gh."""
+    gh = os.environ.get("LIGHTHOUSE_OPS_GH") or "gh"
+    try:
+        cp = subprocess.run([gh, "api", "-H", "Accept: application/vnd.github+json", path],
+                            capture_output=True, text=True, timeout=GH_TIMEOUT, env=child_env(), stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise Refused("gh took over %d s" % GH_TIMEOUT)
+    except OSError as e:
+        raise Refused("gh did not start (%s)" % (e.strerror or type(e).__name__))
+    if cp.returncode:
+        last = (cp.stderr or "").strip().splitlines()[-1:]
+        raise Refused("gh exited %d%s" % (cp.returncode, (": " + last[0][:200]) if last else ""))
+    try:
+        return json.loads(cp.stdout)
+    except ValueError:
+        raise Refused("gh printed no JSON")
+
+
+def gate_module():
+    """The core's bin/gate, loaded as bin/jev's callers load it (its header)."""
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader("gate", str(Path(find_core.hooks()).parent / "bin" / "gate")).load_module()
+
+
+def gate_reason(e):
+    """A gate error's reason without its tail: the gate's messages end in the model's reply or claude's output
+    (`the reply is not JSON: '…'`), which may quote the issue, and a verdict row holds no issue words."""
+    parts = str(e).split(": ")
+    return ": ".join(parts[:2])[:200] or type(e).__name__
+
+
+def gate_down():
+    """None when the four rows resolve, else why the gate can classify nothing: it does not load, a row is missing,
+    off or invalid. The same for every item, so it holds the queue and spends no item's tries (S5's landing review:
+    an overlay table without the rows would otherwise finish the whole backlog unclassified in three passes)."""
+    try:
+        g = gate_module()
+    except Exception as e:   # noqa: BLE001
+        return "the core's gate did not load (%s)" % type(e).__name__
+    if not hasattr(g, "resolve"):
+        return None
+    for dim in SITES:
+        site = SITES[dim][0]
+        try:
+            row = g.resolve(site)
+        except Exception as e:   # noqa: BLE001 — GateError, GateOff, a table that does not read
+            return gate_reason(e)
+        if row is None:
+            return "%s is off (when_off: skip)" % site
+    return None
+
+
+def run_gate(items, sources):
+    """{dim: ({id: label}, None) | (None, why)} and the pass's cost in list USD: one gate call a row for every item of
+    one source, the four rows side by side. `sources` {id: source} — the gate guards a confidential scope's data by
+    source, so items are grouped by it."""
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        g = gate_module()
+    except Exception as e:   # noqa: BLE001
+        return {d: (None, "the core's gate did not load (%s)" % type(e).__name__) for d in SITES}, 0.0, {}
+    groups = {}
+    for i, src in sources.items():
+        groups.setdefault(src, {})[i] = items[i]
+
+    def one(dim):
+        site, ask, labels = SITES[dim]
+        got, cost, why, meta = {}, 0.0, None, {}
+        for src, its in sorted(groups.items()):
+            try:
+                r = g.classify(site, its, ask, labels, context=GATE_CONTEXT, source=src, caller="ops classify")
+            except Exception as e:   # noqa: BLE001 — GateError and anything else: the reason, never the pass's end
+                why = (why + "; " if why else "") + gate_reason(e)
+                continue
+            if r is None:
+                why = "%s is off (when_off: skip)" % site
+                continue
+            cost += float(r.get("cost_usd") or 0)
+            meta = {"provider": r.get("provider"), "model": r.get("model")}
+            got.update({i: v["label"] for i, v in r["items"].items()})
+        return dim, got, why, cost, meta
+    out, total, meta = {}, 0.0, {}
+    with ThreadPoolExecutor(max_workers=len(SITES)) as pool:
+        for dim, got, why, cost, m in pool.map(one, list(SITES)):
+            out[dim] = (got, why)
+            total += cost
+            meta = meta or m
+    return out, total, meta
+
+
+def read_verdicts(since):
+    """The verdict rows written at or after epoch `since`; a torn line is skipped."""
+    out = []
+    try:
+        with open(verdicts_file(), encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and num(r.get("ts")) and r["ts"] >= since:
+                    out.append(r)
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def week_cap(cfg, spent, now):
+    """The week_share cap against S2's token weeks: "ok" or why it refuses. The last ops.jsonl row must be fresh;
+    no eligible login is the week over; the desk's own spend (the gate's, from the verdict log, and S6's runs'
+    `run_cost_usd`) over the fleet's week list spend (the row's `cost.week_list`) must stay under week_share. The row
+    holds no reset time, so a pace (tight) is not judged here: autofinish's week_tight judges it at the launch."""
+    row, why = last_row()
+    if row is None:
+        return "the week is unread (%s)" % ("no ops sample yet" if why.startswith("no sample") else "ops.jsonl unreadable")
+    if now - row["as_of"] > STALE:
+        return "the week is unread (the last sample is %s old)" % ago(now - row["as_of"])
+    weeks = row.get("weeks") if isinstance(row.get("weeks"), dict) else None
+    if not weeks:
+        return "the week is unread (%s)" % ((row.get("why") or {}).get("weeks") or "no weeks in the sample")
+    if not any(isinstance(w, dict) and w.get("eligible") for w in weeks.values()):
+        return "the week is over: no login is eligible"
+    lst = (row.get("cost") or {}).get("week_list") if isinstance(row.get("cost"), dict) else None
+    if not num(lst) or lst <= 0:
+        return "the week's spend is unread"
+    if spent / lst > cfg["week_share"]:
+        return "the desk spent %d%% of the week's list spend, over its %d%%" % (round(spent / lst * 100), round(cfg["week_share"] * 100))
+    return "ok"
+
+
+def open_auto_prs(owners):
+    """The open pull requests labelled ops:auto across `owners`, by GitHub's search (one read an owner), or None."""
+    n = 0
+    for o in sorted(owners):
+        try:
+            d = gh_json("search/issues?q=%s" % urllib.parse.quote('is:pr is:open label:"ops:auto" user:%s' % o))
+        except Refused:
+            return None
+        if not isinstance(d, dict) or not isinstance(d.get("total_count"), int):
+            return None
+        n += d["total_count"]
+    return n
+
+
+def judge_caps(cfg, rung, v, facts, ctx):
+    """{cap: "ok" | why} for one verdict: every cap for rung 1, the week alone for rung 2, none above. `ctx` the
+    pass's shared reads (the verdict log's last day, the week's spend, the open PR count), filled lazily."""
+    if rung not in (1, 2):
+        return {}
+    now = ctx["now"]
+    if "week" not in ctx:
+        ctx["week"] = week_cap(cfg, ctx["spent"], now)
+    caps = {"week_share": ctx["week"]}
+    if rung == 2:
+        return caps
+    lays = [r for r in ctx["day"] if r.get("would") == "lay" or r.get("laid")]
+    caps["max_auto_runs_day"] = "ok" if len(lays) < cfg["max_auto_runs_day"] else \
+        "%d laid in the last day, the cap %d" % (len(lays), cfg["max_auto_runs_day"])
+    here = [r for r in lays if r.get("repo") == v["repo"]]
+    caps["max_auto_runs_repo_day"] = "ok" if len(here) < cfg["max_auto_runs_repo_day"] else \
+        "%d laid in %s in the last day, the cap %d" % (len(here), v["repo"], cfg["max_auto_runs_repo_day"])
+    if "prs" not in ctx:
+        ctx["prs"] = open_auto_prs(ctx["owners"])
+    caps["max_open_auto_prs"] = "the open ops:auto PRs are unread" if ctx["prs"] is None else \
+        "ok" if ctx["prs"] < cfg["max_open_auto_prs"] else "%d open ops:auto PRs, the cap %d" % (ctx["prs"], cfg["max_open_auto_prs"])
+    imp = int(v["labels"]["importance"])
+    caps["importance_auto_max"] = "ok" if imp <= cfg["importance_auto_max"] else \
+        "importance %d over %d" % (imp, cfg["importance_auto_max"])
+    caps["cost_auto"] = "ok" if v["labels"]["cost"] in cfg["cost_auto"] else "cost %s not in %s" % (v["labels"]["cost"], ", ".join(cfg["cost_auto"]))
+    have = {x.lower() for x in facts.get("labels") or []}
+    caps["labels"] = "ok" if have & {x.lower() for x in cfg["labels"]} else "no label of %s" % ", ".join(cfg["labels"])
+    caps["repos"] = "ok" if "*" in cfg["repos"] or v["repo"] in cfg["repos"] else "%s is not in repos" % v["repo"]
+    caps["place"] = facts["place"]
+    caps["held"] = "ok" if not facts["held"] else "held: %s" % ", ".join(facts["held"])
+    return caps
+
+
+def place_of(key, reg, host):
+    """"ok" when a rung-1 fix could be laid here: a registry repo, in no confidential scope, whose scope's yard is
+    this host (the component's "a scope whose yard is another host is out of rung 1"); else why not."""
+    repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
+    if key not in repos:
+        return "%s is not a registry repo" % key
+    scopes = reg.get("scopes") if isinstance(reg.get("scopes"), dict) else {}
+    for n, sc in sorted(scopes.items()):
+        if isinstance(sc, dict) and sc.get("confidential") is True and common.scope_of_repo(key, reg={"scopes": {n: sc}, "repos": repos})[0]:
+            return "in confidential scope %s" % n
+    name, _ = common.scope_of_repo(key, reg=reg)
+    yard = (scopes.get(name) or {}).get("yard") if name else None
+    if not (isinstance(yard, str) and yard.lower() == host):
+        return "its scope's yard is %s, not this host" % (yard or "unnamed")
+    return "ok"
+
+
+def pending_rows(cst, st):
+    """({key: {row, tries}}, offset): the state's queue with the open issue rows intake.jsonl gained past its offset
+    merged in (the last row per issue; a new body or label starts its tries again), less what is classified at that
+    body and label, and what intake-state.json no longer holds open. An issue over a pass's CLASSIFY_MAX stays queued."""
+    path = intake_file()
+    off = cst.get("offset") or 0
+    chunk = b""
+    try:
+        if path.stat().st_size < off:
+            off = 0   # the file was replaced or cut: read it again, `done` keeps what was classified
+        with open(path, "rb") as fh:
+            fh.seek(off)
+            chunk = fh.read()
+    except FileNotFoundError:
+        off = 0
+    end = chunk.rfind(b"\n") + 1   # a torn last line waits for the next pass
+    queue = {k: q for k, q in (cst.get("pending") or {}).items() if isinstance(q, dict) and isinstance(q.get("row"), dict)}
+    for line in chunk[:end].splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("event") not in ("seen", "opened", "reopened", "edited") \
+                or r.get("state") != "open" or not r.get("repo") or not isinstance(r.get("number"), int):
+            continue
+        key = "%s#%d" % (r["repo"], r["number"])
+        old = (queue.get(key) or {}).get("row") or {}
+        same = (old.get("body_sha"), old.get("label")) == (r.get("body_sha"), r.get("label"))
+        queue[key] = {"row": r, "tries": queue[key]["tries"] if key in queue and same else 0}
+    done = cst.get("done") or {}
+    out = {}
+    for key, q in queue.items():
+        r = q["row"]
+        if str(r.get("number")) not in (((st.get("repos") or {}).get(r.get("repo")) or {}).get("open") or {}):
+            continue   # closed or dropped since
+        if done.get(key) == [r.get("body_sha"), r.get("label")]:
+            continue
+        out[key] = q
+    return out, off + end
+
+
+def classify(now=None):
+    """(rows, summary, code): one classify pass. code 0, or 3 when the registry or ops.json will not read (nothing
+    classified) or the gate cannot resolve its four rows (the queue held, no try spent). Off (no ops.json): no
+    rows, the summary says so."""
+    now = time.time() if now is None else now
+    cfg, why = ops_config()
+    if why:
+        return [], why, 3
+    if cfg is None:
+        return [], "off: no %s (the desk is off)" % (common.CONFIG / "lighthouse" / "ops.json"), 0
+    reg, torn = common.read_registry()
+    if torn:
+        return [], "the registry %s cannot be read: nothing classified (a torn registry is no fence)" % common.repos_json(), 3
+    reg = reg or {}   # read once: every repo is judged against this one read (the trap on a re-read mid-loop)
+    host = common.host_name()
+    st = load_intake_state()
+    try:
+        cst = json.loads(classify_state_file().read_text(encoding="utf-8"))
+        cst = cst if isinstance(cst, dict) else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        cst = {}
+    queue, offset = pending_rows(cst, st)
+    done = dict(cst.get("done") or {})
+    repos = reg.get("repos") if isinstance(reg.get("repos"), dict) else {}
+    extras = extra_repos(repos)
+    rows, fenced, gone = [], 0, 0
+    week = read_verdicts(now - 7 * 86400)
+    ctx = {"now": now, "day": [r for r in week if r["ts"] >= now - 86400],
+           "spent": sum(float(r.get("gate_cost_usd") or 0) + float(r.get("run_cost_usd") or 0) for r in week),
+           "owners": {(e.get("github") or "").split("/")[0] for e in repos.values() if isinstance(e, dict) and isinstance(e.get("github"), str)} - {""}}
+
+    def verdict(key, r, **kw):
+        v = {"ts": int(now), "key": key, "repo": r["repo"], "number": r["number"], "kind": r.get("kind"),
+             "author": r.get("author"), "scope": r.get("scope"), "event": r.get("event"), "dry": cfg["dry"], "laid": False}
+        v.update(kw)
+        return v
+    def finish(key, r):
+        done[key] = [r.get("body_sha"), r.get("label")]
+        queue.pop(key, None)
+
+    def failed(key, r, **kw):
+        tries = queue[key]["tries"] + 1
+        rows.append(verdict(key, r, labels=kw.pop("labels", None), rung=None, caps={}, would="none", tries=tries, **kw))
+        if tries >= CLASSIFY_TRIES:
+            finish(key, r)
+        else:
+            queue[key]["tries"] = tries
+    batch, facts, fetched, held = {}, {}, 0, 0
+    down = gate_down() if any(q["row"].get("kind") not in ALARM_KINDS for q in queue.values()) else None
+    for key, q in sorted(queue.items(), key=lambda kv: (kv[1]["row"].get("seen") or 0, kv[0])):
+        r = q["row"]
+        if r["repo"] not in repos and r["repo"] not in extras:
+            queue.pop(key)
+            continue
+        if r["repo"] in repos and repo_fenced(r["repo"], reg, host):
+            fenced += 1   # never fetched, never sent to a model, no row, no state: a confidential scope is classified on its yard
+            queue.pop(key)
+            continue
+        if r.get("kind") in ALARM_KINDS:
+            rows.append(verdict(key, r, labels=None, rung=4, rung_why="kind %s" % r["kind"], caps={}, would="alarm",
+                                gate="skipped: an alarm kind goes to no model", gate_cost_usd=0.0, published="unknown"))
+            finish(key, r)
+            continue
+        if down:
+            held += 1   # kept queued, its tries untouched: the gate's failure is no fault of the item's
+            continue
+        # every fetch counts against the pass's limit, a failed one too: a hung gh costs GH_TIMEOUT each
+        if fetched >= CLASSIFY_MAX:
+            continue
+        fetched += 1
+        slug = (repos.get(r["repo"]) or {}).get("github") if r["repo"] in repos else extras[r["repo"]][0]
+        try:
+            issue = gh_json("repos/%s/issues/%d" % (slug, r["number"]))
+            if not isinstance(issue, dict):
+                raise Refused("gh answered no issue")
+        except Refused as e:
+            failed(key, r, error="fetch: %s" % e, gate_cost_usd=0.0, published="unknown")
+            continue
+        # gh follows a transferred issue's redirect: an answer from another repo (a confidential one, maybe) is
+        # never read on, and the fence judged only this one (S5's landing review)
+        if not str(issue.get("repository_url") or "").lower().endswith("/repos/" + slug.lower()):
+            gone += 1
+            queue.pop(key, None)
+            continue
+        if issue.get("state") != "open":
+            gone += 1
+            queue.pop(key, None)   # not `done`: a reopened issue, unchanged, is classified then
+            continue
+        names = [l.get("name") if isinstance(l, dict) else l for l in issue.get("labels") or []]
+        names = [n for n in names if isinstance(n, str)]
+        title, body = str(issue.get("title") or ""), str(issue.get("body") or "")
+        text = "%s\n%s" % (title, body)
+        paths = repo_paths(r["repo"]) if r["repo"] in repos else None
+        batch[key] = "repo: %s\nlabels: %s\ntitle: %s\nbody: %s" % (r["repo"], ", ".join(names) or "none", title, body[:BODY_MAX])
+        facts[key] = {"kind": r.get("kind"), "author": r.get("author"), "labels": names, "held": held_classes(text, paths),
+                      "place": place_of(r["repo"], reg, host), "published": published_of(text, paths), "row": r}
+        del title, body, text   # the issue's words go to the gate and nowhere else
+    if batch:
+        ids = {key: "i%d" % n for n, key in enumerate(sorted(batch))}
+        got, cost, meta = run_gate({ids[k]: t for k, t in batch.items()},
+                                   {ids[k]: facts[k]["row"]["repo"] for k in batch})
+        share = round(cost / len(batch), 6)
+        ctx["spent"] += cost
+        batch.clear()
+        for key in sorted(ids):
+            f, r, i = facts[key], facts[key]["row"], ids[key]
+            labels = {d: got[d][0].get(i) for d in SITES}
+            errs = ["%s: %s" % (d, got[d][1] or "no label") for d in SITES if labels[d] is None]
+            gate = dict(meta, cost_usd=round(cost, 6), items=len(ids))
+            if errs:
+                failed(key, r, labels=labels, error="gate: " + "; ".join(errs), gate=gate, gate_cost_usd=share,
+                       published=f["published"])
+                continue
+            rung, rwhy = ladder(labels, f)
+            v = verdict(key, r, labels=labels, rung=rung, rung_why=rwhy, gate=gate, gate_cost_usd=share, published=f["published"],
+                        held=f["held"])
+            v["caps"] = judge_caps(cfg, rung, v, f, ctx)
+            v["would"] = would_of(rung, v["caps"], f)
+            rows.append(v)
+            if v["would"] == "lay":
+                ctx["day"].append(v)   # this pass's lays count against the day's caps too
+            finish(key, r)
+    append_verdicts(rows)
+    cst.update(offset=offset, done=done, pending=queue, as_of=int(now))
+    path = classify_state_file()
+    os.makedirs(path.parent, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(cst, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    by = {}
+    for v in rows:
+        by[v["would"]] = by.get(v["would"], 0) + 1
+    summary = "%d verdicts (%s)%s%s%s%s" % (
+        len(rows), ", ".join("%d %s" % (n, w) for w, n in sorted(by.items())) or "none",
+        "; %d fenced" % fenced if fenced else "", "; %d closed since" % gone if gone else "",
+        "; %d queued for the next pass" % len(queue) if queue else "",
+        "" if cfg["dry"] else "; dry is false, but S5 lays nothing: `ops send` is S6's")
+    if down:
+        return rows, "%s; the gate cannot classify, %d held, no try spent: %s" % (summary, held, down), 3
+    return rows, summary, 0
+
+
+def append_verdicts(rows):
+    if not rows:
+        return
+    path = verdicts_file()
+    os.makedirs(path.parent, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows).encode())
+    finally:
+        os.close(fd)
+
+
+def classify_lock():
+    import fcntl
+    path = common.LOG_DIR / "classify.lock"
+    os.makedirs(path.parent, exist_ok=True)
+    fh = open(path, "a")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def run_classify():
+    lock = classify_lock()
+    if lock is None:
+        print("ops classify: another pass holds %s; this one skipped" % (common.LOG_DIR / "classify.lock"))
+        return 0
+    try:
+        _, summary, code = classify()
+    finally:
+        lock.close()
+    print("ops classify: %s — %s" % (verdicts_file(), summary), file=sys.stderr if code else sys.stdout)
+    return code
+
+
+def cmd_classify(a):
+    why = desk_refusal() or ops_host()[1]
+    if why:
+        # a session's pass would send issues to a model outside the desk's job and move its state
+        print("ops classify: %s" % why, file=sys.stderr)
+        return 2
+    return run_classify()
+
+
+def digest(days, now=None):
+    """The logged week's counts: by rung, kind and would; the caps' refusals; rung-1 candidates on published
+    paths (D4's fact); errors; the gate's spend."""
+    now = time.time() if now is None else now
+    rows = read_verdicts(now - days * 86400)
+    d = {"days": days, "verdicts": len(rows), "issues": len({r.get("key") for r in rows}), "by_rung": {}, "by_kind": {},
+         "by_would": {}, "refused": {}, "rung1_published": {"yes": 0, "no": 0, "unknown": 0}, "errors": 0,
+         "gate_usd": round(sum(float(r.get("gate_cost_usd") or 0) for r in rows), 4)}
+    for r in rows:
+        if r.get("error"):
+            d["errors"] += 1
+            continue
+        for k, v in (("by_rung", str(r.get("rung"))), ("by_kind", str(r.get("kind"))), ("by_would", str(r.get("would")))):
+            d[k][v] = d[k].get(v, 0) + 1
+        for c, v in (r.get("caps") or {}).items():
+            if v != "ok":
+                d["refused"][c] = d["refused"].get(c, 0) + 1
+        if r.get("rung") == 1:
+            p = r.get("published") if r.get("published") in ("yes", "no") else "unknown"
+            d["rung1_published"][p] += 1
+    ratio, _ = common.cost_ratio()
+    d["gate_effective_usd"] = round(d["gate_usd"] * ratio, 4) if ratio else None
+    return d
+
+
+def cmd_digest(a):
+    d = digest(a.days)
+    if a.json:
+        print(json.dumps(d, indent=1, sort_keys=True))
+        return 0
+    names = {"0": "none", "1": "just happens", "2": "a skipper's ship", "3": "ask", "4": "alarm"}
+    print("ops digest: the last %d days — %d verdicts on %d issues, %d errors" % (d["days"], d["verdicts"], d["issues"], d["errors"]))
+    for k in sorted(d["by_rung"]):
+        print("  rung %s (%s): %d" % (k, names.get(k, k), d["by_rung"][k]))
+    print("  would:   %s" % (", ".join("%s %d" % kv for kv in sorted(d["by_would"].items())) or "none"))
+    print("  kinds:   %s" % (", ".join("%s %d" % kv for kv in sorted(d["by_kind"].items())) or "none"))
+    print("  refused: %s" % (", ".join("%s %d" % kv for kv in sorted(d["refused"].items())) or "none"))
+    p = d["rung1_published"]
+    print("  rung 1 on published paths (D4's fact): %d yes, %d no, %d unknown" % (p["yes"], p["no"], p["unknown"]))
+    print("  the gate: %s list (%s)" % (common.usd(d["gate_usd"]), "%s effective" % common.usd(d["gate_effective_usd"])
+                                         if d["gate_effective_usd"] is not None else "effective unknown: no ratio"))
+    return 0
+
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="ops", description=__doc__.split("\n\n")[0])
@@ -1390,6 +2173,10 @@ def main(argv):
     st.add_argument("--json", action="store_true")
     sub.add_parser("is-host")
     sub.add_parser("ingest")
+    sub.add_parser("classify")
+    dg = sub.add_parser("digest")
+    dg.add_argument("--days", type=int, default=7)
+    dg.add_argument("--json", action="store_true")
     it = sub.add_parser("intake")
     it.add_argument("--json", action="store_true")
     u = sub.add_parser("usage")
@@ -1400,7 +2187,8 @@ def main(argv):
     k.add_argument("repo", nargs="*")
     a = ap.parse_args(argv)
     return {"usage": cmd_usage, "pick": cmd_pick, "sample": cmd_sample, "status": cmd_status,
-            "is-host": cmd_is_host, "ingest": cmd_ingest, "intake": cmd_intake}[a.verb](a)
+            "is-host": cmd_is_host, "ingest": cmd_ingest, "intake": cmd_intake, "classify": cmd_classify,
+            "digest": cmd_digest}[a.verb](a)
 
 
 if __name__ == "__main__":
