@@ -86,7 +86,7 @@ COLD_S = 55 * 60
 # base $4 → $8, Fable 5.1 base $10 → $20 (pricing page, read 2026-10-04; design section 3).
 WRITE_PER_M = {"opus": 8.0, "fable": 20.0, "sonnet": 6.0}
 RUNNER = os.environ.get("CLAUDE_AUTOFINISH_RUN") or str(Path(__file__).resolve().parent.parent / "bin" / "autofinish-run")
-RUN_TIMEOUT_S = 45  # autofinish-run returns once it has detached: a second, unless it first ends a warm run (30 s cap for --by typed); its account pick is --cached
+RUN_TIMEOUT_S = 45  # autofinish-run returns once dispatch has said whether the run began, within its typed bound (40 + 3 s; not confirmed exits 0), after ending a warm run (30 s cap for --by typed); its account pick is --cached
 
 
 def now():
@@ -234,7 +234,7 @@ def decide(data):
 def sent_to(out):
     """The peer autofinish-run sent the run to, from its first line (its header, Where), or None: that
     Mac holds the window, so the line must not name it as if it were here (second landing review, 13)."""
-    m = re.search(r"^(?:started on|sent to) ([A-Za-z0-9-]+)[:,]", out or "", re.M)
+    m = re.search(r"^(?:started on|sent to|not confirmed after \d+ s on) ([A-Za-z0-9-]+)[:,]", out or "", re.M)
     return m.group(1) if m else None
 
 

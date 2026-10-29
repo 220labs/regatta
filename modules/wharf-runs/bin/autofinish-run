@@ -104,7 +104,7 @@ the run's session is on the peer, and SendMessage reaches only its own Mac's ses
 E1 of docs/autofinish-design-2026-10-02.md (D13): the runner. Whoever decides that a branch should
 launch without the owner's wait — the sweep (rules A, B, D, E, L), `/autofinish` (C), a typed `/finish` handed
 off cold (E7), the end of a `dispatch --yolo` or dnd build run (E12, `--by yolo|dnd`: the prompt becomes
-`/finish <branch> --unattended --yolo|--dnd`) — calls this, and it returns at once.
+`/finish <branch> --unattended --yolo|--dnd`) — calls this, and it returns once dispatch has said what it did (below).
 
 The landing ladder (skipper-modes S3b; the owner, 2026-10-21: "dnd: I want to automerge as well"): before
 the start, landing() reads the branch's mode from plan.json itself (bin/autofinish's landing_mode) and
@@ -328,16 +328,31 @@ The run's own output (dispatch's log and this child's) goes to
 written and run — the state, the lock, the bundle's head, and dispatch's own dry run, claude's
 whole command line included — and writes nothing.
 
-Exit: 0 started (or --dry; or sent to the peer), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
+What it prints is dispatch's verdict, read from the run's log after the detach and never predicted (night-landings
+finding 1: two `started:` lines for runs dispatch then refused for room): `started: …` once the header
+(`== claude <pid>, session <this run's sid>, …`) is in the log; `not started: <dispatch's FAILED text>` when it
+refused and the waiter has recorded the end (never-started at `refused`, the lock released); and, with no verdict
+in VERDICT_S (120 s, less what the caller's own wait leaves), `not confirmed after N s: …` on stdout, exit 0 — the
+run may still begin, so every caller keeps reading it as the start it read before this verdict existed (cold_prompt
+blocks the typed /finish, dispatch leaves the slot to the landing); the waiter goes on and settles it, nothing is
+started twice. The log is polled, dispatch never run again; it is per day and topic, not per repo, so only a header
+naming this run's session counts, and a FAILED line only once this session's state has ended (a sibling repo's
+run of the same topic writes the same log). `dispatch --start` never queues (it refuses with no room), so there is
+no queued verdict. The peer road reads the same from the peer's job (its ticket and state, by peer-sync, the ssh
+road the send used): `started on <peer>: …`, `not started: refused on <peer>: …`. `not started` goes to stderr,
+which a sweep and a ticket quote.
+Exit: 0 started (or --dry; or sent to the peer, its answer lost), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
 a claude/* worktree, 3 refused (same tip, a run going, another start under way, a lock in use, no
 account may run it now), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4), or
-(the peer's job only) no account may run it on that Mac.
+(the peer's job only) no account may run it on that Mac, 5 dispatch refused the start (no room, the cap, memory, no
+account: nothing ran, the tip may start again); no verdict in time is 0, said `not confirmed`, as is a peer with no
+account when the waiter starts the run here instead.
 Tests (bin/test_autofinish_run.sh) replace dispatch's commands with DISPATCH_CLAUDE, _SCREEN and the
 rest; AUTOFINISH_HOST names this Mac, AUTOFINISH_ON its peer ("" none), AUTOFINISH_SSH ssh and
 AUTOFINISH_LAUNCHCTL launchctl, AUTOFINISH_END_WARM `dispatch-rc end-warm`, AUTOFINISH_PEER_WAIT and
 AUTOFINISH_SEND_BUDGET their constants, AUTOFINISH_DAY (YYYY-MM-DD) the day Tree.runlog and log() take (log_day();
 runlog_of keeps the run's start day, and bin/autofinish's sweep lines the real clock), so a case run across local
-midnight reads the file it wrote (the night-landings digest's finding 7: a CI run at 00:00, 2026-10-26); AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
+midnight reads the file it wrote (the night-landings digest's finding 7: a CI run at 00:00, 2026-10-26); AUTOFINISH_VERDICT_S and _POLL the verdict wait's bound and poll, AUTOFINISH_DISPATCH replaces dispatch itself, AUTOFINISH_ACCOUNT bin/account (dispatch's
 DISPATCH_ACCOUNT; the tests mostly run the real one on a fixture registry), AUTOFINISH_API_STUB names a Python file whose
 `api()` stands in for common.api. Python 3.9, stdlib only.
 """
@@ -448,6 +463,22 @@ SEND_BUDGET, SEND_BUDGET_TYPED = 110, 40
 STAY_RESERVE, STAY_RESERVE_TYPED = 25, 6
 SSH_FLOOR = 10   # the send's ssh gets at least this, past the budget: the state is written by then, and a
                  # caller that kills this process leaves a run the sweep settles from the peer (dead())
+# What the caller prints and exits with is dispatch's verdict, read from its log (or, on the peer road, from the
+# peer's job through peer-sync), never predicted: night-landings finding 1, two `started:` lines for runs that
+# dispatch then refused for room. 0 started; REFUSED_RC dispatch (or the peer's job) refused, nothing ran
+# (never 1: a crashed Python exits 1, AGENTS.md's probe trap); UNCONFIRMED_RC no verdict in time, the waiter
+# settles it: 0, as every caller read the detach before this verdict existed — a non-zero "may still begin" let
+# cold_prompt run a second /finish beside it and dispatch's yolo_launch give the landing's slot to a claim (the
+# landing review). A refusal keeps the cap's waiting words.
+REFUSED_RC, UNCONFIRMED_RC = 5, 0
+VERDICT_S = float(os.environ.get("AUTOFINISH_VERDICT_S") or 120)   # the longest wait for dispatch's verdict
+VERDICT_MARGIN, VERDICT_MARGIN_TYPED = 8, 3   # past the send budget the caller's own timeout still allows
+                        # (the sweep waits 120 s on a 110 s budget; cold_prompt 45 s on 40 s, less this)
+VERDICT_FLOOR = 1   # a spent budget still waits this, inside the margin: past it the caller's timeout fires first
+VERDICT_POLL = float(os.environ.get("AUTOFINISH_VERDICT_POLL") or 0.25)
+HEADER_RE = r"^== claude \d+, session %s\b"   # dispatch's header for a run that began, this run's sid in it
+FAILED_RE = re.compile(r"^FAILED:\s*(.*)")
+EXIT_RE = re.compile(r"^== exit ")
 SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")   # common.host_name()'s shape: what --from carries
 # the peer's copy of this script, found as dispatch's guard finds its: the regatta checkout its `home` names
@@ -849,6 +880,78 @@ def give_back(t, sid, before, st):
             os.replace(tmp, path)
     st.update(ended=now_iso(), outcome="never-started", gate=REFUSED)
     write_state(t, st)
+
+
+def log_verdict(path, offset, sid):
+    """(kind, detail) of what dispatch said in the run log past OFFSET, or None while it has said none:
+    `started` at its header naming SID (`== claude <pid>, session <sid>, …`), `refused` at a FAILED line or an
+    `== exit` with no header before it (detail: the text) — a hint only, the log is shared by topic (the header),
+    so await_verdict believes it once SID's state has ended. Whole lines only, the first decisive one wins."""
+    header = re.compile(HEADER_RE % re.escape(sid))
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            raw = f.read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return None
+    lines = raw.split("\n")[:-1]   # the last piece has no newline yet: dispatch is mid-line
+    for line in lines:   # this run's header first, wherever it is: a sibling's FAILED line may come before it
+        if header.match(line):
+            return "started", line
+    for line in lines:
+        m = FAILED_RE.match(line)
+        if m:
+            return "refused", m.group(1).strip() or line
+        if EXIT_RE.match(line):
+            return "refused", line
+    return None
+
+
+def verdict_bound(t, floor=VERDICT_FLOOR):
+    """Seconds to wait for a verdict: VERDICT_S, less than that when the caller's own wait (the send budget,
+    plus the margin its timeout leaves) is nearly spent — but FLOOR of it, or VERDICT_S if that is less."""
+    margin = VERDICT_MARGIN_TYPED if t.budget < SEND_BUDGET else VERDICT_MARGIN
+    left = getattr(t, "deadline", time.time() + VERDICT_S) + margin - time.time()
+    return min(VERDICT_S, max(floor, left))
+
+
+def await_verdict(t, sid, log_from, bound):
+    """(kind, detail) once dispatch has spoken in the run log — polled, dispatch is never run again — else
+    `refused` when the waiter recorded an end first (dispatch crashed, said nothing), else `unconfirmed`
+    after BOUND seconds. A refusal waits up to 10 s more (never past BOUND) for this run's end in the waiter's
+    state, and is `unconfirmed` without it: a FAILED line alone may be a sibling run's of the same topic."""
+    end = time.time() + bound
+    verdict = None
+    while verdict is None:
+        verdict = log_verdict(t.runlog, log_from, sid)
+        st = read_state(t) or {}
+        if verdict is None and st.get("session") == sid and st.get("ended"):
+            last = tail_lines(t.runlog, log_from, 1)
+            verdict = "refused", (last[-1] if last else "dispatch wrote nothing")
+        if verdict is None:
+            if time.time() >= end:
+                return "unconfirmed", None
+            time.sleep(VERDICT_POLL)
+    if verdict[0] == "refused":
+        settled = min(time.time() + 10, max(end, time.time() + VERDICT_FLOOR))
+        while True:
+            st = read_state(t) or {}
+            if st.get("session") == sid and st.get("ended"):
+                break
+            if time.time() >= settled:
+                return "unconfirmed", None
+            time.sleep(VERDICT_POLL)
+    return verdict
+
+
+def not_started_text(why):
+    """`not started: <why>`; a refusal for room or the cap is a wait for a run to end, and says so in the cap's
+    words (CAP_RE, ASK_EXEMPT_RE key on them: a managed run that ends on it asks nothing, AGENTS.md)."""
+    low = why.lower()
+    wait = " — the next step waits for a run to end (the sweep starts this tip again)" if (
+        "waits for a run to end" not in low and
+        ("not starting another" in low or "no room" in low or "other runs are busy" in low)) else ""
+    return "not started: %s%s" % (why, wait)
 
 
 class NoAccount(Exception):
@@ -2088,7 +2191,7 @@ _asked = {}   # sid -> (time, answer): dead() and bury() ask once per sweep, not
 _down = {}    # alias -> time of its last ssh 255: the sweep's other sent runs on it are not asked for a minute
 
 
-def peer_ask(rec, fresh=False, timeout=90, apply=True):
+def peer_ask(rec, fresh=False, timeout=90, apply=True, keep=True):
     """The peer's peer-sync answer about this run, or None when it cannot be had now. Each real ask is
     kept in this Mac's record of the run (save_peer_record), for peer_overdue: `answered`, the last
     answer; `asked`, the last ask; `silent`, the first ask unanswered since the last answer. A peer this
@@ -2096,7 +2199,8 @@ def peer_ask(rec, fresh=False, timeout=90, apply=True):
     run asked second on a down peer kept no `asked`, its silence started again every ASK_GAP_S, and k
     runs sent there took about k × PEER_WAIT_S to bury (third landing review, S3). `apply` False (the
     sweep's verdicts, `--dry-run`): no ssh — peer-sync buries on the peer — and no write; only this
-    process's answer of the last minute."""
+    process's answer of the last minute. `keep` False (the caller's verdict wait): nothing is written to the
+    record, which the waiter forked beside it keeps: a stale copy saved here wiped its `ended`."""
     hit = _asked.get(rec["session"])
     if hit and not fresh and time.time() - hit[0] < 60:
         return hit[1]
@@ -2116,6 +2220,8 @@ def peer_ask(rec, fresh=False, timeout=90, apply=True):
     except (ValueError, IndexError):
         ans = None
     ans = ans if isinstance(ans, dict) else None
+    if not keep:
+        return ans
     _asked[rec["session"]] = (time.time(), ans)
     t0 = now_iso()
     if ans is not None:
@@ -2344,6 +2450,60 @@ def wait_on_peer(t, st, rec, again):
         print((r.stdout + r.stderr).strip(), flush=True)
 
 
+def peer_verdict(sid, ans):
+    """(kind, detail) of what the peer's job reached for the run sent there, from a peer-sync answer, or None
+    while the job has not exited. The job's exit is its own start_here verdict, read from the peer's dispatch
+    log: its ticket's rc (0 started or not confirmed, REFUSED_RC, 4 no account, 3 refused at its door) and
+    `said`, the last line it wrote to stderr; or the run's state there, ended at `refused` (a refusal the waiter
+    recorded before the job's exit landed) or ended some other way (a run that began and finished). Any other
+    rc with the run's state there live and not ended (the job crashed after its detach) is no refusal, as
+    settle() judges it: `unconfirmed`, and the waiter settles it."""
+    if not isinstance(ans, dict):
+        return None
+    tk = ans.get("ticket") if isinstance(ans.get("ticket"), dict) else {}
+    rs = ans.get("state") if isinstance(ans.get("state"), dict) else {}
+    mine = tk if tk.get("session") == sid else {}
+    said = raw = mine.get("said")
+    if said:   # the job's own stderr line, `not started: …; state …; log …`: the sender adds its own frame
+        said = re.sub(r"; state \S+; log \S+$", "", re.sub(r"^(not started|not confirmed)[^:]*: ", "", said, count=1))
+    if rs.get("session") == sid and rs.get("ended"):
+        if rs.get("gate") in REFUSED_GATES:
+            return "refused", said
+        return "started", None
+    rc = mine.get("rc")
+    if not isinstance(rc, int):
+        return None
+    if rc == 0:
+        return ("unconfirmed", said) if raw and raw.startswith("not confirmed") else ("started", None)
+    if rs.get("session") == sid and not rs.get("ended") and rc not in (REFUSED_RC, 3, 4):
+        return "unconfirmed", said
+    if rc == 4:
+        return "no-account", said or "no account may run it there"
+    return "refused", said or "exit %d" % rc
+
+
+def await_peer_verdict(rec, st, bound):
+    """The peer's verdict by peer-sync, over the ssh road the send used, until BOUND: asks (never re-sends)
+    every VERDICT_POLL; a peer that does not answer is no verdict."""
+    end, grace = time.time() + bound, None
+    while True:
+        left = end - time.time()
+        if left <= 0:   # never an ask past the bound: the caller's own timeout comes right after it
+            return "unconfirmed", None
+        v = peer_verdict(st["session"], peer_ask(rec, fresh=True, timeout=max(1, min(15, left)), keep=False))
+        if v and v[0] == "refused" and not v[1]:   # the waiter's end came before the job's exit: its words follow
+            grace = grace or time.time() + 5
+            if time.time() < min(grace, end):
+                v = None
+            else:
+                v = "refused", "dispatch refused it there"
+        if v:
+            return v
+        if time.time() >= end:
+            return "unconfirmed", None
+        time.sleep(min(max(VERDICT_POLL, 1), max(0, end - time.time())))
+
+
 def start_on_peer(t, args, prev, by, via, peer, alias):
     """Send the run to the peer (the header's Where): this Mac's state and lock in the run's id, the
     bundle on stdin, peer-start's answer, then the waiter. Under the start lock main() holds."""
@@ -2437,9 +2597,23 @@ def start_on_peer(t, args, prev, by, via, peer, alias):
         detach(lambda: wait_on_peer(t, st, rec, again), t.runlog)
     except OSError as e:
         head += "; no waiter here (%s): the sweep settles it from %s" % (e, peer)
-    print("%s — session %s, window and Remote Control \"%s\" there; state %s; log %s" % (
-        head, sid, t.window, os.path.join(t.state_dir, STATE), t.runlog))
-    return 0
+    where = "state %s; log %s" % (os.path.join(t.state_dir, STATE), t.runlog)
+    line = "%s — session %s, window and Remote Control \"%s\" there; %s" % (head, sid, t.window, where)
+    if rc != 0:   # the answer was lost: nothing to read the peer's verdict from, said as before
+        print(line)
+        return 0
+    # the peer's job reached a verdict of its own (its dispatch, its log): read it, never assumed at the send
+    bound = verdict_bound(t)
+    kind, detail = await_peer_verdict(rec, st, bound)
+    if kind == "no-account" and again:
+        print("not started on %s: %s — the waiter starts it here" % (peer, detail), file=sys.stderr)
+        print("not confirmed: no account may run it on %s, the waiter starts it here within a minute — window and "
+              "Remote Control \"%s\"; state %s" % (peer, t.window, os.path.join(t.state_dir, STATE)))
+        return UNCONFIRMED_RC   # its outcome is the waiter's second start: not a refusal, nor a start yet
+    elif kind in ("refused", "no-account"):
+        # nothing ran there: this Mac's end written now, as the waiter's next ask would (its poll is a minute)
+        record_peer_end(t, st, kind, {}, {"said": detail}, None, rec)
+    return report_verdict(t, kind, detail, bound, where, line, peer=peer)
 
 
 # the peer's half -----------------------------------------------------------------------------------
@@ -2961,7 +3135,8 @@ def main(argv):
     finally:
         kept, sys.stderr = sys.stderr.kept.getvalue(), real
         lines = [l for l in kept.splitlines() if l.strip()]
-        update_json(args.ticket, lambda tk: dict(tk, rc=1 if rc is None else rc, said=(lines[-1] if lines else None) if rc else None)
+        said = lines[-1] if lines and (rc or lines[-1].startswith("not confirmed")) else None
+        update_json(args.ticket, lambda tk: dict(tk, rc=1 if rc is None else rc, said=said)
                     if tk and tk.get("session") == args.run_session else None)
 
 
@@ -3202,6 +3377,10 @@ def start_here(t, args, prev, by, via):
         + (" hold=\"%s\"" % hold if hold else "") + (" arm=%s" % arm["name"] if arm else " arm=off (%s)" % arm_why if arm_off else ""),
         label or "-", t.window, picked))
     try:
+        log_from = os.path.getsize(t.runlog)
+    except OSError:
+        log_from = 0
+    try:
         detach(lambda: wait_for_end(t, st, cmd), t.runlog)
     except OSError as e:
         # no child: a lock naming a session that never exists would refuse the panel for 2 h
@@ -3210,10 +3389,34 @@ def start_here(t, args, prev, by, via):
         log("%s run %s %s never-started gate=%s session=%s tip=%s rule=%s by=%s — the detach failed: %s" % (
             st["ended"], t.repo, t.branch, REFUSED, sid[:8], t.tip[:7], args.rule, by, e))
         return 1
-    print("started: %s — window and Remote Control \"%s\", session %s, account %s; state %s; log %s"
-          % (finish_prompt(t.branch, by, args.merge, hold=hold, sent_from=args.sent_from), t.window, sid, label or "unchanged",
-             os.path.join(t.state_dir, STATE), t.runlog))
-    return 0
+    # What happened is dispatch's to say (night-landings finding 1): `started` only once its header is in the
+    # log, never at the detach. The waiter records the end of a refusal itself
+    bound = verdict_bound(t)
+    kind, detail = await_verdict(t, sid, log_from, bound)
+    return report_verdict(t, kind, detail, bound, "state %s; log %s" % (os.path.join(t.state_dir, STATE), t.runlog),
+                          "started: %s — window and Remote Control \"%s\", session %s, account %s; state %s; log %s" % (
+                              finish_prompt(t.branch, by, args.merge, hold=hold, sent_from=args.sent_from), t.window, sid,
+                              label or "unchanged", os.path.join(t.state_dir, STATE), t.runlog))
+
+
+def report_verdict(t, kind, detail, bound, where, started_line, peer=None):
+    """Print the caller's line for a verdict (started on stdout, the rest on stderr, which a sweep and a ticket
+    quote) and return the exit code: 0, REFUSED_RC or UNCONFIRMED_RC. Not confirmed is on stdout with the
+    window, as a start is: cold_prompt names the window from it."""
+    on = " on %s" % peer if peer else ""
+    if kind == "started":
+        print(started_line)
+        return 0
+    if kind in ("refused", "no-account"):
+        print(not_started_text(("refused on %s: " % peer if peer else "") + str(detail)) + "; " + where, file=sys.stderr)
+        return REFUSED_RC
+    log_at = ("its dispatch log on %s (dispatch --status there)" % peer) if peer else t.runlog
+    line = ("not confirmed after %d s%s: dispatch has not said whether the run began, and it may still — window and "
+            "Remote Control \"%s\"; read %s" % (bound, on, t.window, log_at))
+    print(line)
+    if isinstance(sys.stderr, Tee):   # a peer's job: its ticket's `said`, so the sending Mac reads it as not confirmed
+        sys.stderr.kept.write(line + "\n")
+    return UNCONFIRMED_RC
 
 
 if __name__ == "__main__":

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `autofinish-run` says what dispatch did, not "started" before it knows (autofinish-outcome, night-landings finding 1):
+  after the detach it reads the run's dispatch log — `started: …` only once the `== claude … session …` header is
+  there and names this run's session, `not started: <FAILED text>` when it refused and the waiter recorded the end
+  (never-started at `refused`, the lock given back, the cap's waiting words added for a room refusal), and
+  `not confirmed after N s: …` on stdout past `AUTOFINISH_VERDICT_S` (120 s, less what the caller's own wait leaves).
+  The peer road reads the same from the peer's job by peer-sync. Exit 5 refused; started and not confirmed exit 0,
+  so cold_prompt still blocks a second /finish and dispatch still leaves the slot to the landing.
 - S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a `--next` put back in the queue at
   its start says queued and the closing line, never `started`; only a login refused for a limit that resets
   (the week, the 5-hour window, a cooldown, a lock) stays in the queue at fire time — extra usage on, same login

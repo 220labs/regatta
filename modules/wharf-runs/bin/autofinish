@@ -385,9 +385,11 @@ def runner_by(worktree, rule):
 
 def start_runner(worktree, rule, cfg=None):
     """Start `/finish <branch> --unattended` in `worktree` through bin/autofinish-run (E1), which
-    pre-writes the lock, detaches and returns at once. Rule C is the owner's /autofinish, so it is
+    pre-writes the lock, detaches and returns once dispatch has said whether the run began, or at its
+    verdict bound (inside RUNNER_TIMEOUT; not confirmed exits 0). Rule C is the owner's /autofinish, so it is
     recorded as `override`; every other rule is the sweep's. A non-zero exit is a failed start
-    (2: not a claude/* worktree, 3: refused — that tip tried, or a run already going)."""
+    (2: not a claude/* worktree, 3: refused — that tip tried, or a run already going, 5: dispatch
+    refused it, nothing ran)."""
     by = runner_by(worktree, rule)
     # without the login variables a hook or a dispatched session passed down: the runner picks
     # its login as week() did; only a typed hand-off (cold_prompt) keeps the caller's. `cfg`: the

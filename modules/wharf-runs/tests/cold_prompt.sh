@@ -162,5 +162,10 @@ git -C "$CP/repo" checkout -q main
 check "$(cpr /finish "$SMALL")" "" "not a claude/* branch: passes, warm"
 check "$(cpr /finish "$COLD")" "" "  and cold"
 check "$(echo 'not json' | python3 "$H/cold_prompt.py"; echo "rc=$?")" "rc=0" "bad input: silent, exit 0"
+# autofinish-run's not-confirmed line on the peer road (exit 0) still names the peer that holds the window
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import cold_prompt as c; print(c.sent_to(sys.argv[2]), c.sent_to(sys.argv[3]))' "$H" \
+  'not confirmed after 33 s on buildbox: dispatch has not said whether the run began, and it may still — window and Remote Control "finish · x"; read its dispatch log on buildbox (dispatch --status there)' \
+  'not confirmed after 2 s: dispatch has not said whether the run began')" "buildbox None" \
+  "sent_to: a not-confirmed line on the peer road names the peer; one here names none"
 
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }
