@@ -576,12 +576,21 @@ def relayed_by_owner(line):
         i += 2
 
 
+_BEFORE_H2 = {"standing_manager": "standing_skipper", "manager_dir": "skipper_dir",
+              "peer_manager": "peer_skipper", "manager_state": "skipper_state"}
+
+
 def __getattr__(name):
     """The predicate's name before the scrub (`relayed_by_<owner>`) for a caller that still uses it:
     keel's main called it so until its own scrub (which reads relayed_by_owner first). Any other
     `relayed_by_*` is the same test; anything else is the usual AttributeError."""
     if name.startswith("relayed_by_"):
         return relayed_by_owner
+    # the four names before helm-vocabulary H2 (2026-10-29), until S8's guard: a module installed at
+    # an older version, or a branch written before the rename (keel's hail guards with hasattr, so a
+    # missing name read as "no standing skipper", silently)
+    if name in _BEFORE_H2:
+        return globals()[_BEFORE_H2[name]]
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 

@@ -725,7 +725,7 @@ PY
 has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=gone-1)" "a skipper (this Mac's standing one, skipper · testmac)" \
   "  its own skipper ended (no record): relay sends it to the standing one, and the finding names skipper · testmac"
 printf '{"pid": %d, "sessionId": "own-1", "name": "coding-1", "updatedAt": 2}' $$ > "$SSD/own-1.json"
-has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=own-1)" "a skipper (DISPATCH_SKIPPER)" "  its own skipper live: that one, not the standing one"
+has "$(smenv afw_ CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=own-1)" "a skipper (DISPATCH_MANAGER)" "  its own skipper live: that one, not the standing one"
 rm "$SSD/own-1.json"
 echo '{"session": "s-1", "by": "sweep", "started": 1}' > "$AG/.git/claude/autofinish.json"
 check "$(smenv af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  autofinish's /finish --unattended start (its run record names this session): no skipper's, the WAITING line passes (M1 c, M3)"
