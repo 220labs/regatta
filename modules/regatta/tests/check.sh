@@ -110,6 +110,43 @@ check "$(py "print(common.repo_key(str(common.PROJECTS.joinpath('a', '.claude', 
   "a g/x /elsewhere/a" "repo_key: a worktree is its checkout's key; a key as given; a path outside the projects folder as given"
 check "$(CLAUDE_REPOS_JSON="$T/sc.json" py "n, s = common.scope_of_repo('a'); print(n, s.get('mode'), s.get('berths'), common.scope_of_repo('g/x')[0], common.scope_of_repo('nope'))")" \
   "s1 dnd ['h2', 'h1'] s2 (None, {})" "scope_of_repo: by name or glob, the scope's own data; none for a repo in no scope"
+echo "the unattended marker, both names (vendor-fence's stage 1)"
+check "$(py 'print(common.unattended({}), common.unattended({"CLAUDE_UNATTENDED": "old"}), common.unattended({"REGATTA_UNATTENDED": "new"}), common.unattended({"REGATTA_UNATTENDED": "new", "CLAUDE_UNATTENDED": "old"}), common.unattended({"CLAUDE_UNATTENDED": ""}))')" \
+  "None old new new None" "unattended(): the new name first, the old name alone still honoured, an empty value is none"
+check "$(CLAUDE_UNATTENDED=dispatch py 'print(common.unattended(), common.unattended_label())')" "dispatch CLAUDE_UNATTENDED=dispatch" \
+  "  from the environment: only the old name set, the run reads unattended and a refusal quotes that name"
+check "$(py 'print(sorted(common.unattended_env("dispatch").items()))')" "[('CLAUDE_UNATTENDED', 'dispatch'), ('REGATTA_UNATTENDED', 'dispatch')]" \
+  "  unattended_env(): what a launcher sets, both names"
+echo "the vendor fence (vendor-fence, docs/codex-agy-gaps-2026-10-29.md F1)"
+VF="$T/vf"; mkdir -p "$VF"; git init -q -b main "$VF/conf"; git -C "$VF/conf" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$VF/conf" worktree add -q -b w "$VF/conf-side"; VF=$(cd "$VF" && pwd -P); mkdir -p "$VF/open"
+# an umbrella scope sorts first and holds every repo: scope_of_repo's first match would call conf open
+printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}, "half": {"confidential": "yes", "repos": ["%s"]}}, "guarded": ["g"]}\n' \
+  "$VF/conf" "$VF/open" > "$T/vf.json"
+cat > "$T/acct" <<'SH'
+#!/bin/sh
+echo "$*" >> "$(dirname "$0")/acct.calls"
+printf '%s\n' "{\"account\": \"codex-x\", \"provider\": \"codex\", \"owns\": ${OWNS:-false}, \"skipped\": []}"
+SH
+chmod +x "$T/acct"
+VFP() { CLAUDE_REPOS_JSON="$T/vf.json" py "$1"; }
+check "$(VFP 'import json; r, _ = common.read_registry(); print(common.fenced_scopes("'"$VF/conf"'", r), common.fenced_scopes("'"$VF/conf-side"'", r), common.fenced_scopes("'"$VF/open"'", r), common.fenced_scopes("g", r))')" \
+  "['conf'] ['conf'] [] ['guarded']" "fenced_scopes(): every scope walked; a worktree beside its checkout, found by git; a non-true flag is open; the guarded list"
+mkdir -p "$T/vfcfg/regatta"; printf 'Cfg-Only\n' > "$T/vfcfg/regatta/guarded"
+check "$(REGATTA_CONFIG="$T/vfcfg" VFP 'r, _ = common.read_registry(); print(common.fenced_scopes("cfg-only", r), common.fenced_scopes("G", r), common.fenced_scopes("transcripts", r))')" \
+  "['guarded'] ['guarded'] ['guarded']" "  and the guarded names every other guard reads: the config dir's regatta/guarded, the transcript archive, case-folded (landing review)"
+check "$(VFP 'print(common.vendor_refusal("'"$VF/conf"'", "claude", account="'"$T/acct"'"), common.vendor_refusal("'"$VF/open"'", "codex", account="'"$T/acct"'"))')" \
+  "None None" "vendor_refusal(): a Claude run's rule unchanged; an open repo passes with no pick"
+check "$(test -e "$T/acct.calls" && echo asked || echo none)" "none" "  and no login was asked for either"
+out=$(VFP 'print(common.vendor_refusal("'"$VF/conf-side"'", "codex", account="'"$T/acct"'"))')
+case "$out" in *"in confidential scope conf: its text goes only to a login its tenant owns, and the codex login account pick names, codex-x, is not one"*) r=refused;; *) r="$out";; esac
+check "$r" "refused" "  a confidential repo's worktree, a Codex login no tenant owns: refused, naming the scope and the login"
+grep -q -- "pick --provider codex --repo $VF/conf-side --json --cached" "$T/acct.calls"; check $? 0 "  account pick asked for the vendor and the repo, from its cache"
+check "$(OWNS=true VFP 'print(common.vendor_refusal("'"$VF/conf"'", "codex", account="'"$T/acct"'"))')" "None" "  a login its tenant owns: passes"
+check "$(VFP 'print(common.vendor_refusal("'"$VF/conf"'", "codex", account="/no/such/account") is not None)')" "True" "  bin/account that does not run: refused (fails closed)"
+printf '{"repos": {"x": ' > "$T/vf-torn.json"
+check "$(CLAUDE_REPOS_JSON="$T/vf-torn.json" py 'print(common.vendor_refusal("'"$VF/open"'", "codex", account="'"$T/acct"'"))')" \
+  "the scope registry does not read: no codex run opens a repo until it does" "  a torn registry: every repo refused, an open one too"
 out=$(CLAUDE_REPOS_JSON="$T/sc.json" "$RG" check 2>&1)
 echo "$out" | grep -q -- "--  registry: scope s2's berths name h9, which no repo is cloned on"; check $? 0 "regatta check: a berth no repo is cloned on is named"
 echo "$out" | grep -q -- "--  registry: scope s3's berths is a list of host names"; check $? 0 "  and berths that are no list"

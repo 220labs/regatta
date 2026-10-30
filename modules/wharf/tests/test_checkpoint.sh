@@ -59,7 +59,7 @@ export MEMO_STATE_DIR="$T/memo-state" MEMO_SHEEP_STATE="$T/memo-sheep"
 export SPACESHEEP_CONFIG_DIR="$T/ss-config"
 # Nor its unattended mark: run by a dispatch session, every "attended" case would be judged
 # unattended and fail (four did, 2026-10-05). The unattended cases set it per call.
-unset CLAUDE_UNATTENDED
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
 # Nor the launcher: every SessionEnd below would leave a detached bin/autofinish behind, judging
 # these throwaway repos into the real dated log. The autofinish cases lift it, against a stub.
 export CLAUDE_HOOK_NO_AUTOFINISH=1
@@ -1467,6 +1467,27 @@ PYSHED
 )
 ok "unattended: shedding CLAUDE_UNATTENDED (export, declare, an un-export too) or typing DISPATCH_LABEL is denied; a mention is no act (skipper-modes landing review 20, follow-ups item 2)" \
   '[ "$shed" = "[] []" ]'
+# the marker's new name (vendor-fence's stage 1): dropping it is a shed too, and either name alone marks the run
+shed2=$(cd "$MOD/hooks" && env -u CLAUDE_UNATTENDED REGATTA_UNATTENDED=dispatch python3 - <<'PYSHED2'
+import importlib.util as u
+s = u.spec_from_file_location("cp_shed2", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+deny = ["env -u REGATTA_UNATTENDED bin/dispatch b --mode yolo", "unset REGATTA_UNATTENDED; bin/dispatch b",
+        "REGATTA_UNATTENDED= bin/helm mode s yolo", "export -n REGATTA_UNATTENDED; bin/x", "declare +x REGATTA_UNATTENDED",
+        "env -u CLAUDE_UNATTENDED bin/dispatch b", "unset CLAUDE_UNATTENDED; bin/x", "env -i bin/dispatch b"]
+allow = ['git commit -qm "Fix: env -u REGATTA_UNATTENDED is denied"', "REGATTA_UNATTENDED=dispatch bash tests/x.sh",
+         "grep -n 'unset REGATTA_UNATTENDED' x"]
+print([c for c in deny if "sheds" not in (m.unattended_live(c, "/tmp") or "")], [c for c in allow if m.unattended_live(c, "/tmp")],
+      m.unattended_mark())
+PYSHED2
+)
+ok "unattended under REGATTA_UNATTENDED alone: dropping either name is denied, a mention is no act (vendor-fence stage 1)" \
+  '[ "$shed2" = "[] [] REGATTA_UNATTENDED=dispatch" ]'
+old_only=$(cd "$MOD/hooks" && env -u REGATTA_UNATTENDED CLAUDE_UNATTENDED=dispatch python3 -c '
+import importlib.util as u
+s = u.spec_from_file_location("cp_old", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.unattended_mark(), "sheds" in (m.unattended_live("unset REGATTA_UNATTENDED; bin/x", "/tmp") or ""))')
+ok "  the old name alone is still honoured: the run reads unattended and its new name may not be dropped" \
+  '[ "$old_only" = "CLAUDE_UNATTENDED=dispatch True" ]'
 rec=$(cd "$MOD/hooks" && CLAUDE_UNATTENDED=dispatch HOME="$T/rh" PLANS_DIR="$T/rh/pl" python3 - <<'PYREC'
 import importlib.util as u
 s = u.spec_from_file_location("cp_rec", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
