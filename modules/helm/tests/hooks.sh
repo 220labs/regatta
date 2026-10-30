@@ -90,7 +90,7 @@ echo '{"rel": "docs/x.md", "item": "D1", "line": "A"}' > "$GP/.git/claude/pendin
 check "$(printf '%s' "$PAY" | ASK_QUEUE_DIR="$AQ" python3 "$H/ask_guard.py" prompt | grep -c 'bin/ask apply')" "1" "a pending answer in this worktree is named, with bin/ask apply"
 echo "talk_nudge.py: a Talk host's session is told to start its Session-tab listener"
 TN() { (export SPACESHEEP_CONFIG_DIR="$T/tn/ss" SESSIONPIPE_CONFIG="$T/tn/sp/config.json" XDG_CONFIG_HOME="$T/tn/xdg" \
-          SESSIONPIPE_SOCKET="${TN_SOCK-$T/tn/sp/control.sock}"; unset SPACESHEEP_KEY CLAUDE_UNATTENDED SESSIONPIPE_CONTROL_JOB CLAUDE_CODE_SESSION_ATTENDED
+          SESSIONPIPE_SOCKET="${TN_SOCK-$T/tn/sp/control.sock}"; unset SPACESHEEP_KEY CLAUDE_UNATTENDED REGATTA_UNATTENDED SESSIONPIPE_CONTROL_JOB CLAUDE_CODE_SESSION_ATTENDED
         unset CLAUDE_CODE_DISABLE_BACKGROUND_TASKS  # a dispatched run sets it, and the nudge then stays silent
         unset REGATTA_SHEEP_PLAN MEMO_SHEEP_BIN; export REGATTA_SHEEP_DIR="${TN_SHEEP-$T/tn/sheep}"  # the plan's cache: the suite's own
         if [ -n "${TN_PROJ+x}" ]; then export CLAUDE_PROJECT_DIR="$TN_PROJ"; else unset CLAUDE_PROJECT_DIR; fi

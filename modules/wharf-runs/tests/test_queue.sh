@@ -7,7 +7,7 @@
 # job, session or network is touched. Every name is synthetic.
 #   bash modules/wharf-runs/tests/test_queue.sh
 set -u
-unset WEEKLY_RUN CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME
+unset WEEKLY_RUN CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME
 unset $(compgen -v | grep '^DISPATCH_')   # every DISPATCH_* a run carries (AGENTS.md: a fixed list goes stale)
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

@@ -35,7 +35,7 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/projects"
 git config --global user.name Test; git config --global user.email t@example.com
 git config --global init.defaultBranch main; git config --global advice.detachedHead false
 unset CLAUDE_CONFIG_DIR CLAUDE_TRANSCRIPT_ARCHIVE PICKUP_NO_START PICKUP_NO_LAUNCH GH_TOKEN GITHUB_TOKEN PICKUP_KEEL
-unset CLAUDE_UNATTENDED  # a dispatch session runs this suite: open and next refuse under it
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED  # a dispatch session runs this suite: open and next refuse under it
 unset VSCODE_PID PICKUP_VSCODE_WINDOW PICKUP_VSCODE_CLI  # a run inside VS Code must not probe its real windows
 # …nor find the real `code` on PATH: the caller's window is 1, no CLI, and a window `code` opens
 # is waited for 1 s (2026-10-13: a link only ever goes to a window of the session's own repo)

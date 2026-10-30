@@ -29,7 +29,7 @@ export SPACESHEEP_CONFIG_DIR="$T/ss-config"
 # then owes no form, so ten cases failed there and nowhere else (2026-10-09). The cases that want
 # it set it per call. CLAUDE_CODE_ENTRYPOINT=sdk-cli (a Remote Control session running the suite)
 # keeps every link https the same way, so the mirror's cases would fail there (review, 2026-10-16).
-unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_ENTRYPOINT
 # A CI job's BASH_ENV may re-export the job's PATH in every non-interactive bash (CircleCI's did until
 # .circleci/linux-tools.sh stopped writing it there): a stub run by `#!/usr/bin/env bash` saw that
 # PATH, not the one a case set (the sheep CLI's own folder first, a claude that is not there). Each keel

@@ -4,7 +4,7 @@
 # checkout is pinned and no launchd job is loaded: `install` runs --dry-run only, and refused.
 #   bash modules/lighthouse/tests/hookwatch.sh
 set -u
-unset CLAUDE_CONFIG_DIR CLAUDE_UNATTENDED HOOKWATCH_POST HOOKWATCH_ROOT HOOKWATCH_LOGINS HOOKWATCH_STATE
+unset CLAUDE_CONFIG_DIR CLAUDE_UNATTENDED REGATTA_UNATTENDED HOOKWATCH_POST HOOKWATCH_ROOT HOOKWATCH_LOGINS HOOKWATCH_STATE
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 M="$(cd "$(dirname "$0")/../.." && pwd)"   # modules/
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

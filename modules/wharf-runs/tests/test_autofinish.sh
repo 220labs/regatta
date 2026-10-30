@@ -32,7 +32,7 @@ export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1
 # suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
 rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 # the suite runs inside Claude sessions and dispatch runs: their markers gate `arm` and `override`
-unset CLAUDECODE CLAUDE_UNATTENDED
+unset CLAUDECODE CLAUDE_UNATTENDED REGATTA_UNATTENDED
 # Since E1 is wired, start_runner starts a real claude session: no test may reach it. Every
 # case runs against this recording stub unless it names its own.
 printf '#!/bin/sh\necho "$1 $2" >> "%s"\n' "$T/default-runner.calls" > "$T/default-runner"; chmod +x "$T/default-runner"
