@@ -10477,7 +10477,7 @@ HAIL_TEXT = {"save": "a Save from the doc's page is on its branch: keel pull, th
              # routed comments S4, T1 under rule 1: the owner asked this run for work in a thread
              "request": "the owner asked for work in a thread on the doc's page: keel sheep threads, keel sheep reply "
                         "'starting: <what you read>' under it first, then do it",
-             # routed comments S5, T3 after landing: the standing manager, for a doc no session holds
+             # routed comments S5, T3 after landing: the standing skipper, for a doc no session holds
              "landed": "the owner's words on a landed doc's page, which no session holds: keel sheep threads, then "
                        "keel sheep reply under each, or start the work they ask for"}
 
@@ -11658,13 +11658,13 @@ def lookout_gone(ev, kind, row, dry):
         return lookout_card(ev, "no checkout of %s on this Mac" % ev["doc"].partition("@")[0])
     # a landed doc (routed comments S5): an owner's T1 ask, and an answer committed on main to a doc routed within
     # ROUTED_DAYS, start a run on a seed off main; a talk turn or a Save there is no run's (lookout_standing hails
-    # the standing manager for the conversation; the page keeps a Save)
+    # the standing skipper for the conversation; the page keeps a Save)
     landed = branch == LANDED and kind in ("request", "answer")
     if branch == LANDED and kind == "save":   # never a seed `--beside main`: the page keeps it, as its comment says
         return lookout_card(ev, "a Save on a landed doc's page waits there; no run starts from it")
     if kind in ("answer", "talk", "request") and not branch.startswith("claude/") and not landed:   # a collaborator's: no run's (finish review, 2026-10-22)
         return lookout_card(ev, "not a claude/* branch: a run starts only on a session's own branch%s"
-                            % ("; no standing manager runs on this Mac to answer a landed doc's conversation" if talk and branch == LANDED else ""))
+                            % ("; no standing skipper runs on this Mac to answer a landed doc's conversation" if talk and branch == LANDED else ""))
     ref = ev["view"] or newer_tip(top, branch)   # a Save fires from origin's newer tip too (item 9): read the same ref
     if landed:
         doc_at = git(ref[0], "rev-parse", "-q", "--verify", ref[1], check=False).stdout.strip()
@@ -12368,7 +12368,7 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
     quotes the thread), T2 an `offer`, a `no` a `close`. A confidential scope's doc, or a registry that
     does not read, is never judged (never_mirrored: its page cannot exist, and nothing of it reaches a
     provider). The event's id is the thread's and its newest words' time: one act per turn. Also the ids
-    of the threads judged a question (routed comments S5: on a landed doc the standing manager is hailed
+    of the threads judged a question (routed comments S5: on a landed doc the standing skipper is hailed
     for them, T3 after landing): (events, fresh, talk, questions)."""
     import hashlib
     name = key_parts(key)[0]
@@ -12714,7 +12714,7 @@ def lookout_act(ev, here, runs, dry):
                 kind = "save-held"
     if how == "none" and landed and (kind == "talk" or ev.get("questions")):
         # T3 after landing (judge section 3): the owner's question, or new words in a conversation, on a doc no
-        # session holds goes to this Mac's standing manager; with none here, the card below, as before
+        # session holds goes to this Mac's standing skipper; with none here, the card below, as before
         res = lookout_standing(ev, kind, here, dry)
         if res:
             return dict(row, **res)
@@ -12752,10 +12752,10 @@ def lookout_act(ev, here, runs, dry):
 
 
 def standing_for(top):
-    """The live standing manager this Mac runs for the repo at `top`, as helm's asklib gives it ({manager,
+    """The live standing skipper this Mac runs for the repo at `top`, as helm's asklib gives it ({manager,
     manager_host, manager_name, …}), or None: the skipper of a scope that lists the repo first — every scope
     walked, never the first that lists it (AGENTS.md's fence trap; here a road, the same rule) — else the Mac's
-    own standing manager (stray-manager M5). Each is live by its pid and its session's registry pid, on this
+    own standing skipper (stray-manager M5). Each is live by its pid and its session's registry pid, on this
     Mac alone: a host whose skipper runs elsewhere hails nobody, and the card stands (routed comments S5)."""
     try:
         lib = _asklib()
@@ -12773,7 +12773,7 @@ def standing_for(top):
         repos, scopes = c.scope_registry()
         mine = [(len(c.scope_members(s, repos)), n) for n, s in sorted(scopes.items()) if key and key in c.scope_members(s, repos)]
         names = [n for _, n in sorted(mine)]   # the narrowest scope's skipper first, an umbrella (`*`) last
-    except Exception:   # noqa: BLE001 — no core, no registry: the Mac's own manager alone
+    except Exception:   # noqa: BLE001 — no core, no registry: the Mac's own skipper alone
         names = []
     for n in names:
         sm = standing(scope=n)
@@ -12783,19 +12783,19 @@ def standing_for(top):
 
 
 def lookout_standing(ev, kind, here, dry):
-    """T3 after landing (routed comments S5): hail this Mac's standing manager (standing_for) about the landed
+    """T3 after landing (routed comments S5): hail this Mac's standing skipper (standing_for) about the landed
     doc's page — `--when idle`, a pointer, never the owner's words — or None when none runs here or no hail
     reaches it, and the comment's card stands."""
     sm = standing_for(ev["top"]) if ev.get("top") else None
     if not sm:
         return None
     about = "%s:%s:%s" % (ev["doc"].partition("@")[0], LANDED, ev["rel"])
-    who = "%s (%s)" % (sm.get("manager_name") or "the standing manager", str(sm.get("manager"))[:8])
+    who = "%s (%s)" % (sm.get("manager_name") or "the standing skipper", str(sm.get("manager"))[:8])
     if dry:
-        return {"action": "would hail", "about": about, "target": str(sm.get("manager")), "via": "the standing manager"}
+        return {"action": "would hail", "about": about, "target": str(sm.get("manager")), "via": "the standing skipper"}
     res = hail_session({"session_id": sm["manager"], "machine": sm.get("manager_host") or here}, about, "landed", here, when="idle")
     if res.get("verdict") in ("delivered", "queued", "held"):
-        return {"action": "hailed", "about": about, "target": str(sm["manager"]), "via": "the standing manager",
+        return {"action": "hailed", "about": about, "target": str(sm["manager"]), "via": "the standing skipper",
                 "verdict": res.get("verdict"), "why": "%s on a landed doc: %s" % (
                     "new words in a conversation" if kind == "talk" else "%s's question" % WHO, who)}
     return None

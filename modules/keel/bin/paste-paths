@@ -768,7 +768,7 @@ _OWNER_ACT_RE = re.compile(r"\b(?:log in|sign in|approve|paste|click|tap|press|p
 # An imperative the owner would carry out, at a clause's start ("merge #12 when you like", "nothing pending;
 # run /finish"), and a "when you"/"you owe"/"your <noun>" that hands the owner the step ("the PR waits for your
 # merge"). At a clause's start only: "the merge landed" and "the check ran" are reports (the finish review,
-# 2026-10-30: these hid an owed merge under ✅ and dropped a managed run's relay).
+# 2026-10-30: these hid an owed merge under ✅ and dropped a skippered run's relay).
 _OWNER_DO_RE = re.compile(r"(?:^|[;:.,!?—]\s*|\b(?:then|just|please|and)\s+)(?:merge|run|review|copy|type|open|"
                           r"restart|start|land|launch|finish|install|enable|grant|give)\b"
                           r"|\bwhen you\b|\byou owe\b|\byour (?:merge|review|tap|go|call|approval|login|yes)\b", re.I)

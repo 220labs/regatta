@@ -1851,7 +1851,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   # then claimed here if this host has room — started at once by a RunAtLoad job — else left queued for
   # the next claim (header, The queue). A queue that cannot take it leaves the one-shot below.
   # S9: --after with no queue home here has nowhere to wait: the run goes only if every predecessor has landed
-  # now, and is refused otherwise in the cap's waiting words (CAP_RE, ASK_EXEMPT_RE: a managed run ending on it
+  # now, and is refused otherwise in the cap's waiting words (CAP_RE, ASK_EXEMPT_RE: a skippered run ending on it
   # is no unrelayed ask). With a home, the entry waits and the claim judges (dispatch-queue after_holds)
   if [ "$probe$dry" = 00 ] && [ ${#afters[@]} -gt 0 ] && [ -z "$on" ] && { [ "$direct" = 1 ] || [ "$next" = 1 ]; } && ! queue_on; then
     for b in "${afters[@]}"; do

@@ -1922,7 +1922,7 @@ EOF
 ('act-unclear', 'held', 'not judged: secret is private — it is never mirrored')
 [] ['S5']
 ([], {'t1': 1}) []" "T1 only on an unshared page of a physical: none repo; a confidential scope's doc is never judged, and its words never reach the call; the text fallback (no address) is never tiered; a Steps: line from the owner's words, never the quoted anchor"
-echo "lookout — after landing (routed comments S5): a landed doc on a host with no pin, its commits on main, T1 off main, T3 to the standing manager"
+echo "lookout — after landing (routed comments S5): a landed doc on a host with no pin, its commits on main, T1 off main, T3 to the standing skipper"
 rm -f "$T/week" "$T/pickup-rc" "$T/pickup-why" "$T/dispatch-rc" "$T/hail-verdict" "$T/queue-on" "$T/queue-queued" "$T/queue-rc"
 asks   # no open items in the poll: the landed doc is read for its Routed: line alone
 # a doc routed on its branch, landed on main (fast-forward, the branch deleted here and on origin); no pin of it
@@ -2021,7 +2021,7 @@ check "$(marks sp-l o1 | grep -c '^memo: routed into')" "0" "…and the offer le
 BLF="$T/brief-$(wc -l < "$T/pickup.log" | tr -d ' ').md"
 has "$BLF" "# d — the lookout's run on docs/d.md" "the request's brief: named for the doc, never main"
 has "$BLF" "seeded this branch off main, where the doc has landed, and started this run (routed comments S5)" "…saying it is off main"
-# T3 after landing: a question on the landed doc goes to this Mac's standing manager, `--when idle`
+# T3 after landing: a question on the landed doc goes to this Mac's standing skipper, `--when idle`
 export ASK_MANAGER_DIR="$T/mgr" ASK_SESSIONS_DIR="$T/sessreg" PLAN_HOST=laptop
 mkdir -p "$T/mgr" "$T/sessreg"
 printf '{"session": "mgrsess1-0000", "pid": %s, "name": "manager · laptop"}\n' "$$" > "$T/mgr/laptop.json"
@@ -2031,19 +2031,19 @@ rthread sp-l q1 "why is the other way cheaper?"
 NH=$(hails)
 lk
 has "$T/out" "comment demo@main:docs/d.md comments:" "a question on a landed doc: the comment event"
-has "$T/out" " — hailed · mgrsess1-0000" "…the standing manager hailed"
+has "$T/out" " — hailed · mgrsess1-0000" "…the standing skipper hailed"
 check "$(( $(hails) - NH ))" "1" "…once"
 has "$T/hail.log" "mgrsess1-0000 --kind event --about demo:main:docs/d.md --text" "…about the doc on main"
 has "$T/hail.log" "the owner's words on a landed doc's page, which no session holds" "…a pointer, never the words"
 check "$(tail -1 "$T/hail.log" | grep -c -- '--when idle')" "1" "…--when idle"
 lk
 check "$(( $(hails) - NH ))" "1" "…and not again"
-# with no standing manager here, the question is the card it was
+# with no standing skipper here, the question is the card it was
 rm -f "$T/mgr/laptop.json"
 rthread sp-l q2 "and which one ships first?"
 NH=$(hails)
 lk
-has "$T/out" "comment demo@main:docs/d.md comments:" "no standing manager here: the comment event…"
+has "$T/out" "comment demo@main:docs/d.md comments:" "no standing skipper here: the comment event…"
 has "$T/out" "new comments, no answer; no run starts for them" "…carded as before"
 check "$(hails)" "$NH" "…nobody hailed"
 unset ASK_MANAGER_DIR ASK_SESSIONS_DIR PLAN_HOST
