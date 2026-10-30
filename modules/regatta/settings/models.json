@@ -6,6 +6,7 @@
   },
   "sites": {
     "example.classify": {"kind": "classify", "provider": "off", "when_off": "skip", "note": "the table's shape; a module's call sites are rows in your own table"},
+    "keel.comment": {"kind": "classify", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "skip", "note": "routed comments S4: the lookout's one call on an owner's free-text page comments, after keel's rules (judge section 3); skip, so an outage makes every such thread T2; keel routed bench reruns the evidence's ten"},
     "lighthouse.importance": {"kind": "classify", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "fail", "note": "lighthouse-ops S5: the desk's triage (lighthouse's bin/ops classify), one of four rows; Sonnet separated clear-and-cheap from ask and alarm on the sense component's probe"},
     "lighthouse.urgency": {"kind": "classify", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "fail", "note": "lighthouse-ops S5: the desk's triage (lighthouse's bin/ops classify), one of four rows; Sonnet separated clear-and-cheap from ask and alarm on the sense component's probe"},
     "lighthouse.cost": {"kind": "classify", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "fail", "note": "lighthouse-ops S5: the desk's triage (lighthouse's bin/ops classify), one of four rows; Sonnet separated clear-and-cheap from ask and alarm on the sense component's probe"},

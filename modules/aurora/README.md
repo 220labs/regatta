@@ -8,7 +8,7 @@ approve.
 
 | File | What it is |
 | --- | --- |
-| `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend, the classify and the trim section (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, and checks each section's proof; `--dry-run` prints tonight's order, `--due` is the same as a precheck (exit 3 when nothing would run); `weekly-run where` prints where things are; `weekly-run aurora --scope <scope>` runs one scope's pass instead, from the scope's anchor and on its login |
+| `bin/weekly-run` | what launchd runs: `weekly-run aurora <cwd>` picks tonight's sections, runs the tend and the classify (zero tokens), then one `claude -p "/aurora <section>"` per section under a time cap, then the trim section (zero tokens, under the same cap; on a Sunday night it waits until 00:30 for every host's day files), and checks each section's proof; `--dry-run` prints tonight's order, `--due` is the same as a precheck (exit 3 when nothing would run); `weekly-run where` prints where things are; `weekly-run aurora --scope <scope>` runs one scope's pass instead, from the scope's anchor and on its login |
 | `bin/embark-memo` | the week's `/embark` sitting as one course memo, by code: the dream's D-items with the sections they quote copied under them, the branches file as one item (a table per class), the sextant's PROPOSE items, the charts dry run, one item per FAILED line; venture and household items left in the vault with a pointer. `weekly-run embark <cwd>` (and the sextant job, after its session) commits it as `docs/embark/embark-<day>.md` in regatta on `claude/<host>/<day>-embark`, pushes it and runs `keel line`; helm's board puts it first in the owner's column; `--dry-run` prints it |
 | `bin/week-digest` | what the owner typed this week, per project and session — the raw material the dream reads — and `--promote-tags`, the tagged lines; a confidential scope's counted, never quoted, `--scope` for one scope; read-only |
 | `bin/scope-pass` | the code half of a scope's pass: `where` (what it reads and writes, and whether it may run), `check` (a confidential scope's draft names none of its repos, paths or words — `<anchor>/.claude/words.txt` holds the node's own; `--judge` adds the gate's `scope.brief` judge for a brief leaving the node, `pickup seed --from`'s review), `record` (the dream on the anchor's main; the draft, checked, as the vault's inbox file with a `log.md` line; a hit holds the draft inside the anchor), `proof` |
@@ -36,10 +36,10 @@ host (its name as the core's `host_name()` prints it, case-blind) the whole-nigh
 line, and `install.sh --schedule` refuses there; a host that gets the overlay later never runs
 them by default (two hosts each writing the week's dream in place conflict on push). A scope's pass,
 `weekly-run aurora --scope <scope>`, runs on that scope's yard (the registry's `yard`), else on
-`aurora/host`; a registry that does not read refuses it. `aurora/trim-repos`, optional: the repos the night's
-`trim` section tunes, one absolute path a line; absent, the core's own checkout, and only a repo holding
-`trim/<vertical>.json` counts. Where an overlay is installed (the config
-dir's `regatta/overlay` marker) and the key is absent, the run refuses. `aurora/skip-hosts`, the old
+`aurora/host`; a registry that does not read refuses it. Where an overlay is installed (the config
+dir's `regatta/overlay` marker) and `aurora/host` is absent, the run refuses. `aurora/trim-repos`, optional: the repos the night's
+`trim` section tunes, one absolute path a line, read as the core reads a key; absent, the core's own checkout; written empty, none; and only a repo holding
+`trim/<vertical>.json` counts. `aurora/skip-hosts`, the old
 deny-list (the hosts never to run on, one per line), is deprecated: read only while `aurora/host` is
 absent, with a line saying so. The rule is the core's (`common.weekly_host`; `regatta weekly-host` in a
 shell), so weekly-run, sextant's runner and both installers read it alike.
@@ -52,7 +52,7 @@ shell), so weekly-run, sextant's runner and both installers read it alike.
 | atlas | the bulletin, `knowledge-commit`, `docs-index` (charts) | no bulletin lines (the log still says it); the quiet week's line and the dream's commit fail their step; charts is never due |
 | wharf | `tend`, `repos` (classify), `pr` (the charts PR), `branches.py` | that step fails with one line; the branches section gathers for itself |
 | wharf-runs | `rc-hosts --launcher` (a stable launcher for `claude`) | `claude` runs directly |
-| plumb | `knowledge-numbers`, `interruptions` (the dream's numbers); `trim` (the trim section) | the dream says the numbers are missing; the trim step fails with one line |
+| plumb | `knowledge-numbers`, `interruptions` (the dream's numbers); `trim` (the trim section) | the dream says the numbers are missing; trim is never due, and the dry run says why |
 | lighthouse | `account pick --repo` (the login a scope's pass runs on, `weekly-run aurora --scope`) | an open scope runs on the login it started on; a confidential one with a login does not run |
 | sextant | `weekly-run sextant <cwd>` runs `/sextant` until the sextant module ships its own runner | — |
 

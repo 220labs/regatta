@@ -5,11 +5,21 @@ the ref's component, docs/dispatch-queue-ref-2026-10-25.md). bin/dispatch calls 
 holds the one home of (this host, the cap, the job's script, the label prefix); nobody else needs to.
 
     dispatch-queue home                    the queue's home (a URL or a path), exit 1 when there is none
-    dispatch-queue enqueue --repo R --branch B [--priority P] [--pin HOST] [--by SID] [--cwd DIR]
-                   [--arg=FLAG]... [--env K=V]... [--refused WHY] [--claim] CTX
+    dispatch-queue enqueue --repo R --branch B [--priority P] [--pin HOST] [--needs a,b] [--by SID] [--cwd DIR]
+                   [--arg=FLAG]... [--env K=V]... [--refused WHY] [--after B2]... [--claim] CTX
                                            one entry per branch (a later one replaces a queued one); with
                                            --claim, this host then claims what it has room for. One JSON
                                            line on stdout: key, qid, store, result, rank, claimed
+                                           --needs: features a claiming host's `wharf-runs/features` line must name; a
+                                           need no host that may take the repo meets exits 3 and is never queued.
+                                           --after: the claim skips it until B2 is proved on origin/<main> (S9)
+    dispatch-queue land --repo R --branch B --topic T --pid P CTX
+                                           a landing (dispatch --start's /finish) with no room: an entry of
+                                           kind landing in this host's queue-local/_land, ranked above every
+                                           build but force; nothing of its run is in it (S9). JSON: qid, rank
+    dispatch-queue land-wait QID --pid P [--for S]
+                                           block until this host's claim takes the landing for process P:
+                                           exit 0 claimed, 3 gone, 6 past --for (the entry then removed)
     dispatch-queue claim [--event-at T] CTX
                                            claim and start what this host has room for, best first; T is
                                            when the slot freed (the watcher's word), for G3's event_at
@@ -47,6 +57,11 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
   its limits, which the next claim here would meet again.
     dispatch-queue unreserve QID [--label L]   a stale job's reservation given back at its exit
     Every verb: exit 5 for a crash, never 1, which dispatch reads as "the queue alone refused it".
+    dispatch-queue requeue TOPIC|--all [--repo R] [--why W] [--dry-run] CTX
+                                           S10: this host's busy runs (or TOPIC's) ended, their work committed and
+                                           pushed, the brief given a "Continue from here" section, the entry queued
+                                           again for any host; --why lid is the watcher's, at a sleep (no offline
+                                           refusal; warm runs left). Exit 3 refused offline by hand, nothing ended
     dispatch-queue mine QID [--label L]    the fired job's check: still its claim? exit 0 yes, 3 no, 4 unreadable
   CTX: --host H --cap N --jobbin PATH --prefix P [--launchctl CMD] [--rch CMD]
 
@@ -117,6 +132,8 @@ import common  # noqa: E402
 REF = "refs/regatta/queue"
 LEASE = 15 * 60          # a claim with no record yet is the claimer's for this long (the ref component)
 SWEEP = 10 * 60          # every host's sweep; an entry silent two sweeps is a card
+SILENT_SWEEPS = 6        # a named host with no word on an unclaimed entry this many sweeps counts by this host's config
+UNREAD_WHY = "the registry will not read, so no berth or clone host can be judged"
 POLL = 60                # the pending poll's interval, on a host no kick road reaches (S2)
 SPENT = 120              # a reservation whose job's plist is gone, whose job is not running and whose claimer
                          # has exited is spent this long after its claim: the job exited before its record
@@ -127,6 +144,13 @@ MARK_AGE = 30 * 60       # a force mark older than this is not this turn's words
 TRIES = 3
 OUTBOX_TTL = 24 * 3600   # a put still unsent after a day is dropped, never replayed onto a branch that moved on
 RANKS = {"force": 0, "high": 1, "normal": 2, "low": 3}
+# S9: a landing ranks above every build but force (the owner's word for one run), by its kind — which dispatch
+# --start alone writes, from what it runs, never from a caller's flag or variable (the brief; S4's unattended
+# refusal stands: no rank is raised by a word)
+LAND_RANK = 0.5
+LAND_STORE = "_land"     # queue-local/_land: a landing's entry never leaves this host (its worktree is here)
+LAND_WAIT = 6 * 3600     # a landing that waited this long in the queue gives up: autofinish's sweep starts it again
+AFTER_BOUND = 48 * 3600  # an entry waiting this long on an --after predecessor files one card (it still holds)
 LIVE = ("claimed", "waiting", "running")
 STATES = ("queued",) + LIVE
 # What a claimed entry may hand the fired dispatch: these flags alone, each value matched — an entry is
@@ -135,7 +159,10 @@ FLAGS = {"--model": r"[A-Za-z0-9.\[\]_-]{1,40}", "--effort": r"low|medium|high|x
          "--background": r"allow|deny", "--account": r"[A-Za-z0-9_.@-]{1,60}", "--mode": r"default|ask|dnd|yolo",
          "--priority": r"low|normal|high|force", "--yolo": None, "--if-room": None, "--force": None, "--headless": None,
          # a confidential origin by its marker only: the entry is pushed, and a scope's name never is (S5)
-         "--origin": r"confidential:[0-9a-f]{8}"}
+         "--origin": r"confidential:[0-9a-f]{8}",
+         # the entry's needs again as a flag (S5): a host whose claimable predates S5 skips an entry carrying a flag
+         # it does not know, so a mixed-version fleet never runs a run on a host lacking its feature
+         "--needs": r"[a-z0-9][a-z0-9._-]{0,39}(,[a-z0-9][a-z0-9._-]{0,39})*"}
 ENV_OK = re.compile(r"DISPATCH_(DEPTH|MODE|SKIPPER|MANAGER|SKIPPER_ACCOUNT|MANAGER_ACCOUNT|SHIP|PLAN|PLAN_SPACE|SKIPPER_HOST|MANAGER_HOST)")
 BRANCH_OK = re.compile(r"claude/[A-Za-z0-9._/-]{1,200}")
 
@@ -192,6 +219,41 @@ def home():
     return "https://github.com/%s.git" % v
 
 
+def queue_mode():
+    """`wharf-runs/queue-mode` (S10(g)): `claim`, the default, or `writes` — a host that may sleep with runs on it
+    (a laptop) holds a home for its own writes alone: the requeue's ops and their outbox, replayed by its sweep
+    at wake. It enqueues nothing of its own (dispatch's queue_on reads `home`, which says none) and claims
+    nothing. A `<host>:<mode>` line is that host's; a bare line every other host's."""
+    h, mode = host_name(), ""
+    for line in common.config_lines("wharf-runs/queue-mode") or []:
+        name, sep, v = line.partition(":")
+        if sep and name.strip().lower() == h:
+            return v.strip().lower() or "claim"
+        if not sep and not mode:
+            mode = line.strip().lower()
+    return mode or "claim"
+
+
+def claims_here():
+    return queue_mode() != "writes"
+
+
+def dark_wake():
+    """True while this Mac is in a DarkWake (a Power Nap or maintenance wake with the lid shut): a claim then
+    starts a run the sleep cuts again within seconds, so it claims nothing (S10(g)). Read from `pmset -g
+    systemstate`, whose capabilities line lacks Graphics in a DarkWake (IOPMLib's kIOPMSystemCapabilityGraphics;
+    the line itself probed awake on a Mac, the DarkWake form not yet: S10(a)). No reading is awake."""
+    pm = os.environ.get("DISPATCH_PMSET") or ("pmset" if sys.platform == "darwin" else "")
+    if not pm:
+        return False
+    try:
+        r = subprocess.run([pm, "-g", "systemstate"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    m = re.search(r"Current System Capabilities are:(.*)", r.stdout or "")
+    return bool(m) and "Graphics" not in m.group(1).split()
+
+
 def topic_of(branch):
     return re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-", "", branch.rsplit("/", 1)[-1])
 
@@ -216,11 +278,13 @@ def repo_path(word):
 
 
 def rank(e, t=None):
-    """Sort key: force, high, normal, low, then age; `low` past LOW_AGE ranks as normal."""
+    """Sort key: force, a landing (S9), high, normal, low, then age; `low` past LOW_AGE ranks as normal."""
     t = now() if t is None else t
     r = RANKS.get(e.get("priority") or "normal", 2)
     if r == 3 and t - int(e.get("queued_at") or t) >= LOW_AGE:
         r = 2
+    if e.get("kind") == "landing" and r > LAND_RANK:
+        r = LAND_RANK
     return (r, int(e.get("queued_at") or 0), e.get("key") or "")
 
 
@@ -604,7 +668,9 @@ def apply_op(entries, op):
             if not op.get("replace") and RANKS.get(cur.get("priority") or "normal", 2) < RANKS.get(new.get("priority") or "normal", 2):
                 new["priority"] = cur["priority"]
                 new["args"] = [x for x in _rank_args(new.get("args"), cur["priority"])]
-            for f in ("running_on", "refused_by", "attempts", "last_refusal"):
+            # `after` too (S9): a later put that names none (helm's retry, a fire-time requeue) never drops the
+            # dependency silently; `--cancel` and a new dispatch with its own --after are the ways to change it
+            for f in ("running_on", "refused_by", "attempts", "last_refusal", "after"):
                 if cur.get(f) and not new.get(f):
                     new[f] = cur[f]
             if not op["entry"].get("refused_by") and new.get("refused_by"):
@@ -691,6 +757,26 @@ def apply_op(entries, op):
             cur["running_on"] = op["keep_on"]
         cur.update(state="queued", refused_by=rb, last_refusal=op["why"], session="")
         return True, "queued"
+    if kind == "requeue":
+        # S10: a busy run handed back by the host that held it (dispatch --requeue, by hand or at sleep), or by
+        # the fleet on that host's own word, its branch tip (D8-B). Unlike `refuse`, no host skips it: the
+        # hour's skip, and a pinned entry's re-offer at once, were both wrong for a run cut by a lid
+        if not _match(cur, op.get("cond")):
+            return False, "moved"
+        for f in ("claimed_by", "claimed_at", "running_on", "job", "started"):
+            cur.pop(f, None)
+        cur.update(state="queued", session="", requeued_from=op["host"], requeued_at=op["at"], seen_at=op["at"])
+        if op.get("skip"):
+            # by hand, before a lid closes: the Mac that handed it back skips it the hour (`refuse`'s skip), or its own
+            # poll or sweep claims it back before the lid shuts. At a sleep none: a DarkWake claims nothing
+            cur["refused_by"] = dict(cur.get("refused_by") or {}, **{op["host"]: op["at"]})
+        if op.get("args") is not None:
+            cur["args"] = op["args"]
+        if cur.get("priority") == "force":
+            # force spent its one slot over the cap on the run that was cut: the step goes on at high (the verb)
+            cur["priority"] = "high"
+            cur["args"] = _rank_args(cur.get("args"), "high")
+        return True, "requeued"
     if kind == "remove":
         if not _match(cur, op.get("cond")):
             return False, "moved"
@@ -730,7 +816,9 @@ def outbox_add(op):
     op = dict(op, queued_op_at=now())
     tmp = d / (".%d.tmp" % os.getpid())
     tmp.write_text(json.dumps(op, sort_keys=True))
-    os.replace(tmp, d / ("%019d-%d.json" % (time.time_ns(), os.getpid())))
+    p = d / ("%019d-%d.json" % (time.time_ns(), os.getpid()))
+    os.replace(tmp, p)
+    return p
 
 
 def outbox_only(key):
@@ -738,9 +826,11 @@ def outbox_only(key):
     return any(o.get("op") == "put" and o.get("key") == key for o in outbox_ops())
 
 
-def flush(fleet):
+def flush(fleet, ready=(), replay=False):
     """The outbox in one CAS round, oldest first, each op as conditional as when it was written. A put
-    older than OUTBOX_TTL is dropped (logged), never written onto a branch that has moved on since.
+    older than OUTBOX_TTL is dropped (logged), never written onto a branch that has moved on since. A
+    requeue's op (S10) waits while hold_waits() says so: its branch reaches origin before the op does, so a
+    host that claims the entry finds the cut run's work; READY names outbox files the verb proved so now.
     [(op, result)] of the ops the home answered ([] when none was sent): an op that came back stale is
     dropped, and a caller waiting on its own put reads why (S2a's landing review, item 5)."""
     files = outbox_files()
@@ -753,10 +843,24 @@ def flush(fleet):
         except (OSError, ValueError):
             p.unlink(missing_ok=True)
             continue
-        if op.get("op") == "put" and now() - int(op.get("queued_op_at") or 0) > OUTBOX_TTL:
+        if op.get("op") == "put" and not op.get("hold") and now() - int(op.get("queued_op_at") or 0) > OUTBOX_TTL:
             event("outbox-dropped", key=op.get("key"), why="unsent for a day")
             p.unlink(missing_ok=True)
             continue
+        if op.get("hold") and p.name not in ready:
+            # owed (S10): never dropped by age — a lid shut over a weekend is the case it is for, and the put of a
+            # writes-only host's run is its only entry. Judged only where asked (the sweep's replay): every other
+            # flush (has, fire, poll…) skips it unprobed, never a push from a reader's process
+            why = hold_waits(op) if replay else "replayed by the sweep"
+            if why == "drop":
+                p.unlink(missing_ok=True)
+                continue
+            if why:
+                if replay and now() - int(op.get("queued_op_at") or 0) > OUTBOX_TTL:
+                    hold = op.get("hold") or {}
+                    card("queue-owed", "fleet:%s" % op.get("key"), {"branch": hold.get("branch"), "repo": hold.get("repo")},
+                         "a requeue from %s owed a day: %s" % (op.get("host"), why), mark=op.get("at"), say=False)
+                continue
         ops.append(op)
         keep.append(p)
     if not ops:
@@ -778,6 +882,108 @@ def flush(fleet):
                      "a put from %s held in the outbox (session %s), refused at its replay: %s"
                      % (e.get("from") or host_name(), (e.get("by") or "none")[:8], r), mark=e.get("id"), say=False)
     return list(zip(ops, res))
+
+
+def git_in(wt, *args, timeout=60):
+    """git in a run's worktree, for the requeue: (exit, stdout stripped); 124 on a timeout, 127 with no git."""
+    try:
+        # the user's own git identity and config (a Requeue: commit is the user's, as a checkpoint is), never
+        # _env()'s queue author; only what a hook or a worktree left set is dropped, as _env() drops it
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX")}
+        r = subprocess.run(["git", "-C", str(wt)] + list(args), capture_output=True, text=True, timeout=timeout,
+                           env=dict(env, LC_ALL="C", GIT_TERMINAL_PROMPT="0"))
+    except subprocess.TimeoutExpired:
+        return 124, ""
+    except OSError:
+        return 127, ""
+    return r.returncode, (r.stdout or "").strip()
+
+
+def origin_tip(wt, branch, timeout=20):
+    """The branch's sha on origin ("" for none), or None when origin did not answer."""
+    rc, out = git_in(wt, "ls-remote", "origin", "refs/heads/" + branch, timeout=timeout)
+    if rc != 0:
+        return None
+    return (out.split() or [""])[0]
+
+
+def hold_waits(op):
+    """Why an owed requeue op (S10, its `hold`) waits in the outbox, or None once it may be written: its verb is
+    still running (it writes the op itself), or its branch is not on origin at the tip the op stands for. A verb
+    cut before it committed (the sleep came first) left no tip: the branch's local tip stands for it. The replay
+    pushes the branch first, and the op goes only once origin holds that tip: the fleet's claim must find the cut
+    run's work (the requeue component's step 6; sync-unpushed alone waits for a session start).
+    "drop" when the run it stands for was never ended by the requeue (the verb died before or while ending it, and
+    the run then ended its own way): the op would queue a step its own run finished or holds. Origin past the tip
+    (a later commit, another host's continuation) holds it too: the tip is an ancestor of origin's."""
+    hold = op.get("hold") or {}
+    pid = hold.get("pid")
+    if pid:
+        try:
+            if rc_mod().running(int(pid), hold.get("pstart") or ""):
+                return "its requeue is running"
+        except (TypeError, ValueError):
+            pass
+    if hold.get("record"):
+        try:
+            rec = json.loads(Path(hold["record"]).read_text())
+        except (OSError, ValueError):
+            rec = None
+        word = str((rec or {}).get("ending") or (rec or {}).get("end_reason") or "")
+        if rec is not None and not word.startswith(REQUEUED):
+            if rec.get("ended"):
+                event("requeue-dropped", key=op.get("key"), why="its run ended its own way: %s" % word[:80])
+                return "drop"
+            return "its run was not ended by the requeue"
+        if rec is not None and not rec.get("ended"):
+            # end_run writes `ending` before its signal: a verb cut between the two leaves a live run marked
+            return "its run is not ended yet"
+    wt, br = hold.get("wt") or "", hold.get("branch") or ""
+    if not br or not wt or not os.path.isdir(wt):
+        return None   # no worktree here to push from: the branch is as origin has it
+    tip = hold.get("tip")
+    if not tip:
+        rc, tip = git_in(wt, "rev-parse", "-q", "--verify", "refs/heads/" + br)
+        if rc != 0 or not tip:
+            return None
+    there = origin_tip(wt, br)
+    if there is None:
+        return "origin did not answer"
+    if there == "":
+        # the branch is gone from origin (landed and deleted, or by hand): pushing it would bring it back, and the
+        # entry the op stands for has moved on with it (the second review)
+        event("requeue-dropped", key=op.get("key"), why="its branch %s is gone from origin" % br)
+        return "drop"
+
+    def anc(a, b):
+        """True or False as merge-base says (0 or 1); None when it could not tell — a commit the fetch never
+        brought exits 128, which is no divergence (S10's finish review)."""
+        for c in (a, b):
+            if git_in(wt, "cat-file", "-e", c + "^{commit}")[0] != 0:
+                git_in(wt, "fetch", "-q", "--no-tags", "origin", "refs/heads/" + br, timeout=60)
+                break
+        rc = git_in(wt, "merge-base", "--is-ancestor", a, b)[0]
+        return True if rc == 0 else False if rc == 1 else None
+
+    def holds(sha):
+        return sha == tip or (bool(sha) and anc(tip, sha))
+    h = holds(there)
+    if h:
+        return None
+    if h is None or anc(there, tip) is None:
+        return "origin's %s did not fetch" % br
+    if anc(there, tip) is False:
+        # origin went elsewhere (rewritten by a landing, or another host's run): this tip can never reach it
+        event("requeue-dropped", key=op.get("key"), why="origin's %s diverged from the requeue's tip" % br)
+        card("queue-owed", "fleet:%s" % op.get("key"), {"branch": br, "repo": hold.get("repo")},
+             "a requeue's branch %s diverged on origin; its op dropped, its tip %s kept in the worktree" % (br, tip[:10]),
+             mark=op.get("at"), say=False)
+        return "drop"
+    git_in(wt, "push", "-q", "origin", "refs/heads/%s:refs/heads/%s" % (br, br), timeout=90)
+    if holds(origin_tip(wt, br)):
+        event("requeue-pushed", key=op.get("key"), branch=br, tip=tip[:12])
+        return None
+    return "its branch %s is not on origin at %s" % (br, tip[:10])
 
 
 def stale(r):
@@ -1041,13 +1247,92 @@ def landing_peer(h):
     return bool(peer and alias)
 
 
+# ---- eligibility: what a host may claim (S5; docs/dispatch-queue-contract-2026-10-25.md "Eligibility") ----
+# Names are lower-case and opaque. The feature lines are the claiming host's own config, one line per host
+# (`wharf-runs/features`, `<host>:<name>,<name>`): a need is met by a host whose line names it, and a host
+# with no line meets none.
+NEED_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
+_BERTH = []
+
+
+def berth_candidates(repo, h):
+    """(the hosts the scope's `berths` and the repo's clone `hosts` let take REPO, why they did) — berth's own
+    candidates(), the one home of those filters; with no berths, each peer `wharf-runs/ssh` names and H. A
+    registry that is there but will not read gives none (berth's rule: read as empty it drops both filters)."""
+    if not _BERTH:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        ld = SourceFileLoader("berth", str(HERE / "berth"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+        ld.exec_module(m)
+        _BERTH.append(m)
+    cands, why = _BERTH[0].candidates(str(repo_path(repo)), h)
+    return [x.lower() for x in cands], why
+
+
+def features():
+    """{host: {name}} from `<config>/wharf-runs/features`. A line naming a malformed feature drops that name
+    only; a host with no line, and a file that does not read, are absent: they meet no need. A line with no
+    `:` continues the host before it: the overlay's bootstrap writes a config value one word per line, so
+    `host-a:feat-a, feat-b` arrives as two lines (AGENTS.md's trap; S5's landing review)."""
+    out = {}
+    last = None
+    for ln in common.config_lines("wharf-runs/features") or []:
+        if ":" not in ln:
+            if last:
+                out[last].update(n for n in (x.strip().lower() for x in ln.split(",")) if NEED_RE.fullmatch(n))
+            continue
+        host, _, names = ln.strip().partition(":")
+        last = host.strip().lower() or None
+        if host.strip():
+            out.setdefault(host.strip().lower(), set()).update(
+                n for n in (x.strip().lower() for x in names.split(",")) if NEED_RE.fullmatch(n))
+    return out
+
+
+def eligibility(e, h, feats=None):
+    """Why host H may not take entry E by the config alone, or None — the pin, the scope's berths and the
+    clone hosts, and the feature line against E's needs. The one function the claim's `claimable` calls
+    (and the sweep's unclaimed card, for every host the config names): what a host's own state decides — its
+    room, its hour's skip, its clone, the yolo rule — stays in `claimable`. `stopped` joins here once
+    host-power's key exists on main (the design doc's S5, "Not built here")."""
+    if e.get("host") and e["host"].lower() != h:
+        return "pinned to %s" % e["host"]
+    cands, why = berth_candidates(e.get("repo") or "/nonexistent", h)
+    if why.get("unreadable"):
+        return UNREAD_WHY
+    if h not in cands:
+        return "the repo's berths and clone hosts leave out %s" % h
+    needs = e.get("needs") or []
+    if not isinstance(needs, list) or any(not isinstance(n, str) for n in needs):
+        return "needs is not a list of feature names"   # an entry is data any host with write may put
+    if needs:
+        feats = features() if feats is None else feats
+        miss = [n for n in needs if n not in feats.get(h, set())]
+        if miss:
+            return "%s %s %s" % (h, "lacks" if h in feats else "has no feature line, so lacks", ", ".join(miss))
+    return None
+
+
+def fleet_hosts(e, local=False):
+    """Every host the config names for E: the repo's berth candidates and the hosts with a feature line (a host
+    that claims from the ref with no ssh alias here has only its line). LOCAL: E is in a node-local queue, which
+    only this host ever claims, so this host alone."""
+    if local:
+        return [host_name()]
+    cands, _ = berth_candidates(e.get("repo") or "/nonexistent", host_name())
+    pin = (e.get("host") or "").lower()
+    return sorted(set(cands) | set(features()) | ({pin} if pin else set()))   # the pin names a host whatever this config says
+
+
 def claimable(e, h, t=None):
-    """Why this host may not claim E, or None (the S1 filters; S5 adds the scope's berths and features)."""
+    """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features)."""
     t = now() if t is None else t
     if e.get("state") != "queued":
         return "it is %s" % e.get("state")
-    if e.get("host") and e["host"].lower() != h:
-        return "pinned to %s" % e["host"]
+    why = eligibility(e, h)   # the pin first, as its text always led the listing
+    if why:
+        return why
     if e.get("running_on") and e["running_on"].lower() != h:
         return "its branch runs on %s" % e["running_on"]
     if t - int((e.get("refused_by") or {}).get(h) or 0) < SKIP:
@@ -1062,7 +1347,134 @@ def claimable(e, h, t=None):
         return "a %s run's launch cannot run here (autofinish disarmed here)" % e.get("mode")
     if bad_args(e):
         return bad_args(e)
+    if e.get("kind") == "landing" and not land_waiter_alive(e):
+        return "a landing whose dispatch --start is gone"
     return None
+
+
+def land_waiter_alive(e):
+    """A landing's entry is its waiting dispatch --start's (S9): that process, with the start time it recorded,
+    still runs. A pid reused since reads as gone."""
+    try:
+        pid = int(e.get("waiter_pid"))
+    except (TypeError, ValueError):
+        return False
+    m = rc_mod()
+    return m.running(pid, e["waiter_start"]) if e.get("waiter_start") else m.alive(pid)
+
+
+_LANDED = []
+
+
+def landed_mod():
+    """wharf-runs' landed.py, the reader helm's dependency check shares (S9), loaded once."""
+    if not _LANDED:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        ld = SourceFileLoader("landed", str(HERE / "landed.py"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+        ld.exec_module(m)
+        _LANDED.append(m)
+    return _LANDED[0]
+
+
+def sightings_file():
+    return qdir() / "after-seen.json"
+
+
+def _jread(name):
+    try:
+        d = json.loads((qdir() / name).read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _jupdate(name, fn):
+    """Read NAME, apply FN to its dict, write it back — under one lock, through a temp name of this process's:
+    every claimer (the sweep, the poll, a run's end, a dispatch) writes these files, and a shared temp name or
+    an unlocked read-modify-write dropped another claimer's sightings (the S9 landing review)."""
+    try:
+        qdir().mkdir(parents=True, exist_ok=True)
+        with open(qdir() / (".%s.lock" % name), "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            d = _jread(name)
+            fn(d)
+            tmp = qdir() / (".%s.%d.tmp" % (name, os.getpid()))
+            tmp.write_text(json.dumps(d, sort_keys=True))
+            os.replace(tmp, qdir() / name)
+    except OSError:
+        pass
+
+
+AFTER_RECHECK = 9 * 60   # the pending poll's claim reuses a hold this young: one origin read per sweep, not per minute
+
+
+def after_holds(qid, e, t=None, cached=False):
+    """Why E waits on a predecessor (`--after`, S9), or None once every one is proved on origin/<main> —
+    the one after test the claim calls (S5's filters join claimable(), beside it). landed.judge decides from
+    the entry's sighting at enqueue (its tip and fork, when it was work) and this host's later ones
+    (after-seen.json: the live tip with its fork while main lacks it). A `landed` verdict is kept there too, by
+    entry and predecessor, and never judged again: once proved, a later read can only be a weaker one.
+    Could-not-tell holds. A predecessor archived or deleted unlanded (`gone`), or one still waiting past
+    AFTER_BOUND, files one card naming both branches (helm's stalls read it); the entry stays queued either way.
+    The word returned names every predecessor that holds, `after <branch>: <verdict> <why>`, joined by `; `."""
+    after = [a for a in (e.get("after") or []) if isinstance(a, dict) and BRANCH_OK.fullmatch(str(a.get("branch") or ""))]
+    if not after:
+        return None
+    t = now() if t is None else t
+    if cached:
+        # the 60 s poll (cmd_poll): a hold judged within AFTER_RECHECK stands — a predecessor's landing is no
+        # queue event, so the sweep, a run's end (the predecessor's own landing run among them) and a dispatch
+        # re-judge it; the poll reading origin every minute per waiting entry was the waste G4 counts
+        w, at = (after_said().get(qid) or [None, 0])
+        if w and t - int(at or 0) < AFTER_RECHECK:
+            return w
+    repo = repo_path(e.get("repo") or "/nonexistent")
+    lm = landed_mod()
+    seen = _jread("after-seen.json")
+    holds, news, proved = [], {}, {}
+    for a in after:
+        sk = "%s %s" % (e.get("repo"), a["branch"])
+        pk = "landed %s %s" % (e.get("id") or qid, a["branch"])
+        if seen.get(pk):
+            continue
+        sights = ([{"sha": a["seen"], "fork": a.get("fork") or ""}] if a.get("work") and a.get("seen") else []) + \
+            [x for x in (seen.get(sk) or []) if isinstance(x, dict)]
+        try:
+            v, why, new = lm.judge(str(repo), a["branch"], sights, a.get("seen") or "")
+        except Exception as x:   # any: the reader's crash is could-not-tell, never a pass
+            v, why, new = "unknown", "the landed reader failed (%s: %s)" % (type(x).__name__, x), None
+        if new and new not in (seen.get(sk) or []):
+            news[sk] = new
+        if v == "landed":
+            proved[pk] = [why, t]
+            continue
+        if v == "gone":
+            card("after-gone", qid, e, "%s waits on %s, which is %s — it will not land by itself: land or re-seed %s, or "
+                 "dispatch %s --cancel and dispatch it again without --after (and without it on its brief's After: line, "
+                 "which dispatch reads too)" % (e.get("branch"), a["branch"], why, a["branch"], e.get("branch")),
+                 mark="%s gone" % a["branch"], say=False, after=a["branch"])
+        elif t - int(e.get("queued_at") or t) >= AFTER_BOUND:
+            card("after-overdue", qid, e, "%s has waited %d h on %s (%s)" % (e.get("branch"), (t - int(e.get("queued_at") or t)) // 3600,
+                                                                          a["branch"], why),
+                 mark="%s %d" % (a["branch"], int(e.get("queued_at") or 0)), say=False, after=a["branch"])
+        holds.append("after %s: %s %s" % (a["branch"], v, why))
+    if news or proved:
+        def keep(d):
+            for k, x in news.items():
+                if x not in (d.get(k) or []):
+                    d[k] = ([y for y in (d.get(k) or []) if isinstance(y, dict)] + [x])[-5:]
+            d.update(proved)
+        _jupdate("after-seen.json", keep)
+    out = "; ".join(holds) or None
+    _jupdate("after-said.json", lambda d: d.__setitem__(qid, [out, t]))   # every judgement: the poll's reuse is timed from it
+    return out
+
+
+def after_said():
+    """{qid: [the after test's last word here, when]}: what the list rows say without judging again."""
+    return _jread("after-said.json")
 
 
 def bad_args(e):
@@ -1086,6 +1498,10 @@ def bad_args(e):
     for k, v in (e.get("env") or {}).items():
         if not ENV_OK.fullmatch(k) or "\n" in str(v):
             return "env %s is not one a queued run may carry" % k
+    if "--needs" in a and (not isinstance(e.get("needs"), list) or sorted(set(",".join(a[a.index("--needs") + 1:a.index("--needs") + 2]).split(","))) != sorted(set(e["needs"]))):
+        return "--needs and the entry's needs differ"
+    if not isinstance(e.get("needs") or [], list) or any(not isinstance(n, str) or not NEED_RE.fullmatch(n) for n in e.get("needs") or []):
+        return "needs is not a list of lower-case feature names"
     return None
 
 
@@ -1123,7 +1539,11 @@ def start_job(ctx, store, key, e, label):
     # dispatch's own log for the entry it just enqueued (its --next confirms from it), else the day's
     log = getattr(ctx, "log", None) if getattr(ctx, "own", None) == qid and getattr(ctx, "log", None) else \
         str(logdir() / ("%s-dispatch-%s.log" % (time.strftime("%Y-%m-%d"), topic)))
-    args = program(ctx, [e["branch"], "--repo", repo] + list(e.get("args") or []) + ["--from-queue", qid])
+    # its predecessors (S9), each a claude/* name: the fired dispatch merges origin/<main> into the worktree
+    # first, so the step has their code; they were proved landed by this claim (after_holds)
+    after = [x for a in (e.get("after") or []) if isinstance(a, dict) and BRANCH_OK.fullmatch(str(a.get("branch") or ""))
+             for x in ("--after", a["branch"])]
+    args = program(ctx, [e["branch"], "--repo", repo] + list(e.get("args") or []) + after + ["--from-queue", qid])
     # no DISPATCH_YEAR: a RunAtLoad job runs at once, and the year guard failed a claim made in the last
     # seconds of a year (the first review's item 6); a stale plist is `mine`'s to judge
     env = {"DISPATCH_LABEL": label, "DISPATCH_LOG": log, "DISPATCH_LOADED_AT": str(now())}
@@ -1156,7 +1576,30 @@ def claim(ctx, out=None):
     held() counts the claims meanwhile)."""
     out = [] if out is None else out
     h = host_name()
+    # S10(g): a host whose home is for its own writes claims nothing, and no host claims in a DarkWake: the
+    # entry it took would start as the sleep resumes, its own requeued run among them
+    why_not = "this host's queue-mode is writes" if not claims_here() else "a DarkWake" if dark_wake() else None
+    if why_not:
+        event("claim-skipped", host=h, why=why_not)
+        return out
     cands = []
+    full_at = {}
+    open_early = {r.get("topic") for r in records() if not r.get("ended")}
+
+    def own_early(e):
+        """The claim's `own` (below): a live run's own --next waits for that run, which no count holds it to."""
+        return (e.get("running_on") or "").lower() == h or topic_of(e["branch"]) in open_early
+
+    def room_for(e):
+        """A rough look, unlocked, whether this host has a slot E's rank could take (the locked count decides
+        later): the after test reads origin, and judging it on a full host bought nothing (the S9 review)."""
+        cap = cap_for(ctx.cap, e.get("priority"))
+        if cap not in full_at:
+            try:
+                full_at[cap] = busy(ctx.launchctl) >= cap
+            except Exception:   # could not count: judge it, the locked count decides
+                full_at[cap] = False
+        return not full_at[cap]
     for s in stores():
         try:
             entries, offline = s.view()
@@ -1166,6 +1609,20 @@ def claim(ctx, out=None):
         seen = None
         for k, e in entries.items():
             if claimable(e, h):
+                if e.get("kind") == "landing" and e.get("state") == "queued" and isinstance(s, Local) \
+                        and (e.get("host") or "").lower() == h and not land_waiter_alive(e):
+                    # its dispatch --start is gone (killed, or its waiter's end): nobody would run it, and
+                    # autofinish's sweep starts the landing again — the entry goes, never a slot held for it
+                    s.do([{"op": "remove", "key": k, "cond": {"id": e.get("id"), "state": "queued"}}], "landing %s gone" % k)
+                    event("landing-gone", key="%s:%s" % (s.name, k), host=h, pid=e.get("waiter_pid"))
+                continue
+            if e.get("kind") == "landing" and not (isinstance(s, Local) and s.scope == LAND_STORE):
+                continue   # a landing lives in this host's _land store only: one in the fleet (by hand, a replay) would hold a slot for any live pid
+            # the after test (S9) once the cheap filters pass: it reads origin, and an entry pinned elsewhere
+            # or refused here within the hour never needs it
+            if e.get("after") and not own_early(e) and not room_for(e):
+                continue   # no slot it could take here now: its after test (origin reads) waits for one
+            if after_holds("%s:%s" % (s.name, k), e, cached=bool(getattr(ctx, "after_cached", False))):
                 continue
             # the outbox may claim only what nobody else can hold: a put still in this host's outbox, its
             # key absent from the last ref fetched here (a key this host re-put while others see it is not)
@@ -1220,7 +1677,9 @@ def claim(ctx, out=None):
             ctx.no_room = "the start lock is held"
             event("no-room", host=h, why="the start lock held 150 s", keys=[qid])
             break
-        rp, tp = str(repo_path(e["repo"])), topic_of(e["branch"])
+        # a landing's own run is `finish-<topic>` (dispatch --start's NAME), never the branch's build run, which
+        # holds its slot meanwhile: counted as the landing's recount counts it (the S9 review)
+        rp, tp = str(repo_path(e["repo"])), (e.get("topic") if e.get("kind") == "landing" else None) or topic_of(e["branch"])
         try:
             n = busy(ctx.launchctl, rp, tp)
             if n >= cap_for(ctx.cap, e.get("priority")):
@@ -1232,6 +1691,11 @@ def claim(ctx, out=None):
             t = now()
             label = job_label(ctx, e)
             res = {"qid": qid, "at": t, "label": label, "pid": os.getpid(), "repo": rp, "topic": tp}
+            if e.get("kind") == "landing":
+                # held while its waiting dispatch --start lives (claimer_alive reads `pid`), until that run's
+                # record (`queue` names this qid) spends it, or the lease
+                label = "landing.%s" % e.get("waiter_pid")
+                res.update(label=label, pid=int(e.get("waiter_pid") or 0))
             # a --next of a live run is counted as waiting from the claim, not from its job's `waiting` word:
             # until then every other fire path counted the earlier run and this one both (the fourth review)
             if own and rc_mod().unfinished(rp, tp, reap=False):
@@ -1253,6 +1717,13 @@ def claim(ctx, out=None):
             continue
         if r != "claimed":
             unreserve(qid, tag)
+            continue
+        if e.get("kind") == "landing":
+            # nothing to start: the landing's own dispatch --start waits for this claim (land-wait) and runs it,
+            # its prompt, lists and merge rights its own, never in the entry (S9)
+            event("claimed", key=qid, host=h, label=label, priority=e.get("priority"), entry_kind="landing",
+                  queued_at=e.get("queued_at"), event_at=ev, claim_s=t - ev)
+            out.append((qid, label, None))
             continue
         try:
             label, log = start_job(ctx, s, k, dict(e, event_at=ev), label)
@@ -1632,11 +2103,31 @@ def cmd_enqueue(a, ctx):
     # its pick's "not set up on this machine" would end the step as failed (the review's item 20)
     acct = (flag_values(args, "--account") or [""])[0]
     pin = (a.pin or "").lower() or (h if acct and acct not in ("auto", "bound") else "")
+    # S5: what a host may take. A need no host that may take the repo meets is never queued (exit 3, apart from the
+    # busy answer's JSON: nothing is printed on stdout): the entry would sit for ever and the caller end its turn on it
+    needs = sorted({n.strip().lower() for n in (a.needs or "").split(",") if n.strip()})
+    if any(not NEED_RE.fullmatch(n) for n in needs):
+        raise Refused("dispatch-queue: --needs takes lower-case feature names, a,b (%s)" % (a.needs or ""), 2)
+    probe = {"repo": repo_word(repo), "host": pin, "needs": needs}
+    feats = features()
+    cands, why_c = berth_candidates(probe["repo"], h)
+    if why_c.get("unreadable"):
+        raise Refused("dispatch-queue: %s — refused, never queued" % why_c["unreadable"], 3)
+    # a node-local queue is claimed by this host alone: the peers' lines cannot help it
+    verdicts = {x: eligibility(probe, x, feats) for x in fleet_hosts(probe, local=not isinstance(store, Fleet))}
+    if verdicts and all(verdicts.values()):
+        raise Refused("dispatch-queue: no host meets this run — %s — refused, never queued"
+                      % "; ".join("%s: %s" % kv for kv in sorted(verdicts.items())), 3)
+    if not verdicts:
+        raise Refused("dispatch-queue: no host may take %s (berths %s, clone hosts %s) — refused, never queued"
+                      % (why_c.get("repo"), why_c.get("berths"), why_c.get("hosts")), 3)
+    if needs and "--needs" not in args:
+        args = args + ["--needs", ",".join(needs)]
     t = now()
     # --queued-at: a one-shot fired at its time enqueues aged from WHEN, its place in line since then (S3)
     qat = min(t, a.queued_at) if a.queued_at and a.queued_at > 0 else t
     e = {"id": uuid.uuid4().hex, "key": k, "repo": repo_word(repo), "branch": a.branch, "topic": topic_of(a.branch),
-         "priority": a.priority, "needs": [], "host": pin, "confined": confined, "state": "queued",
+         "priority": a.priority, "needs": needs, "host": pin, "confined": confined, "state": "queued",
          "queued_at": qat, "event_at": t, "put_at": t, "by": a.by or "", "from": h, "waiter": (a.wait or "")[:200], "attempts": 0,
          "session": "", "args": args, "env": env, "mode": mode}
     if a.refused:
@@ -1647,6 +2138,16 @@ def cmd_enqueue(a, ctx):
     why = bad_args(e)
     if why:
         raise Refused("dispatch-queue: %s — a one-shot, as before the queue" % why, 1)
+    if a.after:
+        # S9: the claim skips the entry until each predecessor is proved on origin/<main>. Its tip on origin
+        # now is recorded, with whether main lacked it (the sighting landed.judge trusts later); an unattended
+        # caller may name one, as it only delays. A name that is no claude/* branch, or this branch itself,
+        # is refused: neither could ever land as a predecessor (2, dispatch's refusal, never the one-shot's 1)
+        bad = [b for b in a.after if not BRANCH_OK.fullmatch(b) or b == a.branch]
+        if bad:
+            raise Refused("dispatch-queue: --after takes another claude/* branch, not %s" % ", ".join(bad))
+        lm = landed_mod()
+        e["after"] = [lm.sighting(repo, b) for b in dict.fromkeys(a.after)]
     put = {"op": "put", "key": k, "entry": e}
     if a.replace:
         put["replace"] = True
@@ -1814,25 +2315,54 @@ def cards_seen():
         return {}
 
 
-def card(kind, qid, e, why, mark=None, say=True):
+def card(kind, qid, e, why, mark=None, say=True, after=None):
     """A card, once per entry and claim: `queue-silent` (its claimer quiet two sweeps), `queue-stuck`
     (refused past three attempts), `queue-dropped` (an outbox put refused at its replay; MARK, its entry's
-    id, dedups it per put). A line in queue.jsonl, a record nothing reads yet: the queue's board cards are
-    S7's or a card of their own (the design doc's S3 as built, "Not built here"). SAY false keeps stdout clean for a flush inside
-    another verb's answer (list --json)."""
+    id, dedups it per put), and S9's `after-gone` and `after-overdue` (AFTER, the predecessor's branch: one
+    card per entry and predecessor, kept apart from the entry's other cards, and named in the line beside
+    the entry's own branch, which helm's stalls read). A line in queue.jsonl; the board's cards for the rest
+    are S7's or a card of their own (the design doc's S3 as built, "Not built here"). SAY false keeps stdout
+    clean for a flush inside another verb's answer (list --json)."""
     seen = cards_seen()
     mark = "%s %s" % (kind, mark) if mark else "%s %s %s" % (kind, e.get("claimed_at") or "", e.get("attempts") or "")
-    if seen.get(qid) == mark:
+    # one mark per kind (two cards of one entry overwrote each other's, and both refired every sweep), and one per
+    # predecessor for the after cards (S9)
+    skey = "%s#%s" % (qid, kind) + (" after %s" % after if after else "")
+    if seen.get(skey) == mark:
         return
-    seen[qid] = mark
+    seen[skey] = mark
     try:
         qdir().mkdir(parents=True, exist_ok=True)
         (qdir() / "cards.json").write_text(json.dumps(seen, sort_keys=True))
     except OSError:
         pass
-    event("card", card=kind, key=qid, host=host_name(), why=why, branch=e.get("branch"), running_on=e.get("running_on"))
+    kw = {"after": after, "repo": e.get("repo")} if after else {}
+    event("card", card=kind, key=qid, host=host_name(), why=why, branch=e.get("branch"), running_on=e.get("running_on"), **kw)
     if say:
         print("card %s: %s — %s" % (kind, qid, why))
+
+
+def tip_word(e):
+    """The sha of E's branch tip on origin when that tip is its host's requeue (D8-B): the subject
+    `Requeue: <topic> from <the host E runs on>`, committed after E's claim (an older one is a requeue the host
+    has since taken back). One ls-remote, and a fetch only when the commit is not here yet. None otherwise, and
+    when the repo is not cloned here or origin does not answer: silence is no word."""
+    repo = repo_path(e.get("repo") or "/nonexistent")
+    br, on = e.get("branch") or "", (e.get("running_on") or "").lower()
+    if not on or not BRANCH_OK.fullmatch(br) or not (repo / ".git").exists():
+        return None
+    sha = origin_tip(repo, br)
+    if not sha:
+        return None
+    if git_in(repo, "cat-file", "-e", sha + "^{commit}")[0] != 0:
+        git_in(repo, "fetch", "-q", "--no-tags", "origin", "refs/heads/" + br, timeout=60)
+    rc, out = git_in(repo, "log", "-1", "--format=%ct%n%s", sha)
+    if rc != 0 or "\n" not in out:
+        return None
+    ct, subject = out.split("\n", 1)
+    if subject.strip().lower() != (REQ_SUBJECT % (e.get("topic") or topic_of(br), on)).lower():
+        return None
+    return sha if ct.isdigit() and int(ct) > int(e.get("claimed_at") or 0) else None
 
 
 def cmd_sweep(a, ctx):
@@ -1840,10 +2370,19 @@ def cmd_sweep(a, ctx):
     own claim), other hosts' silent claims carded (never re-claimed: an unmoved tip proves nothing), then
     a claim — every SWEEP seconds from the queue-sweep job (`jobs` installs it), by hand `dispatch --sweep`."""
     h = host_name()
+    if not claims_here():
+        # a writes-only host (S10(g)): its sweep is its outbox's replay at wake — a requeue owed since the sleep
+        # pushes its branch, then lands its op. It judges no entry and claims nothing
+        url = home()
+        if url:
+            n = len(flush(Fleet(url), replay=True))
+            print("queue sweep on %s (queue-mode writes): %d op(s) from the outbox written, %d owed"
+                  % (h, n, len(outbox_files())))
+        return 0
     recs = records()
     for s in stores():
         if isinstance(s, Fleet):
-            flush(s)
+            flush(s, replay=True)
         try:
             entries = s.entries()
         except (Unreachable, Torn) as x:
@@ -1852,6 +2391,7 @@ def cmd_sweep(a, ctx):
             continue
         ops = []
         t = now()
+        owed = outbox_ops()
         for k, e in entries.items():
             qid = "%s:%s" % (s.name, k)
             st = e.get("state")
@@ -1859,7 +2399,12 @@ def cmd_sweep(a, ctx):
             if st in LIVE and mine:
                 rec = run_of(qid, e, recs)
                 cond = {"running_on": e.get("running_on"), "claimed_at": e.get("claimed_at")}
-                if rec and rec.get("ended"):
+                if rec and (str(rec.get("ending") or "").startswith(REQUEUED) or str(rec.get("end_reason") or "").startswith(REQUEUED)) \
+                        and (not rec.get("ended") or any(o.get("key") == k for o in owed)):
+                    pass   # S10: its requeue's op is in the outbox (or landing now), never a run's end to remove
+                    # — only while one is owed: an op the replay dropped (gone, diverged) leaves the ended run to the
+                    # remove below, or the entry stays running here for good (S10's finish review)
+                elif rec and rec.get("ended"):
                     ops.append({"op": "remove", "key": k, "cond": dict(cond, session=rec.get("session"))
                                 if st == "running" else cond})
                 elif rec and rec_alive(rec):
@@ -1892,10 +2437,56 @@ def cmd_sweep(a, ctx):
                 ops.append({"op": "set", "key": k, "fields": {"running_on": None}, "cond": {"running_on": e.get("running_on")}})
             elif st in LIVE:
                 last = max(int(e.get("seen_at") or 0), int(e.get("claimed_at") or 0))
-                if t - last > 2 * SWEEP:
+                word = tip_word(e) if st == "running" and t - last > SWEEP and isinstance(s, Fleet) else None
+                if word:
+                    # D8-B: its host's own word on the branch, written by its requeue before it slept; the op the
+                    # host owes may never land (cut, offline), and the step waits in nobody's hand meanwhile
+                    ops.append({"op": "requeue", "key": k, "host": (e.get("running_on") or "").lower(), "at": t, "by": h,
+                                "cond": {"id": e.get("id"), "state": "running", "running_on": e.get("running_on"),
+                                         "claimed_at": e.get("claimed_at")}})
+                    event("requeue-by-tip", key=qid, host=h, of=e.get("running_on"), tip=word[:12])
+                    print("requeued %s: running on %s, unseen %d min, its tip says the host handed it back (%s)"
+                          % (qid, e.get("running_on"), (t - last) // 60, word[:10]))
+                elif t - last > 2 * SWEEP:
                     card("queue-silent", qid, e, "%s on %s, not seen for %d min — never re-claimed here: on %s, dispatch %s "
                          "--cancel clears it once its run is gone, and that host's sweep does"
                          % (st, e.get("running_on"), (t - last) // 60, e.get("running_on"), e.get("branch")))
+            why_h = eligibility(e, h) if st == "queued" else None
+            # a torn registry bars every entry for this sweep alone: no word written or cleared, no card on it
+            # (S5's landing review: each tear wrote inelig_ on every entry and cleared it the next sweep)
+            torn = why_h == UNREAD_WHY
+            if st == "queued" and not torn and not why_h and e.get("inelig_" + h):
+                # its line came back (or the berth did): the word it gave is stale
+                ops.append({"op": "set", "key": k, "fields": {"inelig_" + h: None}, "cond": {"id": e.get("id"), "state": "queued"}})
+                e = dict(e, **{"inelig_" + h: None})
+            if st == "queued" and not torn and why_h and not e.get("inelig_" + h):
+                # S5: each host trusts its own config for itself alone, and writes that it may not take the
+                # entry (one flat field per host, so two hosts' writes never overwrite each other)
+                ops.append({"op": "set", "key": k, "fields": {"inelig_" + h: t}, "cond": {"id": e.get("id"), "state": "queued"}})
+                e = dict(e, **{"inelig_" + h: t})
+            age = t - int(e.get("queued_at") or t)
+            if st == "queued" and not torn and age > 2 * SWEEP:
+                # no host may claim it: every host the config names has said so (its own word, above, or this
+                # host's for itself) — a feature line edited since it was queued, a berth changed, a pin to a
+                # host that left. Each host's reason, once per entry; a full or refusing host is not "nobody".
+                # A host that never sweeps (one that left, a VM not yet dispatching, a laptop asleep) gives no
+                # word: past SILENT_SWEEPS it counts by this host's config, said as such (S5's landing review)
+                feats = features()
+                hosts = fleet_hosts(e, local=not isinstance(s, Fleet))
+
+                def word(x):
+                    if x == h:
+                        return why_h
+                    mine_says = eligibility(e, x, feats)
+                    if e.get("inelig_" + x):
+                        return mine_says or "its own sweep says it may not"
+                    if mine_says and age > SILENT_SWEEPS * SWEEP:
+                        return "no word from its sweep in %d min (by %s's config: %s)" % (age // 60, h, mine_says)
+                    return None
+                gone = {x: word(x) for x in hosts}
+                if hosts and all(gone.values()):
+                    card("queue-unclaimed", qid, e, "no host may claim it (%s)" % "; ".join("%s: %s" % kv for kv in sorted(gone.items())),
+                         mark=e.get("id"))
             if st == "queued" and int(e.get("attempts") or 0) > 3:
                 card("queue-stuck", qid, e, "refused %s times (last: %s)" % (e.get("attempts"), e.get("last_refusal")))
             if st == "queued" and e.get("by") and (e.get("from") or "").lower() == h \
@@ -1978,10 +2569,22 @@ def cmd_list(a, ctx):
             why = claimable(e, h)
             if why:
                 bits.append("not here: " + why)
+            if e.get("kind") == "landing":
+                bits.append("a landing")
+            said = after_said().get("%s:%s" % (s.name, k)) or [None, 0]
+            for x in e.get("after") or []:
+                b = (x or {}).get("branch") if isinstance(x, dict) else None
+                if b:
+                    # the claim's last word on it, when this host judged it (the claim and the sweep re-judge)
+                    seg = next((x for x in (said[0] or "").split("; ") if x.startswith("after %s: " % b)), None)
+                    word = seg[len("after %s: " % b):] if seg else ("not holding at the last judgement here" if said[1] else "not judged here yet")
+                    bits.append("after %s (%s%s)" % (b, word, ", " + ago(said[1]) if said[1] else ""))
         if e.get("running_on"):
             bits.append("on " + e["running_on"])
         if e.get("host"):
             bits.append("pinned " + e["host"])
+        if e.get("needs"):
+            bits.append("needs " + ",".join(map(str, e["needs"])) if isinstance(e["needs"], list) else "needs ?")
         bits.append("queued " + ago(e.get("queued_at")))
         if e.get("last_refusal"):
             bits.append("last refused: " + str(e["last_refusal"])[:80])
@@ -2067,6 +2670,406 @@ def cmd_cancel(a, ctx):
     return 0 if said else (4 if torn else 1)
 
 
+# ---- the requeue (S10): a host's busy runs handed back, their work saved -------------------------------
+
+REQUEUED = "requeued"          # end_run's reason opens with it: dispatch's fire path, finish()'s claim and the sweep skip it
+REQ_SUBJECT = "Requeue: %s from %s"   # the host's own word on the branch (D8-B): only that host's requeue writes it
+LAST_REPLY = 4000              # the cut run's last reply in the brief, its last characters
+REQ_LOCK = "requeue.lock"      # one requeue per host: the first watcher at a sleep, or a hand
+_CP = []
+
+
+def caller_unattended():
+    """autofinish-run's unattended_caller(), the same test: a dispatched run's session, or a peer's job for one."""
+    return bool(os.environ.get("CLAUDE_UNATTENDED") or os.environ.get("AUTOFINISH_CALLER_UNATTENDED"))
+
+
+def checkpoint_mod():
+    """wharf's checkpoint.py, through the core's tool lookup: the requeue commits what a run left through the
+    hook's own path (its forbidden-file guard), as sync.py's commit_left does. None when it is not installed."""
+    if not _CP:
+        p = common.tool("checkpoint.py")
+        m = None
+        if p:
+            import importlib.util
+            from importlib.machinery import SourceFileLoader
+            ld = SourceFileLoader("wharf_checkpoint", str(p))
+            m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+            try:
+                ld.exec_module(m)
+            except Exception as x:   # a hook that will not load: the dirt stays in the worktree, said
+                event("requeue-no-checkpoint", why="%s: %s" % (type(x).__name__, x))
+                m = None
+        _CP.append(m)
+    return _CP[0]
+
+
+def run_flags(args, st):
+    """ARGS with --model and --effort as the cut run's record has them, each held to FLAGS (an entry is data)."""
+    a, out, i = list(args or []), [], 0
+    while i < len(a):
+        if a[i] in ("--model", "--effort") and i + 1 < len(a):
+            i += 2
+            continue
+        out.append(a[i])
+        i += 1
+    for f in ("--model", "--effort"):
+        v = str(st.get(f[2:]) or "")
+        if v and re.fullmatch(FLAGS[f], v):
+            out += [f, v]
+    return out
+
+
+# the record's manager fields back into the env the entry carries (dispatch's chain_record wrote them from these)
+REC_ENV = {"manager": "DISPATCH_SKIPPER", "plan": "DISPATCH_SHIP", "plan_space": "DISPATCH_PLAN_SPACE",
+           "manager_host": "DISPATCH_SKIPPER_HOST", "manager_account": "DISPATCH_SKIPPER_ACCOUNT"}
+
+
+def entry_of_record(st, h, t):
+    """A queued entry built from a run record with none (a run from before the home, a writes-only host's own):
+    the verb's put. Its rank is the record's (force as high), its flags and env what the record kept."""
+    repo = str(Path(st["repo"]).resolve())
+    prio = st.get("prio") if st.get("prio") in RANKS else "normal"
+    prio = "high" if prio == "force" else prio
+    env = {"DISPATCH_DEPTH": str(st.get("depth") or 0)}
+    if st.get("task_mode") in ("default", "ask", "dnd", "yolo"):
+        env["DISPATCH_MODE"] = st["task_mode"]
+    for f, v in REC_ENV.items():
+        if st.get(f):
+            env[v] = str(st[f])
+    args = run_flags(["--yolo"] if st.get("yolo") == 1 else [], st)
+    if st.get("note"):
+        args += ["--note", str(st["note"])[:4000]]
+    return {"id": uuid.uuid4().hex, "key": key_of(repo, st["branch"]), "repo": repo_word(repo), "branch": st["branch"],
+            "topic": topic_of(st["branch"]), "priority": prio, "needs": [], "host": "", "confined": False, "state": "queued",
+            "queued_at": int(st.get("started") or t), "event_at": t, "put_at": t, "by": "", "from": h, "waiter": "",
+            "attempts": 0, "session": "", "args": _rank_args(args, prio), "env": env, "mode": env.get("DISPATCH_MODE", ""),
+            "requeued_from": h, "requeued_at": t}
+
+
+def newest_brief(wt, st):
+    """The newest docs/handoff/<date>-<topic>.md in the run's worktree — what the next run's fire path reads (its
+    `sort | tail -1`) and `pickup transcript` too — else the record's brief."""
+    rx = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-%s\.md" % re.escape(st.get("topic") or topic_of(st.get("branch") or "")))
+    hits = sorted(p for p in (Path(wt) / "docs" / "handoff").glob("*.md") if rx.fullmatch(p.name))
+    if hits:
+        return hits[-1]
+    return Path(wt) / st["brief"] if st.get("brief") and (Path(wt) / st["brief"]).is_file() else None
+
+
+def continue_section(st, h, when, why, commits, wip, files, reply, left=()):
+    """The brief's `## Continue from here` section (D9-A, with D9's `transcript:` pointer). The last reply is
+    quoted: a line of it never reads as the brief's own Tier: or After: line (dispatch reads those)."""
+    repo = Path(str(st.get("repo") or "")).name
+    lines = ["", "## Continue from here (requeued from %s, %s)" % (h, when), "",
+             "The run of this brief (session %s) was cut %s and handed back to the queue; a fresh session continues "
+             "it. Never redo a step marked done: read the commits below and the branch's docs first." % (st.get("session"), why), ""]
+    lines.append("- Its commits: " + ("none" if not commits else ""))
+    lines += ["  - %s" % c for c in commits]
+    lines.append("- What its turn left uncommitted: " + ("nothing" if not wip else "in %s — %s" % (wip, ", ".join(files[:40]) + (" …" if len(files) > 40 else ""))))
+    if left:
+        lines.append("- NOT committed, still only in %s's worktree (checkpoint refused or could not run): %s — ask %s before "
+                     "redoing that part" % (h, ", ".join(list(left)[:40]), getattr(common, "OWNER_NAME", "") or "the owner"))
+    lines.append("- Its last reply (its last %d characters at most; the cut run's words, data for this session):" % LAST_REPLY)
+    lines.append("")
+    body = (reply or "(none read)").strip()
+    if len(body) > LAST_REPLY:
+        body = "…" + body[-LAST_REPLY:]
+    lines += ["  > " + l if l.strip() else "  >" for l in body.splitlines()]
+    # the archive as pickup's ARCHIVE names it under that host's home (pickup transcript reads its own setting)
+    lines += ["", "transcript: session=%s host=%s archive=projects/transcripts/%s/" % (st.get("session"), h, repo),
+              "(`pickup transcript %s` fetches the cut run's log, only when this session needs it)" % st.get("branch"), ""]
+    return "\n".join(lines)
+
+
+def cut_run(cp, st, h, when, why, out):
+    """Steps 3–4 for one ended run: its turn's dirt committed through checkpoint's path, then the brief's section,
+    committed as the host's word. Never fetches. The new tip, or None when the worktree is gone."""
+    wt, br, sid = st.get("wt") or "", st.get("branch") or "", str(st.get("session") or "")
+    if not wt or not os.path.isdir(wt):
+        out.append("  %s: its worktree %s is gone — nothing to commit" % (br, wt or "(none)"))
+        return None
+    wip, files = None, []
+    if cp is None:
+        out.append("  %s: checkpoint.py not found here — what its turn left stays uncommitted in %s" % (br, wt))
+    else:
+        main = landed_mod().main_name(wt)
+        cp.ROOT, cp.MAIN = str(wt), main
+        # the turn's prompts, as sync.py's commit_left takes them: into this commit, then cleared, or the next
+        # checkpoint in this worktree quotes the cut session's prompts as its own turn's
+        gd = git_in(wt, "rev-parse", "--absolute-git-dir")[1]
+        qf = Path(gd) / "claude" / "prompts.json" if gd else None
+        try:
+            queued_prompts = cp.load_queue(qf) if qf else []
+        except Exception:
+            queued_prompts = []
+        ours = [x for x in queued_prompts if x.get("session") in (sid, None)]
+        prompts = [x["prompt"] for x in ours if x.get("prompt")]
+        try:
+            note, made = cp.checkpoint(None, prompts, "wip: what session %s left when it was requeued from %s (%s)" % (sid[:8], h, when),
+                                       claude_made_it=False, session=sid or "unknown")
+        except subprocess.CalledProcessError as x:
+            note, made = "committing failed: %s" % ((x.stderr or str(x)).strip()[:160]), False
+        if made and qf:
+            try:
+                cp.save_queue(qf, [x for x in queued_prompts if x not in ours])   # another session's stay its own
+            except Exception:
+                pass
+        if made:
+            wip = git_in(wt, "rev-parse", "--short", "HEAD")[1]
+            files = [f for f in git_in(wt, "show", "--name-only", "--format=", "HEAD")[1].splitlines() if f]
+        elif note:
+            out.append("  %s: %s" % (br, note))   # the refusal (a forbidden file) said, the dirt left
+    started = int(st.get("started") or 0)
+    rc_, log = git_in(wt, "log", "--format=%h %s", "--since=@%d" % started, "-n", "30", "HEAD")
+    commits = [l for l in log.splitlines() if l and not (wip and l.startswith(wip))]
+    brief = newest_brief(wt, st)
+    if brief is None:
+        out.append("  %s: no brief in its worktree — no section written" % br)
+        return git_in(wt, "rev-parse", "-q", "--verify", "refs/heads/" + br)[1] or None
+    reply = ""
+    try:
+        reply = rc_mod().last_answer(sid) if sid else ""
+    except Exception:
+        reply = ""
+    left = [l[3:] for l in git_in(wt, "status", "--porcelain")[1].splitlines() if len(l) > 3]
+    with open(brief, "a", encoding="utf-8") as f:
+        f.write(continue_section(st, h, when, why, commits, wip, files, reply, left))
+    rel = str(brief.relative_to(wt))
+    rc_, said = git_in(wt, "commit", "-q", "-m", REQ_SUBJECT % (st.get("topic") or topic_of(br), h),
+                       "-m", "Cut %s; the brief's new section says where it stands. Written by dispatch --requeue." % why, "--", rel)
+    if rc_ != 0:
+        out.append("  %s: the brief's section did not commit (%s)" % (br, said[-160:] or "exit %d" % rc_))
+    return git_in(wt, "rev-parse", "-q", "--verify", "refs/heads/" + br)[1] or None
+
+
+def requeue_lock():
+    """This host's requeue lock, or None when another requeue holds it. A watcher at a sleep takes it before it
+    starts the verb (DISPATCH_REQUEUE_LOCKED=1), so the verb it starts does not take it twice."""
+    if os.environ.get("DISPATCH_REQUEUE_LOCKED") == "1":
+        return True
+    qdir().mkdir(parents=True, exist_ok=True)
+    f = open(qdir() / REQ_LOCK, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except BlockingIOError:
+        f.close()
+        return None
+
+
+def cmd_requeue(a, ctx):
+    """dispatch --requeue TOPIC|--all [--repo DIR] [--why TEXT] [--dry-run] (S10; the requeue component's "The verb").
+    Every busy run of this host (or TOPIC's) is ended, its work committed and pushed, its brief given a "Continue
+    from here" section, and its entry put back to `queued` for any host. `--why lid` is the watcher's, at a sleep:
+    no offline refusal, and a warm run is left as it is. Exit 0 (an op left in the outbox included), 1 no such
+    run, 2 refused, 3 refused offline by hand (nothing ended), 4 another requeue holds the lock."""
+    h = host_name()
+    lid = (a.why or "") == "lid"
+    why = "as %s closed its lid" % h if lid else "by hand on %s%s" % (h, (": " + a.why) if a.why else "")
+    if caller_unattended():
+        raise Refused("dispatch --requeue: an unattended caller is refused — ending runs and handing them on is the "
+                      "owner's word (or the sleep's); end with the WAITING line — the next step waits for a run to end and for %s "
+                      "to requeue it by hand" % (getattr(common, "OWNER_NAME", "") or "the owner"))
+    url = home()
+    if not url:
+        raise Refused("dispatch --requeue: no queue home here (wharf-runs/queue-repo) — nothing could take a run back", 2)
+    if not a.dry_run:
+        lock = requeue_lock()
+        if lock is None:
+            print("another requeue is running on %s; nothing done here" % h)
+            return 4
+    rc = rc_mod()
+    runs = rc.live(reap=False)
+    if not a.all:
+        runs = [(p, st) for p, st in runs if st.get("topic") == a.topic and (not a.repo or rc.same_repo(st.get("repo"), a.repo))]
+        if not runs:
+            print("no live run of %s here (dispatch --status)" % a.topic)
+            return 1
+    t = now()
+    fleet = Fleet(url)
+    left, cands = [], []
+    for path, st in runs:
+        br, topic = st.get("branch") or "", st.get("topic") or ""
+        name = "%s (%s)" % (topic, Path(str(st.get("repo") or "")).name)
+        if st.get("probe"):
+            continue
+        if not st.get("brief") or not BRANCH_OK.fullmatch(br):
+            # a --start run (a landing, autofinish-run's /finish) has no brief and no entry to return to
+            left.append("left %s: a --start run (a landing re-launches at wake, its caller decides)" % name)
+            continue
+        try:
+            store, _ = route(st["repo"], br, st["repo"])
+        except Refused:
+            store = None
+        if st.get("origin") or not isinstance(store, Fleet):
+            left.append("left %s: confidential — its queue and its berth are this host's" % name)
+            continue
+        # warm and waiting first, before any read of the home: at a sleep the hold is 20 s
+        warm = rc.warm(st)
+        if warm and lid:
+            left.append("left %s: warm — it holds nothing awake, and ending it would start its landing as the Mac sleeps" % name)
+            continue
+        if not warm and rc.parked(st):
+            left.append("left %s: waiting at a prompt — for %s" % (name, getattr(common, "OWNER_NAME", "") or "the owner"))
+            continue
+        if lid:
+            # the last fetch with the outbox over it, no network: the op's cond (this claim, this session) guards
+            # what a newer ref would change, and a fetch here could spend the whole hold (the landing review)
+            k = key_of(str(Path(st["repo"]).resolve()), br)
+            try:
+                view = apply_all(fleet.read(fleet.cached()), outbox_ops())
+            except Torn:
+                view = {}
+            es = [view[k]] if k in view and same_branch(view[k], str(Path(st["repo"]).resolve()), br) else []
+            if not es and st.get("queue"):
+                # the run came from the queue, and the cache lags or is torn: its entry by key, judged by this
+                # host and this session alone — a put here would pin the step to this Mac (the second review)
+                es = [{"key": k, "running_on": h, "session": st.get("session"), "state": "running", "synth": True}]
+        else:
+            es = [e for s, k, e, _ in find(str(Path(st["repo"]).resolve()), br) if isinstance(s, Fleet)]
+        e = es[0] if es else None
+        if e and (e.get("host") or "").lower() == h:
+            left.append("left %s: pinned here: stays" % name)
+            continue
+        if e and (e.get("state") not in LIVE or (e.get("running_on") or "").lower() != h
+                  or (e.get("session") and e.get("session") != st.get("session"))):
+            left.append("left %s: its entry is another step's (%s on %s)" % (name, e.get("state"), e.get("running_on") or "no host"))
+            continue
+        cands.append(("warm" if warm else "busy", path, st, e))
+    for line in left:
+        print(line)
+    busy = [c for c in cands if c[0] == "busy"]
+    if a.dry_run:
+        for kind, _, st, e in cands:
+            print("would %s %s (session %s)%s" % ("requeue" if kind == "busy" else "end, warm,", st.get("topic"), st.get("session"),
+                                                 "" if e or kind != "busy" else " — with no entry: a put from its record"))
+        return 0
+    if busy and not lid:
+        # by hand, online or nothing: one read of the home and of each branch's origin, before anything ends
+        try:
+            fleet.fetch()
+        except Unreachable as x:
+            print("refused offline: the queue home did not answer (%s) — nothing ended; at a sleep the outbox takes it" % x)
+            return 3
+        for _, _, st, _ in busy:
+            if origin_tip(st.get("wt") or st["repo"], st["branch"]) is None:
+                print("refused offline: origin of %s did not answer — nothing ended" % st["branch"])
+                return 3
+    for kind, path, st, _ in cands:
+        if kind == "warm":
+            # by hand only: its normal idle end, its landing and its entry's end as any warm run's (a lid leaves it)
+            r = rc.end_run(path, st, "idle — warm, ended by dispatch --requeue")
+            print("ended %s: warm, its normal idle end%s" % (st.get("topic"), "" if r == 0 else " — not ended (not provably its claude)"))
+    if not busy:
+        print("no busy run to requeue on %s" % h)
+        return 0
+    when = time.strftime("%Y-%m-%d %H:%M %Z")
+    me = {"pid": os.getpid(), "pstart": rc.proc_start(os.getpid())}
+    owed = []
+    # (0) every op in the outbox before any run ends: a hold cut by the sleep leaves each run owed, never lost
+    for _, path, st, e in busy:
+        # the record's path: the replay drops an op whose run was never ended by this requeue (hold_waits)
+        hold = dict(me, wt=st.get("wt") or "", branch=st["branch"], repo=str(st["repo"]), tip=None, record=str(path))
+        if e:
+            # this claim and this run only: a later claim of the same entry (its id kept) by this host is never
+            # set back to queued by an op owed since (the landing review)
+            cond = {"running_on": e.get("running_on")} if e.get("synth") else \
+                {"id": e.get("id"), "running_on": e.get("running_on"), "claimed_at": e.get("claimed_at")}
+            if e.get("session") or e.get("synth"):
+                cond["session"] = e.get("session") or st.get("session")   # empty in a cache that lags `started`: no test
+            op = {"op": "requeue", "key": e["key"], "host": h, "at": t, "hold": hold, "cond": cond}
+            if not e.get("synth"):
+                op["args"] = run_flags(e.get("args"), st)
+            if not lid:
+                op["skip"] = True
+        else:
+            ne = entry_of_record(st, h, t)
+            if not lid:
+                ne["refused_by"] = {h: t}   # by hand: this Mac skips it the hour, as the op's skip does
+            op = {"op": "put", "key": ne["key"], "entry": ne, "hold": hold}
+        owed.append([outbox_add(op), op, path, st])
+    # (1, 2) every run ended at once, its reason `requeued`: the fire path's end, claim and landing pass it by
+    from concurrent.futures import ThreadPoolExecutor
+    reason = "%s from %s (%s)" % (REQUEUED, h, "lid" if lid else "by hand")
+    def end_one(o):
+        try:
+            r = rc.end_run(o[2], o[3], reason)
+        except Exception as x:   # one run's error (its record, its window) never aborts the others' hand-over
+            # owed, not unlinked: end_run may have signalled already, and the replay judges the record (ended with
+            # this reason: the op lands; ended its own way: dropped; not ended: it waits)
+            print("  %s: its end failed (%s: %s); its op stays owed" % (o[3].get("topic"), type(x).__name__, x))
+            return 2
+        if r == 0:
+            # the watcher's own save of its record may race end_run's `ending` (load, set last_status, save):
+            # the requeue's word is written again, so the sweep and the replay read it (the landing review)
+            try:
+                cur = json.loads(Path(o[2]).read_text())
+                if not str(cur.get("end_reason") or "").startswith(REQUEUED):
+                    cur.update(end_reason=reason, ending=reason)
+                    rc.save(o[2], cur)   # atomic: the fire path reads it now
+            except (OSError, ValueError):
+                pass
+        return r
+    with ThreadPoolExecutor(max_workers=len(owed)) as ex:
+        ended = list(ex.map(end_one, owed))
+    cp = checkpoint_mod()
+    ready, said = [], []
+    for o, r in zip(owed, ended):
+        p, op, _, st = o
+        if r == 2:
+            said.append("owed %s: its end failed; the sweep replays its op once its record says how it ended" % st.get("topic"))
+            continue
+        if r != 0:
+            p.unlink(missing_ok=True)
+            said.append("left %s: not ended (not provably its claude) — still running" % st.get("topic"))
+            continue
+        lines = []
+        try:
+            tip = cut_run(cp, st, h, when, why, lines)      # (3, 4)
+        except Exception as x:   # this run's commit or section failed: the others go on; its branch is pushed as it is
+            lines.append("its commit or section failed (%s: %s)" % (type(x).__name__, x))
+            tip = git_in(st.get("wt") or ".", "rev-parse", "-q", "--verify", "refs/heads/" + st["branch"])[1] or None
+        pushed = False
+        if tip and st.get("wt") and os.path.isdir(st["wt"]):  # (5)
+            git_in(st["wt"], "push", "-q", "origin", "refs/heads/%s:refs/heads/%s" % (st["branch"], st["branch"]), timeout=60)
+            pushed = origin_tip(st["wt"], st["branch"]) == tip
+        # an op origin holds the tip of is written below; one it does not keeps this process as its holder, so the
+        # flush below never retries a push the sleep has no time for — once this process is gone, it is owed
+        op["hold"] = dict(op["hold"], tip=tip, **({"pid": None, "pstart": None} if pushed or not tip else {}))
+        try:
+            # the file as outbox_add wrote it (its queued_op_at, which the day's bound reads), the hold updated
+            cur = json.loads(p.read_text())
+            cur["hold"] = op["hold"]
+            tmp = p.with_name("." + p.name + ".tmp")
+            tmp.write_text(json.dumps(cur, sort_keys=True))
+            os.replace(tmp, p)
+        except (OSError, ValueError):
+            pass
+        if pushed or not tip:
+            ready.append(p.name)
+        said.append("requeued %s: ended, %s; %s" % (st.get("topic"), "pushed at %s" % tip[:10] if pushed
+                                                    else "kept locally at %s (origin did not take it)" % (tip or "?")[:10] if tip else "no worktree",
+                                                    "; ".join(x.strip() for x in lines) or "its work committed"))
+        o.append(tip)
+    # (6) the ops whose tip origin holds, in one round; the rest stay owed, replayed by a later sweep
+    landed = {}
+    for op, res in flush(fleet, ready=ready):
+        if op.get("hold"):
+            landed[op.get("key")] = res
+    for line in said:
+        print(line)
+    for o in owed:
+        if len(o) < 5:
+            continue
+        k = o[1]["key"]
+        r = landed.get(k)
+        print("  %s: %s" % (k, "queued again for any host (%s)" % r if r in ("requeued", "queued") else
+                            "the home said %s" % r if r else "owed in the outbox: the next sweep pushes the branch, then writes it"))
+        event("requeue", key="fleet:%s" % k, host=h, why="lid" if lid else "hand", result=r or "outbox", tip=(o[4] or "")[:12])
+    return 0
+
+
 def cmd_mine(a, ctx):
     """The fired job's question before it starts (dispatch --from-queue): is QID still this job's claim —
     claimed or waiting, by this host, with this job's label, and no run of the claim recorded yet? 0 yes,
@@ -2133,6 +3136,12 @@ def cmd_fire(a, ctx):
             except (KeyError, Torn, Unreachable, OSError):
                 pass
         r = s.do([{"op": "set", "key": k, "fields": {"state": "waiting", "seen_at": now()}, "cond": cond}], "waiting %s" % k)[0]
+    elif a.verb == "started" and isinstance(s, Local) and s.scope == LAND_STORE:
+        # a landing's record exists: it holds its slot as any run (its reservation spent by the record's `queue`),
+        # and nothing else reads its entry — gone, so its branch's next landing finds none (S9)
+        unreserve(a.qid, label=a.label)
+        r = s.do([{"op": "remove", "key": k, "cond": cond}], "landing %s started on %s" % (k, h))[0]
+        event("started", key=a.qid, host=h, session=a.session, entry_kind="landing")
     elif a.verb == "started":
         unreserve(a.qid, label=a.label)
         r = s.do([{"op": "set", "key": k, "cond": cond,
@@ -2411,7 +3420,7 @@ def may_take(e, h):
     """E is an entry host H may yet take: queued, pinned nowhere else, its repo cloned here. What H cannot
     take now (its hour's skip, the branch live elsewhere, no room) may become takeable without any event
     that reaches it; an entry pinned to another host never does."""
-    return e.get("state") == "queued" and (e.get("host") or "").lower() in ("", h) \
+    return e.get("state") == "queued" and not eligibility(e, h) \
         and (repo_path(e.get("repo") or "/nonexistent") / ".git").exists()
 
 
@@ -2427,7 +3436,7 @@ def poll_tend(ctx):
         h = host_name()
         url = home()
         want = False
-        if url and not reached(h):
+        if url and claims_here() and not reached(h):
             f = Fleet(url)
             entries = apply_all(f.read(f.cached()), outbox_ops())
             if any(may_take(e, h) for e in entries.values()):
@@ -2472,10 +3481,98 @@ def cmd_poll(a, ctx):
         seen = {}
     if sha != f.cached() or outbox_files() or any(not claimable(e, h) for e in seen.values()):
         flush(f)
+        ctx.after_cached = True   # S9: the poll's claim reuses a young after hold (after_holds)
         for qid, label, log in claim(ctx):
             print("claimed %s: job %s, log %s" % (qid, label, log))
     poll_tend(ctx)
     return 0
+
+
+def cmd_land(a, ctx):
+    """A landing with no room (S9): `dispatch --start`'s /finish of a claude/* worktree, judged a landing by
+    dispatch from what it runs. One entry in this host's queue-local/_land, pinned here (the worktree is), of
+    kind landing — which ranks it above every build but force — and naming the waiting dispatch --start (pid
+    and start time). It carries no prompt, list or merge right: those stay in that process, so a queued
+    landing has the direct road's rights exactly, and an entry written by hand can widen none (it starts
+    nothing; its claim only frees the process it names). JSON: qid, result, rank."""
+    h = host_name()
+    repo = str(Path(a.repo).resolve())
+    if not BRANCH_OK.fullmatch(a.branch):
+        raise Refused("dispatch-queue land: a claude/* branch, not %s" % a.branch, 1)
+    rc = rc_mod()
+    st = rc.proc_start(a.pid)
+    if not st:
+        raise Refused("dispatch-queue land: no process %s here" % a.pid, 1)
+    s = Local(LAND_STORE)
+    k = key_of(repo, a.branch)
+    t = now()
+    e = {"id": uuid.uuid4().hex, "key": k, "repo": repo_word(repo), "branch": a.branch, "topic": a.topic or topic_of(a.branch),
+         "kind": "landing", "priority": "normal", "needs": [], "host": h, "confined": False, "state": "queued",
+         "queued_at": t, "event_at": t, "put_at": t, "by": "", "from": h, "waiter": "", "attempts": 0, "session": "",
+         "args": [], "env": {}, "mode": "", "waiter_pid": int(a.pid), "waiter_start": st}
+    try:   # its own file alone: a sibling's removed mid-glob read the whole folder as torn (the second review)
+        cur = json.loads((s.dir / ("%s.json" % k)).read_text())
+    except FileNotFoundError:
+        cur = None
+    except (OSError, ValueError):
+        raise Refused("dispatch-queue land: %s's entry does not read" % k)
+    if cur and cur.get("state") == "queued" and land_waiter_alive(cur):
+        raise Refused("dispatch-queue land: %s is queued already for process %s" % (a.branch, cur.get("waiter_pid")))
+    if cur:
+        s.do([{"op": "remove", "key": k, "cond": {"id": cur.get("id")}}], "landing %s replaced" % k)
+    r = s.do([{"op": "put", "key": k, "entry": e}], "landing %s queued by %s" % (k, h))[0]
+    order = []
+    for st_ in stores():
+        try:
+            ents = st_.view()[0] if isinstance(st_, Local) else st_.read(st_.cached())   # the last fetch: no network
+        except Exception:   # a store that does not read only leaves the rank unsaid
+            continue
+        order += [(rank(x), "%s:%s" % (st_.name, kk)) for kk, x in ents.items() if x.get("state") == "queued" and not claimable(x, h)]
+    order.sort()
+    qid = "%s:%s" % (s.name, k)
+    event("enqueued", key=qid, host=h, entry_kind="landing", result=r, pid=a.pid)
+    print(json.dumps({"qid": qid, "result": r, "rank": next((i + 1 for i, (_, q) in enumerate(order) if q == qid), None)}))
+    return 0
+
+
+def cmd_land_wait(a, ctx):
+    """dispatch --start's wait for its landing's claim (S9): a read of this host's own file every LAND_POLL s,
+    no network. 0 once this host claimed it for process PID; 3 gone (cancelled, or taken off as dead); 1 past
+    --for, the entry then removed (autofinish's sweep starts the landing again later) — 6, never 1, Python's crash."""
+    s, k = split_qid(a.qid)
+    if not (isinstance(s, Local) and s.scope == LAND_STORE):
+        raise Refused("dispatch-queue land-wait: %s is no landing" % a.qid)
+    h = host_name()
+    end = time.monotonic() + (a.for_s if a.for_s is not None else LAND_WAIT)
+    poll = float(os.environ.get("DISPATCH_LAND_POLL") or 3)
+    f = s.dir / ("%s.json" % k)
+    while True:
+        # its own file alone: a sibling landing's file removed mid-glob read the whole folder as torn (the review)
+        try:
+            e = json.loads(f.read_text())
+        except FileNotFoundError:
+            e = {}
+        except (OSError, ValueError):
+            time.sleep(poll)   # mid-write: read again
+            continue
+        if not e or str(e.get("waiter_pid")) != str(a.pid):
+            print("queue %s: gone" % a.qid)
+            return 3
+        if not land_waiter_alive(e):
+            # its dispatch --start is gone (a TERM bash defers past this foreground child, a KILL): the entry
+            # goes with it, never a slot claimed for nobody
+            s.do([{"op": "remove", "key": k, "cond": {"id": e.get("id")}}], "landing %s: its waiter is gone" % k)
+            event("landing-gone", key=a.qid, host=h, pid=a.pid)
+            return 3
+        if e.get("state") == "claimed" and (e.get("claimed_by") or "").lower() == h:
+            print("queue %s: claimed" % a.qid)
+            return 0
+        if time.monotonic() >= end:
+            s.do([{"op": "remove", "key": k, "cond": {"id": e.get("id"), "state": "queued"}}], "landing %s waited out" % k)
+            event("landing-waited-out", key=a.qid, host=h, pid=a.pid)
+            print("queue %s: waited %d s with no slot" % (a.qid, a.for_s if a.for_s is not None else LAND_WAIT))
+            return 6   # never 1, which a crash exits with (AGENTS.md's probe trap)
+        time.sleep(poll)
 
 
 def cmd_unreserve(a, ctx):
@@ -2553,6 +3650,7 @@ def main(argv=None):
     e.add_argument("--branch", required=True)
     e.add_argument("--priority", choices=sorted(RANKS), default="normal")
     e.add_argument("--pin")
+    e.add_argument("--needs", default="")
     e.add_argument("--by")
     e.add_argument("--cwd")
     e.add_argument("--arg", action="append")
@@ -2564,6 +3662,18 @@ def main(argv=None):
     e.add_argument("--replace", action="store_true")
     e.add_argument("--queued-at", type=int, default=0)
     e.add_argument("--skip-hour", action="store_true")
+    e.add_argument("--after", action="append")
+    ld = sub.add_parser("land")
+    ctxargs(ld)
+    ld.add_argument("--repo", required=True)
+    ld.add_argument("--branch", required=True)
+    ld.add_argument("--topic", default="")
+    ld.add_argument("--pid", type=int, required=True)
+    lw = sub.add_parser("land-wait")
+    ctxargs(lw)
+    lw.add_argument("qid")
+    lw.add_argument("--pid", type=int, required=True)
+    lw.add_argument("--for", dest="for_s", type=float, default=None)
     w = sub.add_parser("watch")
     ctxargs(w)
     w.add_argument("qid")
@@ -2607,6 +3717,13 @@ def main(argv=None):
     cp = sub.add_parser("cap")
     ctxargs(cp)
     cp.add_argument("--priority", choices=sorted(RANKS), default="normal")
+    rq = sub.add_parser("requeue")
+    ctxargs(rq)
+    rq.add_argument("topic", nargs="?")
+    rq.add_argument("--all", action="store_true")
+    rq.add_argument("--repo")
+    rq.add_argument("--why", default="")
+    rq.add_argument("--dry-run", action="store_true")
     m = sub.add_parser("mine")
     ctxargs(m)
     m.add_argument("qid")
@@ -2618,7 +3735,8 @@ def main(argv=None):
     a = p.parse_args(argv)
     _HOST = (getattr(a, "host", None) or "").lower() or None
     if a.verb == "home":
-        h = home()
+        # a writes-only home (S10(g)) is no home to dispatch: nothing of this host's own is enqueued or claimed
+        h = home() if claims_here() else None
         if h:
             print(h)
         return 0 if h else 1
@@ -2627,6 +3745,10 @@ def main(argv=None):
             return cmd_enqueue(a, a)
         if a.verb == "claim":
             return cmd_claim(a, a)
+        if a.verb == "land":
+            return cmd_land(a, a)
+        if a.verb == "land-wait":
+            return cmd_land_wait(a, a)
         if a.verb == "sweep":
             return cmd_sweep(a, a)
         if a.verb == "poll":
@@ -2653,6 +3775,10 @@ def main(argv=None):
             return cmd_floor(a, a)
         if a.verb == "mine":
             return cmd_mine(a, a)
+        if a.verb == "requeue":
+            if bool(a.topic) == bool(a.all):
+                raise Refused("dispatch --requeue: TOPIC or --all, one of them")
+            return cmd_requeue(a, a)
         if a.verb == "watch":
             return cmd_watch(a, a)
         if a.verb == "ended" or (a.verb == "started" and not a.qid):

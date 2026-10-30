@@ -4,8 +4,8 @@
     usage-report tick                 # launchd, every 15 min: the hooks' local copies (account refresh), sample limits; once a day, the report
     usage-report sample               # record the plan's own percentages (5-hour, weekly, Fable, extra usage)
     usage-report collect [--days N]   # per-call usage → this host's daily CSVs (default: the last 3 days)
-    usage-report branches [--days N]  # fill the branch column of this host's CSVs from the transcripts
-                                      # still here (default: 30 days); nothing else in a row changes
+    usage-report branches [--days N]  # re-split this host's CSVs by branch from the transcripts still
+                                      # here (default: every day file); a pruned session's rows stay
     usage-report pull                 # copy other hosts' data here (config "pull"), until they write the NAS
     usage-report push                 # copy this host's day CSVs, fenced, to the hosts that cannot pull it (config "push")
     usage-report render [--day D]     # the Markdown report for local day D (default: yesterday), and
@@ -61,14 +61,16 @@ instead (`push`, trim-cross-host, 2026-10-27): every tick, at most once an hour 
 changed or the last push failed, so a host that renders elsewhere (trim's night) sees this one's rows.
 It sends the day CSVs alone, without a confidential scope's rows, and with its names blanked from the
 rest: those rows stay on this host. The push is a mirror: the target folder ends holding exactly what
-was sent, bar a day file this host could not read, whose last good copy there is kept; with no day file
-to send it sends nothing.
+was sent, bar a day file this host could not read, whose last good copy there is kept, and, at a target
+pushed to before, the days older than this host's oldest; with no day file to send it sends nothing.
 
 The fence (the confidential stopgap, 2026-10-26; the full design is the confidential-reach set): a
 row whose project is a confidential scope's (the core's gather_fence, judged by the project's
 checkout) is counted in every total and named nowhere — its project and title read `(confidential)`,
 and a skill or agent name that is not a shared one too — in the report, the line and anything else
-render prints; an unreadable registry fences every row. The CSVs keep what they held, and so do past
+render prints; an unreadable registry fences every row. A session with a row whose project holds a
+confidential word is fenced the same, and an open row's title, skill, agent or branch holding one is
+blanked (fence_hit: a word of under four characters only as a whole token), as the push treats them. The CSVs keep what they held, and so do past
 reports. `numbers` names a confidential scope's pass `(confidential)`, unless `--scope` asks for that
 scope; the review gate's rows are only counted there, never named.
 
@@ -85,8 +87,11 @@ and says so without a name.
 Stdlib only, Python 3.9. Exits 0 unless the setup is wrong; a failed send is logged, not retried.
 """
 import argparse
+import bisect
+import contextlib
 import csv
 import datetime as dt
+import fcntl
 import glob
 import json
 import os
@@ -154,10 +159,11 @@ FIELDS = ["day", "host", "source", "session", "title", "project", "model", "effo
           "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account", "branch"]
 # account: the registry label hooks/sync.py recorded for the session at its start
 # (<data>/<host>/accounts.jsonl, work-account E6); empty = before that existed = the primary.
-# branch: the claude/* branch the session's main-chain calls name most that day (its agents' only where
-# the main chain names none; session_branches); empty for none, and absent from a file written before 2026-10-27. It is how plumb's trim joins a typed session
-# to its landing once Claude Code has pruned the session's transcript; appended last, so a reader by
-# position keeps its columns.
+# branch: the claude/* branch the row's calls file under (call_branches: a main-chain call's own, any
+# other the main chain's at its time); part of the row's key since trim-usage-key (2026-10-29), so a
+# session that worked on two branches in a day has rows under each. Empty for none, and absent from a
+# file written before 2026-10-27. It is how plumb's trim joins a typed session to its landing once Claude
+# Code has pruned the session's transcript; appended last, so a reader by position keeps its columns.
 
 
 # ----------------------------------------------------------------------------- config
@@ -463,24 +469,60 @@ def session_branches(records):
             for k in set(main) | set(agents)}
 
 
+def call_branches(records):
+    """{id(record): branch}: the claude/* branch each call files under, so a session that lands branch A
+    and goes on to B the same day files each call with its own (trim-usage-key; until then the CSV held one
+    branch per day and session). A main-chain call naming a claude/* branch files under it. Any other call
+    — an agent's (a worker names its own worktree's branch, which lands through its parent's), or a main
+    call on main or a branch of no claude/* name — files under the main chain's branch at its time: the
+    last one named at or before it, else the first after. A session whose main chain names none that day
+    files an agent's call under its own claude/* branch, the rest under session_branches' pick."""
+    seqs, picks = defaultdict(list), session_branches(records)
+    for r in records:
+        b = r.get("branch") or ""
+        if b.startswith("claude/") and not r["agent_id"]:
+            seqs[(r["day"], r["session"])].append((r["ts"], b))
+    for s in seqs.values():
+        s.sort()
+    out = {}
+    for r in records:
+        k, b = (r["day"], r["session"]), r.get("branch") or ""
+        seq = seqs.get(k)
+        if seq and b.startswith("claude/") and not r["agent_id"]:
+            out[id(r)] = b
+        elif seq:
+            i = bisect.bisect_right(seq, (r["ts"], "￿"))   # every entry at or before the call's time
+            out[id(r)] = seq[i - 1][1] if i else seq[0][1]
+        else:
+            out[id(r)] = b if b.startswith("claude/") else picks.get(k, "")
+    return out
+
+
 def aggregate(c, records, titles, agent_types):
     rows = {}
-    branches = session_branches(records)
+    branches = call_branches(records)
     for r in records:
         agent = "main"
         if r["agent_id"]:
             agent = agent_types.get(r["agent_id"], "subagent")
         title = r.get("title") or titles.get(r["session"]) or r["session"][:8]
         r["entry"] = r["entry"] or "unrecorded"  # some sessions on the second Mac carry no entrypoint at all (2026-09-22)
-        k = (r["day"], r["source"], r["session"], r["model"], r["effort"], r["skill"], agent, r["entry"])
+        branch = branches[id(r)]
+        # the branch is in the key: a day file holds a row per branch a session's calls file under
+        k = (r["day"], r["source"], r["session"], r["model"], r["effort"], r["skill"], agent, r["entry"], branch)
         row = rows.get(k)
         if row is None:
+            # the project of the row's own first call, never of its session's: a branch row made in a
+            # confidential checkout after a `cd` from an open one would otherwise ride out under the open
+            # project, its branch name with it (the landing review). Spend moves only for calls made in
+            # another repo, which is the truer label.
+            project = project_of(r["cwd"])
             row = rows[k] = {"day": r["day"], "host": c["host"], "source": r["source"], "session": r["session"],
-                             "title": title, "project": project_of(r["cwd"]), "model": r["model"], "effort": r["effort"],
+                             "title": title, "project": project, "model": r["model"], "effort": r["effort"],
                              "skill": r["skill"], "agent": agent, "entry": r["entry"], "calls": 0, "input": 0,
                              "output": 0, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0,
                              "calls_over_200k": 0, "calls_over_400k": 0, "cost": 0.0, "first": r["ts"], "last": r["ts"],
-                             "branch": branches.get((r["day"], r["session"]), "")}
+                             "branch": branch}
         ctx = r["inp"] + r["cr"] + r["cw5"] + r["cw1"]
         row["calls"] += 1
         row["input"] += r["inp"]
@@ -531,9 +573,39 @@ def secondary_labels():
         return set()
 
 
-def cmd_collect(c, days=3):
+def read_cached(c, since, cache=None):
+    """read_claude_code's four results since `since`, through `cache` (a dict the tick holds): a read
+    since an earlier day serves a later one, its calls filtered by day, so the tick's first run parses the
+    transcripts once for the backfill and both collects. A cached read's titles, agent types and cost
+    states are the wider window's; calibration then prices the processes of that window."""
+    if cache is not None and cache.get("since") and cache["since"] <= since:
+        cc, titles, agent_types, cost_state = cache["read"]
+        return [r for r in cc if r["day"] >= since], titles, agent_types, cost_state
+    got = read_claude_code(c, since)
+    if cache is not None:
+        cache.update(since=since, read=got)
+    return got
+
+
+@contextlib.contextmanager
+def calls_lock(c):
+    """This host's day files, one writer at a time: collect's rewrite and branches' read-modify-write
+    take <data>/<host>/.calls.lock, so a backfill never writes back a day collect rewrote meanwhile. A
+    folder that cannot be locked (a share without flock) is said on stderr at each write and written
+    unlocked."""
+    d = c["data"] / c["host"]
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / ".calls.lock", "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        except OSError as e:
+            print(f"usage-report: {d} cannot be locked ({e}); writing unlocked", file=sys.stderr)
+        yield
+
+
+def cmd_collect(c, days=3, cache=None):
     since = (c["tz_now"].date() - dt.timedelta(days=days)).isoformat()
-    cc, titles, agent_types, cost_state = read_claude_code(c, since)
+    cc, titles, agent_types, cost_state = read_cached(c, since, cache)
     cw = read_cowork_local(c, since)
     rows = aggregate(c, cc + cw, titles, agent_types)
     accts = session_accounts(c)
@@ -545,15 +617,16 @@ def cmd_collect(c, days=3):
     for r in rows:
         by_day[r["day"]].append(r)
     today = c["tz_now"].date().isoformat()
-    for day in sorted(by_day):
-        rows_d = sorted(by_day[day], key=lambda r: -r["cost"])
-        tmp = out / f".{day}.csv.tmp"
-        with tmp.open("w", newline="") as fh:
-            w = csv.DictWriter(fh, FIELDS)
-            w.writeheader()
-            for r in rows_d:
-                w.writerow({**r, "cost": f"{r['cost']:.4f}"})
-        tmp.replace(out / f"{day}.csv")
+    with calls_lock(c):
+        for day in sorted(by_day):
+            rows_d = sorted(by_day[day], key=lambda r: -r["cost"])
+            tmp = out / f".{day}.csv.tmp"
+            with tmp.open("w", newline="") as fh:
+                w = csv.DictWriter(fh, FIELDS)
+                w.writeheader()
+                for r in rows_d:
+                    w.writerow(as_cells(r))
+            tmp.replace(out / f"{day}.csv")
     # calibration: price Claude Code's own per-model token totals with this table and compare with
     # its own costUSD. That tests the price table alone. (Matching sessions instead does not work:
     # totalCostUSD restarts with every process, so a session picked up again reads low; 22% off, 2026-09-22.)
@@ -577,44 +650,112 @@ def cmd_collect(c, days=3):
     return rows
 
 
-def cmd_branches(c, days=30):
-    """Fill an empty branch cell in this host's day files from the transcripts and the archive still
-    here; every other cell, and every row, stays as written. Not `collect --days N`: collect rewrites a
-    day from what it reads, so a day whose transcripts Claude Code has pruned would lose those rows."""
-    since = (c["tz_now"].date() - dt.timedelta(days=days)).isoformat()
-    cc, _, _, _ = read_claude_code(c, since)
-    branches = session_branches(cc)
-    files = filled = 0
-    for f in sorted((c["data"] / c["host"] / "calls").glob("*.csv")):
-        if f.stem < since:
+def as_cells(r):
+    """A row as its CSV cells, the cost to four places: what collect writes and branches compares."""
+    return {k: (f"{r[k]:.4f}" if k == "cost" and isinstance(r[k], float) else "" if r.get(k) is None else str(r[k]))
+            for k in FIELDS}
+
+
+def oldest_day(c):
+    """The first day this host's folder holds a day file for, or None."""
+    return min(day_stems(c["data"] / c["host"]), default=None)
+
+
+def day_stems(src):
+    """The days a host folder's calls/ holds a file for: YYYY-MM-DD names alone (a stray or a Finder
+    duplicate is not a day)."""
+    return [f.stem for f in (src / "calls").glob("*.csv") if re.fullmatch(r"\d{4}-\d\d-\d\d", f.stem)]
+
+
+def resplit_day(f, fresh, picks, accts):
+    """cmd_branches' judgement of one day file: (rows, cells filled, sessions re-split by branch, sessions
+    otherwise rewritten), or None when it is left as it is (nothing changes, or a column or a row this
+    script does not know). A replaced session's rows are what collect writes now, so beside a new branch
+    split they may carry today's prices and calls the day's collect never saw (a transcript that arrived
+    later): counted apart, as `more rewritten`."""
+    with f.open(newline="") as fh:
+        rd = csv.DictReader(fh)
+        rows, head = list(rd), rd.fieldnames or []
+    if set(head) - set(FIELDS):          # a column this script does not know: never drop it
+        print(f"branches: {f.name} has columns {sorted(set(head) - set(FIELDS))}; left as it is", file=sys.stderr)
+        return None
+    if any(None in r for r in rows):     # a row longer than its header: DictWriter would raise on it
+        print(f"branches: {f.name} has a row longer than its header; left as it is", file=sys.stderr)
+        return None
+    by_s = defaultdict(list)
+    for r in rows:
+        by_s[r.get("session")].append(r)
+    out, n, m, o = [], 0, 0, 0
+    for sid, old in by_s.items():
+        new = fresh.get((f.stem, sid))
+        if new and sum(x["calls"] for x in new) >= sum(int(x.get("calls") or 0) for x in old):
+            acct = next((x["account"] for x in old if x.get("account")), accts.get(sid, ""))
+            new = [as_cells(dict(x, account=acct)) for x in new]
+            cells = lambda rs: sorted(sorted({k: x.get(k) or "" for k in FIELDS}.items()) for x in rs)
+            if {x["branch"] for x in new} != {x.get("branch") or "" for x in old}:
+                m += 1
+            elif cells(new) != cells(old):
+                o += 1
+            out += new
             continue
-        with f.open(newline="") as fh:
-            rd = csv.DictReader(fh)
-            rows, head = list(rd), rd.fieldnames or []
-        if set(head) - set(FIELDS):          # a column this script does not know: never drop it
-            print(f"branches: {f.name} has columns {sorted(set(head) - set(FIELDS))}; left as it is", file=sys.stderr)
-            continue
-        if any(None in r for r in rows):     # a row longer than its header: DictWriter would raise on it
-            print(f"branches: {f.name} has a row longer than its header; left as it is", file=sys.stderr)
-            continue
-        n = 0
-        for r in rows:
-            b = branches.get((f.stem, r.get("session")))
+        for r in old:
+            b = picks.get((f.stem, sid))
             if not r.get("branch") and b:
                 r["branch"] = b
                 n += 1
-        if not n and "branch" in head:
-            continue
-        tmp = f.with_name(f".{f.name}.branches.tmp")
-        with tmp.open("w", newline="") as fh:
-            w = csv.DictWriter(fh, FIELDS, restval="")
-            w.writeheader()
-            w.writerows(rows)
-        tmp.replace(f)
-        files += 1
-        filled += n
-    print(f"branches {c['host']}: {filled} row(s) given a branch in {files} day file(s) since {since}")
-    return filled
+        out += old
+    if not (n or m or o) and "branch" in head:
+        return None
+    out.sort(key=lambda r: -float(r.get("cost") or 0))
+    return out, n, m, o
+
+
+def cmd_branches(c, days=None, cache=None):
+    """Re-split this host's day files by branch from the transcripts and the archive still here, since
+    `days` ago (None: the folder's oldest day file). Not `collect --days N`: collect rewrites a day from
+    what it reads, so a day whose transcripts Claude Code has pruned would lose those rows. Per day and
+    session: when the transcripts still hold at least the calls its rows count, its rows are replaced by
+    what collect writes now (a row per branch, call_branches), its account label kept; else its rows stay
+    as written, an empty branch cell filled from session_branches. A session the transcripts do not hold
+    (pruned, a Cowork one), and a file with a column or a row this script does not know, stay as they are.
+    Runs under calls_lock, after the parse. Returns (calls read, rows filled, sessions re-split, files written)."""
+    since = (c["tz_now"].date() - dt.timedelta(days=days)).isoformat() if days is not None else oldest_day(c)
+    if not since:
+        print(f"branches {c['host']}: no day file here")
+        return 0, 0, 0, 0
+    cc, titles, agent_types, _ = read_cached(c, since, cache)
+    picks = session_branches(cc)
+    fresh = defaultdict(list)
+    for r in aggregate(c, [dict(r) for r in cc], titles, agent_types):   # copies: aggregate sets entry in place
+        fresh[(r["day"], r["session"])].append(r)
+    accts = session_accounts(c)
+    files = filled = split = other = 0
+    with calls_lock(c):
+        for f in sorted((c["data"] / c["host"] / "calls").glob("*.csv")):
+            # a day file alone: a stray or a Finder duplicate is no day to re-split (day_stems)
+            if f.name.startswith(".") or not re.fullmatch(r"\d{4}-\d\d-\d\d", f.stem) or f.stem < since:
+                continue
+            try:
+                got = resplit_day(f, fresh, picks, accts)
+            except (OSError, UnicodeDecodeError, csv.Error, ValueError) as e:   # one bad day never stops the rest
+                print(f"branches: {f.name} cannot be read ({e}); left as it is", file=sys.stderr)
+                continue
+            if got is None:
+                continue
+            out, n, m, o = got
+            tmp = f.with_name(f".{f.name}.branches.tmp")
+            with tmp.open("w", newline="") as fh:
+                w = csv.DictWriter(fh, FIELDS, restval="")
+                w.writeheader()
+                w.writerows(out)
+            tmp.replace(f)
+            files += 1
+            filled += n
+            split += m
+            other += o
+    print(f"branches {c['host']}: {filled} row(s) given a branch, {split} session(s) re-split by branch, "
+          f"{other} more rewritten (repriced or gaining calls), in {files} day file(s) since {since}")
+    return len(cc), filled, split, files
 
 
 # ----------------------------------------------------------------------------- sample
@@ -781,10 +922,10 @@ def push_copy(src, out):
     judged as its title is), and
     each file without the rows the global report would fence (fence_rows: a confidential scope's
     project, its scratch folder, its group folder, a row of no project while a scope is confidential), nor an
-    open row whose project holds a confidential word (fence_words) anywhere in it. An open row's branch,
-    skill, agent or title holding such a word is blanked, as a substring: names_one's word match misses
-    a hyphen-bounded token, and a branch is all of them (4 rows on one day carried the scope's word in
-    their branch, trim-cross-host D2). Over-reach is the safe side here: what is dropped only leaves trim
+    open row whose project holds a confidential word (fence_words, matched by fence_hit) anywhere in it.
+    An open row's branch, skill, agent or title holding such a word is blanked, as a substring (a short
+    word as a token): a word match misses a hyphen-bounded token, and a branch is all of them (4 rows on
+    one day carried the scope's word in their branch, trim-cross-host D2). Over-reach is the safe side here: what is dropped only leaves trim
     a row short. Dropped, not blanked: the copy leaves this Mac, and a scope's berth may be this host
     alone. Each copy keeps its source's mtime, which rsync's quick check cannot trust: a
     re-fenced day keeps its size when a 14-character title becomes `(confidential)`, so the push
@@ -800,8 +941,7 @@ def push_copy(src, out):
     if reg[1]:
         return None
     fence, dropped, unread, days = common.gather_fence(), 0, [], []
-    words = sorted(w for w in fence_words(reg) if w)
-    hit = lambda v: any(w in (v or "").casefold() for w in words)
+    hit = fence_hit(fence_words(reg), floor_parts(reg))
     (out / "calls").mkdir(parents=True, exist_ok=True)
     for f in sorted(x for x in (src / "calls").glob("*.csv") if not x.name.startswith(".")):
         try:
@@ -815,9 +955,12 @@ def push_copy(src, out):
     allrows = [r for _, _, rows in days for r in rows]
     judged = fence_rows([dict(r) for r in allrows], fence)
     hot = {r.get("session") for r, j in zip(allrows, judged) if r.get("session") and (j.get("project") == CONFIDENTIAL or hit(r.get("project")))}
-    if allrows and all(r.get("session") in hot for r in allrows):
+    drops = [r.get("session") in hot or (not r.get("session") and (j.get("project") == CONFIDENTIAL or hit(r.get("project"))))
+             for r, j in zip(allrows, judged)]
+    # judged on what is dropped, session-less rows included, so a copy of header-only days is never sent
+    if allrows and all(drops):
         return None  # a fence that drops every row reads the registry wrong: the target keeps its copy
-    judged = iter(judged)
+    judged, drops = iter(judged), iter(drops)
     for f, fields, rows in days:
         dst = out / "calls" / f.name
         with dst.open("w", newline="", encoding="utf-8") as fh:
@@ -825,7 +968,7 @@ def push_copy(src, out):
             w.writeheader()
             for r in rows:
                 j = next(judged)
-                if r.get("session") in hot:
+                if next(drops):
                     dropped += 1
                     continue
                 r = dict(r, title=j.get("title", r.get("title")))
@@ -845,7 +988,8 @@ def cmd_push(c, force=False):
     accounts, calibration, AppleDouble and marker files, an unfenced day) is removed by the first push
     (trim-cross-host D2). --delete reaches only the target folder, and a target must end in this host's
     own folder name: one naming another host's folder would replace its rows and delete the rest. A day
-    file push_copy could not read is excluded, so --delete keeps its last good copy there; and a copy
+    file push_copy could not read is excluded, so --delete keeps its last good copy there, and so are the
+    days older than this host's oldest at a target pushed to before (push_send); and a copy
     with no day file at all (no calls/, an empty one, only unreadable days) is refused, or the mirror
     would empty the target (the third review, 2026-10-28). A refusal (push_refused) returns before any rsync. A failure is reported, not retried until the next
     due tick (an hour). Returns False on a failure."""
@@ -856,17 +1000,61 @@ def cmd_push(c, force=False):
     if not src.is_dir() or not (force or push_due(c, marker)):
         return True
     ok = False
+    fp = fence_print()
     try:
-        ok = push_send(c, src)
+        last = json.loads(marker.read_text())
+        # a fence changed since (a scope made confidential, a member added) forgets every target: the
+        # next push mirrors whole, so the older days it kept there, which it can no longer re-fence, go.
+        # A registry that does not read (fp None) keeps the marker's: that push is refused anyway, and one
+        # torn read must not make the next good push mirror whole (the landing review)
+        sent = set(last.get("sent") or ()) if not fp or last.get("fence") == fp else set()
+        if not fp:
+            fp = last.get("fence")
+    except (OSError, ValueError, AttributeError, TypeError):
+        sent = set()
+    try:
+        ok = push_send(c, src, sent)
     finally:
         # written on a raise too, so a failing push waits its hour rather than retrying every tick
-        marker.write_text(json.dumps({"at": c["tz_now"].isoformat(), "ok": ok}) + "\n")
+        marker.write_text(json.dumps({"at": c["tz_now"].isoformat(), "ok": ok, "sent": sorted(sent), "fence": fp}) + "\n")
     return ok
 
 
-def push_send(c, src):
+def fence_print():
+    """A digest of what the fence judges by (the confidential scopes' names and members, the words), or
+    None when the registry cannot be read. Holds no name: the marker it goes in sits beside the data."""
+    import hashlib
+    parsed = common.read_registry()
+    if parsed[1]:
+        return None
+    torn, hidden, keys, _ = confidential_names(parsed)
+    return hashlib.sha256(json.dumps([sorted(hidden), sorted(keys), sorted(fence_words(parsed))]).encode()).hexdigest()[:16]
+
+
+def rsync_name(n):
+    """A file name as an rsync pattern matching it alone. rsync reads a backslash as an escape only in a
+    pattern that holds a wildcard (*, ? or [), and literally in one that holds none, so a name is escaped
+    only when it holds a wildcard."""
+    return re.sub(r"([*?\[\\])", r"\\\1", n) if re.search(r"[*?\[]", n) else n
+
+
+def older_days(day):
+    """rsync patterns, anchored in calls/, matching every day file named before `day` (YYYY-MM-DD): one
+    per digit of it, the same prefix and a lower digit there. [] for a name of another shape."""
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", day or ""):
+        return []
+    return ["/calls/%s[0-%s]*.csv" % (day[:i], chr(ord(ch) - 1)) for i, ch in enumerate(day) if ch.isdigit() and ch > "0"]
+
+
+def push_send(c, src, sent=None):
     """cmd_push's sending half: the fenced copy, its refusals, the rsync to each target. True when every
-    target took it."""
+    target took it. `sent` is the set of targets a push reached before; each one this push reaches joins it.
+    A target in it keeps its day files older than this host's oldest (older_days): a day pruned or lost
+    in place never empties the target's. A data folder moved or replaced (a share not mounted) holds no
+    marker, so its first push mirrors whole. A target not yet in it is mirrored whole, so a first push still clears an old pull's
+    unfenced days. A kept day stays as it was last sent: a scope made confidential after that is not
+    re-fenced there, as this host no longer holds the day to fence."""
+    sent = set() if sent is None else sent
     ok = True
     with tempfile.TemporaryDirectory(prefix="usage-push-") as tmp:
         out = Path(tmp) / c["host"]
@@ -881,15 +1069,19 @@ def push_send(c, src):
         if ok and not any((out / "calls").glob("*.csv")):
             print("push: REFUSED — no day file to send; the target keeps its copy")
             ok = False
-        # anchored at the copy's root, a wildcard in a name escaped: rsync reads *, ? and [ as a pattern
-        keep = [a for n in unread for a in ("--exclude", "/calls/" + re.sub(r"([*?\[\\])", r"\\\1", n))]
+        # anchored at the copy's root (rsync_name: a wildcard in a name escaped)
+        keep = [a for n in unread for a in ("--exclude", "/calls/" + rsync_name(n))]
+        older = [a for p in older_days(min(day_stems(src), default="")) for a in ("--exclude", p)]
         for dst in c["push"] if ok else ():
             if dst.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1] != c["host"]:
                 print(f"push {dst}: REFUSED — a target must end in /{c['host']}/, this host's own folder")
                 ok = False
                 continue
+            known = dst.rstrip("/") in sent
             r = subprocess.run(["rsync", "-a", "--delete", "--checksum", "--timeout=30", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
-                                *keep, str(out) + "/", dst.rstrip("/") + "/"], capture_output=True, text=True)
+                                *keep, *(older if known else ()), str(out) + "/", dst.rstrip("/") + "/"], capture_output=True, text=True)
+            if r.returncode == 0:
+                sent.add(dst.rstrip("/"))
             kept = f" ({dropped} confidential row{'s' * (dropped != 1)} kept here)" if dropped else ""
             print(f"push {dst}: {'ok' + kept if r.returncode == 0 else 'FAILED ' + r.stderr.strip()[:200]}")
             ok = ok and r.returncode == 0
@@ -954,10 +1146,35 @@ def fence_words(parsed=None):
     return hidden | {w.casefold() for k in keys for w in (k, k.rsplit("/", 1)[-1])}
 
 
-def names_one(title, words):
-    """True when `title` holds any of `words` (casefolded) as a whole word or path part."""
-    t = (title or "").casefold()
-    return any(re.search(r"(?<![\w.-])%s(?![\w-])" % re.escape(w), t) for w in words if w)
+# A member key's last part shorter than this is matched as a whole token, never as a substring: a key
+# whose last part is two letters would otherwise blank most branches and titles (every one holding those
+# letters). Only that part: a scope name and a whole key match as substrings at any length. The part
+# still fences: its scope's rows by their project (gather_fence), its full key (it has a slash) as a
+# substring, and the part itself wherever it stands alone between characters that are not letters or digits.
+FENCE_FLOOR = 4
+
+
+def floor_parts(parsed=None):
+    """The fence words matched as tokens only (FENCE_FLOOR): each confidential member key's last part under
+    the floor, when the key has a slash and the part is not itself a scope name or a whole key."""
+    _, hidden, keys, _ = confidential_names(parsed)
+    whole = hidden | {k.casefold() for k in keys}
+    parts = {k.rsplit("/", 1)[-1].casefold() for k in keys if "/" in k}
+    return {p for p in parts if p and len(p) < FENCE_FLOOR} - whole
+
+
+def fence_hit(words, parts=()):
+    """A test of one text against the fence's words (fence_words, casefolded): each word anywhere in it,
+    bar the `parts` (floor_parts) under FENCE_FLOOR, which count only as a whole token (between characters
+    that are not letters or digits, so `-ab-` in a branch counts). Over-reach is the safe side: a blanked
+    name costs a report one label."""
+    short = [w for w in words if w and w in parts and len(w) < FENCE_FLOOR]
+    long = [w for w in words if w and w not in short]
+    pat = re.compile("|".join(r"(?<![^\W_])%s(?![^\W_])" % re.escape(w) for w in short)) if short else None
+    def hit(v):
+        t = (v or "").casefold()
+        return bool(t) and (any(w in t for w in long) or bool(pat and pat.search(t)))
+    return hit
 
 
 def scope_label(project, reg):
@@ -993,8 +1210,9 @@ def fence_rows(rows, fence=None):
     fence): its numbers stay, so totals and shares hold. `fence` is the core's gather_fence(); an
     unreadable registry fences every row, and so is a row with no project while a scope is
     confidential (unknown is never quoted), and one in a folder that holds a confidential checkout (the
-    projects folder, a group folder). An open row's title that names a confidential scope or one of its
-    repos is blanked too: a pass started from an open repo still names its scope."""
+    projects folder, a group folder). A session with a row whose project holds a confidential word
+    (fence_hit) is fenced whole, as push_copy drops it; an open row's title, skill, agent or branch
+    holding one is blanked: a pass started from an open repo still names its scope."""
     fence = fence or common.gather_fence()
     skills, agents = shared_names()
     reg, torn = common.read_registry()
@@ -1002,7 +1220,7 @@ def fence_rows(rows, fence=None):
     label_scopes(rows, reg or {})
     # a confidential scope by its place in the registry, never its name: a count per scope, no name
     order = [n.casefold() for n, sc in ((reg or {}).get("scopes") or {}).items() if isinstance(sc, dict) and sc.get("confidential") is True]
-    words = fence_words((reg, torn))
+    hit = fence_hit(fence_words((reg, torn)), floor_parts((reg, torn)))
     seen, nth = {}, {}
 
     def fenced(r):
@@ -1016,9 +1234,10 @@ def fence_rows(rows, fence=None):
 
     # session-wide: a session's title and branch ride on every row it has, so one fenced row (its main
     # row in the scope's checkout) fences the rest, a worker's row after a cd included (the landing review)
-    hot = {r.get("session") for r in rows if r.get("session") and fenced(r)}
+    # and a session with an open row whose project holds a confidential word, as push_copy drops it
+    hot = {r.get("session") for r in rows if r.get("session") and (fenced(r) or hit(r.get("project")))}
     for r in rows:
-        if r.get("session") in hot or fenced(r):
+        if r.get("session") in hot or fenced(r) or (not r.get("session") and hit(r.get("project"))):
             # numbered per session, so "By session" and the line's Biggest never sum several into one
             n = nth.setdefault(r.get("session"), len(nth) + 1)
             r.update(project=CONFIDENTIAL, title="(confidential #%d)" % n, scope=fenced_scope(r["scope"], order, torn))
@@ -1027,8 +1246,12 @@ def fence_rows(rows, fence=None):
             if r.get("agent") not in agents:
                 r["agent"] = CONFIDENTIAL
             r["branch"] = ""
-        elif names_one(r.get("title"), words):
-            r["title"] = CONFIDENTIAL
+        else:   # an open row: each name holding a confidential word blanked, as push_copy does
+            for k, shared in (("title", ()), ("skill", skills), ("agent", agents)):
+                if r.get(k) not in shared and hit(r.get(k)):   # a shared name is generic: tier_mix reads it
+                    r[k] = CONFIDENTIAL
+            if hit(r.get("branch")):
+                r["branch"] = ""
     return rows
 
 
@@ -1947,23 +2170,54 @@ def refresh_copies():
         print(line)
 
 
+def branches_due(c, marker):
+    """The day the tick's backfill starts from (this host's oldest day file), when one is due: none has
+    run, or the last read nothing or failed on an earlier day. A failure waits for the next day, not the
+    next tick: it parses every transcript the day files span. None when not due, or no day file here."""
+    try:
+        last = json.loads(marker.read_text())
+        if last.get("ok") or dt.datetime.fromisoformat(last["at"]).date() >= c["tz_now"].date():
+            return None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return oldest_day(c)
+
+
 def cmd_tick(c):
     refresh_copies()
     n = cmd_sample(c)
     now = c["tz_now"]
+    cache = {}   # one transcript parse for this tick's backfill and collects
+    split = c["data"] / c["host"] / ".branches-split"
+    due = branches_due(c, split)
+    if due:
+        # marked tried before the wide read, so a tick killed mid-parse (launchd, memory) or a collect that
+        # raises waits for the next day, not the next tick (the landing review)
+        split.write_text(json.dumps({"at": now.isoformat(), "ok": False}) + "\n")
+        try:
+            read_cached(c, min(due, (now.date() - dt.timedelta(days=3)).isoformat()), cache)
+        except Exception as ex:  # the wide read only serves the backfill: collect then reads its own window
+            cache.clear()
+            print(f"branches: FAILED reading the transcripts: {ex}")
+            due = None
     marker = c["data"] / c["host"] / f".collected-{now.date().isoformat()}"
     if not marker.exists():
-        cmd_collect(c)
+        cmd_collect(c, cache=cache)
         marker.touch()
-    # once per host: the branch column for the days collected before it existed (2026-10-27), so each
-    # Mac fills its own past with no one's hands; collect writes it from then on
-    filled = c["data"] / c["host"] / ".branches-filled"
-    if not filled.exists():
+    # once per host: every day file re-split by branch (the column since 2026-10-27, in the key since
+    # trim-usage-key), so each Mac redoes its own past with no one's hands; collect writes it from then on
+    if due:
+        ok = False
         try:
-            cmd_branches(c)
-            filled.touch()
-        except Exception as ex:  # the daily report goes out regardless; the next tick tries again
+            read, *_ = cmd_branches(c, cache=cache)
+            ok = bool(read)   # nothing read: the transcripts were not there to judge by, so not done
+            if not ok:
+                print("branches: no transcript call read; tried again tomorrow")
+        except Exception as ex:  # the daily report goes out regardless; tomorrow's first tick tries again
             print(f"branches: FAILED {ex}")
+        split.write_text(json.dumps({"at": now.isoformat(), "ok": ok}) + "\n")
+        if ok:
+            (split.parent / ".branches-filled").unlink(missing_ok=True)   # the column's first backfill, superseded
     # after collect, so what it wrote goes with this push (collect itself may run once a day); a failure (rsync missing included) is
     # the line it prints, never the tick's
     try:
@@ -1978,7 +2232,7 @@ def cmd_tick(c):
     if done.exists() or now.strftime("%H:%M") < c["render_after"]:
         print(f"tick {c['host']}: {n} new sample(s)")
         return
-    cmd_collect(c)
+    cmd_collect(c, cache=cache)
     pulled = cmd_pull(c)
     # Weekly: the first render after a week ends, before the line that quotes it. Not on a failed
     # pull — a week without the other host's spend would stand all week; the next day's render retries.
@@ -2004,7 +2258,7 @@ def main(argv=None):
     p = sub.add_parser("collect")
     p.add_argument("--days", type=int, default=3)
     p = sub.add_parser("branches")
-    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--days", type=int, help="the last N days (default: from this host's oldest day file)")
     sub.add_parser("pull")
     sub.add_parser("push")
     for name in ("render", "line"):

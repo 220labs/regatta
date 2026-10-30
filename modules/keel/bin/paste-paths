@@ -709,6 +709,16 @@ def wait_go_findings(line: str) -> list[str]:
 # "nothing to do but pick A or B" still asks: a qualifier after it keeps the line an ask.
 NOTHING_ASKED = re.compile(r"\bnothing (?:for you )?to do\b(?!\s*(?:but|except|until|unless|once|then)\b)"
                            r"|\bnothing for you\b(?!\s*(?:but|except|until|unless|once|then)\b)", re.I)
+# The third wait (the owner, 2026-10-29): a WAITING FOR YOU line that says nothing is owed or left asks
+# nothing and waits on nothing — a plain answer — and takes the WAITING FOR NOTHING line (common.IDLE_PREFIX).
+# Corrected twice in one day before it was a check. The same qualifiers keep an ask ("nothing owed but D2"),
+# and the phrase must open the line's what: "the pick between A and B; nothing else needed" and "merge the
+# PR; nothing more" ask first, so they stay (the landing review, 2026-10-29: both passed on main). "else",
+# "more" and "further" say something was asked, so they are no part of it.
+NOTHING_OWED = re.compile(r"(?:nothing(?: is)? (?:owed|outstanding|pending|left|needed|required)"
+                          r"|no (?:action|follow-?up|next step|step)s? (?:is |are )?(?:owed|needed|required)"
+                          r"|nothing is asked)\b", re.I)
+_QUALIFIED = re.compile(r"\s*(?:,\s*)?(?:but|except|until|unless|once|then|beyond|besides|other than|apart from|save for)\b", re.I)
 # A word joined to another by - / . is a name ("paste-paths.sh"), and "D3's build" is work, not an ask.
 _NAME_RE = re.compile(r"\w+(?:[-/.]\w+)+")
 
@@ -739,24 +749,95 @@ def pending_asks(line: str) -> bool:
                 or (re.search(_GO, line, re.I) and not GO_NEGATED.search(line)))
 
 
+def nothing_owed(line: str) -> bool:
+    what = line.split(" — ", 1)[-1].strip()
+    m = NOTHING_OWED.match(what)
+    return bool(m and not _QUALIFIED.match(what, m.end()))
+
+
+# "the answer is above" names the answer, it asks for none: _OWNER_VERB_RE's verbs after an article or
+# a possessive are nouns. Stripped only where a false ask would hide the line asked for (a plain answer's
+# WAITING FOR NOTHING), never in pending_asks itself, which would pass "the answer to D2" under the
+# quiet line.
+_NOUN_USE = re.compile(r"\b(?:the|an?|its|this|that|my)\s+(?:answer|pick|choice)s?\b", re.I)
+# What makes a WAITING FOR NOTHING line an ask (and a nothing-owed WAITING FOR YOU line still one): a verb
+# the owner would do, the owner's name, a go, or a D-item outside parentheses ("D2 and D3 are open in the
+# doc" hides an ask; "(D2)" cites a decided one). Not "you"/"your", as pending_asks counts them: a plain
+# answer says "your question is answered above" and "nothing needed from you" (the landing review, 2026-10-29).
+_OWNER_ACT_RE = re.compile(r"\b(?:log in|sign in|approve|paste|click|tap|press|pick|choose|answer|decide)(?![\w-])", re.I)
+# An imperative the owner would carry out, at a clause's start ("merge #12 when you like", "nothing pending;
+# run /finish"), and a "when you"/"you owe"/"your <noun>" that hands the owner the step ("the PR waits for your
+# merge"). At a clause's start only: "the merge landed" and "the check ran" are reports (the finish review,
+# 2026-10-30: these hid an owed merge under ✅ and dropped a managed run's relay).
+_OWNER_DO_RE = re.compile(r"(?:^|[;:.,!?—]\s*|\b(?:then|just|please|and)\s+)(?:merge|run|review|copy|type|open|"
+                          r"restart|start|land|launch|finish|install|enable|grant|give)\b"
+                          r"|\bwhen you\b|\byou owe\b|\byour (?:merge|review|tap|go|call|approval|login|yes)\b", re.I)
+
+
+def idle_asks(line: str) -> bool:
+    common = _common()
+    what = _NOUN_USE.sub("", line.split(" — ", 1)[-1])
+    plain = _NAME_RE.sub("", re.sub(r"`[^`]*`", "", what))
+    owner = common.OWNER_NAME and re.search(r"\b%s\b" % re.escape(common.OWNER_NAME), plain, re.I)
+    return bool(_OWNER_ACT_RE.search(plain) or owner or common.ASK_MANUAL_RE.search(plain)
+                or _OWNER_DO_RE.search(what.strip()) or SLASH_COMMAND.search(what)
+                or common.ASK_DITEM_RE.search(re.sub(r"\([^()]*\)|\bD\d+['’]s\b", "", plain))
+                or (re.search(_GO, what, re.I) and not GO_NEGATED.search(what)))
+
+
+def owed_nothing(line: str) -> bool:
+    """A WAITING FOR YOU line whose what opens by saying nothing is owed, and asks nothing after it."""
+    return nothing_owed(line) and not (asks_owner(_NOUN_USE.sub("", line)) or idle_asks(line))
+
+
 def two_waits_findings(kind: str, line: str) -> list[str]:
     common = _common()
+    idle = f"`{common.marked('idle', common.IDLE_PREFIX)}<what was settled, in one line>`"
     if kind in ("pending", "handed") and pending_asks(line):
         return [f"the WAITING FOR SOMETHING line says the owner has nothing to do, and this one asks the owner "
-                f"for something — end on `{common.WAITING_PREFIX}<what, in one line>` instead"]
-    if kind == "waiting" and NOTHING_ASKED.search(line) and not (asks_owner(line) or pending_asks(line)):
-        return [f"the WAITING FOR YOU line is an ask, and this one says there is nothing to do — if it "
-                f"asks the owner nothing, end on `{common.PENDING_PREFIX}<what it waits on, in one line>`; "
-                f"if it does, say the ask"]
+                f"for something — end on `{common.marked('waiting', common.WAITING_PREFIX)}<what, in one line>` instead"]
+    if kind == "idle" and idle_asks(line):
+        return [f"the WAITING FOR NOTHING line says nothing is owed, and this one asks the owner for something "
+                f"— end on `{common.marked('waiting', common.WAITING_PREFIX)}<what, in one line>` instead "
+                f"(a decided D-item is cited in parentheses)"]
+    if kind == "waiting" and owed_nothing(line):
+        return [f"the WAITING FOR YOU line is an ask, and this one says nothing is owed — a plain answer "
+                f"ends on {idle}; work that landed, on its skill's done line; a session whose own work "
+                f"goes on, on `{common.marked('pending', common.PENDING_PREFIX)}<what it waits on, in one line>`"]
+    if kind == "waiting" and not (asks_owner(line) or pending_asks(line)):   # main's rule, unchanged
+        if NOTHING_ASKED.search(line):
+            return [f"the WAITING FOR YOU line is an ask, and this one says there is nothing to do — if it "
+                    f"asks the owner nothing, end on `{common.marked('pending', common.PENDING_PREFIX)}<what it waits on, in one line>` "
+                    f"while its own work goes on, or on {idle} when nothing does; if it does ask, say the ask"]
     return []
+
+
+# One mark per state before the closing line (the owner, 2026-10-29: "so I can easily differentiate done
+# sessions from wip from blocked/waiting for me"); the table is the core's MARKS. Checked only on a line
+# that reads as a closing line, and said beside any other finding, since the hook blocks once.
+def mark_findings(text: str) -> list[str]:
+    common = _common()
+    want, mark = common.ending_mark(text)
+    if not want or mark == want:
+        return []
+    have = ("has no space after its mark" if mark == want + "|" else
+            f"opens with {mark.rstrip('|')}" if mark else "has no mark")
+    return [f"the closing line {have}: start it with {want} and a space — ✅ closeable (done, WAITING FOR "
+            f"NOTHING), ⏳ work goes on without the owner (WAITING FOR SOMETHING, the hand-over, RELAYED), "
+            f"🛑 the owner owes the next move (WAITING FOR YOU, a move that leaves the owner a step)"]
 
 
 def closing_findings(reply: str, command=None, bash=(), last=None, background=False) -> list[str]:
     """`reply`: the turn's text; `last`: its final message, the one that must end right."""
+    return (_closing_findings(reply, command, bash, last, background)
+            + mark_findings(reply if last is None else last))
+
+
+def _closing_findings(reply: str, command=None, bash=(), last=None, background=False) -> list[str]:
     common = _common()
     kind, line, problem = common.ending(reply if last is None else last)
-    waiting = f"`{common.WAITING_PREFIX}<what, in one line>`"
-    pending = f"`{common.PENDING_PREFIX}<what it waits on, in one line>`"
+    waiting = f"`{common.marked('waiting', common.WAITING_PREFIX)}<what, in one line>`"
+    pending = f"`{common.marked('pending', common.PENDING_PREFIX)}<what it waits on, in one line>`"
     if problem and problem[0] == "after":
         out = [f"a closing line is the very last thing said — only links may follow it: move "
                f"`{common.bare(problem[1])[:70]}…` to the end, after anything else"]
@@ -767,10 +848,15 @@ def closing_findings(reply: str, command=None, bash=(), last=None, background=Fa
         return out
     if problem:
         return [f"`{common.bare(problem[1])[:70]}` is not one of the fixed closing lines — use one "
-                f"word for word: the skill's own, {waiting}, or {pending} when the owner has "
-                f"nothing to do"]
-    if kind in ("pending", "handed"):
+                f"word for word: the skill's own, {waiting}, {pending} when the owner has "
+                f"nothing to do and the session carries on, or `{common.marked('idle', common.IDLE_PREFIX)}<what was settled>` "
+                f"when nothing goes on"]
+    if kind in ("pending", "handed", "idle"):
         out = two_waits_findings(kind, line)
+        text = reply if last is None else last
+        if kind == "idle" and not out and (common.do_this_now_block(text) or STOP_STEP.search(text)):
+            out = [f"the WAITING FOR NOTHING line says nothing is owed, and this reply hands the owner a "
+                   f"Do this now block or a ⚠ stop — end on {waiting} instead"]
         if out:
             return out
     if kind == "waiting":
@@ -797,7 +883,7 @@ def closing_findings(reply: str, command=None, bash=(), last=None, background=Fa
     if background and kind is None and WAITS.search(tail[0]):
         owes = False
     if owes and kind not in ("waiting", "handed", "pending", "relayed") and line not in common.FINISH_LINES:
-        fixed = " / ".join(f"`{l}`" for l in common.FINISH_LINES)
+        fixed = " / ".join(f"`{common.marked('done', l)}`" for l in common.FINISH_LINES)
         return [f"/{command or 'finish'} ends with one of its closing lines, on its own, as the "
                 f"very last thing said: {fixed} — or {waiting} when the next move is the owner's, "
                 f"{pending} when the session carries on by itself "
@@ -1057,6 +1143,11 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
     # load, its registry walk, scutil) runs only on the rare turn that asks, not every Stop.
     what = _common().unrelayed_ask(reply, last)
     if not what:
+        return []
+    # a WAITING FOR YOU line that says nothing is owed is told to take WAITING FOR NOTHING (two_waits_findings);
+    # telling it to relay the same line as an ask would contradict that (the landing review, 2026-10-29)
+    kind, line, _ = _common().ending(reply if last is None else last)
+    if what == "the WAITING line" and kind == "waiting" and owed_nothing(line or "") and not _common().do_this_now_block(reply):
         return []
     # autofinish's start is no manager's run (stray-manager M1 c, M3): its asks are landings, which
     # a manager never performs, so they go to the owner as before the seam

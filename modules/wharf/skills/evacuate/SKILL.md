@@ -83,7 +83,7 @@ is still inside a worktree: exiting is what moves the transcript back to the rep
 directory, and one left inside is invisible to the VS Code sidebar and to `claude -r`
 short of `Ctrl+A` (the owner, 2026-09-21). End with the upper-case line from
 `/finish`: `REALLY DONE` when every step above is clean, `READ THE NOTE ABOVE` when
-anything is owed — or, when only the owner can make the next move, `<OWNER>, THIS SESSION IS WAITING
+anything is owed (each opened by ✅) — or, when only the owner can make the next move, `🛑 <OWNER>, THIS SESSION IS WAITING
 FOR YOU — <what, in one line>` (`<OWNER>`: the core's `regatta/owner`, upper-cased; with none
 the line starts at `THIS`). LEAVE OPEN takes none: the session is not finished. The Stop
 hook blocks any other ending once.

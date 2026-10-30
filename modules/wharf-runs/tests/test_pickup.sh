@@ -748,6 +748,7 @@ echo "\$* | session \$CLAUDE_CODE_SESSION_ID" >> "$T/dispatch.calls"
 [ -n "\${STUB_RS_UNREAD:-}" ] && { echo "dispatch: the queue does not read (dispatch-queue exit 4) — refused, not scheduled: a one-shot beside an entry it cannot see could run \$1 twice. End with the WAITING line" >&2; exit 2; }
 [ -n "\${STUB_RS_UNTOLD:-}" ] && { echo "dispatch: could not tell whether the queue holds it (queue entry fleet:demo--stage) — dispatch-queue watch exit 5: x — and no run header in log after 0 s — not handed off. End with the WAITING line — the next step waits for a run to end and for the queue to read" >&2; exit 2; }
 [ -n "\${STUB_RS_HELD:-}" ] && { echo "dispatch: \$1 is claimed on buildbox (queue entry fleet:demo--stage) — one branch, one host: end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
+[ -n "\${STUB_RS_NOHOST:-}" ] && { echo "dispatch: no host meets this run — laptop lacks feat-z — refused, never queued" >&2; echo "dispatch: \$1 is refused, never queued — end with the WAITING line — the next step waits for a run to end and for a host to meet it" >&2; exit 2; }
 [ -n "\${STUB_RS_QUEUED:-}" ] && { echo "queued as fleet:demo--stage (normal), rank 2: no room on this Mac now — it starts once a slot frees"; echo "end your turn on this line: THIS SESSION IS WAITING FOR SOMETHING — queued \$1 (normal); the next step waits for a run to end; the skipper finishes it"; exit 0; }
 echo "started: claude is running \$1 (opus high) in screen run-demo-stage; dispatch --status"
 SH
@@ -908,6 +909,32 @@ hasnt "$T/out" "vscode://" "…no tab"
 has "$T/dispatch.calls" "$SP --repo" "…dispatch on the seed"
 has "$T/dispatch.calls" " --next" "…--next: pushed and confirmed from its log"
 : > "$T/dispatch.calls"
+# S5 (dispatch-queue eligibility): a brief's frontmatter `needs:` line rides to dispatch as --needs, names lower-cased
+SN2=claude/$HN/$TODAY-needsa; SB2="$T/brief-needs.md"
+{ printf -- '---\nneeds: Feat-A, feat-b\n---\n'; cat "$SB"; } > "$SB2"
+: > "$T/dispatch.calls"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed needsa --file "$SB2" --no-fetch)" 0 "a seed whose brief says needs:…"
+has "$T/dispatch.calls" "$SN2 --repo" "  is dispatched"
+has "$T/dispatch.calls" "--needs feat-a,feat-b" "  with the needs passed on, lower-cased and comma-joined"
+SN3=claude/$HN/$TODAY-needsb; SB3="$T/brief-badneeds.md"
+{ printf -- '---\nneeds: feat-a, Bad Name!\n---\n'; cat "$SB"; } > "$SB3"
+: > "$T/dispatch.calls"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed needsb --file "$SB3" --no-fetch)" 0 "a seed with a malformed need…"
+has "$T/dispatch.calls" "--needs feat-a, bad name!" "  is passed on as written, for dispatch to refuse (dropped, it would route the run to any host: the review's S2)"
+: > "$T/dispatch.calls"
+check "$(STUB_RS_NOHOST=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SN2" --fresh --no-fetch)" 1 "dispatch refusing a run no host can meet: a stop…"
+has "$T/out" "never queued — no tab" "  …naming why"
+check "$(STUB_RS_FAIL=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SN2" --fresh --no-fetch)" 1 "any other refusal of a run with needs: a stop too (S5's landing review)…"
+has "$T/out" "it needs feat-a,feat-b — no tab" "  …naming the needs"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "  …and no window opens"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "  …and no tab or window opens on a Mac that lacks the feature"
+: > "$T/dispatch.calls"
+{ printf -- '---\nneeds: [Feat-A, feat-b]\n---\n'; cat "$SB"; } > "$T/brief-list.md"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed needsd --file "$T/brief-list.md" --no-fetch)" 0 "a bracketed list…"
+has "$T/dispatch.calls" "--needs feat-a,feat-b" "  reads as the names in it"
+: > "$T/dispatch.calls"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed needsc --file "$SB" --no-fetch)" 0 "a seed with no needs line…"
+check "$(grep -c -- '--needs' "$T/dispatch.calls")" "0" "  passes none"
 check "$(CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" P open "$SP" --fresh --note 'mind the cache' --no-fetch)" 0 "open --fresh from a terminal…"
 has "$T/dispatch.calls" "--note mind the cache" "…dispatched, the note passed on"
 hasnt "$T/out" "new Terminal window" "…no Terminal window"
@@ -1071,6 +1098,22 @@ has "$T/out" "$GB is gone from origin" "…never seeded from the stale local bra
 check "$(git branch --list "*-fromg" | wc -l | tr -d ' ')" "0" "…and no branch made"
 check "$(P seed fromg --file "$SB" --beside $GB --dry-run --no-fetch) $(grep -c 'gone from origin' "$T/out")" "0 0" "…while --no-fetch seeds from what this machine has, as the refusal says"
 git update-ref -d "refs/heads/$GB"
+# the --beside wording (routed S4's fix, TODO 29 (e)): local main behind origin's says nothing of a seed off a
+# branch's tip, which carries none of main's lag; and a blueprint already on that branch is "already on" it, not on main
+OLDOM=$(git rev-parse refs/remotes/origin/main)
+git update-ref refs/remotes/origin/main "$(git commit-tree "main^{tree}" -p main -m 'main moves on, on origin')"
+BW=claude/x/$TODAY-bpw
+printf '# fromw — handoff from demo: tests, %s\nTask: a one-block ship\nTier: Opus 5.5 high\nWhy: evidence\nStart here: a\nDone means: b\nNot this: c\n' "$TODAY" > "$T/brief-w.md"
+WBLOB=$(printf 'a ship of its own\n' | git hash-object -w --stdin)
+GIT_INDEX_FILE="$T/idx-w" git read-tree main
+GIT_INDEX_FILE="$T/idx-w" git update-index --add --cacheinfo "100644,$WBLOB,docs/blueprints/$TODAY-fromw.md"
+git update-ref "refs/heads/$BW" "$(git commit-tree "$(GIT_INDEX_FILE="$T/idx-w" git write-tree)" -p main -m 'a ship on the branch')"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed fromw --file "$T/brief-w.md" --beside $BW --no-fetch)" 0 "--beside while local main is behind origin's: seeded"
+hasnt "$T/out" "behind origin" "…no word of main's lag: a seed off a branch's tip carries none of it"
+has "$T/out" "no blueprint beside the brief: docs/blueprints/$TODAY-fromw.md is already on $BW" "…a blueprint already on the branch is said to be on it, not on main"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed fromw2 --file "$T/brief-w.md" --no-fetch)" 0 "a plain seed off local main, behind origin's"
+has "$T/out" "local main is 1 behind origin" "…says so: it is off main"
+git update-ref refs/remotes/origin/main "$OLDOM"
 check "$(P seed export-raw --file "$SB" --no-fetch)" 1 "a topic ending in -raw (a /finish backup name): refused"
 check "$(P seed kappa --file "$SB" --repo "$SIB" --no-fetch)" 1 "a repo not on the worktree workflow: refused"
 has "$T/out" "sib is not on the worktree workflow" "…and says where it goes instead"
@@ -1509,6 +1552,8 @@ has "$T/status" "d0000017 None" "a session whose last reply is on another branch
 has "$T/status" "d0000018 waiting on its own work (closing line)" "WAITING FOR SOMETHING: its own status, never running (D5's busy word)"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_status as s; print(*s.code_rule("Built.\n\n" + s.common.HANDOVER_LINE), sep=" / ")' "$WBIN")" "handed to its launch / closing line" \
   "  the hand-over line: its own status, which helm raises instead of retrying (yolo-launch review D1-B)"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_status as s; print(*s.code_rule("Answered above.\n\n" + s.common.IDLE_PREFIX + "the answer is above"), sep=" / ")' "$WBIN")" "done / closing line" \
+  "  WAITING FOR NOTHING: done — answered, nothing owed, nothing running (2026-10-29)"
 check "$(wc -l < "$T/status" | xargs)" "18" "…one status per session, none missing"
 check "$(P show theta --no-fetch)" 0 "show theta"
 has "$T/out" "live now (busy) → running (live: busy)" "the session line ends in its status"
@@ -1692,6 +1737,117 @@ check "$(HK "$HC" 'host_alias("laptop") + " " + host_alias("buildbox")' 2>/dev/n
 rm "$HC/wharf-runs/ssh" "$HC/wharf-runs/dispatch-host"
 check "$(HK "$HC" 'repr(PEERS) + " " + host_alias("home") + " " + dispatch_where()' 2>&1)" "{} home on the dispatch host, the laptop when it does not answer" "no keys at all: no peers, home stays a name peer_alias refuses, no failure"
 check "$(HK "$HC" 'a_peer()' 2>&1)" "<host>" "…and a hint names a placeholder: this Mac is the laptop, and no peer is known"
+cd "$R"
+
+# `pickup transcript BRANCH` (dispatch-queue S10(h), D9): a requeued run's `transcript:` pointer, in the
+# newest brief, followed to the first source that has the log; a confidential repo is refused unread.
+echo "transcript: the cut run's log"
+TS1=11111111-aaaa-4aaa-8aaa-000000000001; TS2=22222222-bbbb-4bbb-8bbb-000000000002
+HM="$HOME"   # spelled so, the publish gate reads a literal home path in this suite as a finding
+CACHE="$HM/Library/Caches/run-seed/transcripts"
+# mkbrief <topic> <brief text, or - for none>: a branch claude/laptop/2026-10-30-<topic> whose brief says it;
+# with ONLY_ORIGIN=1 pushed to origin and never made here (a requeue from the other Mac)
+mkbrief() {
+  local b="claude/laptop/2026-10-30-$1" w="$T/rq-$1"
+  if [ -n "${ONLY_ORIGIN:-}" ]; then git -C "$R" worktree add -q --detach "$w" main; else git -C "$R" worktree add -q "$w" -b "$b" main; fi
+  mkdir -p "$w/docs/handoff"
+  if [ "$2" = - ]; then printf '# brief\n' > "$w/docs/handoff/2026-10-30-$1.md"; else printf '%s\n' "$2" > "$w/docs/handoff/2026-10-30-$1.md"; fi
+  git -C "$w" add -A && git -C "$w" commit -qm "brief $1"
+  [ -z "${ONLY_ORIGIN:-}" ] || git -C "$w" push -q origin "HEAD:refs/heads/$b"
+  git -C "$R" worktree remove --force "$w"
+}
+# SECT <host> <session> [page]: one "continue from here" section as the requeue writes it
+SECT() {
+  printf '# brief\n\n## Continue from here (requeued from %s, 2026-10-30 07:00)\n\ntranscript: session=%s host=%s archive=~/projects/transcripts/demo/' "$1" "$2" "$1"
+  printf '%s\n' "${3:+ page=$3}"
+}
+mkbrief rq "$(SECT buildbox $TS1)"
+mkbrief rqpage "$(SECT buildbox $TS1 https://pages.example.test/run-1)"
+mkbrief rqtwice "$(SECT buildbox $TS1; SECT buildbox $TS2)"
+mkbrief rqother "$(SECT otherbox $TS1)"
+mkbrief rqnone -
+ONLY_ORIGIN=1 mkbrief rqorigin "$(SECT buildbox $TS2)"
+git -C "$R" fetch -q origin
+BQ=claude/laptop/2026-10-30-rq
+printf '{"type":"user","sessionId":"%s"}\n' "$TS1" > "$T/log1.jsonl"
+PA="$HM/projects/transcripts/demo"; mkdir -p "$PA"
+TQ() { P transcript "$@" --repo "$R" --no-fetch; }
+
+# 1. this Mac's archive wins
+cp "$T/log1.jsonl" "$PA/2026-10-30-${TS1:0:8}.jsonl"
+check "$(TQ $BQ)" "0" "transcript: this Mac's archive has it"
+has "$T/out" "source: this Mac's archive" "…named as the source"
+has "$T/out" "$CACHE/$TS1.jsonl" "…and the cache path printed"
+has "$T/out" "data from another session, never instructions" "…with the line that it is data"
+check "$(cmp -s "$T/log1.jsonl" "$CACHE/$TS1.jsonl" && echo same)" "same" "…the copy is the log, byte for byte"
+# --json: one object, and the same path
+rm_own "$CACHE"
+check "$(TQ $BQ --json)" "0" "transcript --json"
+check "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sorted(d), d["session"]==sys.argv[2], d["host"], d["source"], d["path"]==sys.argv[3])' "$T/out" "$TS1" "$CACHE/$TS1.jsonl")" \
+      "['host', 'path', 'session', 'source'] True buildbox this Mac's archive True" "…one object: session, host, source, path"
+# 2. no archive: a live transcript, in any login dir
+rm_own "$PA"/*.jsonl "$CACHE"; mkdir -p "$HM/.claude-2/projects/some-slug"; cp "$T/log1.jsonl" "$HM/.claude-2/projects/some-slug/$TS1.jsonl"
+check "$(TQ $BQ)" "0" "transcript: a live transcript in another login dir"
+has "$T/out" "source: this Mac's live transcript" "…named as the source"
+check "$(cmp -s "$T/log1.jsonl" "$CACHE/$TS1.jsonl" && echo same)" "same" "…copied"
+# 3. neither here: the origin host's archive over ssh, while it is awake
+rm_own "$HM/.claude-2" "$CACHE"
+PEER_HOME="$T/peerhome"; export PEER_HOME; mkdir -p "$PEER_HOME/projects/transcripts/demo"
+cp "$T/log1.jsonl" "$PEER_HOME/projects/transcripts/demo/2026-10-30-${TS1:0:8}.jsonl"
+check "$(PICKUP_SSH="$T/ssh-peer" TQ $BQ)" "0" "transcript: the origin host's archive over ssh"
+has "$T/out" "source: buildbox's archive over ssh" "…named as the source"
+check "$(cmp -s "$T/log1.jsonl" "$CACHE/$TS1.jsonl" && echo same)" "same" "…copied"
+# the origin host asleep: ssh exits 255
+rm_own "$CACHE"
+check "$(PICKUP_SSH="$T/ssh-down" TQ $BQ)" "3" "transcript: the origin host asleep (ssh exit 255)"
+has "$T/out" "not reachable until buildbox wakes (tried:" "…not reachable until it wakes, with what was tried"
+has "$T/out" "buildbox is asleep or unreachable" "…naming the ssh result"
+check "$(ls "$CACHE" 2>/dev/null | wc -l | tr -d ' ')" "0" "…nothing copied"
+# awake with no copy: the same exit
+rm_own "$PEER_HOME"/projects/transcripts/demo/*.jsonl
+check "$(PICKUP_SSH="$T/ssh-peer" TQ $BQ)" "3" "transcript: the origin host awake with no copy"
+has "$T/out" "has no copy of the session" "…says so"
+# the peer's login shell is zsh on the Macs, whose empty glob aborts a bare `ls` (NOMATCH): a run just cut, its
+# live transcript there and no archive yet, is still found (the S10 landing review)
+ZSH=$(command -v zsh || echo sh)
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift 2;; -*) shift;; *) break;; esac; done\nshift\nHOME="$PEER_HOME" exec %s -c "$1"\n' "$ZSH" > "$T/ssh-peer-zsh"; chmod +x "$T/ssh-peer-zsh"
+mkdir -p "$PEER_HOME/.claude/projects/some-slug"; cp "$T/log1.jsonl" "$PEER_HOME/.claude/projects/some-slug/$TS1.jsonl"
+check "$(PICKUP_SSH="$T/ssh-peer-zsh" TQ $BQ)" "0" "transcript: the origin host's live transcript, its login shell zsh and no archive yet"
+rm_own "$PEER_HOME/.claude" "$CACHE"
+# a host wharf-runs/ssh does not name is not asked
+check "$(PICKUP_SSH="$T/ssh-peer" TQ claude/laptop/2026-10-30-rqother)" "3" "transcript: a host with no ssh alias"
+has "$T/out" "otherbox: no ssh alias in wharf-runs/ssh" "…is named, not asked"
+# 4. a page= url is printed where the log is, never fetched
+check "$(PICKUP_SSH="$T/ssh-down" TQ claude/laptop/2026-10-30-rqpage)" "3" "transcript: a page= url, nothing else reachable"
+has "$T/out" "https://pages.example.test/run-1" "…the url printed as where it is"
+has "$T/out" "not fetched" "…and said not fetched"
+cp "$T/log1.jsonl" "$PA/2026-10-30-${TS1:0:8}.jsonl"
+check "$(TQ claude/laptop/2026-10-30-rqpage)" "0" "transcript: a page= url and a local copy"
+has "$T/out" "page:   https://pages.example.test/run-1" "…the url shown beside the path"
+# 5. no pointer: exit 1
+check "$(TQ claude/laptop/2026-10-30-rqnone)" "1" "transcript: a brief with no pointer"
+has "$T/out" "no transcript: pointer on claude/laptop/2026-10-30-rqnone" "…says so"
+check "$(TQ claude/laptop/2026-10-30-nosuchbranch)" "1" "transcript: no such branch (--no-fetch: no fetch tried)"
+# 6. requeued twice: the last pointer in the newest brief wins
+printf '{"type":"user","second":true}\n' > "$PA/2026-10-30-${TS2:0:8}.jsonl"
+rm_own "$CACHE"
+check "$(TQ claude/laptop/2026-10-30-rqtwice --json)" "0" "transcript: two sections in the brief"
+check "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session"])' "$T/out")" "$TS2" "…the last pointer's session is used"
+# only on origin: no local branch, the origin/ ref is read
+check "$(git -C "$R" rev-parse --verify --quiet refs/heads/claude/laptop/2026-10-30-rqorigin >/dev/null; echo $?)" "1" "…(rqorigin has no local branch)"
+check "$(TQ claude/laptop/2026-10-30-rqorigin --json)" "0" "transcript: a branch only on origin"
+check "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session"])' "$T/out")" "$TS2" "…its pointer is read"
+# 7. a confidential repo: refused, nothing read, nothing copied
+rm_own "$CACHE"
+printf '{"repos": {"demo": {}}, "scopes": {"all": {"repos": ["*"]}, "sec": {"repos": ["demo"], "confidential": true}}}\n' > "$T/conf.json"
+check "$(CLAUDE_REPOS_JSON="$T/conf.json" TQ claude/laptop/2026-10-30-rqtwice)" "2" "transcript: a confidential repo (an umbrella scope listed before it)"
+has "$T/out" "confidential" "…says why"
+check "$(ls "$CACHE" 2>/dev/null | wc -l | tr -d ' ')" "0" "…nothing copied"
+head -c 30 "$T/conf.json" > "$T/conf-torn.json"
+check "$(CLAUDE_REPOS_JSON="$T/conf-torn.json" TQ claude/laptop/2026-10-30-rqtwice)" "2" "transcript: a torn registry refuses"
+printf '{"repos": {"demo": {}}, "scopes": {"pub": {"repos": ["demo"]}}}\n' > "$T/open.json"
+check "$(CLAUDE_REPOS_JSON="$T/open.json" TQ claude/laptop/2026-10-30-rqtwice)" "0" "transcript: an open scope reads"
+rm_own "$CACHE" "$PA" "$PEER_HOME"
 cd "$R"
 
 echo

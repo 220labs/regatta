@@ -936,17 +936,19 @@ sys.path.insert(0, sys.argv[1])
 import stalls
 W = "THIS SESSION IS WAITING FOR YOU — D2"
 recs = [{"session_id": s, "state": "idle", "cwd": c, "native": {}} for s, c in
-        (("link", "/p/r"), ("bold", "/p/r"), ("quoted", "/p/r"), ("guard", "/p/secret/.claude/worktrees/t"), ("other", "/p/r"))]
+        (("link", "/p/r"), ("bold", "/p/r"), ("quoted", "/p/r"), ("guard", "/p/secret/.claude/worktrees/t"), ("other", "/p/r"),
+         ("marked", "/p/r"), ("unspaced", "/p/r"))]
 texts = {"link": "Done.\nOWNER, " + W + "\n[course](https://x) | [github](https://y) — [d.md](/p/d.md#L1)",
          "bold": "**OWNER, " + W + "**", "quoted": "OWNER, " + W + "\nand then more prose",
-         "guard": "OWNER, " + W, "other": "SOMEONE ELSE, " + W}
+         "guard": "OWNER, " + W, "other": "SOMEONE ELSE, " + W, "marked": "Built.\n**\U0001F6D1 OWNER, " + W + "**",
+         "unspaced": "Built.\n\U0001F6D1OWNER, " + W}
 ad = types.SimpleNamespace(list=lambda: recs, status=lambda *a, **k: None, last_reply=lambda sid: {"text": texts[sid]})
 print([w["session_id"] for w in stalls.facts([], ad, lambda st: False, lambda st: True, ("secret",), "OWNER, THIS SESSION IS WAITING FOR YOU — ")["waiting"]],
       [w["session_id"] for w in stalls.facts([], ad, lambda st: False, lambda st: True, (), "THIS SESSION IS WAITING FOR YOU — ")["waiting"]])
 PY
 )
-  check "$fx" "['link', 'bold'] ['link', 'bold', 'guard', 'other']" \
-    "  the WAITING line as common.ending reads it: link lines after it, markup around it; a guarded repo's reply unread; the owner's address from config (landing review 15, 16)"
+  check "$fx" "['link', 'bold', 'marked', 'unspaced'] ['link', 'bold', 'guard', 'other', 'marked', 'unspaced']" \
+    "  the WAITING line as common.ending reads it: link lines after it, markup and its mark (🛑, spaced or not) around it; a guarded repo's reply unread; the owner's address from config (landing review 15, 16; marks 2026-10-29)"
   pb=$(ASK_BOARD_CMD="echo overview: /x/index.html — 3 need Sam" python3 -c 'import sys; from importlib.machinery import SourceFileLoader; SourceFileLoader("ask_mod", sys.argv[1]).load_module().poll_board()' "$B/ask" 2>&1)
   check "$pb" "ask poll: board — overview: /x/index.html — 3 need Sam" "ask poll renders and deploys the board (its 5-minute job)"
   pb=$(ASK_BOARD_CMD="false" python3 -c 'import sys; from importlib.machinery import SourceFileLoader; SourceFileLoader("ask_mod", sys.argv[1]).load_module().poll_board()' "$B/ask" 2>&1); check "$?" "0" "  a board that fails is one line, never the poll's"
@@ -1171,6 +1173,37 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/t/2026-10-14-queued
   yt=$(CLAUDE_REPOS_JSON="$T/yard-bb.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" STALLS_LOG="$T/yard-tick.jsonl" "$HM" tick --dry-run)
   hasnt "$yt" "S3 buildbox" "  the laptop's tick acts on none of the yard's stalls"
   has "$yt" "S8: the stalls of buildbox are left to their own tick (1)" "  and says so"
+  # dispatch-queue S10(e): a run its host handed back (dispatch --requeue), its step in the queue, is no stall and
+  # reads where it went; one the queue no longer holds is judged as before. An unreachable peer that may sleep (a
+  # `sleeps` line) with no fresh queue word reads asleep; a host with no such word stays unreachable
+  git -C "$D" branch claude/t/2026-10-14-requeued-step
+  rec 9r-requeued.json requeued-step started=$((now-7200)) ended=$((now-3000)) "end_reason=exit 143" "ending=requeued from laptop (lid)"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"$(basename "$D")\", \"branch\": \"claude/t/2026-10-14-requeued-step\", \"state\": \"queued\", \"requeued_from\": \"laptop\"}], \"unreadable\": false, \"why\": []}'" > "$T/dq-rq"; chmod +x "$T/dq-rq"
+  rj=$(STALLS_DISPATCH_QUEUE="$T/dq-rq" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$rj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['class'] for s in d['stalls'] if s['topic']=='requeued-step'], [x['why'] for x in d['queued'] if x['topic']=='requeued-step'], any('requeued-step on testhost' in n and 'requeued from laptop' in n for n in d['notes']))")" \
+    "[] ['requeued from laptop'] True" "S10(e): a requeued run its queue holds is no stall; the board's note reads requeued from <host> (its \`ending\` read, a headless exit over it)"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"$(basename "$D")\", \"branch\": \"claude/t/2026-10-14-requeued-step\", \"state\": \"running\", \"running_on\": \"testhost\"}], \"unreadable\": false, \"why\": []}'" > "$T/dq-rq-here"; chmod +x "$T/dq-rq-here"
+  rj=$(STALLS_DISPATCH_QUEUE="$T/dq-rq-here" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$rj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['topic'] for x in d['queued']].count('requeued-step'))")" "0" \
+    "  …its entry still running on the host that handed it back (the op lost): not called queued"
+  rj=$(STALLS_DISPATCH_QUEUE="$T/dq-empty" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$rj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['topic'] for x in d['queued']].count('requeued-step'), any(x.get('topic')=='requeued-step' for x in d['stalls'] + d['unsure']))")" \
+    "0 True" "  …the queue no longer holding it (its op lost): judged as any run, never hidden as queued"
+  rm -f "$R/9r-requeued.json"
+  printf '#!/bin/sh\necho "ssh: connect to host fake port 22: Operation timed out" >&2\nexit 255\n' > "$T/ssh-down"; chmod +x "$T/ssh-down"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"x\", \"branch\": \"claude/t/2026-10-14-far\", \"state\": \"running\", \"running_on\": \"buildbox\", \"seen_at\": $((now-1800))}], \"unreadable\": false, \"why\": []}'" > "$T/dq-stale"
+  printf '#!/bin/sh\necho %s\n' "'{\"entries\": [{\"repo\": \"x\", \"branch\": \"claude/t/2026-10-14-far\", \"state\": \"running\", \"running_on\": \"buildbox\", \"seen_at\": $((now-60))}], \"unreadable\": false, \"why\": []}'" > "$T/dq-fresh"
+  chmod +x "$T/dq-stale" "$T/dq-fresh"
+  note() { STALLS_DISPATCH_QUEUE="$T/$1" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-down" python3 "$B/stalls.py" --json \
+           | python3 -c "import json,sys; print([n.split(' (')[0] for n in json.load(sys.stdin)['notes'] if n.startswith('buildbox:')])"; }
+  check "$(note dq-stale)" "['buildbox: unreachable']" "  an unreachable peer with no word that it may sleep stays unreachable (a build host down is no sleep)"
+  echo "buildbox:sleeps" > "$REGATTA_CONFIG/wharf-runs/power"
+  check "$(note dq-stale)" "['buildbox: asleep']" "  …one with a sleeps line, its queue entries unseen past two sweeps: asleep"
+  check "$(note dq-empty)" "['buildbox: asleep']" "  …or running none"
+  check "$(note dq-fresh)" "['buildbox: unreachable']" "  …its sweep still writing: awake, its ssh down — unreachable"
+  printf '#!/bin/sh\nexit 5\n' > "$T/dq-crash"; chmod +x "$T/dq-crash"
+  check "$(note dq-crash)" "['buildbox: unreachable']" "  …a queue that gave no answer: could not tell, unreachable"
+  rm -f "$REGATTA_CONFIG/wharf-runs/power"
   has "$yt" "S1 testhost demo gone-step" "  its own as before"
   yt=$(CLAUDE_REPOS_JSON="$T/yard-torn.json" STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" STALLS_LOG="$T/yard-tick.jsonl" "$HM" tick --dry-run)
   has "$yt" "S8: the stalls of buildbox are left to nobody this pass — the registry does not read (1)" "a torn registry: no peer's stall acted on"
@@ -4189,6 +4222,92 @@ check "$(env HOME="$SC/home" STALLS_CANARY="$SC/canary" python3 "$SC/unit2.py" "
 check "$(env HOME="$SC/home" STALLS_CANARY="$SC/canary" python3 "$SC/unit.py" "$B" "$SC")" \
   "ok:0:True:1: bad:2:True:1: ('start path dead', 'raise', 'owner', ['testhost', 'canary', 'orca'], 'canary', False, None) exit2:2:False:1:canary: clock canary check exit 2 — its failures unreadfail:1:False:1: garbled:0:False:1:canary: the \`start path dead\` class not judged ( brake:0:False:0:canary: not read — the studio brake holds (the b off:0:False:0: orca-off:0:False:0: hang:0:False:1:canary: the \`start path dead\` class not judged (" \
   "judge_canary: a pass is read with no stall; a failing beat raised to the owner; a check that exits 2 still raises but reads nothing; an Orca it could not read raises what it did read and closes nothing; unreadable or hung output costs the class, said in a note; the brake, STALLS_CANARY=0 and the Orca read off call nothing"
+
+echo "dispatch-queue S9: a build step's dependency met at landed, not at done; compile's after map; the queue's after cards"
+AF="$T/s9"; mkdir -p "$AF"
+G=(git -c user.name=t -c user.email=t@t)
+git init -q --bare "$AF/origin.git"; git clone -q "$AF/origin.git" "$AF/repo" 2>/dev/null
+(cd "$AF/repo" && echo x > f && "${G[@]}" add f && "${G[@]}" commit -qm init && git push -q origin HEAD:main 2>/dev/null)
+(cd "$AF/repo" && git checkout -q -b claude/laptop/2026-10-29-sa && echo a > a && "${G[@]}" add a && "${G[@]}" commit -qm build && git push -q origin claude/laptop/2026-10-29-sa 2>/dev/null)
+cat > "$AF/dep.py" <<'PY'
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+import helmlib
+repo, branch = sys.argv[2], "claude/laptop/2026-10-29-sa"
+helmlib.load_plan = lambda pid: {"id": pid, "repo": repo, "tasks": {
+    "a": {"branch": branch}, "b": {"deps": ["a"]}, "h": {"kind": "human", "deps": ["a"]},
+    "x": {}, "c": {"deps": ["x"]}, "l": {"branch": "claude/laptop/2026-10-29-sl"}, "m": {"deps": ["l"]}}}
+now = time.time()
+helmlib.events = lambda pid: [{"task": "a", "status": "done", "t": now}, {"task": "x", "status": "done", "t": now},
+                              {"task": "l", "status": "launched", "t": now}]
+t = {x["id"]: x for x in helmlib.state("s9")["tasks"]}
+print(t["b"]["blockers"], t["h"]["blockers"], t["c"]["blockers"], t["m"]["blockers"])
+PY
+check "$(python3 "$AF/dep.py" "$B" "$AF/repo")" "['waits on a to land'] [] [] []" \
+  "a build step waits on a built (done) build step to land; a human task, a dep with no branch and a launched one keep today's meaning"
+(cd "$AF/repo" && { git checkout -q main 2>/dev/null || git checkout -q -b main origin/main; } && "${G[@]}" merge -q --no-ff -m land claude/laptop/2026-10-29-sa && git push -q origin main 2>/dev/null && git fetch -q origin)
+check "$(python3 "$AF/dep.py" "$B" "$AF/repo")" "[] [] [] []" \
+  "  its branch merged on origin/main (read without a fetch, its own commits seen in the reflog): met — wharf-runs' landed.py, dispatch's reader"
+cat > "$AF/pub.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.load_plan = lambda pid: {"id": pid, "tasks": {"a": {"branch": "claude/x/2026-10-29-a"}, "b": {"deps": ["a"], "after_branches": ["claude/x/2026-10-29-a"]}}}
+helmlib.events = lambda pid: []
+st = helmlib.state("s9p")
+print([t["after_branches"] for t in st["tasks"] if t["id"] == "b"], [("after_branches" in t) for t in helmlib.public(st)["tasks"]])
+PY
+check "$(python3 "$AF/pub.py" "$B")" "[['claude/x/2026-10-29-a']] [False, False]" "state carries a task's after_branches; the public copy drops them (another task's branch, a guarded one's among them)"
+cat > "$AF/course.md" <<'EOF'
+# Course
+
+## Action plan
+
+- **S1 — the base** · session `sr-worker` · status: done 2026-10-29 claude/laptop/2026-10-29-cs1
+- **S2 — on top** · session `worker` · after: S1 · status: not started
+- **S3 — dropped** · session `worker` · status: superseded 2026-10-29 by S1, claude/laptop/2026-10-29-cs3
+- **S4 — after the dropped** · session `worker` · after: S3 · status: not started
+EOF
+"$HM" $SHIP s9course --id s9c > /dev/null
+"$HM" compile s9c "$AF/course.md" > /dev/null
+check "$("$HM" state s9c | python3 -c 'import json,sys; d={t["id"]: t for t in json.load(sys.stdin)["tasks"]}; print(d["S1"]["branch"], d["S2"]["after_branches"], d["S2"]["blockers"])')" \
+  "claude/laptop/2026-10-29-cs1 ['claude/laptop/2026-10-29-cs1'] ['waits on S1 to land']" \
+  "compile: a step's branch from its status line, after: S1 mapped to that branch, and S2 waits on S1 to land"
+check "$("$HM" state s9c | python3 -c 'import json,sys; d={t["id"]: t for t in json.load(sys.stdin)["tasks"]}; print(d["S3"]["superseded"], d["S4"]["blockers"])')" \
+  "True []" "  a superseded step never lands: its dependant waits on no landing (code review, pass 2)"
+sed -i.bak 's|status: done 2026-10-29 claude/laptop/2026-10-29-cs1$|status: done 2026-10-30 claude/laptop/2026-10-30-cs1b, after claude/laptop/2026-10-29-cs1|' "$AF/course.md" && rm -f "$AF/course.md.bak"
+"$HM" compile s9c "$AF/course.md" > /dev/null
+check "$("$HM" state s9c | python3 -c 'import json,sys; d={t["id"]: t for t in json.load(sys.stdin)["tasks"]}; print(d["S1"]["branch"], d["S2"]["after_branches"])')" \
+  "claude/laptop/2026-10-30-cs1b ['claude/laptop/2026-10-30-cs1b']" \
+  "  re-compiled after a re-seed: the branch after the status word and its date, read again (code review, pass 3)"
+mkdir -p "$AF/home/Library/Logs/claude-weekly"
+python3 - "$AF/home/Library/Logs/claude-weekly/queue.jsonl" <<'PY'
+import json, sys, time
+now = time.time()
+rows = [{"at": now - 600, "event": "card", "card": "after-gone", "key": "fleet:repo--step", "branch": "claude/laptop/2026-10-29-step",
+         "after": "claude/laptop/2026-10-29-pre", "repo": "demo", "why": "step waits on pre, which is deleted from origin"},
+        {"at": now - 9 * 86400, "event": "card", "card": "after-overdue", "key": "fleet:repo--old", "branch": "claude/laptop/2026-10-29-old",
+         "after": "claude/laptop/2026-10-29-pre", "repo": "demo", "why": "old"},
+        {"at": now - 60, "event": "card", "card": "queue-stuck", "key": "fleet:repo--x", "branch": "claude/laptop/2026-10-29-x"}]
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+cat > "$AF/cards.py" <<'PY'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import stalls
+held = stalls.judge_after_cards("testhost", time.time(), lambda repo, br: True)
+gone = stalls.judge_after_cards("testhost", time.time(), lambda repo, br: False)
+s = held[0]
+print(len(held), s["class"], s["action"], s["key"], s["evidence"][:2], len(gone))
+PY
+check "$(HOME="$AF/home" python3 "$AF/cards.py" "$B")" \
+  "1 S6 raise ['testhost', 'fleet:repo--step', 'claude/laptop/2026-10-29-pre'] ['step claude/laptop/2026-10-29-step', 'after claude/laptop/2026-10-29-pre'] 0" \
+  "stalls: the queue's after card is one raised S6 naming both branches, while the queue holds the step; a week-old card and other cards none"
+
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib; t = {"tax return": "guarded-1", "tax": "guarded-2"}
+print([helmlib._tokened(b, t) for b in ("waits on tax return", "waits on tax return to land", "waits on tax", "waits on taxes")])' "$B")" \
+  "['waits on guarded-1', 'waits on guarded-1 to land', 'waits on guarded-2', 'waits on taxes']" \
+  "public: a guarded id is swapped whole, a space in it included, in both blocker forms (the S9 review: a first-word match leaked it)"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

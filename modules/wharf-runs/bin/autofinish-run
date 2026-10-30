@@ -337,10 +337,13 @@ run may still begin, so every caller keeps reading it as the start it read befor
 blocks the typed /finish, dispatch leaves the slot to the landing); the waiter goes on and settles it, nothing is
 started twice. The log is polled, dispatch never run again; it is per day and topic, not per repo, so only a header
 naming this run's session counts, and a FAILED line only once this session's state has ended (a sibling repo's
-run of the same topic writes the same log). `dispatch --start` never queues (it refuses with no room), so there is
-no queued verdict. The peer road reads the same from the peer's job (its ticket and state, by peer-sync, the ssh
-road the send used): `started on <peer>: …`, `not started: refused on <peer>: …`. `not started` goes to stderr,
-which a sweep and a ticket quote.
+run of the same topic writes the same log). Since dispatch-queue S9 a landing with no room is queued by `dispatch
+--start` (its `queued as <qid> (a landing), …` line, on a Mac with a queue home) rather than refused: the verdict
+`queued`, said on stdout as `queued: …`, exit 0 — the run starts at the first free slot there, ahead of every
+build, and the waiter goes on waiting on that same dispatch, refreshing the lock while the queue holds it; the
+prompt and its merge rights stay in that process, never in the queue. The peer road reads the same from the peer's
+job (its ticket and state, by peer-sync, the ssh road the send used): `started on <peer>: …`, `queued on <peer>: …`,
+`not started: refused on <peer>: …`. `not started` goes to stderr, which a sweep and a ticket quote.
 Exit: 0 started (or --dry; or sent to the peer, its answer lost), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
 a claude/* worktree, 3 refused (same tip, a run going, another start under way, a lock in use, no
 account may run it now), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4), or
@@ -479,6 +482,8 @@ VERDICT_POLL = float(os.environ.get("AUTOFINISH_VERDICT_POLL") or 0.25)
 HEADER_RE = r"^== claude \d+, session %s\b"   # dispatch's header for a run that began, this run's sid in it
 FAILED_RE = re.compile(r"^FAILED:\s*(.*)")
 EXIT_RE = re.compile(r"^== exit ")
+QUEUED_RE = r"^queued as \S+ \(a landing\), session %s\b"   # dispatch --start's land_queue (dispatch-queue S9), this run's sid
+QUEUED_REFRESH_S = 600   # the waiter's lock refresh while dispatch's queue holds the landing (S9)
 SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")   # common.host_name()'s shape: what --from carries
 # the peer's copy of this script, found as dispatch's guard finds its: the regatta checkout its `home` names
@@ -888,6 +893,7 @@ def log_verdict(path, offset, sid):
     `== exit` with no header before it (detail: the text) — a hint only, the log is shared by topic (the header),
     so await_verdict believes it once SID's state has ended. Whole lines only, the first decisive one wins."""
     header = re.compile(HEADER_RE % re.escape(sid))
+    queued = re.compile(QUEUED_RE % re.escape(sid))
     try:
         with open(path, "rb") as f:
             f.seek(offset)
@@ -904,6 +910,11 @@ def log_verdict(path, offset, sid):
             return "refused", m.group(1).strip() or line
         if EXIT_RE.match(line):
             return "refused", line
+        if queued.match(line):
+            # the landing waits in dispatch's queue for this Mac's first free slot (S9): a verdict of its own,
+            # never `started` (no run began) nor a refusal (it may start any minute); a later FAILED or header is
+            # the waiter's to settle, as an unconfirmed start's is
+            return "queued", line
     return None
 
 
@@ -932,6 +943,8 @@ def await_verdict(t, sid, log_from, bound):
             if time.time() >= end:
                 return "unconfirmed", None
             time.sleep(VERDICT_POLL)
+    if verdict[0] == "queued":
+        return verdict
     if verdict[0] == "refused":
         settled = min(time.time() + 10, max(end, time.time() + VERDICT_FLOOR))
         while True:
@@ -1723,7 +1736,18 @@ def wait_for_end(t, st, cmd):
     try:
         print("%s autofinish-run: bundle %s" % (now_iso(), write_bundle(t, st, getattr(t, "shipped", None))), flush=True)
         p = subprocess.Popen(cmd, env=start_env(t))
-        rc = p.wait()
+        while True:
+            try:
+                rc = p.wait(timeout=QUEUED_REFRESH_S)
+                break
+            except subprocess.TimeoutExpired:
+                # queued (S9): no session of the run exists yet to keep the worktree's lock fresh, and a lock idle
+                # OWNER_TTL is taken over by the next /finish typed there — the waiter refreshes it meanwhile
+                try:
+                    if (log_verdict(t.runlog, log_from, sid) or ("",))[0] == "queued":
+                        refresh_lock(t.state_dir, sid, t.branch)
+                except OSError:
+                    traceback.print_exc()
     except BaseException as e:  # SystemExit from SIGTERM included: the finally below is the point
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a second TERM must not cut the cleanup short
         why = "the waiter ended: " + ("signal %s" % e.code if isinstance(e, SystemExit) else type(e).__name__)
@@ -2474,6 +2498,9 @@ def peer_verdict(sid, ans):
     if not isinstance(rc, int):
         return None
     if rc == 0:
+        if raw and raw.startswith("queued"):
+            # the peer's dispatch queued the landing (S9): its slot frees there; its own `queued: ` prefix dropped
+            return "queued", re.sub(r"^queued[^:]*: ", "", said or "", count=1)
         return ("unconfirmed", said) if raw and raw.startswith("not confirmed") else ("started", None)
     if rs.get("session") == sid and not rs.get("ended") and rc not in (REFUSED_RC, 3, 4):
         return "unconfirmed", said
@@ -3410,6 +3437,16 @@ def report_verdict(t, kind, detail, bound, where, started_line, peer=None):
     if kind in ("refused", "no-account"):
         print(not_started_text(("refused on %s: " % peer if peer else "") + str(detail)) + "; " + where, file=sys.stderr)
         return REFUSED_RC
+    if kind == "queued":
+        # dispatch's own words after the prefix (night landings' finding 1: the verdict read, never predicted);
+        # on stdout with the window, as a start is: cold_prompt names the window from it, and every caller reads
+        # exit 0 as "the landing is in hand" — no second /finish beside it, no slot given to a claim
+        text = re.sub(r", session [^,\s]+", "", re.sub(r"^queued as ", "", str(detail or "")), count=1)
+        line = "queued%s: %s — window and Remote Control \"%s\" once it starts; %s" % (on, text, t.window, where)
+        print(line)
+        if isinstance(sys.stderr, Tee):   # a peer's job: its ticket's `said`, read by the sending Mac's peer_verdict
+            sys.stderr.kept.write(line + "\n")
+        return 0
     log_at = ("its dispatch log on %s (dispatch --status there)" % peer) if peer else t.runlog
     line = ("not confirmed after %d s%s: dispatch has not said whether the run began, and it may still — window and "
             "Remote Control \"%s\"; read %s" % (bound, on, t.window, log_at))

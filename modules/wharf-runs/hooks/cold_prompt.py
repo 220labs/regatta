@@ -234,7 +234,8 @@ def decide(data):
 def sent_to(out):
     """The peer autofinish-run sent the run to, from its first line (its header, Where), or None: that
     Mac holds the window, so the line must not name it as if it were here (second landing review, 13)."""
-    m = re.search(r"^(?:started on|sent to|not confirmed after \d+ s on) ([A-Za-z0-9-]+)[:,]", out or "", re.M)
+    # `queued on <peer>:` too (dispatch-queue S9): a landing queued at the peer's cap waits for a slot there
+    m = re.search(r"^(?:started on|sent to|queued on|not confirmed after \d+ s on) ([A-Za-z0-9-]+)[:,]", out or "", re.M)
     return m.group(1) if m else None
 
 

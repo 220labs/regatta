@@ -103,7 +103,7 @@ an override is never exported.
 | `lighthouse/user.json` | the declared settings (a link to a file in git) | `claude-settings` | `CLAUDE_SETTINGS_DECLARED` | no declaration: every verb a no-op |
 | `lighthouse/env-keys.json` | the install's own declarable `env` names: `{name: [values]}` | `claude-settings` | — | only CLAUDE_CODE_SUBAGENT_MODEL |
 | `lighthouse/hosts` | the Macs' host names, one per line, for a declaration's `hosts` sections | `claude-settings` | `CLAUDE_SETTINGS_HOST` (this host) | any lowercase name |
-| `lighthouse/vaults` | the shared drives whose `_secrets`/`_contacts` are closed, by name, for a path behind a variable | `secrets_guard` | `SECRETS_GUARD_DIR` (the folder) | the mounted shared drives that hold one |
+| `lighthouse/vaults` | the shared drives whose `_secrets`/`_contacts` are closed, by name, for a path behind a variable | `secrets_guard` | `SECRETS_GUARD_DIR` (the folder; `SECRETS_GUARD_SCRATCH_ROOT`, the fence's scratch root, in tests) | the mounted shared drives that hold one |
 | `lighthouse/guarded-dirs` | absolute local folders closed to agents like `_secrets`, one per line (`~` the home folder; a relative line is dropped), on every platform, Drive or none: the desk's token dir first | `secrets_guard`; `ops usage` warns when the token dir is not listed | — | none guarded |
 | `lighthouse/secrets/ops.env` | the owner's token for the billing read (`GITHUB_TOKEN`, `CIRCLECI_TOKEN`): on the ops host only, its dir 0700 and the file 0600, neither a link, written by the owner over ssh | `ops`, in the desk's own job only (`LIGHTHOUSE_DESK=1`, no session) | — | every account `absent`: the pick holds every hosted lane of a private repo over budget |
 | `lighthouse/ci-lanes.json` | the runner lanes: `{"lanes": [{name, provider, runs_on, runs, account}]}` | wharf's `ci-provider --pick` | — | `--pick` refuses, naming the file |
@@ -144,10 +144,13 @@ stop accidents, not intent: each header says what it does not see.
 **The fence** (`secrets_guard`, since 2026-10-21): a scope the registry flags `"confidential": true`
 (wharf's `scopes set <scope> --confidential`) is closed to every session whose cwd — and start
 directory — is outside it: its checkouts and worktrees, its transcripts folder and each login's
-session folder for them (`projects/<slug>/`: the session logs and the memory dir), by Read, Edit,
+session folder for them (`projects/<slug>/`: the session logs and the memory dir), and Claude Code's scratch
+folder of each (`<tmp>/claude-<uid>/<slug>/`, a removed worktree's included), by Read, Edit,
 Write, NotebookEdit, Grep, Glob and Bash. A session inside the scope reads all
 of it, open scopes stay open, and each refusal adds one line (time, scope, tool, cwd, session; never
-the path) to `<log-dir>/fence.log`. The paths are the core's `scope_paths()`, mirrored in the stdlib;
+the path) to `<log-dir>/fence.log`. The paths are the core's `scope_paths()`, mirrored in the stdlib, plus removed worktrees' session
+and scratch folders; a scratch folder walls the scope but never makes a session inside it. A walker over
+the temp folder (`find /tmp`) is refused while such a scratch folder exists, as one over the projects folder is;
 `tests/hooks.sh` proves the two agree.
 
 ## beacon — support: a site's contact form and its bot

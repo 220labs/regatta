@@ -466,5 +466,247 @@ for r in 'dispatch --claim' 'dispatch --poll' 'dispatch-queue poll' 'dispatch-qu
   check "$(grep '^denied=(' "$B/dispatch" | grep -cF "\"Bash(*$r*)\"")" "1" "  a run's deny list names $r"
 done
 
+
+echo "S5: eligibility — a host claims by its feature line, the pin and the scope's berths (docs/dispatch-queue-contract-2026-10-25.md)"
+qreset
+FEAT="$REGATTA_CONFIG/wharf-runs/features"
+printf 'laptop:feat-a\nbuildbox:feat-b,Feat-C\n' > "$FEAT"
+RK="$(cd "$T/repo" && pwd -P)"
+Q5=(python3 "$QB" enqueue --repo "$T/repo" "${QC[@]}")
+claim_as() { DISPATCH_HOST=$1 python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1; }
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5a --needs feat-b > "$T/out" 2>&1; check "$?" "0" "an entry with a need only the other host meets is queued"
+check "$(qget repo--n5a state needs)" "queued ['feat-b']" "  carrying its needs"
+claim_as laptop
+check "$(qget repo--n5a state claimed_by)" "queued None" "  the host without the feature skips it…"
+DISPATCH_HOST=laptop python3 "$QB" list --all "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "not here: laptop lacks feat-b" "  …and says why in the listing"
+has "$T/out" "needs feat-b" "  …with the need named"
+claim_as buildbox
+check "$(qget repo--n5a state claimed_by)" "claimed buildbox" "  the host whose line names it claims it"
+qreset
+echo "  a need is met by every name on the line, and names are case-folded"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5b --needs feat-b,feat-c > /dev/null 2>&1; claim_as buildbox
+check "$(qget repo--n5b state claimed_by)" "claimed buildbox" "  two needs, both on the line (the line's Feat-C folds)"
+qreset
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5c --needs feat-b,feat-a > "$T/out" 2>&1
+check "$?" "3" "needs no single host meets together (feat-a is laptop's, feat-b buildbox's): exit 3"
+qreset
+echo "  at enqueue: a need no host meets is exit 3, and never queued"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5d --needs feat-z > "$T/out" 2> "$T/err"; check "$?" "3" "a need nobody meets: exit 3"
+has "$T/err" "no host meets this run" "  …naming it"
+has "$T/err" "laptop lacks feat-z" "  …and each host's reason"
+check "$(qget repo--n5d state)" "" "  nothing reached the queue"
+check "$(wc -c < "$T/out" | tr -d ' ')" "0" "  and stdout is empty, so dispatch reads no entry"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5d --needs 'Feat Z' > /dev/null 2>&1; check "$?" "2" "a malformed name is a usage error, exit 2"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5e --needs feat-b --pin laptop > "$T/out" 2> "$T/err"; check "$?" "3" "a need met only off the pin: exit 3 too"
+has "$T/err" "buildbox: pinned to laptop" "  the pin is a reason like any"
+printf 'buildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5f --needs feat-a > /dev/null 2>&1; check "$?" "3" "a host with no line meets no need (laptop's line is gone)"
+rm -f "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5g --needs feat-a > /dev/null 2>&1; check "$?" "3" "no features file at all: no host meets a need"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5h > /dev/null 2>&1; check "$?" "0" "an entry with no needs asks for no line"
+qreset
+echo "  the pin"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5i --pin buildbox > /dev/null 2>&1
+claim_as laptop
+check "$(qget repo--n5i state claimed_by)" "queued None" "a pinned entry is not claimed off its pin"
+claim_as buildbox
+check "$(qget repo--n5i state claimed_by)" "claimed buildbox" "  and is claimed on it"
+qreset
+echo "  the scope's berths and the repo's clone hosts (berth's filters)"
+printf '{"repos": {"%s": {"hosts": ["buildbox"]}}}\n' "$RK" > "$T/repos.json"
+export CLAUDE_REPOS_JSON="$T/repos.json"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5j > /dev/null 2>&1; check "$?" "0" "a repo cloned on one host only: queued"
+claim_as laptop
+check "$(qget repo--n5j state claimed_by)" "queued None" "  the other host, left out by the clone hosts, skips it"
+claim_as buildbox
+check "$(qget repo--n5j state claimed_by)" "claimed buildbox" "  the named host claims it"
+qreset
+printf '{"repos": {"%s": {"hosts": ["elsewhere"]}}}\n' "$RK" > "$T/repos.json"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5k > "$T/out" 2> "$T/err"; check "$?" "3" "berths and clone hosts that share none with the fleet: exit 3, never queued"
+printf '{"repos": {"%s": {"hosts": ["laptop", "buildbox"]}}, "scopes": {"s": {"repos": ["%s"], "berths": ["buildbox"]}}}\n' "$RK" "$RK" > "$T/repos.json"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5l > /dev/null 2>&1; claim_as laptop
+check "$(qget repo--n5l state claimed_by)" "queued None" "a scope whose berths leave a host out: that host skips the entry"
+claim_as buildbox
+check "$(qget repo--n5l state claimed_by)" "claimed buildbox" "  the berth claims it"
+qreset
+printf '{"repos": {' > "$T/repos.json"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5m > /dev/null 2>&1; check "$?" "2" "a torn registry refuses the enqueue (the fence's rule)"
+unset CLAUDE_REPOS_JSON; qreset
+echo "  the sweep cards an entry no host may claim, naming each host's reason — each host's own word, never a peer's file"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5n --needs feat-b > /dev/null 2>&1
+printf 'laptop:feat-a\n' > "$FEAT"
+LATE=$(( $(date +%s) + 1500 ))
+DISPATCH_QUEUE_NOW=$LATE python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+check "$(grep -c 'queue-unclaimed' "$T/out")" "0" "one host's sweep alone: no card (its config says the peer lacks it, but the peer's own word is the proof)"
+check "$(qget repo--n5n inelig_laptop)" "$LATE" "  …it writes its own word on the entry"
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$LATE python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "card queue-unclaimed: fleet:repo--n5n — no host may claim it (" "the other host's sweep, past two sweeps: a card…"
+has "$T/out" "laptop lacks feat-b" "  …with the reasons"
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$LATE python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+check "$(grep -c 'queue-unclaimed' "$T/out")" "0" "  once per entry"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$LATE python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--n5n state claimed_by)" "claimed buildbox" "a host whose line is back claims it (the entry was never stuck)"
+qreset
+echo "  a named host that never sweeps blocks no card: past six sweeps it counts by this host's config (S5's landing review)"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5v --needs feat-b > /dev/null 2>&1
+printf 'laptop:feat-a\n' > "$FEAT"
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 3900 )) python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "card queue-unclaimed: fleet:repo--n5v — no host may claim it (" "one host's sweep, the peer silent an hour: a card…"
+has "$T/out" "buildbox: no word from its sweep in 65 min (by laptop's config:" "  …naming the silence and whose config judged it"
+qreset
+echo "  a torn registry writes no word on the entries for that sweep"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5w --needs feat-a > /dev/null 2>&1
+printf '{"repos": {' > "$T/repos-torn.json"
+CLAUDE_REPOS_JSON="$T/repos-torn.json" DISPATCH_QUEUE_NOW=$(( $(date +%s) + 3900 )) python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+check "$(qget repo--n5w inelig_laptop):$(grep -c 'queue-unclaimed' "$T/out")" "None:0" "  …and fires no card"
+qreset
+echo "  two cards of one entry fire once each (the review: one mark per entry overwrote the other)"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5o --needs feat-b > /dev/null 2>&1
+cat > "$T/cards.py" <<'PY2'
+import contextlib, importlib.machinery, io, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+q.card("queue-unclaimed", "fleet:k", {"id": "1"}, "a", mark="1", say=False)
+q.card("queue-stuck", "fleet:k", {"claimed_at": 1, "attempts": 4}, "b", say=False)
+b = io.StringIO()
+with contextlib.redirect_stdout(b):
+    q.card("queue-unclaimed", "fleet:k", {"id": "1"}, "a", mark="1")
+    q.card("queue-stuck", "fleet:k", {"claimed_at": 1, "attempts": 4}, "b")
+print("refired" if b.getvalue() else "once each")
+PY2
+check "$(QB="$QB" python3 "$T/cards.py")" "once each" "an unclaimed card and a stuck card of one entry, written again: neither fires twice"
+qreset
+echo "  a node-local queue is claimed by this host alone: the peers' lines cannot help it (the review's WRONG 1)"
+printf '{"repos": {}, "scopes": {"vault": {"confidential": true, "repos": ["%s"]}}}' "$RK" > "$T/repos.json"
+export CLAUDE_REPOS_JSON="$T/repos.json"
+printf 'buildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5p --needs feat-b > "$T/out" 2> "$T/err"; check "$?" "3" "a need only a peer meets, for a run that never leaves this host: exit 3"
+has "$T/err" "laptop has no feature line, so lacks feat-b" "  naming this host alone"
+unset CLAUDE_REPOS_JSON; qreset
+echo "  a host with a feature line and no ssh alias here is a host (a VM): its need is met"
+printf 'laptop:feat-a\nvm1:feat-v\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5q --needs feat-v > /dev/null 2>&1; check "$?" "0" "enqueue judges every host the config names, not only this Mac's ssh peers"
+qreset
+echo "  a feature line split one word per line (the overlay's bootstrap) keeps its host (S5's landing review)"
+printf 'laptop:feat-a,\nfeat-b\nbuildbox:feat-c\n' > "$FEAT"
+cat > "$T/featsplit.py" <<'PY2'
+import importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+print(sorted((h, sorted(v)) for h, v in q.features().items()))
+PY2
+check "$(QB="$QB" python3 "$T/featsplit.py")" "[('buildbox', ['feat-c']), ('laptop', ['feat-a', 'feat-b'])]" "  …a line with no colon continues the host before it, never a host of its own"
+echo "  an entry is data: a needs that is no list of names is skipped, and breaks neither the claim nor the listing"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5r > /dev/null 2>&1
+cat > "$T/badneeds.py" <<'PY2'
+import importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+print(q.Fleet(q.home()).do([{"op": "set", "key": "repo--n5r", "fields": {"needs": True}, "cond": {"state": "queued"}}], "t")[0])
+PY2
+QB="$QB" python3 "$T/badneeds.py" > /dev/null
+claim_as laptop; DISPATCH_HOST=laptop python3 "$QB" list --all "${QC[@]}" > "$T/out" 2>&1; check "$?" "0" "a needs of true: the claim and the listing survive"
+has "$T/out" "needs is not a list of feature names" "  …the listing says why it is not claimed"
+qreset
+echo "  a mixed-version fleet: the entry carries --needs as a flag too, which a host that predates S5 does not know"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5s --needs feat-b > /dev/null 2>&1
+check "$("${QGIT[@]}" show refs/regatta/queue:queue/repo--n5s.json | python3 -c 'import json, sys; print(json.load(sys.stdin)["args"])')" "['--needs', 'feat-b']" "the entry's args hold it"
+printf 'laptop:feat-a,feat-b\nbuildbox:feat-b\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5t --needs feat-b,feat-a --arg=--needs --arg=feat-b,feat-a > "$T/out" 2>&1
+check "$?" "0" "a carried --needs in another order than the entry's sorted needs is the same set: queued (S5's landing review)"
+"${Q5[@]}" --branch claude/laptop/2026-10-29-n5u --needs feat-a --arg=--needs --arg=feat-b > "$T/out" 2>&1
+check "$?:$(grep -c "needs differ" "$T/out")" "1:1" "  a carried --needs naming other features is still refused"
+echo "  claimable stays one function: the claim, the listing and the poll ask it, and it asks eligibility"
+check "$(sed -n '/^def claimable(/,/^def bad_args(/p' "$B/dispatch-queue" | grep -c 'eligibility(e, h)')" "1" "claimable calls eligibility once"
+echo "S5: dispatch — --needs, the berth pick retired, no home"
+check "$(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'needs:+--needs')" "1" "queue_dispatch passes --needs to the enqueue"
+check "$(grep -c 'needs:+--needs' "$B/dispatch")" "3" "  as do the fire-time enqueues (a one-shot's, a refusal's)"
+check "$(grep -c '<string>--needs</string>' "$B/dispatch")" "1" "  and a one-shot's plist carries it to its fire time"
+BRN=claude/laptop/2026-10-29-dn
+"$B/dispatch" $BRN --repo "$T/repo" --needs 'Feat Z' --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "dispatch refuses a malformed need"
+has "$T/err" "--needs takes lower-case feature names" "  saying how"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
+"$B/dispatch" $BRN --repo "$T/repo" --needs feat-a --dry-run > /dev/null 2> "$T/err"
+has "$T/err" "--needs ignored — no queue home here" "no queue home: the need is said and dropped"
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+WEEKLY_RUN=t "$B/dispatch" claude/laptop/2026-10-27-wk --repo "$T/repo" --at reset --if-room --needs feat-a > /dev/null 2> "$T/err"
+check "$?:$(grep -c 'under WEEKLY_RUN=t only' "$T/err")" "2:1" "WEEKLY_RUN refuses the one shape with --needs"
+rm -f "$FEAT"
+
+# ---- S10(c): the watcher's sleep notice — powerlib's stand-in (DISPATCH_POWER_FAKE) for the OS ----------------
+# Two watchers of one Mac: each loads dispatch-rc and runs watch() with its loop stood in; the loop says it is
+# ready, then "its run ends" once its watcher has acknowledged the sleep. The requeue is a stand-in that notes its
+# words and environment and takes 2 s, past the 0.5 s hold, so a watcher that returned at its run's end would
+# return before it.
+qreset
+mkdir -p "$T/pw"; rm -f "$T/pw"/*
+cat > "$T/rqstub" <<EOF
+#!/bin/sh
+echo "\$* locked=\${DISPATCH_REQUEUE_LOCKED:-} unattended=\${CLAUDE_UNATTENDED:-none}" >> "$T/pw/calls"
+sleep 2
+echo done >> "$T/pw/done"
+EOF
+chmod +x "$T/rqstub"
+cat > "$T/pw.py" <<'PYPW'
+import importlib.machinery as m, importlib.util as u, os, sys, time
+l = m.SourceFileLoader("rc", sys.argv[1]); rc = u.module_from_spec(u.spec_from_loader("rc", l)); l.exec_module(rc)
+d = sys.argv[2]
+rc.load = lambda p: {"session": "s-pw"}
+rc.save = lambda p, st: None
+rc.hold_awake = lambda want: None
+def loop(path, st, start, busy, started):
+    open(os.path.join(d, "ready.%d" % os.getpid()), "w").close()
+    while not os.path.exists(os.path.join(d, "ack.%d" % os.getpid())):
+        time.sleep(0.1)
+    return 0   # its run ended: the requeue ended it
+rc.watch_loop = loop
+rc.watch("x")
+print("returned done=%s" % os.path.exists(os.path.join(d, "done")))
+PYPW
+pw() { DISPATCH_POWER_FAKE="$T/pw" DISPATCH_REQUEUE_BIN="$T/rqstub" DISPATCH_REQUEUE_ACK_S=0.5 CLAUDE_UNATTENDED=dispatch \
+       python3 "$T/pw.py" "$B/dispatch-rc" "$T/pw" > "$T/pw/out.$1" 2>&1; }
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+pw a & pa=$!; pw b & pb=$!
+for _ in $(seq 1 100); do [ "$(ls "$T/pw"/ready.* 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break; sleep 0.1; done
+touch "$T/pw/willsleep.1"
+wait $pa $pb
+check "$(wc -l < "$T/pw/calls" | tr -d ' ')" "1" "S10(c) a sleep notice: one watcher of the Mac runs the requeue…"
+check "$(cat "$T/pw/calls")" "--requeue --all --why lid locked=1 unattended=none" "  …--requeue --all --why lid, the lock its own, no unattended mark carried"
+check "$(ls "$T/pw"/ack.* | wc -l | tr -d ' ')" "2" "  …both watchers acknowledge the sleep (the other at once)"
+check "$(grep -l 'going to sleep: --requeue' "$T/pw"/out.a "$T/pw"/out.b | xargs grep -h '^returned')" "returned done=True" \
+  "  …and the one that runs it does not return before it ends, though its own run ended at the acknowledgement"
+grep -q 'still going after 0 s: acknowledging the sleep' "$T/pw"/out.a "$T/pw"/out.b && r=ok || r="$(cat "$T/pw"/out.a "$T/pw"/out.b)"
+check "$r" ok "  …a requeue past the hold: the sleep is acknowledged, the requeue goes on"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"; rm -f "$T/pw"/*; pw c & pc=$!
+for _ in $(seq 1 50); do ls "$T/pw"/ready.* > /dev/null 2>&1 && break; sleep 0.1; done
+touch "$T/pw/willsleep.2"; sleep 1
+for r in "$T/pw"/ready.*; do touch "$T/pw/ack.${r##*.}"; done   # the watcher's own pid (its ready file's): no notice acknowledged it
+wait $pc
+check "$([ -f "$T/pw/calls" ] && echo ran || echo none)" "none" "  with no queue home, no sleep notice is taken: nothing to hand a run to"
+
+# ---- S10(g): a writes-only queue home, and no claim in a DarkWake ----------------------------------------------
+qreset
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+printf 'studio:claim\nlaptop:writes\n' > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+DISPATCH_HOST=laptop python3 "$QB" home > /dev/null; check "$?" "1" "S10(g) queue-mode writes: \`home\` says none, so dispatch enqueues nothing of this host's own"
+DISPATCH_HOST=studio python3 "$QB" home > /dev/null; check "$?" "0" "  …another host's line keeps its home"
+DISPATCH_HOST=laptop python3 "$QB" claim "${QC[@]}" > "$T/out" 2>&1
+check "$(grep -c '"claim-skipped".*writes' "$QL")" "1" "  …it claims nothing"
+DISPATCH_HOST=laptop python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "(queue-mode writes): 0 op(s) from the outbox written" "  …its sweep replays its outbox and judges no entry"
+DISPATCH_HOST=laptop python3 "$QB" jobs "${QC[@]}" > /dev/null 2>&1
+check "$([ -f "$LA/org.example.claude.queue-sweep.plist" ] && echo yes)" "yes" "  …and it still gets the sweep job, which replays a requeue owed since the sleep"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-mode"
+printf '#!/bin/sh\necho "Current System Capabilities are: CPU Network "\necho "Current Power State: 4"\n' > "$T/pmset-dark"
+printf '#!/bin/sh\necho "Current System Capabilities are: CPU Graphics Audio Network "\n' > "$T/pmset-awake"
+chmod +x "$T/pmset-dark" "$T/pmset-awake"
+: > "$QL"; DISPATCH_PMSET="$T/pmset-dark" python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c '"claim-skipped".*DarkWake' "$QL")" "1" "  no host claims in a DarkWake (pmset's capabilities lack Graphics)"
+: > "$QL"; DISPATCH_PMSET="$T/pmset-awake" python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c '"claim-skipped"' "$QL")" "0" "  …and claims as before once fully awake"
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

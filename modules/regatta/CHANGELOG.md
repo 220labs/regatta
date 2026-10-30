@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- `cost ratio` lists every provider's entry with the date it was measured (subscription-bags D3-B,
+  2026-10-29); `--json` gains `others`. An entry `cost --provider` would not apply reads "no usable ratio",
+  a hand-written field that is no number `$?`. With Anthropic's entry alone the output is the one line as before.
+  `cost <amount> --provider P` names a hand-measured entry's date on stderr.
+
+- A mark before every closing line (the owner, 2026-10-29): `MARKS` (✅ done and idle, ⏳ pending, handed and
+  relayed, 🛑 waiting), `marked(kind, line)` for a producer, `mark_of()` and `ending_mark()` for the lint.
+  `bare()` drops a leading pictograph run, so `ending()` and every comparison read a marked line as before.
+  A mark with no space after it still strips, and the lint names the space; `mark_for(line)` gives 🛑 to a
+  done line that leaves the owner a step (a move not proved running, a prepared move, a teleport).
+
+- A fourth waiting line, `IDLE_PREFIX` (`THIS SESSION IS WAITING FOR NOTHING — <what was settled>`), an
+  `idle` kind in `CLOSING` (the owner, 2026-10-29): a plain answer, nothing owed and nothing running. No ask
+  (`unrelayed_ask`, `asks_answers` skip it); dispatch-rc reads it as an end, autofinish as no veto.
+
+- The gate's module rows hold a `keel.comment` row (routed comments S4): Sonnet 5.5, `when_off: skip`, keel's
+  lookout's one call on an owner's free-text page comments; a Mac whose table lacks the site runs it as a
+  module default.
+
 - The gate's module rows (gate-module-rows, 2026-10-29): a site the config table lacks runs the row in
   `settings/models.json` beside the gate, filled from that table's own defaults, so a module ships its call
   sites' rows and the owner's table names only what it changes. A site in both runs the config row whole; a
@@ -12,15 +31,6 @@
   `check`, never a config site. `GATE_TABLE` resolves as one file, no fallback. `settings/` joins
   `autofinish_exclude`: every gate call on the Macs now reads it. Lighthouse's four `lighthouse.*` rows met "no row" on the Macs, whose config table links to the overlay's.
 
-- Bridges (confidential-reach S8, 2026-10-28): `bridges_file()`, `read_bridges()`, `open_bridges()`,
-  `bridge_directions()` and `bridge_active(cwd, path)` read the config dir's
-  `lighthouse/bridges.json`, failing closed: a missing or torn file, a torn registry, an entry past `until`,
-  ended, longer than 24 h (`BRIDGE_MAX`), naming a scope missing or open, or in a chain (a scope with two
-  partners) grants nothing. A bridge runs both ways unless `one_way`, and never past the two scopes.
-  `bridge_active` tests the cwd exactly (`scope_within`) and grants nothing for a path a confidential scope
-  outside the bridge matches; `scope_paths` and `scope_match` take one registry parse (`reg`; the landing review).
-  `read_bridges` reads a link, anything but a regular file, a second hard link or a name not exactly
-  `bridges.json` in its folder as torn (the second finish stop).
 - `scope_marker(name)` and `scope_of_marker(marker)` (confidential-reach S5's landing review, 2026-10-26):
   what text bound for an open repo says in place of a confidential scope's name, `confidential:<first 8
   hex of sha256(name)>`, and its reading back by this host's registry (None for an open scope, an unknown

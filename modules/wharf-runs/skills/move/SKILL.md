@@ -81,13 +81,13 @@ upper-cased, one word each (the Stop check matches `\S+` there):
 
 | outcome | line |
 | --- | --- |
-| `--to`, proved running | `<OWNER>, THIS SESSION MOVED TO <PEER> — CLOSE THIS TAB. THE WORK CONTINUES THERE.` |
-| `--to`, not proved | `<OWNER>, THIS SESSION MOVED TO <PEER> — CLOSE THIS TAB. THE WORK CONTINUES THERE ONCE YOU START IT: <the printed line>` |
-| `--prepare` on a peer | `<OWNER>, THIS SESSION IS READY TO MOVE TO <LAPTOP> — CLOSE THIS TAB. TYPE /MOVE --FROM-<THIS HOST> '<TOPIC>' ON THE LAPTOP.` |
-| `--prepare` on the laptop (the peer did not answer) | `<OWNER>, THIS SESSION WAITS TO MOVE TO <PEER> — TYPE /MOVE --TO-HOME HERE ONCE IT ANSWERS, OR /MOVE --CANCEL.` |
-| `--from`, `--from-cloud` into VS Code | `<OWNER>, THIS WAS ONLY THE MOVE — CLOSE THIS SESSION. THE WORK CONTINUES IN THE NEW TAB.` |
-| `--from-cloud` into Terminal | `<OWNER>, THIS WAS ONLY THE MOVE — CLOSE THIS SESSION. THE WORK CONTINUES IN TERMINAL.` |
-| `--to-cloud` | `<OWNER>, THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — ANSWER /TELEPORT THERE, THEN CLOSE THIS TAB.` |
+| `--to`, proved running | `✅ <OWNER>, THIS SESSION MOVED TO <PEER> — CLOSE THIS TAB. THE WORK CONTINUES THERE.` |
+| `--to`, not proved | `🛑 <OWNER>, THIS SESSION MOVED TO <PEER> — CLOSE THIS TAB. THE WORK CONTINUES THERE ONCE YOU START IT: <the printed line>` |
+| `--prepare` on a peer | `🛑 <OWNER>, THIS SESSION IS READY TO MOVE TO <LAPTOP> — CLOSE THIS TAB. TYPE /MOVE --FROM-<THIS HOST> '<TOPIC>' ON THE LAPTOP.` |
+| `--prepare` on the laptop (the peer did not answer) | `🛑 <OWNER>, THIS SESSION WAITS TO MOVE TO <PEER> — TYPE /MOVE --TO-HOME HERE ONCE IT ANSWERS, OR /MOVE --CANCEL.` |
+| `--from`, `--from-cloud` into VS Code | `✅ <OWNER>, THIS WAS ONLY THE MOVE — CLOSE THIS SESSION. THE WORK CONTINUES IN THE NEW TAB.` |
+| `--from-cloud` into Terminal | `✅ <OWNER>, THIS WAS ONLY THE MOVE — CLOSE THIS SESSION. THE WORK CONTINUES IN TERMINAL.` |
+| `--to-cloud` | `🛑 <OWNER>, THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — ANSWER /TELEPORT THERE, THEN CLOSE THIS TAB.` |
 
 `--cancel` and `--check` hand nothing over: no closing line.
 

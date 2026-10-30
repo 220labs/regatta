@@ -136,7 +136,7 @@ SURFACES_FILE="$T/primary-wt/settings/surfaces.json" "$B/ask" backends --set rel
 echo "relay: no manager (R6)"
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: none" "no DISPATCH_MANAGER: none"
-has "$out" "SAM, THIS SESSION IS WAITING FOR YOU — D1 in docs/demo-2026-10-10.md" "…and the WAITING line to end on"
+has "$out" "🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1 in docs/demo-2026-10-10.md" "…and the WAITING line to end on, marked 🛑"
 check "$(python3 -c "import json; d=json.load(open('.git/claude/ask.json')); print(d['verdict'], d['asks'][0]['item'], d['asks'][0]['reversible'], d['session'])")" "none D1 yes run-1" "ask.json records the verdict and this session, which the Stop hook reads"
 
 echo "relay: an uncommitted doc is refused (R3)"
@@ -160,7 +160,7 @@ printf '{"session": "sm-1", "name": "manager · testhost", "pid": %d, "space": "
 live sm-1 manager
 out=$("$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: live" "no DISPATCH_MANAGER, a live standing manager: relayed to it"
-has "$out" "RELAYED TO manager · testhost — D1" "  the RELAYED line names the Mac's manager"
+has "$out" "⏳ RELAYED TO manager · testhost — D1" "  the RELAYED line names the Mac's manager, marked ⏳"
 out=$(env "$E_SKIP"=dead-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "RELAYED TO manager · testhost — D1" "  a run whose own manager ended: the standing one takes it too (M1)"
 printf '{"pid": %d, "sessionId": "sm-1", "name": "manager", "status": "idle", "messagingSocketPath": "/tmp/x.sock", "cwd": "/a", "updatedAt": 2}' "$DEAD" > "$T/sess/sm-1.json"

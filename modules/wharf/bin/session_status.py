@@ -167,6 +167,8 @@ def closing(text):
         return PENDING
     if kind == "done":
         return NOTE if line == FINISH_LINES[1] else DONE
+    if kind == "idle":   # WAITING FOR NOTHING: answered, nothing owed and nothing running — closing it loses nothing
+        return DONE
     return None
 
 

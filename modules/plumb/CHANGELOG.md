@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `trim`: the S1+S2 landing review's leftovers (trim-s1s2-leftovers, 2026-10-29). G1 is the cost per step (a
+  landing's `steps` from its brief's `Steps:` line, one without), and G4 reads the Size table's own 300–999 row; `wrong_at_review` is the
+  gate's first review of a branch, not the re-review; the PR search runs per 28-day window of merge dates and
+  halves one over GitHub's 1,000; a ledger row is stamped `known_at` when it first has an arm and a pass or
+  fail, and a look takes each arm's outcomes in that order, so a row that gains its arm or rework later never
+  shifts a frozen slice; the diff detects renames (`-M`), so a pure move is no rework; a dispatch header keeps
+  its zone, and a headless run joins by its `== started:` line, its topic cut as dispatch cuts it; a finisher row matches by its repo's path;
+  helm's plans (the vertical's new `plans` source) name same-plan siblings; a floor check that never read
+  (`floor_known`, the check by default) leaves a landing unknown, never a pass; `verdict --write --json` prints
+  the JSON; `--night` writes under usage-report's data folder and host name, the folder `pull` carries; the
+  intake reads the sextant entries of the 14 days to the look. `bin/trim`, `trimlib.py` and the core's
+  `transcript.py` join `autofinish_leaks`: the fence decides whether a confidential scope's rows reach git.
+- usage-report: a row's branch is part of its key, so a session that lands one branch and goes on to the next the
+  same day files each, each row under its own calls' project. `branches` re-splits past days from the transcripts
+  that still hold them under a lock shared with `collect`, and retries a failed or empty run the next day. The push
+  keeps a known target's older days, matches a short fence word as a token only, and escapes an rsync name only
+  when it holds a wildcard; the global report fences what the push strips. (trim-usage-key)
 - `trim collect` joins four more kinds of landing (trim-join-3, 2026-10-29): a run `NOT_BUILD` reads as landing
   nothing (a `bench-` topic) builds its own branch when it was dispatched for it and nothing else built it; a run
   whose CSV rows never name its record's branch landed the branches they name, with the record's arm (never a

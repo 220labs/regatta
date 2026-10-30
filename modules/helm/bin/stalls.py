@@ -104,6 +104,12 @@ PENDING_RE = re.compile(r"\bqueued (\S+) \((?:low|normal|high|force)\); the next
 DEEP_RE = re.compile(r"the next step waits for [\w' ]{1,40}? to start it", re.I)   # a person's name, or the owner
 # a record's end that is a person's decision or dispatch's own retry: never a stall (F11)
 NOT_STALLS = re.compile(r"^(?:ended by dispatch --end|never started)")
+# S10 (dispatch --requeue): a run its host handed back, ended with this reason; its step waits in the queue
+REQUEUED_END = re.compile(r"^requeued from (\S+)")
+# S10(e): a host that may sleep says so — a `<host>:sleeps` line here, or the core's laptop — and, unreachable with
+# no fresh queue word of its own (seen_at, which its sweep writes), reads `asleep`; any other host stays unreachable
+POWER_KEY = "wharf-runs/power"
+SLEEP_AFTER = 2 * 600   # two of dispatch-queue's sweeps, as its queue-silent card waits
 GONE_ENDS = re.compile(r"^(?:tidied: its claude was gone|claude exited by itself)")
 
 ACTIONS = {"S1": "retry", "S2": "start", "S4": "relaunch"}
@@ -196,6 +202,8 @@ def facts(records, ad, same, watcher_gone, guarded, waiting=None):
         while lines and link.match(lines[-1]):
             lines.pop()
         last = lines[-1].strip("*`_ ") if lines else ""
+        # the core's mark (🛑, its MARKS; spaced or not, as the core's _MARK_RE) and markup inside it; written out, as this runs on a peer without the core
+        last = _re.sub("^[\u2190-\u2bff\U0001F000-\U0001FAFF\ufe0f\u200d]+[ \t]*", "", last).strip("*`_ ")
         last = _re.sub(r"^[^,]{1,40}, (?=THIS SESSION)", "", last) if "," not in words.split(" THIS SESSION")[0] else last
         return last.startswith(words)
 
@@ -346,6 +354,31 @@ def self_judging():
     return yards - {helmlib.host()}, torn
 
 
+def asleep(host, queued, now):
+    """S10(e): why an unreachable HOST reads asleep, or None. Only a host that may sleep, by a positive word: a
+    `<host>:sleeps` line in POWER_KEY, or the core's laptop; a build host that goes down stays unreachable (the
+    landing review: keyed on a missing line, every down host read asleep). And only while the queue holds no
+    fresh word from it — the seen_at its sweep writes on the entries it runs, younger than SLEEP_AFTER, says it is
+    awake with its ssh down. The queue is read only for such a host."""
+    try:
+        c = helmlib._common()
+        lines = c.config_lines(POWER_KEY) or []
+        laptop = str(getattr(c, "LAPTOP", "") or "").lower()
+    except Exception:   # noqa: BLE001 — no core: nothing can be told, so no new word
+        return None
+    word = next((l.partition(":")[2].strip().lower() for l in lines if l.partition(":")[0].strip().lower() == host.lower()), None)
+    if word != "sleeps" and not (word is None and host.lower() == laptop):
+        return None
+    ents = queued.entries()
+    if ents is None:
+        return None   # the queue gave no answer this pass: could not tell, so unreachable as before
+    seen = [int(e.get("seen_at") or 0) for e in ents if (e.get("running_on") or "").lower() == host.lower()]
+    last = max(seen) if seen else 0
+    if last and now - last < SLEEP_AFTER:
+        return None
+    return "asleep (it may sleep; %s)" % ("its queue entries unseen %d min" % ((now - last) // 60) if last else "no queue word of its own")
+
+
 def read_peer(host, alias, rc):
     """(facts, note): a peer's records and facts over one ssh, or (None, "<host>: unreachable …")."""
     ssh = os.environ.get("STALLS_SSH") or "ssh"
@@ -457,7 +490,15 @@ class QueueRead:
     def __init__(self):
         self.reader, self.made, self.bad, self.last_bad = None, False, None, None
 
-    def __call__(self, repo, branch):
+    def entries(self):
+        """The queue's entries as this pass read them, or None when it gave none (S10(e)'s asleep test)."""
+        if not self.made:
+            self(None, None)
+        if not self.reader:
+            return None
+        return self.reader.read()[0]
+
+    def __call__(self, repo, branch, here=None):
         """True when the queue holds BRANCH of REPO (a name). `last_bad`: this answer held only because the
         queue (or the store the branch routes to) does not read, the card's why; `bad`: any answer of the pass
         did, the pass's note."""
@@ -470,7 +511,9 @@ class QueueRead:
         if self.reader is False:
             self.bad = self.last_bad = "dispatch's queue reader failed"
             return True
-        why = self.reader.why(repo, branch) if self.reader else None
+        if repo is None:
+            return False
+        why = self.reader.why(repo, branch, here=here) if self.reader else None
         self.last_bad = why if why and why.endswith("counts as there") else None
         self.bad = self.bad or self.last_bad
         return bool(why)
@@ -537,6 +580,8 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
         if not isinstance(st, dict) or launching(st.get("topic")) or st.get("probe"):
             continue
         reason = str(st.get("end_reason") or "")
+        # `ending` too: a headless run writes its own exit code over the requeue's reason (dispatch's requeued_end)
+        rq = REQUEUED_END.match(str(st.get("ending") or "")) or REQUEUED_END.match(reason)
         if NOT_STALLS.match(reason) or f.get("branch") is not True:
             continue
         started = _num(st.get("started")) or 0
@@ -546,6 +591,14 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
                  and (_num(o.get("started")) or 0) > started]
         if later:
             continue   # run again, or a launch started on it: the newer record is judged instead
+        # held means queued for another host: an entry still running on this one is the requeue's op lost (here=)
+        if rq and queued is not None and queued(repo, st.get("branch"), here=host):
+            # handed back by its host (S10) and held by the queue: the board reads where it went. One the queue no
+            # longer holds (its op lost, or dropped) falls through to the rules below, the requeue in its evidence
+            if queued_out is not None:
+                queued_out.append({"host": host, "repo": repo, "branch": st.get("branch"), "topic": st.get("topic"),
+                                   "run": name, "why": "unreadable queue" if queued.last_bad else "requeued from %s" % rq.group(1)})
+            continue
         s = f.get("status") or {}
         text = s.get("last_message") or ""
         kind = reply_kind(text)
@@ -750,6 +803,50 @@ def judge_launches(host, live_branches, now):
 
 
 # ---------------------------------------------------------------------------- plans (S7)
+
+# dispatch-queue S9: the queue's cards for a step that waits on an --after predecessor which will not land by
+# itself (after-gone: archived, or deleted from origin, unlanded) or past the queue's bound (after-overdue)
+AFTER_CARDS = ("after-gone", "after-overdue")
+AFTER_CARD_DAYS = 7
+
+
+def queue_log():
+    return Path(os.environ.get("HOME") or Path.home()) / "Library/Logs/claude-weekly/queue.jsonl"
+
+
+def judge_after_cards(host, now, queued=None):
+    """S6, raised: one stall per queued step and predecessor its claim carded on this host (dispatch-queue's
+    after_holds writes the card to queue.jsonl), naming both branches; the newest card of each in the last
+    AFTER_CARD_DAYS, and only while the queue still holds the step (QUEUED, the pass's one read: a queue that
+    does not read holds it, so the card stays). The entry itself stays queued: a person — or the skipper —
+    lands or re-seeds the predecessor, or cancels the step and dispatches it again without --after."""
+    try:
+        lines = queue_log().read_text().splitlines()[-5000:]
+    except OSError:
+        return []
+    last = {}
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and e.get("event") == "card" and e.get("card") in AFTER_CARDS and e.get("after") and e.get("key"):
+            last[(e["key"], e["after"])] = e
+    out = []
+    for (k, pred), e in sorted(last.items()):
+        at = _num(e.get("at")) or 0
+        br = e.get("branch") or ""
+        if now - at > AFTER_CARD_DAYS * 86400 or not br:
+            continue
+        if queued is not None and not queued(e.get("repo") or "", br):
+            continue   # claimed since, cancelled or gone: the card's step is no longer waiting
+        rule = ("waits on %s, which will not land by itself" % pred if e["card"] == "after-gone"
+                else "has waited past the queue's bound on %s" % pred)
+        st = {"repo": e.get("repo"), "topic": br.rsplit("/", 1)[-1], "branch": br}
+        out.append(_stall("S6", host, st, None, rule, ["step %s" % br, "after %s" % pred, str(e.get("why") or "")[:TEXT_LINE]],
+                          now, at, key=[host, k, pred], key_kind="after", predecessor=pred))
+    return out
+
 
 def judge_plans(host, live_ids, all_records, now):
     """S7: a planned task whose dependencies are all done, nothing reported on it or them for
@@ -1283,6 +1380,11 @@ def judge(peer=True, live_call=True, orca_held=None):
     live_ids = {x["session_id"] for v in views.values() for x in v.get("live") or []}
     asked = poll_asks()
     queued, queued_runs = QueueRead(), []
+    for i, n in enumerate(notes):
+        m = re.match(r"^(\S+): unreachable", n)
+        w = asleep(m.group(1), queued, now) if m else None
+        if w:
+            notes[i] = "%s: %s — %s" % (m.group(1), w, n[len(m.group(1)) + 2:])
     # a launch running now (a finish-* record not ended, alive on its host): autofinish's, not a stall
     live_branches = {(repo_name(st.get("repo")), st.get("branch")) for h, n, st in all_records
                      if launching(st.get("topic")) and not st.get("ended") and (views[h]["records"].get(n) or {}).get("alive")}
@@ -1329,6 +1431,7 @@ def judge(peer=True, live_call=True, orca_held=None):
         unread["orca"] = bool(n)
         dead = orca_dead(n)   # what the dead-man's count counts and names (S13a): a warning Orca answered with is not it
     stalls += judge_plans(me, live_ids, all_records, now)
+    stalls += judge_after_cards(me, now, queued)   # S9: a queued step whose --after predecessor will not land
     k = len(notes)
     stalls += judge_skippers(me, now, notes)
     unread["skippers"] = len(notes) > k

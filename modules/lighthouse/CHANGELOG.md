@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- secrets_guard's fence covers a confidential scope's scratch folders (guard-scratch, 2026-10-29): Claude Code's
+  `<tmp>/claude-<uid>/<slug>/` for each of the scope's trees and each removed worktree's
+  (`<slug>--claude-worktrees-<topic>`), as the core's `scope_match` fences them for usage-report since
+  trim-cross-host. A sibling slug (`<slug>-site`) and an open repo's own scratch stay open; a torn registry
+  still fails open. A scratch cwd never makes a session the scope's own (inside is judged on the scope's paths),
+  and a walker over the temp folder is refused while a confidential scratch folder exists. The root is Claude Code's: `CLAUDE_CODE_TMPDIR`, else `/tmp`; `SECRETS_GUARD_SCRATCH_ROOT` points the suite at a stand-in.
+- The desk's jobs find `claude` (2026-10-29): `install.sh --schedule` ends both plists' PATH with the home
+  folder's `.local/bin`, the native installer's home for `claude`, as helm's and hookwatch's do; and `ops classify`'s gate
+  probe holds the queue, no try spent, when a row's provider command (`$CLAUDE_BIN`, else `claude`) is not on the
+  job's PATH, naming the command and the PATH (the home as `~`), or when a row has no classify adapter in the gate (a
+  `codex` row); the Linux face's printed units carry the same PATH. The desk's first pass had spent a try on each issue.
 - The desk's sense, logged (lighthouse-ops S5, 2026-10-28): `ops classify` takes each new open issue the intake
   holds through four rows of the core's gate (`lighthouse.importance`, `.urgency`, `.cost`, `.clarity`; Sonnet in
   the shipped table), derives the ladder's rung from the labels and the issue's kind and author, judges every cap
@@ -26,18 +37,6 @@
   unchanged it is classified; every fetch counts against `CLASSIFY_MAX`; a named path loses a sentence's
   closing punctuation; an autofinish that exits at import is "unread", not the pass's end.
 
-- Bridges (confidential-reach S8): the fence lifts a confidential scope's fence for a session whose start is
-  in a scope bridged into it and whose every start is in the two (`bridge_lifts`, read per call; a `cd` across
-  reads both, hooks.sh drives `fence()` beside the core's `bridge_active()`), and refuses every agent write of
-  the bridges file, its lock or temp file (a Read and `scopes bridge` pass; the landing review). `account` waives a covering tenant's route for the other side's logins on
-  the bridged scope's repos alone, takes them beside a scope `login` in pick, limits and a ship's pin, and
-  narrows both to a start in either side with `--from` (allowed, pick, limits); account_guard passes the
-  session's start; doctor lists each open bridge and the half it can waive. The second finish stop: the wall
-  takes any case of the name on the real dirname and a copier's, mover's, linker's or extractor's destination
-  that is the lighthouse folder; its reader reads a link, a second hard link or another case of the name as torn;
-  `scopes bridge open` is refused in every agent's Bash (D1-A; the owner's `!` never reaches PreToolUse);
-  `account` lends nothing with no `--from`, waives a route only when every route on the path is the bridged
-  tenant's, and reads the registry once.
 - account.sh deletes under HOME through `rm_own` (the core's lint, 2026-10-27).
 - The desk's intake (lighthouse-ops S4, 2026-10-27): `ops ingest` reads every fleet repo in the registry (its
   `github`) for issues and comments since that repo's cursor, with the machine account's `gh`, and each Project

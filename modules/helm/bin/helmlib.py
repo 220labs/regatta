@@ -247,6 +247,56 @@ def display(name):
     return name
 
 
+def _tokened(b, tokens):
+    """A blocker with a guarded id swapped for its token: `waits on <id>` and S9's `waits on <id> to land`, the id
+    matched whole (ids are free strings: one with a space left the Mac verbatim under a first-word match)."""
+    for i in sorted(tokens, key=len, reverse=True):
+        for tail in ("", " to land"):
+            if b == "waits on %s%s" % (i, tail):
+                return "waits on %s%s" % (tokens[i], tail)
+    return b
+
+
+def dep_landed(dep, plan):
+    """(verdict, why) for build step DEP's branch through wharf-runs' landed.py (S9), read without a fetch: the
+    repo's own origin refs, as sync and the checkpoint push keep them, the proof file any judge on this Mac
+    wrote, and GitHub's merged PR at most once per landed.GH_RECHECK per branch — a stale read errs on holding.
+    No landed.py, no clone here: ("unknown", why), which holds."""
+    br = dep.get("branch") or ""
+    repo = repo_dir(dep.get("repo") or plan.get("repo"))
+    key = (str(repo), br)
+    if key in _LANDED_SAID:
+        return _LANDED_SAID[key]
+    lib = peer("landed.py")
+    if not lib or not repo:
+        res = ("unknown", "no landed.py or no clone of %s here" % (dep.get("repo") or plan.get("repo")))
+    else:
+        try:
+            spec = importlib.util.spec_from_file_location("landed", str(lib))
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            v, why, _ = m.judge(str(repo), br, (), "", fetch=False, github="cached")
+            res = (v, why)
+        except Exception as x:   # any: could not tell, which holds
+            res = ("unknown", "%s: %s" % (type(x).__name__, x))
+    _LANDED_SAID[key] = res
+    return res
+
+
+def repo_dir(name):
+    """A task's or plan's repo as a checkout here: an absolute path as it is, a name under the projects folder;
+    None when neither is a git checkout."""
+    if not name:
+        return None
+    p = Path(str(name)).expanduser()
+    if not p.is_absolute():
+        try:
+            p = Path(_common().PROJECTS) / p
+        except ImportError:
+            p = Path.home() / "projects" / p
+    return p if (p / ".git").exists() else None
+
+
 def doer(t):
     """A task's or event's doer: `by` (rename S5, D3-A), else the older `owner`."""
     return (t or {}).get("by") or (t or {}).get("owner")
@@ -258,6 +308,12 @@ SKIPPER = "skipper"   # what the page and `helm show` print for the persisted "m
 STATUSES = ("planned", "running", "relayed", "parked", "waiting", "blocked", "done", "failed", "landed", "launched")
 DONE = ("done", "landed", "launched")
 ENDED = DONE + ("failed",)
+# dispatch-queue S9 (the owner's "add after-landed", 2026-10-28): a build step's dependency on another build
+# step (both sessions, the dependency on a claude/* branch) is met once that branch has landed — `landed` or
+# `launched`, or proved on origin/<main> by wharf-runs' landed.py, the reader dispatch's `--after` uses — not
+# at `done`, which keel writes when the step is built. A human task's dependency keeps `done` (DONE).
+LANDED = ("landed", "launched")
+_LANDED_SAID = {}   # (repo, branch) -> (verdict, why): one judgement per process (state() runs per render)
 # Repos whose rows never leave the Mac with text in them (K6): hooks/sheep_gate.py's PRIVATE_REPOS,
 # the one list (two repos were missing from the gate while this file had them, 2026-10-16).
 # Loaded by path, not imported: the gate is keel's (hooks/sheep_gate.py), found through the core's
@@ -851,7 +907,9 @@ def state(pid, at=None):
                        "cost": None, "progress": None, "started": None, "updated": None, "parked": [],
                        "parked_at": None, "asks": [], "session": t.get("session"), "host": None, "harness": None,
                        "check": t.get("check"), "waiting_for": None, "milestone": t.get("milestone"),
-                       "blueprint": _block_fields(t), **dict.fromkeys(SENT_FIELDS)}
+                       "blueprint": _block_fields(t), "after_branches": list(t.get("after_branches") or []),
+                       "superseded": bool(t.get("superseded")),   # S9: a step the doc superseded never lands
+                       **dict.fromkeys(SENT_FIELDS)}
     asks = {}
     for e in evs:
         name = e.get("task")
@@ -927,6 +985,9 @@ def state(pid, at=None):
             dep = tasks.get(d)
             if not dep or dep["status"] not in DONE:
                 b.append("waits on %s" % d)
+            elif t.get("kind") != "human" and dep.get("kind") != "human" and dep.get("branch") and not dep.get("superseded") \
+                    and dep["status"] not in LANDED and dep_landed(dep, plan)[0] != "landed":
+                b.append("waits on %s to land" % d)
         if t.get("waiting_for"):
             b.append(t["waiting_for"])
         b += ["open ask %s" % a["ref"] for a in t["asks"] if a["open"]]
@@ -1004,10 +1065,10 @@ def public(st):
               for t in out["tasks"] if t.get("guarded")}
     for t in out["tasks"]:
         t["deps"] = [tokens.get(d, d) for d in t.get("deps") or []]
-        t["blockers"] = ["waits on %s" % tokens[b[9:]] if b.startswith("waits on ") and b[9:] in tokens else b
-                         for b in t.get("blockers") or []]
+        t["blockers"] = [_tokened(b, tokens) for b in t.get("blockers") or []]
     for t in out["tasks"]:
         t.pop("tail", None)
+        t.pop("after_branches", None)   # S9's map names other tasks' branches, a guarded one's among them: never leaves
         # a send's sender (a session id), its host and the lease holder (`skipper · <scope>`, often a
         # confidential repo's name) stay on this Mac, as an ask's `to` does; `send` and its times leave
         for k in ("sent_by", "sent_from", "picked_up_by"):

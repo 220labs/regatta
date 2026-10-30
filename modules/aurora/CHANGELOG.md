@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The night's trim step (S5's landing review): it runs last, after the dream, and on a Sunday night waits
+  until 00:30 for every host's day file of the week's last day (each Mac collects a day only after it
+  ends and pushes it at about 00:10), noting a host still short; its calls share the night's `WEEKLY_CAP`, so
+  a stalled GitHub page fails the step instead of holding the night; a torn registry fails it, said as torn,
+  apart from the fence's quiet REFUSED; `aurora/trim-repos` is read through the core's `config_read` (a BOM,
+  and a key written empty tunes nothing); trim is due only where plumb's `trim` is installed; a verdict of a
+  repo or vertical the night no longer tunes is renamed `verdict.retired.json`, out of the night host's daily
+  report (a Mac that pulls it keeps its copy until plumb's pull mirrors `trim/`).
+  SKILL.md says trim has no section file (a by-hand `/aurora` never runs it) and no longer that the dream
+  reads its report.
 - `scope-pass check --json`: `file` is the base name and an `error` names the scope's repos by its marker, so
   the object names nothing (the landing re-review, 2026-10-27). The bench rows survive a judge that does not answer.
 

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Routed comments S5, after landing: a routed doc whose `Routed:` line `main` holds is read under `main`'s key on
+  every host, its page from the line where no pin is (the branch's pin first, until a deploy on main adopts it).
+  No run holds a landed doc: an owner's T1 ask, and an answer committed on `main` to a doc routed within 14 days,
+  take rule 3 off `main` — a claim, a pass, `pickup seed` with no `--beside` (refused while local `main` lacks the
+  doc as origin has it), `dispatch`, the `routed into` mark; the brief says it is off main, named for the doc. A
+  commit on `main` carrying a session's trailer came with a landing and answers nothing; a landed doc's first pass
+  is the baseline of its commits; a Save on a landed doc is carded, never a seed `--beside main` (no pass raises
+  one there yet: TODO item 29 (h)). An ask on `main` takes the landed road only on a doc routed within 14 days. A
+  question, or new words in a conversation, on a landed doc hails this Mac's standing manager (a
+  narrowest scope's skipper first, an umbrella's last, none on a torn registry; helm's asklib's `standing_skipper`),
+  `--when idle`; with none here, the card as before.
+  TODO item 29: a `stop` stops only the run that replied `starting:` (a queued run or one begun after it is
+  another, left running, carded — a resumed run is still the one); an offer still open on the page goes into a T1 seed's `--routing`; in a repo
+  that is not `physical: none` the `would start` mark names the skipper and invites no `go`; a dry pass spends no
+  `keel.comment` call; `keel routed bench` makes one call for every writer.
+
+- The third wait, narrowed (the finish review, 2026-10-30): a WAITING FOR YOU line that opens with a nothing
+  phrase but asks after it ("nothing pending; merge the PR", "…waits for your merge", "…beyond the pick")
+  stays an ask and is still relayed in a managed run; WAITING FOR NOTHING also blocks on an imperative, a
+  manual step, a slash command, a Do this now block or a ⚠ stop. A managed run's nothing-owed WAITING line
+  goes to WAITING FOR NOTHING and is not relayed.
+- `mark_findings`: the Stop lint blocks a closing line with no mark or the wrong one, naming its kind's; every
+  line the lint suggests carries its mark.
+
+- The Stop lint's third wait (2026-10-29): a WAITING FOR YOU line that says nothing is owed, left or needed
+  (`NOTHING_OWED`, unless a qualifier keeps an ask) is blocked and pointed at WAITING FOR NOTHING; a WAITING
+  FOR NOTHING line that asks is blocked toward WAITING FOR YOU; the nothing-to-do block names both quiet lines.
+  "the answer is above" reads as a noun on these two paths only (`_NOUN_USE`).
+- Routed comments S4, the tiers and the start path: an owner's new words in a thread are judged — the rules
+  first, then one `keel.comment` call a page for the free text (a confidential scope's repo never reaches it) —
+  and the lookout acts on the tier. T1 (a plain act, an unshared page, `physical: none`) is a `request` event:
+  a live run here is hailed `--when idle` under a claim naming it; with none in sight, a claim, a pass, a seed
+  off the tip whose brief quotes the thread, `dispatch`, and only then a `routed into` mark; a refusal posts
+  `not started` once and is tried again each pass. T2 (held or unclear) posts one `would start` mark and one
+  card; `go` under it takes the T1 road, `no` posts `closed by`. The owner's `stop` under a run's `starting:`
+  reply ends it by `harness stop` on its host (`dispatch --cancel` while queued). A `go` stays owed at the gate
+  until its start's mark. `keel routed bench` runs the evidence's ten comments (`bench/comments.jsonl`; 9 of 10
+  on Sonnet 5.5, one call, $0.019 ($0.00035 effective)). The lookout's start runs `dispatch` in the doc's repo.
+  Its landing review: a request's hail names the doc alone (hail refused a thread id in `--about`), the text
+  fallback is never tiered (it carries no address, so every comment read as the owner's), `harness stop`'s
+  exit 2 settles in a card, a `no` under an offer is `no` whatever it names, and a brief's `Steps:` line reads
+  the owner's words, never the quoted anchor.
+
 - The lookout runs `pickup seed --beside` in the doc's repo, never the pass's cwd: a pass started inside a
   confidential scope no longer meets pickup's `confined_refusal` (confidential-reach S5). Routed S3's fix round 3.
 - Routed comments S3's last review: a claim takes over only from a holder whose lease had died when it was

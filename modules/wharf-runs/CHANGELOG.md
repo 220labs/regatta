@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- `pickup seed --beside`'s wording has its case (routed comments S5, TODO 29 (e)): no "behind origin" for a seed off a
+  branch's tip, and a blueprint already on that branch is said to be on it.
+- dispatch-queue S10, the requeue (docs/dispatch-queue-requeue-2026-10-25.md): `dispatch --requeue TOPIC|--all
+  [--why] [--dry-run]` hands this Mac's busy runs back to the queue with their work saved — each op in the outbox
+  first, every run ended at once (`requeued …` its reason, which the fire path, `finish()` and the sweep pass by),
+  its turn's files committed through checkpoint's path, a `## Continue from here` section on its brief (its commits,
+  its WIP files, its last reply quoted, a `transcript:` pointer) committed as `Requeue: <topic> from <host>`,
+  pushed, and the entry queued again once origin holds that tip, else owed in the outbox, whose replay pushes the
+  branch first. Refused unattended, and offline by hand (exit 3, nothing ended); warm, waiting, pinned-here,
+  confidential and `--start` runs named and left (a warm one by hand gets its normal idle end). The watcher
+  registers for the sleep notice (`bin/powerlib.py`): at `kIOMessageSystemWillSleep` the first watcher to take the
+  host's lock runs `--requeue --all --why lid`, holding the sleep up to 20 s. The sweep reads a silent host's
+  branch tip: its own `Requeue:` commit, newer than the claim, queues the entry again (D8-B). `wharf-runs/queue-mode`
+  `writes` gives a sleeping host a home for its own writes; no host claims in a DarkWake. `pickup transcript
+  BRANCH` fetches the cut run's log from the local archive, then the origin host's over ssh. Cases:
+  `tests/test_dispatch.sh`, `tests/test_queue.sh`, `tests/test_pickup.sh`.
+
+- dispatch hands a run the marked hand-over and queue lines (⏳); the autofinish, pickup and move skills state
+  theirs with ✅ (🛑 for move's wait).
+- dispatch-queue S9, after-landed and landings in the queue (docs/dispatch-queue-2026-10-25.md, the owner's "add
+  after-landed"): `dispatch BRANCH --after BRANCH2` (repeatable, on `--next` too, and a seed brief's `After:` line)
+  waits in the queue until `bin/landed.py` proves BRANCH2 on origin/<main> — by its content at some main commit,
+  `bin/pr merge`'s record, or GitHub's merged PR, kept in the repo's `claude/after-landed.json`, with every vacuous
+  proof refused (no net change, a tip on main with no fork recorded before, a gone ref) — and the fired run
+  merges origin/main first (a merge, never a rebase). A predecessor archived or deleted unlanded, or waited on
+  past 48 h, files one card naming both branches; the entry holds. With no queue home, `--after` runs only once
+  landed. A landing (`dispatch --start`'s /finish) with no room waits in `queue-local/_land` for this Mac's first
+  free slot, ranked above every build but force by its kind, its prompt and merge rights never in the entry;
+  `autofinish-run` reports it `queued`. Cases: `tests/test_after.sh`.
+
+- `pickup seed --beside` no longer warns that local main is behind origin (its base is the branch's tip), and a
+  blueprint already on the base names that branch, not main (routed comments S3's fourth pass, fixed in S4).
+
+- dispatch-queue S5, eligibility (docs/dispatch-queue-2026-10-25.md): `wharf-runs/features` (`<host>:<name>,<name>`),
+  `dispatch --needs a,b` and a seed brief's `needs:` line (`pickup seed` passes it on). A host claims an entry only
+  if the pin, the scope's `berths` and the repo's clone `hosts` (berth's own filters), and its feature line
+  allow it, all in `dispatch-queue`'s one `eligibility()`, which `claimable()` calls; a need no host that may
+  take the repo meets is `enqueue` exit 3 (dispatch: exit 2, the waiting words) and never queued, and the
+  sweep cards an entry no host's config lets claim (`queue-unclaimed`, each host's reason). With a queue home
+  berth's load pick retires for a run now (the queue places it); berth keeps its filters and peer probe for
+  `--status` and for a one-shot. Cases: `tests/test_queue.sh`, `test_dispatch.sh`, `test_pickup.sh`.
 - dispatch-queue S4, priorities and the force (docs/dispatch-queue-2026-10-25.md, D2-A and D3-A): a `force`
   entry is claimed one slot over the host's cap (at most one run ever above it; a second force entry waits
   first in line) and on headroom's force floor, `headroom check --floor 5` (avail 5 %, swap and rate kept);
