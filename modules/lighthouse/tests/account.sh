@@ -16,7 +16,7 @@ hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: found [$2]"; sed 's/^/
 
 # a dispatched or unattended run's environment (CLAUDE_UNATTENDED refuses `refresh --force`): hooks.sh's reset
 for v in $(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-unset REGATTA_HOME REGATTA_LEGACY
+unset REGATTA_HOME REGATTA_LEGACY REGATTA_UNATTENDED
 # account reads these (doctor's `blind`, orca-sync's VS Code step): a run over ssh, as dispatch's
 # are, would otherwise fail seven cases (B9 review)
 unset SSH_CONNECTION SSH_CLIENT SSH_TTY
@@ -525,6 +525,10 @@ SDA() { CLAUDE_REPOS_JSON="$T/scoped.json" DA "$@"; }
 check "$(SDA pick --repo "$PR/app2" --json) $(field "['account']")" "0 main" "pick --repo app2, in a scope whose login is main → main, though work is first and allowed"
 has "$T/out" "scope node runs on main" "…naming why work was skipped"
 check "$(SDA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…a repo in a scope with no login → the walk as before"
+check "$(SDA pick --repo "$PR/app2" --json) $(field "['owns']") $(SDA pick --repo "$PR/app" --json) $(field "['owns']")" "0 True 0 False" \
+  "…pick's JSON says whether the repo is the row's own (\`owns\`, vendor-fence): the scope's login yes, a walk's row no"
+check "$(DA pick --json) $(python3 -c "import json; print('owns' in json.load(open('$T/out')))")" "0 False" \
+  "…and without --repo says nothing of it"
 check "$(sed 's/"login": "main"/"login": "nobody"/' "$T/scoped.json" > "$T/scoped2.json"; CLAUDE_REPOS_JSON="$T/scoped2.json" DA pick --repo "$PR/app2" --json)" 3 \
   "…a login no enabled row has → exit 3, never another seat"
 has "$T/out" "scope node runs on nobody, which is no enabled claude account" "…saying so"
@@ -1300,6 +1304,8 @@ check "$(TA pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "
 has "$T/out" "acme-one is acme's: it runs on lab only (tenants)" "…naming why work was skipped"
 check "$(TA pick --repo "$PR/acme-two" --json) $(field "['account']")" "0 lab" "a glob entry: a second repo is the tenant's too"
 check "$(TA pick --repo "$PR/acme-one/.claude/worktrees/y" --json) $(field "['account']")" "0 lab" "…and a worktree of one"
+check "$(TA pick --repo "$PR/acme-one/.claude/worktrees/y" --json) $(field "['owns']") $(TA pick --repo "$PR/app" --json) $(field "['owns']")" "0 True 0 False" \
+  "…\`owns\`: the tenant's login owns its repo (the vendor fence's yes); another row another repo, no"
 check "$(TA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "another repo: the walk as before"
 check "$(TA pick --repo "$PR/privy" --json) $(field "['account']")" "0 lab" "the tenant's login runs elsewhere by its own deny list (none: privy too)"
 use "$L" "100 100"; rm -f "$L/usage-probe.json"

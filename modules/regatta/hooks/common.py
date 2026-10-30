@@ -641,6 +641,112 @@ def scope_of_repo(repo, path=None, reg=None):
     return None, {}
 
 
+# ---- the unattended marker and the vendor fence (vendor-fence, docs/codex-agy-gaps-2026-10-29.md) ----
+# One marker for every CLI's unattended run (the owner on that doc: "let's rename this to vendor-neutral"),
+# staged: every launcher sets both names (unattended_env), every reader asks unattended(), which takes
+# either, and the checkpoint's shed guard denies dropping either. Stage 2 (the doc's list of the readers
+# left) drops the old name once the overlay and both Macs read only this helper.
+UNATTENDED_NAMES = ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED")
+
+
+def unattended(env=None):
+    """The unattended marker's value — REGATTA_UNATTENDED, else the old CLAUDE_UNATTENDED — or None."""
+    env = os.environ if env is None else env
+    return next((env[n] for n in UNATTENDED_NAMES if env.get(n)), None)
+
+
+def unattended_label(env=None):
+    """`NAME=value` of the marker that is set (what a refusal quotes), or None."""
+    env = os.environ if env is None else env
+    return next(("%s=%s" % (n, env[n]) for n in UNATTENDED_NAMES if env.get(n)), None)
+
+
+def unattended_env(value):
+    """{name: VALUE} for both of the marker's names: what a launcher puts in its child's environment."""
+    return {n: value for n in UNATTENDED_NAMES}
+
+
+def _checkout_of(path):
+    """The main checkout of the git tree at PATH (a worktree's, wherever it lies), or None: repo_key knows a
+    worktree only in the folder the workflow makes them in, and a Codex thread's cwd can be any worktree."""
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return os.path.dirname(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def fenced_scopes(repo, reg):
+    """[name] of what fences REPO from a vendor its tenant holds no login of: every confidential scope that
+    lists it — every scope walked, never scope_of_repo's first (AGENTS.md's fence trap) — and `guarded` when
+    the registry's `guarded` list, the config dir's `regatta/guarded` or the transcript archive names it. REPO and, for a git tree, its main checkout are both judged.
+    REG: one read_registry() parse."""
+    main = _checkout_of(repo) if repo and os.path.isdir(str(repo)) else None
+    forms = [repo] + ([main] if main and os.path.realpath(main) != os.path.realpath(str(repo)) else [])
+    keys = {k for k in (repo_key(f) for f in forms) if k}
+    out = []
+    for n, sc in sorted(((reg or {}).get("scopes") or {}).items()):
+        if isinstance(sc, dict) and sc.get("confidential") is True and any(
+                scope_of_repo(f, reg={"scopes": {n: sc}})[0] for f in forms):
+            out.append(n)
+    # the guarded names every other guard reads (sheep_gate's PRIVATE_REPOS, helmlib's fallback): the
+    # registry's list, the config dir's `regatta/guarded` and the transcript archive, case-folded (APFS)
+    g = (reg or {}).get("guarded")
+    names = [x for x in (g if isinstance(g, list) else []) if isinstance(x, str)]
+    names += list(config_lines("regatta/guarded") or []) + ["transcripts"]
+    folded = {x.strip().casefold() for x in names if x.strip()}
+    if any(k.casefold() in folded or os.path.basename(k).casefold() in folded for k in keys):
+        out.append("guarded")
+    return out
+
+
+VENDORS_UNFENCED = ("claude",)   # the providers whose runs this check leaves to their own rules
+
+
+def vendor_refusal(repo, provider, account=None, timeout=120):
+    """Why a run of PROVIDER's CLI may not open REPO, or None: the start check every vendor's road asks
+    (docs/codex-agy-gaps-2026-10-29.md, D2-A and "Differences that stay" 1). A confidential or guarded repo's
+    text goes only to a login its tenant owns. `gate` states it as "every vendor but Anthropic", because the
+    tenants hold a Claude seat and no other; stated per login it is one rule, and a tenant that adds its own
+    login of another vendor gets that vendor. A Claude run's rule is unchanged: None here, as before.
+    bin/account's `pick --provider P --repo R --json --cached` names the login the run would take and says
+    whether it `owns` the repo (its scope's login, or a login of the tenant whose repos
+    cover it). Fails closed: a torn registry refuses first, then a pick that does not read, names no
+    login, or names one the repo's tenant does not own. ACCOUNT: bin/account's path (a suite's stand-in)."""
+    if not provider or provider in VENDORS_UNFENCED:
+        return None
+    reg, torn = read_registry()
+    if torn:
+        return "the scope registry does not read: no %s run opens a repo until it does" % provider
+    try:
+        fenced = fenced_scopes(repo, reg or {})
+    except Exception as e:  # noqa: BLE001 — a registry it cannot walk is never known open
+        return "the scope registry does not walk (%s): no %s run opens a repo until it does" % (type(e).__name__, provider)
+    if not fenced:
+        return None
+    where = "%s is %s" % (repo_key(repo), " and ".join("guarded" if n == "guarded" else "in confidential scope " + n
+                                                        for n in fenced))
+    exe = account or os.environ.get("REGATTA_ACCOUNT") or tool("account")
+    if not exe:
+        return "%s, and bin/account is not here to name a %s login its tenant owns" % (where, provider)
+    try:
+        r = subprocess.run([str(exe), "pick", "--provider", provider, "--repo", str(repo), "--json", "--cached"],
+                           capture_output=True, text=True, timeout=timeout)
+        d = json.loads(r.stdout) if r.stdout.strip() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return "%s, and account pick did not answer (%s)" % (where, type(e).__name__)
+    if not isinstance(d, dict) or not d.get("account"):
+        skipped = "; ".join("%s: %s" % tuple(x[:2]) for x in (d or {}).get("skipped") or [] if isinstance(x, list) and len(x) >= 2) \
+            if isinstance(d, dict) else ""
+        return "%s, and no %s login may run it (%s)" % (where, provider, skipped or (r.stderr or "").strip()[:200]
+                                                         or "account pick exit %d" % r.returncode)
+    if d.get("owns") is not True:
+        return ("%s: its text goes only to a login its tenant owns, and the %s login account pick names, %s, is not "
+                "one (a tenant gets %s by adding its own login: account tenant set)" % (where, provider, d["account"], provider))
+    return None
+
+
 API = "https://api.github.com"
 _host = None
 

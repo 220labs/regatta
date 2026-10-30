@@ -170,8 +170,11 @@ reaches it). An Orca login no registry row names gets ORCA_ROW's deny list, the 
 rows (the owner, 2026-10-18). A new employer login added through Orca needs its row in the
 registry first when its deny list is longer than ORCA_ROW's.
 A plan has the windows it has (prolite: the week alone), and a window a plan lacks is no limit.
-`pick --provider codex` answers with a Codex row, but nothing starts Codex yet: `run` and bin/pickup
-start claude only and refuse a Codex pick; the readings feed `limits` and the desktop widget. Orca's Codex logins become rows as its Claude ones do (`orca-sync`, orca_codex_sync).
+`pick --provider codex` answers with a Codex row; `run` and bin/pickup start claude only and refuse a
+Codex pick. With --repo, pick's JSON adds `owns`: whether the repo is the row's own (its scope's
+`login` or its tenant's), which every non-Claude road's start check reads for a
+confidential or guarded repo (the core's vendor_refusal; vendor-fence, 2026-10-29). The readings feed
+`limits` and the desktop widget. Orca's Codex logins become rows as its Claude ones do (`orca-sync`, orca_codex_sync).
 Every other agent Orca can sign in to — Antigravity, Cursor — is Orca's to read: `limits --all --orca`
 adds one report-only row per agent Orca reads limits for (the owner, 2026-10-20: "add antigravity
 from orca … automate this"), so one signed in there reaches the widget with no change here. Those
@@ -345,6 +348,17 @@ def core():
     sys.path.insert(0, core_hooks())
     import common
     return common
+
+
+def unattended():
+    """`NAME=value` of the unattended marker (the core's unattended_label: REGATTA_UNATTENDED, else the
+    old CLAUDE_UNATTENDED), or None; the two names read here when no core imports, so a refusal never
+    turns into a traceback."""
+    try:
+        return core().unattended_label()
+    except (ImportError, AttributeError):
+        return next(("%s=%s" % (n, os.environ[n]) for n in ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED")
+                     if os.environ.get(n)), None)
 
 
 def overlay(*rel):
@@ -736,7 +750,7 @@ def cmd_refresh(force=False):
     Exit 1 when a file did not read (its copy holds as it was)."""
     lp = logins_path()
     blocks = any(local_first(f) for f in (TENANTS, lp) if f)
-    if blocks and force and os.environ.get("CLAUDE_UNATTENDED"):
+    if blocks and force and unattended():
         print("account refresh: --force is a person's, and this run is unattended — the local copies stay as they are")
         return 3
     if blocks and not force:
@@ -960,6 +974,18 @@ def own_tenant(reg, a, path):
     t = a.get("tenant")   # a list or object here would be unhashable: no tenant, never a crash (review 2026-10-21)
     entries = (reg.get("tenants") or {}).get(t) if isinstance(t, str) else None
     return bool(entries and path and denied({"routed": dict.fromkeys(entries)}, path))
+
+
+def owns_repo(reg, a, path):
+    """True when the repo at path is row a's own: its scope's `login` names a, or a's tenant's repos cover it
+    (the bridge that could lend one went with confidential-reach S8). pick's JSON says so as `owns` — the start check every vendor's road
+    asks of a confidential or guarded repo (the core's vendor_refusal, vendor-fence 2026-10-29)."""
+    if not path:
+        return False
+    own = scope_login_of(path)
+    if own and own[1] and a["label"] == own[1]:
+        return True
+    return own_tenant(reg, a, path)
 
 
 def routes_for(reg, a):
@@ -2351,7 +2377,7 @@ def orca_wake(before):
     hourly while nobody focuses it. Never under CLAUDE_UNATTENDED: a run opens no window on a Mac
     someone is using. Two runs at one moment may both open (no lock); the second only takes focus.
     Quiet on stderr: the widget's reply rides on it (review 2026-10-26)."""
-    if os.environ.get("CLAUDE_UNATTENDED"):
+    if unattended():
         return None
     try:
         wait = float(os.environ.get("ACCOUNT_ORCA_WAKE_WAIT") or 30)
@@ -3684,7 +3710,7 @@ def main(argv):
         return 0
     if args.cmd == "refresh":   # before load_registry: the copies are refreshed whatever the registry says
         return cmd_refresh(args.force)
-    if args.cmd == "tenant" and os.environ.get("CLAUDE_UNATTENDED"):
+    if args.cmd == "tenant" and unattended():
         # a flag that stands for a person's yes refuses an unattended caller (AGENTS.md's trap); so does this verb
         print("account tenant: the tenants file is the owner's to write — an unattended caller (CLAUDE_UNATTENDED) "
               "may not; nothing written", file=sys.stderr)
@@ -3923,7 +3949,7 @@ def main(argv):
     if not REGISTRY.is_file():  # exit 4: no registry on this machine — callers start as before
         print(f"account: no registry at {REGISTRY}", file=sys.stderr)
         return 4
-    if args.allow_overage and os.environ.get("CLAUDE_UNATTENDED"):
+    if args.allow_overage and unattended():
         # a flag that stands for a person's yes refuses an unattended caller (AGENTS.md's trap)
         print("account: --allow-overage is a person's yes to paid extra usage; an unattended caller "
               "(CLAUDE_UNATTENDED) may not pass it", file=sys.stderr)
@@ -3946,8 +3972,11 @@ def main(argv):
                 print(f"  {label}: {w}", file=sys.stderr)
         return 3
     if args.json:
-        print(json.dumps({"account": a["label"], "primary": bool(a.get("primary")), "provider": a["provider"],
-                          "env": env_of(a), "reason": why, "skipped": skipped}, ensure_ascii=False))
+        out = {"account": a["label"], "primary": bool(a.get("primary")), "provider": a["provider"],
+               "env": env_of(a), "reason": why, "skipped": skipped}
+        if args.repo:
+            out["owns"] = owns_repo(reg, a, args.repo)
+        print(json.dumps(out, ensure_ascii=False))
     else:
         print(f"{a['label']}: {why}")
         for label, w in skipped:

@@ -15,11 +15,11 @@ creating one (see NO_WORKFLOW_FILE). The file is small:
                                     # denied on main and under another session's lock, like
                                     # a commit. (The home-automation repo: its deploy scripts
                                     # without --check-only.)
-    "unattended_deny_regex": "…",   # optional: Bash an UNATTENDED run (CLAUDE_UNATTENDED set,
+    "unattended_deny_regex": "…",   # optional: Bash an UNATTENDED run (its marker set,
                                     # bin/dispatch) may never run here, on top of the live-write
                                     # regex and any --live-ok/--estate-ok: what acts on the live
                                     # system without being a deploy (the home repo: ha.py call, test.py
-                                    # tiers 2-3). See UNATTENDED_ENV.
+                                    # tiers 2-3). See UNATTENDED_NAMES.
     "in_place": ["memory/", "log.md"]  # optional: records an Edit/Write may change ON the
   }                                 # primary's main — a folder ("x/") or one file. No lock, no
                                     # checkpoint; the repo's own committer takes them (the vault:
@@ -1261,10 +1261,20 @@ def handle_bash(command, cwd, session):
 # off. An unreadable regex denies — failing open here is the one failure nobody would see. Not
 # covered: a script reached through a variable, `env -C`, or an interpreter's own string (`awk
 # 'BEGIN{system(…)}'`) — habits no agent falls into by accident.
-UNATTENDED_ENV = "CLAUDE_UNATTENDED"
+# The unattended marker, under both its names (vendor-fence's stage 1, the core's UNATTENDED_NAMES): either
+# set is an unattended run, and the shed guard below denies dropping either
+UNATTENDED_NAMES = tuple(getattr(common, "UNATTENDED_NAMES", None) or ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED"))
+_MARK = "(?:" + "|".join(UNATTENDED_NAMES) + ")"
+
+
+def unattended_mark():
+    """`NAME=value` of the marker that is set, or None (the core's unattended_label; read here without it)."""
+    return next((f"{n}={os.environ[n]}" for n in UNATTENDED_NAMES if os.environ.get(n)), None)
+
+
 CONSENT_FLAG_RE = re.compile(r"--(?:live|estate)-ok\b")
 # A run that sheds what marks it unattended: the raise refusals (helmlib.raise_refusal, dispatch's
-# --mode check) and every merge gate read CLAUDE_UNATTENDED and DISPATCH_LABEL from the environment,
+# --mode check) and every merge gate read the marker and DISPATCH_LABEL from the environment,
 # so `env -u`, `unset`, an emptied value, `env -i` or a typed DISPATCH_LABEL would be the run writing
 # itself the yes (skipper-modes landing review 20). Read from the raw text with quoted strings cut —
 # simple_commands drops `env` and assignments, and a mention in a commit message is no act. The shell's
@@ -1277,9 +1287,9 @@ _ASSIGN_AT = (r"(?:(?:^|[;&|(\n]|\benv\b[^\n|;&]*?\s)\s*|" + _SETTER + r")"
               r"(?:[A-Za-z_]\w*=\S*\s+)*")   # where an assignment sets a variable
 _UNEXPORT = r"\b(?:export\s+(?:-\w+\s+)*-\w*n|(?:declare|typeset)\s+(?:[-+]\w+\s+)*\+\w*x)\w*\b[^\n|;&]*\b"
 UNATTENDED_SHED_RE = re.compile(
-    r"\benv\b[^\n|;&]*?\s(?:-u\s*|--unset[= ])" + UNATTENDED_ENV + r"\b|\benv\s+(?:-\w*i\b|--ignore-environment\b)"
-    r"|\bunset\b[^\n|;&]*\b" + UNATTENDED_ENV + r"\b|" + _UNEXPORT + UNATTENDED_ENV + r"\b"
-    r"|" + _ASSIGN_AT + r"(?:" + UNATTENDED_ENV + r"=(?=[\s;&|)]|$)|DISPATCH_LABEL=)")
+    r"\benv\b[^\n|;&]*?\s(?:-u\s*|--unset[= ])" + _MARK + r"\b|\benv\s+(?:-\w*i\b|--ignore-environment\b)"
+    r"|\bunset\b[^\n|;&]*\b" + _MARK + r"\b|" + _UNEXPORT + _MARK + r"\b"
+    r"|" + _ASSIGN_AT + r"(?:" + _MARK + r"=(?=[\s;&|)]|$)|DISPATCH_LABEL=)")
 QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 # The skipper's records (follow-ups item 7, the landing review's finding 20): helm's plans root —
 # plan.json, branch-modes.json, events.jsonl — and dispatch's run records. A mode, a raise refusal and a
@@ -1436,7 +1446,7 @@ def record_write(command, rx=None):
 
 
 def record_reason(what):
-    return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): `{what}` writes a skipper's "
+    return (f"⛔ Unattended run ({unattended_mark()}): `{what}` writes a skipper's "
             f"record by hand (helm's plans — plan.json, branch-modes.json — a dispatch run record, or the "
             f"lander's: its run record, /autofinish's marker, the yes at the brief). A mode, a raise refusal, a "
             f"run's task_mode and the owner's yes are read there, so only their tools (bin/helm, bin/plan, "
@@ -1470,11 +1480,11 @@ CHECKERS = {"py_compile", "compileall", "pyflakes", "ruff", "mypy"}  # `python3 
 
 def unattended_live(command, cwd):
     """The reason an unattended run may not run this command, or None."""
-    if not os.environ.get(UNATTENDED_ENV):
+    if not unattended_mark():
         return None
     shed = UNATTENDED_SHED_RE.search(QUOTED_RE.sub(lambda m: "" if m.group(0) in ("''", '""') else "Q", command))
     if shed:
-        return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): `{shed.group(0).strip()}` "
+        return (f"⛔ Unattended run ({unattended_mark()}): `{shed.group(0).strip()}` "
                 f"sheds what marks this run unattended — the mode's raise refusal and the merge gates read it, "
                 f"so only the owner may run that. Leave it as an open item for the owner in your report.")
     record = record_write(command)
@@ -1538,7 +1548,7 @@ def unattended_live(command, cwd):
                 if hit:
                     break
         if hit:
-            return (f"⛔ Unattended run ({UNATTENDED_ENV}={os.environ[UNATTENDED_ENV]}): read-only on "
+            return (f"⛔ Unattended run ({unattended_mark()}): read-only on "
                     f"live systems — `{hit.group(0)}` acts on one. Nobody is here to say yes. Leave "
                     f"it as an open item for the owner in your report; reads and --check-only are fine.")
     return None
@@ -1557,7 +1567,7 @@ def fallback_bash(command, cwd, session, exc):
     except Exception:
         inline = None
     if FLOOR_RE.search(command) or LIVEISH_RE.search(command) or inline or (
-            os.environ.get(UNATTENDED_ENV) and CONSENT_FLAG_RE.search(command)):
+            unattended_mark() and CONSENT_FLAG_RE.search(command)):
         return deny(f"⛔ The checkpoint hook could not judge this write ({why}). Run it from the "
                     f"checkout it writes to, without cd or -C, and say so in the report.")
     return {"systemMessage": f"⚠ checkpoint hook could not resolve this command's checkout ({why}); "
@@ -2930,7 +2940,7 @@ def main():
             if in_force(ti.get("file_path") or ti.get("notebook_path")):
                 print(json.dumps(deny(force_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
                 return
-            if os.environ.get(UNATTENDED_ENV) and in_records(ti.get("file_path") or ti.get("notebook_path")):
+            if unattended_mark() and in_records(ti.get("file_path") or ti.get("notebook_path")):
                 print(json.dumps(deny(record_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
                 return
             try:
@@ -3301,7 +3311,7 @@ def core_missing(exc):
         hit = (deletion_in(cmd) or RAW_DELETE_RE.search(cmd) or "worktree remove" in cmd
                or any(v != "pull" for v in verbs) or ("pull" in verbs and not PULL_FF_RE.search(cmd))
                or PUSH_ANY_RE.search(cmd) or inline
-               or (os.environ.get(UNATTENDED_ENV) and CONSENT_FLAG_RE.search(cmd)))
+               or (unattended_mark() and CONSENT_FLAG_RE.search(cmd)))
     elif tool in WRITE_TOOLS:
         hit = in_git_tree(ti.get("file_path") or ti.get("notebook_path"), cwd)
     else:
