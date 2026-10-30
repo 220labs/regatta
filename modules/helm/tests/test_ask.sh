@@ -644,7 +644,7 @@ from importlib.machinery import SourceFileLoader
 ask = SourceFileLoader("ask_t", sys.argv[1] + "/ask").load_module()
 kinds = []
 ask.asklib.log_relay = lambda kind, *a, **k: kinds.append(kind)
-for src in ("manager", "yes item", "Sam", "sam's form", "Sam's GitHub", "Sam, Session tab (signed)", "Sam, Session tab",
+for src in ("manager", "skipper", "yes item", "Sam", "sam's form", "Sam's GitHub", "Sam, Session tab (signed)", "Sam, Session tab",
             "manager (buildbox)", "Sam, chat"):
     ask.log_answer(types.SimpleNamespace(source=src, item="D1", text="A", to=None), "docs/x.md")
 line = lambda who, src: ask.RELAYED_ANSWER % (who, src, "2026-10-16", "A")
@@ -653,8 +653,11 @@ print(" ".join(kinds), "|", ask.asklib.relayed_by_owner(line("manager (buildbox)
       ask.asklib.relayed_by_owner(line("manager · buildbox", "Session tab, Sam (signed)")),
       ask.asklib.relayed_by_owner(line("manager · buildbox", "Sam, Session tab (signed)")))
 PY
-)" "answered answered answered escalated escalated escalated answered answered escalated | False True False True" \
-  "  escalated only for Sam's routes (bare 'Sam', an unsigned tab line, a skipper's are answered); a 'who' with a parenthesis is read right"
+)" "answered answered answered answered escalated escalated escalated answered answered escalated | False True False True" \
+  "  escalated only for Sam's routes (bare 'Sam', an unsigned tab line, a skipper's — 'skipper' since H2 or 'manager' — are answered); a 'who' with a parenthesis is read right"
+echo "  helm-vocabulary H2: the four old names still resolve, to the new functions, until S8"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import asklib as a; print(a.standing_manager is a.standing_skipper, a.manager_dir is a.skipper_dir, a.peer_manager is a.peer_skipper, a.manager_state is a.skipper_state, hasattr(a, 'manager_nope'))")" \
+  "True True True True False" "  standing_manager and its three siblings are aliases; any other name is still an AttributeError"
 
 echo "--print-curl for a cloud brief"
 out=$(env "$E_SKIP"=mgr-1 DISPATCH_PLAN_SPACE=space-9 "$B/ask" relay docs/demo-2026-10-10.md D1 --print-curl)

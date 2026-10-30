@@ -1161,8 +1161,8 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
         return []
     # named as bin/ask relay's RELAYED line names it when that is where the ask goes
     who = (f"a skipper ({sm.get('manager_name')}, its scope's)" if sm and sm.get("scope") else
-           f"a skipper (this Mac's standing one, skipper · {sm.get('manager_host')})" if sm
-           else "a skipper (DISPATCH_SKIPPER)")
+           f"a skipper (this Mac's standing one, {sm.get('manager_name') or 'skipper · %s' % sm.get('manager_host')})" if sm
+           else "a skipper (%s)" % ("DISPATCH_SKIPPER" if env.get("DISPATCH_SKIPPER") else "DISPATCH_MANAGER"))
     return [f"this run has {who}, so what it would hand the owner — {what} — goes "
             f"to the skipper instead: write it in the doc as an item (a D-item, or a Do-this-now item "
             f"naming what it unblocks), commit, run `{_ask_cmd()} relay <doc> <Dn>`, park what rests "

@@ -335,7 +335,8 @@ def cmd_relay(a):
                                            "to_host": ctx.get("manager_host") or None, "reply_flags": reply_flags})
     if verdict in ("none", "unreachable"):
         pr_asks(top, branch, data["asks"])
-        print("no live skipper: the ask waits for the owner. Park what rests on %s, build the rest, then end on:" % a.item)
+        print("%s: the ask waits for the owner. Park what rests on %s, build the rest, then end on:"
+              % ("no live skipper" if verdict == "none" else "no road reaches the skipper", a.item))
         print("  " + WAITING_LINE % ("%s in %s (%s)" % (a.item, rel, it["title"][:60])))
     else:
         who = skipper_name(ctx)
