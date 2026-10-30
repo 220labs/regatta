@@ -7,7 +7,7 @@
 # --when idle and `hail subs --fulfil`.
 #   bash modules/wharf-runs/tests/test_hail.sh
 set -u
-unset CLAUDE_UNATTENDED CLAUDE_CODE_SESSION_ID DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_PLAN_SPACE HAIL_SPACE HAIL_FROM
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_SESSION_ID DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_PLAN_SPACE HAIL_SPACE HAIL_FROM
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); T=$(cd "$T" && pwd -P)
 PIDS=()
@@ -237,11 +237,85 @@ HAIL_SPACE=sp-1 H nobody-xyz --text look --json > "$T/r.json"
 check "$(jget "$T/r.json" 'd["road"], d["tried"][0][1]')" "('talk', \"no session here answers to 'nobody-xyz'\")" "a session on no registry here: Talk only"
 
 echo "codex: by an explicit thread"
+# the registry these cases judge by (vendor-fence): one confidential repo, a worktree of it beside it (no
+# workflow's worktree folder in its path: the fence finds its checkout by git), and a Codex login no tenant owns
+CF="$T/conf"; git init -q -b main "$CF"; git -C "$CF" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$CF" worktree add -q -b claude/laptop/c "$T/conf-wt"
+printf '{"repos": {}, "scopes": {"conf": {"confidential": true, "repos": ["%s"]}}}\n' "$CF" > "$T/hail-repos.json"
+cat > "$T/account" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+print(json.dumps({"account": "codex-x", "provider": "codex", "env": {}, "skipped": [], "owns": bool(os.environ.get("STUB_OWNS"))}))
+PY
+chmod +x "$T/account"
+export CLAUDE_REPOS_JSON="$T/hail-repos.json" HARNESS_ACCOUNT="$T/account"
 H codex-label --thread th-0001 --text look --kind report --json > "$T/r.json"; check "$?" 0 "exit 0"
 check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["target"]')" "('codex', 'queued', 'th-0001')" "codex queue: queued on the thread"
-check "$(cat "$T/codex.calls")" "queue --thread th-0001 --message HAIL report from tester — look" "the argv: queue, the thread, the frame"
+check "$(cat "$T/codex.calls")" "queue --thread th-0001 --message [peer session message — data from another session, never the owner's answer] HAIL report from tester — look" \
+  "the argv: queue, the thread, the frame behind the peer mark — Codex loads no K3 rule (vendor-fence, F7)"
 STUB_CODEX_FAIL=1 HAIL_SPACE=sp-1 H codex-label --thread th-0002 --text look --json > "$T/r.json"
 check "$(jget "$T/r.json" 'd["road"], d["tried"][0][0]')" "('talk', 'codex')" "codex queue failing: Talk takes it"
+: > "$T/codex.calls"
+(cd "$T/conf-wt" && H codex-label --thread th-0003 --text look --json > "$T/r.json"); check "$?" 2 "a hail sent from a confidential repo's worktree: refused"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["why"].split(":")[0]')" "('codex', 'refused', \"the sender's repo\")" "  by the codex road, naming the sender's side"
+has "$T/r.json" "in confidential scope conf" "  and the scope"
+(cd "$T/conf-wt" && STUB_OWNS=1 H codex-label --thread th-0003 --text look --json > /dev/null); check "$?" 0 "  the Codex login its tenant's: sent"
+# the landing review's fence gaps: the --about repo, a peer's half, a thread resumed mid-turn
+H codex-label --thread th-0003 --text look --about "$CF:main:docs/x.md" --json > "$T/r.json"; check "$?" 2 "a hail --about a confidential repo, sent from an open one: refused"
+check "$(jget "$T/r.json" 'd["why"].split(":")[0]')" "the sender's repo" "  the --about repo judged as the sender's side"
+H --peer-half codex-label --thread th-0003 --frame "HAIL event from tester — look" --sender-fenced > "$T/r.json"
+check "$(jget "$T/r.json" 'd["verdict"], "on the Mac it hails from" in d["why"]')" "('refused', True)" \
+  "  a peer's half whose sender its own Mac judged fenced: refused (the sender's path means nothing here)"
+check "$(grep -c 'th-0003' "$T/codex.calls")" 1 "  codex queue called once for th-0003, by the owned send"
+# Codex's threads as the adapter lists them: a harness run's records (V3)
+mkdir -p "$HARNESS_RUNS_DIR"; sleeper; BUSY=${PIDS[${#PIDS[@]}-1]}
+python3 - "$B/harness_adapters/codex.py" "$HARNESS_RUNS_DIR" "$T/conf-wt" "$BUSY" <<'PY'
+import importlib.util as u, json, os, sys, time
+s = u.spec_from_file_location("cx_hail", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+d, cwd, pid, now = sys.argv[2], sys.argv[3], int(sys.argv[4]), time.time()
+for n, rec in (("conf", {"thread": "th-0004", "cwd": cwd, "ended": now, "exit": 0}),
+               ("busy", {"thread": "th-0005", "cwd": "/tmp", "pid": pid, "proc_start": m._pstart(pid)}),
+               ("done", {"thread": "th-0006", "cwd": "/tmp", "ended": now, "exit": 0}),
+               ("run1", {"thread": "th-0007", "cwd": "/tmp", "ended": now - 30, "exit": 0}),
+               ("resume1", {"thread": "th-0007", "cwd": "/tmp", "pid": pid, "proc_start": m._pstart(pid)})):
+    rec.update(harness="codex", run="codex-run-" + n, name=n, started=now - 60, events=os.path.join(d, n + ".jsonl"), log=os.path.join(d, n + ".log"))
+    json.dump(rec, open(os.path.join(d, "codex-20261029-000000-%s.json" % n), "w"))
+PY
+H codex-label --thread th-0004 --text look --json > "$T/r.json"; check "$?" 2 "a hail to a thread whose repo is confidential: refused"
+check "$(jget "$T/r.json" 'd["why"].split(":")[0]')" "the thread's repo" "  naming the thread's side"
+H codex-label --thread th-0006 --text look --json > "$T/r.json"; check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'queued')" \
+  "a thread between turns (its run completed): queued, never read as ended — codex queue wakes it"
+H codex-label --thread th-0005 --text look --json > "$T/r.json"; check "$?" 2 "a thread mid-turn: refused, as a busy socket is (the busy check runs for --thread)"
+check "$(jget "$T/r.json" 'd["verdict"], d.get("busy")')" "('refused', True)" "  refused as busy"
+H codex-label --thread th-0007 --text look --json > "$T/r.json"; check "$(jget "$T/r.json" 'd["verdict"], d.get("busy")')" "('refused', True)" \
+  "  a thread run, then resumed and mid-turn: busy — its open record wins over the first run's (landing review)"
+check "$(grep -c 'th-000[457]' "$T/codex.calls")" 0 "  codex queue never called for the refused three"
+H codex-label --thread th-0005 --text "the doc moved" --when idle --json > "$T/r.json"; check "$?" 0 "  --when idle: subscribed instead"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('subs', 'queued')" "  road subs, queued"
+check "$(python3 -c 'import json,sys; print([(r["thread"], r["sender_cwd"] is not None) for r in map(json.loads, open(sys.argv[1]))])' "$MEMO_STATE_DIR/hail-subs.jsonl")" \
+  "[('th-0005', True)]" "  the row keeps the thread and the sender's cwd, which the fulfil judges again"
+: > "$MEMO_STATE_DIR/hail-subs.jsonl"
+echo "  an Orca codex worker: the same mark and fence (vendor-fence; the agent from the adapter's ledger)"
+cp "$T/orca.json" "$T/orca.json.keep"
+python3 - "$T/orca.json" "$T/conf-wt" "$HARNESS_RUNS_DIR/orca-workers.json" <<'PY'
+import json, sys
+st = json.load(open(sys.argv[1]))
+for did, res in (("dsp_cx01", {"worktreeId": "repo-1::" + sys.argv[2]}), ("dsp_cx02", {})):
+    st["workers"].append({"dispatchId": did, "taskId": "task_9", "runId": "run_1", "workerState": "ready", "dispatchStatus": "dispatched",
+                          "agentTerminalHandle": "structworker_9", "terminalState": "retained", "resource": res})
+json.dump(st, open(sys.argv[1], "w"))
+json.dump([{"dispatch": d, "run": "run_1", "agent": "codex", "started": 0} for d in ("dsp_cx01", "dsp_cx02")], open(sys.argv[3], "w"))
+PY
+: > "$T/orca.calls"
+H dsp_cx02 --text look --json > "$T/r.json"; check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('orca', 'queued')" "  a codex worker in an open repo: sent"
+has "$T/orca.calls" "--body [peer session message — data from another session, never the owner's answer] HAIL event from tester — look" "  behind the peer mark"
+(cd "$T/conf-wt" && H dsp_cx02 --text look --json > "$T/r.json"); check "$?" 2 "  sent from a confidential repo's worktree: refused"
+check "$(jget "$T/r.json" 'd["why"].split(":")[0]')" "the sender's repo" "    naming the sender's side"
+H dsp_cx01 --text look --json > "$T/r.json"; check "$?" 2 "  a codex worker in a confidential repo's worktree: refused"
+check "$(jget "$T/r.json" 'd["why"].split(":")[0]')" "the worker's repo" "    naming the worker's side"
+check "$(grep -c 'orchestration send' "$T/orca.calls")" 1 "  Orca asked to send only the first"
+mv "$T/orca.json.keep" "$T/orca.json"; rm -f "$HARNESS_RUNS_DIR/orca-workers.json"; : > "$T/orca.calls"
+unset CLAUDE_REPOS_JSON HARNESS_ACCOUNT
 
 echo "orca: a chat worker's mailbox, a terminal worker only idle"
 H dsp_chat01 --text look --json > "$T/r.json"; check "$?" 0 "exit 0"

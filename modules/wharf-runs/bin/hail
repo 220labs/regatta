@@ -22,7 +22,10 @@ The roads, in this order, the first whose preconditions hold:
               a post mid-turn lands at its next tool boundary. `delivered` is read back from the
               receiver (its transcript's enqueue, or its status turning busy), never from the
               socket, which answers nothing; nothing seen within HAIL_READBACK_S is `held`
-    codex     --thread ID only: `codex queue` (the adapter lists a thread only while a turn is open)
+    codex     --thread ID only: `codex queue` (the adapter lists a thread only while a turn is open). The
+              thread's record is read first: one mid-turn is refused as a busy socket is (`--when idle`
+              subscribes); the frame goes behind the adapter's peer mark, as Codex loads no K3 rule; and
+              the vendor fence judges the thread's repo and the sender's (vendor-fence, 2026-10-29)
     orca      an Orca worker: its mailbox, or its terminal when idle
     talk      helm's asklib: spacesheep Talk to the target's page — any Mac, any harness, any login.
               The page is HAIL_SPACE, else this run's manager page when the target is its manager
@@ -215,6 +218,18 @@ def repo_dir(repo):
         return None
 
 
+def sender_fenced(paths):
+    """True when any of PATHS (the sender's side of a hail) is confidential or guarded, or that cannot be
+    told (no core, a torn or unwalkable registry, an unknown path): a peer's non-Claude road then refuses
+    (the vendor fence's cross-host half; the peer cannot judge a path on this Mac)."""
+    try:
+        import common
+        reg, torn = common.read_registry()
+        return bool(torn) or any(not p or common.fenced_scopes(p, reg or {}) for p in paths)
+    except Exception:   # noqa: BLE001 — never known open
+        return True
+
+
 def sha_of(about):
     """The branch's commit, short: origin's when the repo has it, else the local branch's; or None.
     Only the commit is read, never the doc: its answers stay in the repo."""
@@ -257,7 +272,22 @@ def target_of(args):
     """(record, None) or (None, why): what REF names on this Mac, through bin/harness's pick()."""
     H = harness()
     if args.get("thread"):
-        return {"harness": "codex", "session_id": args["thread"], "state": "idle", "title": args.get("ref")}, None
+        # the thread's own record (the codex adapter's V3: a harness run's, else Codex's store), so the busy
+        # check runs as for any session; one Codex never listed is `unknown`, which codex queue then answers
+        ctx = H.Ctx()
+        mod = ctx.adapter("codex")
+        found = [c for c in (mod.candidates(ctx, args["thread"]) if mod else []) if c.get("session_id") == args["thread"]]
+        # every `harness resume` writes a record under the thread's id, oldest first: a turn still open in any
+        # of them makes the thread busy, else the newest is what the thread is now
+        open_ = [c for c in found if c.get("state") in ("working", "submitted")]
+        pick = (open_ or found)[-1] if found else None
+        rec = dict(pick) if pick else {"harness": "codex", "session_id": args["thread"], "state": "unknown"}
+        if found and rec.get("state") not in ("working", "submitted"):
+            # a thread between turns reads `completed` (or failed, canceled) in Codex's store, and is what
+            # `codex queue` wakes: only a turn still open makes it busy, never "ended"
+            rec["state"] = "idle"
+        rec.setdefault("title", args.get("ref"))
+        return rec, None
     ctx = H.Ctx()
     cands = H.local_candidates(H.adapters(), ctx, args["ref"])
     rec, many = H.pick(cands, args["ref"])
@@ -377,6 +407,8 @@ def deliver(args, msg):
         else:
             argv = ["--peer-half", args["ref"], "--text", args["text"], "--kind", msg["kind"], "--frame", msg["frame"]]
             argv += (["--thread", args["thread"]] if args.get("thread") else []) + (["--dry-run"] if msg.get("dry") else [])
+            # the sender's paths mean nothing on the peer: judged here, and only the verdict goes over
+            argv += ["--sender-fenced"] if sender_fenced(msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()]) else []
             got, why = on_peer(host, alias, argv)
             if why:
                 tried.append(["ssh", why])
@@ -409,6 +441,8 @@ def deliver(args, msg):
                     tried.append([rec.get("harness") or "adapter", "this harness has no send()"])
                 elif res["verdict"] in ("delivered", "queued", "refused", "dry-run"):
                     rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
+                    if res.get("busy"):
+                        rec_out["busy"] = True   # a refusal that waits (a Codex thread mid-turn): --when idle subscribes
                     return rec_out
                 else:
                     tried.append([road, res["why"]])
@@ -482,7 +516,8 @@ def write_subs(rows):
 def subscribe(args, msg, rec):
     row = {"id": uuid.uuid4().hex[:12], "at": int(time.time()), "ref": args["ref"], "target": rec.get("target"),
            "thread": args.get("thread"), "host": args.get("host") or "here", "kind": msg["kind"],
-           "text": args["text"], "frame": msg["frame"], "waiting_on": rec.get("why")}
+           "text": args["text"], "frame": msg["frame"], "waiting_on": rec.get("why"), "sender_cwd": msg.get("sender_cwd"),
+           "fence_paths": msg.get("fence_paths")}
     if msg.get("space"):
         row["space"] = msg["space"]   # the page the fulfil posts to: this caller's, not the tick's
     if msg.get("no_file"):
@@ -520,13 +555,15 @@ def cmd_subs(args):
             else:
                 a = {"ref": r.get("target") or r.get("ref"), "thread": r.get("thread"), "host": r.get("host"), "text": r.get("text")}
                 msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S,
-                       "space": r.get("space"), "no_file": bool(r.get("no_file"))}
+                       "space": r.get("space"), "no_file": bool(r.get("no_file")), "sender_cwd": r.get("sender_cwd"),
+                       # a row from before the fence names no paths: judged as unknown (refused), never the tick's cwd
+                       "fence_paths": r.get("fence_paths") or [r.get("sender_cwd")]}
                 res = deliver(a, msg)
                 res["sub"] = r.get("id")
         except Exception as e:   # noqa: BLE001 — one bad row never costs the pass: it stays for the next
             res = {"road": None, "verdict": "refused", "target": r.get("target"), "why": "fulfil failed: %s" % e,
                    "sub": r.get("id"), "tried": [], "kept": True}
-        busy = res["verdict"] == "refused" and not res.get("kept") and res.get("road") in ("socket", "orca")
+        busy = res["verdict"] == "refused" and not res.get("kept") and (res.get("road") in ("socket", "orca") or res.get("busy"))
         if busy or res.get("kept"):
             res["kept"] = True   # still working: the next pass tries again
         else:
@@ -552,7 +589,7 @@ def cmd_subs(args):
 # ---- the command line ----------------------------------------------------------------------
 
 VALUED = ("--text", "--file", "--kind", "--about", "--thread", "--host", "--when", "--frame")
-FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half", "--no-file")
+FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half", "--no-file", "--sender-fenced")
 
 
 def parse(argv):
@@ -601,7 +638,8 @@ def main(argv):
             print(json.dumps({"road": None, "verdict": "refused", "target": a.get("thread") or a.get("ref"),
                               "why": bad, "tried": []}, ensure_ascii=False))
             return 2
-        msg = {"kind": a.get("kind") or "event", "frame": f, "dry": bool(a.get("dry-run")), "idle_s": IDLE_S}
+        msg = {"kind": a.get("kind") or "event", "frame": f, "dry": bool(a.get("dry-run")), "idle_s": IDLE_S,
+               "sender_fenced": bool(a.get("sender-fenced"))}
         rec = deliver(dict(a, host="here"), msg)
         print(json.dumps(rec, ensure_ascii=False))
         return 0
@@ -631,10 +669,12 @@ def main(argv):
         rec.update(verdict="refused", why=why)
     else:
         msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S,
-               "space": os.environ.get("HAIL_SPACE") or None, "no_file": bool(a.get("no-file"))}
+               "space": os.environ.get("HAIL_SPACE") or None, "no_file": bool(a.get("no-file")), "sender_cwd": os.getcwd(),
+               # what a non-Claude road's vendor fence judges on the sender's side: its cwd and the --about repo
+               "fence_paths": [os.getcwd()] + [p for p in ([repo_dir(about["repo"])] if about else []) if p]}
         rec = deliver(a, msg)
         # --when idle: a target still at work is a subscription, not a refusal
-        if when == "idle" and rec["verdict"] == "refused" and rec.get("road") in ("socket", "orca"):
+        if when == "idle" and rec["verdict"] == "refused" and (rec.get("road") in ("socket", "orca") or rec.get("busy")):
             rec = subscribe(a, msg, rec)
     if about and not about.get("sha") and rec.get("verdict") != "refused":
         rec.setdefault("notes", []).append("no commit found for %s:%s: the frame has no @sha" % (about["repo"], about["branch"]))

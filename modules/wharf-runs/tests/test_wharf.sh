@@ -67,7 +67,7 @@ export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" P
        SURFACES_FILE="$T/surfaces.json" PLAN_NO_DEPLOY=1 ASK_SESSIONS_DIR="$T/sess" ASK_CACHE_DIR="$T/askcache" \
        COST_RATIO="$T/ratio.json" PLAN_NO_MEMO=1 PLAN_NO_GH=1 PLAN_PROJECTS_ROOT="$T/projects-root" \
        STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 STALLS_CANARY=0 PLAN_NO_WHARF=1   # no wharf pass in a tick outside B7's own block, whose stub it reaches; the stall cards: no ssh to the build Mac, no real repo's autofinished, no Orca app (B8's block turns its stub on)
-unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
+unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED REGATTA_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 export CLAUDE_CODE_SESSION_ID=mgr-1
@@ -563,6 +563,38 @@ PY
 }
 check "$(CLAUDE_UNATTENDED=dispatch bash -c "$(declare -f wmj); B='$B' wmj")" "True True" \
   "  bp_mode_judge reads the ship's mode once: torn then healed, the refusal is still judged torn"
+# vendor-fence (F1 of docs/codex-agy-gaps-2026-10-29.md): an Orca block of another agent meets the vendor fence —
+# a confidential repo's text only on a login its tenant owns, account pick naming it; a Claude block's rule unchanged
+VR="$T/vfrepo"; git init -q -b main "$VR"; printf -- '- physical: none\n' > "$VR/AGENTS.md"; VR=$(cd "$VR" && pwd -P)
+printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}}}\n' "$VR" > "$T/vf-repos.json"
+cat > "$T/vf-account" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+print(json.dumps({"account": "codex-x", "provider": "codex", "env": {}, "skipped": [], "owns": bool(os.environ.get("STUB_OWNS"))}))
+PY
+chmod +x "$T/vf-account"
+printf '#!/bin/sh\n[ -n "$STUB_SLOTS_FAIL" ] && exit 1\nprintf "%%s\\n" "${STUB_SLOTS:-0 3}"\n' > "$T/vf-dispatch"; chmod +x "$T/vf-dispatch"
+wsr() { python3 - "$B/wharf" "$1" "$VR" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_vf", sys.argv[1]).load_module()
+st = {"raw": {"provider": "orca", "agent": sys.argv[2]}}
+print(w.start_refusal({"meta": {}}, st, sys.argv[3]) or "None")
+PY
+}
+vf() { env -u CLAUDE_UNATTENDED -u REGATTA_UNATTENDED -u CLAUDE_CODE_SESSION_ID WHARF_NO_WEEK=1 CLAUDE_REPOS_JSON="$T/vf-repos.json" \
+         HARNESS_ACCOUNT="$T/vf-account" HARNESS_DISPATCH="$T/vf-dispatch" "$@"; }
+out=$(vf bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr codex")
+case "$out" in *"in confidential scope conf"*"codex-x, is not one"*) r=named;; *) r="$out";; esac
+check "$r" "named" "an Orca codex block in a confidential repo, the Codex login no tenant's: refused, scope and login named (vendor-fence)"
+check "$(vf env STUB_OWNS=1 bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr codex")" "None" "  a Codex login its tenant owns: the start passes"
+check "$(vf bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr claude")" "None" "  a Claude block in the same repo: its rule unchanged"
+out=$(vf env STUB_OWNS=1 STUB_SLOTS="3 3" bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr codex")
+case "$out" in *"3 runs are busy of 3"*"the next step waits for a run to end"*) r=capped;; *) r="$out";; esac
+check "$r" "capped" "  the run cap full: an Orca codex block waits, in the cap's waiting words (review: F6's tick)"
+out=$(vf env STUB_OWNS=1 STUB_SLOTS_FAIL=1 bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr codex")
+case "$out" in *"run cap did not read"*) r=held;; *) r="$out";; esac
+check "$r" "held" "  a cap that does not read holds it: the tick carries no marker"
 # the refusal an apply writes reaches plan.json: Ship.save reloads the plan and copies back only what it
 # names, and dropped mode_refused, so the next tick recorded the run's mode (the follow-ups' landing review)
 mkdir -p "$T/wplans/ms"; echo '{"id": "ms", "tasks": {}}' > "$T/wplans/ms/plan.json"

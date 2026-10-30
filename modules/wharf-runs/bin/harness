@@ -19,7 +19,8 @@ file per harness).
         re-dispatched from its brief by bin/stalls_tick.py instead. Exit 2: not a failed run.
     harness run [--harness claude-code|orca|codex] (--prompt TEXT | --prompt-file FILE | --branch BRANCH)
                 [--cwd DIR] [--repo DIR] [--name TOPIC] [--agent claude|codex] [--runner orca]
-                [--model M] [--effort E] [--account auto|LABEL [--ship KEY]] [--headless] [--on HOST] [--json]
+                [--model M] [--effort E] [--account auto|LABEL [--ship KEY]] [--headless] [--on HOST]
+                [--timeout S] [--ephemeral] [--json]
         V1: start a session; prints its record at once (state `submitted` or later, its session_id
         when the harness has one by then). claude-code (the default) is bin/dispatch: --prompt in
         --cwd, a claude/* worktree, is `dispatch --start` detached; --branch is a seeded branch,
@@ -28,8 +29,10 @@ file per harness).
         `--agent` worker in it — with --account (auto: bin/account's pick; --ship KEY keeps a ship on
         the login it was pinned to) a Claude worker on that login, in a terminal of ours (docs/
         orca-accounts-2026-10-16.md); codex is `codex exec --json` detached in --cwd, or Orca's codex
-        worker with --runner orca. Exit 1: the start failed; 2: refused before anything started.
-    harness resume REF (--prompt TEXT | --prompt-file FILE) [--fork] [--harness NAME] [--repo DIR] [--json]
+        worker with --runner orca; --timeout S ends a codex run past S seconds (default two hours) and
+        --ephemeral runs it `codex exec --ephemeral`. Exit 1: the start failed; 2: refused before anything started.
+    harness resume REF (--prompt TEXT | --prompt-file FILE) [--fork] [--harness NAME] [--repo DIR]
+                [--timeout S] [--ephemeral] [--json]
         V2: REF's next turn — the same session, or with --fork a copy under a new id (claude-code,
         codex; Orca has no fork). A live session is not continued beside itself: stop it first, or fork.
     harness stop REF [--harness NAME] [--repo DIR] [--json]
@@ -41,7 +44,12 @@ file per harness).
 Every run is refused (exit 2) unless the repo's contract says `physical: none` — bin/dispatch's rule,
 which `dispatch --start` leaves to its caller — and a Codex run (--harness codex or --agent codex)
 in a public repo (oss/, the overlay's own, those wharf-runs/public-repos names): OpenAI's docs say not to use a plan login in scripts on
-public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14).
+public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14). A run of
+any CLI but Claude Code's (Codex, an Orca worker of another agent) meets the checks a Claude run does
+(docs/codex-agy-gaps-2026-10-29.md, D2-A; vendor-fence): a confidential or guarded repo only on a login
+its tenant owns (the core's vendor_refusal, `account pick --provider <it>` naming the login), and the
+run cap (`dispatch --slots`, whose count holds Codex runs and Orca's non-Claude workers), so an
+unattended caller may start one. Only an Orca Claude worker is still attended-only: no cap counts it.
 
 --host: `here` (the default) is this Mac; PEER a Mac wharf-runs/ssh names (`<peer>:<ssh alias>`),
 read over that alias; `all` both. ssh runs from the Mac whose key names the peer (bin/pickup's PEERS,
@@ -528,8 +536,57 @@ def codex_in(req, harness):
     return harness == "codex" or (req.get("agent") or "") == "codex"
 
 
+def vendor_of(req, harness):
+    """The provider whose CLI the run starts — `claude` for Claude Code, else the agent's own name (`codex`,
+    and any agent Orca names later): what bin/account's rows call it, and what the vendor fence judges."""
+    if harness == "codex":
+        return "codex"
+    agent = req.get("agent") or ""
+    if harness == "orca" or req.get("runner") == "orca":
+        return agent or "claude"
+    return agent if agent and agent != "claude" else "claude"
+
+
+def unattended_mark():
+    """`NAME=value` of the unattended marker this caller carries (the core's unattended_label), or None."""
+    if common and hasattr(common, "unattended_label"):
+        return common.unattended_label()
+    return next(("%s=%s" % (n, os.environ[n]) for n in ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED") if os.environ.get(n)), None)
+
+
+def dispatch_bin():
+    """bin/dispatch beside this file (HARNESS_DISPATCH, the suites' stand-in): the one home of the run cap."""
+    return os.environ.get("HARNESS_DISPATCH") or os.path.join(coding_root(), "bin", "dispatch")
+
+
+def run_slots():
+    """(busy, cap) from `dispatch --slots`, or None when it does not read. dispatch-rc's live count holds the
+    harness's Codex runs and Orca's non-Claude workers since vendor-fence (2026-10-29), so a Codex start asks
+    the same cap a dispatch does."""
+    try:
+        r = subprocess.run([dispatch_bin(), "--slots"], capture_output=True, text=True, timeout=120)
+        busy, cap = r.stdout.split()[:2]
+        return int(busy), int(cap)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def vendor_fence(root, vendor):
+    """Why a run of VENDOR's CLI may not open ROOT, or None: the core's vendor_refusal (a confidential or
+    guarded repo's text goes only to a login its tenant owns; Claude's rule unchanged). No core, no
+    judgement: refused, as a torn registry is."""
+    if vendor == "claude":
+        return None
+    if not common or not hasattr(common, "vendor_refusal"):
+        return "the regatta core is not here to judge %s's scopes: no %s run starts without it" % (root, vendor)
+    return common.vendor_refusal(root, vendor, account=os.environ.get("HARNESS_ACCOUNT"))
+
+
 def guard(req, harness):
-    """The shared refusals before any start (exit 2), and req["repo"] made the main checkout."""
+    """The shared refusals before any start (exit 2), and req["repo"] made the main checkout. Every vendor's
+    run meets the same checks a Claude run does (docs/codex-agy-gaps-2026-10-29.md, D2-A): the contract's
+    `physical: none`; for a non-Claude CLI, the vendor fence (a confidential or guarded repo only on a login
+    its tenant owns) and the run cap; Codex's public-repo rule (contract E4)."""
     where = req.get("cwd") or req.get("repo")
     if not where or not os.path.isdir(where):
         fail("--cwd or --repo must name a directory (got %r)" % where, 2)
@@ -539,16 +596,37 @@ def guard(req, harness):
     why = physical_ok(root)
     if why:
         fail(why, 2)
-    if os.environ.get("CLAUDE_UNATTENDED") and (harness in ("orca", "codex") or req.get("runner") == "orca"):
-        # an Orca worker or a Codex run counts against no run cap (dispatch-rc live sees neither) and no
-        # depth cap: only an attended caller starts one (review 2026-10-15). stalls.py sees Orca workers
-        # since B8, and the tick's `harness retry` passes here from launchd (no CLAUDE_UNATTENDED), bounded
-        # by its two retries per Task; a dispatched session's tick is refused, and raised after six
-        fail("%s runs are started attended only (CLAUDE_UNATTENDED=%s): no run cap counts them yet"
-             % (req.get("runner") or harness, os.environ["CLAUDE_UNATTENDED"]), 2)
+    vendor = vendor_of(req, harness)
+    mark = unattended_mark()
+    if mark and vendor == "claude" and (harness == "orca" or req.get("runner") == "orca"):
+        # an Orca Claude worker counts against no run cap (dispatch-rc live counts only the non-Claude ones,
+        # whose CLI no registry of Claude Code's sees) and no depth cap: only an attended caller starts one
+        # (review 2026-10-15). stalls.py sees Orca workers since B8, and the tick's `harness retry` passes
+        # here from launchd (no marker), bounded by its two retries per Task
+        fail("Orca Claude workers are started attended only (%s): no run cap counts them yet" % mark, 2)
     if codex_in(req, harness) and public_repo(root):
         fail("Codex does not run in %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — OpenAI's docs say not "
              "to use a plan login in scripts there (contract E4)" % root, 2)
+    why = vendor_fence(root, vendor)
+    if why:
+        fail(why, 2)
+    if vendor != "claude":
+        # the depth cap the attended-only rule also stood for: a chain of runs stops at DISPATCH_MAX_DEPTH, as
+        # dispatch's does (the codex adapter's child_env counts one deeper)
+        d, top = os.environ.get("DISPATCH_DEPTH", ""), os.environ.get("DISPATCH_MAX_DEPTH", "")
+        d, top = (int(d) if d.isdigit() else 0), (int(top) if top.isdigit() else 5)
+        if d >= top:
+            fail("this caller is at depth %d of DISPATCH_MAX_DEPTH %d: no %s run starts from it" % (d, top, vendor), 2)
+        # counted by the cap since vendor-fence, so an unattended caller may start one: the attended-only
+        # rule this replaced said "no run cap counts them yet" (F6 of the gaps doc)
+        slots = run_slots()
+        if slots is None and mark:
+            fail("the run cap did not read (%s --slots): an unattended %s start waits until it does" % (dispatch_bin(), vendor), 2)
+        if slots is None:
+            warn("the run cap did not read (%s --slots): starting, as an attended caller" % dispatch_bin())
+        elif slots[0] >= slots[1]:
+            fail("%d runs are busy of %d (dispatch --slots): no %s run starts; the next step waits for a run to end"
+                 % (slots[0], slots[1], vendor), 2)
     req["repo"] = root
     return req
 
@@ -566,9 +644,10 @@ def prompt_of(args):
 def request(args):
     """The adapter's request from the command line; the date is today's, here, once."""
     req = {k: args.get(k) for k in ("cwd", "repo", "name", "branch", "agent", "runner", "model", "effort",
-                                      "account", "ship", "on", "fork")}
+                                      "account", "ship", "on", "fork", "timeout")}
     req["prompt"] = prompt_of(args)
     req["headless"] = bool(args.get("headless"))
+    req["ephemeral"] = bool(args.get("ephemeral"))   # a Codex run's --ephemeral: the council's research mode
     req["date"] = time.strftime("%Y-%m-%d")
     for k in ("cwd", "repo"):
         if req.get(k):
@@ -676,7 +755,8 @@ def cmd_retry(args):
 
 def exit_report(rec):
     """The contract's exit report from a session's last record. Cost is not measured here (the plan
-    readings are bin/account's, a reading of the whole login): null, not guessed; turns only where
+    readings are bin/account's, a reading of the whole login): the adapter's own `cost` where it summed
+    one (a codex run's tokens over every turn.completed, F11), else null, never guessed; turns only where
     the harness counted them (a codex run's turn.completed events)."""
     native = rec.get("native") or {}
     files = None
@@ -686,7 +766,7 @@ def exit_report(rec):
     return {"session_id": rec.get("session_id"), "harness": rec.get("harness"), "state": rec.get("state"),
             "stop_reason": native.get("end_reason") or native.get("stop_reason"),
             "last_message": rec.get("last_message") or native.get("last_message"),
-            "turns": native.get("turns"), "cost": None,
+            "turns": native.get("turns"), "cost": native.get("cost"),
             "started_at": rec.get("started_at"), "ended_at": native.get("ended_at") or time.time(),
             "files_changed": files, "cwd": rec.get("cwd"), "branch": rec.get("branch"), "native": native}
 
@@ -707,11 +787,11 @@ def cmd_stop(args):
 VALUED = {"status": ("--host", "--harness", "--repo"), "list": ("--host", "--harness", "--repo"),
           "candidates": ("--host", "--harness", "--repo"),
           "run": ("--host", "--harness", "--repo", "--cwd", "--prompt", "--prompt-file", "--branch", "--name",
-                  "--agent", "--runner", "--model", "--effort", "--account", "--ship", "--on"),
-          "resume": ("--host", "--harness", "--repo", "--prompt", "--prompt-file", "--model", "--effort"),
+                  "--agent", "--runner", "--model", "--effort", "--account", "--ship", "--on", "--timeout"),
+          "resume": ("--host", "--harness", "--repo", "--prompt", "--prompt-file", "--model", "--effort", "--timeout"),
           "stop": ("--host", "--harness", "--repo"),
           "retry": ("--host", "--harness", "--repo", "--model", "--effort")}
-FLAGS = {"run": ("--json", "--headless"), "resume": ("--json", "--fork"), "list": ("--json", "--unsettled")}
+FLAGS = {"run": ("--json", "--headless", "--ephemeral"), "resume": ("--json", "--fork", "--ephemeral"), "list": ("--json", "--unsettled")}
 
 
 def parse(argv):

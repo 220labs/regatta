@@ -9,7 +9,7 @@
 # agent is started. Last, on a Mac with `claude`: the real list against `claude agents --json`.
 #   bash modules/wharf-runs/tests/test_harness.sh
 set -u
-unset CLAUDE_UNATTENDED   # an unattended /finish runs this check: the cases are an attended caller unless they say
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED   # an unattended /finish runs this check: the cases are an attended caller unless they say
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 T=$(mktemp -d); T=$(cd "$T" && pwd -P)
 PIDS=()
@@ -132,8 +132,13 @@ cat > "$T/codex" <<'SH'
 # codex exec --json, as OpenAI documents its events; the prompt arrives on stdin ("-")
 echo "codex $*" >> "$STUB_CODEX_CALLS"
 echo "stdin: $(cat)" >> "$STUB_CODEX_CALLS"
+# what the child was handed (vendor-fence): the marker, no Claude session, its own TMPDIR
+echo "env: RU=${REGATTA_UNATTENDED:-unset} CU=${CLAUDE_UNATTENDED:-unset} SID=${CLAUDE_CODE_SESSION_ID:-unset} PH=${PLAN_HARNESS:-unset} TMP=${TMPDIR:-unset}" >> "$STUB_CODEX_CALLS"
 echo '{"type":"thread.started","thread_id":"'"${STUB_CODEX_THREAD:-th-000001}"'"}'
 echo '{"type":"turn.started"}'
+if [ -n "${STUB_CODEX_RATE:-}" ]; then
+  echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again in 3 hours."}}'; exit 1
+fi
 # a TERM waits for the sleep in hand before its trap runs: 0.2 s steps, not 1 s, as test_dispatch's stub
 if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; while :; do sleep 0.2; done; fi
 echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"DONE"}}'
@@ -146,7 +151,9 @@ cat > "$T/dispatch" <<'PY'
 import json, os, re, subprocess, sys, time
 a = sys.argv[1:]
 open(os.environ["STUB_DISPATCH_CALLS"], "a").write(" ".join(a) + "\n")
-runs = os.path.join(os.environ["HOME"], "Library", "Logs", "claude-weekly", "run-seed-runs")
+if a[0] == "--slots":   # the run cap a non-Claude start asks (vendor-fence): STUB_SLOTS `<busy> <cap>`, or garbage
+    print(os.environ.get("STUB_SLOTS", "0 4")); sys.exit(0)
+runs =os.path.join(os.environ["HOME"], "Library", "Logs", "claude-weekly", "run-seed-runs")
 lstart = lambda pid: " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                                              env=dict(os.environ, TZ="UTC", LC_ALL="C")).stdout.split())
 if os.environ.get("STUB_DISPATCH_FAIL"):
@@ -533,12 +540,25 @@ grep -q "retry-of" "$STUB_ORCA_CALLS"; check "$?" 1 "  and Orca was never asked 
 
 echo "codex V1: codex exec --json under a detached wrapper"
 CW="$T/scratch-wt"; : > "$STUB_CODEX_CALLS"
-STUB_CODEX_THREAD=th-aaaa0001 H run --harness codex --cwd "$CW" --name cx --prompt "reply DONE" --model gpt-6 --effort high --json > "$T/c.json" 2>"$T/err"
+# the run's scratch dir (its TMPDIR, writable under the fence) lands here, not in /private/tmp
+export HARNESS_CODEX_SCRATCH="$T/cxs"; mkdir -p "$HARNESS_CODEX_SCRATCH"
+# an attended caller, pinned: with no session, no terminal app and no tty (CI, launchd) a start reads unattended
+HC() { CLAUDE_CODE_SESSION_ID=sess-attended H "$@"; }
+FENCE="-c default_permissions=\"regatta-fence\" -c permissions.regatta-fence.extends=\":workspace\" -c permissions.regatta-fence.filesystem={"
+STUB_CODEX_THREAD=th-aaaa0001 HC run --harness codex --cwd "$CW" --name cx --prompt "reply DONE" --model gpt-6 --effort high --json > "$T/c.json" 2>"$T/err"
 check "$?" 0 "run --harness codex exits 0"
 check "$(jget "$T/c.json" '(d["harness"], d["session_id"], d["branch"])')" "('codex', 'th-aaaa0001', 'claude/laptop/2026-10-14-w')" "  the thread id read from codex's first event"
-has "$STUB_CODEX_CALLS" "codex exec --json --approve-for-me -C $CW -m gpt-6 -c model_reasoning_effort=\"high\" -" "  exec --json --approve-for-me -C, model and effort, the prompt from stdin"
+has "$STUB_CODEX_CALLS" "codex exec --json --approve-for-me -C $CW $FENCE" "  exec --json --approve-for-me -C, then the fence's permissions profile (vendor-fence, F2)"
+has "$STUB_CODEX_CALLS" "\"$HOME\"=\"deny\"" "    the home folder denied (the worktree lies outside it here)"
+has "$STUB_CODEX_CALLS" "\"$CW\"=\"write\"" "    the worktree writable"
+has "$STUB_CODEX_CALLS" "\"$HARNESS_CODEX_SCRATCH/codex-run-" "    and the run's scratch dir"
+has "$STUB_CODEX_CALLS" "} -m gpt-6 -c model_reasoning_effort=\"high\" -" "  model and effort after it, the prompt from stdin"
 has "$STUB_CODEX_CALLS" "stdin: reply DONE" "  the prompt on stdin"
 grep -q -- "--dangerously" "$STUB_CODEX_CALLS"; check "$?" 1 "  never --dangerously-bypass-approvals-and-sandbox"
+has "$STUB_CODEX_CALLS" "--disable apps" "  attended too: the account apps off, as the run is detached and its approvals go to auto-review (landing review, F3)"
+grep -q -- "--ephemeral" "$STUB_CODEX_CALLS"; check "$?" 1 "  no --ephemeral unless asked"
+has "$STUB_CODEX_CALLS" "env: RU=unset CU=unset SID=unset PH=codex TMP=$HARNESS_CODEX_SCRATCH/codex-run-" \
+  "  the child: no marker (attended), no CLAUDE_CODE_SESSION_ID (helmlib.harness() misread it), PLAN_HARNESS=codex, TMPDIR its scratch"
 cx_state() {   # the thread's state once it reads $2, or what it read last (4 s)
   local s="" i
   for i in $(seq 1 20); do
@@ -549,13 +569,75 @@ cx_state() {   # the thread's state once it reads $2, or what it read last (4 s)
 check "$(cx_state th-aaaa0001 completed)" "completed" "the run ends by itself: completed (exit 0)"
 H stop th-aaaa0001 --json > "$T/cst.json"; check "$(jget "$T/cst.json" '(d["state"], d["last_message"], d["turns"], d["stop_reason"])')" \
   "('completed', 'DONE', 1, 'exit 0')" "stop on an ended run: its exit report, the reply and the turns the wrapper counted"
+check "$(jget "$T/cst.json" '(d["cost"]["input_tokens"], d["cost"]["output_tokens"], d["cost"]["usd"])')" "(1, 1, None)" \
+  "  cost: the turns' usage summed, no price for a plan login (F11)"
+check "$(H status th-aaaa0001 --harness codex --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["model"], d["effort"])')" "gpt-6 high" \
+  "  the model and effort it ran with (the request's, where Codex's store has no thread)"
+check "$(ls "$HARNESS_CODEX_SCRATCH" | grep -c codex-run-)" 0 "  the run's scratch dir removed at its end"
 H run --harness codex --cwd "$T/scratch" --prompt x > /dev/null 2>&1; check "$?" 2 "--cwd on main: refused"
 
+echo "codex unattended: the marker, the apps off, the run cap (vendor-fence, F3, F5, F6)"
+: > "$STUB_CODEX_CALLS"
+REGATTA_UNATTENDED=dispatch CLAUDE_CODE_SESSION_ID=sess-x STUB_SLOTS="1 4" STUB_CODEX_THREAD=th-uuuu0004 \
+  H run --harness codex --cwd "$CW" --name cxu --prompt x --ephemeral --json > /dev/null 2>"$T/err"
+check "$?" 0 "an unattended caller starts a Codex run while the cap has room (counted since vendor-fence)"
+has "$STUB_DISPATCH_CALLS" "--slots" "  the cap asked: dispatch --slots"
+has "$STUB_CODEX_CALLS" "--disable apps --disable plugins" "  the account apps and plugins off"
+has "$STUB_CODEX_CALLS" "--disable computer_use --disable in_app_browser -c mcp_servers={} --ephemeral -" "  computer use, the browser and every MCP server off; --ephemeral asked for"
+has "$STUB_CODEX_CALLS" "env: RU=dispatch CU=dispatch SID=unset PH=codex" "  the child carries the marker under both names, the caller's session id dropped"
+: > "$STUB_CODEX_CALLS"
+CLAUDE_UNATTENDED=dispatch STUB_CODEX_THREAD=th-uuuu0005 H run --harness codex --cwd "$CW" --name cxo1 --prompt x > /dev/null 2>"$T/err"
+check "$?" 0 "only the old name set (CLAUDE_UNATTENDED): still an unattended caller"
+has "$STUB_CODEX_CALLS" "env: RU=dispatch CU=dispatch" "  its child gets both names"
+has "$STUB_CODEX_CALLS" "--disable apps" "  and the apps off"
+: > "$STUB_CODEX_CALLS"
+REGATTA_UNATTENDED=dispatch STUB_SLOTS="4 4" H run --harness codex --cwd "$CW" --name cxf --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "the cap full: refused"
+has "$T/err" "4 runs are busy of 4 (dispatch --slots): no codex run starts; the next step waits for a run to end" "  in the cap's waiting words"
+REGATTA_UNATTENDED=dispatch STUB_SLOTS="?" H run --harness codex --cwd "$CW" --name cxq --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "a cap that does not read: an unattended start refused"
+REGATTA_UNATTENDED=dispatch DISPATCH_DEPTH=5 H run --harness codex --cwd "$CW" --name cxd --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "a caller at DISPATCH_MAX_DEPTH (5): refused, as dispatch's chain stops (landing review)"
+has "$T/err" "at depth 5 of DISPATCH_MAX_DEPTH 5: no codex run starts" "  naming the depth"
+check "$(wc -c < "$STUB_CODEX_CALLS" | tr -d ' ')" 0 "  codex never ran for any of the three"
+check "$(python3 - "$B/harness_adapters/codex.py" <<'PY'
+import importlib.util as u, sys
+s = u.spec_from_file_location("cx_ua", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+m._tty = lambda: False
+print(m.caller_unattended({}), m.caller_unattended({"CLAUDE_CODE_SESSION_ID": "s"}), m.caller_unattended({"TERM_PROGRAM": "vscode"}),
+      m.caller_unattended({"CLAUDE_UNATTENDED": "old"}), m.caller_unattended({"REGATTA_UNATTENDED": "new", "CLAUDE_UNATTENDED": "old"}))
+m._tty = lambda: True
+print(m.caller_unattended({}))
+PY
+)" "launchd None None old new
+None" "caller_unattended: launchd's start (no session, no terminal app, no tty) is unattended; the new name before the old"
+
+echo "codex: bounded — a timeout, a rate limit (vendor-fence, F6)"
+STUB_CODEX_THREAD=th-tttt0006 STUB_CODEX_HOLD=1 HC run --harness codex --cwd "$CW" --name tmo --prompt x --timeout 1 --json > /dev/null 2>"$T/err"
+check "$?" 0 "--timeout 1: started"
+check "$(cx_state th-tttt0006 failed)" "failed" "  past its timeout: failed"
+H stop th-tttt0006 --json > "$T/tmo.json"; check "$(jget "$T/tmo.json" '(d["state"], d["stop_reason"], d["native"]["timed_out"])')" \
+  "('failed', 'timed out after 1s', True)" "  the end says why"
+STUB_CODEX_RATE=1 STUB_CODEX_THREAD=th-rrrr0007 HC run --harness codex --cwd "$CW" --name rate --prompt x --json > /dev/null 2>"$T/err"
+check "$(cx_state th-rrrr0007 failed)" "failed" "a turn that fails on a usage limit: failed"
+H stop th-rrrr0007 --json > "$T/rate.json"; check "$(jget "$T/rate.json" '(d["stop_reason"], d["native"]["rate_limited"])')" \
+  "('rate limited: You have hit your usage limit. Try again in 3 hours.', True)" "  the reason recorded, rate_limited true"
+check "$(python3 - "$B/../../helm/bin" <<'PY'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import stalls
+s, n = stalls.judge_codex("laptop", time.time())
+print(sorted(x["class"] + " " + x["action"] for x in s), n)
+PY
+)" "['S1 raise', 'S1 raise'] []" "stalls.py judges the harness's Codex runs: the timed-out and the rate-limited one are S1 cards, raised"
+
 echo "codex: a run still going, stopped"
-STUB_CODEX_THREAD=th-bbbb0002 STUB_CODEX_HOLD=1 H run --harness codex --cwd "$CW" --name hold --prompt x --json > "$T/h.json" 2>"$T/err"
+STUB_CODEX_THREAD=th-bbbb0002 STUB_CODEX_HOLD=1 HC run --harness codex --cwd "$CW" --name hold --prompt x --json > "$T/h.json" 2>"$T/err"
 HP=$(jget "$T/h.json" 'd["pid"]')
 check "$(jget "$T/h.json" 'd["state"]')/$(kill -0 "$HP" 2>/dev/null && echo alive)" "working/alive" "a live run: working, its codex alive after the call returned"
 check "$(H list --harness codex --json | python3 -c 'import json,sys; print([r["session_id"] for r in json.load(sys.stdin)])')" "['th-bbbb0002']" "  listed"
+rc_live() { python3 "$B/dispatch-rc" live --no-reap "" "" 2>/dev/null; }
+check "$(( $(rc_live) - $(DISPATCH_RC_VENDORS=0 rc_live) ))" 1 "  dispatch-rc's run count holds it: one slot of the cap (vendor-fence, F6)"
 H resume th-bbbb0002 --prompt x > /dev/null 2>&1; check "$?" 2 "  not continued beside itself"
 H stop th-bbbb0002 --json > "$T/hst.json" 2>"$T/err"; check "$?" 0 "stop exits 0"
 check "$(jget "$T/hst.json" '(d["state"], d["stop_reason"])')/$(kill -0 "$HP" 2>/dev/null && echo alive || echo gone)" \
@@ -563,13 +645,18 @@ check "$(jget "$T/hst.json" '(d["state"], d["stop_reason"])')/$(kill -0 "$HP" 2>
 
 echo "codex V2: exec resume and exec fork"
 : > "$STUB_CODEX_CALLS"
-STUB_CODEX_THREAD=th-aaaa0001 H resume th-aaaa0001 --prompt next --json > "$T/cr.json" 2>"$T/err"; check "$?" 0 "continue an ended thread"
-has "$STUB_CODEX_CALLS" "codex exec --json --approve-for-me -C $CW resume th-aaaa0001 -" "  exec resume THREAD, the prompt on stdin"
+STUB_CODEX_THREAD=th-aaaa0001 HC resume th-aaaa0001 --prompt next --json > "$T/cr.json" 2>"$T/err"; check "$?" 0 "continue an ended thread"
+has "$STUB_CODEX_CALLS" "codex exec --json --approve-for-me -C $CW $FENCE" "  exec resume behind the same fence"
+has "$STUB_CODEX_CALLS" "} resume th-aaaa0001 -" "  exec resume THREAD, the prompt on stdin"
 check "$(jget "$T/cr.json" '(d["session_id"], d["native"]["resumed_from"])')" "('th-aaaa0001', 'th-aaaa0001')" "  the same thread, resumed_from naming it"
 cx_state th-aaaa0001 completed > /dev/null
-STUB_CODEX_THREAD=th-cccc0003 H resume th-aaaa0001 --prompt again --fork --json > "$T/cf.json" 2>"$T/err"; check "$?" 0 "--fork"
-has "$STUB_CODEX_CALLS" "codex exec --json --approve-for-me -C $CW fork th-aaaa0001 -" "  exec fork THREAD: headless in 0.162.1"
+STUB_CODEX_THREAD=th-cccc0003 HC resume th-aaaa0001 --prompt again --fork --json > "$T/cf.json" 2>"$T/err"; check "$?" 0 "--fork"
+has "$STUB_CODEX_CALLS" "} fork th-aaaa0001 -" "  exec fork THREAD: headless in 0.162.1"
 check "$(jget "$T/cf.json" '(d["session_id"], d["native"]["resumed_from"], d["native"]["fork"])')" "('th-cccc0003', 'th-aaaa0001', True)" "  a new thread, forked from the old"
+git -C "$CW" checkout -q --detach
+HC resume th-aaaa0001 --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "a thread whose worktree left its claude/* branch: not resumed there (run's rule, F5)"
+has "$T/err" "not a claude/* branch" "  saying why"
+git -C "$CW" checkout -q claude/laptop/2026-10-14-w
 
 echo "codex V3/V4: threads Codex ran itself, from its store, read-only"
 CH="$T/codexhome"; mkdir -p "$CH/sessions"
@@ -604,11 +691,51 @@ check "$(CODEX_HOME="$CH" H status "title th-done" --harness codex --json | pyth
       "th-done False" "status by title; a status never carries what the session said"
 CODEX_HOME="$CH" H stop th-open > /dev/null 2>"$T/err"; check "$?" 2 "a thread Codex ran itself is not stopped from here"
 
-echo "codex --runner orca: an Orca codex worker"
+echo "codex --runner orca: an Orca codex worker, in a terminal of ours behind the fence (vendor-fence, F4)"
+# Orca's settings document as its store holds it: codex's default args clean, another agent's holding a bypass
+printf '{"agentDefaultArgs": {"codex": "--approve-for-me", "antigravity": "--dangerously-skip-permissions"}}\n' > "$T/orca-settings.json"
+export HARNESS_ORCA_SETTINGS="$T/orca-settings.json"
 : > "$STUB_ORCA_CALLS"
-H run --harness codex --runner orca --repo "$T/scratch" --name cxo --prompt x --json > "$T/cxo.json" 2>"$T/err"; check "$?" 0 "run --harness codex --runner orca"
-has "$STUB_ORCA_CALLS" "--agent codex --run run_1" "  worker-start --agent codex"
+HC run --harness codex --runner orca --repo "$T/scratch" --name cxo --prompt x --json > "$T/cxo.json" 2>"$T/err"; check "$?" 0 "run --harness codex --runner orca (another agent's bypass flag refuses no codex worker)"
+has "$STUB_ORCA_CALLS" "terminal create --worktree id:repo-1::$STUB_ORCA_WS/$TODAY-cxo --title $TODAY-cxo --command env -u CLAUDE_CODE_SESSION_ID -u CLAUDECODE PLAN_HARNESS=codex TMPDIR=$HARNESS_CODEX_SCRATCH/codex-worker-" \
+    "  a terminal of ours in the worktree: no Claude session in its env, its own TMPDIR"
+has "$STUB_ORCA_CALLS" "$T/codex --approve-for-me -C $STUB_ORCA_WS/$TODAY-cxo -c 'default_permissions=\"regatta-fence\"'" \
+    "  running codex behind the fence's permissions profile, never Orca's own launch"
+check "$(grep 'worker-start' "$STUB_ORCA_CALLS" | grep -c -- '--agent')/$(grep -c 'worker-start.*--terminal term_own_' "$STUB_ORCA_CALLS")" "0/2" \
+    "  worker-start --terminal (refused once while Orca learns the agent), never --agent codex"
 check "$(jget "$T/cxo.json" '(d["harness"], d["branch"])')" "('orca', 'claude/laptop/$TODAY-cxo')" "  the record is the orca adapter's"
+check "$(python3 -c 'import json,sys; print([x["agent"] for x in json.load(open(sys.argv[1]))])' "$HARNESS_RUNS_DIR/orca-workers.json")" "['codex']" \
+    "  in the adapter's ledger of non-Claude workers"
+check "$(( $(rc_live) - $(DISPATCH_RC_VENDORS=0 rc_live) ))" 1 "  dispatch-rc's run count holds the live worker (F6)"
+H stop "$(jget "$T/cxo.json" 'd["session_id"]')" --harness orca > /dev/null 2>&1
+check "$(( $(rc_live) - $(DISPATCH_RC_VENDORS=0 rc_live) ))" 0 "  stopped: no longer counted"
+printf '{"agentDefaultArgs": {"codex": "--approve-for-me --dangerously-bypass-approvals-and-sandbox"}}\n' > "$T/orca-bad.json"
+: > "$STUB_ORCA_CALLS"
+HARNESS_ORCA_SETTINGS="$T/orca-bad.json" HC run --harness codex --runner orca --repo "$T/scratch" --name cxb --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "Orca's default args for codex hold a bypass flag: refused"
+has "$T/err" "--dangerously-bypass-approvals-and-sandbox (settings.agentDefaultArgs.codex in $T/orca-bad.json)" "  naming the flag and what was read"
+HARNESS_ORCA_SETTINGS="$T/orca-bad.json" HC run --harness orca --agent codex --repo "$T/scratch" --name cxb2 --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "  the same through --harness orca --agent codex"
+printf '{"agentDefaultArgs": {}, "experimentalNativeChat": true, "nativeChatPermissionMode": "full-access"}\n' > "$T/orca-chat.json"
+HARNESS_ORCA_SETTINGS="$T/orca-chat.json" HC run --harness orca --agent codex --repo "$T/scratch" --name cxb3 --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "Orca's chat workers on full-access (its Yolo's other half): refused"
+HARNESS_ORCA_SETTINGS="$T/no-such.json" HC run --harness orca --agent codex --repo "$T/scratch" --name cxb4 --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "Orca's settings unread: refused, never assumed clean"
+check "$(grep -c 'worktree create' "$STUB_ORCA_CALLS")" 0 "  nothing made in Orca for any of them"
+# Orca's own store, read-only: the active profile's profile-state.db, domain settings
+OD="$T/orcadata"; mkdir -p "$OD/profiles/p1"; echo '{"activeProfileId": "p1"}' > "$OD/orca-profile-index.json"
+python3 - "$OD/profiles/p1/profile-state.db" <<'PY'
+import json, sqlite3, sys
+c = sqlite3.connect(sys.argv[1]); c.execute("CREATE TABLE profile_state_documents (domain TEXT PRIMARY KEY, payload TEXT)")
+c.execute("INSERT INTO profile_state_documents VALUES ('settings', ?)", (json.dumps({"agentDefaultArgs": {"codex": "--yolo"}}),)); c.commit()
+PY
+check "$(env -u HARNESS_ORCA_SETTINGS HARNESS_ORCA_DATA="$OD" python3 - "$B/harness_adapters/orca.py" <<'PY'
+import importlib.util as u, sys
+s = u.spec_from_file_location("orca_bp", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.bypass_refusal("codex").split(" (")[0], m.bypass_refusal("claude"))
+PY
+)" "Orca's default args for codex hold --yolo None" "  read from Orca's own store (the active profile's settings document); a Claude worker is not this check's"
+unset HARNESS_ORCA_SETTINGS
 
 echo "the real list against claude agents --json"
 if command -v claude > /dev/null 2>&1 && [ "$(uname)" = Darwin ] && [ -d "$REAL_HOME/.claude/sessions" ]; then
@@ -642,19 +769,23 @@ except h.Failed as e:
 print(rec, len(many or []), g)
 PY
 )" "None 2 refused 2" "two live records with no id yet are two (never guessed between); an Orca codex worker meets the public-repo rule"
-check "$(CLAUDE_UNATTENDED=dispatch python3 - "$B/harness" "$T/projects/site-wt" <<'PY'
+# guarded(MARKER): each road's guard() for an unattended caller marked MARKER=dispatch, the cap with room
+guarded() { env "$1=dispatch" STUB_SLOTS="0 4" python3 - "$B/harness" "$CW" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("harness", sys.argv[1])
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness", loader)); loader.exec_module(h)
 out = []
-for harness, req in (("orca", {}), ("codex", {}), ("claude-code", {"runner": "orca"}), ("claude-code", {})):
+for harness, req in (("orca", {}), ("codex", {}), ("claude-code", {"runner": "orca"}), ("claude-code", {}), ("orca", {"agent": "codex"})):
     try:
         h.guard(dict(req, cwd=sys.argv[2]), harness); out.append("ok")
     except h.Failed as e:
         out.append(str(e.code))
 print(" ".join(out))
 PY
-)" "2 2 2 ok" "unattended: no Orca worker or Codex run (no run cap counts them yet); claude-code through dispatch still"
+}
+check "$(guarded REGATTA_UNATTENDED)" "2 ok 2 ok ok" \
+  "unattended: an Orca Claude worker still refused (no cap counts it); a Codex run and an Orca codex worker pass, counted by the cap (vendor-fence, F6)"
+check "$(guarded CLAUDE_UNATTENDED)" "2 ok 2 ok ok" "  the old marker name alone: judged the same"
 
 echo "orca --account: a Claude worker on a login Orca cannot select, in a terminal of ours (docs/orca-accounts-2026-10-16.md)"
 # a stand-in bin/account: pick → acct-b on its own dir; limits → the row asked for; every call logged
@@ -724,6 +855,82 @@ mkdir -p "$T/copy/bin" && cp -R "$B/harness" "$B/harness_adapters" "$T/copy/bin/
 check "$?" 0 "--account auto from another cwd, bin/account by the checkout ctx names"
 has "$STUB_ACCOUNT_CALLS" "pick --repo $T/scratch --json" "  the checkout's own bin/account answered"
 unset HARNESS_ACCOUNT STUB_ACCOUNT_CALLS HARNESS_ORCA_START_WAIT HARNESS_ORCA_OWN
+
+echo "the vendor fence: a confidential or guarded repo only on a login its tenant owns (vendor-fence, F1)"
+mkrepo "$T/projects/conf" "- physical: none"
+# an umbrella scope sorts first: a fence that took scope_of_repo's first match would read the repo open (AGENTS.md's trap)
+printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}}}\n' "$T/projects/conf" > "$T/conf.json"
+cat > "$T/account-v" <<'PY'
+#!/usr/bin/env python3
+# bin/account's pick for a vendor: the login named, and whether the repo is its own (`owns`)
+import json, os, sys
+open(os.environ["STUB_ACCOUNT_CALLS"], "a").write(" ".join(sys.argv[1:]) + "\n")
+if os.environ.get("STUB_PICK_NONE"):
+    print(json.dumps({"account": None, "skipped": [["codex-x", "week 100%"]]})); sys.exit(3)
+print(json.dumps({"account": "codex-x", "provider": sys.argv[sys.argv.index("--provider") + 1], "env": {}, "skipped": [],
+                  "owns": bool(os.environ.get("STUB_OWNS"))}))
+PY
+chmod +x "$T/account-v"
+export CLAUDE_REPOS_JSON="$T/conf.json" HARNESS_ACCOUNT="$T/account-v" STUB_ACCOUNT_CALLS="$T/account-v.calls"
+: > "$STUB_CODEX_CALLS"; : > "$STUB_ORCA_CALLS"; : > "$STUB_ACCOUNT_CALLS"
+HC run --harness codex --cwd "$T/projects/conf-wt" --name cf1 --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "Codex in a confidential repo's worktree, the login no tenant's: refused"
+has "$T/err" "$T/projects/conf is in confidential scope conf: its text goes only to a login its tenant owns, and the codex login account pick names, codex-x, is not one" \
+    "  naming the scope, the rule and the login"
+has "$STUB_ACCOUNT_CALLS" "pick --provider codex --repo $T/projects/conf --json --cached" "  the login is account pick's, for the vendor and the repo"
+HC run --harness codex --runner orca --repo "$T/projects/conf" --name cf2 --prompt x > /dev/null 2>&1; check "$?" 2 "  codex through Orca (--runner orca): refused"
+HC run --harness orca --agent codex --repo "$T/projects/conf" --name cf3 --prompt x > /dev/null 2>&1; check "$?" 2 "  an Orca codex worker: refused"
+check "$(wc -c < "$STUB_CODEX_CALLS" | tr -d ' ')/$(grep -c 'worktree create' "$STUB_ORCA_CALLS")" "0/0" "  codex never ran, Orca made no worktree"
+STUB_OWNS=1 STUB_CODEX_THREAD=th-own00008 HC run --harness codex --cwd "$T/projects/conf-wt" --name cf4 --prompt x > /dev/null 2>"$T/err"
+check "$?" 0 "a Codex login its tenant owns: the run starts"
+STUB_PICK_NONE=1 HC run --harness codex --cwd "$T/projects/conf-wt" --name cf5 --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "no Codex login may run it: refused"
+has "$T/err" "no codex login may run it (codex-x: week 100%)" "  with pick's reason"
+check "$(python3 - "$B/harness" "$T/projects/conf-wt" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("harness", sys.argv[1])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness", loader)); loader.exec_module(h)
+out = []
+for harness, req in (("claude-code", {}), ("orca", {}), ("orca", {"agent": "claude"})):
+    try:
+        h.guard(dict(req, cwd=sys.argv[2]), harness); out.append("ok")
+    except h.Failed as e:
+        out.append(str(e.code))
+print(" ".join(out))
+PY
+)" "ok ok ok" "  a Claude run there, direct or an Orca Claude worker: its rule unchanged"
+printf '{"repos": {"x": ' > "$T/torn.json"
+CLAUDE_REPOS_JSON="$T/torn.json" HC run --harness codex --cwd "$CW" --name cf6 --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "a torn registry: every Codex start refused (fails closed)"
+has "$T/err" "the scope registry does not read" "  saying so"
+printf '{"repos": {}, "guarded": ["conf"]}\n' > "$T/guarded.json"
+CLAUDE_REPOS_JSON="$T/guarded.json" HC run --harness codex --cwd "$T/projects/conf-wt" --name cf7 --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "a guarded repo: refused the same"
+has "$T/err" "is guarded" "  named guarded"
+unset CLAUDE_REPOS_JSON HARNESS_ACCOUNT STUB_ACCOUNT_CALLS
+
+echo "the fence, live: codex sandbox under the start's permissions profile (no model call)"
+if command -v codex > /dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
+  # a home with a key in it, and a repo under it with a worktree inside the repo
+  FH="$T/fhome"; mkdir -p "$FH/.ssh" "$FH/.codex" "$T/fscratch"; echo SECRET > "$FH/.ssh/id_test"
+  FR="$FH/projects/r"; git init -q -b main "$FR"; printf -- '- physical: none\n' > "$FR/AGENTS.md"
+  git -C "$FR" add -A; git -C "$FR" -c user.email=t@t -c user.name=t commit -qm init
+  FW="$FR/trees/w"; git -C "$FR" worktree add -q -b claude/laptop/w "$FW"
+  HOME="$FH" python3 -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import codex; print(json.dumps(codex.fence_profile(sys.argv[2], sys.argv[3])))' \
+    "$B/harness_adapters" "$FW" "$T/fscratch" > "$T/fence.json"
+  sbx() { python3 - "$T/fence.json" "$@" <<'PY'
+import json, os, subprocess, sys
+argv = ["codex", "sandbox"] + json.load(open(sys.argv[1])) + ["--"] + sys.argv[2:]
+r = subprocess.run(argv, capture_output=True, text=True, env=dict(os.environ, HOME=os.environ["FH"], CODEX_HOME=os.environ["FH"] + "/.codex"))
+print(r.returncode, (r.stdout.strip().splitlines() or [""])[-1])
+PY
+  }
+  export FH
+  check "$(sbx cat "$FH/.ssh/id_test" | cut -d' ' -f1)" 1 "  the home folder's .ssh key unreadable under the fence"
+  check "$(sbx cat "$FW/AGENTS.md")" "0 - physical: none" "  the worktree readable"
+  check "$(sbx git -C "$FW" rev-parse --abbrev-ref HEAD)" "0 claude/laptop/w" "  git runs in it"
+  check "$(sbx touch "$FW/new" "$T/fscratch/new" | cut -d' ' -f1)/$(sbx touch "$FR/x" | cut -d' ' -f1)" "0/1" "  the worktree and the scratch dir writable, the checkout above read-only"
+  check "$(HOME="$FH" CODEX_HOME="$FH/.codex" codex sandbox -- cat "$FH/.ssh/id_test" 2>/dev/null)" "SECRET" "  the control: without the profile the same read succeeds"
+  unset FH
+else
+  echo "  skip no codex here, or not macOS (seatbelt): the live fence runs on a Mac with Codex"
+fi
 
 [ "$fails" = 0 ] && echo "test_harness: all passed" || echo "test_harness: $fails FAILED"
 [ "$fails" = 0 ]

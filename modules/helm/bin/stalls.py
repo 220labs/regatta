@@ -24,6 +24,8 @@ What is read:
     the plan store   helmlib.state() of every plan on this Mac (S7)
     ask poll's cache ~/Library/Caches/ask/asks.json: a WAITING line whose branch holds an open D-item
                      is already an ask (`asks N`), never also a stall (launch review, S6)
+    Codex            the codex adapter's own run records (harness-runs/codex-*.json): a harness Codex run
+                     that ended failed is an S1 card, raised (the Codex section below; vendor-fence)
     Orca             `bin/harness list --harness orca --unsettled`, and the orca adapter's task-list,
                      run-show and `check --peek` (this Mac only; the Orca section below, B8)
     the canary       wharf-runs' `clock canary check --json` (this Mac only; the class `start path dead`,
@@ -1180,6 +1182,63 @@ def judge_orca(host, live_states, live_ids, asked, now, recs=None, read=None):
     return stalls, unsure, runs, notes
 
 
+# ---------------------------------------------------------------------------- Codex
+#
+# A harness Codex run (`harness run --harness codex`: codex exec under the codex adapter's wrapper) has no
+# run record of dispatch's and no Orca Dispatch: its facts are the wrapper's own record. One that ended
+# failed — a timeout, a rate limit, an exit that was not 0, or a wrapper gone with no end — within CODEX_H
+# is an S1 card, raised and never retried (a retry is a fresh `harness run`, the brief's to give), unless a
+# later run of the same topic in the same directory has started since (vendor-fence, F6 of
+# docs/codex-agy-gaps-2026-10-29.md). A stop someone asked for is canceled, never a card.
+
+CODEX_ADAPTER = helmlib.harness_adapter("codex.py")   # wharf-runs'; None: no Codex read
+CODEX_H = 24
+
+
+def codex_adapter():
+    if not CODEX_ADAPTER:
+        return None
+    loader = SourceFileLoader("codex_adapter_for_stalls", str(CODEX_ADAPTER))
+    mod = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def judge_codex(host, now, read=None):
+    """(stalls, notes) of this Mac's harness Codex runs (the block above). READ: the adapter (tests)."""
+    try:
+        ad = read or codex_adapter()
+    except Exception as e:   # noqa: BLE001 — a reader that cannot load costs its cards, never the judge
+        return [], ["codex: the adapter did not load (%s)" % e.__class__.__name__]
+    if ad is None:
+        return [], []
+    ctx = __import__("types").SimpleNamespace(machine=host, warn=lambda m: None)
+    recs = [(p, r, ad._run_record(ctx, p, r)) for p, r in ad._records()]
+    stalls = []
+    for path, raw, rec in recs:
+        native = rec.get("native") or {}
+        if rec.get("state") != "failed":
+            continue
+        since = _num(raw.get("ended")) or _num(raw.get("updated")) or _num(raw.get("started"))
+        if not since or now - since > CODEX_H * 3600:
+            continue
+        later = [r for _, x, r in recs if x is not raw and (x.get("name") == raw.get("name")) and x.get("cwd") == raw.get("cwd")
+                 and (_num(x.get("started")) or 0) > (_num(raw.get("started")) or 0)]
+        if later:
+            continue   # run again since: the later run is the one to judge
+        why = native.get("end_reason") or "failed"
+        st = {"repo": raw.get("repo") or raw.get("cwd"), "topic": raw.get("name"), "branch": raw.get("branch"),
+              "started": raw.get("started"), "session": rec.get("session_id")}
+        ev = ["codex run %s (%s)" % (raw.get("run"), os.path.basename(path)), "end: %s" % why,
+              "error: %s" % (raw.get("error") or "none recorded"), "log: %s" % raw.get("log")]
+        rule = ("rate limited" if raw.get("rate_limited") else "timed out" if raw.get("timed_out")
+                else "gone, no end recorded" if not raw.get("ended") else "exited %s" % raw.get("exit"))
+        stalls.append(_stall("S1", host, st, raw.get("run"), "codex run: " + rule, ev, now, since, action="raise",
+                             key=[host, "codex", raw.get("run")], key_kind="codex", harness="codex",
+                             codex_run=raw.get("run")))
+    return stalls, []
+
+
 # ---------------------------------------------------------------------------- all of it
 
 TITLES = {"S1": "gone %s", "S2": "next step refused by the run cap", "S3": "ended at max lifetime",
@@ -1325,7 +1384,7 @@ def judge_canary(host, now, notes=None, held=None, dead=None):
 
 def title(s, now):
     what = TITLES[s["class"]]
-    if s["class"] == "S1" and s.get("harness") == "orca" and s["action"] == "raise":
+    if s["class"] == "S1" and s.get("harness") in ("orca", "codex") and s["action"] == "raise":
         what = "failed %s ago" % _ago(s.get("since"), now)
     elif s["class"] == "S1":
         what = what % _ago(s.get("since"), now)
@@ -1432,6 +1491,9 @@ def judge(peer=True, live_call=True, orca_held=None):
         dead = orca_dead(n)   # what the dead-man's count counts and names (S13a): a warning Orca answered with is not it
     stalls += judge_plans(me, live_ids, all_records, now)
     stalls += judge_after_cards(me, now, queued)   # S9: a queued step whose --after predecessor will not land
+    s, n = judge_codex(me, now)
+    stalls += s
+    notes += n
     k = len(notes)
     stalls += judge_skippers(me, now, notes)
     unread["skippers"] = len(notes) > k

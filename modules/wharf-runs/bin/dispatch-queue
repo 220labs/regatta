@@ -1137,7 +1137,7 @@ def busy(launchctl, repo="", topic="", except_qid=None):
     runs = [st for _, st in every if not m.parked(st)]
     n = m.counted([(k, st) for k, st in every
                    if not (topic and st.get("topic") == topic and m.same_repo(st.get("repo"), repo))])
-    return n + len(held(launchctl, except_qid, runs))
+    return n + m.vendor_slots() + len(held(launchctl, except_qid, runs))
 
 
 def start_lock(wait=150):
