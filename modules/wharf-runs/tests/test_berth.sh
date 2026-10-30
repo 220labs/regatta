@@ -8,7 +8,7 @@ B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"
 export HOME="$T/home"; mkdir -p "$HOME"
-unset DISPATCH_HOST CLAUDE_UNATTENDED DISPATCH_LABEL DISPATCH_MODE
+unset DISPATCH_HOST CLAUDE_UNATTENDED REGATTA_UNATTENDED DISPATCH_LABEL DISPATCH_MODE
 # the running session's id would make each case a typed skipper, whose dispatch runs the real `helm page` (S1)
 unset CLAUDE_CODE_SESSION_ID
 fails=0

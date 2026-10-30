@@ -5,7 +5,7 @@
 #   bash modules/wharf-runs/tests/test_autofinish_run.sh
 set -u
 # a dispatch session runs this suite inside its own run: its markers would change what is tested
-unset CLAUDE_UNATTENDED RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LOG RUN_SEED_YEAR \
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LOG RUN_SEED_YEAR \
       DISPATCH_DEPTH DISPATCH_BRIEF DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR \
       DISPATCH_MAX_DEPTH DISPATCH_MAX_RUNS DISPATCH_MAX_H AUTOFINISH_DISPATCH AUTOFINISH_ACCOUNT \
       ACCOUNTS_FILE ACCOUNT_NOW ACCOUNT_CLAUDE CLAUDE_CODE_OAUTH_TOKEN
@@ -525,7 +525,7 @@ cp "$STATE" "$T/state.before"
 af --dry > "$T/out" 2>&1; check "$?" "0" "--dry exits 0"
 has "$T/out" "would write $STATE" "  names the state it would write"
 has "$T/out" "would write $LOCK: session" "  and the lock"
-has "$T/out" "exec env CLAUDE_UNATTENDED=dispatch" "  dispatch's dry run: the runner's exec line"
+has "$T/out" "exec env REGATTA_UNATTENDED=dispatch CLAUDE_UNATTENDED=dispatch" "  dispatch's dry run: the runner's exec line, the marker under both names (vendor-fence)"
 has "$T/out" "--remote-control finish\\ ·\\ demo\\ ·\\ buildbox" "  with the whole claude command line"
 check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  starts nothing"
 check "$(cmp -s "$STATE" "$T/state.before" && echo same || echo changed)" "same" "  writes no state"

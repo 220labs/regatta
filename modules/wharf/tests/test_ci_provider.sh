@@ -1356,7 +1356,7 @@ echo "the pick: lanes, budgets, the trust refusals (lighthouse-ops S1)"
 mkdir -p "$REGATTA_CONFIG/lighthouse" "$REGATTA_CONFIG/regatta" "$T/logs"
 printf '%s\n' "$T/logs" > "$REGATTA_CONFIG/regatta/log-dir"
 # --apply refuses inside a Claude Code session: the suite stands in for the desk's job
-unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED
+unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED REGATTA_UNATTENDED
 LANES="$REGATTA_CONFIG/lighthouse/ci-lanes.json"; BUDGETS="$REGATTA_CONFIG/lighthouse/ci-budgets.json"
 USAGE="$T/logs/ci-usage.json"; PLOG="$T/logs/ci-pick.jsonl"
 "$CP" "$T/a" --pick > "$T/out" 2>&1; check "$?" "2" "no lanes file: refused"

@@ -13,7 +13,7 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 has() { case "$1" in *"$2"*) echo "  ok   $3";; *) echo "  FAIL $3: [$2] not in [${1:0:300}]"; fails=$((fails+1));; esac; }
 
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-unset CLAUDE_UNATTENDED SURFACES_FILE ACCOUNTS_FILE PLANS_DIR
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED SURFACES_FILE ACCOUNTS_FILE PLANS_DIR
 S="$T/tree"; mkdir -p "$S/.claude-plugin" "$S/modules" "$T/overlay/bin" "$T/home" "$T/config/regatta"
 cp "$ROOT/.claude-plugin/marketplace.json" "$S/.claude-plugin/"
 cp -R "$ROOT/modules/regatta" "$H" "$S/modules/"
@@ -51,7 +51,7 @@ check "$(py 'import importlib.machinery as m; h = m.SourceFileLoader("h", "'"$S"
 printf '%s\n' '{"repos": {}, "scopes": {"s": {"repos": [], "yard": "testhost"}}}' > "$T/yard.json"
 mkdir -p "$T/cfg-plain"   # a stranger's install: no overlay (`legacy`), so the core's private values keep their defaults
 # launchd's tick (no session, not unattended): a caller's session id would answer before the absent peer
-check "$(unset CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED; REGATTA_CONFIG="$T/cfg-plain" CLAUDE_REPOS_JSON="$T/yard.json" py 'import helmlib, stalls_tick; print(helmlib.brake_refusal()); print(stalls_tick.deadman_ping(brake="x")); print(stalls_tick.ensure_skippers("armed", "x"))')" \
+check "$(unset CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED REGATTA_UNATTENDED; REGATTA_CONFIG="$T/cfg-plain" CLAUDE_REPOS_JSON="$T/yard.json" py 'import helmlib, stalls_tick; print(helmlib.brake_refusal()); print(stalls_tick.deadman_ping(brake="x")); print(stalls_tick.ensure_skippers("armed", "x"))')" \
       "None
 ['deadman: not pinged — not installed (lighthouse)']
 []" "S11 without wharf-runs or lighthouse: no brake read, the yard's ping is one quiet line, the held skippers pass says nothing"

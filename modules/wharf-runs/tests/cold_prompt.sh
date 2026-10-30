@@ -8,7 +8,7 @@ set -u
 # The run's own inputs, unset by pattern (AGENTS.md's attended-behaviour trap: a fixed list goes stale):
 # a dispatched run carries CLAUDE_UNATTENDED, the background switch and DISPATCH_*, and the hook passes
 # every prompt of an unattended session untouched.
-unset CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_HOOK_NO_AUTOFINISH
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_HOOK_NO_AUTOFINISH
 for v in $(env | sed -nE 's/^((DISPATCH|RUN_SEED|SKIPPER|HELM|AUTOFINISH|COLD_PROMPT)_[A-Za-z0-9_]*)=.*/\1/p'); do unset "$v"; done
 # Not the laptop unless a case says so: there the hand-off carries --merge (the hook's header), and the
 # Mac that runs the suite must not decide what the cases expect.

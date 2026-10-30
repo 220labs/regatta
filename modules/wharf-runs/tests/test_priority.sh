@@ -9,7 +9,7 @@
 # job, session or network is touched. Every name is synthetic.
 #   bash modules/wharf-runs/tests/test_priority.sh
 set -u
-unset WEEKLY_RUN CLAUDE_UNATTENDED CLAUDECODE CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME AUTOFINISH_CALLER_UNATTENDED
+unset WEEKLY_RUN CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDECODE CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME AUTOFINISH_CALLER_UNATTENDED
 unset $(compgen -v | grep '^DISPATCH_')   # every DISPATCH_* a run carries (AGENTS.md: a fixed list goes stale)
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 H="$(cd "$(dirname "$0")/../hooks" && pwd)"
@@ -338,8 +338,8 @@ unset Q q_qid branch model effort log
 echo "--on auto beside --wait or --replace with a queue home: the queue places it, no refusal naming berth's pick"
 check "$(grep -c 'on_auto=0; on_default=0' "$B/dispatch")" "1" "a typed --on auto is dropped where --wait or --replace speaks to the queue"
 echo "the unattended --next one-shot keeps its pin"
-check "$(grep -c '\[ "$next" = 1 \] && \[ -n "${CLAUDE_UNATTENDED:-}" \]; }; } && opin=1' "$B/dispatch")" "1" \
-  "its fallback plist carries DISPATCH_HOST_PIN, as the queue road pins it"
+check "$(grep -c '\[ "$next" = 1 \] && \[ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" \]; }; } && opin=1' "$B/dispatch")" "1" \
+  "its fallback plist carries DISPATCH_HOST_PIN, as the queue road pins it (the marker under either name)"
 
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

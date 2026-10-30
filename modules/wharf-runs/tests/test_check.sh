@@ -7,7 +7,7 @@ T=$(cd "$(mktemp -d)" && pwd -P); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # this suite runs inside unattended /finish runs too; its cases set CLAUDE_UNATTENDED themselves
-unset CLAUDE_UNATTENDED
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
 export CHECK_SLOT_DIR="$T/slots" CHECK_LOGS="$T/logs" CHECK_SLOT_POLL=0.2 CHECK_SLOTS=1 CHECK_PASS_TTL=0   # the memory off; its own cases turn it on
 # wait up to 10 s for a condition
 until_() { local i; for i in $(seq 1 50); do eval "$1" && return 0; sleep 0.2; done; return 1; }

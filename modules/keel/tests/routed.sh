@@ -10,7 +10,7 @@ set -u
 T=$(mktemp -d)
 . "$(dirname "$0")/config.sh"; keel_config "$T/config"
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
-unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }

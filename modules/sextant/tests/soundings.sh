@@ -9,7 +9,7 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has() { case "$1" in *"$2"*) echo "  ok   $3";; *) echo "  FAIL $3: missing [$2] in [$1]"; fails=$((fails+1));; esac; }
 export SOUNDINGS_QUEUE="$T/pool/soundings.json" SOUNDINGS_PROPOSALS="$T/pool/proposals" SOUNDINGS_TODAY=2026-10-25
-unset CLAUDE_UNATTENDED
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
 S() { python3 "$D/bin/soundings" "$@"; }
 mkdir -p "$T/pool/proposals"
 prop() {  # prop <slug> <status> <repo or -> [no-launch]

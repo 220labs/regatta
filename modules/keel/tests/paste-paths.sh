@@ -13,9 +13,9 @@ fails=0
 # (2026-10-14, 2026-10-26). SPACESHEEP_CONFIG_DIR: never the Mac's own mirror.json, so a running mirror
 # changes no case's line
 export MEMO_STATE_DIR="$T/state" MEMO_SHEEP_STATE="$T/sheep" MEMO_SHEEP_BIN="$T/spacesheep" SPACESHEEP_KEY=ss_test SPACESHEEP_CONFIG_DIR="$T/ss-config"
-unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT  # each drops a part of the line; the cases that want one set it
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_ENTRYPOINT  # each drops a part of the line; the cases that want one set it
 printf '#!/bin/sh\nexit 9\n' > "$T/spacesheep"; chmod +x "$T/spacesheep"
-unset CLAUDE_UNATTENDED CLAUDE_HOOK_NO_SHEEP
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_HOOK_NO_SHEEP
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 form() {  # form <doc>: its spacesheep page — the form since 2026-10-14; unpinned, any page passes
   echo "https://spacesheep.dev/@sam/$(basename "$1" .md)"; }

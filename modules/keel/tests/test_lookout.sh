@@ -25,7 +25,7 @@ export GATE_TABLE="$T/models.json"
 unset CLAUDE_BIN
 # keel's brief day, pinned: fixtures dated by the wall clock fail across midnight (regatta#217, 2026-10-27)
 export KEEL_BRIEF_DAY=2026-10-21
-unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID MEMO_NOW
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID MEMO_NOW
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 mkdir -p "$T/bin" "$T/state" "$T/sheep" "$T/ask" "$T/runs" "$T/srv"
 fails=0
