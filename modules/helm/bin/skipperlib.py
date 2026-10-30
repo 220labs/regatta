@@ -676,7 +676,9 @@ def run_body(scope, start_id, say):
     # types here, so every guard that stands for a person's yes (helmlib.raise_refusal, ask answer's
     # mode-ask rule, tick and lookout arming, autofinish-run --merge, checkpoint.py's live rule) must
     # read it as unattended, as dispatch's runs are (CLAUDE_UNATTENDED=dispatch).
-    e.update(SKIPPER_SCOPE=scope, SKIPPER_ACCOUNT=label, HELM_HOLD_PARENT=str(os.getpid()), CLAUDE_UNATTENDED="skipper")
+    # both of the marker's names (vendor-fence's stage 1: the core's unattended_env)
+    e.update(SKIPPER_SCOPE=scope, SKIPPER_ACCOUNT=label, HELM_HOLD_PARENT=str(os.getpid()),
+             REGATTA_UNATTENDED="skipper", CLAUDE_UNATTENDED="skipper")
     # the prompt first: --disallowedTools takes every word after it; through claude-host where this
     # Mac's grant allows it (launcher()), which takes the word `claude` and starts the current one
     argv = claude_argv(host_bin, brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
@@ -819,9 +821,10 @@ def session_refusal(verb):
     if sid:
         return ("helm skipper %s: refused inside a session (CLAUDE_CODE_SESSION_ID %s) — a session may not load "
                 "or boot out a job; the tick, launchd's own child, does" % (verb, sid[:8]))
-    if os.environ.get("CLAUDE_UNATTENDED"):
-        return ("helm skipper %s: refused in an unattended caller (CLAUDE_UNATTENDED=%s) — the tick or the owner's "
-                "shell starts and stops a skipper" % (verb, os.environ["CLAUDE_UNATTENDED"]))
+    mark = next(("%s=%s" % (n, os.environ[n]) for n in ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED") if os.environ.get(n)), None)
+    if mark:   # the core's unattended_label, read here as this guard reads every name: from the environment
+        return ("helm skipper %s: refused in an unattended caller (%s) — the tick or the owner's "
+                "shell starts and stops a skipper" % (verb, mark))
     anc = session_ancestor()
     if anc:
         return ("helm skipper %s: refused below a live session (pid %d in the registry) — a session may not load "

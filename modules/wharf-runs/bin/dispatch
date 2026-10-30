@@ -799,7 +799,7 @@ elif [ "$mode" = yolo ]; then yolo=1; fi
 # lowered (landing review 5). ship_mode checks the ship's task again before it writes. A fired job
 # (DISPATCH_LABEL) carries the plist's mode, which a guarded dispatch wrote. Without helm here, the
 # caller's DISPATCH_MODE or `default` is its mode: the refusal fails closed.
-if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -z "${DISPATCH_LABEL:-}" ] && [ -n "$mode" ] && { [ "$mode_given" = 1 ] || [ "$yolo" = 1 ]; }; then
+if [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -z "${DISPATCH_LABEL:-}" ] && [ -n "$mode" ] && { [ "$mode_given" = 1 ] || [ "$yolo" = 1 ]; }; then
   why=$(python3 - "$core" "$mode" "$branch" "$repo" <<'PY' 2>/dev/null
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -833,13 +833,13 @@ fi
 # fired job carries no CLAUDE_UNATTENDED and no session, and passes as the owner's own schedule (the landing review)
 # main's plain refusal first, before any python: an unattended caller never forces, whatever force-ok answers
 # (the final landing review: a DISPATCH_QUEUE_BIN stand-in made the check exit 0)
-if [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = force ]; then
+if [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = force ]; then
   echo "dispatch: --priority force is the owner's word for one run, and an unattended caller never raises to it: end with the WAITING line — the next step waits for a run to end" >&2; exit 2
 fi
 if [ "$prio" = force ] && [ "$prio_given" = 1 ]; then
   why=$(python3 "$QG" force-ok 2>&1) || { echo "dispatch: ${why:-the force check failed}: end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
 fi
-if [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = high ]; then
+if [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$prio_given" = 1 ] && [ "$prio" = high ]; then
   inh=$(python3 "$QG" caller-prio 2>/dev/null) || inh=""
   [ "$inh" = high ] || { echo "dispatch: --priority high is a raise, and an unattended caller never raises a run's priority (its own run's record says ${inh:-none}): end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
 fi
@@ -847,7 +847,7 @@ fi
 # so an unattended caller is refused it (the same trap; S3's landing review, item 12). No caller is exempt, as
 # autofinish-run's unattended_caller() judges --merge: a DISPATCH_LABEL is any session's word, and no fired job
 # carries --replace (S3's third landing review, item 3)
-if [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$replace" = 1 ]; then
+if [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}${AUTOFINISH_CALLER_UNATTENDED:-}" ] && [ "$replace" = 1 ]; then
   echo "dispatch: --replace takes over another run's step, and an unattended caller is refused it: end with the WAITING line — the next step waits for a run to end (dispatch --queue names whose it is)" >&2; exit 2
 fi
 # Where a run goes when nobody names a host (the owner, 2026-10-13: "dispatch to [the build Mac] by
@@ -903,7 +903,7 @@ fi
 default_on="${DISPATCH_DEFAULT_ON-auto}"; dpeer=""
 if [ -z "$on" ] && [ "$on_here" = 0 ] && [ "$on_auto" = 0 ] && [ -n "$default_on" ] && [ "$(lc "$self_host")" != "$(lc "$default_on")" ] \
    && [ -z "${DISPATCH_LABEL:-}" ] && [ "$start$yolo" = 00 ] && [ -z "$waitwhy" ] && [ "$replace" = 0 ] \
-   && ! { [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ]; }; then
+   && ! { [ "$next" = 1 ] && [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ]; }; then
   case "$at" in
     # a cancel looks on auto's peer, never on this Mac itself: from that peer it would ssh to itself
     ''|reset*|@*) if [ "$cancel" = 1 ]; then
@@ -1095,7 +1095,7 @@ manager_env() {
   mgr="${DISPATCH_SKIPPER:-${DISPATCH_MANAGER:-}}"; macct="${DISPATCH_SKIPPER_ACCOUNT:-${DISPATCH_MANAGER_ACCOUNT:-}}"
   mplan="${DISPATCH_SHIP:-${DISPATCH_PLAN:-}}"; mspace="${DISPATCH_PLAN_SPACE:-}"
   mhost="${DISPATCH_SKIPPER_HOST:-${DISPATCH_MANAGER_HOST:-}}"
-  if [ -z "$mgr" ] && [ -z "${CLAUDE_UNATTENDED:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+  if [ -z "$mgr" ] && [ -z "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir); mtyped=1
     # where the manager runs: bin/ask reads "no record here" as an ended manager only on its own Mac
     mhost="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
@@ -1135,7 +1135,7 @@ mark_dispatched() {   # HOST
   # the force mark spent here, at each road's success (the queue's put, the plist, the peer's yes), never
   # before a refusal: a refused dispatch kept costing the owner another "use the force" (AGENTS.md: a write
   # that stands for a newer word goes after every refusal)
-  if [ "$prio" = force ] && [ -z "${CLAUDE_UNATTENDED:-}" ]; then
+  if [ "$prio" = force ] && [ -z "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ]; then
     case "${CLAUDE_CODE_SESSION_ID:-}" in ''|*[!A-Za-z0-9_-]*) ;; *) rm -f "$cache/force/$CLAUDE_CODE_SESSION_ID";; esac
   fi
   d="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/claude/dispatched"
@@ -1165,7 +1165,7 @@ if [ "$next" = 1 ]; then
   [ -n "$brief" ] || { echo "dispatch: $branch has no committed docs/handoff/<date>-$topic.md — write the next step's brief there and commit it" >&2; exit 2; }
   # A run that commits nothing could --next itself on its own brief forever (review of 2026-10-05).
   # Its session carries the blob of the brief it started from; the next step needs a new one.
-  if [ -n "${CLAUDE_UNATTENDED:-}" ] && [ -n "${DISPATCH_BRIEF:-}" ] \
+  if [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -n "${DISPATCH_BRIEF:-}" ] \
      && [ "$(git -C "$repo" rev-parse "refs/heads/$branch:$brief" 2>/dev/null)" = "$DISPATCH_BRIEF" ]; then
     echo "dispatch: $brief is the brief this run started from, unchanged — a --next would run the same step again. Write the next step's brief (a new docs/handoff/<date>-$topic.md), or end with what is left for $who" >&2; exit 2
   fi
@@ -1464,7 +1464,7 @@ queue_dispatch() {
   queue_args
   # a direct run's start is read from the bytes its job writes after this (run_shown); a --next set it already
   [ "$next" = 1 ] || { size0=0; [ -f "$log" ] && size0=$(wc -c < "$log"); }
-  [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ] && pin="$self_host"
+  [ "$next" = 1 ] && [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && pin="$self_host"
   # a typed --on here keeps it here (the header's promise): unpinned, another host's claim took it (the third
   # review's item 21). berth's pick of this host stays unpinned: a load pick, which any host with room serves
   [ "$on_typed" = 1 ] && pin="$self_host"
@@ -1505,7 +1505,7 @@ queue_dispatch() {
     # with --replace (S3's second review, item 4): the step then waits here for the run there to end
     local behind="there" rp=""; [ "$on_typed" = 1 ] && behind="here, to start once it ends there"
     # --replace is named to an attended caller only: an unattended one is refused it (S3's third landing review, item 6)
-    [ -n "${CLAUDE_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] || rp="; --replace queues this step behind it $behind"
+    [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}${AUTOFINISH_CALLER_UNATTENDED:-}" ] || rp="; --replace queues this step behind it $behind"
     case "$q_res" in
       "busy running"*) qhow="dispatch --end it there to start it here, or dispatch $branch --cancel there once its run is gone$rp";;
       "busy queued by"*) qhow="that session's step, still queued$([ -n "$rp" ] && echo "; --replace takes it over")";;
@@ -1905,7 +1905,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   # and an unattended --next, pinned here on the queue road (queue_dispatch: after() waits for its run on this
   # host): the one-shot it falls back to, should the queue not take it, keeps that pin at its fire-time enqueue
   # (S3's finish review; S4)
-  opin=""; { [ "$on_typed" = 1 ] || [ "${DISPATCH_HOST_PIN:-}" = 1 ] || { [ "$next" = 1 ] && [ -n "${CLAUDE_UNATTENDED:-}" ]; }; } && opin=1
+  opin=""; { [ "$on_typed" = 1 ] || [ "${DISPATCH_HOST_PIN:-}" = 1 ] || { [ "$next" = 1 ] && [ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ]; }; } && opin=1
   mgr_plist() {   # the skipper's five, under both names, only when there is a skipper (R1)
     local k v
     for k in $SKIPPER_ENV; do
@@ -2029,7 +2029,7 @@ pid_of_claude() {
 # switch (the owner, 2026-10-05: "configurable, so we can test side by side").
 run_env() {   # headless|rc -> the session's variables in $renv; the choice goes to the log and $bgeff
   bgeff="${bg:-deny}"
-  renv=(CLAUDE_UNATTENDED=dispatch BASH_DEFAULT_TIMEOUT_MS=1800000)
+  renv=(REGATTA_UNATTENDED=dispatch CLAUDE_UNATTENDED=dispatch BASH_DEFAULT_TIMEOUT_MS=1800000)   # the marker under both names (vendor-fence, stage 1)
   [ "$bgeff" = deny ] && renv+=(CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1)
   echo "== background $bgeff$([ -n "$bg" ] && echo " (--background)" || echo " (default for $1)")"
 }
@@ -2327,7 +2327,7 @@ if not a.get("here"):
     print("FAILED\x1f\x1f--account %s is not set up on this machine (account setup)" % want); sys.exit()
 if a.get("denied"):  # the guard would block every prompt there: --force never crosses a deny list
     print("FAILED\x1f\x1f--account %s: %s — run it on the default login (no --account)" % (want, a.get("why"))); sys.exit()
-if not a.get("eligible") and force and a.get("overage") and os.environ.get("CLAUDE_UNATTENDED"):
+if not a.get("eligible") and force and a.get("overage") and (os.environ.get("REGATTA_UNATTENDED") or os.environ.get("CLAUDE_UNATTENDED")):
     # --force past paid overage is a yes to money: an unattended caller never gives it (costs S8; no apostrophe in this block)
     print("FAILED\x1f\x1f--account %s: %s — --force past paid overage is a yes only a person gives, refused to an unattended caller" % (want, a.get("why"))); sys.exit()
 if not a.get("eligible") and not force:   # SHORT only for its limits, which a reset lifts: a refusal the queue keeps

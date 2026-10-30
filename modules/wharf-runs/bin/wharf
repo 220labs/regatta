@@ -155,7 +155,7 @@ ENDED = ("done", "landed", "launched")   # `launched` is rename S2's word for `l
 PASSES = 10          # an apply's passes at most; a pass that acts on nothing ends it sooner
 SHELL_TIMEOUT = 300  # a shell block's own timeout_seconds wins; over ~500 s it starts only from an attended apply (the tick has 600 s)
 SESSION_START = 400  # what a session start may take: worker-start's 300 s and its 90 s wait, or pickup seed
-TICK_STARTS = 2      # session starts per tick, every ship together: no run cap counts them yet (bin/harness)
+TICK_STARTS = 2      # session starts per tick, every ship together: the run cap counts only a non-Claude worker (start_refusal)
 HAIL_TEXT_MAX = 400  # bin/hail's TEXT_MAX: a hail's text is a pointer, and hail refuses a longer one
 HAIL_TIMEOUT = 120   # one hail: its socket readback (HAIL_READBACK_S) and a Talk post, well inside the tick
 HAIL_TAKEN = ("delivered", "queued", "held")   # what hail exits 0 for: a road took it (held: posted, unread yet)
@@ -463,7 +463,7 @@ def bp_mode_refusal(pid, bp, once=False, read=None):
     CLAUDE_UNATTENDED) counts as unattended: no person runs it (landing review 9). `read`: the ship's
     mode as bp_ship_mode read it, else read here."""
     m = bp["meta"].get("mode")
-    env = dict(os.environ, CLAUDE_UNATTENDED=os.environ.get("CLAUDE_UNATTENDED") or "wharf apply --once") if once else None
+    env = dict(os.environ, **core().unattended_env(core().unattended() or "wharf apply --once")) if once else None
     return m and helmlib.raise_refusal((read or bp_ship_mode(pid, bp))[0], m, env)
 
 
@@ -666,13 +666,28 @@ def start_refusal(bp, st, repo):
         return why
     if s.get("provider") == "shell":
         return None
-    if os.environ.get("CLAUDE_UNATTENDED"):
-        return "a session start is attended only (CLAUDE_UNATTENDED=%s): the tick starts it from launchd" % os.environ["CLAUDE_UNATTENDED"]
+    if core().unattended():
+        return "a session start is attended only (%s): the tick starts it from launchd" % core().unattended_label()
     depth = os.environ.get("DISPATCH_DEPTH") or "0"
     if depth not in ("", "0"):
         return "a ship starts its blocks at depth 0 (DISPATCH_DEPTH=%s)" % depth
     if s.get("provider") == "orca" and s.get("agent") == "codex" and harness().public_repo(str(repo)):
         return "Codex does not run in %s: a public repo (contract E4)" % repo
+    agent = s.get("agent") or "claude"
+    if s.get("provider") == "orca" and agent != "claude":
+        # every vendor's start meets the same check (vendor-fence, F1): a confidential or guarded repo only
+        # on a login its tenant owns; Orca's own bypass flags are orca.start()'s refusal, shared with harness
+        why = harness().vendor_fence(str(repo), agent)
+        if why:
+            return why
+        # and the run cap, as harness's guard asks it for every non-Claude start (F6): dispatch-rc counts a
+        # live Orca worker of another vendor; a cap that does not read holds the start (the tick has no marker)
+        slots = harness().run_slots()
+        if slots is None:
+            return "the run cap did not read (dispatch --slots): no %s worker starts until it does" % agent
+        if slots[0] >= slots[1]:
+            return ("%d runs are busy of %d (dispatch --slots): no %s worker starts; the next step waits for a run "
+                    "to end" % (slots[0], slots[1], agent))
     if not os.environ.get("WHARF_NO_WEEK"):
         try:
             af = _cache.get("autofinish") or _mod("autofinish_bin", HERE / "autofinish")
@@ -2543,7 +2558,7 @@ def refused_line(pid, bp, p):
     silent after (follow-ups item 3). Not once the ship has a mode: `helm mode` spoke, and drops it."""
     r = p.get("mode_refused")
     m = isinstance(r, dict) and (r.get("mode") or bp["meta"].get("mode"))
-    if not m or "mode" in p or os.environ.get("CLAUDE_UNATTENDED"):
+    if not m or "mode" in p or core().unattended():
         return None
     return "mode %s refused %s, and not recorded since (`helm mode %s %s` records it): %s" % (
         m, helmlib.iso(r.get("ts")) or "earlier", pid, m, r.get("why") or "a raise by an unattended apply")
@@ -2644,7 +2659,7 @@ def tick_caller(environ=None):
     autofinish-run checks the same names again (its ship_caller_refusal): this only keeps the pass
     from asking for what would be refused."""
     env = os.environ if environ is None else environ
-    for n in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_UNATTENDED", "SKIPPER_SCOPE") + tuple(helmlib.ENV_NAMES["ship"]):
+    for n in ("CLAUDE_CODE_SESSION_ID",) + core().UNATTENDED_NAMES + ("SKIPPER_SCOPE",) + tuple(helmlib.ENV_NAMES["ship"]):
         if env.get(n):
             return "%s is set" % n
     if (env.get("DISPATCH_DEPTH") or "0").strip() != "0":
@@ -2730,9 +2745,9 @@ def cmd_apply(a):
     pid = plan_id(a.plan)
     launch = None
     if a.launch:
-        if os.environ.get("CLAUDE_UNATTENDED"):
-            raise SystemExit("wharf apply --launch: a launch starts from an attended apply only (CLAUDE_UNATTENDED=%s)"
-                             % os.environ["CLAUDE_UNATTENDED"])
+        if core().unattended():
+            raise SystemExit("wharf apply --launch: a launch starts from an attended apply only (%s)"
+                             % core().unattended_label())
         launch = {"launches": a.launches, "session": a.session or os.environ.get("CLAUDE_CODE_SESSION_ID")}
     if a.dry_run and not a.once:
         return dry_run(pid, a.file, a.json)
@@ -2812,7 +2827,7 @@ def laid_by_here():
     raw = os.environ.get("DISPATCH_DEPTH") or "0"
     # a ship's block (a shell command, an Orca worker) carries the ship's env (helmlib's ENV_NAMES)
     # and no CLAUDE_UNATTENDED: no person laid it, and S6 reads `attended` as a person's yes to merge
-    unattended = (bool(os.environ.get("CLAUDE_UNATTENDED")) or raw != "0"
+    unattended = (bool(core().unattended()) or raw != "0"
                   or any(os.environ.get(n) for n in helmlib.ENV_NAMES["ship"]))
     return {"mode": "unattended" if unattended else "attended", "depth": int(raw) if raw.isdigit() else 0,
             "session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "host": harness().machine(), "t": helmlib.now()}
@@ -2959,7 +2974,7 @@ def depth_refusal(laid):
 def yard_side(a):
     """The yard's side of --yard, as the caller's ssh runs it: the pin and laid_by as the caller sent
     them, never read from a session here."""
-    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED"):
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or core().unattended():
         raise Refused(YARD_ONLY)
     try:
         pin, laid = json.loads(a.pinned), json.loads(a.laid_by)
@@ -2982,7 +2997,7 @@ def yard_side(a):
     # ssh sends no environment: the caller's layer is restored here, so start_refusal judges a lay
     # through the yard exactly as one made on it (an unattended or nested layer starts no session)
     if laid["mode"] == "unattended":
-        os.environ["CLAUDE_UNATTENDED"] = "laid_by"
+        os.environ.update(core().unattended_env("laid_by"))
     os.environ["DISPATCH_DEPTH"] = str(laid["depth"])
     return yard_compile(pin, laid, a.plan, a)
 
@@ -3102,8 +3117,8 @@ def cmd_watch(a):
     no state of its own beyond the file list. Attended only, as a start is; the tick stays as D5-A
     left it (disarmed). A pass's lines are printed only when it said something (--quiet: the
     tick's rule, a standing row said once)."""
-    if os.environ.get("CLAUDE_UNATTENDED"):
-        raise SystemExit("wharf apply --watch: attended only, as a start is (CLAUDE_UNATTENDED=%s)" % os.environ["CLAUDE_UNATTENDED"])
+    if core().unattended():
+        raise SystemExit("wharf apply --watch: attended only, as a start is (%s)" % core().unattended_label())
     if a.once or a.all or a.dry_run or a.json:
         raise SystemExit("wharf apply --watch: its passes are full applies; not with --once, --all, --dry-run or --json")
     if not a.files:

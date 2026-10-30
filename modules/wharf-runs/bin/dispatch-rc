@@ -31,7 +31,8 @@
                                is busy (D2 of docs/dispatch-warm-hour-2026-10-08.md)
     dispatch-rc live [--no-reap] REPO TOPIC
                                how many runs are busy, REPO's TOPIC and warm or waiting runs not
-                               counted (dispatch's run cap; parked());
+                               counted (dispatch's run cap; parked()); the harness's busy Codex runs
+                               and Orca's non-Claude workers count too (vendor_slots, vendor-fence);
                                only the count on stdout, the reaping's lines on stderr
     dispatch-rc unfinished REPO TOPIC
                                how many of REPO's TOPIC runs are not yet ended (after()'s view): a run
@@ -768,6 +769,36 @@ def counted(runs):
     CLI's `live` and the queue's claim both use (queue-s1's fourth review: the claim had dropped the overflow)."""
     n = len([1 for _, st in runs if not parked(st)])
     return n + max(0, (len(runs) - n) - MAX_PARKED)
+
+
+BUSY_STATES = ("submitted", "working")   # a vendor run that waits (input-required, idle) is parked, as a Claude one is
+
+
+def vendor_slots():
+    """The slots the runs of other CLIs hold here (vendor-fence, F6 of docs/codex-agy-gaps-2026-10-29.md): the
+    harness's own Codex runs (the codex adapter's harness_live) and Orca's non-Claude workers that the orca
+    adapter started (its ledger, vendor_live: no Orca call while it is empty), each busy one a slot. The
+    adapters are bin/harness's, loaded through it. DISPATCH_RC_VENDORS=0 counts none (a suite's switch). A
+    read that fails counts none, said on stderr: the cap is against load, and a count that cannot read
+    never stops a Claude run."""
+    if os.environ.get("DISPATCH_RC_VENDORS", "1") in ("0", "", "off"):
+        return 0
+    try:
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+        loader = SourceFileLoader("harness_for_rc", os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness"))
+        h = module_from_spec(spec_from_loader(loader.name, loader))
+        loader.exec_module(h)
+        ctx = h.Ctx()
+        n = 0
+        for name, verb in (("codex", "harness_live"), ("orca", "vendor_live")):
+            mod = ctx.adapter(name)
+            if mod is not None and hasattr(mod, verb):
+                n += len([r for r in getattr(mod, verb)(ctx) if r.get("state") in BUSY_STATES])
+        return n
+    except Exception as e:   # noqa: BLE001
+        print("dispatch-rc: the other CLIs' runs were not counted (%s: %s)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
+        return 0
 
 
 def live(skip_repo=None, skip_topic=None, reap=True):
@@ -2156,7 +2187,7 @@ if __name__ == "__main__":
         repo, topic = sys.argv[-2:]
         out, sys.stdout = sys.stdout, sys.stderr   # say() from a reap must not join the count
         try:
-            n = counted(live(repo, topic, reap))
+            n = counted(live(repo, topic, reap)) + vendor_slots()
         finally:
             sys.stdout = out
         print(n)
