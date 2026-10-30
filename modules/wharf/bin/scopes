@@ -30,21 +30,6 @@
   scopes configure        the checklist: every scope, its flag and login; at a terminal, toggle
                           by number and save through `set`
   scopes paths SCOPE      the paths the fence keeps out for SCOPE (the core's scope_paths)
-  scopes bridge open FROM TO --until TIME|+Nh|+Nm --why TEXT [--one-way]
-                          two confidential scopes treated as one until TIME (24 h at most): an entry in
-                          the config dir's lighthouse/bridges.json, both ways unless --one-way (FROM
-                          reads TO); a person's — refused to an unattended caller (CLAUDE_UNATTENDED,
-                          WEEKLY_RUN, AUTOFINISH_CALLER_UNATTENDED: exit 2), and refused
-                          when it would chain a scope to a second partner
-  scopes bridge --revoke ID|SCOPE
-                          end the entry ID, or every open one SCOPE is in, now (`ended` written)
-  scopes bridge audit [--since DATE]
-                          every entry: open, ended, expired or void and why; an expired one gets its
-                          `ended`; exit 1 when the file does not read; DATE a plain date (UTC) or an ISO
-                          time with its zone, anything else refused (exit 2)
-  scopes bridge concern SESSION --text TEXT [--bridge ID] [--dry-run]
-                          an issue in the anchor's own repository, from a cwd in a bridged scope, naming
-                          the session and the other scope only
 
 Confidential (knowledge-layers design D3, 2026-10-20: "base it on scopes. And make a scope
 configurator on regatta that lets me set which ones are confidential"): `"confidential": true` on a
@@ -88,15 +73,6 @@ A member may be a glob (`*zigzag*`), matched against registry keys, so a repo no
 lands in its scope the day it is added. Paths in a file are relative to it, so one list serves
 both Macs; a folder missing on this Mac is left out of the file, with a note.
 
-A bridge (confidential-reach S8; its D3 answered A, the bridge component doc): while an entry is open,
-two confidential scopes treat each other as their own — the fence lets a session started in one read
-and write the other's paths, and account lets each side's logins run the other's repos. The file is
-local to the Mac (a hook reads it on every call, so never a Drive link), appended and ended, never
-edited: it is the history of who opened what, why and until when. This tool is its one writer; the
-core's open_bridges() its one reading, which takes every doubt (a torn file, an entry past `until`,
-longer than 24 h, a scope missing or open, a chain) as no bridge. Opening stands for the owner's yes,
-so an unattended caller is refused (the house rule for such a flag); ending one never is.
-
 Python 3.9, stdlib only.
 """
 import datetime
@@ -106,7 +82,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import urllib.parse
 from pathlib import Path
 
@@ -643,243 +618,8 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None):
     return out
 
 
-# ---- bridges (confidential-reach S8) -------------------------------------------------------------
-
-def bridge_iso(t):
-    return datetime.datetime.fromtimestamp(int(t), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_until(v, now):
-    """`--until`'s value as epoch seconds: `+Nh` or `+Nm` from now, or an ISO time with its zone; else None."""
-    m = re.fullmatch(r"\+(\d+(?:\.\d+)?)([hm])", v or "")
-    if m:
-        return now + float(m.group(1)) * (3600 if m.group(2) == "h" else 60)
-    return common.bridge_time(v)
-
-
-class BridgeLock:
-    """An exclusive lock beside the bridges file: two writers never lose an entry between read and replace."""
-
-    def __init__(self, path):
-        self.path = path.with_name(path.name + ".lock")
-
-    def __enter__(self):
-        import fcntl
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.f = open(self.path, "a")
-        fcntl.flock(self.f, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *a):
-        self.f.close()
-
-
-def write_bridges(path, rows):
-    """The file in one step, as write_registry does: the fence reads it on every call."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"bridges": rows}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def bridge_status(e, scopes, now, live_ids):
-    """One word and why for entry `e`: open, ended, expired, chained or void."""
-    if e.get("ended"):
-        return "ended", f"ended {e['ended']}" + (f" ({e['ended_why']})" if e.get("ended_why") else "")
-    why = common.bridge_void(e, scopes, now)
-    if why == "expired":
-        return "expired", f"expired {e.get('until')}"
-    if why:
-        return "void", why
-    if e.get("id") not in live_ids:
-        return "chained", "a scope of it is in a second open entry with another partner: neither grants anything"
-    return "open", f"until {e.get('until')}"
-
-
-# Who is unattended (the house rule for a flag that stands for a person's yes): a dispatched run, the weekly
-# job, which exports WEEKLY_RUN instead of CLAUDE_UNATTENDED (soundings' unattended()), and a caller
-# autofinish-run marks (the S8 landing review's item 9)
-UNATTENDED = ("CLAUDE_UNATTENDED", "WEEKLY_RUN", "AUTOFINISH_CALLER_UNATTENDED")
-
-
-def unattended():
-    return next((f"{k}={os.environ[k]}" for k in UNATTENDED if os.environ.get(k)), None)
-
-
-def bridge_open(path, scopes, frm, to, until, why, one_way, now=None, torn=False):
-    """→ (exit code, lines). Refuses rather than guess: the history is never rewritten. TORN: the registry
-    did not read (bridge_main read it once)."""
-    now = time.time() if now is None else now
-    who = unattended()
-    if who:
-        return 2, [f"✗ scopes bridge open: a bridge stands for the owner's yes — an unattended caller ({who}) "
-                   "may not open one; nothing written"]
-    if torn:
-        return 1, ["✗ scopes bridge open: the registry does not read, so neither scope can be judged; nothing written"]
-    for s in (frm, to):
-        if s not in scopes:
-            return 1, [f"✗ scopes bridge open: no scope {s} in the registry"]
-        if scopes[s].get("confidential") is not True:
-            return 1, [f"✗ scopes bridge open: {s} is not confidential — a bridge joins two confidential scopes"]
-    if frm == to:
-        return 1, ["✗ scopes bridge open: FROM and TO are one scope"]
-    if not (why or "").strip():
-        return 1, ["✗ scopes bridge open: --why says what the window is for; it is the record both sides read"]
-    end = parse_until(until, now)
-    if end is None:
-        return 1, [f"✗ scopes bridge open: --until {until!r} is no time: +Nh, +Nm or an ISO time with its zone"]
-    if end <= now:
-        return 1, [f"✗ scopes bridge open: --until {until} is past"]
-    if end - now > common.BRIDGE_MAX:
-        return 1, [f"✗ scopes bridge open: --until {until} is past {common.BRIDGE_MAX // 3600} h from now — open a new one then"]
-    with BridgeLock(path):
-        rows, torn = common.read_bridges(path)
-        if torn:
-            return 1, [f"✗ scopes bridge open: {path} does not read — its history is never overwritten; mend it by hand, "
-                       "then open again"]
-        for e in rows:
-            if common.bridge_void(e, scopes, now) is None:
-                ends = {e.get("from"), e.get("to")}
-                for s in (frm, to):
-                    if s in ends and ends != {frm, to}:
-                        return 1, [f"✗ scopes bridge open: {s} is in open bridge {e.get('id')} with "
-                                   f"{(ends - {s}).pop()} — a second partner would chain them, and a chain grants "
-                                   f"nothing; revoke it first (scopes bridge --revoke {e.get('id')})"]
-        e = {"id": __import__("secrets").token_hex(4), "from": frm, "to": to, "opened": bridge_iso(now), "until": bridge_iso(end),
-             "why": why.strip(), "by": os.environ.get("USER") or "unknown"}
-        if one_way:
-            e["one_way"] = True
-        write_bridges(path, rows + [e])
-    arrow = "→" if one_way else "↔"
-    return 0, [f"opened bridge {e['id']}: {frm} {arrow} {to} until {e['until']} — {e['why']}",
-               "  every session reads it at its next tool call; `scopes bridge --revoke "
-               f"{e['id']}` ends it sooner"]
-
-
-def bridge_revoke(path, what, now=None):
-    """→ (exit code, lines): `ended` on entry WHAT, or on every open entry scope WHAT is in."""
-    now = time.time() if now is None else now
-    with BridgeLock(path):
-        rows, torn = common.read_bridges(path)
-        if torn:
-            return 1, [f"✗ scopes bridge --revoke: {path} does not read — every bridge reads as none until it does"]
-        hit = [e for e in rows if not e.get("ended") and (e.get("id") == what or what in (e.get("from"), e.get("to")))]
-        if not hit:
-            return 1, [f"✗ scopes bridge --revoke: no entry {what} that is not ended already"]
-        for e in hit:
-            e["ended"], e["ended_why"] = bridge_iso(now), f"revoked by {os.environ.get('USER') or 'unknown'}"
-        write_bridges(path, rows)
-    return 0, [f"ended bridge {e['id']}: {e.get('from')} – {e.get('to')}" for e in hit]
-
-
-def since_time(v):
-    """`--since`'s value as epoch seconds: a plain date (`2026-10-20`, UTC midnight) or an ISO time with its
-    zone; None for anything else, which bridge_main refuses (a value read as no filter listed everything)."""
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v or ""):
-        return common.bridge_time(v + "T00:00:00Z")
-    return common.bridge_time(v)
-
-
-def bridge_audit(path, scopes, since=None, now=None):
-    """→ (exit code, lines): every entry and its state; an expired one with no `ended` gets one (the clock ended it)."""
-    now = time.time() if now is None else now
-    with BridgeLock(path):
-        rows, torn = common.read_bridges(path)
-        if torn:
-            return 1, [f"✗ {path} does not read: every bridge reads as none until it is mended by hand"]
-        changed = False
-        for e in rows:
-            if not e.get("ended") and common.bridge_void(e, scopes, now) == "expired":
-                e["ended"], e["ended_why"] = e.get("until"), "expired"
-                changed = True
-        if changed:
-            write_bridges(path, rows)
-    live = {e.get("id") for e in common.open_bridges(file=path)}
-    lo = since_time(since) if since else None
-    out = []
-    for e in rows:
-        if lo is not None and (common.bridge_time(e.get("opened")) or 0) < lo:
-            continue
-        word, why = bridge_status(e, scopes, now, live)
-        arrow = "→" if e.get("one_way") else "↔"
-        out.append(f"  {word:8} {e.get('id')}: {e.get('from')} {arrow} {e.get('to')} opened {e.get('opened')} by {e.get('by')} — "
-                   f"{e.get('why')}; {why}")
-    return 0, out or ["  no bridge entries"]
-
-
-def bridge_concern(path, repos, scopes, session, text, bridge=None, dry=False, cwd=None):
-    """→ (exit code, lines): an issue in the anchor's own repository, naming the session and the other scope only."""
-    if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", session or ""):
-        return 1, ["✗ scopes bridge concern: SESSION is a session id (or its first 8 characters)"]
-    if not (text or "").strip():
-        return 1, ["✗ scopes bridge concern: --text says what the concern is"]
-    here = scope_of(resolve(cwd or os.getcwd(), repos), repos, scopes)
-    if not here or scopes[here].get("confidential") is not True:
-        return 1, ["✗ scopes bridge concern: run it from a checkout of a confidential scope — the one raising it"]
-    rows, torn = common.read_bridges(path)
-    if torn:
-        return 1, [f"✗ scopes bridge concern: {path} does not read"]
-    mine = [e for e in rows if here in (e.get("from"), e.get("to")) and (bridge is None or e.get("id") == bridge)]
-    if not mine:
-        return 1, [f"✗ scopes bridge concern: no bridge{' ' + bridge if bridge else ''} with {here}"]
-    e = mine[-1]
-    other = e["to"] if e.get("from") == here else e.get("from")
-    try:   # the window's anchor (its file's first folder), as every other verb here reads it
-        anchor = anchor_of(scopes[here], repos)
-    except (KeyError, IndexError, TypeError):
-        return 1, [f"✗ scopes bridge concern: scope {here} has no anchor repo to hold the issue"]
-    r = subprocess.run(["git", "-C", str(anchor), "remote", "get-url", "origin"], capture_output=True, text=True)
-    slug = common.repo_slug(r.stdout.strip()) if r.returncode == 0 else None
-    if not slug:
-        return 1, [f"✗ scopes bridge concern: {anchor} has no GitHub origin to hold the issue"]
-    argv = [os.environ.get("SCOPES_GH") or "gh", "issue", "create", "--repo", slug,
-            "--title", f"Bridge concern: session {session[:8]}",
-            "--body", f"Session {session} ran while bridge {e.get('id')} joined this scope with {other}.\n\n{text.strip()}"]
-    if dry:
-        return 0, ["would run: " + " ".join(argv[:5]) + " …"]
-    r = subprocess.run(argv, capture_output=True, text=True)
-    if r.returncode:
-        return 1, [f"✗ scopes bridge concern: gh issue create failed — {(r.stderr or r.stdout).strip()[:200]}"]
-    return 0, [f"raised: {r.stdout.strip()}"]
-
-
-def bridge_main(rest):
-    """The bridge verbs. The registry is read here, once and never fatally (the S8 landing review's item 7:
-    a torn or mid-merge repos.json crashed every verb, --revoke too): --revoke needs none, open refuses on a
-    torn one, audit judges every entry void then, concern refuses."""
-    path = common.bridges_file()
-    flag = lambda k: rest[rest.index(k) + 1] if k in rest and rest.index(k) + 1 < len(rest) else None
-    if rest[:1] == ["--revoke"] or rest[:1] == ["revoke"]:
-        if len(rest) != 2:
-            return 2, ["scopes bridge --revoke ID|SCOPE"]
-        return bridge_revoke(path, rest[1])
-    reg, torn = common.read_registry(REGISTRY) if REGISTRY else (None, False)
-    repos, scopes = (reg or {}).get("repos") or {}, (reg or {}).get("scopes") or {}
-    if rest[:1] == ["open"] and len(rest) >= 3:
-        known = {"--until", "--why", "--one-way"}
-        stray = [a for i, a in enumerate(rest[3:], 3) if a not in known and rest[i - 1] not in ("--until", "--why")]
-        if stray or not flag("--until") or flag("--why") is None:
-            return 2, ["scopes bridge open FROM TO --until TIME|+Nh|+Nm --why TEXT [--one-way]"
-                       + (f" — not understood: {' '.join(stray)}" if stray else "")]
-        return bridge_open(path, scopes, rest[1], rest[2], flag("--until"), flag("--why"), "--one-way" in rest, torn=torn)
-    if rest[:1] == ["audit"]:
-        if "--since" in rest and since_time(flag("--since")) is None:
-            return 2, [f"scopes bridge audit --since DATE: {flag('--since')!r} is no date (2026-10-20) or ISO time with its zone"]
-        code, lines = bridge_audit(path, scopes, flag("--since"))
-        return code, lines + (["  (the registry does not read: every entry reads as void until it does)"] if torn else [])
-    if rest[:1] == ["concern"] and len(rest) >= 2:
-        if torn:
-            return 1, ["✗ scopes bridge concern: the registry does not read, so no scope can be judged"]
-        return bridge_concern(path, repos, scopes, rest[1], flag("--text"), flag("--bridge"), "--dry-run" in rest)
-    return 2, ["scopes bridge open FROM TO --until … --why … [--one-way] | --revoke ID|SCOPE | audit [--since DATE] | "
-               "concern SESSION --text TEXT [--bridge ID] [--dry-run]"]
-
-
 def main(argv):
     cmd = argv[0] if argv else "list"
-    if cmd == "bridge":   # before registry(), which exits on a torn file: ending a bridge is never refused
-        code, lines = bridge_main(argv[1:])
-        print("\n".join(lines), file=sys.stderr if code else sys.stdout)
-        return code
     repos, scopes, names = registry()
     if cmd in ("list", "-l"):
         for name, scope in scopes.items():

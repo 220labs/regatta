@@ -89,11 +89,11 @@ check "$(sh_ "$T/t2.jsonl" | grep -c 'bare PR number.*vscode')" 1 "stop: a bare 
 tr_ "$T/t3.jsonl" $'Launched: [house#42 (robots)](https://github.com/samco/house/pull/42).\n```bash\nsh /srv/sam/x.sh\n```'
 check "$(sh_ "$T/t3.jsonl" | wc -c | tr -d ' ')" 0 "stop: a clean reply passes (and an earlier turn's block is not read)"
 # the declared line (rename S4, M3): the new one is said from S4, the old one still ends a reply until S8
-tr_ "$T/t3n.jsonl" $'Pushed; the PR is WIP.\n\nSAM, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.'
+tr_ "$T/t3n.jsonl" $'Pushed; the PR is WIP.\n\n✅ SAM, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.'
 check "$(sh_ "$T/t3n.jsonl" | wc -c | tr -d ' ')" 0 "stop: the declared line in its new word passes"
-tr_ "$T/t3o.jsonl" $'Pushed; the PR is WIP.\n\nSAM, THIS SESSION IS DONE — IT LANDS BY ITSELF.'
+tr_ "$T/t3o.jsonl" $'Pushed; the PR is WIP.\n\n✅ SAM, THIS SESSION IS DONE — IT LANDS BY ITSELF.'
 check "$(sh_ "$T/t3o.jsonl" | wc -c | tr -d ' ')" 0 "  and the old one (a session started before S4) is still accepted, not held"
-tr_ "$T/t3x.jsonl" $'Pushed; the PR is WIP.\n\nSAM, THIS SESSION IS DONE — IT SAILS BY ITSELF.'
+tr_ "$T/t3x.jsonl" $'Pushed; the PR is WIP.\n\n✅ SAM, THIS SESSION IS DONE — IT SAILS BY ITSELF.'
 check "$(sh_ "$T/t3x.jsonl" | grep -c 'is not one of the fixed closing lines')" 1 "  while a line in neither word is held"
 check "$(grep -c 'IT LANDS BY ITSELF\.' "$0") $(grep -c 'IT LAUNCHES BY ITSELF\.' "$0")" "1 1" "rename guard: the old declared line's fixture keeps its land word (IT LANDS / IT LAUNCHES BY ITSELF)"
 
@@ -203,8 +203,8 @@ tr_ "$T/fence.jsonl" $'Checking:\n```bash\nls /srv/sam'
 DLF=$'- **D1 — Launch it?**\n  ➤ Answer: yes.'
 check "$(lag_ "$T/fence.jsonl" "$DLF" | grep -c 'hands no doc')" 1 "payload: a transcript ending inside a fence does not swallow the tail"
 # the turn's own closing line, quoted earlier in the turn, must not suppress the append
-tr_ "$T/quoted.jsonl" 'The line will be: `SAM, THIS SESSION IS WAITING FOR YOU — answer D1.`'
-check "$(lag_ "$T/quoted.jsonl" 'SAM, THIS SESSION IS WAITING FOR YOU — answer D1.' | grep -c 'hands no doc')" 1 "payload: a tail quoted earlier in the turn is still appended"
+tr_ "$T/quoted.jsonl" 'The line will be: `🛑 SAM, THIS SESSION IS WAITING FOR YOU — answer D1.`'
+check "$(lag_ "$T/quoted.jsonl" '🛑 SAM, THIS SESSION IS WAITING FOR YOU — answer D1.' | grep -c 'hands no doc')" 1 "payload: a tail quoted earlier in the turn is still appended"
 
 tr_ "$T/c.jsonl" $'Quick ones, here only:\n\n- **D1 — Rename the session now?**\n  ➤ Answer: yes.\n- **D2 — Keep the old branch?**\n  ➤ Answer: no, archive it.'
 check "$(sc_ "$T/c.jsonl" | grep -c 'hands no doc')" 1 "line: a chat-only D-list blocks — it needs a doc (Sam, 2026-10-04)"
@@ -231,7 +231,7 @@ tr_ "$T/w.jsonl" "$DL"$'\n\n'"[course]($F1) | [github](https://github.com/o/r/bl
 check "$(sc_ "$T/w.jsonl" | grep -c 'no line ends with the file link')" 1 "line: another checkout's copy does not count for the branch doc"
 tr_ "$T/w2.jsonl" "$DL"$'\n\n'"[course]($F1) | [github](https://github.com/o/r/blob/main/docs/orch-2026-10-02.md) | [space]($SPACE) — $FL"
 check "$(sc_ "$T/w2.jsonl" | grep -c "not this branch's read (blob) view")" 1 "line: main's blob URL is not this branch's"
-WAITD="SAM, THIS SESSION IS WAITING FOR YOU — answer D1 and D2 in the doc."
+WAITD="🛑 SAM, THIS SESSION IS WAITING FOR YOU — answer D1 and D2 in the doc."
 tr_ "$T/wl.jsonl" $'Both are in the doc.\n\n'"$WAITD"$'\n'"$LINE"
 check "$(sc_ "$T/wl.jsonl" | wc -c | tr -d ' ')" 0 "line: after a WAITING line naming D-items, the line passes (only links follow it)"
 mkdir -p "$T/vault/docs"; git -C "$T/vault" init -q -b claude/p
@@ -355,8 +355,8 @@ PY
 FIN='<command-message>finish</command-message>
 <command-name>/finish</command-name>'
 EVAC=$'<command-message>evacuate</command-message>\n<command-name>/evacuate</command-name>'
-DONE="SAM, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING."
-WAIT="SAM, THIS SESSION IS WAITING FOR YOU — pick option A or B."
+DONE="✅ SAM, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING."
+WAIT="🛑 SAM, THIS SESSION IS WAITING FOR YOU — pick option A or B."
 blocks() { sh_ "$1" | grep -c "$2"; }
 quiet() { sh_ "$1" | wc -c | tr -d ' '; }
 tf_ "$T/k1.jsonl" "$FIN" 'touch "$(git rev-parse --git-dir)/claude/finishing"' $'Merged.\n\n🚢 ⛵ 🛶 **Shipped:** x'
@@ -377,7 +377,7 @@ tf_ "$T/k1s.jsonl" "wrap it up" 'ls' $'Merged.\n\n🚢 ⛵ **Shipped:** x' skill
 check "$(blocks "$T/k1s.jsonl" 'ends with one of its closing lines')" 1 "closing: a /finish run through the Skill tool counts"
 tf_ "$T/k1b.jsonl" "$FIN" 'touch "$(git rev-parse --git-dir)/claude/finishing"' $'Step 10.\n\nWaiting for the reviewer in the background.' bg
 check "$(quiet "$T/k1b.jsonl")" 0 "closing: a stop waiting on its own background task owes nothing yet"
-tf_ "$T/k2t.jsonl" "$FIN" 'git status' $'**Shipped:** x\n\n`SAM, IT’S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN’T FORGOTTEN ANYTHING.`'
+tf_ "$T/k2t.jsonl" "$FIN" 'git status' $'**Shipped:** x\n\n`✅ SAM, IT’S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN’T FORGOTTEN ANYTHING.`'
 check "$(quiet "$T/k2t.jsonl")" 0 "closing: the line in backticks, typographic apostrophes, passes"
 tf_ "$T/k2.jsonl" "$FIN" 'git status' $'⛵ 🚢 **Shipped:** x\n\n'"**$DONE**"
 check "$(quiet "$T/k2.jsonl")" 0 "closing: the fixed line last, in bold, passes (an unclosed fence earlier in the turn is not read)"
@@ -397,7 +397,7 @@ tf_ "$T/k5q.jsonl" "plain prompt" 'ls' $'The two lines:\n- `'"$DONE"$'`\n- the o
 check "$(quiet "$T/k5q.jsonl")" 0 "closing: a line quoted in a bullet is not said"
 tf_ "$T/k6.jsonl" "plain prompt" 'ls' $'Two options above.\n\n'"$WAIT"
 check "$(quiet "$T/k6.jsonl")" 0 "closing: the WAITING line with its ask passes"
-WD="SAM, THIS SESSION IS WAITING FOR YOU — answer D1–D4."
+WD="🛑 SAM, THIS SESSION IS WAITING FOR YOU — answer D1–D4."
 tf_ "$T/kq1.jsonl" "plain prompt" 'ls' $'All four are above.\n\n'"$WD"
 check "$(blocks "$T/kq1.jsonl" 'hands no doc')" 1 "D-list doc: a WAITING line naming D-items with no doc blocks (2026-10-04)"
 mkdir -p "$T/loose"; printf -- '- **D1 — Loose?** Body.\n  ➤ Answer:\n' > "$T/loose/x-2026-10-04.md"
@@ -413,68 +413,125 @@ check "$(quiet "$T/kq4.jsonl")" 0 "  a D-item named in prose, WAITING line witho
 tf_ "$T/kq5.jsonl" "plain prompt" 'ls' $'All four above.\n\n'"$WD"$'\n\nThey are in the list above.'
 check "$(blocks "$T/kq5.jsonl" 'hands no doc')" 1 "  a WAITING line naming D-items that is not last still owes the doc"
 check "$(blocks "$T/kq5.jsonl" 'only links may follow it')" 1 "  in the same block as the closing-line finding"
-tf_ "$T/kq6.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go once the week resets (per D23).'
+tf_ "$T/kq6.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go once the week resets (per D23).'
 check "$(quiet "$T/kq6.jsonl")" 0 "  a D-number cited in parentheses is not an ask"
 mkdir -p "$T/My Docs"; printf '# Spaced\n' > "$T/My Docs/a.md"
 tf_ "$T/kq7.jsonl" "plain prompt" 'ls' $'Open.\n\n'"$WD"$'\n'"[a.md](<$T/My Docs/a.md#L1>)"
 check "$(quiet "$T/kq7.jsonl")" 0 "  an angle-bracket file link (a path with a space): the line of a doc without D-items outside git"
 tf_ "$T/kq8.jsonl" "plain prompt" 'ls' $'See http://localhost:8123/config\n\n'"$WD"
 check "$(blocks "$T/kq8.jsonl" 'hands no doc')" 1 "  a dev-server URL is not the memo form"
-tf_ "$T/kg1.jsonl" "plain prompt" 'ls' $'Stopped: regatta is not on main.\n\nSAM, THIS SESSION IS WAITING FOR YOU — SAY `go` ONCE REGATTA (#100) HAS MERGED, AND THE CHARTS BUILD STARTS.'
+tf_ "$T/kg1.jsonl" "plain prompt" 'ls' $'Stopped: regatta is not on main.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — SAY `go` ONCE REGATTA (#100) HAS MERGED, AND THE CHARTS BUILD STARTS.'
 check "$(blocks "$T/kg1.jsonl" 'wait on it yourself')" 1 "say-go: a WAITING line asking for go once a PR merges blocks (2026-10-04)"
-tf_ "$T/kg2.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — type continue when the deploy finishes.'
+tf_ "$T/kg2.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — type continue when the deploy finishes.'
 check "$(blocks "$T/kg2.jsonl" 'wait on it yourself')" 1 "  type continue when a deploy finishes blocks too"
-tf_ "$T/kg3.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go to merge it.'
+tf_ "$T/kg3.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go to merge it.'
 check "$(quiet "$T/kg3.jsonl")" 0 "  a go that is Sam's approval, with no event to wait on, passes"
-tf_ "$T/kg4.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — the check passed; say go to merge.'
+tf_ "$T/kg4.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the check passed; say go to merge.'
 check "$(quiet "$T/kg4.jsonl")" 0 "  an approval go beside a finished fact passes"
-tf_ "$T/kg5.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — merge regatta (#100); no need to say go once it has merged, this session polls it.'
+tf_ "$T/kg5.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — merge regatta (#100); no need to say go once it has merged, this session polls it.'
 check "$(quiet "$T/kg5.jsonl")" 0 "  a negated go-ask passes"
-tf_ "$T/kg6.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go once the week passes.'
+tf_ "$T/kg6.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go once the week passes.'
 check "$(quiet "$T/kg6.jsonl")" 0 "  a wait on time passes"
-tf_ "$T/kg7.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say **`go`** once CI is green.'
+tf_ "$T/kg7.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say **`go`** once CI is green.'
 check "$(blocks "$T/kg7.jsonl" 'wait on it yourself')" 1 "  bold-and-backticked go once CI is green blocks"
-tf_ "$T/kg8.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — run `/finish` to launch it, then say go once #100 has merged.'
+tf_ "$T/kg8.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — run `/finish` to launch it, then say go once #100 has merged.'
 check "$(blocks "$T/kg8.jsonl" 'wait on it yourself')" 1 "  with a command in it: the go finding…"
 check "$(blocks "$T/kg8.jsonl" 'Do this now')" 1 "  …and the Do-this-now one, in one block"
-tf_ "$T/kg9.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go once #100 merges.\n\nThe charts build follows.'
+tf_ "$T/kg9.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go once #100 merges.\n\nThe charts build follows.'
 check "$(blocks "$T/kg9.jsonl" 'wait on it yourself')" 1 "  a WAITING line that is not last is still read for the go"
 # rename S4: /finish's text says launch, so the event takes it beside land (the review, 2026-10-19)
-tf_ "$T/kg10.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go once it lands.'   # the old word, not launch: a guard
+tf_ "$T/kg10.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go once it lands.'   # the old word, not launch: a guard
 check "$(blocks "$T/kg10.jsonl" 'wait on it yourself')" 1 "  go once it lands blocks (the old word; launch is the new one)"
-tf_ "$T/kg11.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — say go once it launches.'
+tf_ "$T/kg11.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — say go once it launches.'
 check "$(blocks "$T/kg11.jsonl" 'wait on it yourself')" 1 "  go once it launches blocks (the new word)"
-tf_ "$T/k7.jsonl" "plain prompt" 'ls' $'Two options above.\n\nSAM, THIS SESSION IS WAITING FOR YOU — '
+tf_ "$T/k7.jsonl" "plain prompt" 'ls' $'Two options above.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — '
 check "$(blocks "$T/k7.jsonl" 'not one of the fixed closing lines')" 1 "closing: the WAITING line without its ask blocks"
 echo "the two waits (2026-10-20): WAITING FOR YOU asks, WAITING FOR SOMETHING says there is nothing to do"
-tf_ "$T/kw1.jsonl" "plain prompt" 'ls' $'Reviewers started.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; it continues by itself.'
+tf_ "$T/kw1.jsonl" "plain prompt" 'ls' $'Reviewers started.\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; it continues by itself.'
 check "$(quiet "$T/kw1.jsonl")" 0 "  WAITING FOR SOMETHING on its own work passes"
-tf_ "$T/kw2.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running.'
-check "$(blocks "$T/kw2.jsonl" 'end on .SAM, THIS SESSION IS WAITING FOR SOMETHING')" 1 "  WAITING FOR YOU saying nothing to do blocks, naming the other line"
-tf_ "$T/kw3.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do but approve the merge.'
+tf_ "$T/kw2.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running.'
+check "$(blocks "$T/kw2.jsonl" 'end on `[^`]*SAM, THIS SESSION IS WAITING FOR SOMETHING')" 1 "  WAITING FOR YOU saying nothing to do blocks, naming the other line"
+tf_ "$T/kw3.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do but approve the merge.'
 check "$(quiet "$T/kw3.jsonl")" 0 "  …unless it still asks (a D-item, a step)"
 for l in "the reviewers, then pick A or B in D2" "the check; then log in to gh" "say go once you have looked" "the reviewers, then your pick in D2's doc"; do
-  tf_ "$T/kw4.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
-  check "$(blocks "$T/kw4.jsonl" 'end on .SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  WAITING FOR SOMETHING that asks ('$l') blocks"
+  tf_ "$T/kw4.jsonl" "plain prompt" 'ls' $'Built.\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
+  check "$(blocks "$T/kw4.jsonl" 'end on `[^`]*SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  WAITING FOR SOMETHING that asks ('$l') blocks"
 done
-tf_ "$T/kw4h.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — autofinish-run, once you approve D3'
-check "$(blocks "$T/kw4h.jsonl" 'end on .SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  a hand-over line that asks (D3) blocks as a pending one does"
-tf_ "$T/kw5.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — the PR to merge, polled here (per D6).'
+tf_ "$T/kw4h.jsonl" "plain prompt" 'ls' $'Built.\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — autofinish-run, once you approve D3'
+check "$(blocks "$T/kw4h.jsonl" 'end on `[^`]*SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  a hand-over line that asks (D3) blocks as a pending one does"
+tf_ "$T/kw5.jsonl" "plain prompt" 'ls' $'Built.\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the PR to merge, polled here (per D6).'
 check "$(quiet "$T/kw5.jsonl")" 0 "  a D-number cited in parentheses is no ask here either"
 for l in "keel's suite (paste-paths.sh) to pass" "the review of D3's build" "the login probe on the other Mac" "the reviewers' approval verdicts" "CI's approval of PR 41" "the gh login check" "the review of the D2 doc"; do
-  tf_ "$T/kw6.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
+  tf_ "$T/kw6.jsonl" "plain prompt" 'ls' $'Built.\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — '"$l"
   check "$(quiet "$T/kw6.jsonl")" 0 "  a name ('$l') is no ask (code review, 2026-10-20)"
 done
 # dispatch-queue S3: the queue's closing line, as dispatch prints it — the pending kind, no ask (its cap
 # words are ASK_EXEMPT_RE's), and the branch name and its priority read as names, never a pick
-tf_ "$T/kwq.jsonl" "plain prompt" 'ls' $'Queued (dispatch: queued as fleet:regatta--queue-s4 (normal), rank 2).\n\nSAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (normal); the next step waits for a run to end; the skipper finishes it'
+tf_ "$T/kwq.jsonl" "plain prompt" 'ls' $'Queued (dispatch: queued as fleet:regatta--queue-s4 (normal), rank 2).\n\n⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (normal); the next step waits for a run to end; the skipper finishes it'
 check "$(quiet "$T/kwq.jsonl")" 0 "  the queue's closing line passes the Stop lint (dispatch-queue S3)"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.ending(sys.argv[2])[0])' "$B/../../regatta/hooks" \
-  "SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (high); the next step waits for a run to end; the skipper finishes it")" \
+  "⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — queued claude/laptop/2026-10-27-queue-s4 (high); the next step waits for a run to end; the skipper finishes it")" \
   "pending" "  …read as the pending kind (dispatch-rc's said_its_end: no end; the run ends by its hand-off)"
-tf_ "$T/kw7.jsonl" "plain prompt" 'ls' $'Two options above.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do but pick option A or B.'
+tf_ "$T/kw7.jsonl" "plain prompt" 'ls' $'Two options above.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do but pick option A or B.'
 check "$(quiet "$T/kw7.jsonl")" 0 "  'nothing to do but <an ask>' stays WAITING FOR YOU"
-WF="SAM, THIS SESSION IS WAITING FOR YOU — \`/finish\` to launch it, then look at the list."
+echo "the third wait (2026-10-29): WAITING FOR NOTHING closes a plain answer; WAITING FOR YOU with nothing owed blocks"
+tf_ "$T/kn1.jsonl" "plain prompt" 'ls' $'It reads the config dir first.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — the answer is above.'
+check "$(quiet "$T/kn1.jsonl")" 0 "  WAITING FOR NOTHING on a plain answer passes ('the answer' is a noun, no ask)"
+for l in "nothing owed; the answer is above" "nothing is owed" "nothing left to do" "no action needed" "nothing is asked"; do
+  tf_ "$T/kn2.jsonl" "plain prompt" 'ls' $'It reads the config dir first.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — '"$l"
+  check "$(blocks "$T/kn2.jsonl" 'ends on `[^`]*SAM, THIS SESSION IS WAITING FOR NOTHING')" 1 "  WAITING FOR YOU saying '$l' blocks, naming WAITING FOR NOTHING"
+done
+for l in "nothing owed but D2" "nothing owed, then approve the merge" "nothing left until you pick A or B"; do
+  tf_ "$T/kn3.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — '"$l"
+  check "$(blocks "$T/kn3.jsonl" 'WAITING FOR NOTHING')" 0 "  …unless a qualifier keeps the ask ('$l')"
+done
+tf_ "$T/kn4.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running.'
+check "$(blocks "$T/kn4.jsonl" 'or on `[^`]*SAM, THIS SESSION IS WAITING FOR NOTHING')" 1 "  the nothing-to-do block names WAITING FOR NOTHING beside WAITING FOR SOMETHING"
+for l in "answered; pick A or B next" "say go once you have read it" "log in to gh, then nothing" "D2 and D3 are open in the doc" \
+         "log into gh, then nothing" "\`/finish\` when you like" "merge the PR when you are happy" "copy the token to the vault"; do
+  tf_ "$T/kn5.jsonl" "plain prompt" 'ls' $'Built.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — '"$l"
+  check "$(blocks "$T/kn5.jsonl" 'end on `[^`]*SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  WAITING FOR NOTHING that asks ('$l') blocks"
+done
+tf_ "$T/kn7.jsonl" "plain prompt" 'ls' $'## Do this now\n\n```\nopen https://x\n```\n\nBuilt.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — the answer is above.'
+check "$(blocks "$T/kn7.jsonl" 'Do this now block or a')" 1 "  WAITING FOR NOTHING under a Do this now block blocks (finish review, 2026-10-30)"
+for l in "nothing pending; merge the PR when you are happy" "nothing required; the PR waits for your merge" "nothing needed beyond the pick between A and B"; do
+  tf_ "$T/kn8.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — '"$l"
+  check "$(blocks "$T/kn8.jsonl" 'WAITING FOR NOTHING')" 0 "  WAITING FOR YOU '$l' stays an ask: the ask after the nothing phrase wins (finish review, 2026-10-30)"
+done
+tf_ "$T/kn6.jsonl" "plain prompt" 'ls' $'Built.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — '
+check "$(blocks "$T/kn6.jsonl" 'not one of the fixed closing lines')" 1 "  WAITING FOR NOTHING without its what blocks"
+echo "the marks (2026-10-29): ✅ closeable, ⏳ work goes on, 🛑 the owner owes the next move"
+tf_ "$T/km1.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — pick A or B.'
+check "$(blocks "$T/km1.jsonl" 'the closing line has no mark')" 1 "  a closing line with no mark blocks"
+check "$(sh_ "$T/km1.jsonl" | python3 -c 'import json,sys; print("start it with \U0001F6D1" in json.load(sys.stdin)["reason"])')" "True" "  …naming its kind's mark (🛑 for WAITING FOR YOU)"
+tf_ "$T/km2.jsonl" "plain prompt" 'ls' $'Reviewers started.\n\n✅ SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers.'
+check "$(blocks "$T/km2.jsonl" 'the closing line opens with')" 1 "  a wrong mark (✅ on WAITING FOR SOMETHING) blocks"
+tf_ "$T/km3.jsonl" "plain prompt" 'ls' $'It reads the config dir.\n\n🟢 SAM, THIS SESSION IS WAITING FOR NOTHING — the answer is above.'
+check "$(blocks "$T/km3.jsonl" 'the closing line opens with')" 1 "  a mark outside the table (🟢) blocks"
+tf_ "$T/km4.jsonl" "plain prompt" 'ls' $'Reviewers started.\n\n**⏳️ SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers.**'
+check "$(quiet "$T/km4.jsonl")" 0 "  the right mark passes, inside bold and with U+FE0F after it"
+tf_ "$T/km5.jsonl" "plain prompt" 'ls' $'Done.\n\n⏳ RELAYED TO coding-7 — D1, the cadence'
+check "$(quiet "$T/km5.jsonl")" 0 "  the RELAYED line takes ⏳"
+tf_ "$T/km6.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑SAM, THIS SESSION IS WAITING FOR YOU — pick A or B.'
+check "$(blocks "$T/km6.jsonl" 'has no space after its mark')" 1 "  a mark with no space after it blocks, named (it read as no closing line before)"
+tf_ "$T/km7.jsonl" "plain prompt" 'ls' $'Moved.\n\n✅ SAM, THIS SESSION MOVED TO buildbox — CLOSE THIS TAB. THE WORK CONTINUES THERE ONCE YOU START IT: claude --resume x'
+check "$(blocks "$T/km7.jsonl" 'the closing line opens with')" 1 "  a move that leaves the owner a step wants 🛑, not ✅"
+echo "the landing review (2026-10-29): what stays where"
+for l in "nothing needed from you" "your question is answered above" "the cadence is settled (D2)"; do
+  tf_ "$T/kr1.jsonl" "plain prompt" 'ls' $'It reads the config dir.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — '"$l"
+  check "$(quiet "$T/kr1.jsonl")" 0 "  WAITING FOR NOTHING '$l' passes: 'you' is no ask there, a cited D-item none"
+done
+for l in "the pick between A and B; nothing else needed" "merge the PR; nothing else needed"; do
+  tf_ "$T/kr2.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — '"$l"
+  check "$(quiet "$T/kr2.jsonl")" 0 "  WAITING FOR YOU '$l' stays an ask, as on main (the nothing phrase must open the what)"
+done
+tf_ "$T/kr3.jsonl" "plain prompt" 'ls' $'Built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing needed from you'
+check "$(blocks "$T/kr3.jsonl" 'ends on `[^`]*SAM, THIS SESSION IS WAITING FOR NOTHING')" 1 "  WAITING FOR YOU 'nothing needed from you' takes WAITING FOR NOTHING"
+tf_ "$T/kr4.jsonl" "plain prompt" 'ls' $'Built.\n\n**🛑** SAM, THIS SESSION IS WAITING FOR YOU — pick A or B.'
+check "$(quiet "$T/kr4.jsonl")" 0 "  a mark in its own bold, then a space, passes"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.ending("x\n\n\U0001F6D1 " + common.WAITING_PREFIX + "pick A")[1] == common.WAITING_PREFIX + "pick A")' "$B/../../regatta/hooks")" "True" \
+  "  ending() hands back the line without its mark, so every reader compares as before"
+WF="🛑 SAM, THIS SESSION IS WAITING FOR YOU — \`/finish\` to launch it, then look at the list."
 tf_ "$T/kd1.jsonl" "go" 'ls' $'Built and checked.\n\n'"$WF"
 check "$(blocks "$T/kd1.jsonl" 'put it in a \*\*Do this now\*\* block')" 1 "do this now: a WAITING line naming /finish without the block blocks (2026-10-04)"
 tf_ "$T/kd2.jsonl" "go" 'ls' $'**Do this now**\n```\n/finish\n```\n\nBuilt and checked.\n\n'"$WF"
@@ -499,11 +556,11 @@ tf_ "$T/ke6.jsonl" "$FIN" 'ls' $'⚠ step 4 — one open item.\n\n'"$WAIT"$'\n\n
 check "$(blocks "$T/ke6.jsonl" 'finishes it from outside')" 1 "  said at once when the WAITING line is not last (the hook blocks once)"
 tf_ "$T/ke7.jsonl" "$FIN" 'ls' $'**Do this now**\n```\n/Users/x/projects/layer/bin/autofinish-run \'/Users/x/My Drive/r/.claude/worktrees/t\'\n```\n\n⚠ step 4 — one open item.\n\n'"$WAIT"
 check "$(quiet "$T/ke7.jsonl")" 0 "  a quoted worktree path passes"
-tf_ "$T/kd4.jsonl" "go" 'ls' $'Done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — on laptop: `/move --to-home`.'
+tf_ "$T/kd4.jsonl" "go" 'ls' $'Done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — on laptop: `/move --to-home`.'
 check "$(blocks "$T/kd4.jsonl" '`/move`')" 1 "  an unblock command (/move) counts the same"
-tf_ "$T/kd5.jsonl" "go" 'ls' $'Doc above.\n\nSAM, THIS SESSION IS WAITING FOR YOU — read ~/projects/x/docs/a.md and answer D1 and/or D2 at https://github.com/o/r.'$'\n[docs/a.md](/Users/x/docs/a.md)'
+tf_ "$T/kd5.jsonl" "go" 'ls' $'Doc above.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — read ~/projects/x/docs/a.md and answer D1 and/or D2 at https://github.com/o/r.'$'\n[docs/a.md](/Users/x/docs/a.md)'
 check "$(blocks "$T/kd5.jsonl" 'Do this now')" 0 "  paths, and/or and URLs are not commands"
-tf_ "$T/kd6.jsonl" "go" 'ls' $'**Do this now**\n```\n/finish\n```\n\nBuilt.\n\nSAM, THIS SESSION IS WAITING FOR YOU — run /finish: it launches it; logs are in /tmp.'
+tf_ "$T/kd6.jsonl" "go" 'ls' $'**Do this now**\n```\n/finish\n```\n\nBuilt.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — run /finish: it launches it; logs are in /tmp.'
 check "$(quiet "$T/kd6.jsonl")" 0 "  a colon after the command, and a root path like /tmp: still the block's /finish, no false block"
 tf_ "$T/k8.jsonl" "$EVAC" 'ls' $'Verdict: CLOSE.\n\n'"$WAIT"
 check "$(quiet "$T/k8.jsonl")" 0 "closing: /evacuate may end on the WAITING line"
@@ -520,7 +577,7 @@ mkdir -p "$R/.claude"; echo '{"checkpoint": true}' > "$R/.claude/workflow.json";
 P2="$T/phys"; git -C "$T" init -q -b main phys; mkdir -p "$P2/.claude"; echo '{"checkpoint": true}' > "$P2/.claude/workflow.json"
 printf -- '- physical: python3 scripts/test.py --physical\n' > "$P2/AGENTS.md"
 sx_() { printf '{"transcript_path":"%s","stop_hook_active":%s,"cwd":"%s"}' "$1" "${3:-false}" "$2" | python3 "$B/paste-paths" --stop-hook; }
-WP="SAM, THIS SESSION IS WAITING FOR YOU — start step 3: \`/pickup 'claude/x/2026-10-04-s3' --fresh\`."
+WP="🛑 SAM, THIS SESSION IS WAITING FOR YOU — start step 3: \`/pickup 'claude/x/2026-10-04-s3' --fresh\`."
 tf_ "$T/h1.jsonl" "go" 'ls' $'Step 2 built.\n\n'"$WP"
 check "$(sx_ "$T/h1.jsonl" "$R" | grep -c "hands Sam a session to start.*dispatch '<branch>' --next")" 1 "handoff: a /pickup --fresh for Sam to run blocks, naming dispatch"
 check "$(sx_ "$T/h1.jsonl" "$R" | grep -c 'Do this now')" 0 "  instead of asking for a Do-this-now block"
@@ -546,7 +603,7 @@ check "$(sx_ "$T/h6.jsonl" "$R" | wc -c | tr -d ' ')" 0 "handoff: prose about se
 # D1 (2026-10-05, C): `pickup next` decides the split itself — seeded (dispatch --next) where dispatch
 # takes the repo, a tab only where it refuses — so each of its three verdicts' replies passes
 PN=$'python3 ~/projects/layer/bin/pickup next - <<\'EOF\'\nBuild step 3.\nEOF'
-tf_ "$T/h7.jsonl" "go" "$PN" $'Step 2 built. A new VS Code tab has the next step pre-filled.\n\nSAM, THIS SESSION IS WAITING FOR YOU — press Enter in the new tab.'
+tf_ "$T/h7.jsonl" "go" "$PN" $'Step 2 built. A new VS Code tab has the next step pre-filled.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — press Enter in the new tab.'
 check "$(sx_ "$T/h7.jsonl" "$P2" | wc -c | tr -d ' ')" 0 "handoff: pickup next's tab, in a repo dispatch refuses (\"press Enter in the new tab\"), passes"
 tf_ "$T/h7b.jsonl" "go" "$PN" $'Step 2 built. Started claude/x/2026-10-04-s3 unattended (dispatch); its window is titled run · s3.'
 check "$(sx_ "$T/h7b.jsonl" "$R" | wc -c | tr -d ' ')" 0 "  pickup next's seeded, in a repo dispatch takes, passes"
@@ -577,7 +634,7 @@ TODO_SEED="Follow-up handed off: s3 — claude/x/2026-10-04-s3 (repo) waits on S
 tf_ "$T/h9.jsonl" "go" 'ls' "Brief seeded. $TODO_SEED"
 check "$(HOME="$H" sx_ "$T/h9.jsonl" "$P2" | grep -c 'hands Sam a session to start')" 1 "  and one for a seedable repo blocks, from a physical session"
 git -C "$P2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; git -C "$P2" branch -q claude/x/2026-10-04-p3
-tf_ "$T/h10.jsonl" "go" 'ls' $'Step 2 built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — start step 3: `/pickup \'claude/x/2026-10-04-p3\' --fresh`.'
+tf_ "$T/h10.jsonl" "go" 'ls' $'Step 2 built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — start step 3: `/pickup \'claude/x/2026-10-04-p3\' --fresh`.'
 check "$(HOME="$H" sx_ "$T/h10.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "  a branch found only in a physical repo under ~/projects: that repo judges"
 tf_ "$T/h11.jsonl" "go" 'ls' "Seeded. Not dispatched, waits on D2: start it with /pickup 'claude/x/2026-10-04-s3' --fresh in a repo window"
 check "$(HOME="$H" sx_ "$T/h11.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "  /todo's waits-on line names dispatch, so it passes in a seedable repo too"
@@ -608,24 +665,29 @@ print(len(m.ask_findings(sys.argv[2].replace("\\n", "\n"), None, sys.argv[3], en
 PY
 }
 AG="$T/askrepo"; git init -q "$AG"
-W='done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — D1, the cadence'
+W='done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1, the cadence'
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "ask: a managed run's WAITING line naming a D-item is refused once"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1)" 1 "  the same under the skipper's new name alone (rename S5: both names read)"
 check "$(af_ 'Do this now\n\n```\nssh buildbox-ssh login\n```\n\nthen I go on.' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a Do-this-now step (Sam: a login counts too)"
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — log in to gh on buildbox, then dispatch --next' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a WAITING line naming a manual step"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — log in to gh on buildbox, then dispatch --next' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a WAITING line naming a manual step"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a run with no manager may end on it (R6)"
 check "$(af_ "$W" "$AG" DISPATCH_MANAGER=m1)" 0 "  an attended session is untouched"
 check "$(af_ 'RELAYED TO coding-7 — D1, the cadence' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the RELAYED line passes"
 echo "  finding 7: dispatch's own refusals end a run on the WAITING line, and are not asks"
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — the next step waits for a run to end (dispatch --next once one has)' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the run cap's line passes"
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — the next step waits for Sam to start it (dispatch --next by hand starts a new chain)' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the chain depth's line passes"
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — the primary has no room until its weekly reset, Sun 04:00' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  an account with no room passes"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the next step waits for a run to end (dispatch --next once one has)' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the run cap's line passes"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the next step waits for Sam to start it (dispatch --next by hand starts a new chain)' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  the chain depth's line passes"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the primary has no room until its weekly reset, Sun 04:00' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  an account with no room passes"
 echo "  second review, finding 1: every other WAITING line counts — the default flipped"
 for l in "the worktree switch needs your approval" "run the six commands above, then /finish" "pick option A or B" "say go to start the four fixes"; do
-  check "$(af_ "done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — $l" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  '$l' is an ask"
+  check "$(af_ "done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — $l" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  '$l' is an ask"
 done
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  'nothing to do' is not"
-check "$(af_ 'done.\n\nSAM, THIS SESSION IS WAITING FOR YOU — nothing to do but approve D1' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  …unless it names a D-item or a step (the signals beat the exemption)"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  'nothing to do' is not"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do but approve D1' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  …unless it names a D-item or a step (the signals beat the exemption)"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing is owed' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  'nothing is owed' is not either: the lint sends it to WAITING FOR NOTHING, never to a relay too (landing review, 2026-10-29)"
+check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — merge the PR; nothing else needed' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  …while an ask with a nothing tail still relays"
+for l in "nothing pending; merge the PR when you are happy" "nothing required; the PR waits for your merge" "nothing needed; just merge #12"; do
+  check "$(af_ "done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — $l" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  '$l' still relays, as on main (finish review, 2026-10-30)"
+done
 check "$(af_ 'No Do this now block is owed here.\n\n```\nls\n```\n\nRELAYED TO coding-7 — D1, x' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 0 "  a mention of Do this now in prose is not the heading"
 check "$(af_ '## Do this now\n\n```\nopen https://x\n```\n\nRELAYED TO coding-7 — D1, x' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  the heading form with a block under it is"
 echo "  finding 9: ask.json counts only for this session"

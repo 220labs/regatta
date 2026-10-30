@@ -99,78 +99,6 @@ check "$(SP 'f = common.gather_fence(path="'"$T/torn.json"'"); print(f("'"$PJ/o/
 check "$(SP '
 try: common.gather_fence("half", path="'"$T/torn.json"'")
 except ValueError as e: print("refused")')" "refused" "  and a scope asked of it: ValueError"
-echo "bridges: two confidential scopes for a window (confidential-reach S8)"
-# three confidential scopes (A, B, C), one open (O); the bridges file is the config dir's, written per case
-printf '{"repos": {"ka": {}, "kb": {}, "kc": {}, "ko": {}},\n "scopes": {"A": {"file": "a", "repos": ["ka"], "confidential": true, "login": "la"},\n  "B": {"file": "b", "repos": ["kb"], "confidential": true, "login": "lb"},\n  "C": {"file": "c", "repos": ["kc"], "confidential": true},\n  "O": {"file": "o", "repos": ["ko"]}}}\n' > "$T/br.json"
-BF="$T/config/lighthouse/bridges.json"; mkdir -p "$T/config/lighthouse"
-# BW "from to hours [one_way] [ended]"…: one entry per argument, opened a minute ago, until HOURS from now
-BW() { python3 - "$BF" "$@" <<'PY'
-import datetime, json, sys
-now = datetime.datetime.now(datetime.timezone.utc)
-iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
-rows = []
-for n, spec in enumerate(sys.argv[2:]):
-    w = spec.split()
-    e = {"id": "b%d" % n, "from": w[0], "to": w[1], "opened": iso(now - datetime.timedelta(minutes=1)),
-         "until": iso(now + datetime.timedelta(hours=float(w[2]))), "why": "t", "by": "t"}
-    if "one_way" in w[3:]: e["one_way"] = True
-    if "ended" in w[3:]: e["ended"] = iso(now)
-    rows.append(e)
-open(sys.argv[1], "w").write(json.dumps({"bridges": rows}))
-PY
-}
-BP() { CLAUDE_REPOS_JSON="$T/br.json" ACCOUNTS_FILE="$T/acc.json" py "$1"; }
-BA() { BP "print(*(common.bridge_active(c, p) for c, p in [$1]))"; }
-PA="'$PJ/ka/x'"; PB="'$PJ/kb/x'"; PC="'$PJ/kc/x'"; PO="'$PJ/ko/x'"
-check "$(BA "($PA, $PB)")" "False" "no bridges file: no bridge"
-BW "A B 4"
-check "$(BA "($PA, $PB), ($PB, $PA), ($PA, $PC), ($PO, $PB), ($PA, $PA), ($PA, $PO)")" "True True False False False False" \
-  "an open bridge, both ways; never a third scope, an open cwd, the cwd's own scope or an open path"
-check "$(BA "('$HD/.claude-w/projects/$(printf '%s' "$PJ/ka" | sed 's/[^A-Za-z0-9]/-/g')/s.jsonl', '$PJ/transcripts/kb/s.jsonl')")" "True" \
-  "  a login's session folder of A (scope_within, exact) reaches B's transcripts"
-# the landing review's two over-reaches (S8): scope_match's slug-prefix rule granted from a scratch folder named
-# after A's slug, and into a third scope whose repo's slug starts with B's
-SL() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
-sed 's/"ko": {}/"ko": {}, "kb-two": {}/; s/"O": {/"D": {"file": "d", "repos": ["kb-two"], "confidential": true},\n  "O": {/' "$T/br.json" > "$T/br3.json"
-check "$(BA "('$T/scratch/claude-501/$(SL "$PJ/ka")-tools/s1', $PB)") $(CLAUDE_REPOS_JSON="$T/br3.json" ACCOUNTS_FILE="$T/acc.json" py "print(common.bridge_active($PA, '$HD/.claude-w/projects/$(SL "$PJ/kb-two")/s.jsonl'))")" "False False" \
-  "  never from a scratch folder that only shares A's slug, nor into a third scope D whose slug starts with B's"
-check "$(CLAUDE_REPOS_JSON="$T/br3.json" ACCOUNTS_FILE="$T/acc.json" py "print(common.bridge_active($PA, '$HD/.claude-w/projects/$(SL "$PJ/kb")/s.jsonl'))")" "True" \
-  "  while B's own session folder beside it still is"
-BW "A B 4 one_way"
-check "$(BA "($PA, $PB), ($PB, $PA)")" "True False" "one-way: from reaches to, never back"
-BW "A B -1"
-check "$(BA "($PA, $PB)")" "False" "expired: no bridge"
-BW "A B 4 ended"
-check "$(BA "($PA, $PB)")" "False" "ended (revoked): no bridge"
-BW "A B 30"
-check "$(BA "($PA, $PB)")" "False" "an entry past 24 h: no bridge, whoever wrote it"
-BW "A B 4" "B C 4"
-check "$(BA "($PA, $PB), ($PB, $PC), ($PA, $PC), ($PC, $PB)")" "False False False False" \
-  "a chain (B bridged to A and C): every entry B is in is void, so nothing reaches a third scope"
-BW "A B 4" "A B 2"
-check "$(BA "($PA, $PB)")" "True" "  two entries of one pair are no chain"
-BW "A O 4" "A Z 4"
-check "$(BA "($PA, $PO)")" "False" "an open scope or one the registry lacks: no bridge"
-BW "A B 4"; printf '{"bridges": [' > "$BF"
-check "$(BA "($PA, $PB)")" "False" "a torn bridges file: no bridge (fails closed, unlike the fence's torn registry)"
-BW "A B 4"
-check "$(CLAUDE_REPOS_JSON="$T/torn.json" py "print(common.bridge_active($PA, $PB))")" "False" "a torn registry: no bridge"
-check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "False 1" "read_bridges(), open_bridges(): the entry as written"
-printf '{"bridges": {}}' > "$BF"
-check "$(BP 'print(common.read_bridges())')" "([], True)" "  a bridges key that is no list: torn"
-# the second finish stop: an agent's link there made the file its target's; scopes bridge writes none of these
-BW "A B 4"; mv "$BF" "$T/bsrc.json"; ln -s "$T/bsrc.json" "$BF"
-check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))') $(BA "($PA, $PB)")" "True 0 False" "a bridges file that is a link: torn, no bridge"
-rm -f "$BF"; cp "$T/bsrc.json" "$(dirname "$BF")/Bridges.json"
-check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "$([ -e "$BF" ] && echo True || echo False) 0" \
-  "  a file named Bridges.json: not the file (torn where the disk opens it by the name, absent where it does not)"
-rm -f "$(dirname "$BF")/Bridges.json"; cp "$T/bsrc.json" "$BF"; ln "$BF" "$T/bhard.json"
-check "$(BP 'print(common.read_bridges()[1])')" "True" "  a second hard link: torn"
-rm -f "$T/bhard.json"; mkdir -p "$T/bdir"; mv "$BF" "$T/bdir/x"; mkdir "$BF"
-check "$(BP 'print(common.read_bridges())')" "([], True)" "  a folder of the name: torn"
-rmdir "$BF"; mv "$T/bdir/x" "$BF"
-check "$(BP 'print(common.read_bridges()[1], len(common.open_bridges()))')" "False 1" "  the plain file again: read"
-rm -f "$BF"
 printf '{"repos": {"a": {}}, "scopes": {"y": {"repos": ["a"], "yard": "studio"}, "n": {"repos": [], "yard": null}, "x": {"repos": []}, "e": {"repos": [], "yard": ""}}}\n' > "$T/yards.json"
 check "$(CLAUDE_REPOS_JSON="$T/yards.json" py 'print(common.scope_yard("y"), common.scope_yard("n"), common.scope_yard("x"), common.scope_yard("e"), common.scope_yard("nope"))')" \
   "studio None None None None" "scope_yard() (skipper-resilience S2): a host; null, absent, empty or no such scope: None"
@@ -215,6 +143,14 @@ check "$(py 'print(repr(common.ADDRESS), common.DECLARED_LINE)')" "'' THIS SESSI
 check "$(py 'print(common.closing_kind(common.FINISH_LINES[0]), common.closing_kind(common.WAITING_PREFIX + "D1"))')" "done waiting" "  and still read as closing lines"
 check "$(py 'print(common.closing_kind(common.PENDING_PREFIX + "the reviewers"), common.closing_kind(common.PENDING_PREFIX), common.unrelayed_ask("x\n\n" + common.PENDING_PREFIX + "the check"))')" "pending None None" \
   "  WAITING FOR SOMETHING reads as pending, needs its what, and is no ask to relay"
+check "$(py 'I = common.IDLE_PREFIX; print(common.closing_kind(I + "the answer is above"), common.closing_kind(I), common.unrelayed_ask("x\n\n" + I + "answered"), common.asks_answers("x\n\n" + I + "D2 is answered"))')" "idle None None False" \
+  "  WAITING FOR NOTHING reads as idle, needs its what, and is no ask to relay or to answer (2026-10-29)"
+check "$(py 'W = common.WAITING_PREFIX + "pick A"; M = common.marked("waiting", W); print(common.closing_kind(M), common.bare("**" + M + "**") == W, repr(common.mark_of(M)), repr(common.mark_of(W)), common.ending_mark("x\n\n" + M)[1] == common.MARKS["waiting"], common.ending_mark("x\n\n\u2705\ufe0f " + common.IDLE_PREFIX + "ok")[1] == common.MARKS["idle"], sorted({k for k, _ in common.CLOSING} ^ set(common.MARKS)))')" \
+  "waiting True '🛑' '' True True []" \
+  "  a mark before a closing line: bare() drops it, mark_of() and ending_mark() read it (U+FE0F aside), every kind has one"
+check "$(py 'A = common.ADDRESS; print(common.bare("\U0001F6D1" + common.WAITING_PREFIX + "x") == common.WAITING_PREFIX + "x", common.mark_of("\U0001F6D1" + common.WAITING_PREFIX + "x"), common.mark_for(A + "THIS SESSION MOVED TO peer — CLOSE THIS TAB. THE WORK CONTINUES THERE ONCE YOU START IT: claude"), common.mark_for(A + "THIS SESSION MOVED TO peer — CLOSE THIS TAB. THE WORK CONTINUES THERE."), common.mark_for(A + "THIS SESSION IS READY TO MOVE TO laptop — CLOSE THIS TAB. TYPE x"))')" \
+  "True 🛑| 🛑 ✅ 🛑" \
+  "  a mark with no space still strips (and reads as unspaced); a move that leaves the owner a step wants 🛑 (landing review, 2026-10-29)"
 check "$(py 'P = common.PENDING_PREFIX; print(common.closing_kind(common.HANDOVER_LINE), common.closing_kind(P + "dispatch\x27s yolo launch (autofinish-run --by yolo), which starts once this run ends"), common.closing_kind(P + "dispatch to start the yolo launch of B14b ([x#1](https://example.com/x/pull/1)) now"), common.closing_kind(P + "the two reviewers, then dispatch\x27s launch"), common.closing_kind(P + "dispatch\x27s tidier"), common.unrelayed_ask("x\n\n" + common.HANDOVER_LINE))')" \
   "handed handed handed pending pending None" \
   "  the hand-over reads as handed (the fixed line and the two free forms of 2026-10-24); a line naming something else first stays pending"
@@ -705,6 +641,27 @@ check "$out" "ImportError:" "  imported with no core: the ImportError reaches th
 mkdir -p "$HOME/.config/regatta"; echo "$ROOT" > "$HOME/.config/regatta/home"
 out=$(env -i HOME="$HOME" PATH=/usr/bin:/bin /usr/bin/python3 -I -c "import sys; sys.path.insert(0, '$T/old/hooks'); import common; print(common.__file__)")
 check "$out" "$core" "  env -i, no REGATTA_CONFIG: the default ~/.config/regatta/home"
+
+echo "cost ratio lists every provider (a subscription bag measured by hand carries its date)"
+printf '%s\n' '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-10-25", "plan": "Max 20x", "plan_usd_week": 46, "list_usd_week": 2300},' \
+  '"codex": {"ratio": 0.084, "measured": "2026-10-29", "plan": "Codex Pro", "plan_usd_week": 23, "list_usd_week": 275}}}' > "$T/ratio.json"
+out=$(COST_RATIO="$T/ratio.json" "$M/bin/cost" ratio | sed -n 2p)
+check "$out" 'codex: list × 0.084, measured 2026-10-29 (Codex Pro $23.00 a week over a $275 bag at list)' "  a second provider: its own line, with its date"
+out=$(COST_RATIO="$T/ratio.json" "$M/bin/cost" 10 --provider codex)
+check "$out" '$10 ($0.84 effective)' "  cost --provider codex prices at codex's ratio"
+out=$(COST_RATIO="$T/ratio.json" "$M/bin/cost" 10 --provider codex 2>&1 >/dev/null)
+check "$out" "cost: codex's ratio was measured by hand on 2026-10-29 — \`cost ratio\` lists it" "  …and names its measured date on stderr"
+out=$(COST_RATIO="$T/ratio.json" "$M/bin/cost" ratio --json | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin)["others"]))')
+check "$out" "['codex']" "  --json carries the others beside Anthropic's entry"
+printf '%s\n' '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-10-25", "plan": "Max 20x", "plan_usd_week": 46, "list_usd_week": 2300}}}' > "$T/ratio1.json"
+out=$(COST_RATIO="$T/ratio1.json" "$M/bin/cost" ratio)
+check "$out" 'Anthropic list × 0.0200, week ending 2026-10-25 (Max 20x $46.00 a week over $2,300 of list spend); other providers: pay-per-use, × 1' "  Anthropic alone: the one line as before (the overlay's cost test reads it)"
+printf '%s\n' '{"providers": {"anthropic": {"ratio": 0.02, "week_ending": "2026-10-25", "plan": "Max 20x", "plan_usd_week": 46, "list_usd_week": 2300},' \
+  '"codex": {"ratio": 0.084, "plan_usd_week": "23x", "list_usd_week": null}, "Gemini": {"ratio": 0.05}}}' > "$T/ratio2.json"
+out=$(COST_RATIO="$T/ratio2.json" "$M/bin/cost" ratio 2>&1; echo "rc=$?")
+check "$(printf '%s\n' "$out" | grep -c '^codex: list × 0.084, measured ? (? \$? a week over a \$? bag at list)$')" "1" "  a hand-written field that is no number reads \$?, never a traceback"
+check "$(printf '%s\n' "$out" | grep -c '^Gemini: no usable ratio')" "1" "  a key --provider would not apply is listed as unusable, not with its ratio"
+check "$(printf '%s\n' "$out" | tail -1)" "rc=0" "  …and exits 0"
 
 echo "cost lint (effective applies to Claude prices, not real money)"
 lintcase() {  # $1 line, $2 expected exit, $3 label

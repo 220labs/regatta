@@ -184,17 +184,19 @@ finished; a clear, always-identical marker is what tells a truly closed session 
 that still carries a thought worth reading:
 
 - Nothing actionable remains — no open items, no suggestion, no manual step owed:
-  `<OWNER>, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING.`
+  `✅ <OWNER>, IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING.`
 - Everything is merged and nothing is *owed*, but there is a suggestion, an idea for later
   or a question left with the owner, written out just above the line:
-  `<OWNER>, THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.`
+  `✅ <OWNER>, THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.`
 
 Never use the first line when the second applies — a manual step the owner still owes counts as
 a note, so it takes the second line. A Phase 1 ⚠ stop (open items, another session's lock)
 is not a finished session and gets neither: when the owner owes the next move it ends with
-`<OWNER>, THIS SESSION IS WAITING FOR YOU — <what, in one line>` (the rules on working with the owner). A
+`🛑 <OWNER>, THIS SESSION IS WAITING FOR YOU — <what, in one line>` (the rules on working with the owner). A
 turn that ends while its own work runs on — the reviewers, the check — asks the owner nothing and
-ends `<OWNER>, THIS SESSION IS WAITING FOR SOMETHING — <what it waits on, in one line>`.
+ends `⏳ <OWNER>, THIS SESSION IS WAITING FOR SOMETHING — <what it waits on, in one line>`.
+Each line opens with its mark and a space — ✅ closeable, ⏳ work goes on without the owner, 🛑 the
+owner owes the next move (`hooks/common.py`'s `MARKS`) — so a panel of sessions reads at a glance.
 Enforced, not described: `bin/paste-paths --stop-hook` blocks a `/finish` reply once when it
 reports a launch (`Shipped:`, or the `finishing` marker touched this turn) and its last line
 is not one of these, or when anything but links follows a closing line; the table is

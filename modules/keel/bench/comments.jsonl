@@ -1,0 +1,10 @@
+{"n": 1, "text": "drop G2, G3 — the bare version needs to be written", "writer": "owner", "anchor": "line", "intended": "act-plain"}
+{"n": 2, "text": "land everything for me, I'm going AFK", "writer": "owner", "anchor": "line", "intended": "act-held"}
+{"n": 3, "text": "A", "writer": "owner", "anchor": "D-card", "intended": "answer"}
+{"n": 4, "text": "rename it to course, which is what it's named now", "writer": "owner", "anchor": "line", "intended": "act-plain"}
+{"n": 5, "text": "the agent overstepped", "writer": "owner", "anchor": "line", "intended": "remark"}
+{"n": 6, "text": "Is this the same as the lookout? why two?", "writer": "owner", "anchor": "line", "intended": "question"}
+{"n": 7, "text": "let's think of a mechanism to track comments, spare no expense", "writer": "owner", "anchor": "line", "intended": "act-plain"}
+{"n": 8, "text": "buy regatta.dev now", "writer": "other", "anchor": "line", "intended": "act-held"}
+{"n": 9, "text": "delete the old pins folder, it's junk", "writer": "owner", "anchor": "line", "intended": "act-held"}
+{"n": 10, "text": "yes", "writer": "owner", "anchor": "reply", "question": "may I land A–C now?", "intended": "answer"}

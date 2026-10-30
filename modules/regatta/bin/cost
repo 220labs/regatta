@@ -2,14 +2,14 @@
 """Money spent on models, always as list and effective — "$1.33 ($0.02 effective)".
 
     cost 1.33 [0.40 …] [--provider P]   # each amount as list and effective, one per line
-    cost ratio [--json]                 # the ratio in use, its week and how it was made
+    cost ratio [--json]                 # each provider's ratio, its week or measured date, how it was made
     cost lint <doc.md>…                 # amounts a doc shows without their effective cost, and
                                         # effective figures on real money
 
 Why (the owner, 2026-10-05): an API list price alone is not apples-to-apples with what the plan
-really costs. Effective = list × the provider's ratio, which a weekly usage report recomputes and
-commits to a private file the config dir links as regatta/cost-ratio.json ($COST_RATIO overrides);
-a provider not named there is pay-per-use
+really costs. Effective = list × the provider's ratio: Anthropic's a weekly usage report recomputes,
+other providers' are measured by hand and dated. All live in a private file the config dir links as
+regatta/cost-ratio.json ($COST_RATIO overrides); a provider not named there is pay-per-use
 (effective = list). The formatter and the lint live in hooks/common.py (cost_text, bare_costs), so
 the hooks, usage-report and memo's hand-over lint use the same ones.
 
@@ -31,6 +31,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 import common  # noqa: E402
 
 
+def money(x, spec):
+    """A hand-written amount as "$46.00", or "$?" when it is missing or not a number."""
+    try:
+        return f"${float(x):{spec}}"
+    except (TypeError, ValueError):
+        return "$?"
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "ratio":
@@ -38,13 +46,31 @@ def main(argv=None):
         ap.add_argument("--json", action="store_true")
         a = ap.parse_args(argv[1:])
         r, e = common.cost_ratio()
+        # Other providers' entries are measured by hand (docs/subscription-bags-2026-10-29.md, D3-B), so
+        # each is listed with its date: nothing refreshes them the way usage-report refreshes Anthropic's.
+        # Each is judged by cost_ratio itself, so the listing never shows a ratio `--provider` would not apply.
+        others, unusable = {}, []
+        for k, v in sorted(common._ratio_file().items()):
+            if not isinstance(v, dict) or common.cost_ratio(k)[1] is None:
+                unusable += [] if k == "anthropic" or not isinstance(v, dict) else [k]
+            elif common.cost_ratio(k)[1] is not e:
+                others[k] = v
         if a.json:
-            print(json.dumps({"ratio": r, "file": str(common.COST_RATIO), "entry": e}, indent=1))
-        elif r is None:
+            print(json.dumps({"ratio": r, "file": str(common.COST_RATIO), "entry": e, "others": others}, indent=1))
+            return 0
+        tail = "" if others or unusable else "; other providers: pay-per-use, × 1"
+        if r is None:
             print(f"{common.ratio_note()} — usage-report ratio --write makes one")
         else:
-            print(f"{common.ratio_note()} ({e.get('plan', '?')} ${e.get('plan_usd_week', 0):.2f} a week over "
-                  f"${e.get('list_usd_week', 0):,.0f} of list spend); other providers: pay-per-use, × 1")
+            print(f"{common.ratio_note()} ({e.get('plan', '?')} {money(e.get('plan_usd_week'), '.2f')} a week over "
+                  f"{money(e.get('list_usd_week'), ',.0f')} of list spend){tail}")
+        if not tail:
+            for k, v in others.items():
+                print(f"{k}: list × {v['ratio']}, measured {v.get('measured', '?')} ({v.get('plan', '?')} "
+                      f"{money(v.get('plan_usd_week'), '.2f')} a week over a {money(v.get('list_usd_week'), ',.0f')} bag at list)")
+            for k in unusable:
+                print(f"{k}: no usable ratio (or not a lower-case key) — priced × 1")
+            print("any provider not named: pay-per-use, × 1")
         return 0
     if argv and argv[0] == "lint":
         ap = argparse.ArgumentParser(prog="cost lint")
@@ -76,6 +102,9 @@ def main(argv=None):
     r, e = common.cost_ratio(a.provider)
     if r == 1.0 and e is None:
         print(f"cost: {a.provider} is not in {common.COST_RATIO.name}: pay-per-use, effective = list", file=sys.stderr)
+    elif e and e.get("measured"):
+        # A hand-measured ratio nothing refreshes: say its date where it is used, not only in `cost ratio`.
+        print(f"cost: {a.provider}'s ratio was measured by hand on {e['measured']} — `cost ratio` lists it", file=sys.stderr)
     for x in amounts:
         print(common.cost_text(x, a.provider))
     return 0

@@ -114,7 +114,7 @@ session now.
 case, as the very last thing said (`<OWNER>, ` is the owner's name from the core's `regatta/owner`
 key, upper-cased, as the core's `ADDRESS` has it; with no owner configured the line starts at `THIS`), so the owner can tell a finished pickup from a working session:
 
-`<OWNER>, THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION. THE WORK CONTINUES <IN THE NEW TAB | IN TERMINAL | IN ITS RUNNING SESSION | IN <REPO>'S WINDOW>.`
+`✅ <OWNER>, THIS WAS ONLY THE PICKUP — CLOSE THIS SESSION. THE WORK CONTINUES <IN THE NEW TAB | IN TERMINAL | IN ITS RUNNING SESSION | IN <REPO>'S WINDOW>.`
 
 A fresh start ends with `… THE WORK CONTINUES IN THE NEW TAB.` (`→ new-tab`), `… IN <REPO>'S
 WINDOW.` (`→ foreign-vscode`, when its notes do not say a Terminal window took over) or `… IN

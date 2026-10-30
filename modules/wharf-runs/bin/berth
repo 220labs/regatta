@@ -81,30 +81,38 @@ def ssh_aliases():
     return dict(x.split(":", 1) for x in common.config_lines("wharf-runs/ssh") or [] if ":" in x)
 
 
-def registry():
-    p = common.repos_json()
-    try:
-        return json.loads(p.read_text(encoding="utf-8")) if p else {}
-    except (OSError, ValueError):
-        return {}
-
-
 def candidates(repo, me):
     """(candidates in order, a dict of what decided them). A registry that is there but will not read
-    gives none, its `unreadable` set: read as empty it would drop the clone-host filter."""
+    gives none, its `unreadable` set: read as empty it would drop the clone-host filter. One parse of the
+    registry judges the tear, the scopes and the clone hosts (a second read could find it torn). Every
+    scope listing the repo counts, as a fence walks every scope (an umbrella scope listed first must not
+    hide a scope with berths): the first berths found set the order, a later scope's narrow it. Host names
+    compare lower-cased."""
     key = common.repo_key(repo)
-    if common.registry_unreadable():
+    reg, torn = common.read_registry()
+    if torn:
         return [], {"repo": key, "scope": None, "berths": None, "hosts": None, "source": None,
                     "unreadable": "the registry (%s) will not read" % common.repos_json()}
-    name, scope = common.scope_of_repo(repo)
-    entry = (registry().get("repos") or {}).get(key)
+    reg = reg or {}
+    name, scope = common.scope_of_repo(repo, reg=reg)
+    entry = (reg.get("repos") or {}).get(key)
     hosts = entry.get("hosts") if isinstance(entry, dict) else None
     berths = scope.get("berths") if isinstance(scope, dict) else None
+    others = []   # every other scope that lists the repo and has berths
+    for n2, sc in (reg.get("scopes") or {}).items():
+        if n2 != name and isinstance(sc, dict) and isinstance(sc.get("berths"), list) and sc["berths"]:
+            if common.scope_of_repo(repo, reg={"scopes": {n2: sc}})[0] == n2:
+                others.append((n2, [h for h in sc["berths"] if isinstance(h, str)]))
+    if not (isinstance(berths, list) and berths) and others:
+        name, berths = others.pop(0)   # the scope whose berths decide is the one named (S5's landing review)
     if isinstance(berths, list) and berths:
         order, source = [h for h in berths if isinstance(h, str)], "scope %s berths" % name
+        for _, narrower in others:
+            order = [h for h in order if h.lower() in {x.lower() for x in narrower}]
     else:
         order, source = [h for h in ssh_aliases() if h != me] + [me], "no berths: each peer, then this Mac"
-    out = [h for h in order if hosts is None or h in hosts]
+    low = {x.lower() for x in hosts if isinstance(x, str)} if isinstance(hosts, list) else None
+    out = [h for h in order if low is None or h.lower() in low]
     return out, {"repo": key, "scope": name, "berths": berths, "hosts": hosts, "source": source}
 
 

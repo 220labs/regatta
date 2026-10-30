@@ -504,16 +504,15 @@ def project_slug(path):
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def scope_paths(name, path=None, home=None, reg=None):
+def scope_paths(name, path=None, home=None):
     """[Path] — what a scope's sessions leave on this Mac, the paths the fence keeps out: per repo
     of the scope (its anchor, the knowledge repo, first) its checkout and every `git worktree list`
     entry, PROJECTS/transcripts/<repo>/, and each login dir's projects/<slug>/ for each of those
     checkouts — the transcripts and the memory both (week-digest reads the .jsonl files there). A
     worktree already removed left a folder whose slug starts with its checkout's slug and a `-`:
     a reader matches that prefix, as sheep_gate's transcript test does. A copy outside a
-    registered repo is not found. [] for a scope the registry lacks. REG: one read_registry() parse, so a
-    caller judging several scopes reads one file (the "a fence walks every scope" trap). Never raises."""
-    repos, scopes = scope_registry(path) if reg is None else (reg.get("repos") or {}, reg.get("scopes") or {})
+    registered repo is not found. [] for a scope the registry lacks. Never raises."""
+    repos, scopes = scope_registry(path)
     if name not in scopes:
         return []
     logins = login_dirs(home)
@@ -545,7 +544,7 @@ def scope_paths(name, path=None, home=None, reg=None):
     return out
 
 
-def scope_match(name, path=None, home=None, reg=None):
+def scope_match(name, path=None, home=None):
     """A test path -> bool: is it one of scope `name`'s (scope_paths)? Under one of its folders by
     the path as given or its real path, or any path part that is one of its slugs or starts with one
     and a `-`, whatever folder holds it — a login dir scope_paths did not list, a worktree already
@@ -553,7 +552,7 @@ def scope_match(name, path=None, home=None, reg=None):
     `projects/`: 11 of a scope's rows were quoted for it, trim-cross-host D2,
     2026-10-28). The prefix over-reaches (a repo `<name>-x` beside `<name>`): for a fence that is the
     safe side. Never raises."""
-    ps = scope_paths(name, path, home, reg)
+    ps = scope_paths(name, path, home)
     roots = {os.path.normpath(str(p)) for p in ps} | {os.path.realpath(p) for p in ps}
     slugs = {project_slug(r) for r in roots}
 
@@ -599,187 +598,6 @@ def gather_fence(scope=None, path=None, home=None):
             return "outside"
         return "quote"
     return fence
-
-
-# Bridges (confidential-reach S8; the entry's D3 answered A, the bridge component): two confidential
-# scopes treated as one for a window, by one entry in a local file, `<config>/lighthouse/bridges.json`
-# ({"bridges": [{id, from, to, until, why, by, opened, one_way?, ended?}]}), which wharf's `scopes bridge`
-# alone writes, appended and ended, never edited. Every reader of confidentiality that widens on a bridge
-# asks here (account's tenancy and pick, dispatch through account) or in the fence's stdlib
-# copy (lighthouse's secrets_guard, kept in step by its suite). A bridge is a widening, so every doubt
-# reads as no bridge: a missing or torn file, a torn registry, an entry past `until`, ended, longer than
-# BRIDGE_MAX, naming a scope the registry lacks or one not confidential, and a chain — a scope in two
-# open entries with two partners voids every entry it is in, so no session reaches a third scope through
-# a second bridge, and no reading of the file can pick which of two the owner meant. The opposite of the
-# fence's torn-registry choice (kl-s2 D3-A), on purpose.
-BRIDGE_MAX = 24 * 3600   # s: the longest window `scopes bridge open` writes, and the longest a reader honours
-
-
-def bridges_file():
-    """The bridges file: per Mac, local, never a Drive link (a hook reads it on every call)."""
-    return CONFIG / "lighthouse" / "bridges.json"
-
-
-def read_bridges(file=None):
-    """(entries, torn): every entry of the bridges file, open or not, as written; torn is True when the
-    file is there and does not read as {"bridges": [object, …]}, and when it is a link, anything but a regular
-    file, a second hard link, or a name that is not exactly `bridges.json` in its folder's listing (APFS opens
-    `Bridges.json` by this name): `scopes bridge` writes none of those, so an agent did (the S8 second stop —
-    a link there made the file its target's, and a Write through it opened a bridge). lighthouse's
-    secrets_guard holds the same gate (_bridges_text). No file: ([], False). Never raises."""
-    import stat
-    p = Path(file) if file else bridges_file()
-    try:
-        st = os.lstat(p)
-    except FileNotFoundError:
-        return [], False
-    except OSError:
-        return [], True
-    try:
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or p.name not in os.listdir(p.parent):
-            return [], True
-        fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(fd, encoding="utf-8") as f:
-            if os.fstat(f.fileno()).st_ino != st.st_ino:   # replaced between the look and the open
-                return [], True
-            d = json.loads(f.read())
-    except (OSError, ValueError):
-        return [], True
-    rows = d.get("bridges") if isinstance(d, dict) else None
-    if not isinstance(rows, list) or not all(isinstance(e, dict) for e in rows):
-        return [], True
-    return rows, False
-
-
-def bridge_time(v):
-    """An entry's ISO 8601 time with its zone (`Z` or an offset) as epoch seconds, else None: a time
-    with no zone is no time, as a reader on another zone would read it otherwise."""
-    import datetime
-    if not isinstance(v, str) or not v:
-        return None
-    try:
-        t = datetime.datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)
-    except ValueError:
-        return None
-    return t.timestamp() if t.tzinfo else None
-
-
-def bridge_void(e, scopes, now=None):
-    """Why entry `e` grants nothing now (past, ended, too long, a scope missing or open, malformed),
-    else None. SCOPES: the registry's scopes. A chain is judged across entries, in open_bridges()."""
-    now = time.time() if now is None else now
-    a, b = e.get("from"), e.get("to")
-    if not (isinstance(a, str) and isinstance(b, str) and a and b) or a == b:
-        return "it names no two scopes"
-    if "ended" in e:
-        return "ended"
-    for s in (a, b):
-        sc = scopes.get(s)
-        if not isinstance(sc, dict):
-            return f"the registry has no scope {s}"
-        if sc.get("confidential") is not True:
-            return f"{s} is not confidential"
-    if "one_way" in e and not isinstance(e["one_way"], bool):
-        return "its one_way is not true or false"
-    opened, until = bridge_time(e.get("opened")), bridge_time(e.get("until"))
-    if opened is None or until is None:
-        return "its opened or until is no time with a zone"
-    if until - opened > BRIDGE_MAX:
-        return f"it runs past {BRIDGE_MAX // 3600} h"
-    if until <= now:
-        return "expired"
-    if opened > now + 60:   # a minute's slack for two clocks; an entry opened in the future is no entry
-        return "it opens in the future"
-    return None
-
-
-def open_bridges(path=None, now=None, file=None, reg=None):
-    """[entry] — each bridge that grants something now (bridge_void() says nothing against it and it is in
-    no chain); [] on any doubt (the section above). PATH: the registry; REG: one read_registry() parse."""
-    rows, torn = read_bridges(file)
-    if torn or not rows:
-        return []
-    if reg is None:
-        reg, unreadable = read_registry(path)
-        if unreadable:
-            return []
-    scopes = (reg or {}).get("scopes") or {}
-    live = [e for e in rows if bridge_void(e, scopes, now) is None]
-    partners = {}
-    for e in live:
-        partners.setdefault(e["from"], set()).add(e["to"])
-        partners.setdefault(e["to"], set()).add(e["from"])
-    return [e for e in live if len(partners[e["from"]]) == 1 and len(partners[e["to"]]) == 1]
-
-
-def bridge_directions(path=None, now=None, file=None, reg=None):
-    """[(from, to, entry)] — who reaches whom now: each open bridge both ways, a `one_way` one from→to only."""
-    out = []
-    for e in open_bridges(path, now, file, reg):
-        out.append((e["from"], e["to"], e))
-        if not e.get("one_way"):
-            out.append((e["to"], e["from"], e))
-    return out
-
-
-def scope_within(name, path=None, home=None, reg=None):
-    """A test path -> bool: the exact half of scope_match(), as the fence's _scope_dirs reads a scope —
-    under one of its scope_paths() by the path as given or its real path, under where a `memory` link in
-    one points, or under a login's session folder of a worktree already removed
-    (`<login>/projects/<slug>--claude-worktrees-…`). No slug-part rule: for a grant the over-reach is the
-    unsafe side (the S8 landing review: a scratch folder named after a scope's slug read as in it). Never raises."""
-    try:
-        ps = scope_paths(name, path, home, reg)
-        roots = {os.path.normpath(str(p)) for p in ps} | {os.path.realpath(p) for p in ps}
-        roots |= {os.path.realpath(os.path.join(str(p), "memory")) for p in ps if os.path.islink(os.path.join(str(p), "memory"))}
-        repos, scopes = scope_registry(path) if reg is None else (reg.get("repos") or {}, reg.get("scopes") or {})
-        gone = [str(d / "projects" / project_slug(PROJECTS / k)) + "--claude-worktrees-"
-                for k in scope_members(scopes.get(name) or {}, repos) if k in repos for d in login_dirs(home)]
-    except Exception:
-        return lambda p: False
-
-    def match(p):
-        try:
-            s = os.path.normpath(os.path.expanduser(str(p)))
-            cs = {s, os.path.realpath(s)}
-            if any(c == r or c.startswith(r + os.sep) for c in cs for r in roots):
-                return True
-            return any(c.startswith(g) for c in cs for g in gone)
-        except (OSError, ValueError, TypeError):
-            return False
-    return match
-
-
-def bridge_active(cwd, path, reg_path=None, home=None, now=None, file=None):
-    """True when a session whose cwd is `cwd` may reach `path` across a bridge — the fence's rule
-    (secrets_guard's bridge_lifts) for a session with that one start: cwd is in a confidential scope X's
-    paths exactly (scope_within), path in a scope Y an open bridge runs X→Y (scope_match), and in no
-    confidential scope outside X and its partners (scope_match, whose over-reach is the safe side here:
-    a path a third scope may hold is no grant). False on every doubt, for an open cwd (the same login's
-    open sessions read neither side), and for a path in X itself — so it says nothing of a path the
-    session reaches without a bridge. Never raises."""
-    try:
-        reg, torn = read_registry(reg_path)   # one read for every scope judged (the trap)
-        if torn or reg is None or not cwd or not path:
-            return False
-        dirs = bridge_directions(reg_path, now, file, reg)
-        if not dirs:
-            return False
-        flagged = confidential_scopes(reg=reg)
-        home_scopes = {s for s in flagged if scope_within(s, reg_path, home, reg)(cwd)}
-        held = home_scopes | {y for x, y, _ in dirs if x in home_scopes}
-        match = {}
-
-        def m(s):
-            if s not in match:
-                match[s] = scope_match(s, reg_path, home, reg)
-            return match[s]
-        if any(m(s)(path) for s in flagged if s not in held):
-            return False
-        return any(m(y)(path) for y in held - home_scopes)
-    except Exception:
-        return False
-
 
 def repo_key(repo):
     """REPO as a registry key: a path under PROJECTS made relative to it (a worktree's path is its
@@ -1735,16 +1553,41 @@ def handoff(sid):
 # something it started or watches itself — a reviewer, the check, a PR it polls — and carries on
 # by itself; the owner has nothing to do (the owner, 2026-10-20: the WAITING line said "nothing to do
 # yet; the reviewers are running" and still read as an ask). An ask under it is blocked
-# (keel's bin/paste-paths, two_waits_findings).
+# (keel's bin/paste-paths, two_waits_findings). `idle`: nothing goes on and nothing is owed — a plain
+# answer, a look that changed nothing; the owner may close it or ask more (the owner, 2026-10-29, the
+# second closing-line correction that day: an answer ended WAITING FOR YOU with nothing owed). Work
+# that landed ends on its skill's done line instead.
 # Each line opens by addressing the owner (OWNER_NAME upper-cased, then ", "), or on its first word
 # with no owner configured; a skill states its line in the addressed form, so every pattern
 # below starts with _TO.
+# Before the address, one mark per state, so a panel of sessions reads at a glance (the owner,
+# 2026-10-29): ✅ closeable — a done line or WAITING FOR NOTHING; ⏳ work goes on without the owner —
+# WAITING FOR SOMETHING, the hand-over, RELAYED; 🛑 the owner owes the next move — WAITING FOR YOU.
+# The constants and CLOSING stay unmarked: bare() drops a leading mark, so every reader compares as
+# before, and keel's Stop lint (mark_findings) holds a reply to the mark its kind names. A producer
+# that prints a line for a session to end on prints `marked(kind, line)`.
+MARKS = {"done": "✅", "idle": "✅", "pending": "⏳", "handed": "⏳", "relayed": "⏳", "waiting": "🛑"}
+# Any leading pictograph run, and the space after it — not only MARKS, so a wrong mark is read as one, and
+# a missing space still strips (the lint names it): without it the line read as no closing line at all.
+_MARK_RE = re.compile("^([\u2190-\u2bff\U0001F000-\U0001FAFF\ufe0f\u200d]+)([*_`]*[ \t]*)")   # "**🛑** " too
+
+
+def mark_for(line):
+    """The mark a closing line opens with: its kind's, or 🛑 for a done line that leaves the owner a step."""
+    kind = closing_kind(line)
+    return MARKS["waiting"] if kind == "done" and _OWNER_STEP_RE.match(bare(line)) else MARKS.get(kind)
+
+
+def marked(kind, line):
+    """`line` with its kind's mark in front."""
+    return f"{MARKS[kind]} {line}" if kind in MARKS else line
 ADDRESS = OWNER_NAME.replace("’", "'").upper() + ", " if OWNER_NAME else ""   # straight apostrophes, as bare() reads a line
 _TO = re.escape(ADDRESS)
 FINISH_LINES = (ADDRESS + "IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'T FORGOTTEN ANYTHING.",
                 ADDRESS + "THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.")
 WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
 PENDING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR SOMETHING — "
+IDLE_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR NOTHING — "
 # `handed`: a dispatched yolo or dnd run hands its landing to dispatch's launch (wharf-runs' yolo_launch,
 # autofinish-run) — a WAITING FOR SOMETHING line, since the work goes on without the owner, but its own
 # kind, so that dispatch launches on it, dispatch-rc ends the run at once, and helm raises a launch that
@@ -1782,10 +1625,16 @@ CLOSING = (
     ("waiting", re.escape(WAITING_PREFIX) + r"\S.*"),                               # A1: any ask
     ("handed", re.escape(PENDING_PREFIX) + HANDED_WHAT),                            # before pending: its landing is dispatch's
     ("pending", re.escape(PENDING_PREFIX) + r"\S.*"),                               # no ask: it carries on by itself
+    ("idle", re.escape(IDLE_PREFIX) + r"\S.*"),                                     # no ask, nothing going on: a plain answer
     # session-asks R4: a dispatched run that relayed its ask waits on its skipper, not on the owner
     ("relayed", r"RELAYED TO \S.* — \S.*"),
 )
 _CLOSING_RE = [(kind, re.compile(f"(?:{rx})$")) for kind, rx in CLOSING]
+# A done line that still names a step for the owner elsewhere (a move not proved running, one prepared
+# for the laptop, a teleport to answer) takes 🛑: closing the tab is safe, the work still waits on them
+# (the landing review, 2026-10-29).
+_OWNER_STEP_RE = re.compile(_TO + r"(?:THIS SESSION MOVED TO \S+ — CLOSE THIS TAB\. THE WORK CONTINUES THERE ONCE YOU START IT: "
+                            r"|THIS SESSION IS READY TO MOVE TO |THIS SESSION GOES TO THE CLOUD FROM THE NEW TERMINAL WINDOW — )")
 # Bold or backticks around the whole line only: one in a bullet or mid-sentence is *quoted*.
 _MARKUP_RE = re.compile(r"^[\s*_`]+|[\s*_`]+$")
 # What reads as an attempt at one — not any line that addresses the owner (a previewed
@@ -1842,12 +1691,20 @@ _LINK_RE = re.compile(r"https?://|\]\(")
 
 
 def bare(line):
-    """The line without the markup around it, its typographic apostrophes straight."""
-    return _MARKUP_RE.sub("", (line or "").replace("’", "'"))
+    """The line without the markup around it or its leading mark, its typographic apostrophes straight."""
+    line = _MARKUP_RE.sub("", (line or "").replace("’", "'"))
+    return _MARKUP_RE.sub("", _MARK_RE.sub("", line))
+
+
+def mark_of(line):
+    """The pictograph run that opens a line (markup around it skipped), without U+FE0F; "" for none.
+    A run with no space after it comes back with a trailing "|", so it never equals a mark."""
+    m = _MARK_RE.match(_MARKUP_RE.sub("", (line or "")))
+    return (m.group(1).replace("\ufe0f", "") + ("" if m.group(2).strip("*_`") or m.group(2)[-1:].isspace() else "|")) if m else ""
 
 
 def closing_kind(line):
-    """'done', 'waiting', 'handed', 'pending', 'relayed' or None for one line of a reply. Markup around it doesn't change what
+    """'done', 'waiting', 'handed', 'pending', 'idle', 'relayed' or None for one line of a reply. Markup around it doesn't change what
     it says, so it doesn't change the answer."""
     line = bare(line)
     for kind, rx in _CLOSING_RE:
@@ -1873,6 +1730,18 @@ def ending(text):
     if all(not inside and _LINK_RE.search(l) for l, inside in lines[at[-1] + 1:]):
         return closing_kind(line), bare(line), None
     return None, None, ("after", line)
+
+
+def ending_mark(text):
+    """(want, mark) for the closing line `text` ends on, as ending() reads it: the mark it should open with
+    (mark_for) and the one it does (mark_of); (None, "") for none."""
+    raws = (text or "").splitlines()
+    lines = [raw.strip() for raw, inside in zip(raws, fenced(raws)) if raw.strip() and not inside]
+    kind, line, problem = ending(text)
+    if not kind:
+        return None, ""
+    raw = next((l for l in reversed(lines) if closing_kind(l) and bare(l) == line), "")
+    return mark_for(line), mark_of(raw)
 
 
 # session-asks R2 (docs/session-asks-2026-10-09.md): what a managed run hands the owner past its

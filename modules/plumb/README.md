@@ -6,7 +6,7 @@ the statusline, the tier hint (`hooks/tier_check.py`), the attention log (`hooks
 limits widget and the benches (`bench/`) read their private values as the next section says.
 `trim collect|report|verdict` reads whether each pin still earns its place: one row per outcome from the
 ledgers above, a scorecard per job and arm, and a verdict against a floor that never trades (`bin/trim`'s header).
-Aurora's night runs it weekly with `--night`, its ledger in the core's log dir, and usage-report's daily report
+Aurora's night runs it weekly with `--night`, its ledger under usage-report's data folder and host name, and usage-report's daily report
 carries the verdict's state in one `Trim:` line.
 
 ## crew-report

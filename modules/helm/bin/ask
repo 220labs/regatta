@@ -94,12 +94,22 @@ RELAYED_LINE = "RELAYED TO %s — %s"
 def _waiting_line():
     """The core's WAITING line (addressed to `regatta/owner`), else the same words unaddressed."""
     try:
-        return helmlib._common().WAITING_PREFIX + "%s"
+        common = helmlib._common()
     except Exception:  # no core: the line still ends the turn
         return "THIS SESSION IS WAITING FOR YOU — %s"
+    marked = getattr(common, "marked", None)   # a core older than the marks keeps its addressed line
+    return (marked("waiting", common.WAITING_PREFIX) if marked else common.WAITING_PREFIX) + "%s"   # 🛑 first: the core's MARKS
 
 
 WAITING_LINE = _waiting_line()
+
+
+def _relayed_mark():
+    """The core's mark for the RELAYED line and a space (⏳), or nothing without a core."""
+    try:
+        return helmlib._common().MARKS["relayed"] + " "
+    except Exception:
+        return ""
 GUARDED = helmlib.GUARDED
 
 
@@ -335,7 +345,7 @@ def cmd_relay(a):
         listen = " start `bin/ask listen` as a background shell," if background_ok() else ""
         print("relayed. Park what rests on %s, build the rest, report (bin/helm report --status relayed --parked %s),%s"
               " then end on:" % (a.item, a.item, listen))
-        print("  " + RELAYED_LINE % (who, "%s, %s" % (a.item, it["title"][:60])))
+        print("  " + _relayed_mark() + RELAYED_LINE % (who, "%s, %s" % (a.item, it["title"][:60])))
         if name == "sendmessage":
             print("  (sendmessage: call SendMessage to %s with the message line above before ending)" % who)
     return 0

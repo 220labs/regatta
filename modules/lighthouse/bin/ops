@@ -115,6 +115,7 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -1727,10 +1728,19 @@ def gate_reason(e):
     return ": ".join(parts[:2])[:200] or type(e).__name__
 
 
+# The command a row's provider runs on this host, by the variable that overrides it, as the core's gate looks it up
+# (_classify_claude). codex joins when the gate has a classify adapter for it; jev is HTTP, never probed here.
+GATE_BINS = {"claude": ("CLAUDE_BIN", "claude")}
+# The providers the gate's classify() has an adapter for; any other row raises per call and spends a try per item
+GATE_ADAPTERS = ("jev", "claude")
+
+
 def gate_down():
     """None when the four rows resolve, else why the gate can classify nothing: it does not load, a row is missing,
-    off or invalid. The same for every item, so it holds the queue and spends no item's tries (S5's landing review:
-    an overlay table without the rows would otherwise finish the whole backlog unclassified in three passes)."""
+    off or invalid, or the command a row's provider runs is not on this job's PATH. The same for every item, so it
+    holds the queue and spends no item's tries (S5's landing review: an overlay table without the rows would
+    otherwise finish the whole backlog unclassified in three passes; the desk's first pass on a launchd PATH without
+    the home's .local/bin spent a try on each issue, 2026-10-29)."""
     try:
         g = gate_module()
     except Exception as e:   # noqa: BLE001
@@ -1745,6 +1755,17 @@ def gate_down():
             return gate_reason(e)
         if row is None:
             return "%s is off (when_off: skip)" % site
+        if row.get("kind") != "classify" or row.get("provider") not in GATE_ADAPTERS:
+            return "%s: a %s %s row, no classify adapter in the gate" % (site, row.get("provider"), row.get("kind"))
+        var, name = GATE_BINS.get(row.get("provider"), (None, None))
+        if var:
+            cmd = os.environ.get(var, name)   # the gate's own spelling: an empty CLAUDE_BIN runs "", never claude
+            if not cmd or not shutil.which(cmd):
+                # the home folder as ~: the reason is a log line and may be quoted on, never a login's name
+                home = os.path.expanduser("~")
+                path = ":".join("~" + p[len(home):] if home != "/" and (p == home or p.startswith(home + "/")) else p
+                                for p in os.environ.get("PATH", os.defpath).split(":"))
+                return "%s runs %s, not found on PATH %s" % (site, cmd or '""', path)
     return None
 
 

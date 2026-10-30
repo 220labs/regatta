@@ -1644,7 +1644,7 @@ check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called 
 : > "$T/claude.calls"
 YREPLY="Built.
 SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-hand.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
-has "$T/claude.calls" "end on exactly \`SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "the yolo prompt names the hand-over line"
+has "$T/claude.calls" "end on exactly \`⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "the yolo prompt names the hand-over line"
 has "$T/claude.calls" "and keel yolo took every item it met (exit 0, or no D-list at all), end on exactly" "  only when keel yolo stopped at nothing (review D4)"
 has "$T/claude.calls" "no WAITING line asks it — this run's mode hands the landing to dispatch" "  and the base text no longer tells it to ask about landing (review D4)"
 has "$HOME/yolo-hand.log" "starting the launch: autofinish-run $T/repo/.claude/worktrees/demo --by yolo" "  a build ending on it: the launch starts"
@@ -1697,8 +1697,8 @@ YMARK=no YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPAT
 has "$HOME/mode-dnd.log" "== mode dnd" "mode dnd from the plist: read at fire time, logged"
 has "$T/claude.calls" "keel yolo --dnd <the doc>" "  the prompt's gate is keel yolo --dnd"
 has "$T/claude.calls" "relay each one as above (ask relay <doc> <Dn>)" "  …and its held items are relayed"
-has "$T/claude.calls" "when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "  …and, as the last step with nothing relayed, it ends on the hand-over line"
-has "$T/claude.calls" "A step that scheduled the next one waits for no launch: it ends on the line dispatch --next told it to end on, when it printed one (the queue holds the step), else on \`SAM, THIS SESSION IS WAITING FOR SOMETHING — <the next step, in one line>\`" "  …a step with a next one scheduled does not (review D4); one the queue holds ends on dispatch's line (S3's third review)"
+has "$T/claude.calls" "when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)\`" "  …and, as the last step with nothing relayed, it ends on the hand-over line"
+has "$T/claude.calls" "A step that scheduled the next one waits for no launch: it ends on the line dispatch --next told it to end on, when it printed one (the queue holds the step), else on \`⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — <the next step, in one line>\`" "  …a step with a next one scheduled does not (review D4); one the queue holds ends on dispatch's line (S3's third review)"
 grep -q "Taken unattended (Sam's dnd, " "$T/repo/.claude/worktrees/demo/docs/d.md"; check "$?" "0" "  a Reversible: no pick taken as the owner's dnd"
 grep -q "== yolo" "$HOME/mode-dnd.log"; check "$?" "1" "  …no yolo launch: dnd is not yolo"
 has "$HOME/mode-dnd.log" "== dnd: the build run ended clean — starting the launch: autofinish-run $T/repo/.claude/worktrees/demo --by dnd" \
@@ -2430,6 +2430,21 @@ check "$? $("${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json 2>/dev/nu
   "a typed skipper's run through the queue: its entry carries the page dispatch published (the S1 landing)"
 qreset
 
+# S5 (eligibility): the berth load pick retires with a queue home, and a need nobody meets is refused
+printf 'laptop:feat-a\n' > "$REGATTA_CONFIG/wharf-runs/features"
+env -u DISPATCH_LABEL -u DISPATCH_DEFAULT_ON DISPATCH_MAX_RUNS=5 BERTH_SSH=/nonexistent "$B/dispatch" $BR --repo "$T/repo" --on auto --needs feat-z --headless > "$T/out" 2>&1
+check "$? $("${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json 2>/dev/null | wc -c | tr -d ' ')" "2 0" "a need no host meets: refused (exit 2), nothing queued"
+has "$T/out" "refused, never queued — end with the WAITING line — the next step waits for a run to end" "  with the cap's waiting words"
+has "$T/out" "laptop lacks feat-z" "  and the queue's reason"
+qreset
+env -u DISPATCH_LABEL -u DISPATCH_DEFAULT_ON DISPATCH_MAX_RUNS=5 BERTH_SSH=/nonexistent "$B/dispatch" $BR --repo "$T/repo" --on auto --needs feat-a --headless > "$T/out" 2>&1
+check "$? $(grep -c 'dispatch: berth' "$T/out")" "0 0" "--on auto with a queue home: no berth pick (its load rule retires; the queue places the run)"
+check "$("${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json 2>/dev/null | python3 "$T/qget.py" needs state)" "['feat-a'] claimed" "  the entry carries the need and, with room and the line, is claimed here"
+qreset
+env -u DISPATCH_LABEL -u DISPATCH_DEFAULT_ON DISPATCH_MAX_RUNS=5 BERTH_SSH=/nonexistent "$B/dispatch" $BR --repo "$T/repo" --on auto --needs feat-a,feat-a --headless > "$T/out" 2>&1
+check "$? $("${QGIT[@]}" show refs/regatta/queue:queue/repo--demo.json 2>/dev/null | python3 "$T/qget.py" needs state)" "0 ['feat-a'] claimed" "a need named twice is said once: the carried flag agrees with the entry (S5's landing review)"
+qreset
+rm -f "$REGATTA_CONFIG/wharf-runs/features"
 # a run now, here: enqueued, claimed with room, started by a job that runs at load
 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
 check "$?" "0" "a run now, with a queue home: through the queue"
@@ -3572,6 +3587,254 @@ seen = [q.waiter_live({"by": b, "from": here}) for b in ("s-live", "s-gone", "s-
 print(n[0], seen)
 PY6
 check "$(python3 "$T/scan6.py" "$QB")" "1 [True, False, True, False]" "item 6: four waiters judged, one registry scan"
+
+# ---- S10: dispatch --requeue (the requeue component's "The verb") and the sweep's tip read (D8-B) -------------
+# One harness: a bare origin and a clone on the run's branch (its worktree), a run record, the run's fleet entry
+# running here; dispatch-rc's live/warm/parked/end_run stood in (end_run marks the record as the real one does and
+# notes what the outbox held then), checkpoint.py the real one. CASE picks what differs. Prints key=value words.
+cat > "$T/rq.py" <<'PYRQ'
+import importlib.machinery as m, importlib.util as u, json, os, subprocess, sys, time
+l = m.SourceFileLoader("dq", sys.argv[1]); q = u.module_from_spec(u.spec_from_loader("dq", l)); l.exec_module(q)
+url, case, root = sys.argv[2], sys.argv[3], sys.argv[4]
+os.environ.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+def g(*a, cwd=None, check=True):
+    r = subprocess.run(["git"] + list(a), cwd=cwd, capture_output=True, text=True)
+    if check and r.returncode:
+        raise SystemExit("git %s: %s" % (a, r.stderr))
+    return r.stdout.strip()
+topic = "rq-" + case + (sys.argv[5] if case == "tipword" else "")
+br = "claude/laptop/2026-10-30-" + topic
+o, wt = os.path.join(root, topic + ".git"), os.path.join(root, topic)
+g("init", "-q", "--bare", "-b", "main", o)
+g("clone", "-q", o, wt)
+os.makedirs(os.path.join(wt, "docs", "handoff"))
+brief = "docs/handoff/2026-10-30-%s.md" % topic
+open(os.path.join(wt, "f"), "w").write("one\n")
+open(os.path.join(wt, brief), "w").write("# %s\n\nTier: worker\n\nBuild it.\n" % topic)
+g("add", "-A", cwd=wt); g("commit", "-qm", "seed", cwd=wt); g("push", "-q", "origin", "HEAD:main", cwd=wt)
+g("checkout", "-qb", br, cwd=wt); open(os.path.join(wt, "f"), "a").write("two\n")
+g("commit", "-qam", "Build: half of it", cwd=wt); g("push", "-q", "origin", br, cwd=wt)
+h, sid, t = q.host_name(), "s-%s-0000-0000" % case, q.now()
+st = {"session": sid, "branch": br, "repo": wt, "topic": topic, "wt": wt, "brief": brief, "started": t - 600, "model": "opus-x",
+      "effort": "max", "prio": "force" if case == "force" else "normal", "depth": 2, "pid": 1, "proc_start": "x", "mode": "rc"}
+if case == "confidential":
+    st["origin"] = "vault"
+d = q.logdir() / "run-seed-runs"; d.mkdir(parents=True, exist_ok=True)
+path = str(d / ("%s.json" % case)); json.dump(st, open(path, "w"))
+f = q.Fleet(url)
+if case == "tipword":
+    # another host's running entry, unseen past a sweep, whose branch tip is that host's requeue (or not)
+    e = {"id": "e-" + case, "key": q.key_of(wt, br), "repo": q.repo_word(wt), "branch": br, "topic": topic, "priority": "normal",
+         "state": "running", "running_on": "studio", "claimed_by": "studio", "claimed_at": t - 3600, "seen_at": t - 1500,
+         "session": "s-other", "host": "", "queued_at": t - 4000, "args": [], "env": {}}
+    f.do([{"op": "put", "key": e["key"], "entry": e}], "seed")
+    open(os.path.join(wt, brief), "a").write("\n## Continue from here\n")
+    words = {"own": "Requeue: %s from studio" % topic, "other": "Build: more", "old": "Requeue: %s from studio" % topic}
+    env = dict(os.environ, GIT_COMMITTER_DATE="@%d" % (t - 7200)) if sys.argv[5] == "old" else None
+    subprocess.run(["git", "commit", "-qam", words[sys.argv[5]]], cwd=wt, env=env, check=True)
+    g("push", "-q", "origin", br, cwd=wt)
+    g("checkout", "-q", "main", cwd=wt)   # the sweeping host's clone of the repo: the branch is not its checkout
+    os.environ["DISPATCH_HOST"] = "laptop"
+    ctx = q.argparse.Namespace(host="laptop", cap=3, launchctl=sys.argv[6], prefix="org.example.claude", jobbin="/nonexistent", rch="")
+    q.claim = lambda ctx, out=None: []
+    q.poll_tend = lambda ctx: None
+    q.cmd_sweep(ctx, ctx)
+    print("W state=%s from=%s" % ((f.entries().get(e["key"]) or {}).get("state"), (f.entries().get(e["key"]) or {}).get("requeued_from")))
+    sys.exit(0)
+if case != "entryless":
+    e = {"id": "e-" + case, "key": q.key_of(wt, br), "repo": q.repo_word(wt), "branch": br, "topic": topic,
+         "priority": "force" if case == "force" else "normal", "state": "running", "running_on": h, "claimed_by": h,
+         "claimed_at": t - 700, "seen_at": t - 60, "session": sid, "host": h if case == "pinned" else "", "queued_at": t - 800,
+         "args": ["--model", "opus", "--note", "keep me"] + (["--priority", "force"] if case == "force" else []), "env": {"DISPATCH_DEPTH": "2"}}
+    f.do([{"op": "put", "key": e["key"], "entry": e}], "seed")
+# the turn's dirt: a changed file and a new one
+open(os.path.join(wt, "f"), "a").write("three, uncommitted\n"); open(os.path.join(wt, "new.txt"), "w").write("new\n")
+if case == "held":
+    # origin refuses this push (a hook), so the op must wait in the outbox for the branch
+    hk = os.path.join(o, "hooks", "pre-receive"); open(hk, "w").write("#!/bin/sh\nexit 1\n"); os.chmod(hk, 0o755)
+real = q.rc_mod()
+seen = {}
+class RC:
+    def __getattr__(self, n):
+        return getattr(real, n)
+    def live(self, reap=True):
+        return [(path, json.load(open(path)))]
+    def warm(self, s):
+        return case in ("warm", "warmlid")
+    def parked(self, s):
+        return case in ("warm", "warmlid", "waiting")
+    def last_answer(self, s):
+        return "Half built.\nTier: principal-architect\nNext: the rest."
+    def end_run(self, p, s, reason):
+        seen["outbox"] = len(q.outbox_files())
+        if case == "endfail":
+            raise OSError("its record went away")
+        cur = json.load(open(p)); cur.update(ended=int(time.time()), end_reason=reason); json.dump(cur, open(p, "w"))
+        seen["reason"] = reason
+        if case == "midsweep":
+            # a sweep of this host between the end and the op: the entry stays (a requeued end is no run's end)
+            r = subprocess.run([sys.executable, sys.argv[1], "sweep", "--host", h, "--launchctl", sys.argv[6], "--cap", "0"],
+                               capture_output=True, text=True)
+            seen["midsweep"] = (q.Fleet(url).entries().get(q.key_of(wt, br)) or {}).get("state")
+        return 0
+q.rc_mod = lambda: RC()
+if case == "unattended":
+    os.environ["CLAUDE_UNATTENDED"] = "dispatch"
+argv = ["requeue", "--all", "--host", h, "--launchctl", sys.argv[6]] + (["--why", "lid"] if case in ("warmlid", "lidbusy") else [])
+if case == "offline":
+    q.home = lambda: os.path.join(root, "no-such.git")
+rc = q.main(argv)
+k = q.key_of(wt, br)
+ent = q.Fleet(url).entries().get(k) or {}
+rec = json.load(open(path))
+log = g("log", "--format=%s", "-n", "3", br, cwd=wt).splitlines()
+for kv in (("rc", rc), ("state", ent.get("state")), ("from", ent.get("requeued_from")), ("on", ent.get("running_on")),
+           ("prio", ent.get("priority")), ("args", ",".join(ent.get("args") or [])), ("ended", bool(rec.get("ended"))),
+           ("reason", (rec.get("end_reason") or "-").split(" (")[0]), ("outbox_at_end", seen.get("outbox")),
+           ("outbox_now", len(q.outbox_files())), ("dirty", bool(g("status", "--porcelain", cwd=wt))), ("head", (log or ["-"])[0]),
+           ("wip", (log[1:2] or ["-"])[0].split(":")[0]), ("midsweep", seen.get("midsweep")),
+           ("skip", ",".join(sorted(ent.get("refused_by") or {}))), ("author", g("log", "-1", "--format=%an", br, cwd=wt)),
+           ("origin_eq", g("rev-parse", br, cwd=wt) == (g("ls-remote", "origin", "refs/heads/" + br, cwd=wt).split() or [""])[0])):
+    print("W %s=%s" % kv)
+print("BRIEF " + open(os.path.join(wt, brief)).read().replace("\n", "|"))
+print("WIPFILES " + ",".join(sorted(g("show", "--name-only", "--format=", br + "~1", cwd=wt).split())))
+PYRQ
+rq() { DISPATCH_HOST=laptop python3 "$T/rq.py" "$QB" "$T/queue.git" "$@" "$T/rq" "${RQX:-}" "$T/launchctl"; }
+rqw() { printf '%s\n' "$1" | grep "^W $2=" | cut -d= -f2-; }
+mkdir -p "$T/rq"; rm_own "$HA/Library/Caches/run-seed/queue/outbox"
+out=$(rq basic 2>&1); w=$out
+check "$(rqw "$w" rc)/$(rqw "$w" state)/$(rqw "$w" from)/$(rqw "$w" on)" "0/queued/laptop/None" "S10 --requeue: a busy run's entry is queued again for any host, stamped requeued_from, running_on cleared"
+check "$(rqw "$w" outbox_at_end)/$(rqw "$w" outbox_now)" "1/0" "  …its op in the outbox before the run ended, gone once the tip was on origin"
+check "$(rqw "$w" ended)/$(rqw "$w" reason)" "True/requeued from laptop" "  …the run ended, its reason opening \`requeued\` (the fire path's skip)"
+check "$(rqw "$w" dirty)/$(rqw "$w" wip)" "False/wip" "  …every cut file in the WIP commit, the worktree clean"
+check "$(echo "$out" | grep '^WIPFILES')" "WIPFILES f,new.txt" "  …the WIP commit holds the changed file and the new one"
+check "$(rqw "$w" head)/$(rqw "$w" origin_eq)" "Requeue: rq-basic from laptop/True" "  …the brief's section committed as the host's word, and pushed"
+check "$(rqw "$w" author)" "t" "  …in the user's own git identity, never the queue clone's"
+check "$(rqw "$w" skip)" "laptop" "  …by hand, this Mac skips it the hour, or its own poll claims it back before the lid shuts"
+check "$(rqw "$w" args)" "--note,keep me,--model,opus-x,--effort,max" "  …the record's model and effort carried, the entry's other flags kept"
+b=$(echo "$out" | grep '^BRIEF ')
+case "$b" in *"## Continue from here (requeued from laptop, "*"Build: half of it"*"uncommitted: in "*", new.txt"*"  > Tier: principal-architect"*"transcript: session=s-basic-0000-0000 host=laptop archive=projects/transcripts/rq-basic/"*) r=ok;; *) r="$b";; esac
+check "$r" ok "  …the brief's section: the run's commits, the WIP files, the last reply quoted, the transcript: pointer"
+w=$(rq force 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" prio)/$(rqw "$w" args)" "queued/high/--note,keep me,--model,opus-x,--effort,max,--priority,high" "  a force entry is requeued as high, its carried flag too"
+w=$(rq entryless 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" from)/$(rqw "$w" prio)" "queued/laptop/normal" "  a run with no entry: a put built from its record, queued for any host"
+w=$(rq unattended 2>&1)
+check "$(rqw "$w" rc)/$(rqw "$w" state)/$(rqw "$w" ended)" "2/running/False" "  an unattended caller is refused, nothing ended"
+w=$(rq offline 2>&1)
+check "$(rqw "$w" rc)/$(rqw "$w" state)/$(rqw "$w" ended)/$(rqw "$w" outbox_now)" "3/running/False/0" "  by hand with the home unreachable: exit 3, nothing ended, nothing owed"
+for c in warmlid waiting pinned confidential; do
+  w=$(rq $c 2>&1)
+  check "$(rqw "$w" rc)/$(rqw "$w" state)/$(rqw "$w" ended)" "0/running/False" "  a $c run is left as it is, named"
+done
+w=$(rq endfail 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" outbox_now)" "running/1" "  a run whose end raised: its op stays owed (the replay judges its record), its entry untouched"
+rm_own "$HA/Library/Caches/run-seed/queue/outbox"   # its owed op is that case's alone
+w=$(rq lidbusy 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" from)/$(rqw "$w" skip)/$(rqw "$w" outbox_now)" "queued/laptop//0" "  at a sleep: the entry from the last fetch, queued again with no skip of this Mac"
+w=$(rq warm 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" ended)/$(rqw "$w" reason)" "running/True/idle — warm, ended by dispatch --requeue" "  a warm run by hand: its normal idle end, never requeued"
+w=$(rq midsweep 2>&1)
+check "$(rqw "$w" midsweep)/$(rqw "$w" state)" "running/queued" "  a sweep between the end and the op leaves the entry (a requeued end is no run's end); the op then lands"
+w=$(rq held 2>&1)
+check "$(rqw "$w" state)/$(rqw "$w" outbox_now)/$(rqw "$w" origin_eq)" "running/1/False" "  origin refuses the push: the op stays owed in the outbox, the entry untouched"
+rm -f "$T/rq/rq-held.git/hooks/pre-receive"
+# two days on: an owed op is never dropped by age (a lid shut over a weekend is its case)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 172800 )) DISPATCH_HOST=laptop python3 "$QB" sweep --host laptop "${QC[@]}" --cap 0 > "$T/out" 2>&1
+check "$("${QGIT[@]}" show "refs/regatta/queue:queue/rq-held--rq-held.json" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state"))')/$(git -C "$T/rq/rq-held" rev-parse claude/laptop/2026-10-30-rq-held)" \
+  "queued/$(git -C "$T/rq/rq-held" ls-remote origin refs/heads/claude/laptop/2026-10-30-rq-held | cut -f1)" "  …the next sweep, two days on, pushes the branch first, then writes the op"
+# the op's cond is its claim's: a later claim of the same entry (its id kept) by the same host is never set back
+cat > "$T/rq2.py" <<'PYRQ2'
+import importlib.machinery as m, importlib.util as u, json, os, sys
+l = m.SourceFileLoader("dq", sys.argv[1]); q = u.module_from_spec(u.spec_from_loader("dq", l)); l.exec_module(q)
+e = {"id": "e1", "state": "running", "running_on": "laptop", "claimed_at": 5000, "session": "s2"}
+op = {"op": "requeue", "key": "k", "host": "laptop", "at": 6000, "cond": {"id": "e1", "running_on": "laptop", "claimed_at": 1000, "session": "s1"}}
+d8 = {"op": "requeue", "key": "k", "host": "laptop", "at": 6000, "cond": {"id": "e1", "state": "running", "running_on": "laptop", "claimed_at": 1000}}
+print(q.apply_op({"k": dict(e)}, op)[1], q.apply_op({"k": dict(e)}, d8)[1], end=" ")
+# an owed op whose run ended its own way (the verb died before ending it): dropped at the replay, never written
+p = os.path.join(sys.argv[2], "rec2.json")
+json.dump({"ended": 1, "end_reason": "idle 61 min"}, open(p, "w"))
+print(q.hold_waits({"key": "k", "hold": {"record": p, "pid": None}}), end=" ")
+json.dump({"ending": "requeued from laptop (lid)"}, open(p, "w"))
+print(q.hold_waits({"key": "k", "hold": {"record": p, "pid": None}}), end=" ")
+# origin's four states against an owed tip: behind it (pushed, then held), past it, diverged, gone
+json.dump({"ended": 1, "end_reason": "requeued from laptop (lid)"}, open(p, "w"))
+import subprocess as sp
+def g(*a, cwd=None):
+    return sp.run(["git"] + list(a), cwd=cwd, capture_output=True, text=True).stdout.strip()
+o, w, w2 = (os.path.join(sys.argv[2], x) for x in ("ho.git", "hw", "hw2"))
+g("init", "-q", "--bare", o); g("clone", "-q", o, w)
+b = "claude/laptop/2026-10-30-hold"
+g("checkout", "-qb", b, cwd=w); open(os.path.join(w, "f"), "w").write("1\n"); g("add", "f", cwd=w); g("commit", "-qm", "c1", cwd=w)
+g("push", "-q", "origin", b, cwd=w)
+open(os.path.join(w, "f"), "a").write("2\n"); g("commit", "-qam", "c2", cwd=w)
+tip = g("rev-parse", "HEAD", cwd=w)
+op = lambda: {"key": "k", "hold": {"record": p, "pid": None, "wt": w, "branch": b, "tip": tip}}
+r1 = q.hold_waits(op()); on1 = g("ls-remote", "origin", "refs/heads/" + b, cwd=w).split()[0] == tip
+g("clone", "-q", "-b", b, o, w2); open(os.path.join(w2, "f"), "a").write("3\n"); g("commit", "-qam", "c3", cwd=w2); g("push", "-q", "origin", b, cwd=w2)
+r2 = q.hold_waits(op())
+g("checkout", "-q", "--orphan", "other", cwd=w2); g("commit", "-qm", "unrelated", cwd=w2); g("push", "-qf", "origin", "other:" + b, cwd=w2)
+r3 = q.hold_waits(op())
+g("push", "-q", "origin", ":" + b, cwd=w2)
+r4 = q.hold_waits(op())
+print(r1, on1, r2, r3, r4)
+PYRQ2
+check "$(python3 "$T/rq2.py" "$QB" "$T" 2>&1)" "moved moved drop its run is not ended yet None True None drop drop" \
+  "  an owed op, or a D8-B one, never sets a later claim back; dropped when its run ended its own way, held while it is not ended; origin behind the tip: pushed; past it: held; diverged or gone: dropped, never pushed back"
+# a requeued run whose op the replay dropped (gone, diverged) is removed by its host's sweep, never left running
+# for good; one whose op is still owed stays (S10's finish review)
+cat > "$T/rq3.py" <<'PYRQ3'
+import importlib.machinery as m, importlib.util as u, json, os, sys, argparse
+l = m.SourceFileLoader("dq", sys.argv[1]); q = u.module_from_spec(u.spec_from_loader("dq", l)); l.exec_module(q)
+f = q.Fleet(sys.argv[2]); t = q.now()
+d = q.logdir() / "run-seed-runs"; d.mkdir(parents=True, exist_ok=True)
+q.claim = lambda ctx, out=None: []
+q.poll_tend = lambda ctx: None
+q._HOST = "laptop"
+ctx = argparse.Namespace(host="laptop", cap=3, launchctl="/usr/bin/true", prefix="org.example.claude", jobbin="/nonexistent", rch="")
+out = []
+for topic, owe in (("strand", False), ("owed", True)):
+    repo = os.path.join(os.environ["HOME"], "r"); br = "claude/laptop/2026-10-30-" + topic; k = q.key_of(repo, br)
+    e = {"id": topic, "key": k, "repo": q.repo_word(repo), "branch": br, "topic": topic, "priority": "normal",
+         "state": "running", "running_on": "laptop", "claimed_by": "laptop", "claimed_at": t - 4000, "seen_at": t - 3000,
+         "session": "s-" + topic, "host": "", "queued_at": t - 5000, "args": [], "env": {}}
+    f.do([{"op": "put", "key": k, "entry": e}], "seed")
+    json.dump({"session": "s-" + topic, "branch": br, "repo": repo, "topic": topic, "started": t - 3900, "ended": t - 3000,
+               "end_reason": "requeued from laptop (lid)", "ending": "requeued from laptop (lid)", "queue": "fleet:" + k},
+              open(str(d / (topic + ".json")), "w"))
+    if owe:
+        q.outbox_add({"op": "requeue", "key": k, "host": "laptop", "at": t, "cond": {"id": topic, "running_on": "laptop"},
+                      "hold": {"record": str(d / (topic + ".json")), "pid": os.getpid(),
+                               "pstart": q.rc_mod().proc_start(os.getpid())}})   # its verb still running: the op waits
+    q.cmd_sweep(ctx, ctx)
+    out.append("%s=%s" % (topic, (f.entries().get(k) or {}).get("state")))
+print(" ".join(out))
+PYRQ3
+mkdir -p "$T/rq3/home" "$T/rq3/cfg/wharf-runs" && git init -q --bare "$T/rq3/queue.git" && echo "$T/rq3/queue.git" > "$T/rq3/cfg/wharf-runs/queue-repo"
+check "$(cd "$T/rq3" && HOME="$T/rq3/home" REGATTA_CONFIG="$T/rq3/cfg" DISPATCH_HOST=laptop DISPATCH_POWER=off python3 "$T/rq3.py" "$QB" "$T/rq3/queue.git" 2>&1 | tail -1)" \
+  "strand=None owed=running" "  …a requeued run whose op was dropped is removed by its host's sweep; one whose op is owed stays running"
+RQX=own; w=$(rq tipword 2>&1 | grep "^W ")
+check "$w" "W state=queued from=studio" "S10 D8-B: a host unseen a sweep whose branch tip is its own Requeue: commit — its entry is queued again"
+RQX=other; w=$(rq tipword 2>&1 | grep "^W ")
+check "$w" "W state=running from=None" "  …any other tip is no word: it stays running (silence proves nothing)"
+RQX=old; w=$(rq tipword 2>&1 | grep "^W ")
+check "$w" "W state=running from=None" "  …a Requeue: tip older than the claim is a requeue the host took back: ignored"
+unset RQX
+# an orphan's end (its watcher gone) claims at finish() — never when it was requeued: its Mac is about to sleep
+cat > "$T/fin.py" <<'PYFIN'
+import importlib.machinery as m, importlib.util as u, json, sys
+l = m.SourceFileLoader("rc", sys.argv[1]); rc = u.module_from_spec(u.spec_from_loader("rc", l)); l.exec_module(rc)
+said = []
+rc.queue_claim = lambda why, at=None: said.append(why)
+rc.ask_guard = lambda st: None
+for reason in ("requeued from laptop (lid)", "idle 61 min"):
+    p = sys.argv[2] + "/fin.json"
+    st = {"session": "s-fin", "watcher": 999999, "watcher_start": "x"}
+    json.dump(st, open(p, "w"))
+    rc.finish(p, st, reason)
+print(len(said), "idle" in (said or [""])[0])
+PYFIN
+check "$(python3 "$T/fin.py" "$B/dispatch-rc" "$T" 2>/dev/null | tail -1)" "1 True" "S10: an orphaned run's finish() claims nothing when it was requeued, and claims after any other end"
 
 
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"

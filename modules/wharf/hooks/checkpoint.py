@@ -1358,6 +1358,39 @@ def force_re():
     return re.compile("(?:" + "|".join(alts) + r")(?:/[^\s\"'<>|;&]*)?(?![\w.-])")
 
 
+# a script named in a gh command's text (an issue's title or body) is prose: gh runs no local script, so only a
+# folder it names still counts (regatta-logbook#2, queue S10)
+SCRIPT_NAME_RE = re.compile(r"[^\s\"'<>|;&]*force_mark\.py")
+# …only an issue's or a pull request's text, and never beside a flag that writes a local file: `gh alias set` makes
+# a shell alias that runs it, and `gh release download -O` overwrites it (the S10 landing review)
+GH_PROSE = {"issue", "pr"}
+GH_WRITES = {"-O", "--output", "-D", "--dir", "--clobber"}
+# ssh's options that take an argument (OpenSSH's usage line): the first word after them is the host, and the
+# rest is a command line the remote shell runs, judged as one of its own (regatta-logbook#2)
+SSH_OPT_WITH_ARG = set("BbcDEeFIiJLlmOoPpQRSWw")
+# a substitution anywhere in a narrowed command's words — `$(…)`, backticks, `<(…)`, `>(…)` — runs a command the
+# tokenizer never splits out, locally or on the peer, so neither the ssh nor the gh road calls such a text a read
+# (S10's finish review: main denies them all)
+SUBST_RE = re.compile(r"`|[$<>]\(")
+
+
+def ssh_split(words):
+    """(the local words: ssh, its options and HOST; the command lines HOST may run) of an `ssh …` command.
+    ssh joins its trailing words with spaces and the remote shell parses them again, so `ssh h 'cat x'` runs
+    `cat x`; the words as quoted here are judged too, so `ssh h bash -c 'python3 x'` keeps its payload."""
+    i = 1
+    while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        opt = words[i]
+        i += 2 if len(opt) == 2 and opt[1] in SSH_OPT_WITH_ARG else 1
+    if i < len(words) and words[i] == "--":
+        i += 1
+    rest = words[i + 1:]
+    lines = [" ".join(rest)] if rest else []
+    if len(rest) > 1:
+        lines.append(shlex.join(rest))
+    return words[:i + 1], lines
+
+
 def force_reason(what):
     return (f"⛔ `{what}` writes the force mark by hand ({FORCE_DIR} under HOME): it stands for the owner saying \"use the "
             f"force\", so only wharf-runs' force_mark hook writes it, from the owner's typed message, and only dispatch "
@@ -1385,6 +1418,18 @@ def record_write(command, rx=None):
         prog = os.path.basename(words[0])
         if prog in READERS and not (prog == "find" and (FIND_RUNS | {"-delete"}) & set(words)) \
                 and not (prog == "sed" and any(w.startswith(("-i", "--in-place")) for w in words[1:])):
+            continue
+        if prog == "ssh":
+            local, remote = ssh_split(words)
+            if not SUBST_RE.search(text) and not rx.search(" ".join(local)) \
+                    and not any(record_write(r, rx) for r in remote):
+                continue
+            return text[:80]
+        # a quoted substitution stays one word to the tokenizer, so a run inside it is never its own simple command:
+        # such a text is no prose (SUBST_RE). A write flag by prefix: `--output=F`, `-OF`
+        if prog == "gh" and len(words) > 1 and words[1] in GH_PROSE and not SUBST_RE.search(text) \
+                and not any(w.split("=", 1)[0] in GH_WRITES or w.startswith(("-O", "-D")) for w in words[2:]) \
+                and not rx.search(SCRIPT_NAME_RE.sub("", text)):
             continue
         return text[:80]
     return None
@@ -2660,7 +2705,7 @@ def autofinish_at_stop(state, data, session, toplevel, declared):
                     f"says `{v}` — the line is only for a branch autofinish would start now "
                     f"(`/autofinish` set, nothing asked, pushed, its PR still WIP:). End the reply "
                     f"again with the line that is true: the WAITING line when the owner must act, "
-                    f"`{common.PENDING_PREFIX}<what>` when its own work goes on, or none of these."), None
+                    f"`{common.marked('pending', common.PENDING_PREFIX)}<what>` when its own work goes on, or none of these."), None
     if not spawn_autofinish("--worktree", str(toplevel), "--session", session,
                             "--reply", str(state / LAST_REPLY), "--log"):
         return None, None

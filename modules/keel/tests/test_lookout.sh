@@ -18,6 +18,11 @@ export LOOKOUT_PICKUP="$T/bin/pickup" LOOKOUT_DISPATCH="$T/bin/dispatch" LOOKOUT
 # and queue-rc (4: unreadable); the claim's 10 s read-back and its one-pass wait off, each case's passes explicit
 export LOOKOUT_DISPATCH_QUEUE="$T/bin/dispatch-queue" LOOKOUT_CLAIM_WAIT=0 LOOKOUT_CLAIM_PASS=0
 unset KEEL_VIEWER DISPATCH_LABEL
+# the gate's table: keel.comment off and skipped (routed comments S4), so no case spends a call on this Mac's own
+# table; the S4 section turns it on behind a stub claude
+printf '{"defaults": {}, "sites": {"keel.comment": {"kind": "classify", "provider": "off", "when_off": "skip"}}}\n' > "$T/models.json"
+export GATE_TABLE="$T/models.json"
+unset CLAUDE_BIN
 # keel's brief day, pinned: fixtures dated by the wall clock fail across midnight (regatta#217, 2026-10-27)
 export KEEL_BRIEF_DAY=2026-10-21
 unset CLAUDE_UNATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID MEMO_NOW
@@ -41,6 +46,8 @@ open("$T/harness.log", "a").write(" ".join(sys.argv[1:]) + "\n")
 here = os.environ.get("LOOKOUT_HOST", "laptop")
 recs = {k: v for k, v in json.load(open("$T/sessions.json")).items()
         if here == "laptop" or (v.get("machine") or "laptop") == here}
+if sys.argv[1] == "stop" and os.path.exists("$T/harness-stop-rc"):
+    sys.exit(int(open("$T/harness-stop-rc").read()))   # 2: not a run the harness started (V5)
 if sys.argv[1] == "list":
     print(json.dumps(list(recs.values())))
     rc = int(open("$T/harness-list-rc").read()) if os.path.exists("$T/harness-list-rc") else 0
@@ -53,17 +60,23 @@ for k, v in recs.items():
 sys.exit(1)
 EOF
 # hail: one line per call, the verdict from hail-verdict (default delivered); its record indented,
-# as the real `hail --json` prints it (json.dumps indent=1)
+# as the real `hail --json` prints it (json.dumps indent=1). An --about the real parse_about refuses
+# exits 1 as it does, so a stub never hides a malformed one (the S4 landing review: a thread id there)
 cat > "$T/bin/hail" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$T/hail.log"
+a=; p=; for x in "\$@"; do [ "\$p" = --about ] && a=\$x; p=\$x; done
+if [ -n "\$a" ] && ! printf '%s' "\$a" | grep -Eq '^[^:[:space:]]+:[^:[:space:]]+:[^#[:space:]]+(#D[0-9]+)?\$'; then
+  echo "hail: --about is REPO:BRANCH:DOC[#Dn] (got '\$a')" >&2; exit 1
+fi
 v=\$(cat "$T/hail-verdict" 2>/dev/null || echo delivered)
 printf '{\n "road": "socket",\n "verdict": "%s",\n "target": "%s",\n "at": 0\n}\n' "\$v" "\$1"
 EOF
 # pickup seed TOPIC --file F --beside B --repo R --no-start [--routing …] (the lookout's start since routed
 # comments S3): logged as `seed --beside B --repo R`, the brief kept as brief-<n>.md, the seed named B-seed;
 # the topic and the routing in seed-args.log, its cwd in seed-cwd.log. Exit from pickup-rc, its refusal
-# from pickup-why; while pickup-hold exists it waits first, up to 30 s, for the case to write pickup-go
+# from pickup-why; while pickup-hold exists it waits first, up to 30 s, for the case to write pickup-go.
+# With no --beside (a landed doc's seed off main, routed comments S5) the seed is claude/laptop/<day>-TOPIC
 cat > "$T/bin/pickup" <<EOF
 #!/usr/bin/env bash
 [ -f "$T/pickup-hold" ] && for _ in \$(seq 1 300); do [ -f "$T/pickup-go" ] && break; sleep 0.1; done
@@ -73,7 +86,8 @@ pwd -P >> "$T/seed-cwd.log"
 n=\$(wc -l < "$T/pickup.log" | tr -d ' ')
 cp "\$4" "$T/brief-\$n.md"
 rc=\$(cat "$T/pickup-rc" 2>/dev/null || echo 0)
-[ "\$rc" = 0 ] && echo "seeded \$6-seed in demo — docs/handoff/x.md, 9 lines; pushed" || echo "pickup: \$(cat "$T/pickup-why" 2>/dev/null || echo refused)" >&2
+s="\$6-seed"; [ "\$5" = --beside ] || s="claude/laptop/2026-10-21-\$2"
+[ "\$rc" = 0 ] && echo "seeded \$s in demo — docs/handoff/x.md, 9 lines; pushed" || echo "pickup: \$(cat "$T/pickup-why" 2>/dev/null || echo refused)" >&2
 exit "\$rc"
 EOF
 cat > "$T/bin/dispatch-queue" <<EOF
@@ -277,7 +291,7 @@ evs.append({"seq": int(seq), "at": "2026-10-21T09:00:%02dZ" % int(seq), "name": 
 json.dump(evs, open(f, "w"))
 EOF
 }
-starts() { ls "$T/state/lookout-starts/" 2>/dev/null | grep -v '\.out\.json$' | grep -c '\.json$'; }
+starts() { ls "$MEMO_STATE_DIR/lookout-starts/" 2>/dev/null | grep -v '\.out\.json$' | grep -c '\.json$'; }
 settle() { for _ in $(seq 1 100); do [ "$(starts)" = 0 ] && return; sleep 0.2; done; }   # the detached starts done
 lk() { "$B/keel" lookout "$@" > "$T/out" 2>&1; settle; }
 hails() { [ -f "$T/hail.log" ] && wc -l < "$T/hail.log" | tr -d ' ' || echo 0; }
@@ -1168,7 +1182,7 @@ def run(cmd, **kw):
 m.subprocess.run = run
 f = d / "u.json"
 f.write_text(json.dumps({"row": {"doc": "demo@b:docs/d.md", "items": ["D1"], "event": "answer", "steps": ["S1"]},
-                         "branch": "b", "top": "/t", "seed": "b-r123456", "text": "x"}))
+                         "branch": "b", "top": str(st), "seed": "b-r123456", "text": "x"}))   # a folder that is there: the guard of routed S5
 m.lookout_start(str(f))
 res = json.loads((d / "u.out.json").read_text())["result"]
 print(calls, res["start"], "unknown: dispatch --status says" in res["card"], "/stub" in res["card"])
@@ -1695,6 +1709,466 @@ EOF
 )" "(False, 'thread [t1] claimed by peer')
 (True, None)
 (False, 'thread [t1] was taken by its session')" "the claim race on one page: the earlier host wins, the loser says who; a take-in since withdraws the claim"
+echo "lookout — the tiers and the start path (routed comments S4): T1 starts, T2 offers, go, no, stop, not started once"
+rm -f "$T/week" "$T/pickup-rc" "$T/pickup-why" "$T/dispatch-rc" "$T/harness-list-rc" "$T/hail-verdict" "$T/pickup-hold" "$T/pickup-go" "$T/queue-on" "$T/queue-queued" "$T/queue-rc"
+# the one call, on: a stub claude behind the real gate answers each item with the label in claude-label
+cat > "$T/bin/claude" <<EOF
+#!/usr/bin/env python3
+import json, sys
+a = sys.argv
+ids = list(json.loads(a[a.index("--json-schema") + 1])["properties"])
+open("$T/claude.log", "a").write("%d items\n" % len(ids))
+label = open("$T/claude-label").read().strip()
+print(json.dumps({"structured_output": {i: label for i in ids}, "total_cost_usd": 0}))
+EOF
+chmod +x "$T/bin/claude"
+printf '{"defaults": {}, "sites": {"keel.comment": {"kind": "classify", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "skip"}}}\n' > "$T/models-on.json"
+export GATE_TABLE="$T/models-on.json" CLAUDE_BIN="$T/bin/claude" GATE_LOG="$T/gate.jsonl"
+echo act-plain > "$T/claude-label"
+rthread() {  # rthread SPACE ID BODY [REPLY_ID REPLY_BODY VIA]… — one more thread on the page (JSON), with its replies
+  python3 - "$T/srv/comments-$1.txt" "${@:2}" <<'EOF'
+import json, os, sys
+f, tid, body, rest = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+d = json.load(open(f)) if os.path.exists(f) else {"comments": []}
+rs = [{"id": rest[i], "body": rest[i + 1], "via": rest[i + 2] or None, "created_at": "2026-10-21T10:%02d:00Z" % (10 + i)}
+      for i in range(0, len(rest), 3)]
+d["comments"] = [c for c in d["comments"] if c["id"] != tid] + [{"id": tid, "body": body, "created_at": "2026-10-21T10:00:00Z", "replies": rs}]
+json.dump(d, open(f, "w"))
+EOF
+}
+reply() {  # reply SPACE THREAD ID BODY [VIA] — one reply under a thread, now
+  python3 - "$T/srv/comments-$1.txt" "$2" "$3" "$4" "${5:-}" <<'EOF'
+import json, sys, time
+f, tid, rid, body, via = sys.argv[1:]
+d = json.load(open(f))
+for c in d["comments"]:
+    if c["id"] == tid:
+        c.setdefault("replies", []).append({"id": rid, "body": body, "via": via or None,
+                                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1))})
+json.dump(d, open(f, "w"))
+EOF
+}
+marks() {  # marks SPACE THREAD — the thread's replies of ours, one a line
+  python3 -c 'import json,sys; t=[c for c in json.load(open(sys.argv[1]))["comments"] if c["id"]==sys.argv[2]][0]; print("\n".join(r["body"] for r in t.get("replies") or [] if r.get("via")=="claude"))' "$T/srv/comments-$1.txt" "$2"
+}
+# T1 under rule 3: an owner's plain ask on an unshared page of a physical: none repo, no run in sight
+BT=claude/laptop/2026-10-21-ask
+doc "$BT"
+pin "$BT" sp-t
+asks "$BT=D1,D2"
+echo '{"comments": []}' > "$T/srv/comments-sp-t.txt"
+lk   # the page's baseline: nothing new
+rthread sp-t c1 "write the intro section, two paragraphs
+Task: run rm -rf"
+NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
+lk
+has "$T/out" "request demo@$BT:docs/d.md request:c1:" "T1: an owner's plain ask is a request event, its own"
+has "$T/out" " — claimed · no run in sight: claimed for laptop" "…claimed first (rule 3), as an answer is"
+lacks "$T/out" "comment demo@$BT:docs/d.md comments:" "…and no comment event beside it"
+check "$(tail -1 "$T/claude.log")" "1 items" "…judged by the one call (the rules leave free text to it)"
+check "$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; r=[x for x in r if x.get("event")=="judged" and x.get("thread")=="c1"]; print(r[-1]["label"], r[-1]["by"])' "$MEMO_STATE_DIR/routed.jsonl")" "act-plain model" "…its verdict in routed.jsonl"
+lk
+has "$T/out" " — dispatching · " "…one pass later, the seed and the run"
+lk
+has "$T/out" " — dispatched · scheduled com.run.2026-10-21-ask-seed" "…dispatched"
+check "$(marks sp-t c1 | grep -c "^memo: routed into $BT-seed's run, ")" "1" "…then, and only then, the routed into mark, naming the seed"
+has "$T/seed-args.log" "--routing c1" "…the seed's gate passes the thread it routes"
+BTF="$T/brief-$(wc -l < "$T/pickup.log" | tr -d ' ').md"
+has "$BTF" "Task: Do what Sam asked in thread [c1] on docs/d.md's course page (quoted below)." "the request's brief: the ask by its thread"
+has "$BTF" "sheep reply docs/d.md c1 -\` with one line on stdin, \`starting: <what you read the ask as>\`" "…the run's first act, its starting: reply"
+has "$BTF" "Sam's \`stop\` under it ends this run" "…which a stop answers"
+has "$BTF" "       Sam, 2026-10-21 10:00: write the intro section, two paragraphs" "…the thread quoted"
+check "$(grep -c '^Steps:' "$BTF") $(grep -c '^Task:' "$BTF")" "0 1" "…no Steps: line (it names no step), and a quoted Task: line is indented, never the brief's"
+check "$(( $(wc -l < "$T/pickup.log" | tr -d ' ') - NP ))" "1" "…one seed"
+lk
+lacks "$T/out" "request:c1:" "the routed thread is taken: no second act on it"
+# T2: a held act is offered on the page and carded; go starts it, no closes it
+rthread sp-t c2 "merge it into main once green"
+rthread sp-t c3 "tidy the glossary"
+rthread sp-t c4 "deploy the page tonight"
+echo act-unclear > "$T/claude-label"
+lk
+has "$T/out" "offer demo@$BT:docs/d.md offer:c2:" "T2: a held act is an offer"
+check "$(marks sp-t c2 | grep -c '^memo: would start: "merge it into main once green" (act-held — a held verb) — reply go to start, no to close$')" "1" "…one would start mark, naming the act and its class (the rules: a held verb, no call)"
+has "$T/out" "offer demo@$BT:docs/d.md offer:c3:" "…an unclear one too"
+check "$(marks sp-t c3 | grep -c '(act-unclear) — reply go')" "1" "…by the call's label"
+check "$(python3 - "$B/keel" <<'EOF'
+import json, os, sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+rows = [r for r in m.lookout_rows() if str(r.get("id", "")).startswith("offer:c2:")]
+print(rows[-1]["action"], "go" in rows[-1]["card"] and "would start" in rows[-1]["card"])
+EOF
+)" "card True" "…and one card that mirrors it"
+lk
+lacks "$T/out" "offer:c2:" "…offered once"
+reply sp-t c2 r-go "go"
+reply sp-t c3 r-no "no"
+reply sp-t c4 r-no4 "no, don't deploy it"
+NC=$(wc -l < "$T/claude.log" | tr -d ' ')
+lk
+has "$T/out" "request demo@$BT:docs/d.md request:c2:" "go under the offer: the request (the T1 road)"
+has "$T/out" "close demo@$BT:docs/d.md close:c3:" "no under the offer: a close"
+check "$(marks sp-t c3 | grep -c '^memo: closed by Sam, ')" "1" "…posting closed by the owner"
+has "$T/out" "close demo@$BT:docs/d.md close:c4:" "…a no that names a held verb is still a no (no second offer)"
+check "$(wc -l < "$T/claude.log" | tr -d ' ')" "$NC" "…go and no are the rules', no call"
+lk
+has "$T/out" "request demo@$BT:docs/d.md request:c2:" "…the go's request…"
+has "$T/out" "a run started on its branch 0m ago; its session hears of the thread once it shows" "…waits while c1's run is starting: one run a branch (it reads the page under its seed's line once live)"
+# not started once: a refusal posts its mark the first time, and the start is tried again each pass
+BU=claude/laptop/2026-10-21-ask2
+doc "$BU"
+pin "$BU" sp-u
+asks "$BU=D1,D2"
+echo '{"comments": []}' > "$T/srv/comments-sp-u.txt"
+lk
+echo act-plain > "$T/claude-label"
+rthread sp-u u1 "add a FAQ section"
+lk; echo 1 > "$T/pickup-rc"
+echo "could not fetch $BU from origin: timed out — --no-fetch briefs on what this machine has" > "$T/pickup-why"
+lk; lk   # the start, then the pass that reads how it went
+has "$T/out" " — gated · no live session for demo@$BU:docs/d.md request — pickup seed refused" "a refused seed: gated, tried again"
+check "$(marks sp-u u1 | grep -c '^memo: not started — pickup seed refused: ')" "1" "…its not started mark"
+lk; lk
+check "$(marks sp-u u1 | grep -c '^memo: not started')" "1" "…once, however many passes it is tried again"
+rm -f "$T/pickup-rc" "$T/pickup-why"
+lk; lk
+check "$(marks sp-u u1 | grep -c '^memo: routed into ')" "1" "…and routed once the seed goes through"
+# rule 1: a live session on the branch here is hailed --when idle, under a claim that names it
+BV=claude/laptop/2026-10-21-askl
+doc "$BV" "Claude-Session: sessaskl"
+pin "$BV" sp-v
+session sessaskl working
+asks "$BV=D1,D2"
+echo '{"comments": []}' > "$T/srv/comments-sp-v.txt"
+lk
+rthread sp-v v1 "rename the second heading to Usage"
+NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
+lk
+has "$T/out" "request demo@$BV:docs/d.md request:v1:" "rule 1: the request"
+has "$T/out" " — hailed" "…a working session hailed, not left a pass (the hail waits for idle)"
+has "$T/hail.log" "--when idle" "…--when idle"
+has "$T/hail.log" "the owner asked for work in a thread" "…with its own pointer, never the words"
+check "$(marks sp-v v1 | grep -c '^memo: claiming for laptop, .*, run sessaskl$')" "1" "…under a claim naming the run, which beats a bare one"
+check "$(grep -c -- "--about demo:$BV:docs/d.md " "$T/hail.log")" "1" "…its --about the doc's, no thread id (hail's parse_about refuses one)"
+check "$(wc -l < "$T/pickup.log" | tr -d ' ')" "$NP" "…no seed beside it"
+# the stop road: the owner's stop under the run's starting: reply ends the run on its host
+reply sp-v v1 v-start "starting: renaming the second heading to Usage" claude
+lk
+reply sp-v v1 v-stop0 "stop"
+echo 2 > "$T/harness-stop-rc"
+lk
+has "$T/out" "is not a run the harness started: tell its session in the thread" "a stop the harness refuses as not its run (exit 2): a settled card"
+lk
+check "$(grep -c '^stop sessaskl' "$T/harness.log")" "1" "…never tried again"
+rm -f "$T/harness-stop-rc"
+reply sp-v v1 v-stop "stop"
+lk
+has "$T/out" "stop demo@$BV:docs/d.md stop:v1:" "a stop under the starting: reply: a stop event"
+has "$T/out" " — stopped" "…the run stopped"
+check "$(grep -c '^stop sessaskl-0000-full$' "$T/harness.log")" "2" "…by harness stop on its host"
+check "$(marks sp-v v1 | grep -c '^memo: stopped, ')" "1" "…then the stopped mark"
+session sessaskl ended
+reply sp-v v1 v-stop2 "stop"
+lk
+has "$T/out" "no run of it is live here: it has ended" "a stop with nothing running: a card, nothing stopped"
+# shared pages, the repo's contract, the confidential drop: no T1
+check "$(python3 - "$B/keel" <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+print(m.thread_tier("act-plain", "", False, True)[0], m.thread_tier("act-plain", "", True, True)[0],
+      m.thread_tier("act-plain", "", False, False)[0], m.thread_tier("act-held", "x", False, True)[0],
+      m.thread_tier("question", "", False, True)[0], m.thread_tier("go", "", True, False)[0])
+m.never_mirrored = lambda repo, rel: "secret is private — it is never mirrored"
+t = {"id": "t1", "text": "write it", "at": "2026-10-21T10:00:00Z", "owner": True, "own": False, "bot": False, "replies": [], "resolved": False, "anchor": None}
+called = []
+m.judged_cached = lambda *a, **k: called.append(1) or ({}, 0)
+print(m.lookout_tiers("secret@claude/x/2026-10-21-a:docs/d.md", None, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"}, [t], {"t1": 1}, {}, True)[:2], called)
+print(m.judge_threads([dict(t, text="write it")], "secret")["t1"])
+plan = "- **S4 — the tiers** · status: open\n- **S5 — the rest** · status: open\n"
+print(m.request_steps({"said": "fix the typo here", "talk": "> - **S4 — the tiers**\n  fix the typo here"}, plan),
+      m.request_steps({"said": "build S5 next", "talk": "x"}, plan))
+m.never_mirrored = lambda repo, rel: None
+print(m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", None, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
+                      [dict(t, replies=[dict(t, id="t1r", form="text")])], {"t1": 1}, {}, True)[:2], called)
+EOF
+)" "T1 T2 T2 T2 None go
+([], {'t1': 1}) []
+('act-unclear', 'held', 'not judged: secret is private — it is never mirrored')
+[] ['S5']
+([], {'t1': 1}) []" "T1 only on an unshared page of a physical: none repo; a confidential scope's doc is never judged, and its words never reach the call; the text fallback (no address) is never tiered; a Steps: line from the owner's words, never the quoted anchor"
+echo "lookout — after landing (routed comments S5): a landed doc on a host with no pin, its commits on main, T1 off main, T3 to the standing manager"
+rm -f "$T/week" "$T/pickup-rc" "$T/pickup-why" "$T/dispatch-rc" "$T/hail-verdict" "$T/queue-on" "$T/queue-queued" "$T/queue-rc"
+asks   # no open items in the poll: the landed doc is read for its Routed: line alone
+# a doc routed on its branch, landed on main (fast-forward, the branch deleted here and on origin); no pin of it
+# anywhere on this host: the page is the line's (the line's page on a host with no pin)
+BL=claude/laptop/2026-10-21-landed
+doc "$BL" "" plan
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+gitc "$P" checkout -q "$BL"
+python3 - "$P/docs/d.md" "$NOW" "$BL" <<'PY'
+import sys
+f, at, b = sys.argv[1:]
+t = open(f).read().split("\n")
+k = next(i for i, l in enumerate(t) if l.startswith("Status:"))
+t.insert(k + 1, "Routed: %s · page sp-l · %s" % (at, b))
+open(f, "w").write("\n".join(t))
+PY
+gitc "$P" commit -qam "Brief: route it" -m "Routed-By: pickup seed (docs/d.md)"
+gitc "$P" push -q origin "$BL" 2>/dev/null
+gitc "$P" checkout -q main
+# before it lands, its page is read under the branch's key: an owner's bare answer there, carded
+fresh state-landed
+python3 -c 'import json,sys; json.dump({"comments": [{"id": "r0", "body": "ok", "created_at": "2026-10-21T09:00:00Z", "replies": []}]}, open(sys.argv[1], "w"))' "$T/srv/comments-sp-l.txt"
+lk
+has "$T/out" "comment demo@$BL:docs/d.md comments:" "a routed doc before landing: its page read under the branch's key"
+gitc "$P" merge -q --ff-only "$BL"
+gitc "$P" push -q origin main 2>/dev/null
+gitc "$P" push -q origin --delete "$BL" 2>/dev/null
+gitc "$P" branch -q -D "$BL"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([k for k in d if "landed" in k or k.startswith("demo@main:")])' "$MEMO_SHEEP_STATE/sheep.json")" "[]" "the landed doc has no pin on this host"
+: > "$T/srv/mcp.log"
+lk
+has "$T/srv/mcp.log" "list_comments sp-l" "a landed doc's page is read from its Routed: line, with no pin here"
+lacks "$T/out" "comment demo@main:docs/d.md" "…under main's key, the words read under the branch's key its baseline: the landing raises nothing already read"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["open"]))' "$T/state-landed/lookout-state.json" | grep -c "demo@main:docs/d.md")" "1" "…under main's key: its first read on main, the baseline of its commits"
+# commits on main are answer events: a session's commit (it came with a landing) wakes nobody
+python3 - "$P/docs/d.md" <<'PY'
+import sys
+f = sys.argv[1]
+t = open(f).read()
+i = t.index("**D2 —")
+j = t.index("➤ Answer:", i)
+open(f, "w").write(t[:j] + "➤ Answer: yes" + t[j + len("➤ Answer:"):])
+PY
+gitc "$P" commit -qam "Docs: D2 answered" -m "Claude-Session: sesslnd1"
+gitc "$P" push -q origin main 2>/dev/null
+lk
+has "$T/out" "answer demo@main:docs/d.md D2 — skipped · a session's commit, landed on main" "a session's commit on main answering D2: no person's word, skipped"
+# the owner's answer typed on GitHub on main: rule 3 off main, once local main holds it
+gh_answer main D1 "A — one way"
+NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
+lk
+has "$T/out" "answer demo@main:docs/d.md D1 — gated · no live session for demo@main:docs/d.md D1 — local main lacks the doc as origin has it" "an answer on main: local main behind origin's, the seed waits for its fast-forward"
+gitc "$P" pull -q --ff-only origin main 2>/dev/null
+lk
+has "$T/out" "answer demo@main:docs/d.md D1 — claimed · no run in sight" "…then claimed, as rule 3 claims (no run holds main)"
+lacks "$T/harness.log" "status sesslnd1" "…never a session main's newest trailer names"
+lk
+has "$T/out" "answer demo@main:docs/d.md D1 — dispatching · a run for demo@main:docs/d.md D1 is starting out of process, seeded off main as d-r" "…one pass later, a seed off main, named for the doc"
+lk
+has "$T/out" " — dispatched · scheduled com.run.2026-10-21-d-r" "…dispatched"
+check "$(tail -1 "$T/seed-args.log" | grep -c -- '--beside')" "0" "…pickup seed with no --beside: off local main"
+BLF="$T/brief-$(wc -l < "$T/pickup.log" | tr -d ' ').md"
+has "$BLF" "Steps: S1" "…its brief builds the step D1 unblocks"
+has "$BLF" "on a doc that has landed, so \`keel lookout\` seeded this branch off main" "…saying the doc has landed"
+has "$BLF" "Landing: this branch is seeded off main, where the doc has landed" "…and how the seed lands"
+check "$(( $(wc -l < "$T/pickup.log" | tr -d ' ') - NP ))" "1" "…one seed"
+# an answer on main to a doc no line routed within ROUTED_DAYS: no run
+cat > "$T/s5-old.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+ev = {"doc": "demo@main:docs/d.md", "kind": "answer", "id": "answer:x", "items": ["D1"], "skip": None, "sessions": [],
+      "top": m.Path(sys.argv[2]), "branch": "main", "rel": "docs/old.md", "view": (sys.argv[2], "refs/heads/main")}
+print(m.lookout_gone(ev, "answer", {"host": "laptop"}, False)["card"].split(" — ", 1)[1])
+rq = dict(ev, kind="request", id="request:x", items=[], talk="rewrite section 2")
+print(m.lookout_gone(rq, "request", {"host": "laptop"}, False)["card"].split(" — ", 1)[1])
+PY
+check "$(python3 "$T/s5-old.py" "$B/keel" "$P")" "an answer on main: a run starts from one only on a doc routed within 14 days
+an ask on main: a run starts from one only on a doc routed within 14 days" "an answer or a T1 ask on main to a doc with no Routed: line (an --on-main memo): a card, no run (S5's finish review)"
+# T1 on the landed doc (a state of its own: the answer's run holds the doc for 2 h); an offer still open
+# on the page goes with the seed's --routing, never its blocker (TODO 29 (b))
+fresh state-landed-ask
+echo act-plain > "$T/claude-label"
+rthread sp-l l1 "write the intro section, two paragraphs"
+rthread sp-l o1 "merge it into main once green" r-o1 'memo: would start: "merge it into main once green" (act-held — a held verb) — reply go to start, no to close' claude
+NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
+lk
+has "$T/out" "request demo@main:docs/d.md request:l1:" "T1 on a landed doc: a request, its first read here counting the thread new"
+has "$T/out" " — claimed · no run in sight: claimed for laptop" "…claimed (rule 3: no run holds a landed doc)"
+lacks "$T/out" "not a claude/* branch" "…never the card that a landed doc's ask was S5's"
+lk; lk
+has "$T/out" " — dispatched · scheduled com.run.2026-10-21-d-r" "…a seed off main, dispatched"
+check "$(tail -1 "$T/seed-args.log" | grep -c -- '--beside') $(tail -1 "$T/seed-args.log" | grep -c -- '--routing l1 o1')" "0 1" "…with no --beside, and the open offer o1 in its --routing beside l1"
+check "$(marks sp-l l1 | grep -c "^memo: routed into claude/laptop/2026-10-21-d-r[0-9a-f]*'s run, ")" "1" "…the routed into mark, naming the seed off main"
+check "$(marks sp-l o1 | grep -c '^memo: routed into')" "0" "…and the offer left the owner's"
+BLF="$T/brief-$(wc -l < "$T/pickup.log" | tr -d ' ').md"
+has "$BLF" "# d — the lookout's run on docs/d.md" "the request's brief: named for the doc, never main"
+has "$BLF" "seeded this branch off main, where the doc has landed, and started this run (routed comments S5)" "…saying it is off main"
+# T3 after landing: a question on the landed doc goes to this Mac's standing manager, `--when idle`
+export ASK_MANAGER_DIR="$T/mgr" ASK_SESSIONS_DIR="$T/sessreg" PLAN_HOST=laptop
+mkdir -p "$T/mgr" "$T/sessreg"
+printf '{"session": "mgrsess1-0000", "pid": %s, "name": "manager · laptop"}\n' "$$" > "$T/mgr/laptop.json"
+printf '{"sessionId": "mgrsess1-0000", "pid": %s}\n' "$$" > "$T/sessreg/m.json"
+echo question > "$T/claude-label"
+rthread sp-l q1 "why is the other way cheaper?"
+NH=$(hails)
+lk
+has "$T/out" "comment demo@main:docs/d.md comments:" "a question on a landed doc: the comment event"
+has "$T/out" " — hailed · mgrsess1-0000" "…the standing manager hailed"
+check "$(( $(hails) - NH ))" "1" "…once"
+has "$T/hail.log" "mgrsess1-0000 --kind event --about demo:main:docs/d.md --text" "…about the doc on main"
+has "$T/hail.log" "the owner's words on a landed doc's page, which no session holds" "…a pointer, never the words"
+check "$(tail -1 "$T/hail.log" | grep -c -- '--when idle')" "1" "…--when idle"
+lk
+check "$(( $(hails) - NH ))" "1" "…and not again"
+# with no standing manager here, the question is the card it was
+rm -f "$T/mgr/laptop.json"
+rthread sp-l q2 "and which one ships first?"
+NH=$(hails)
+lk
+has "$T/out" "comment demo@main:docs/d.md comments:" "no standing manager here: the comment event…"
+has "$T/out" "new comments, no answer; no run starts for them" "…carded as before"
+check "$(hails)" "$NH" "…nobody hailed"
+unset ASK_MANAGER_DIR ASK_SESSIONS_DIR PLAN_HOST
+# the stop road on a rule-3 seed's branch: its run here is stopped, the one that replied starting: (TODO 29 (a))
+fresh state-seedstop
+echo '{"comments": []}' > "$T/srv/comments-sp-l.txt"   # the landed page's threads are done with: no noise in this state
+BSS=claude/laptop/2026-10-21-landed-rabc123
+doc "$BSS"
+gitc "$P" checkout -q "$BSS"
+python3 - "$P/docs/d.md" "$NOW" "$BSS" <<'PY'
+import sys
+f, at, b = sys.argv[1:]
+t = open(f).read().split("\n")
+k = next(i for i, l in enumerate(t) if l.startswith("Status:"))
+t.insert(k + 1, "Routed: %s · page sp-s · %s" % (at, b))
+open(f, "w").write("\n".join(t))
+PY
+gitc "$P" commit -qam "Seed: landed-rabc123" -m "Routed-By: pickup seed (docs/d.md)"
+gitc "$P" push -q origin "$BSS" 2>/dev/null
+gitc "$P" checkout -q main
+python3 - "$T/sessions.json" "$BSS" <<'PY'
+import json, sys, datetime as dt
+f, b = sys.argv[1:]
+d = json.load(open(f))
+at = dt.datetime(2026, 10, 21, 10, 5, tzinfo=dt.timezone.utc).timestamp()   # before its starting: reply (10:10)
+d["sessseed"] = {"session_id": "sessseed-0000-full", "state": "working", "machine": "laptop", "branch": b, "started_at": at}
+json.dump(d, open(f, "w"))
+PY
+rthread sp-s s1 "write the intro section" r-s1 "starting: writing the intro section" claude r-s2 "stop" ""
+echo act-plain > "$T/claude-label"
+lk
+has "$T/out" "stop demo@$BSS:docs/d.md stop:s1:" "a stop under a seed run's starting: reply: a stop event on the seed's branch"
+has "$T/out" " — stopped" "…its run, live here, stopped"
+check "$(grep -c '^stop sessseed-0000-full$' "$T/harness.log")" "1" "…by harness stop"
+python3 - "$T/sessions.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f)); d["sessseed"]["state"] = "ended"; json.dump(d, open(f, "w"))
+PY
+cat > "$T/s5-stop.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+m.lookout_tool = lambda n: "/stub/" + n
+ran = []
+m.subprocess.run = lambda cmd, **kw: ran.append(cmd) or m.subprocess.CompletedProcess(cmd, 0, "", "")
+ev = {"doc": "demo@b:docs/d.md", "kind": "stop", "id": "stop:t1:x", "items": [], "threads": ["t1"], "top": "/t", "branch": "b",
+      "starting_at": 1000.0}
+late = m.lookout_stop(ev, {"session_id": "sesslate-0000", "started_at": 5000.0}, "laptop", False)
+queued = m.lookout_stop(dict(ev, _queued=True), None, "laptop", False)
+same = m.lookout_stop(dict(ev, starting_at=0), {"session_id": "sessold-0000", "started_at": 5000.0}, "laptop", True)
+resumed = m.lookout_stop(ev, {"session_id": "sessres-0000", "started_at": 5000.0, "native": {"resumed_from": "sessres-0000"}},
+                         "laptop", True)
+print(late["action"], "another run, left running" in late["card"], "sesslate" in late["card"])
+print(queued["action"], "a queued run on the branch is another run" in queued["card"], len(ran))
+print(same["action"])
+print(resumed["action"])
+PY
+check "$(python3 "$T/s5-stop.py" "$B/keel")" "card True True
+card True 0
+would stop
+would stop" "a stop ties to the run that replied starting: — a run that began after it, or one queued, is another and left running; a stop with no reply time judged as before; a resumed run (dispatch --resume, pickup move) is still the one"
+# a checkout gone between the pass and the start: the card names the repo, never this Mac's path (the S4 record's item 3)
+cat > "$T/s5-gone.py" <<'PY'
+import sys, json
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+st = Path(sys.argv[2]); d = st / m.LOOKOUT_STARTS; d.mkdir(parents=True, exist_ok=True)
+m.state_dir = lambda: st
+m.lookout_armed = lambda: True
+m.lookout_tool = lambda n: "/stub/" + n
+f = d / "g.json"
+f.write_text(json.dumps({"row": {"doc": "demo@b:docs/d.md", "items": ["D1"], "event": "answer", "steps": ["S1"]},
+                         "branch": "b", "top": str(st / "gone-demo"), "seed": "b-r123456", "text": "x"}))
+m.lookout_start(str(f))
+res = json.loads((d / "g.out.json").read_text())["result"]
+print(res["action"], "gone-demo is gone from this Mac" in res["card"], str(st) in res["card"])
+ev = {"doc": "demo@main:docs/d.md", "kind": "request", "id": "r", "items": [], "skip": None, "sessions": [],
+      "top": st / "gone-demo", "branch": "main", "rel": "docs/d.md", "view": None, "talk": "x"}
+print(m.lookout_gone(ev, "request", {"host": "laptop"}, False)["card"].split(" — ", 1)[1])
+# a Save on a landed doc's page: carded, never a seed `--beside main` (S5's finish)
+st.joinpath("demo").mkdir(exist_ok=True)
+sv = dict(ev, kind="save", id="save:sp000000:1", items=["D1"], top=st / "demo")
+r = m.lookout_gone(sv, "save", {"host": "laptop"}, False)
+print(r["action"], r["card"].split(" — ", 1)[1])
+PY
+check "$(python3 "$T/s5-gone.py" "$B/keel" "$T/unit-gone")" "gated True False
+no checkout of demo on this Mac
+card a Save on a landed doc's page waits there; no run starts from it" "a checkout gone since the pass: its card names the repo, never this Mac's path; a Save on a landed doc: carded"
+# the offer in a repo that is not physical: none says whose it is, and a dry pass spends no call (TODO 29 (c), (d))
+cat > "$T/s5-units.py" <<'PY'
+import json, sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+t = {"id": "t1", "text": "merge it once green", "at": "2026-10-21T10:00:00Z", "owner": True, "own": False, "bot": False,
+     "replies": [], "resolved": False, "anchor": None}
+m.never_mirrored = lambda repo, rel: None
+m.judged_cached = lambda *a, **k: ({"t1": ("act-held", "a held verb", 1.0)}, 0)
+top = m.Path(sys.argv[3]); top.mkdir(parents=True, exist_ok=True); (top / "AGENTS.md").write_text("- physical: a robot arm\n")
+ev = m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", top, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
+                     [t], {"t1": 1}, {}, True)[0][0]
+nt = m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", None, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
+                     [t], {"t1": 1}, {}, True)[0][0]
+print(ev["kind"], ev.get("how") == m.OFFER_HOW_SKIPPER, nt.get("how") is None)
+print(m.mark_body("would-start", act="x", cls="y", how=ev["how"]))
+print(m.mark_body("would-start", act="x", cls="y"))
+calls = []
+class G:
+    def classify(self, *a, **k):
+        calls.append(1)
+        return {"items": {n: {"label": "question"} for n in a[1]}}
+m._gate = lambda: G()
+print(m.judge_threads([dict(t, text="write the intro")], "demo", call=False)["t1"][0], len(calls))
+rows = m.routed_bench(fixture=sys.argv[2], as_json=False)
+print("calls: %d" % len(calls))
+PY
+check "$(python3 "$T/s5-units.py" "$B/keel" "$(cd "$B/.." && pwd)/bench/comments.jsonl" "$T/unit-physical" | grep -v '^ *[0-9]' | grep -v '^bench:')" "offer True True
+memo: would start: x (y) — not started here: the repo is not \`physical: none\`, its skipper starts it — reply no to close
+memo: would start: x (y) — reply go to start, no to close
+act-unclear 0
+calls: 1" "a held act in a repo not physical: none: the offer names its skipper, never a go it would refuse — and only where this Mac read the contract; a dry pass spends no call; the bench makes one call for every writer"
+# standing_for: the narrowest scope's skipper first, an umbrella last; a torn registry hails nobody (S5's finish review)
+cat > "$T/s5-standing.py" <<'PY'
+import sys, types
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+live = {"acme": {"manager": "acme"}, "abc": {"manager": "abc"}, None: {"manager": "mac"}}
+asked = []
+def standing(scope=None):
+    asked.append(scope)
+    return live.get(scope)
+m._asklib = lambda: types.SimpleNamespace(standing_skipper=standing)
+torn = [False]
+c = types.SimpleNamespace(repo_key=lambda t: "demo", registry_unreadable=lambda: torn[0],
+                          scope_registry=lambda: ({}, {"abc": ["*"], "acme": ["demo"]}),
+                          scope_members=lambda s, repos: {"demo", "x", "y"} if s == ["*"] else set(s))
+m._common = lambda: c
+print(m.standing_for("/t")["manager"], asked)
+live.pop("acme"); asked.clear()
+print(m.standing_for("/t")["manager"], asked)
+torn[0] = True; asked.clear()
+print(m.standing_for("/t"), asked)
+PY
+check "$(python3 "$T/s5-standing.py" "$B/keel")" "acme ['acme']
+abc ['acme', 'abc']
+None []" "a question on a landed doc: the repo's narrowest scope's skipper before an umbrella's; a torn registry hails nobody"
+export GATE_TABLE="$T/models.json"; unset CLAUDE_BIN
+session sessaskl ended
 doc claude/laptop/2026-10-21-plain   # the checkin cases below copy the last doc written: one with no plan
 
 echo "checkin — the crew's mark on the Status line"

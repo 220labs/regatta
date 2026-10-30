@@ -575,6 +575,8 @@ rm -f "$REGATTA_CONFIG/helm/logbook-repo" "$REGATTA_CONFIG/beacon/config.json" "
 # <cost>,<clarity>` marker in its title, each call logged to $T/gate.calls with its site, source and text, a site
 # named in $T/gate.fail raising. gh answers the issue fetch and the PR search from gh.json, as above; autofinish a
 # stub module in $T/tools (MONEY_RE, repo_config, published). Every name made up.
+# The stub's rows name claude, whose command gate_down looks for on PATH: a stand-in that never runs.
+printf '#!/bin/sh\nexit 0\n' > "$T/claude-stand"; chmod +x "$T/claude-stand"; export CLAUDE_BIN="$T/claude-stand"
 cat > "$T/cls.py" <<'PY'
 import importlib.machinery, importlib.util, json, os, re, sys
 from pathlib import Path
@@ -590,7 +592,7 @@ class Gate:
         off = (T / "gate.off").read_text().split() if (T / "gate.off").exists() else []
         if site in off:
             raise RuntimeError("models.json: no row for %s — a call site needs its row before it runs" % site)
-        return {"site": site, "provider": "claude"}
+        return {"site": site, "kind": "classify", "provider": "claude"}
     @staticmethod
     def classify(site, items, ask, labels, context=None, source=None, caller=None, **kw):
         with open(T / "gate.calls", "a") as f:
@@ -798,6 +800,27 @@ intake alpha:17:bug:member:s17
 python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/17"][1][0]["state"]="open"; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
 cls classify > "$T/out" 2>&1
 check "$(verd key | tr '\n' ' ')" "alpha#17 " "an issue found closed at its fetch, open again unchanged: classified (a close never marks it done)"
+
+echo "ops classify: the rows resolve, claude is not on the job's PATH (the desk's first pass, 2026-10-29)"
+# the core's real gate and its shipped rows, CLAUDE_BIN unset: the gate runs `claude` from PATH, as the desk's job does
+PY3=$(command -v python3); mkdir -p "$T/nobin" "$T/stubbin"; cp "$T/claude" "$T/stubbin/claude"
+onpath() { : > "$T/gh.calls"; : > "$T/gate.calls"; v0=$(cat "$T/logs/ops-verdicts.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+  p=$1; shift; env -u CLAUDE_BIN PATH="$p" "$@" OPS_REAL_GATE=1 GATE_TABLE="$C/../regatta/settings/models.json" GATE_LOG="$T/gate.jsonl" \
+    "$PY3" "$T/cls.py" "$OPS" "$TL" classify > "$T/out" 2>&1; }
+intake alpha:21:bug:member:s21
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["repos/acme/alpha/issues/21"]=[0, [{"number": 21, "state": "open", "title": "the help has a typo", "labels": [{"name": "bug"}], "body": "x"}]]; json.dump(a, open(sys.argv[1], "w"))' "$T/gh.json"
+# /usr/sbin kept: common.host_name() runs scutil from it, and the host must still read as the ops host
+onpath "$T/nobin:/usr/sbin"
+check "$? $(verd key | wc -l | tr -d ' ') $(grep -c . "$T/gh.calls")" "3 0 0" "no claude on PATH: exit 3, no verdict, nothing fetched"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pending"]["alpha#21"]["tries"])' "$T/logs/classify-state.json")" "0" "…the issue kept queued, no try spent"
+has "$(cat "$T/out")" "1 held, no try spent: lighthouse.importance runs claude, not found on PATH $T/nobin:/usr/sbin" "…naming the command and the PATH it was looked up in"
+onpath "$T/nobin:/usr/sbin" CLAUDE_BIN=
+has "$(cat "$T/out")" "1 held, no try spent: lighthouse.importance runs \"\", not found on PATH" "an empty CLAUDE_BIN: held, as the gate would run \"\""
+onpath "$T/stubbin:$PATH" GATE_LIGHTHOUSE_IMPORTANCE_PROVIDER=codex
+check "$? $(verd key | wc -l | tr -d ' ')" "3 0" "a codex row, claude on PATH: held, the gate has no classify adapter for it"
+has "$(cat "$T/out")" "lighthouse.importance: a codex classify row, no classify adapter in the gate" "…naming the row"
+onpath "$T/stubbin:$PATH"
+check "$? $(verd key labels.cost rung)" "0 alpha#21 xs 1" "a stub claude on PATH: classified"
 rm -f "$OJ"
 unset LIGHTHOUSE_OPS_GH
 
@@ -818,11 +841,14 @@ LIGHTHOUSE_UNAME=Darwin sched --schedule > "$T/out" 2>&1; check "$?" "0" "the op
 check "$(python3 -c 'import plistlib,sys; p=plistlib.load(open(sys.argv[1],"rb")); a=p["ProgramArguments"]; print(a[-2].endswith("modules/lighthouse/bin/ops"), a[-1], p["StartInterval"], p["EnvironmentVariables"]["LIGHTHOUSE_DESK"], p["EnvironmentVariables"]["REGATTA_CONFIG"] == sys.argv[2], p["StandardOutPath"].endswith("ops-sample.log"))' "$LA/test.ops.plist" "$REGATTA_CONFIG")" \
   "True sample 900 1 True True" "…the plist: ops sample every 900 s, LIGHTHOUSE_DESK=1, the config dir carried, logged to ops-sample.log"
 check "$(grep -c "bootstrap gui/$(id -u) $LA/test.ops.plist" "$T/lc.calls")" "1" "…loaded with launchctl bootstrap"
+HM="$HOME"; check "$(python3 -c 'import plistlib,sys; print(*(plistlib.load(open(p,"rb"))["EnvironmentVariables"]["PATH"].split(":")[-1] for p in sys.argv[1:]))' "$LA/test.ops.plist" "$LA/test.ops.ingest.plist")" \
+  "$HM/.local/bin $HM/.local/bin" "…both PATHs end with the home's .local/bin, the native installer's home for claude"
 check "$(python3 -c 'import plistlib,sys; p=plistlib.load(open(sys.argv[1],"rb")); a=p["ProgramArguments"]; print(a[-2].endswith("modules/lighthouse/bin/ops"), a[-1], p["StartInterval"], p["EnvironmentVariables"]["LIGHTHOUSE_DESK"], p["StandardOutPath"].endswith("ops-ingest.log"))' "$LA/test.ops.ingest.plist") $(grep -c "bootstrap gui/$(id -u) $LA/test.ops.ingest.plist" "$T/lc.calls")" \
   "True ingest 600 1 True 1" "the intake beside it (S4): ops ingest every 600 s, LIGHTHOUSE_DESK=1, its own log, loaded"
 sched --remove > /dev/null 2>&1; check "$(test -e "$LA/test.ops.plist" && echo there || echo absent) $(test -e "$LA/test.ops.ingest.plist" && echo there || echo absent)" "absent absent" "--remove: both plists gone"
 LIGHTHOUSE_UNAME=Linux sched --schedule > "$T/out" 2>&1; check "$? $(test -e "$LA/test.ops.plist" && echo there || echo absent)" "1 absent" "Linux: no LaunchAgent, nothing written (yard-node S5's timer)"
 grep -q "ExecStart=.*bin/ops sample" "$T/out" && grep -q "Environment=LIGHTHOUSE_DESK=1" "$T/out"; check "$?" "0" "…the unit's lines printed: the seam"
+check "$(grep -c "Environment=PATH=.*:$HM/.local/bin\$" "$T/out")" "2" "…both units' PATH ends with the home's .local/bin"
 grep -q "ExecStart=.*bin/ops ingest" "$T/out" && grep -q "OnUnitActiveSec=10min" "$T/out"; check "$?" "0" "…and the intake's unit, every 10 minutes"
 check "$(test -e "$LA/test.ops.ingest.plist" && echo there || echo absent)" "absent" "…no intake plist on Linux either"
 

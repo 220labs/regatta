@@ -128,7 +128,7 @@ rm -f "$REGATTA_CONFIG/lighthouse/guarded-dirs"
 check "$(gd_path Read file_path "$GD/ops.env")" pass "  no key: the dir is not guarded (the desk is off)"
 
 echo "the fence: a confidential scope's paths, closed to a session outside it (knowledge-layers S2)"
-FH="$T/home"; FP="$FH/projects"; FL="$T/fence-logs"; FD="$T/fence"
+FH="$T/home"; FP="$FH/projects"; FL="$T/fence-logs"; FD="$T/fence"; FSCR="$T/tmpdir/c-501"
 mkdir -p "$FP/node-knowledge/memory" "$FP/node-app/src" "$FP/open/docs" "$FP/dream" "$FP/two-knowledge" "$FP/transcripts/node-app" \
   "$FH/.claude" "$FH/.claude-w" "$FH/.claude-o" "$FD/out"
 for r in node-knowledge open two-knowledge; do git init -q "$FP/$r"; git -C "$FP/$r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; done
@@ -148,7 +148,7 @@ printf '{"o": {"home": "~/.claude-o"}, "_default": {"enabled": true}}\n' > "$FD/
 printf '{"repos": {"node-knowledge": {}, "node-app": {}, "open": {}, "dream": {}, "two-knowledge": {}},\n "scopes": {"node": {"file": "n", "repos": ["node-knowledge", "node-*"], "confidential": true},\n  "two": {"file": "t", "repos": ["two-knowledge"], "confidential": true},\n  "atlas": {"file": "a", "repos": ["open", "dream"], "confidential": "yes"}}}\n' > "$FD/repos.json"
 sed 's/"confidential": true/"confidential": false/g' "$FD/repos.json" > "$FD/open.json"
 echo "$FL" > "$REGATTA_CONFIG/regatta/log-dir"
-FENV() { env CLAUDE_REPOS_JSON="${FRJ:-$FD/repos.json}" ACCOUNTS_FILE="$FD/acc.json" ACCOUNT_ORCA_FILE="$FD/orca.json" CLAUDE_PROJECT_DIR="${FPD:-}" SECRETS_GUARD_DIR="$T/sg/no-such-vault" "$@"; }
+FENV() { env CLAUDE_REPOS_JSON="${FRJ:-$FD/repos.json}" ACCOUNTS_FILE="$FD/acc.json" ACCOUNT_ORCA_FILE="$FD/orca.json" CLAUDE_PROJECT_DIR="${FPD:-}" SECRETS_GUARD_DIR="$T/sg/no-such-vault" SECRETS_GUARD_SCRATCH_ROOT="$FSCR" "$@"; }
 fraw() { python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","cwd":sys.argv[1],"tool_name":sys.argv[2],"tool_input":json.loads(sys.argv[3]),"session_id":"s-1"}))' "$1" "$2" "$3" | FENV python3 "$SG"; }
 fg() { fraw "$@" | python3 -c 'import json,sys; t=sys.stdin.read(); print(json.loads(t)["hookSpecificOutput"]["permissionDecision"] if t.strip() else "pass")'; }
 fpath() { fg "$1" "$2" "$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "$3" "$4")"; }
@@ -217,6 +217,22 @@ GONE="$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")--claude-worktrees-old
 echo '{}' > "$GONE/s-3.jsonl"; echo '{}' > "$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")-site/s-4.jsonl"
 check "$(fpath "$OUT" Read file_path "$GONE/s-3.jsonl") $(fbash "$DREAM" "cat '$GONE/s-3.jsonl'") $(fpath "$OUT" Read file_path "$FH/.claude-w/projects/$(fslug "$FP/node-knowledge")-site/s-4.jsonl")" \
   "deny deny pass" "  a removed worktree's session folder (<slug>--claude-worktrees-<topic>) stays fenced; a sibling slug's does not"
+SK="$(fslug "$IN")"; OSK="$(fslug "$OUT")"
+for d in "$SK/s-1/work" "$SK--claude-worktrees-old/s-2/work" "$(fslug "$IN/trees/pass")/s-3/work" "$(fslug "$(cd "$FD/out/away" && pwd -P)")/s-6/work" "$SK-site/s-4/work" "$OSK/s-5/work"; do
+  mkdir -p "$FSCR/$d"; echo x > "$FSCR/$d/x.txt"; done
+check "$(fpath "$OUT" Read file_path "$FSCR/$SK/s-1/work/x.txt") $(fpath "$OUT" Read file_path "$FSCR/$SK--claude-worktrees-old/s-2/work/x.txt") $(fpath "$OUT" Read file_path "$FSCR/$(fslug "$IN/trees/pass")/s-3/work/x.txt") $(fpath "$OUT" Read file_path "$FSCR/$(fslug "$(cd "$FD/out/away" && pwd -P)")/s-6/work/x.txt")" \
+  "deny deny deny deny" "  a session's scratch folder (<tmp>/claude-<uid>/<slug>/): the checkout's, a removed worktree's, a live one's (its folder as written), one outside the checkout (git's real path)"
+check "$(fpath "$OUT" Grep path "$FSCR/$SK") $(fglob "$OUT" '**/*.txt' "$FSCR") $(fbash "$OUT" "cat '$FSCR/$SK'/s-1/work/x.txt") $(fbash "$OUT" "grep -r x '$FSCR'")" \
+  "deny deny deny deny" "  Grep in it, a Glob from above it, Bash cat, a walk of the folder that holds it"
+check "$(fpath "$OUT" Read file_path "$FSCR/$OSK/s-5/work/x.txt") $(fbash "$OUT" "cat '$FSCR/$OSK/s-5/work/x.txt'") $(fpath "$OUT" Read file_path "$FSCR/$SK-site/s-4/work/x.txt") $(fbash "$OUT" "ls '$FSCR'")" \
+  "pass pass pass pass" "  the open repo's own scratch folder, a sibling slug's and a plain ls of the folder that holds them pass"
+check "$(fpath "$IN" Read file_path "$FSCR/$SK/s-1/work/x.txt") $(fbash "$IN" "cat '$FSCR/$SK--claude-worktrees-old/s-2/work/x.txt'")" "pass pass" \
+  "  the scope's own session reads its scratch folders"
+check "$(FPD="$IN" fpath "$FSCR/$SK/s-1" Read file_path "$IN/memory/plan.md") $(FPD="$OUT" fpath "$FSCR/$SK/s-1" Read file_path "$IN/memory/plan.md") $(fpath "$FSCR/$SK/s-1" Read file_path "$IN/memory/plan.md")" "pass deny deny" \
+  "  a cwd in the scope's scratch folder is inside only with the scope's project dir (none set: outside)"
+CT="$T/ctmp"; mkdir -p "$CT/claude-$(id -u)/$SK/s-7/work"; echo x > "$CT/claude-$(id -u)/$SK/s-7/work/x.txt"
+check "$(FSCR= CLAUDE_CODE_TMPDIR="$CT" fpath "$OUT" Read file_path "$CT/claude-$(id -u)/$SK/s-7/work/x.txt") $(FRJ=/no/such fpath "$OUT" Read file_path "$FSCR/$SK/s-1/work/x.txt") $(printf '{"repos": {' > "$FD/torn-scr.json"; FRJ="$FD/torn-scr.json" fpath "$OUT" Read file_path "$FSCR/$SK/s-1/work/x.txt")" "deny pass pass" \
+  "  Claude Code's CLAUDE_CODE_TMPDIR moves the root, and a missing or torn registry still passes (kl-s2 D3-A)"
 check "$(fbash "$OUT" "python3 -c \"print(open('$IN/memory/plan.md').read())\"") $(fbash "$OUT" "$(printf "python3 - <<'X'\nopen('~/projects/node-knowledge/memory/plan.md')\nX")")" \
   "deny deny" "  python -c and a python heredoc naming it"
 check "$(fbash "$OUT" "git commit -m 'Moves $IN/memory into the knowledge repo'") $(fbash "$OUT" "grep -n '$IN/memory' docs/n.md") $(fbash "$OUT" "echo '$IN' && ls '$FP' && cat docs/n.md")" \
@@ -242,117 +258,6 @@ rm -rf "$FL"; FPD="$OUT" fpath "$IN" Read file_path "$IN/memory/plan.md" >/dev/n
 check "$(cut -f2,4 "$FL/fence.log" | tr '\t\n' ',;')" "node,-;node,-;" "  a cwd in a scope's paths (the cd-in case, another scope's tree) is logged as -"
 check "$(fraw "$OUT" Read "{\"file_path\": \"$IN/memory/plan.md\"}" | python3 -c 'import json,sys; r=json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"]; print("`node`" in r, sys.argv[1] in r, "set node --open" in r, "Owner" in r, "plan.md" in r)' "$IN")" \
   "True True True True True" "  the refusal names the scope, its knowledge repo as the way in, the verb that opens it, the owner"
-
-echo "the fence across a bridge: two confidential scopes for a window (confidential-reach S8)"
-BRF="$REGATTA_CONFIG/lighthouse/bridges.json"; TWO="$FP/two-knowledge"
-# BWF "from to hours [one_way] [ended]"…: the bridges file, one entry per argument, opened a minute ago
-BWF() { python3 - "$BRF" "$@" <<'PY'
-import datetime, json, sys
-now = datetime.datetime.now(datetime.timezone.utc)
-iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
-rows = []
-for n, spec in enumerate(sys.argv[2:]):
-    w = spec.split()
-    e = {"id": "b%d" % n, "from": w[0], "to": w[1], "opened": iso(now - datetime.timedelta(minutes=1)),
-         "until": iso(now + datetime.timedelta(hours=float(w[2]))), "why": "t", "by": "t"}
-    if "one_way" in w[3:]: e["one_way"] = True
-    if "ended" in w[3:]: e["ended"] = iso(now)
-    rows.append(e)
-open(sys.argv[1], "w").write(json.dumps({"bridges": rows}))
-PY
-}
-# one running session in two's knowledge repo, asked again after each change of the file (it is read per call)
-brun() { echo "$(fpath "$TWO" Read file_path "$IN/memory/plan.md") $(fpath "$IN" Read file_path "$TWO/x.md")"; }
-check "$(brun)" "deny deny" "no bridge: each confidential scope refuses the other"
-BWF "two node 4"
-check "$(brun)" "pass pass" "  a bridge opened under the running session: its next call reads across, both ways"
-check "$(fbash "$TWO" "cat '$IN/memory/plan.md' && git -C '$IN' log") $(fpath "$TWO" Read file_path "$SF/s-1.jsonl") $(fglob "$TWO" '**/*.md' "$IN")" "pass pass pass" \
-  "  Bash, the other side's session transcripts, a Glob in it"
-check "$(fpath "$OUT" Read file_path "$IN/memory/plan.md") $(FPD="$OUT" fpath "$TWO" Read file_path "$IN/memory/plan.md") $(fpath "$DREAM" Read file_path "$TWO/x.md")" "deny deny deny" \
-  "  an open cwd, a session that started open and cd'd into two, the dream: still refused both"
-BWF "two node 4 ended"
-check "$(brun)" "deny deny" "  revoked under it: the next call is refused again"
-BWF "node two 4 one_way"
-check "$(brun)" "deny pass" "one-way node→two: node reads two, two never node"
-BWF "two node -1"
-check "$(brun)" "deny deny" "expired: refused"
-BWF "two node 30"
-check "$(brun)" "deny deny" "an entry past 24 h: refused"
-BWF "two node 4"; printf '{"bridges": [{' > "$BRF"
-check "$(brun)" "deny deny" "a torn bridges file: refused (a widening fails closed)"
-BWF "two node 4"; printf '{"repos": {' > "$FD/torn-reg.json"
-check "$(FRJ=$FD/torn-reg.json brun)" "pass pass" "  (a torn registry: the fence is open by its own choice, kl-s2 D3-A; the bridge adds nothing to that)"
-sed 's/"confidential": "yes"/"confidential": true/' "$FD/repos.json" > "$FD/three.json"
-BWF "two node 4" "node atlas 4"
-check "$(FRJ=$FD/three.json brun) $(FRJ=$FD/three.json fpath "$TWO" Read file_path "$OUT/docs/n.md")" "deny deny deny" \
-  "a chain (node bridged to two and atlas): every entry node is in is void — nothing reaches a third scope"
-BWF "two node 4"
-check "$(FPD="$TWO" fpath "$IN" Read file_path "$IN/memory/plan.md") $(FPD="$TWO" fpath "$IN" Read file_path "$TWO/x.md") $(FPD="$TWO" fbash "$IN" "cat '$TWO/x.md' '$IN/memory/plan.md'")" "pass pass pass" \
-  "  a session started in two that cd's into node reads both sides (the landing review: it was fenced from both)"
-check "$(FPD="$TWO" fpath "$OUT" Read file_path "$TWO/x.md") $(FPD="$TWO" fpath "$OUT" Read file_path "$IN/memory/plan.md")" "deny deny" \
-  "  one that cd's out to an open repo: fenced from both, as with no bridge"
-# the agreement: the core's bridge_active(cwd, path) is True exactly where the hook's own fence() passes a
-# Read with the bridge and refuses it without (a session with that one start); zed holds a repo whose slug
-# starts with two's, and the scratch cwd only shares node's slug (the landing review's two over-reaches)
-sed 's/"two-knowledge": {}}/"two-knowledge": {}, "two-knowledge-x": {}}/; s/"atlas": {/"zed": {"file": "z", "repos": ["two-knowledge-x"], "confidential": true},\n  "atlas": {/' "$FD/repos.json" > "$FD/zed.json"
-cat > "$T/agree.py" <<'PY'
-import importlib.util as u, os, sys
-sys.path.insert(0, sys.argv[1]); import common
-s = u.spec_from_file_location("sg", sys.argv[2]); g = u.module_from_spec(s); s.loader.exec_module(g)
-two, inn, out, sf, brf, zed, scratch = sys.argv[3:10]
-os.environ.pop("CLAUDE_PROJECT_DIR", None)
-read = lambda c, p: g.fence({"cwd": c, "tool_name": "Read", "tool_input": {"file_path": p}}) is None
-pairs = [(two, inn + "/memory/plan.md"), (inn, two + "/x.md"), (two, sf + "/s-1.jsonl"), (out, inn + "/x"), (two, out + "/x"),
-         (inn, inn + "/x"), (inn, zed), (scratch, two + "/x.md")]
-core = [common.bridge_active(c, p) for c, p in pairs]
-with_bridge = [read(c, p) for c, p in pairs]
-os.rename(brf, brf + ".off")
-hook = [w and not read(c, p) for w, (c, p) in zip(with_bridge, pairs)]
-os.rename(brf + ".off", brf)
-print(" ".join("%s%s" % (k, "" if k == h else "!") for k, h in zip(core, hook)))
-PY
-check "$(FRJ=$FD/zed.json FENV python3 "$T/agree.py" "$R/modules/regatta/hooks" "$SG" "$TWO" "$IN" "$OUT" "$SF" "$BRF" \
-  "$FH/.claude-w/projects/$(fslug "$FP/two-knowledge-x")/s.jsonl" "$T/scratch/claude-501/$(fslug "$IN")-tools/s1")" \
-  "True True True False False False False False" "the hook's fence() and the core's bridge_active() agree, pair by pair"
-echo "the bridges file is scopes bridge's alone (the landing review: a dispatched run opened its own)"
-check "$(fpath "$TWO" Write file_path "$BRF") $(fpath "$TWO" Edit file_path "$BRF.lock") $(fpath "$TWO" Write file_path "$(dirname "$BRF")/.bridges.json.1.tmp")" "deny deny deny" \
-  "a Write or Edit of the file, its lock or the writer's temp file: refused"
-check "$(fbash "$TWO" "cat > '$BRF' <<EOF
-{}
-EOF") $(fbash "$TWO" 'printf x > "$REGATTA_CONFIG/lighthouse/bridges.json"') $(fbash "$TWO" "python3 -c 'open(\"$BRF\", \"w\")'") $(fbash "$TWO" "cp /dev/null '$BRF'")" "deny deny deny deny" \
-  "  a heredoc, a redirect behind a variable, python's open, a cp onto it: refused"
-check "$(fpath "$TWO" Read file_path "$BRF") $(fbash "$TWO" "python3 '$R/modules/wharf/bin/scopes' bridge audit") $(fbash "$TWO" "grep -rn bridges.json '$R/modules/wharf/bin'") $(fpath "$TWO" Write file_path "$(dirname "$BRF")/accounts.json")" "pass pass pass pass" \
-  "  a Read, scopes bridge itself, a grep for the name, a file beside it: pass"
-check "$(fraw "$TWO" Write "{\"file_path\": \"$BRF\"}" | grep -c 'scopes bridge')" 1 "  the refusal names scopes bridge"
-# the second finish stop: a copy into the folder, a link, mv, rsync, tar -x -C and another case all passed
-BRD="$(dirname "$BRF")"; BSRC="$T/bsrc"; mkdir -p "$BSRC/up"; BWF "two node 4"; cp "$BRF" "$BSRC/bridges.json"; cp "$BRF" "$BSRC/up/"
-( cd "$BSRC/up" && tar -cf "$BSRC/b.tar" bridges.json ); rm -f "$BRF"
-check "$(fbash "$TWO" "cp '$BSRC/bridges.json' '$BRD/'") $(fbash "$TWO" "ln -s '$BSRC/bridges.json' '$BRF'") $(fbash "$TWO" "ln -s '$BSRC/bridges.json' '$BRD'") $(fbash "$TWO" "mv '$BSRC/bridges.json' '$BRD'") $(fbash "$TWO" "rsync -a '$BSRC/up/' '$BRD/'") $(fbash "$TWO" "tar -x -f '$BSRC/b.tar' -C '$BRD'")" \
-  "deny deny deny deny deny deny" "  cp into the folder, ln -s onto the name or into the folder, mv, rsync, tar -x -C: refused"
-check "$(fbash "$TWO" "cd '$BRD' && tar xf '$BSRC/b.tar'") $(fbash "$TWO" "cp -t '$BRD' '$BSRC/up/bridges.json'") $(fbash "$TWO" "unzip -d '$BRD' '$BSRC/b.zip'") $(fbash "$TWO" "ln '$BSRC/bridges.json' '$BRD/'") $(fbash "$TWO" "ditto '$BSRC/up' '$BRD'")" \
-  "deny deny deny deny deny" "  a tar after a cd into it, cp -t, unzip -d, a hard link, ditto: refused"
-check "$(fpath "$TWO" Write file_path "$BRD/Bridges.json") $(fbash "$TWO" "cp '$BSRC/up/bridges.json' '$BRD/BRIDGES.JSON'") $(fpath "$TWO" Write file_path "$(dirname "$BRD")/Lighthouse/bridges.json")" "deny deny deny" \
-  "  another case of the name or of its folder (APFS opens it as the file): refused"
-ln -s "$BRF" "$BSRC/to-brf"
-check "$(fpath "$TWO" Write file_path "$BSRC/to-brf") $(fbash "$TWO" "cp '$BSRC/up/bridges.json' '$BSRC/to-brf'")" "deny deny" "  a Write or cp through a link that points at it: refused"
-check "$(fbash "$TWO" "tar -cf '$BSRC/cfg.tar' -C '$REGATTA_CONFIG' lighthouse") $(fbash "$TWO" "cp '$BSRC/up/bridges.json' '$BSRC/elsewhere'") $(fbash "$TWO" "mv '$BSRC/b.tar' '$BRD/sub/'")" "pass pass pass" \
-  "  an archive of the config dir, a copy elsewhere, a move into a folder below it: pass (only the folder itself or the name)"
-# both readers: a link, another case of the name, a second hard link read as torn — no bridge (core: tests/check.sh)
-ln -s "$BSRC/up/bridges.json" "$BRF"
-check "$(brun)" "deny deny" "a bridges file that is a link: torn, so no bridge (an agent's link made the file its target's)"
-rm -f "$BRF"; cp "$BSRC/up/bridges.json" "$BRD/Bridges.json"
-check "$(brun)" "deny deny" "  a file named Bridges.json: not the file, so no bridge"
-rm -f "$BRD/Bridges.json"; cp "$BSRC/up/bridges.json" "$BRF"; ln "$BRF" "$BSRC/hard"
-check "$(brun)" "deny deny" "  a second hard link: torn, so no bridge"
-rm -f "$BSRC/hard"
-check "$(brun)" "pass pass" "  the same file, one link and the exact name: the bridge holds"
-echo "scopes bridge open is the owner's (the second stop's D1, answered A by the manager)"
-check "$(fbash "$TWO" "python3 '$R/modules/wharf/bin/scopes' bridge open two node --until +1h --why x") $(fbash "$TWO" "'$R/modules/regatta/bin/regatta' scopes bridge open two node --until +1h --why x") $(fbash "$TWO" "env X=1 scopes bridge open two node --until +1h --why x") $(fbash "$TWO" "bash -c 'cd /tmp && scopes bridge open two node --until +1h --why x'") $(fbash "$TWO" "\$(git rev-parse --show-toplevel)/modules/wharf/bin/scopes bridge open two node --until +1h --why x")" \
-  "deny deny deny deny deny" "an agent's scopes bridge open, every spelling (module path, regatta scopes, a wrapper, bash -c, a worktree's copy): refused"
-check "$(fbash "$TWO" "scopes bridge --revoke b0") $(fbash "$TWO" "scopes bridge audit --since 2026-10-20") $(fbash "$TWO" "grep -n 'scopes bridge open' docs/n.md")" "pass pass pass" \
-  "  revoke, audit and a grep for the words: pass"
-check "$(fraw "$TWO" Bash '{"command": "scopes bridge open two node --until +1h --why x"}' | grep -c '! .*scopes bridge open')" 1 "  the refusal hands the owner the ! line"
-rm -f "$BRF"
 
 echo "claude-settings (docs/record/machine-settings-2026-09-29.md)"
 CS="$C/bin/claude-settings"; CSD="$T/cs"; mkdir -p "$CSD/cfg"

@@ -1507,6 +1507,31 @@ PYFORCE
 )
 ok "every session, attended too: a hand write of the force mark or the queue's folders, or a hand run of force_mark.py, by Bash is denied; a read is not (dispatch-queue S4)" \
   '[ "$fm" = "[] [] []" ]'
+fm2=$(cd "$MOD/hooks" && env -u CLAUDE_UNATTENDED HOME="$T/rh" python3 - <<'PYFORCE2'
+import importlib.util as u
+s = u.spec_from_file_location("cp_force2", "checkpoint.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+F = "~/projects/regatta/modules/wharf-runs/hooks/force_mark.py"
+RS = "~" + "/Library/Caches/run-seed"   # spelled in two halves: the publish gate reads a typed home path
+deny = ["ssh peer 'python3 " + F + " < /tmp/p'", "ssh -p 22 peer python3 " + F, "ssh peer bash -c 'python3 " + F + "'",
+        "ssh peer 'touch " + RS + "/force/s1'", "ssh peer 'echo x > " + RS + "/force/s1'",
+        "ssh -E " + RS + "/force/s1 peer true", "ssh peer \"python3 -c 'open(1)' " + RS + "/queue/x\"",
+        "gh issue create --body-file " + RS + "/force/s1", "gh run download -D " + RS + "/queue",
+        "bash -c 'ssh peer python3 " + F + "'", "gh alias set fm '!python3 " + F + "'",
+        "gh release download v1 -R o/r -O " + F, "gh pr diff 3 -R o/r --patch --output " + F,
+        "gh pr diff 3 -R o/r --patch --output=" + F, "gh issue create -R o/r --title t --body \"$(python3 " + F + " < /tmp/p)\"",
+        "gh pr comment 3 --body \"`python3 " + F + "`\"",
+        "gh pr comment 3 --body-file <(python3 " + F + " < /tmp/p)", "gh pr comment 3 --body-file=<(python3 " + F + " < /tmp/p)",
+        "gh pr comment 3 --body x >(python3 " + F + ")", "ssh peer cat <(python3 " + F + ")",
+        "ssh peer \"cat `python3 " + F + "`\"", "ssh peer 'cat `python3 " + F + " < /tmp/p`'",
+        "ssh peer 'cat <(python3 " + F + " < /tmp/p)'"]
+allow = ["ssh peer 'cat " + F + "'", "ssh -o BatchMode=yes peer grep -n PHRASE " + F, "ssh peer 'ls " + RS + "/force'",
+         "gh issue create -R o/r --title 'checkpoint denies a read of force_mark.py over ssh' --body 'see " + F + "'",
+         "gh issue close 2 -R o/r -c 'fixed: force_mark.py'"]
+print([c for c in deny if not m.record_write(c, m.force_re())], [c for c in allow if m.record_write(c, m.force_re())])
+PYFORCE2
+)
+ok "  …an ssh HOST '<cmd>' is judged as its own command line, a gh text naming force_mark.py is prose, every main denial kept (regatta-logbook#2, queue S10)" \
+  '[ "$fm2" = "[] []" ]'
 mkdir -p "$T/rh/Library/Caches/run-seed/force"
 FJ=$(jq -nc --arg p "$T/rh/Library/Caches/run-seed/force/s1" '{file_path:$p,content:"x"}')
 ok "  …and by the Write tool, attended or not" \

@@ -19,7 +19,11 @@
                                Where a queue home is set, it claims (`dispatch --claim`) when its
                                busy run turns parked, its slot then free, once each parked stretch —
                                not for a yolo or dnd run, whose end hands its slot to its landing
-                               (S2 of docs/dispatch-queue-2026-10-25.md).
+                               (S2 of docs/dispatch-queue-2026-10-25.md). There it also registers for
+                               the sleep notice (bin/powerlib.py): at kIOMessageSystemWillSleep the first
+                               watcher to take the host's requeue lock runs `dispatch --requeue --all
+                               --why lid`, holding the sleep up to DISPATCH_REQUEUE_ACK_S (20 s), and
+                               returns only once that requeue ends (S10).
     dispatch-rc end TOPIC [REPO]
                                end the live run of TOPIC now, busy or not (`dispatch --end`)
     dispatch-rc end-warm BRANCH REPO [--dry-run]
@@ -106,6 +110,7 @@ ignored: not live, not counted, shown as gone.
 """
 import calendar
 import datetime
+import fcntl
 import glob
 import importlib.machinery
 import importlib.util
@@ -116,6 +121,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -545,8 +551,9 @@ def said_its_end(st, rec):
     fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
     outcome from (read_outcome). A RELAYED line is no end: that run waits for its manager's answer
     (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
-    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher.
-    False whenever it cannot tell."""
+    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher. So is
+    WAITING FOR NOTHING (`idle`, 2026-10-29): nothing goes on and nothing is owed. A mark before any of
+    them changes nothing (common.ending reads past it). False whenever it cannot tell."""
     if common is None or not rec or rec.get("status") != "idle" or not st.get("session"):
         return False
     path = transcript(st["session"])
@@ -1398,7 +1405,8 @@ def finish(path, st, reason):
     say("ended session %s (%s)" % (st["session"], reason))
     # no fire path behind a run whose watcher is gone (an orphan a reap, tidy or after() ended): its slot is
     # free and nothing else claims it (S2). A watched run's fire path claims at its end, after its launch
-    if watcher_gone(st) and not st.get("probe"):
+    # a requeued run (S10) hands its slot to nobody here: its Mac is about to sleep, or its owner said so by hand
+    if watcher_gone(st) and not st.get("probe") and not str(reason).startswith("requeued"):
         queue_claim("its run ended with no watcher (%s)" % reason, st["ended"])
 
 
@@ -1498,6 +1506,71 @@ def hold_awake(want):
     _AWAKE[:] = []
 
 
+# S10(c), the sleep hook (the requeue component's "The sleep hook"): every watcher on a Mac with a queue home
+# registers for the sleep notice (powerlib); at kIOMessageSystemWillSleep the first to take the host's requeue
+# lock runs `dispatch --requeue --all --why lid` for every busy run, holding the sleep up to REQUEUE_ACK_S, and
+# the others acknowledge at once. Past it the sleep goes on and the requeue with it, after the wake; its ops
+# were in the outbox before any run ended. The watcher's own run is among those ended: its main thread waits
+# for the requeue before it returns, so the process that holds the lock outlives the run it watched.
+REQUEUE_ACK_S = float(os.environ.get("DISPATCH_REQUEUE_ACK_S", "20"))
+REQUEUE_LOCK = os.path.join(HOME, "Library", "Caches", "run-seed", "queue", "requeue.lock")   # dispatch-queue's REQ_LOCK
+_REQUEUE = []   # the requeue this watcher started at a sleep: watch() waits for it before it returns
+
+
+def on_will_sleep():
+    """The sleep is coming: the first watcher here hands every busy run back; the rest acknowledge."""
+    try:
+        os.makedirs(os.path.dirname(REQUEUE_LOCK), exist_ok=True)
+        lk = open(REQUEUE_LOCK, "w")
+        fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lk.close()
+        say("the Mac is going to sleep: another watcher hands the runs back; acknowledging")
+        return
+    except OSError as e:
+        say("the Mac is going to sleep: the requeue lock will not open (%s); acknowledging" % e)
+        return
+    # the watcher's env, less what makes the verb refuse (an unattended caller: a --start run's watcher may
+    # carry its caller's mark) or read a fired job's words; the lock is held here, so the verb takes none
+    env = {k: v for k, v in os.environ.items() if k not in JOB_ENV + ("CLAUDE_UNATTENDED", "AUTOFINISH_CALLER_UNATTENDED")}
+    env["DISPATCH_REQUEUE_LOCKED"] = "1"
+    argv = [os.environ.get("DISPATCH_REQUEUE_BIN") or os.path.join(HERE, "dispatch"), "--requeue", "--all", "--why", "lid"]
+    t0 = time.time()
+    say("the Mac is going to sleep: %s" % " ".join(argv[1:]))
+    try:
+        proc = subprocess.Popen(argv, env=env, cwd=HOME, stdin=subprocess.DEVNULL)
+    except OSError as e:
+        lk.close()
+        say("the requeue did not start (%s); acknowledging" % e)
+        return
+
+    def release():
+        rc = proc.wait()
+        lk.close()
+        say("the requeue at sleep ended, exit %s, %.1f s after the notice" % (rc, time.time() - t0))
+    t = threading.Thread(target=release, name="requeue", daemon=True)
+    t.start()
+    _REQUEUE.append(t)
+    try:
+        proc.wait(timeout=REQUEUE_ACK_S)
+    except subprocess.TimeoutExpired:
+        say("the requeue is still going after %d s: acknowledging the sleep; it goes on after the wake" % REQUEUE_ACK_S)
+
+
+def power_start():
+    """The sleep notice, where a queue home is set (claiming or writes-only): with none, a requeue has nowhere
+    to hand a run, and a sleep freezes it as before. A stop callable, or None."""
+    if os.environ.get("DISPATCH_POWER") == "off" or not queue_home_set():
+        return None
+    try:
+        sys.path.insert(0, HERE)
+        import powerlib
+    except ImportError as e:
+        say("power: powerlib does not load (%s)" % e)
+        return None
+    return powerlib.listen(on_will_sleep, say)
+
+
 def watch(path):
     st = load(path)
     # recorded so after() and status() can tell an orphan: claude running, its watcher gone
@@ -1506,9 +1579,14 @@ def watch(path):
     start, busy = time.time(), False
     started = st.get("started") or start
     hold_awake(True)
+    stop = power_start() if not st.get("probe") else None
     try:
         return watch_loop(path, st, start, busy, started)
     finally:
+        for t in list(_REQUEUE):
+            t.join(600)   # a requeue started here ends before this watcher does, its lock with it
+        if stop:
+            stop()
         hold_awake(False)
 
 

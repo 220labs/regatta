@@ -27,7 +27,7 @@ git config --global user.name t; git config --global user.email t@example.invali
 export WEEKLY_EMBARK_REPO="$T/no-embark-repo" WEEKLY_KEEL_EMBARK="$T/no-keel-embark.json" WEEKLY_KEEL_LINE=echo
 unset REGATTA_HOME REGATTA_LEGACY ATLAS_LAYER ATLAS_VAULT CLAUDE_CONFIG_DIR WEEKLY_ANY_HOST AURORA_SECTIONS \
       WEEKLY_TEND WEEKLY_CLASSIFY WEEKLY_COMMIT WEEKLY_PR WEEKLY_CLAUDE AURORA_TODAY AURORA_HOUR CLAUDE_BULLETIN \
-      WEEKLY_TRIM TRIM_NOW CLAUDE_REPOS_JSON
+      WEEKLY_TRIM TRIM_NOW CLAUDE_REPOS_JSON WEEKLY_CLOCK WEEKLY_SLEEP STUB_TRIM_COLLECT STUB_TRIM_VERDICT STUB_TRIM_SLEEP STUB_TRIM_TORN LANDS WEEKLY_CAP WEEKLY_CAP_GRACE
 fails=0
 check() {
   if [ "$1" = "$2" ]; then echo "  ok  $3"; else echo "  FAIL $3"; echo "       got:  $1"; echo "       want: $2"; fails=$((fails + 1)); fi
@@ -161,7 +161,7 @@ out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
 echo "$out" | head -1 | grep -q "^aurora 2026-10-18 21h — the night's order"; check $? 0 "a Sunday night: the header"
 check "$(echo "$out" | grep -cE '^  [0-9] ')" 6 "  six steps, in order"
 echo "$out" | grep -qE '^  2 classify +due '; check $? 0 "  classify due"
-echo "$out" | grep -qE '^  6 dream +due .* must be on vlt main'; check $? 0 "  dream due, its proof named by the vault's name"
+echo "$out" | grep -qE '^  5 dream +due .* must be on vlt main'; check $? 0 "  dream due, its proof named by the vault's name"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=12 "$W" aurora "$V" --dry-run)
 echo "$out" | grep -q "nothing due tonight"; check $? 0 "a Sunday before 20:00: nothing due"
 check "$(ls "$T/logs" | grep -c tried)" 0 "  a dry run records nothing"
@@ -193,7 +193,7 @@ rm -f "$lg"
 AURORA_SECTIONS=dream WEEKLY_CLAUDE=true "$W" aurora "$V"
 check "$(grep -c '^LAUNCHED' "$lg")" 1 "  a second run that day finds the first one's dream on main"
 
-echo "the trim section (self-tuning S5): plumb's trim, zero tokens, before the dream"
+echo "the trim section (self-tuning S5): plumb's trim, zero tokens, last"
 # A tuned repo of the suite's own (the key names it, so the checkout's own trim/ is never run), and a
 # stand-in trim that logs each call and exits as STUB_TRIM_<verb> says.
 # where the core puts things under the suite's config: its projects folder (the fence keys a repo by it), its log dir
@@ -206,7 +206,9 @@ cat > "$T/stub-trim" <<STUB
 echo "\$*" >> "$T/trim-calls"
 case "\$1" in collect) rc=\${STUB_TRIM_COLLECT:-0} ;; verdict) rc=\${STUB_TRIM_VERDICT:-0} ;; *) rc=0 ;; esac
 case "\$1" in
-  collect) [ "\$rc" = 3 ] && { echo "trim collect: refused — scope vault is confidential: its rows never leave it" >&2; exit 3; }
+  collect) [ -n "\${STUB_TRIM_SLEEP:-}" ] && sleep "\$STUB_TRIM_SLEEP"
+           [ "\$rc" = 3 ] && [ -n "\${STUB_TRIM_TORN:-}" ] && { echo "trim collect: refused — the repo registry cannot be read (a torn write?): nothing collected, nothing written" >&2; exit 3; }
+           [ "\$rc" = 3 ] && { echo "trim collect: refused — scope vault is confidential: its rows never leave it" >&2; exit 3; }
            [ "\$rc" = 4 ] && { echo "trim collect: could not tell — GitHub did not answer the PR search (status 0)" >&2; exit 4; }
            echo "trim collect: 0 rows ({})" ;;
   verdict) if [ "\$rc" = 3 ]; then echo "trim verdict: wrote $T/verdict.json — refused — floor breached by 1 outcome(s): harbor#5"
@@ -215,16 +217,29 @@ esac
 exit "\$rc"
 STUB
 chmod +x "$T/stub-trim"
-out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
-echo "$out" | grep -qE '^  3 trim +due .*in 1 repo\(s\), no session'; check $? 0 "a Sunday night: trim due, third, in the one tuned repo"
+# the plan's trim line is due only where trim is installed: the stand-in counts as installed
+sun() { AURORA_TODAY=2026-10-18 AURORA_HOUR=21 WEEKLY_TRIM="$T/stub-trim" "$W" aurora "$V" --dry-run; }
+out=$(sun)
+echo "$out" | grep -qE '^  6 trim +due .*in 1 repo\(s\), no session'; check $? 0 "a Sunday night: trim due, last (sixth), in the one tuned repo"
 echo "$T/elsewhere" > "$REGATTA_CONFIG/aurora/trim-repos"
-out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
-echo "$out" | grep -qE '^  3 trim +not due '; check $? 0 "  no repo with a vertical file: not due"
+out=$(sun)
+echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  no repo with a vertical file: not due"
+printf '\357\273\277%s\r\n' "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
+out=$(sun)
+echo "$out" | grep -qE '^  6 trim +due .*in 1 repo\(s\)'; check $? 0 "  the key read as the core reads it: a BOM and CRLF still name the repo"
+: > "$REGATTA_CONFIG/aurora/trim-repos"
+out=$(sun)
+echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  the key written empty: no repo, never the default"
 echo "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
 echo "$day" > "$T/logs/aurora-trim-tried"
-out=$(AURORA_TODAY="$day" AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
-echo "$out" | grep -qE '^  3 trim +not due '; check $? 0 "  tried this week: not due again"
+out=$(AURORA_TODAY="$day" AURORA_HOUR=21 WEEKLY_TRIM="$T/stub-trim" "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  tried this week: not due again"
 rm -f "$T/logs/aurora-trim-tried"
+# without plumb (a copy of the core and aurora alone, as on a stranger's install): never due, the plan says why
+NP="$T/notrim"; mkdir -p "$NP/modules"; cp -R "$R/modules/regatta" "$R/modules/aurora" "$NP/modules/"
+out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$NP/modules/aurora/bin/weekly-run" aurora "$V" --dry-run)
+echo "$out" | grep -qE "^  6 trim +not due +plumb's trim is not installed"; check $? 0 "  plumb's trim not installed: not due, though a repo is tuned"
+rm_own "$NP"
 
 trimnight() { rm -f "$lg" "$T/trim-calls"; AURORA_SECTIONS="trim dream" WEEKLY_TRIM="$T/stub-trim" WEEKLY_CLAUDE=true "$W" aurora "$V"; }
 p0=$(posts "trim step failed")
@@ -234,10 +249,10 @@ check "$(grep -c -- "--repo $TR --vertical coding --night" "$T/trim-calls")" 3 "
 grep -q -- "^report .*--write" "$T/trim-calls" && grep -q -- "^verdict .*--write" "$T/trim-calls"; check $? 0 "  report and verdict written (--write)"
 grep -q "^TRIM harbor coding $day: builder sonnet:high no move$" "$lg"; check $? 0 "  the verdict's state in the log"
 check "$(cat "$T/logs/aurora-trim-tried")" "$day" "  its attempt recorded"
-awk '/^== trim at /{t=NR} /^LAUNCHED .*dreams/{d=NR} END{exit !(t && d && t < d)}' "$lg" < /dev/null; check $? 0 "  before the dream, which still lands"
+awk '/^== dream in /{d=NR} /^== trim at /{t=NR} /^LAUNCHED .*dreams/{l=NR} END{exit !(d && t && l && d < t && t < l)}' "$lg" < /dev/null; check $? 0 "  after the dream's session, before its proof, which still lands"
 STUB_TRIM_COLLECT=3 trimnight; check $? 0 "a refusal (exit 3): the night still exits 0"
 check "$(cut -d' ' -f1 "$T/trim-calls" | tr '\n' ' ')" "collect " "  nothing reported or judged after it"
-grep -q "^REFUSED trim coding $day: trim's fence" "$lg"; check $? 0 "  one REFUSED line with its reason"
+grep -q "^REFUSED trim coding $day: trim's fence (a confidential scope's repo)$" "$lg"; check $? 0 "  one REFUSED line with its reason, the fence's alone"
 check "$(grep -c '^FAILED trim' "$lg")$(posts "trim step failed")" "0$p0" "  never a FAILED line, never a bulletin post"
 grep -q "^LAUNCHED .*dreams/$day.md" "$lg"; check $? 0 "  and the dream still runs"
 STUB_TRIM_VERDICT=3 trimnight
@@ -247,6 +262,97 @@ STUB_TRIM_COLLECT=4 trimnight
 grep -q "^FAILED trim $day: trim collect in harbor (coding) exit 4: .*GitHub did not answer" "$lg"; check $? 0 "could not tell (exit 4): the step fails, saying why"
 check "$(posts "trim step failed")" "$((p0 + 1))" "  and posts one bulletin line (so the refusal's none above is a real none)"
 grep -q "^LAUNCHED .*dreams/$day.md" "$lg"; check $? 0 "  and the dream still runs"
+
+# A torn registry is not the fence: every repo would refuse. Said as torn, failed and posted, the step stopped.
+echo '{"repos": {"harbor": ' > "$T/torn-repos.json"
+p1=$(posts "trim step failed")
+CLAUDE_REPOS_JSON="$T/torn-repos.json" STUB_TRIM_COLLECT=3 trimnight; check $? 0 "a torn registry: the night still exits 0"
+grep -q "^FAILED trim $day: the repo registry cannot be read (a torn write?)" "$lg" && ! grep -q '^REFUSED trim' "$lg"; check $? 0 "  FAILED, said as torn, never the fence's REFUSED"
+check "$(posts "trim step failed")" "$((p1 + 1))" "  one bulletin line"
+STUB_TRIM_COLLECT=3 STUB_TRIM_TORN=1 trimnight
+grep -q "^FAILED trim $day: the repo registry cannot be read" "$lg"; check $? 0 "  trim's own word for it counts too (torn while it read, whole again after)"
+# The cap: trim's calls share WEEKLY_CAP, so a stalled GitHub page fails the step, never holds the night.
+t0=$SECONDS
+WEEKLY_CAP=3 WEEKLY_CAP_GRACE=1 STUB_TRIM_SLEEP=60 trimnight; check $? 0 "a collect that hangs: the night exits 0"
+check "$([ $((SECONDS - t0)) -lt 30 ] && echo bounded || echo "$((SECONDS - t0)) s")" bounded "  killed at the cap, not after the stall"
+grep -q "^FAILED trim $day: trim collect in harbor (coding) killed at the step's .*cap (WEEKLY_CAP)" "$lg"; check $? 0 "  FAILED, naming the cap"
+check "$(cut -d' ' -f1 "$T/trim-calls" | tr '\n' ' ')" "collect " "  nothing reported or judged after it"
+grep -q "^LAUNCHED .*dreams/$day.md" "$lg"; check $? 0 "  and the dream still lands"
+# A dropped repo's verdict leaves the daily report: renamed verdict.retired.json; a tuned one stays.
+NV="$(core LOG_DIR)/$(core 'host_name()')/trim"
+mkdir -p "$NV/gone/coding" "$NV/harbor/coding"
+echo '{"key": "gone", "repo": "/x/gone", "vertical": "coding", "at": "2026-10-01T00:00", "refused": []}' > "$NV/gone/coding/verdict.json"
+echo '{"key": "harbor", "repo": "/x/harbor", "vertical": "other", "at": "2026-10-01T00:00", "refused": []}' > "$NV/harbor/coding/old.json"
+python3 -c 'import json, sys; json.dump({"key": sys.argv[1], "repo": sys.argv[2], "vertical": "coding", "refused": []}, open(sys.argv[3], "w"))' \
+  "$(core "repo_key('$TR')")" "$TR" "$NV/harbor/coding/verdict.json"
+mkdir "$REGATTA_CONFIG/aurora/trim-repos.d" && mv "$REGATTA_CONFIG/aurora/trim-repos" "$REGATTA_CONFIG/aurora/trim-repos.keep" \
+  && mv "$REGATTA_CONFIG/aurora/trim-repos.d" "$REGATTA_CONFIG/aurora/trim-repos"
+trimnight
+check "$(ls "$NV/gone/coding" | tr '\n' ' ')" "verdict.json " "an unreadable key (a folder here): no repo tuned, and nothing retired"
+rmdir "$REGATTA_CONFIG/aurora/trim-repos"; mv "$REGATTA_CONFIG/aurora/trim-repos.keep" "$REGATTA_CONFIG/aurora/trim-repos"
+trimnight
+check "$(ls "$NV/gone/coding" | tr '\n' ' ')" "verdict.retired.json " "a verdict of a repo the night no longer tunes: retired"
+check "$(ls "$NV/harbor/coding" | tr '\n' ' ')" "old.json verdict.json " "  the tuned repo's verdict kept"
+grep -q "^RETIRED trim $day: 1 verdict(s) of a repo or vertical the night no longer tunes" "$lg" && ! grep -q "^RETIRED.*gone" "$lg"; check $? 0 "  one RETIRED line, counting, naming no repo"
+# The vertical as trim names it: a file whose own "vertical" differs from its name keeps that night's verdict.
+cp "$TR/trim/coding.json" "$T/coding.json.keep"
+python3 -c 'import json, sys; json.dump({"vertical": "code"}, open(sys.argv[1], "w"))' "$TR/trim/coding.json"
+mkdir -p "$NV/harbor/code"
+python3 -c 'import json, sys; json.dump({"key": sys.argv[1], "repo": sys.argv[2], "vertical": "code", "refused": []}, open(sys.argv[3], "w"))' \
+  "$(core "repo_key('$TR')")" "$TR" "$NV/harbor/code/verdict.json"
+trimnight
+check "$(ls "$NV/harbor/code" | tr '\n' ' ')" "verdict.json " "  a vertical file naming its own vertical: its verdict kept"
+cp "$T/coding.json.keep" "$TR/trim/coding.json"
+# A listed repo not there tonight (an unmounted disk): nothing retired.
+printf '%s\n%s\n' "$TR" "$T/unmounted" > "$REGATTA_CONFIG/aurora/trim-repos"
+rm -f "$NV/gone/coding/verdict.retired.json"; echo '{"key": "gone", "vertical": "coding"}' > "$NV/gone/coding/verdict.json"
+trimnight
+check "$(ls "$NV/gone/coding" | tr '\n' ' ')" "verdict.json " "  a listed repo missing tonight: nothing retired"
+printf '%s\n' "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
+rm_own "$NV/gone" "$NV/harbor"
+# A dotfile in trim/ (an AppleDouble copy) is no vertical: a repo holding only one is not tuned.
+DR="$T/dotrepo"; mkdir -p "$DR/trim"; echo '{}' > "$DR/trim/._web.json"
+printf '%s\n' "$DR" > "$REGATTA_CONFIG/aurora/trim-repos"
+out=$(sun)
+echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  a repo whose only vertical file is a dotfile: not due"
+printf '%s\n' "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"; rm_own "$DR"
+# Another Mac's push: each Mac collects a day after it ends (about 00:10). A Sunday night waits until 00:30
+# for every host's collect after Sunday; a host whose files were all written before then is not in.
+# WEEKLY_CLOCK, WEEKLY_SLEEP.
+FH="$(core LOG_DIR)/far/calls"; mkdir -p "$FH"
+echo day > "$FH/2026-10-24.csv"; echo day > "$FH/2026-10-25.csv"
+touch -t 202610250010 "$FH/2026-10-24.csv"; touch -t 202610251800 "$FH/2026-10-25.csv"
+cat > "$T/rec-sleep" <<STUB
+#!/usr/bin/env bash
+echo "\$1" >> "$T/slept"
+[ -n "\${LANDS:-}" ] && touch -t 202610260010 "$FH/2026-10-25.csv"
+true
+STUB
+chmod +x "$T/rec-sleep"
+rm -f "$T/slept"; LANDS=1 WEEKLY_CLOCK=2026-10-25T22:00:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+check "$(cat "$T/slept" 2>/dev/null)" 9000 "a Sunday at 22:00 with a host's Sunday file collected before midnight: waits until 00:30"
+grep -q "^== trim waits 150 min, until 00:30: 1 host(s)' day file of 2026-10-25 not in yet" "$lg" && ! grep -q '^NOTE trim' "$lg"; check $? 0 "  says so; the file landed meanwhile: no note"
+awk '/^== trim waits/{w=NR} /^== dream in /{d=NR} END{exit !(d && w && d < w)}' "$lg" < /dev/null; check $? 0 "  the wait after the dream's session: nothing before it waits"
+check "$(head -1 "$T/trim-calls" | cut -d' ' -f1)" collect "  then trim runs"
+touch -t 202610251800 "$FH/2026-10-25.csv"
+rm -f "$T/slept"; WEEKLY_CLOCK=2026-10-25T22:00:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+grep -q "^NOTE trim $day: 1 host(s)' day file of 2026-10-25 not in at " "$lg" && ! grep -q "far" <(grep '^NOTE trim' "$lg"); check $? 0 "  still short at 00:30: one NOTE, naming no host, and trim runs"
+check "$(cut -d' ' -f1 "$T/trim-calls" | tr '\n' ' ')" "collect report verdict " "  the whole step all the same"
+rm -f "$T/slept"; WEEKLY_CLOCK=2026-10-26T00:10:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+check "$(cat "$T/slept" 2>/dev/null)" 1200 "  past midnight, before 00:30: waits the rest"
+touch -t 202610260010 "$FH/2026-10-25.csv"
+rm -f "$T/slept"; WEEKLY_CLOCK=2026-10-25T22:00:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+check "$(cat "$T/slept" 2>/dev/null)$(grep -c '^== trim waits' "$lg")" 0 "every host's file in already: no wait"
+rm -f "$T/slept"; WEEKLY_CLOCK=2026-10-25T15:00:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+check "$(cat "$T/slept" 2>/dev/null)$(grep -c '^== trim waits' "$lg")" 0 "a hand run on a Sunday afternoon: no wait (the last Sunday is the target)"
+# A host idle on Sunday has no Sunday file: its collect after midnight rewrote Saturday's, so it is in.
+rm -f "$FH/2026-10-25.csv"; touch -t 202610260010 "$FH/2026-10-24.csv"
+rm -f "$T/slept"; WEEKLY_CLOCK=2026-10-25T22:00:00 WEEKLY_SLEEP="$T/rec-sleep" trimnight
+check "$(cat "$T/slept" 2>/dev/null)$(grep -c '^== trim waits' "$lg")" 0 "  a host with no calls on Sunday, collected after it: no wait"
+# A catch-up night (the Mac slept through Sunday) judges the week's Sunday, not yesterday.
+touch -t 202610251800 "$FH/2026-10-24.csv"
+check "$(WEEKLY_CLOCK=2026-10-27T21:00:00 python3 -c "$(sed -n "/^TRIM_PY='/,/^'$/p" "$W" | sed '1s/^TRIM_PY=.//;$d')" "$R/modules/regatta/hooks" wait)" "2026-10-25 0 1" "  a Tuesday catch-up: the target is Sunday, the short host counted, no wait"
+rm_own "$(dirname "$FH")"
 
 echo "  the real trim, through the night (no stand-in): the ledger outside the repo, the fence held"
 if [ -f "$R/modules/plumb/bin/trim" ]; then

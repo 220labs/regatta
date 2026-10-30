@@ -79,13 +79,17 @@ PY
       || { echo "lighthouse: not scheduling the desk's intake — $job/bin/ops has no ingest verb" >&2; exit 1; }
     if [ "$os" != Darwin ]; then
       # yard-node S5's seam: the unit it writes runs this, under this environment, every 15 minutes
+      # the plists' PATH, the home's .local/bin last: systemd's default user PATH lacks it, and claude lives there
+      hm="$HOME"; unit_path="/usr/local/bin:/usr/bin:/bin:$hm/.local/bin"
       echo "lighthouse: a systemd timer is yard-node S5's, not written here; its unit's lines:" >&2
       echo "  ExecStart=$(command -v python3) $job/bin/ops sample" >&2
       echo "  Environment=LIGHTHOUSE_DESK=1${REGATTA_CONFIG:+ REGATTA_CONFIG=$REGATTA_CONFIG}" >&2
+      echo "  Environment=PATH=$unit_path" >&2
       echo "  OnBootSec=2min, OnUnitActiveSec=15min (the timer)" >&2
       echo "lighthouse: the intake's unit beside it (S4):" >&2
       echo "  ExecStart=$(command -v python3) $job/bin/ops ingest" >&2
       echo "  Environment=LIGHTHOUSE_DESK=1${REGATTA_CONFIG:+ REGATTA_CONFIG=$REGATTA_CONFIG}" >&2
+      echo "  Environment=PATH=$unit_path" >&2
       echo "  OnBootSec=3min, OnUnitActiveSec=10min (the timer)" >&2
       exit 1
     fi
@@ -101,8 +105,11 @@ import common
 log = common.LOG_DIR
 log.mkdir(parents=True, exist_ok=True)
 # LIGHTHOUSE_DESK=1 makes it the desk's job, the one reader of the owner's token (bin/ops' header);
-# a job does not inherit the installer's shell, so the config dir's override is carried
-env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LIGHTHOUSE_DESK": "1"}
+# a job does not inherit the installer's shell, so the config dir's override is carried. The PATH ends with the
+# home folder's .local/bin, Claude Code's native installer's home for `claude`, which the gate's claude rows run: without it
+# every classify read "claude -p did not answer" (the desk's first pass, 2026-10-29)
+env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin" % os.path.expanduser("~"),
+       "LIGHTHOUSE_DESK": "1"}
 if os.environ.get("REGATTA_CONFIG"):
     env["REGATTA_CONFIG"] = os.environ["REGATTA_CONFIG"]
 plist = {

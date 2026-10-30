@@ -568,6 +568,8 @@ DIGEST_RE = re.compile(r"^## Plan\b.*?(?=^## |\Z)", re.M | re.S)
 # only a section that says it is this tool's is ever replaced: the mark it writes, and the one a
 # digest written before rename S5 carries (a doc keeps it until its next digest)
 DIGEST_MARKS = ("(bin/helm digest;", "(bin/plan digest;")
+STEP_BRANCH_RE = re.compile(r"\bclaude/[A-Za-z0-9._/-]+")   # a step's branch in its status line (S9)
+STEP_BRANCH_HEAD_RE = re.compile(r"\s*\w+\s+\d{4}-\d{2}-\d{2}\s+(claude/[A-Za-z0-9._/-]+)")
 STEP_LINE_RE = re.compile(r"^\s*[-*]\s+\*\*S\d+\s*[—–-]", re.M)
 
 
@@ -614,7 +616,12 @@ def keel_steps(doc):
 
 def cmd_compile(a):
     """The doc's S-lines into tasks named by their ids (S3), `--kind` from the step's kind, one dep per
-    `after:` step id of the same doc (a D waits in the doc, not the plan). `project` is no plan kind:
+    `after:` step id of the same doc (a D waits in the doc, not the plan). Each step's branch is read from its
+    status line (`done … claude/…`, keel step's stamp) where the task names none, and a task's `after_branches`
+    are its dependencies' branches: `after: S<n>` mapped to that step's branch (dispatch-queue S9). state()
+    proves the dependency's branch landed before a build step's dependency is met; `after_branches` is kept for
+    the step's own dispatch to name as `--after`, which no caller passes by itself yet (S9 as built, "Not built
+    here"). `project` is no plan kind:
     such a step is a human task for `--by` (default the owner, helmlib.people()'s first) with the project as its repo — someone
     starts a session there. A step the doc marks done or blocked is reported so, once."""
     pid = default_id(a.id)
@@ -634,6 +641,17 @@ def cmd_compile(a):
         for s in steps:
             t = p["tasks"].setdefault(s["id"], {})
             t["title"], t["doc"] = s["what"], doc
+            if s["status"] == "superseded":
+                t["superseded"] = True   # S9: done, and its branch never lands; a dependant waits on no landing
+            else:
+                t.pop("superseded", None)
+            # the branch right after the status word and its date (`done 2026-10-29 claude/…`), else the first one
+            # named; read again at every compile, so a step re-seeded on a new branch follows it (the third review:
+            # a carried branch named first, or a re-seed, gave the step another branch's landing and mode)
+            txt = s.get("status_text") or ""
+            m = STEP_BRANCH_HEAD_RE.match(txt) or STEP_BRANCH_RE.search(txt)
+            if m:
+                t["branch"] = m.group(m.lastindex or 0).rstrip(".,;)")
             if s["kind"] in ("human", "project"):
                 t["kind"] = "human"
                 t["by"] = helmlib.doer(t) or a.by or helmlib.people()[0]
@@ -649,6 +667,13 @@ def cmd_compile(a):
                 if x in ids and x != s["id"] and x not in have:
                     have.append(x)
             deps += len(have)
+        for s in steps:   # S9: after: S<n> → that step's branch, once every step has read its own
+            t = p["tasks"][s["id"]]
+            brs = [p["tasks"][d]["branch"] for d in t.get("deps") or [] if (p["tasks"].get(d) or {}).get("branch")]
+            if brs:
+                t["after_branches"] = brs
+            else:
+                t.pop("after_branches", None)
         helmlib.save_plan(p)
     st = {t["id"]: t for t in helmlib.state(pid)["tasks"]}
     marked = 0

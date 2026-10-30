@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ask` prints the marked WAITING (🛑) and RELAYED (⏳) lines; stalls' `ends_waiting` reads past a mark.
+- dispatch-queue S9: a build step's dependency on another build step with a branch is met once that branch has
+  landed (`landed`, `launched`, or proved by wharf-runs' `landed.py`, read without a fetch and asking GitHub at
+  most once per 10 minutes per branch), not at `done`; a human task's, and one on a superseded step, keep `done`. `helm compile` reads each step's branch from its status line and maps `after: S<n>` to it
+  (`after_branches`, never in the public copy). stalls raises the queue's `after-gone` and `after-overdue` cards
+  as one S6 naming both branches, while the queue holds the step.
+
 - stalls reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4), the reader autofinish and
   sextant share: a torn node-local store of another scope no longer holds every branch on the pending line.
 

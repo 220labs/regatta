@@ -1890,7 +1890,7 @@ class Ship:
         busy, most = self.runs_busy(wt)
         if busy is not None and busy >= most:
             return "raised: %s%d runs busy, dispatch's cap is %d (dispatch --status): the launch waits for one to end" % (
-                "held — its last start was refused by the run cap (a landing is dispatch --start, which never queues); "
+                "held — its last start was refused by the run cap (a landing queues at the cap only where a queue home is set: wharf-runs/queue-repo, S9); "
                 if refused else "", busy, most)
         call = self.merge_flags()
         argv = [os.environ.get("WHARF_AUTOFINISH_RUN") or str(HERE / "autofinish-run"), str(wt)] + (["--session", me] if me else []) + call

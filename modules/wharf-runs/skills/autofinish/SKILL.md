@@ -71,7 +71,7 @@ its window.
 
 ## 3. The closing line
 
-The declared closing line, `<NAME>, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.` (the owner's name upper-cased
+The declared closing line, `✅ <NAME>, THIS SESSION IS DONE — IT LAUNCHES BY ITSELF.` (the owner's name upper-cased
 first; `hooks/common.py`'s `DECLARED_LINES`) is for a branch
 the launcher will start now. End with it after `/autofinish now` when the verdict is `start (C)`,
 or when its only obstacle is `not pushed` / `no PR`, which the turn's end clears. The Stop hook

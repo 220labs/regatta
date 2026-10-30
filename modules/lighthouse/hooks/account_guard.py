@@ -24,8 +24,7 @@ traceback: the core missing or its config incomplete, B2b), open on any other er
 as that folder's project memory and follows its imports there. Otherwise the list says where sessions
 start; it is no data boundary (section 2 of the doc). Hence the start is what it judges ($CLAUDE_PROJECT_DIR,
 else the event's cwd): a session that later `cd`s into the projects folder is not refused (2026-10-22). Where
-the shell went is judged too, bar "it holds a denied repo": a `cd` into a denied or a tenant's repo is still refused —
-unless an open bridge from the start's scope waives it (`allowed --from` the start; confidential-reach S8).
+the shell went is judged too, bar "it holds a denied repo": a `cd` into a denied or a tenant's repo is still refused.
 Wired user-wide on UserPromptSubmit (the overlay's `bootstrap.sh --hooks`, or this plugin's
 hooks.json). Stdlib only, Python 3.9, never exits non-zero (exit 2 there erases the prompt).
 """
@@ -220,8 +219,7 @@ def main():
     # the shell moved into is still refused, while "it holds" a denied repo (the projects folder, the
     # home folder) is about what loads at the start and binds the start only (the branch's reviews).
     if here != cwd and (not default_dir or maybe_tenants(here, entries)):
-        # --from the start: an open bridge (confidential-reach S8) waives a route only for a session started in either side
-        t = subprocess.run([sys.executable, str(ACCOUNT), "allowed", here, "--from", cwd], capture_output=True, text=True, timeout=20)
+        t = subprocess.run([sys.executable, str(ACCOUNT), "allowed", here], capture_output=True, text=True, timeout=20)
         if t.returncode == 1 and " is off " in t.stdout and " holds " not in t.stdout:
             why = t.stdout.strip()
             # a tenant's line (off_line) names its own login's way in, from either source (review 2026-10-23)
@@ -230,7 +228,7 @@ def main():
             return
     if default_dir and not maybe_tenants(cwd, entries) and not holds_vault(cwd, entries):
         return
-    r = subprocess.run([sys.executable, str(ACCOUNT), "allowed", cwd, "--from", cwd], capture_output=True, text=True, timeout=20)
+    r = subprocess.run([sys.executable, str(ACCOUNT), "allowed", cwd], capture_output=True, text=True, timeout=20)
     # The default dir is the seat a broken core is repaired from: it was never blocked before tenancy,
     # so a traceback there fails open, on stderr (review 2026-10-20). Secondary dirs fail closed below.
     if default_dir and r.returncode != 0 and "Traceback (most recent call last)" in r.stderr:

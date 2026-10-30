@@ -377,9 +377,9 @@ evs3, _ = m.lookout_events({}, st, {}, [], [None, 0], True, [])
 row = m.lookout_act(evs3[0], "testhost", [], True)
 print(evs3[0]["kind"], row["action"], row["card"])
 EOF
-)" "[('$RK', 'comment')] ['$RK']
+)" "[('$RK', 'offer')] ['$RK']
 0
-nokey card no SPACESHEEP_KEY here — 1 routed page not read on testhost, nothing judged" "a comment typed before routing is an event at the first read, under the newest routing only, kept in the state, once; no key: one card"
+nokey card no SPACESHEEP_KEY here — 1 routed page not read on testhost, nothing judged" "a comment typed before routing is an event at the first read (an offer since S4: the call is off here, so the owner's ask is held, T2), under the newest routing only, kept in the state, once; no key: one card"
 
 echo "R11 — not_owners_answer: the routing commit and a review stamp wake nobody"
 check "$(py <<'EOF'
@@ -426,6 +426,8 @@ fi
 # ----- S2's finish review: its open findings 1-9 and the five fixes before them, on a repo of their own
 E="$T/two"; mkdir -p "$E/docs" "$E/.github" "$E/.claude"; git -C "$E" init -q; git -C "$E" checkout -q -b claude/testhost/2026-10-27-e
 printf '{"checkpoint": true}\n' > "$E/.claude/workflow.json"; printf '# x\n' > "$E/.github/x.md"
+# main forks before the doc: a main holding the branch's Routed: line is a landing (routed comments S5), read under main's key
+git -C "$E" add -A; git -C "$E" commit -qm "two's repo"; git -C "$E" branch -q main
 ago() { python3 -c 'import sys, datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(hours=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
 cat > "$E/docs/e.md" <<EOF
 # E — a routed doc (proposal, 2026-10-27)
@@ -453,7 +455,7 @@ import re, sys
 p = sys.argv[1]; t = open(p).read()
 open(p, "w").write(re.sub(r"(?m)^Routed: .*$", "Routed: %s · page sp-e · claude/testhost/2026-10-27-e" % sys.argv[2], t))
 EOF
-git -C "$E" commit -qam "routed again, to its page now"; git -C "$E" branch -q main
+git -C "$E" commit -qam "routed again, to its page now"
 ED="$E/docs/e.md"; EK="two@claude/testhost/2026-10-27-e:docs/e.md"
 mirror() {   # the run's own mirror of the doc: a pin with its own page, as a first checkpoint leaves it
   python3 - "$MEMO_SHEEP_STATE/sheep.json" "$EK" <<'EOF'
@@ -493,11 +495,11 @@ check "$rc:$(reads sp-e):$(reads sp-mirror)" "0:1:0" "sheep pull: the line's pag
 has "$T/r14b.out" "this Mac's own page sp-mirror is left" "…saying which page it left"
 check "$(pinof)" "sp-e sp-mirror None" "…the pin pointed at the line's page, no address kept, so the next deploy goes there"
 mirror; : > "$S/web.log"
-check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"comment\", null]]" "the lookout: the owner's thread on the line's page is the event"
+check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"offer\", [\"e1\"]]]" "the lookout: the owner's thread on the line's page is the event (S4: judged, held with the call off, an offer)"
 check "$(reads sp-e):$(reads sp-mirror)" "1:1" "…read from the line's page, and the page given up read for an owner's thread typed there (item 10)"
 printf '{"comments": [{"id": "m1", "body": "typed on the old page", "author_email": "sam@example.com", "created_at": "2026-10-26T09:00:00Z"}]}\n' > "$S/comments-sp-mirror.json"
 mirror
-check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"gave-up\", null], [\"$EK\", \"comment\", null]]" "item 10: an owner's thread on the page given up raises its own event"
+check "$(py "$E" < "$S/lookout.py" 2>/dev/null)" "[[\"$EK\", \"gave-up\", null], [\"$EK\", \"offer\", [\"e1\"]]]" "item 10: an owner's thread on the page given up raises its own event"
 check "$(py "$E" <<'EOF'
 import sys
 from importlib.machinery import SourceFileLoader as L
@@ -532,7 +534,7 @@ m = L("k", sys.argv[1]).load_module()
 m.repo_tops = lambda pinned: {"two": m.Path(sys.argv[2])}
 notes = []
 evs, _ = m.lookout_events({sys.argv[3]: ["D1"], sys.argv[4]: ["D1"]}, {"open": {}, "comments": {}, "pending": []}, m.pins(), [], [None, 0], True, notes)
-print(sorted({e["doc"] == sys.argv[4] for e in evs if e["kind"] in ("save", "comment", "talk")}), any("is routed to " + sys.argv[4] in n for n in notes))
+print(sorted({e["doc"] == sys.argv[4] for e in evs if e["kind"] in ("save", "comment", "talk", "offer", "request")}), any("is routed to " + sys.argv[4] in n for n in notes))
 EOF
 )" "[True] True" "item 6: a page routed on to a seed raises its events under the seed's key alone, the old branch's key said and skipped"
 git -C "$E" update-ref -d "refs/heads/$E2"
@@ -618,8 +620,24 @@ g1|||sam@example.com||2026-10-26T08:00:00Z|tidy the intro
 g2|g1||sam@example.com|claude|2026-10-26T08:05:00Z|memo: would start: tidy the intro (act-plain) — reply go to start, no to close
 g3|g1||sam@example.com||2026-10-26T08:12:00Z|go
 EOF
+K routed check "$ED" > "$T/r18b.out" 2>&1; rc=$?
+check "$rc" "3" "a bare go under the offer: owed until its start's mark (the S2 landing review's item 5, S4)"
+has "$T/r18b.out" "[g1] a go under the offer, its run not started yet" "…saying so"
+comments <<'EOF'
+g1|||sam@example.com||2026-10-26T08:00:00Z|tidy the intro
+g2|g1||sam@example.com|claude|2026-10-26T08:05:00Z|memo: would start: tidy the intro (act-plain) — reply go to start, no to close
+g3|g1||sam@example.com||2026-10-26T08:12:00Z|go
+g4|g1||sam@example.com|claude|2026-10-26T08:20:00Z|memo: routed into claude/testhost/2026-10-26-g's run, 2026-10-26
+EOF
 K routed check "$ED" > /dev/null 2>&1; rc=$?
-check "$rc" "0" "a bare go under the offer: an answer, clear"
+check "$rc" "0" "…and clear once the routed into mark is up"
+comments <<'EOF'
+g1|||sam@example.com||2026-10-26T08:00:00Z|tidy the intro
+g2|g1||sam@example.com|claude|2026-10-26T08:05:00Z|memo: would start: tidy the intro (act-plain) — reply go to start, no to close
+g3|g1||sam@example.com||2026-10-26T08:13:00Z|no
+EOF
+K routed check "$ED" > /dev/null 2>&1; rc=$?
+check "$rc" "0" "a no under the offer owes nothing (the lookout posts its closed mark)"
 
 echo "R19 — findings 6 and 7: --dry-run logs nothing; --routing passes the start's own thread (h1: g1 has a verdict above)"
 comments <<'EOF'
@@ -732,6 +750,15 @@ EOF
 else
   echo "  --   skipped: no pickup beside keel (wharf-runs absent)"
 fi
+
+echo "R25 — keel routed bench (S4): the evidence's ten through the rules and the one call; the call off here"
+GATE_LOG="$T/gate-bench.jsonl" K routed bench --json > "$T/r25.out" 2>&1; rc=$?
+check "$rc:$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["of"], d["right"], " ".join("%s=%s/%s" % (r["n"], r["label"], r["by"]) for r in d["rows"] if r["by"] == "rules"))' "$T/r25.out")" \
+  "0:10 5 2=act-held/rules 3=answer/rules 8=act-held/rules 9=act-held/rules 10=answer/rules" \
+  "the bench: ten read, the held verbs, the D-card and the reply under our question settled by the rules"
+check "$(python3 -c 'import json,sys; print(sorted({r["why"] for r in json.load(open(sys.argv[1]))["rows"] if r["by"] == "held"}))' "$T/r25.out")" \
+  "['the keel.comment call is off']" "…the free text held while the row is off, and no call made"
+check "$([ -e "$T/gate-bench.jsonl" ] && echo called || echo none)" "none" "…nothing logged by the gate: no call left the Mac"
 
 echo
 [ $fails -eq 0 ] && echo "routed: all passed" || echo "routed: $fails failed"

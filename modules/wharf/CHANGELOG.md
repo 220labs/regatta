@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The finish and evacuate skills state their lines with their marks (✅, ⏳, 🛑); checkpoint's declared-line
+  refusal suggests the marked WAITING FOR SOMETHING line.
+
+- `session_status` reads WAITING FOR NOTHING (the core's `idle` kind) as done.
+
 - checkpoint denies every session, attended or not, a hand write of the force mark
   (`force/` in run-seed's cache folder, dispatch-queue S4): it stands for the owner saying "use the force";
   only wharf-runs' `force_mark` hook writes it and only dispatch spends it. Reading it stays allowed.
@@ -12,12 +17,6 @@
 - `branches.seed_task` judges a seed made off another branch's tip (`Seeded-From:`) from that tip, and
   `seed` is a whole carry kind; `pr carried` reads the repo's `carried` pointer beside the worktree's
   (routed comments S3).
-- `scopes bridge open FROM TO --until --why [--one-way]`, `--revoke ID|SCOPE`, `audit [--since]`, `concern
-  SESSION --text` (confidential-reach S8): the bridges file's one writer, appended and ended under a lock,
-  never edited. Opening is refused to an unattended caller (CLAUDE_UNATTENDED, WEEKLY_RUN,
-  AUTOFINISH_CALLER_UNATTENDED), past 24 h, for an open scope, and where it would chain a scope to a second
-  partner; a torn file is never overwritten. `bridge` reads the registry itself and never dies on a torn one
-  (`--revoke` needs none), `audit --since` takes a plain date, `concern` files in the scope's anchor.
 - `/finish` step 5 removes a seed's `.review` with its brief (confidential-reach S5).
 - `ci-provider --runner install`: a runner whose frozen LANG is no locale on its Mac (C.UTF-8 from a
   newer Mac's ssh, on macOS 12) takes an installed UTF-8 one and restarts, so its jobs no longer run

@@ -41,9 +41,10 @@
 # archive of superseded branches, its report kept for the branches section. 3 branches — the
 # section's judgement of what classify left — skipped on a quiet week, when the report has no
 # C3–C6 and no probably-launched line: this script writes the section's log.md line itself, and
-# no Fable session starts. 4 trim — plumb's `trim` collect, report and verdict over each tuned repo,
-# zero tokens and no session (trim_step below). 5 charts. 6 review (planned). 7 dream — each section
-# but trim a `claude -p` of its own, so one that exits costs only itself, and one that hangs is killed at WEEKLY_CAP
+# no Fable session starts. 4 charts. 5 review (planned). 6 dream — each a `claude -p` of its own, so
+# one that exits costs only itself. 7 trim — plumb's `trim` collect, report and verdict over each tuned
+# repo, zero tokens and no session, last because on a Sunday night it waits until 00:30 for the other
+# hosts' day files (trim_step below). A session that hangs, or trim's calls together, are killed at WEEKLY_CAP
 # seconds (aurora 3600 per section, 3× the longest dream; sextant 10800, its 68 min ×2.6) —
 # macOS has no `timeout`, so `capped` is a Python process-group kill (bin/tend's way). Each step
 # that fails logs `FAILED …`, posts one bulletin line and the next still runs; a run past
@@ -401,16 +402,104 @@ denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Ba
   "Bash(*pickup*--start*)" "Bash(*pickup*--launch*)" "Bash(*pickup*--force*)")
 cd "$cwd" || exit 1
 
-# The repos the trim section tunes: the aurora/trim-repos key, one path a line (bootstrap's config_values
-# splits on spaces, so a path holding one cannot be named there), else the core's own checkout; only a
-# repo with a vertical file (`trim/<vertical>.json`) counts, so an install without one never has it due.
+# The repos the trim section tunes: the aurora/trim-repos key, one path a line, read as the core reads every
+# key (common.config_read: a BOM, CR and edge spaces dropped; bootstrap's config_values splits on spaces, so
+# a path holding one cannot be named there); absent, the core's own checkout; written empty, none (a key
+# written empty is an empty list, never the default); unreadable, none, said on stderr. Only a repo with a
+# vertical file (`trim/<vertical>.json`, a dotfile not: an AppleDouble copy is no vertical) counts, so an
+# install without one never has it due. With --mark the first line says how the list read, in the same
+# read: ok, unreadable, or partial (a listed repo not there tonight, an unmounted disk); retire runs on ok
+# alone. An import that fails exits 2, which no verb reads as a verdict (torn is 0). TRIM_PY is bash
+# single-quoted: no apostrophe in it.
+TRIM_PY='
+import json, os, sys
+from datetime import datetime, timedelta
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+try:
+    import common
+except BaseException:
+    sys.exit(2)
+verb = sys.argv[2]
+def verticals(r):
+    return sorted(f for f in Path(r).glob("trim/*.json") if not f.name.startswith("."))
+if verb == "repos":
+    mark = sys.argv[4:5] == ["--mark"]
+    lines, why = common.config_read("aurora/trim-repos")
+    if why:
+        sys.stderr.write("aurora/trim-repos cannot be read (%s): no repo is tuned\n" % why)
+        if mark:
+            print("unreadable")
+        sys.exit(0)
+    if lines is None:
+        lines = [sys.argv[3]] if sys.argv[3] else []
+    lines = [os.path.expanduser(r) for r in lines if r]
+    if mark:
+        print("ok" if all(os.path.isdir(r) for r in lines) else "partial")
+    for r in lines:
+        if verticals(r):
+            print(r)
+elif verb == "torn":
+    sys.exit(0 if common.registry_unreadable() else 1)
+elif verb == "retire":
+    # each verdict.json of this host night ledger whose repo and vertical the night no longer tunes, renamed
+    # verdict.retired.json: the night host daily report reads verdict.json alone (trimlib.night_verdicts; a Mac
+    # that pulls the ledger keeps its copy, plumb pull has no --delete), and would
+    # show a dropped repo last verdict, stale, for good. Keyed as trim writes it: the registry key, else
+    # the resolved path, and the vertical as trim names it: the file own "vertical", else its name.
+    keep = set()
+    for pair in sys.argv[3:]:
+        r, vf = pair.split("\t", 1)
+        try:
+            vt = json.loads(Path(vf).read_text(encoding="utf-8")).get("vertical") or Path(vf).stem
+        except (OSError, ValueError, AttributeError):
+            vt = Path(vf).stem
+        rp = str(Path(r).resolve())
+        keep |= {(common.repo_key(rp) or rp, vt), (rp, vt)}
+    n = 0
+    for f in sorted((Path(common.LOG_DIR) / common.host_name() / "trim").glob("*/*/verdict.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and (d.get("key") or d.get("repo"), d.get("vertical")) not in keep:
+            f.replace(f.with_name("verdict.retired.json"))
+            n += 1
+    print(n)
+elif verb == "wait":
+    # The day the week ends on, and how long to wait for every host day file of it. A Mac tick
+    # collects a day only after it ends (usage-report: its first tick after midnight, then the push;
+    # 00:10 on 2026-10-29), so a Sunday night trim reads the other hosts Sunday short until about
+    # 00:30. Sunday from 20:00 (when trim is due) and any night before 00:30: the target is the day
+    # that ends at that midnight, waited for until 00:30; any other time (a hand run, a catch-up night
+    # after a Mac slept through Sunday), the last Sunday before today, no wait. A host, this one too,
+    # counts when its calls/ holds a day of the target week; it is in once any of its day files was
+    # written after the target day ended (its first collect after that midnight ran and pushed; a day
+    # with no calls gets no file). The push keeps the source mtime. WEEKLY_CLOCK stands in for the clock.
+    now = datetime.fromisoformat(os.environ.get("WEEKLY_CLOCK") or datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+    if now.hour == 0 and now.minute < 30:
+        target, until = now.date() - timedelta(days=1), now.replace(minute=30, second=0, microsecond=0)
+    elif now.isoweekday() == 7 and now.hour >= 20:
+        target, until = now.date(), datetime.combine(now.date() + timedelta(days=1), datetime.min.time()).replace(minute=30)
+    else:
+        y = now.date() - timedelta(days=1)
+        target, until = y - timedelta(days=y.isoweekday() % 7), None
+    if len(sys.argv) > 3:
+        target, until = datetime.strptime(sys.argv[3], "%Y-%m-%d").date(), None
+    ended = datetime.combine(target + timedelta(days=1), datetime.min.time()).timestamp()
+    week = (target - timedelta(days=7)).isoformat()
+    short = 0
+    for h in sorted(Path(common.LOG_DIR).glob("*/calls")):
+        days = [f for f in h.glob("*.csv") if not f.name.startswith(".")]
+        if not any(week <= f.stem <= target.isoformat() for f in days):
+            continue
+        if not any(f.stat().st_mtime >= ended for f in days):
+            short += 1
+    print(target.isoformat(), int((until - now).total_seconds()) if until and short else 0, short)
+'
 trim_repos() {
-  local r
-  { if [ -s "$RCFG/aurora/trim-repos" ]; then tr -d '\r' < "$RCFG/aurora/trim-repos"
-    elif [ -n "$REG" ]; then echo "${REG%/modules/regatta/bin/regatta}"; fi; } | while IFS= read -r r; do
-    r=$(printf '%s' "$r" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); r=${r/#\~/$HOME}
-    [ -n "$r" ] && ls "$r"/trim/*.json >/dev/null 2>&1 && echo "$r"
-  done
+  [ -n "$REG" ] || return 0
+  python3 -c "$TRIM_PY" "$HOOKS" repos "${REG%/modules/regatta/bin/regatta}" "$@"
   true
 }
 # Aurora's sections and their cadence; a new section is one line here (skills/aurora/SKILL.md)
@@ -439,13 +528,14 @@ due() {
   # section sees its PR. Its proof is the PR (or, live, the launch), so "tried" is the whole gate.
   # branches: the same week, tried once (docs/record/branch-reaping-2026-10-04.md E10). A week
   # with nothing to judge writes no file, so its proof is the log.md line (branches_check).
-  # trim: the same week, tried once, where some repo has a vertical file (trim_repos); zero tokens.
+  # trim: the same week, tried once, where some repo has a vertical file (trim_repos) and plumb's trim is
+  # installed (absent, the night would only fail the step each week); zero tokens.
   local ctried btried ttried
   ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null); ttried=$(cat "$trim_tried" 2>/dev/null)
   if [ "$dow" = 7 ] && [ "$hour" -lt 20 ]; then :
   else
     if [[ "$btried" < "$sunday" ]]; then echo branches; fi
-    if [[ "$ttried" < "$sunday" ]] && [ -n "$(trim_repos)" ]; then echo trim; fi
+    if [[ "$ttried" < "$sunday" ]] && [ -n "${WEEKLY_TRIM:-}$TRIM" ] && [ -n "$(trim_repos)" ]; then echo trim; fi
     if [[ "$ctried" < "$sunday" ]] && [ -n "$C" ] && [ -n "$DOCS_INDEX" ] && [ "$(python3 "$DOCS_INDEX" mode --repo "$C" 2>/dev/null)" != none ]; then echo charts; fi
     if [[ "${newest%.md}" < "$sunday" ]] && [[ "$tried" < "$sunday" ]]; then echo dream; fi
   fi
@@ -456,7 +546,7 @@ charts_tried="$(dirname "$log")/aurora-charts-tried"
 branches_tried="$(dirname "$log")/aurora-branches-tried"
 trim_tried="$(dirname "$log")/aurora-trim-tried"
 classified="$(dirname "$log")/$day-branches.txt"  # step 2's report, which the branches section reads
-ORDER="branches trim charts review dream"  # the night's order (skills/aurora/SKILL.md); review is planned
+ORDER="branches charts review dream trim"  # the night's order (skills/aurora/SKILL.md); review is planned
 # The night's order, whatever order the sections were named in; an unknown one runs last.
 in_order() {
   local s out=""
@@ -469,12 +559,13 @@ plan() {
   local n=0 s step what
   echo "aurora ${AURORA_TODAY:-$day} ${AURORA_HOUR:-$(date +%H)}h — the night's order (dry run: nothing runs, nothing is recorded)"
   [ -z "$sections" ] && echo "  nothing due tonight: no step runs, the tend neither"
-  for step in tend classify trim charts review dream; do
+  for step in tend classify charts review dream trim; do
     n=$((n + 1)); s=$step; [ "$step" = classify ] && s=branches; [ "$step" = tend ] && s=""
     case "$step" in
       tend)     what="bin/tend — sync.py's tend in every repo of repos.json cloned here ($(t=$(tool tend) || { echo "wharf not installed"; exit; }; "$t" --list 2>/dev/null | grep -c .; true))" ;;  # --list reads only
       classify) what="bin/repos --branches --fetch --classify --reap > $classified, then claude -p \"/aurora branches\" from $cwd (a quiet week: its log.md line only)" ;;
-      trim)     what="plumb's trim collect, report --write and verdict --write --night in $(trim_repos | grep -c .) repo(s), no session" ;;
+      trim)     if [ -z "${WEEKLY_TRIM:-}$TRIM" ]; then what="plumb's trim is not installed (regatta which trim)"
+                else what="plumb's trim collect, report --write and verdict --write --night in $(trim_repos | grep -c .) repo(s), no session; on a Sunday night it waits until 00:30 for every host's day files"; fi ;;
       charts)   what="claude -p \"/aurora charts\" from $C, then its PR" ;;
       review)   what="not built (skills/aurora/SKILL.md: planned)" ;;
       dream)    what="claude -p \"/aurora dream\" from $cwd, then dreams/<day>.md must be on $VAULT_NAME main" ;;
@@ -739,39 +830,78 @@ classify_step() {
   fi
 }
 
-# Step 4: trim (the self-tuning entry's S5, docs/self-tuning-2026-10-26.md) — plumb's `trim` over each
-# repo trim_repos names, per vertical file: collect, report --write, verdict --write, all with --night
-# (the ledger in the core's log dir; trimlib.night_dir says why never the repo's). Zero tokens, no
-# session, before the dream so the week's report is there to read. A refusal (exit 3: the registry
-# torn, the repo in a confidential scope) is the fence working: one REFUSED line, nothing collected,
-# reported or posted, and the night goes on. The verdict's own exit 3 (a floor breach, too few joins)
-# is its state, filed like any other. Any other exit fails the step (exit 4: GitHub did not answer).
-# WEEKLY_TRIM replaces the command for the suite.
+# The night's last step: trim (the self-tuning entry's S5, docs/self-tuning-2026-10-26.md) — plumb's `trim`
+# over each repo trim_repos names, per vertical file: collect, report --write, verdict --write, all with
+# --night (the ledger in the core's log dir; trimlib.night_dir says why never the repo's). Zero tokens, no
+# session. Last, after the dream, because it waits: each Mac's tick collects a day only after it ends and
+# pushes it at about 00:10, so on a Sunday night the step waits until 00:30 for every host's day file
+# of the week's last day (TRIM_PY's `wait`), and notes a host still short then (asleep, or its push failed);
+# no section reads trim's report, so nothing after it waits on it. Its calls share one cap, WEEKLY_CAP, as a
+# section's session does, counted from after the wait: a GitHub page that stalls is killed with the call,
+# and the step fails. A refusal (exit 3) on a confidential scope's repo is the fence working: one REFUSED
+# line, nothing collected, reported or posted, and the next repo runs. On a torn registry (the core's
+# registry_unreadable, or trim saying so) every repo would refuse: the step fails, saying so, and stops. The
+# verdict's own exit 3 (a floor breach, too few joins) is its state, filed like any other. Any other exit
+# fails the step (exit 4: GitHub did not answer). After a run that read the registry, a verdict of a repo or
+# vertical the night no longer tunes is retired (TRIM_PY's `retire`). WEEKLY_TRIM replaces the command and
+# WEEKLY_SLEEP the wait's sleep, for the suite.
 trim_step() {
-  local r f vt name out rc
+  local r f vt name out rc cmd=() pairs=() w target wait short t0 left n list
   echo "== trim at $(date)"
   if [ -z "${WEEKLY_TRIM:-}${TRIM}" ]; then step_failed trim "plumb's trim is not installed (regatta which trim)"; return; fi
+  if [ -n "${WEEKLY_TRIM:-}" ]; then read -ra cmd <<<"$WEEKLY_TRIM"; else cmd=("$TRIM"); fi
+  w=$(python3 -c "$TRIM_PY" "$HOOKS" wait); read -r target wait short <<<"$w"
+  if [ "${wait:-0}" -gt 0 ]; then
+    echo "== trim waits $((wait / 60)) min, until 00:30: $short host(s)' day file of $target not in yet (each Mac collects a day after it ends)"
+    if [ -n "${WEEKLY_SLEEP:-}" ]; then $WEEKLY_SLEEP "$wait"
+    elif command -v caffeinate >/dev/null; then caffeinate -i sleep "$wait"; else sleep "$wait"; fi
+    w=$(python3 -c "$TRIM_PY" "$HOOKS" wait "$target"); read -r target wait short <<<"$w"
+  fi
+  [ "${short:-0}" -gt 0 ] && echo "NOTE trim $day: $short host(s)' day file of $target not in at $(date +%H:%M); the verdict reads their rows short (next week's collect re-reads 14 days)"
+  t0=$SECONDS
+  # tcall <verb> <args…>: one trim call under what is left of the step's cap; out, rc. 124: the cap.
+  tcall() {
+    left=$((CAP - (SECONDS - t0)))
+    if [ "$left" -le 0 ]; then out="not started: the step's cap was spent"; rc=124; return; fi
+    out=$(CAP=$left capped "${cmd[@]}" "$@" 2>&1); rc=$?
+    if [ -e "$capmark" ]; then rm -f "$capmark"; rc=124; out="killed at the step's $((CAP / 60))-min cap (WEEKLY_CAP)"; fi
+  }
+  list=$(trim_repos --mark)  # one read: its first line says how; retire runs on ok alone
   while IFS= read -r r; do
+    [ -n "$r" ] || continue
     name=$(basename "$r")
     for f in "$r"/trim/*.json; do
-      vt=$(basename "$f" .json)
-      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} collect --repo "$r" --vertical "$vt" --night 2>&1); rc=$?
+      [ -f "$f" ] || continue
+      vt=$(basename "$f" .json); pairs+=("$r"$'\t'"$f")
+      tcall collect --repo "$r" --vertical "$vt" --night
       if [ $rc = 3 ]; then  # neither trim's words nor the repo's name: embark-memo quotes this log into a pushed memo
-        echo "REFUSED trim $vt $day: trim's fence (a confidential scope's repo, or the registry unreadable)"; continue
+        if printf '%s\n' "$out" | grep -q "registry cannot be read" || python3 -c "$TRIM_PY" "$HOOKS" torn; then
+          step_failed trim "the repo registry cannot be read (a torn write?): trim refused, the step stopped here (regatta check)"; return
+        fi
+        echo "REFUSED trim $vt $day: trim's fence (a confidential scope's repo)"; continue
       fi
+      [ $rc = 124 ] && { step_failed trim "trim collect in $name ($vt) $out"; return; }
       printf '%s\n' "$out"
       [ $rc = 0 ] || { step_failed trim "trim collect in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)"; continue; }
-      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} report --repo "$r" --vertical "$vt" --night --write 2>&1); rc=$?
+      tcall report --repo "$r" --vertical "$vt" --night --write
+      [ $rc = 124 ] && { step_failed trim "trim report in $name ($vt) $out"; return; }
       printf '%s\n' "$out"
       [ $rc = 0 ] || { step_failed trim "trim report in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)"; continue; }
-      out=$(${WEEKLY_TRIM:-"${TRIM:-trim-missing}"} verdict --repo "$r" --vertical "$vt" --night --write 2>&1); rc=$?
+      tcall verdict --repo "$r" --vertical "$vt" --night --write
+      [ $rc = 124 ] && { step_failed trim "trim verdict in $name ($vt) $out"; return; }
       printf '%s\n' "$out"
       case $rc in
         0|3) echo "TRIM $name $vt $day: $(printf '%s\n' "$out" | sed -n 's/^trim verdict: wrote .*verdict\.json — //p' | tail -1)" ;;
         *)   step_failed trim "trim verdict in $name ($vt) exit $rc: $(printf '%s\n' "$out" | tail -1)" ;;
       esac
     done
-  done < <(trim_repos)
+  done <<<"$(printf '%s\n' "$list" | sed 1d)"
+  # never on a list that did not read whole: an unreadable key tunes no repo, and an unmounted one is
+  # missing only tonight; either would retire verdicts still wanted
+  [ "${list%%$'\n'*}" = ok ] || return 0
+  n=$(python3 -c "$TRIM_PY" "$HOOKS" retire ${pairs[@]+"${pairs[@]}"})
+  [ "${n:-0}" -gt 0 ] && echo "RETIRED trim $day: $n verdict(s) of a repo or vertical the night no longer tunes (verdict.retired.json beside each)"
+  true
 }
 
 # A quiet week (open feedback 2026-10-05): classify's report has no C3–C6 line and no

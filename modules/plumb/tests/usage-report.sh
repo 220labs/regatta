@@ -150,7 +150,7 @@ bu branches --days 3 > "$BR/b.out"
 check "$(bpy 'print([(r["session"], r["calls"], r["cost"], r["account"], r["branch"]) for r in rows])')" \
   "[('sb', '7', '42.0000', 'acct-a', 'claude/x/2026-09-19-main-work'), ('gone', '3', '9.0000', '', '')]" \
   "branches: an old file gains the column, a known session its branch; every other cell and the pruned session's row stay"
-check "$(cat "$BR/b.out")" "branches testmac: 1 row(s) given a branch in 1 day file(s) since 2026-09-17" "  …and says what it filled"
+check "$(cat "$BR/b.out")" "branches testmac: 1 row(s) given a branch, 0 session(s) re-split by branch, 0 more rewritten (repriced or gaining calls), in 1 day file(s) since 2026-09-17" "  …and says what it filled"
 cp "$BF" "$BR/before.csv"; bu branches --days 3 > /dev/null
 check "$(cmp -s "$BF" "$BR/before.csv" && echo same)" "same" "  a second run changes nothing"
 check "$(USAGE_DATA="$BR/data" USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" line --day 2026-09-19 | grep -c 'Claude')" "1" \
@@ -161,6 +161,79 @@ bu branches --days 3 > "$BR/b2.out" 2> "$BR/b2.err"
 check "$(cmp -s "$BF" "$BR/bad.csv" && echo same; grep -c 'longer than its header' "$BR/b2.err")" "same
 1" "branches: a file with a row longer than its header is left as it is, said on stderr, and the run still ends"
 cp "$BR/good.csv" "$BF"
+
+echo "branch in the key — a session that lands A and goes on to B the same day files each (trim-usage-key)"
+BS="$T/bs"; mkdir -p "$BS/cc/-proj/sab/subagents" "$BS/data/testmac/calls"
+cat > "$BS/fx.py" <<'PY'
+import json, sys
+BS = sys.argv[1]
+def a(ts, req, sid, branch, **kw):
+    d = {"type": "assistant", "timestamp": ts, "requestId": req, "sessionId": sid, "cwd": "/Users/x/projects/harbor",
+         "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}}}
+    if branch:
+        d["gitBranch"] = branch
+    d.update(kw); return json.dumps(d) + "\n"
+A, B = "claude/x/2026-09-19-first", "claude/x/2026-09-19-second"
+# main: A twice, a call on main between, then B twice; a worker in its own worktree while A was the branch
+open(f"{BS}/cc/-proj/sab.jsonl", "w").write(a("2026-09-19T17:00:00Z", "s1", "sab", A) + a("2026-09-19T17:01:00Z", "s2", "sab", A)
+    + a("2026-09-19T17:20:00Z", "s3", "sab", "main") + a("2026-09-19T17:30:00Z", "s4", "sab", B) + a("2026-09-19T17:31:00Z", "s5", "sab", B)
+    # a call on main before the first claude/* call files with the first branch named after it
+    + a("2026-09-19T16:00:00Z", "s0", "sab", "main"))
+open(f"{BS}/cc/-proj/sab/subagents/agent-w9.jsonl", "w").write(a("2026-09-19T17:05:00Z", "w9", "sab", "claude/x/2026-09-19-worker", agentId="w9"))
+# the partly pruned session: its transcript holds 1 call, its day file's row 9
+open(f"{BS}/cc/-proj/spart.jsonl", "w").write(a("2026-09-19T18:00:00Z", "p1", "spart", B))
+PY
+python3 "$BS/fx.py" "$BS"
+bs() { USAGE_CC="$BS/cc" USAGE_ARCHIVE="$BS/none" USAGE_DATA="$BS/data" "$B/usage-report" "$@"; }
+BSF="$BS/data/testmac/calls/2026-09-19.csv"
+spy() { python3 -c "import csv,sys; rows=list(csv.DictReader(open('$BSF'))); $1"; }
+bs collect --days 3 > /dev/null
+check "$(spy 'print(sorted((r["session"], r["agent"], r["branch"].rpartition("-")[2], r["calls"]) for r in rows))')" \
+  "[('sab', 'main', 'first', '4'), ('sab', 'main', 'second', '2'), ('sab', 'subagent', 'first', '1'), ('spart', 'main', 'second', '1')]" \
+  "collect: a row per branch; a call on main and a worker's call file under the main chain's branch at their time"
+# the same day as collect wrote it before the key held the branch: sab on one row under A, its account recorded;
+# spart's row counts more calls than its transcript still holds; a pruned session; a Cowork row
+printf '%s\n' "day,host,source,session,title,project,model,effort,skill,agent,entry,calls,input,output,cache_read,cache_write_5m,cache_write_1h,calls_over_200k,calls_over_400k,cost,first,last,account,branch" \
+  "2026-09-19,testmac,claude-code,sab,t,harbor,claude-opus-5-5,,,main,unrecorded,6,6,6,0,0,0,0,0,0.0001,2026-09-19T16:00:00Z,2026-09-19T17:31:00Z,acct-a,claude/x/2026-09-19-first" \
+  "2026-09-19,testmac,claude-code,sab,t,harbor,claude-opus-5-5,,,subagent,unrecorded,1,1,1,0,0,0,0,0,0.0000,2026-09-19T17:05:00Z,2026-09-19T17:05:00Z,acct-a,claude/x/2026-09-19-first" \
+  "2026-09-19,testmac,claude-code,spart,t,harbor,claude-opus-5-5,,,main,unrecorded,9,0,0,0,0,0,0,0,3.0000,2026-09-19T10:00:00Z,2026-09-19T18:00:00Z,," \
+  "2026-09-19,testmac,claude-code,gone,t,harbor,claude-opus-5-5,,,main,cli,3,0,0,0,0,0,0,0,9.0000,2026-09-19T10:00:00Z,2026-09-19T11:00:00Z,acct-b,claude/x/2026-09-19-gone" \
+  "2026-09-19,testmac,cowork-local,cw1,t,Docs,claude-opus-5-5,,,main,cowork,2,0,0,0,0,0,0,0,1.0000,2026-09-19T10:00:00Z,2026-09-19T11:00:00Z,," > "$BSF"
+cp "$BSF" "$BS/presplit.csv"
+bs branches --days 3 > "$BS/b.out"
+check "$(spy 'print(sorted((r["session"], r["agent"], r["branch"].rpartition("-")[2], r["calls"], r["account"]) for r in rows))')" \
+  "[('cw1', 'main', '', '2', ''), ('gone', 'main', 'gone', '3', 'acct-b'), ('sab', 'main', 'first', '4', 'acct-a'), ('sab', 'main', 'second', '2', 'acct-a'), ('sab', 'subagent', 'first', '1', 'acct-a'), ('spart', 'main', 'second', '9', '')]" \
+  "branches: a session its transcripts still hold whole is re-split by branch, its account kept; a partly pruned one, a pruned one and a Cowork row stay"
+check "$(cat "$BS/b.out")" "branches testmac: 1 row(s) given a branch, 1 session(s) re-split by branch, 0 more rewritten (repriced or gaining calls), in 1 day file(s) since 2026-09-17" "  …and says so"
+check "$(spy 'print(round(sum(float(r["cost"]) for r in rows), 4))')" "13.0001" "  the day's cost: the re-split session's own, the rest as written"
+cp "$BSF" "$BS/before.csv"; cut -d, -f1-23 "$BS/presplit.csv" > "$BS/data/testmac/calls/2026-09-19 2.csv"; bs branches --days 3 > "$BS/b2.out"
+check "$(cut -d, -f1-23 "$BS/presplit.csv" | cmp -s - "$BS/data/testmac/calls/2026-09-19 2.csv" && echo same)" "same" "  a Finder duplicate is no day: left as it is (the landing review)"
+rm -f "$BS/data/testmac/calls/2026-09-19 2.csv"
+check "$(cmp -s "$BSF" "$BS/before.csv" && echo same):$(cat "$BS/b2.out")" "same:branches testmac: 0 row(s) given a branch, 0 session(s) re-split by branch, 0 more rewritten (repriced or gaining calls), in 0 day file(s) since 2026-09-17" "  a second run writes nothing"
+check "$(USAGE_DATA="$BS/data" USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" line --day 2026-09-19 | grep -c 'Claude')" "1" "  the report still reads the file"
+if [ -f "$B/../lib/trimlib.py" ]; then
+  check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trimlib; s = trimlib.usage([sys.argv[2]], "2026-09-01")["sab"]; print(sorted(s["branches"].items()), sorted(s["by"]))' "$B/../lib" "$BSF")" \
+    "[('claude/x/2026-09-19-first', 5), ('claude/x/2026-09-19-second', 2)] ['claude/x/2026-09-19-first', 'claude/x/2026-09-19-second']" "  trim's usage() reads the split rows: each branch's calls and its own totals"
+fi
+bs branches > "$BS/b3.out"
+has "$BS/b3.out" "since 2026-09-19" "branches with no --days: from the host's oldest day file"
+cp "$BS/presplit.csv" "$BSF"   # the day as it was before the re-split: branches has a rewrite to make under the lock
+# a collect that writes a day while branches holds its read: branches reads under the lock, so it never
+# writes back the day as it was before the collect (the lock, trim-usage-key)
+python3 - "$BS/data/testmac" "$BS/held" <<'PY' &
+import fcntl, sys, time, csv
+d, flag = sys.argv[1], sys.argv[2]
+with open(d + "/.calls.lock", "a") as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    open(flag, "w").close()
+    time.sleep(2)   # branches starts meanwhile and must wait here
+    with open(d + "/calls/2026-09-19.csv", "a", newline="") as f:
+        f.write("2026-09-19,testmac,claude-code,late,t,harbor,claude-opus-5-5,,,main,cli,1,0,0,0,0,0,0,0,0.5000,2026-09-19T19:00:00Z,2026-09-19T19:00:00Z,,\n")
+PY
+LP=$!
+for _ in $(seq 50); do [ -e "$BS/held" ] && break; sleep 0.1; done
+bs branches --days 3 > /dev/null; late=$(grep -c ',late,' "$BSF"); wait "$LP"
+check "$late:$(grep -c ',late,' "$BSF"):$(grep -c ',sab,.*-second' "$BSF")" "1:1:1" "  branches waits on collect's lock, then reads the day as collect left it: the row written meanwhile is there as it returns, and stays"
 
 echo "sample"
 "$B/usage-report" sample > /dev/null
@@ -230,7 +303,7 @@ USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T06:50:00-07:00" "$B/usage-repor
 check "$(ls "$RP" 2>/dev/null | wc -l | tr -d ' ')" "0" "before 07:05 the tick only samples"
 has "$T/tick1.out" "refresh: stub ['refresh']" "every tick first refreshes the hooks' local copies of the Drive-backed files (account refresh, S4)"
 has "$T/tick1.out" "branches testmac:" "the first tick fills the branch column of the host's past days, once"
-check "$(test -f "$T/data/testmac/.branches-filled" && echo yes)" "yes" "  …and marks it done"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ok"])' "$T/data/testmac/.branches-split")" "True" "  …and marks it done"
 USAGE_CONFIG="$T/cfg.json" USAGE_NOW="2026-09-20T07:10:00-07:00" "$B/usage-report" tick > "$T/tick2.out"
 has "$T/tick2.out" "notify: sent" "after 07:05 it renders and sends"
 has "$T/tick2.out" "published project_data/$SH/2026-09-19.md → drive" "the log says where the report went"
@@ -240,6 +313,64 @@ lacks "$T/tick3.out" "notify" "once a day, not every tick"
 lacks "$T/tick3.out" "branches" "the backfill runs once per host, not every tick"
 USAGE_RENDER=0 USAGE_NOW="2026-09-21T09:00:00-07:00" "$B/usage-report" tick > "$T/tick4.out"
 has "$T/tick4.out" "does not render" "a collector-only host never renders"
+# the backfill's marker (trim-usage-key): a run that read no transcript, or raised, is not done; it is
+# tried again the next day, not every tick
+TK="$T/tk"; mkdir -p "$TK/data/testmac/calls" "$TK/empty"; cp "$BS/before.csv" "$TK/data/testmac/calls/2026-09-19.csv"
+tk() { USAGE_CC="$1" USAGE_ARCHIVE="$TK/none" USAGE_DATA="$TK/data" USAGE_RENDER=0 USAGE_NOW="$2" "$B/usage-report" tick > "$TK/t.out" 2>&1; }
+tkok() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ok"])' "$TK/data/testmac/.branches-split"; }
+tk "$TK/empty" 2026-09-20T09:00:00-07:00
+check "$(grep -c 'no transcript call read; tried again tomorrow' "$TK/t.out"):$(tkok)" "1:False" "a backfill that read no transcript: said, and not marked done"
+tk "$BS/cc" 2026-09-20T09:15:00-07:00
+lacks "$TK/t.out" "branches" "  not tried again the same day"
+tk "$BS/cc" 2026-09-21T09:00:00-07:00
+check "$(grep -c '^branches testmac:' "$TK/t.out"):$(tkok)" "1:True" "  the next day: run, and marked done"
+# a day before collect's window, which collect never rewrites, that cannot be read
+rm -f "$TK/data/testmac/.branches-split"; cp "$BS/before.csv" "$TK/data/testmac/calls/2026-09-15.csv"; chmod 000 "$TK/data/testmac/calls/2026-09-15.csv"
+tk "$BS/cc" 2026-09-22T09:00:00-07:00; rc=$?
+check "$rc:$(grep -c 'branches: 2026-09-15.csv cannot be read' "$TK/t.out"):$(grep -c '^branches testmac:' "$TK/t.out"):$(tkok)" "0:1:1:True" \
+  "a day file that cannot be read: said and left as it is, the rest re-split, the backfill done (no daily full parse for one bad file)"
+chmod 644 "$TK/data/testmac/calls/2026-09-15.csv"
+# the backfill's wide read raises: the tick goes on, collect reads its own window, the marker says not done
+rm -rf "$TK/data3"; mkdir -p "$TK/data3/testmac/calls"; cp "$BS/before.csv" "$TK/data3/testmac/calls/2026-09-10.csv"
+check "$(USAGE_CC="$BS/cc" USAGE_ARCHIVE="$TK/none" USAGE_DATA="$TK/data3" USAGE_RENDER=0 USAGE_NOW=2026-09-20T09:00:00-07:00 python3 -c "
+import sys, io, contextlib, json; from importlib.machinery import SourceFileLoader as L
+ur = L('ur', sys.argv[1]).load_module(); real = ur.read_claude_code
+def rc(c, since):
+    if since < '2026-09-17': raise ValueError('a transcript only the wide window reads')
+    return real(c, since)
+ur.read_claude_code = rc
+o = io.StringIO()
+with contextlib.redirect_stdout(o):
+    ur.cmd_tick(ur.load_config())
+print('FAILED reading' in o.getvalue(), 'collect testmac' in o.getvalue(), json.load(open(sys.argv[2]))['ok'])" "$B/usage-report" "$TK/data3/testmac/.branches-split")" "True True False" \
+  "the backfill's wide read raises: said, collect still runs, the marker says not done"
+# a tick that dies after the wide read (collect raises; launchd or memory alike): already marked tried
+# today, so the next tick does not parse every transcript again (the landing review)
+rm -rf "$TK/data4"; mkdir -p "$TK/data4/testmac/calls"; cp "$BS/before.csv" "$TK/data4/testmac/calls/2026-09-10.csv"
+check "$(USAGE_CC="$BS/cc" USAGE_ARCHIVE="$TK/none" USAGE_DATA="$TK/data4" USAGE_RENDER=0 USAGE_NOW=2026-09-20T09:00:00-07:00 python3 -c "
+import sys, io, contextlib, json; from importlib.machinery import SourceFileLoader as L
+ur = L('ur', sys.argv[1]).load_module()
+def boom(c, days=3, cache=None):
+    raise RuntimeError('collect died')
+ur.cmd_collect = boom
+c = ur.load_config()
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        ur.cmd_tick(c)
+except RuntimeError:
+    pass
+print(json.load(open(sys.argv[2]))['ok'], ur.branches_due(c, ur.Path(sys.argv[2])))" "$B/usage-report" "$TK/data4/testmac/.branches-split")" "False None" \
+  "a tick that dies after the wide read: marked tried, not due again the same day"
+# the first tick on a host that renders parses the transcripts once: the backfill and both collects
+rm -rf "$TK/data2"; mkdir -p "$TK/data2/testmac/calls"; cp "$BS/before.csv" "$TK/data2/testmac/calls/2026-09-19.csv"
+check "$(USAGE_CC="$BS/cc" USAGE_ARCHIVE="$TK/none" USAGE_DATA="$TK/data2" USAGE_PUBLISH= USAGE_NOW=2026-09-20T07:10:00-07:00 python3 -c "
+import sys, io, contextlib; from importlib.machinery import SourceFileLoader as L
+ur = L('ur', sys.argv[1]).load_module(); n = []; real = ur.read_claude_code
+ur.read_claude_code = lambda c, since: n.append(since) or real(c, since)
+with contextlib.redirect_stdout(io.StringIO()):
+    ur.cmd_tick(ur.load_config())
+print(n)" "$B/usage-report")" "['2026-09-17']" "the first tick parses the transcripts once, from the earlier of the backfill's and collect's first day"
+
 # two failed days in a row post one bulletin line (dream 2026-09-27 P5)
 printf '{"hosts": {"testmac": {"render": true, "notify": ["/usr/bin/false"]}}}' > "$T/cfg-fail.json"
 export CLAUDE_BULLETIN="$T/bulletin.md"
@@ -758,10 +889,35 @@ check "$rc:$(cd "$T/sent/calls" && ls -A | tr '\n' ' ')" "0:2026-09-19.csv " "a 
 has "$T/fp.out" "push: 1 day file(s) did not parse and stay here: 2026-09-18.csv" "  the unparsed one named"
 check "$(grep -o -- '--exclude [^ ]*' "$T/rsync.txt")" "--exclude /calls/2026-09-18.csv" "  and excluded, anchored, so --delete keeps the target's last good copy"
 rm -f "$FD/testmac/calls/._2026-09-19.csv" "$FD/testmac/calls/2026-09-18.csv"
+# rsync reads a backslash literally in a pattern with no wildcard: escaped only in a name holding one
+printf 'day,host\n\377\376\n' > "$FD/testmac/calls/2026-09-19 a\b.csv"; printf 'day,host\n\377\376\n' > "$FD/testmac/calls/2026-09-19 w*[1].csv"
+fp "$T/frepos.json"
+check "$(grep -o -- '--exclude /calls/2026-09-19 [^ ]*' "$T/rsync.txt" | LC_ALL=C sort | tr '\n' '|')" '--exclude /calls/2026-09-19 a\b.csv|--exclude /calls/2026-09-19 w\*\[1].csv|' \
+  "  an unparsed name with a backslash and no wildcard excluded as written; one with a wildcard escaped"
+rm -f "$FD/testmac/calls/2026-09-19 "*
+# a target a push reached before keeps the days older than this host's oldest (a source that lost its
+# past never empties the target's); a first push mirrors it whole
+fp "$T/frepos.json"
+check "$(grep -c -- '--exclude /calls/[^ ]*\]\*\.csv' "$T/rsync.txt")" "0" "a first push to a target: mirrored whole, no older day kept"
+rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$T/frepos.json" USAGE_DATA="$FD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/fp.out" 2>&1
+check "$(grep -o -- '--exclude /calls/[^ ]*\]\*\.csv' "$T/rsync.txt" | tr '\n' ' ')" \
+  "--exclude /calls/[0-1]*.csv --exclude /calls/20[0-1]*.csv --exclude /calls/202[0-5]*.csv --exclude /calls/2026-0[0-8]*.csv --exclude /calls/2026-09-[0-0]*.csv --exclude /calls/2026-09-1[0-8]*.csv " \
+  "  the next push to it: every day before this host's oldest (09-19) excluded, so --delete keeps it there"
+# the fence changes (another registry): the targets are forgotten, so the next push mirrors whole and the
+# kept days, which it can no longer re-fence, go; the push after that keeps them again
+xp() { rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$1" USAGE_DATA="$FD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/fp.out" 2>&1; grep -o -- '--exclude /calls/[^ ]*\]\*\.csv' "$T/rsync.txt" | wc -l | tr -d ' '; }
+printf '{"repos": {"lab/vault": {}, "lab/other": {}, "harbor": {}}, "scopes": {"s-hidden": {"repos": ["lab/*"], "confidential": true}, "s-open": {"repos": ["harbor"]}}}\n' > "$T/frepos2.json"
+check "$(xp "$T/frepos2.json"):$(xp "$T/frepos2.json"):$(grep -c 'frepos\|vault\|hidden' "$FD/testmac/.pushed")" "0:6:0" \
+  "  a fence that changed since: mirrored whole once, then the older days kept again; the marker holds a digest, no name"
+# one torn read keeps the marker's targets: the next good push still keeps the older days (the landing review)
+rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$T/ftorn.json" USAGE_DATA="$FD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > /dev/null 2>&1
+check "$(xp "$T/frepos2.json")" "6" "  a torn registry between two pushes: the targets kept, the next push keeps the older days"
 fp "$T/ftorn.json"; rc=$?
 check "$rc:$(calls):$(test -d "$T/sent" && echo sent || echo none)" "1:0:none" "a torn registry: nothing sent, the push fails"
 has "$T/fp.out" "push: REFUSED — the scope registry cannot be read" "  …and says why"
 AD="$T/adata"; mkdir -p "$AD/testmac/calls"; grep -E '^day,|,v[12],' "$FD/testmac/calls/2026-09-19.csv" > "$AD/testmac/calls/2026-09-19.csv"
+# and a session-less row of the scope's project, which the push drops too: still every row (the landing review)
+grep -E ',v1,' "$FD/testmac/calls/2026-09-19.csv" | head -1 | sed 's/,v1,/,,/' >> "$AD/testmac/calls/2026-09-19.csv"
 rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$T/frepos.json" USAGE_DATA="$AD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/fp.out" 2>&1; rc=$?
 check "$rc:$(calls)" "1:0" "every row fenced: refused, the target keeps its copy (a fence that drops all reads the registry wrong)"
 has "$T/fp.out" "it fences every row; nothing sent" "  …and says why"
@@ -792,12 +948,23 @@ rm "$MD/testmac/calls/2026-09-19.csv"
 rp "$T/frepos.json"; rc=$?
 check "$rc:$(cd "$MT" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" "1:./calls/2026-09-18.csv ./calls/2026-09-19.csv " \
   "  nothing readable left to send: refused, the target keeps its copy"
+# the source loses its past: a target pushed to before keeps its older days, a first one is mirrored whole
+rm -f "$MD/testmac/calls/2026-09-18.csv" "$MD/testmac/.pushed"; cp "$FD/testmac/calls/2026-09-19.csv" "$MD/testmac/calls/2026-09-20.csv"
+echo old > "$MT/calls/2026-09-10.csv"
+CLAUDE_REPOS_JSON="$T/frepos.json" USAGE_DATA="$MD" USAGE_CONFIG="$T/cfg-rpush.json" "$B/usage-report" push > "$T/rp.out" 2>&1; rc=$?
+check "$rc:$(cd "$MT" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" "0:./calls/2026-09-20.csv " "real rsync, a first push: mirrored whole, the older days there gone"
+echo old > "$MT/calls/2026-09-10.csv"; echo old > "$MT/calls/2026-09-19.csv"; echo stale > "$MT/calls/2026-09-25.csv"
+CLAUDE_REPOS_JSON="$T/frepos.json" USAGE_DATA="$MD" USAGE_CONFIG="$T/cfg-rpush.json" "$B/usage-report" push > "$T/rp.out" 2>&1; rc=$?
+check "$rc:$(cd "$MT" && find . -type f | LC_ALL=C sort | tr '\n' ' '):$(cat "$MT/calls/2026-09-10.csv")" "0:./calls/2026-09-10.csv ./calls/2026-09-19.csv ./calls/2026-09-20.csv :old" \
+  "  the next push: the days before this host's oldest kept as they were, a later day it no longer has removed"
 fi
 rm -f "$FD/testmac/.pushed"
 fu "$T/frepos.json" render --day 2026-09-19 > "$T/f.out"
 check "$(cat "$FR/2026-09-19.md" "$FR/latest.md" "$FR/latest-line.txt" "$T/f.out" | grep -cE "$SECRETS")" "0" \
   "a confidential scope's title, project, skill and agent, its pass run from an open repo, a session in its group folder and an open title naming its repo: in no report file, the line or the log"
 has "$FR/2026-09-19.md" "| (confidential) |" "  its project reads (confidential) in the tables"
+check "$(grep -cE 'vault-helper|vault-copy|Elsewhere copy' "$FR/2026-09-19.md" "$FR/latest-line.txt" | awk -F: '{s+=$2} END {print s}')" "0" \
+  "  an open row's agent holding the scope's word blanked, and a session whose project holds it fenced whole, as the push drops them"
 has "$FR/latest-line.txt" "Biggest: (confidential #1), \$7.00" "  and in the line's Biggest, one session's cost (numbered: two fenced sessions never sum)"
 has "$FR/2026-09-19.md" "Open harbor work" "  an open scope's session is named as before"
 check "$(grep -m1 'in Claude Code and local Cowork' "$FR/2026-09-19.md")" "$(grep -m1 'in Claude Code and local Cowork' "$T/f-open.md")" \
@@ -861,6 +1028,60 @@ lacks "$FR/2026-09-19.md" "| s-open |" "  no scope named either"
 echo "the fence: an open-quoted row of a confidential scope's glob names nothing (cr-s3 review)"
 # lab/vault2 matches the scope's glob but is not registered, so the core quotes it
 check "$(CLAUDE_REPOS_JSON="$T/frepos.json" load "$PM/bin/usage-report" ur 'ur.fence_rows([{"project": "lab/vault2", "title": "t lab/vault2", "skill": "vault2-deploy", "agent": "vault2-agent", "session": "s1", "cost": 1}], lambda p: "quote")[0]' | grep -c 'vault2')" "0" "a glob member the registry does not list: project and title blanked, not only the scope"
+
+echo "the fence: a branch row made in a confidential checkout keeps that project (trim-usage-key landing review)"
+# sx works in an open repo, then `cd`s into a confidential checkout for one call on its own branch; the
+# split row once took the key's first call's project (harbor), so the push sent the confidential branch name
+XD="$T/xdata"; mkdir -p "$XD/cc/-proj" "$XD/data/testmac/calls" "$XD/out"
+cat > "$XD/fx.py" <<'PY'
+import json, sys
+D = sys.argv[1]
+def a(ts, req, sid, cwd, branch):
+    return json.dumps({"type": "assistant", "timestamp": ts, "requestId": req, "sessionId": sid, "cwd": cwd, "gitBranch": branch,
+        "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 1000, "output_tokens": 1000}}}) + "\n"
+H, V = "/Users/x/projects/harbor/.claude/worktrees/a", "/Users/x/projects/lab/vault/.claude/worktrees/c"
+open(f"{D}/cc/-proj/sx.jsonl", "w").write(a("2026-09-19T17:00:00Z", "x1", "sx", H, "claude/x/2026-09-19-harbor-a")
+    + a("2026-09-19T17:01:00Z", "x2", "sx", H, "claude/x/2026-09-19-harbor-a")
+    + a("2026-09-19T17:10:00Z", "x3", "sx", V, "claude/x/2026-09-19-contract-draft"))
+open(f"{D}/cc/-proj/so.jsonl", "w").write(a("2026-09-19T17:20:00Z", "o1", "so", H, "claude/x/2026-09-19-harbor-b"))
+PY
+python3 "$XD/fx.py" "$XD"
+USAGE_CC="$XD/cc" USAGE_ARCHIVE="$XD/none" USAGE_DATA="$XD/data" "$B/usage-report" collect --days 3 > /dev/null
+check "$(python3 -c 'import csv,sys; print(sorted((r["session"], r["project"], r["branch"].rpartition("-")[2]) for r in csv.DictReader(open(sys.argv[1]))))' "$XD/data/testmac/calls/2026-09-19.csv")" \
+  "[('so', 'harbor', 'b'), ('sx', 'harbor', 'a'), ('sx', 'lab/vault', 'draft')]" "collect: each branch row takes its own calls' project"
+check "$(CLAUDE_REPOS_JSON="$T/frepos.json" load "$B/usage-report" ur "ur.push_copy(Path('$XD/data/testmac'), Path('$XD/out'))"):$(cut -d, -f4 "$XD/out/calls/2026-09-19.csv" | tr '\n' ' '):$(grep -c 'contract' "$XD/out/calls/2026-09-19.csv")" \
+  "(2, []):session so :0" "  push: the session is fenced whole (both its rows dropped), its confidential branch name never leaves"
+
+echo "the fence's floor: a short member key part is matched as a token, never a substring (trim-usage-key)"
+SD="$T/sdata"; SR="$T/sfence/reports"; mkdir -p "$SD/testmac/calls"
+printf '{"repos": {"lab/ab": {}, "harbor": {}, "harborx": {}}, "scopes": {"s-hidden": {"repos": ["lab/*"], "confidential": true}, "qz": {"repos": ["harborx"], "confidential": true}, "s-open": {"repos": ["harbor"]}}}\n' > "$T/srepos.json"
+python3 - "$SD/testmac/calls/2026-09-19.csv" <<'PY'
+import csv, sys
+F = ["day", "host", "source", "session", "title", "project", "model", "effort", "skill", "agent", "entry", "calls", "input", "output",
+     "cache_read", "cache_write_5m", "cache_write_1h", "calls_over_200k", "calls_over_400k", "cost", "first", "last", "account", "branch"]
+def row(session, title, project, agent, branch, cost):
+    return {"day": "2026-09-19", "host": "testmac", "source": "claude-code", "session": session, "title": title, "project": project,
+            "model": "claude-opus-5-5", "effort": "high", "skill": "", "agent": agent, "entry": "cli", "calls": 10, "input": 0, "output": 1000,
+            "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0, "calls_over_200k": 0, "calls_over_400k": 0, "cost": cost,
+            "first": "2026-09-19T17:00:00Z", "last": "2026-09-19T18:00:00Z", "account": "", "branch": branch}
+w = csv.DictWriter(open(sys.argv[1], "w", newline=""), fieldnames=F); w.writeheader()
+w.writerow(row("o1", "Tabs layout", "harbor", "main", "claude/x/2026-09-19-fabric-work", 1.0))   # "ab" inside words only
+w.writerow(row("o2", "Fix ab deploy", "harbor", "main", "claude/x/2026-09-19-ab-fix", 0.5))      # "ab" as a token
+w.writerow(row("o3", "Open helper", "harbor", "ab-helper", "", 0.25))
+w.writerow(row("o4", "Open copy", "/elsewhere/ab", "main", "", 0.2))                              # an open path ending in it
+w.writerow(row("v1", "Secret ab work", "lab/ab", "main", "", 2.0))
+w.writerow(row("o5", "Aqzb notes", "harbor", "main", "", 0.1))                                    # a short scope name: still a substring
+w.writerow(row("", "No session", "/elsewhere/ab", "main", "", 0.1))                               # a row of no session in such a path
+PY
+rm -f "$T/rsync.txt"; CLAUDE_REPOS_JSON="$T/srepos.json" USAGE_DATA="$SD" USAGE_CONFIG="$T/cfg-fpush.json" PATH="$T/stubbin:$PATH" "$B/usage-report" push > "$T/sp.out" 2>&1
+check "$(python3 -c 'import csv,sys; print(" ".join("%s=%s/%s/%s" % (r["session"], r["title"], r["agent"], r["branch"]) for r in csv.DictReader(open(sys.argv[1]))))' "$T/sent/calls/2026-09-19.csv")" \
+  "o1=Tabs layout/main/claude/x/2026-09-19-fabric-work o2=(confidential)/main/ o3=Open helper/(confidential)/ o5=(confidential)/main/" \
+  "push: a member key's short last part inside other words left alone, as a token blanked; a short scope name blanked as a substring; the scope's rows, an open path ending in it and a session-less row there dropped"
+CLAUDE_REPOS_JSON="$T/srepos.json" USAGE_DATA="$SD" USAGE_LOCAL_REPORTS="$SR" USAGE_PUBLISH= USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" render --day 2026-09-19 > /dev/null
+check "$(grep -cE 'Fix ab deploy|ab-helper|/elsewhere/ab|Open copy|Secret ab work|lab/ab|Aqzb|No session' "$SR/2026-09-19.md")" "0" "render: the same names fenced in the global report"
+has "$SR/2026-09-19.md" "Tabs layout" "  and the open title holding the letters inside a word still named"
+check "$(CLAUDE_REPOS_JSON="$T/srepos.json" load "$B/usage-report" ur 'sorted(ur.floor_parts())')" "['ab']" \
+  "  the words under the floor (matched as tokens only): here the member key's last part alone; its full key stays a substring"
 
 echo "render — the trim line (self-tuning S5): the night's verdict, one line, fenced as trim's collect is"
 if [ -f "$B/../lib/trimlib.py" ]; then
