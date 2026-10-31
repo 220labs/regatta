@@ -57,7 +57,10 @@ Read `README.md` first: it is the chart. For an agent:
   it (2.1.309's bundle, read 2026-10-23). `rc-hosts --check` (exit 1) and `--broken` (exit 3) fail on
   such a host, and `--reap` restarts it once every session has been idle 10 minutes (on a Mac the
   `wharf-runs/rc-hosts` key leaves out, its hosts are unwanted: `--check` and `--reap` leave them to retire,
-  and `--broken` alone still fails one). The probes and D1
+  and `--broken` alone still fails one). Two things the key does not reach (its landing review, 2026-10-30):
+  a host whose repo's `rc.label` does not start with the label prefix is never retired, as `unwanted()`
+  globs the prefix only, though `--check` says the key keeps hosts off; and a wanted confidential host on
+  the wrong login is no FAIL on a Mac the key leaves out, since that host only retires there. The probes and D1
   (answered A: the cleanup is not held off; revisit if `--broken` posts monthly): the private repo's
   `docs/rc-hosts-versions-2026-10-23.md`.
 - check: `bash modules/wharf-runs/tests/check.sh`.
