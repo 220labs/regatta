@@ -385,37 +385,42 @@ mkdir -p "$T/config/wharf-runs"; echo off > "$T/config/wharf-runs/queue-repo"
 out=$("$RG" check); check "$?:$(echo "$out" | grep -c '  queue home: \|  queue-sweep: ')" "0:0" "  a queue home off: exit 0, no queue row"
 echo "$T/q.git" > "$T/config/wharf-runs/queue-repo"; echo org.example.claude > "$T/config/wharf-runs/label-prefix"
 LA="$HOME/Library/LaunchAgents"; SWEEP="$LA/org.example.claude.queue-sweep.plist"   # dispatch's own LA, the job's path once
+# Linux reads the same plist through wharf-runs' systemd-launchctl (S7), so the same cases: its user manager
+# stood in as up (the shim's `manager` probe asks systemctl is-system-running), and once as down below
+printf '#!/bin/sh\ncase "$*" in *is-system-running*) echo "${STUB_MANAGER:-running}"; [ "${STUB_MANAGER:-running}" = running ];; esac\n' > "$T/systemctl"
+chmod +x "$T/systemctl"; export SYSTEMD_LAUNCHCTL_SYSTEMCTL="$T/systemctl"
 out=$("$RG" check); rc=$?
-if [ "$(uname)" = Darwin ]; then
-  check "$rc" 1 "  a queue home and no queue-sweep job: exit 1"
-  echo "$out" | grep -qx "  ok  queue home: $T/q.git"; check $? 0 "    the home's row"
-  echo "$out" | grep -q -- "--  queue-sweep: no job here ($SWEEP)"; check $? 0 "    the sweep's row names the job it looked for"
-  mkdir -p "$LA"; touch "$SWEEP"
-  # launchd stood in: it holds the job while $T/held exists (S2a's landing review, item 3: the file is not the job)
-  printf '#!/bin/sh\n[ "$1" = print ] && [ -f "%s/held" ]\n' "$T" > "$T/launchctl"; chmod +x "$T/launchctl"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  the plist but launchd does not hold it: exit 1"
-  echo "$out" | grep -q -- "--  queue-sweep: its plist is here but launchd does not hold it ($SWEEP)"; check $? 0 "    its row says so"
-  touch "$T/held"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with the job loaded: exit 0"
-  echo "$out" | grep -q "^  ok  queue-sweep: every 10 min"; check $? 0 "    its row ok"
-  # a label move (wharf-runs/label-prefix-previous): the sweep under the previous prefix is read while the new one is absent
-  OSW="$LA/org.old.jobs.queue-sweep.plist"; rm -f "$SWEEP"; touch "$OSW"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  no previous key: a sweep under another prefix is not this host's (today's behaviour)"
-  echo org.old.jobs > "$T/config/wharf-runs/label-prefix-previous"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with it, the sweep under the previous prefix loaded: exit 0"
-  echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($OSW) — under the previous label prefix; the next dispatch here relabels it"; check $? 0 "    its row names it and what moves it"
-  touch "$SWEEP"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
-  echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($SWEEP)"; check $? 0 "    both there: the current prefix's is the one read"
-  echo "$out" | grep -q "under the previous label prefix"; check $? 1 "    and its row names no move"
-  echo org.example.claude > "$T/config/wharf-runs/label-prefix-previous"
-  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
-  echo "$out" | grep -q "under the previous label prefix"; check $? 1 "  a previous key equal to the prefix is none: no move named"
-  rm -f "$OSW" "$T/config/wharf-runs/label-prefix-previous"
-  rm -f "$SWEEP" "$T/held" "$T/launchctl"
-else
-  check "$rc" 0 "  a queue home off macOS: exit 0, the sweep a note (a systemd timer is S7's)"
+if [ "$(uname)" != Darwin ]; then
+  out2=$(STUB_MANAGER=offline "$RG" check); check "$?" 0 "  a queue home with no user manager answering: exit 0, the sweep a note"
+  echo "$out2" | grep -q -- "..  queue-sweep: no launchd or systemd user manager here"; check $? 0 "    its row says so (a systemctl on PATH is no manager)"
 fi
+check "$rc" 1 "  a queue home and no queue-sweep job: exit 1"
+echo "$out" | grep -qx "  ok  queue home: $T/q.git"; check $? 0 "    the home's row"
+echo "$out" | grep -q -- "--  queue-sweep: no job here ($SWEEP)"; check $? 0 "    the sweep's row names the job it looked for"
+mkdir -p "$LA"; touch "$SWEEP"
+# launchd stood in: it holds the job while $T/held exists (S2a's landing review, item 3: the file is not the job)
+printf '#!/bin/sh\n[ "$1" = print ] && [ -f "%s/held" ]\n' "$T" > "$T/launchctl"; chmod +x "$T/launchctl"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  the plist but launchd does not hold it: exit 1"
+echo "$out" | grep -q -- "--  queue-sweep: its plist is here but launchd does not hold it ($SWEEP)"; check $? 0 "    its row says so"
+touch "$T/held"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with the job loaded: exit 0"
+echo "$out" | grep -q "^  ok  queue-sweep: every 10 min"; check $? 0 "    its row ok"
+# a label move (wharf-runs/label-prefix-previous): the sweep under the previous prefix is read while the new one is absent
+OSW="$LA/org.old.jobs.queue-sweep.plist"; rm -f "$SWEEP"; touch "$OSW"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  no previous key: a sweep under another prefix is not this host's (today's behaviour)"
+echo org.old.jobs > "$T/config/wharf-runs/label-prefix-previous"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with it, the sweep under the previous prefix loaded: exit 0"
+echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($OSW) — under the previous label prefix; the next dispatch here relabels it"; check $? 0 "    its row names it and what moves it"
+touch "$SWEEP"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
+echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($SWEEP)"; check $? 0 "    both there: the current prefix's is the one read"
+echo "$out" | grep -q "under the previous label prefix"; check $? 1 "    and its row names no move"
+echo org.example.claude > "$T/config/wharf-runs/label-prefix-previous"
+out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
+echo "$out" | grep -q "under the previous label prefix"; check $? 1 "  a previous key equal to the prefix is none: no move named"
+rm -f "$OSW" "$T/config/wharf-runs/label-prefix-previous"
+rm -f "$SWEEP" "$T/held" "$T/launchctl"
+unset SYSTEMD_LAUNCHCTL_SYSTEMCTL
 rm -r "$T/config/wharf-runs"
 # aurora/host against lighthouse/hosts (the weekly host rule's row): case-blind, as the rule compares
 mkdir -p "$T/config/lighthouse" "$T/config/aurora"; printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"; echo Studio > "$T/config/aurora/host"

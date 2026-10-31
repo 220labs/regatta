@@ -350,6 +350,58 @@ check "$(git -C "$T/repo/.claude/worktrees/demo" rev-parse --abbrev-ref HEAD)" "
 check "$([ -f "$P" ] && echo present || echo gone)" "gone" "one-shot plist removed"
 has "$T/calls" "bootout gui/" "job unloaded after the run"
 
+echo "the fence (dispatch-queue S7's Linux half): a confidential scope's checkout cloned here is denied to the run"
+cp "$T/claude.calls" "$T/claude.calls.keep"
+PJ="$HOME"/projects; FL="$HOME"/fence.log   # one definition each (the publish gate reads every home path)
+VK="$PJ"/vault-kb; LD="$HOME"/.claude
+mkdir -p "$VK" "$PJ"/acme-x/.git "$PJ"/vault-kb.dev "$LD"
+# an umbrella scope listed first (it hides nothing), a glob member the registry's repos lack (acme-x)
+printf '{"repos": {"vault-kb": {}, "open-kb": {}}, "scopes": {"wide": {"repos": ["*"]}, "vault": {"confidential": true, "repos": ["vault-kb", "gone-kb", "acme-*"]}}}\n' > "$T/fence-reg.json"
+fence_run() {   # $1 the registry, $2 the log; the run's claude.calls fresh, its stdout and stderr in $T/fence.out
+  : > "$T/claude.calls"
+  "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+  CLAUDE_REPOS_JSON="$1" DISPATCH_LOG="$2" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless > "$T/fence.out" 2>&1
+}
+fence_run "$T/fence-reg.json" "$FL"
+has "$T/claude.calls" "Read(/$VK/**)" "  Read of the confidential checkout denied (an absolute path rule)"
+has "$T/claude.calls" "Edit(/$VK/**)" "  Edit too"
+for r in "Bash(*/projects/vault-kb/*)" "Bash(*/projects/vault-kb)" "Bash(*/projects/vault-kb *)"; do
+  has "$T/claude.calls" "$r" "  and a Bash line naming it, with a boundary: $r"
+done
+hasnt "$T/claude.calls" "Bash(*/vault-kb*)" "  never a bare prefix (it denied a run in 220labs.dev its own checkout; the landing reviews)"
+hasnt "$T/claude.calls" "vault-kb.dev" "  a folder whose name only starts with the key draws no rule"
+hasnt "$T/claude.calls" "gone-kb" "  a member not cloned here draws no rule"
+has "$T/claude.calls" "Read(/$PJ/acme-x/**)" "  a checkout a glob member matches is denied, though the registry's repos lack it (scope_of_repo per scope)"
+has "$T/claude.calls" "Read(/$PJ/transcripts/vault-kb/**)" "  the scope's transcripts folder (the core's scope_paths)"
+VS=$(printf '%s' "$VK" | sed 's/[^A-Za-z0-9]/-/g')
+has "$T/claude.calls" "Read(/$LD/projects/$VS/**)" "  and each login dir's projects/<slug>/: its transcripts and auto-memory"
+hasnt "$T/claude.calls" "open-kb" "  an open repo draws no rule"
+# a run inside the confidential scope keeps its own scope's checkouts
+printf '{"repos": {"vault-kb": {}}, "scopes": {"vault": {"confidential": true, "repos": ["vault-kb", "%s"]}}}\n' "$(cd "$T/repo" && pwd -P)" > "$T/fence-own.json"
+fence_run "$T/fence-own.json" "$FL.own"
+has "$T/claude.calls" "claude " "  a run inside the scope runs…"
+hasnt "$T/claude.calls" "Read(/$VK/**)" "  …and keeps its own scope's checkout"
+head -c 20 "$T/fence-reg.json" > "$T/fence-torn.json"
+fence_run "$T/fence-torn.json" "$FL.torn"
+has "$T/fence.out" "== the registry does not read: every other checkout in the projects folder is denied to this run (the fence)" "  a torn registry: the run goes ahead, said so…"
+has "$T/claude.calls" "Read(/$VK/**)" "  …with every other checkout in the projects folder denied (it cannot tell which are confidential)"
+has "$T/claude.calls" "Read(/$PJ/vault-kb.dev/**)" "  …each by its own name"
+# a fence that cannot be drawn (here an overlay marker with none of its keys: the core will not import) draws the
+# same wide deny and runs, never FAILED (the second landing review); the overlay's checkout, nested in a group
+# folder, stays open, its group's other checkouts are denied and the group itself is walked, not denied
+mkdir -p "$PJ"/grp/ov/bin "$PJ"/grp/other
+echo "$PJ/grp/ov" > "$REGATTA_CONFIG/regatta/overlay"
+fence_run "$T/fence-reg.json" "$FL.broken"
+rm -f "$REGATTA_CONFIG/regatta/overlay"
+has "$T/fence.out" "== the fence's registry check exited 1 (a crash, or a config the core will not load): every other checkout in the projects folder is denied to this run (the fence)" "  a broken config: the wide deny, said so…"
+hasnt "$T/fence.out" "FAILED" "  …never FAILED"
+has "$T/claude.calls" "claude " "  …and the run goes ahead"
+has "$T/claude.calls" "Read(/$PJ/grp/other/**)" "  a group folder's other checkout is denied (every level of the run's path, not the top alone)"
+has "$T/claude.calls" "Bash(*/projects/grp/other/*)" "  by its path from the projects folder"
+hasnt "$T/claude.calls" "Read(/$PJ/grp/**)" "  the group folder itself is walked into, not denied"
+hasnt "$T/claude.calls" "grp/ov" "  the overlay's checkout stays open (the run's tools)"
+rm_own "$VK" "$PJ"/acme-x "$PJ"/vault-kb.dev "$PJ"/grp; mv "$T/claude.calls.keep" "$T/claude.calls"
+
 echo "a principal tier (principal tier S5): the brief's Tier: line sets model and effort, never a silent opus/high"
 for pt in architect:fable worker:opus; do
   pn=${pt%%:*}; pm=${pt#*:}; PB=claude/laptop/2026-10-02-prin-$pn
@@ -1362,6 +1414,12 @@ reap "$RUNS"/00000000-00002*
 # went stale at 5 -> 8 -> 10, and 8 -> 6 sat unmerged on a conflict; 2026-10-25)
 check "$(DISPATCH_HOST=buildbox "$B/dispatch" --cap) $(DISPATCH_HOST=elsewhere "$B/dispatch" --cap) $(DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=4 "$B/dispatch" --cap)" \
   "6 3 4" "--cap: 6 on the dispatch host, 3 elsewhere, DISPATCH_MAX_RUNS over either"
+# this host's own name as the core's host_name() spells it (the landing review): a LocalHostName with a character
+# outside [a-z0-9-] is the dispatch host `build-box` once each is a hyphen, as dispatch-queue reads it
+mkdir -p "$T/hn"; printf '#!/bin/sh\necho Build_Box\n' > "$T/hn/scutil"; printf '#!/bin/sh\necho build_box\n' > "$T/hn/hostname"
+chmod +x "$T/hn/scutil" "$T/hn/hostname"; cp "$REGATTA_CONFIG/wharf-runs/dispatch-host" "$T/dh.keep"; echo build-box > "$REGATTA_CONFIG/wharf-runs/dispatch-host"
+check "$(PATH="$T/hn:$PATH" "$B/dispatch" --cap)" 6 "--cap: Build_Box is the dispatch host build-box (local_host sanitised as host_name)"
+mv "$T/dh.keep" "$REGATTA_CONFIG/wharf-runs/dispatch-host"
 check "$(grep -c -- '"--cap"' "$B/wharf") $(grep -c -- '"--cap"' "$STALLS_TICK" 2>/dev/null) $(grep -cE 'DISPATCH_MAX_RUNS"\) or \([0-9]' "$B/wharf" "$STALLS_TICK" 2>/dev/null | awk -F: '{n+=$NF} END {print n+0}')" \
   "1 1 0" "  wharf and stalls_tick.py ask dispatch --cap and carry no number of their own"
 own sess-A

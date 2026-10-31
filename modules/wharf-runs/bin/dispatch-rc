@@ -119,6 +119,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1521,8 +1522,15 @@ def hold_awake(want):
     every stream to /dev/null: one that inherits the caller's stdout holds that pipe open until it
     exits, and a reader of it then waits for the caffeinate rather than the run — bin/test_dispatch
     hung on exactly that, 2026-10-06. Kept in a module-level list, not passed around: the watcher's
-    `finally` has to stop the caffeinate that is live now, not the one it started with."""
+    `finally` has to stop the caffeinate that is live now, not the one it started with. A host with no
+    caffeinate (Linux: a node that never sleeps) holds nothing, and says so once, not at every poll."""
     if want:
+        if _AWAKE == [None]:
+            return
+        if not _AWAKE and not shutil.which("caffeinate"):
+            say("caffeinate: none on this host; nothing holds sleep off (a host that sleeps may pause the run)")
+            _AWAKE[:] = [None]
+            return
         if not _AWAKE or _AWAKE[0].poll() is not None:
             try:
                 _AWAKE[:] = [subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
@@ -1532,9 +1540,10 @@ def hold_awake(want):
                 say("caffeinate: %s (the Mac may sleep mid-run)" % e)
                 _AWAKE[:] = []
         return
-    if _AWAKE and _AWAKE[0].poll() is None:
+    if _AWAKE and _AWAKE[0] is not None and _AWAKE[0].poll() is None:
         _AWAKE[0].terminate()
-    _AWAKE[:] = []
+    if _AWAKE != [None]:
+        _AWAKE[:] = []
 
 
 # S10(c), the sleep hook (the requeue component's "The sleep hook"): every watcher on a Mac with a queue home

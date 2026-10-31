@@ -5,6 +5,20 @@
 - A named node's clone unit writes the core's `home` file, best effort (TODO 25 (b)): from a clone the clones list
   carried that holds the core whole, else the marketplace clone `known_marketplaces.json` records; a home that names
   a core is kept, and a node with no core still finishes rather than retrying every minute.
+- dispatch-queue S7's Linux half: `bin/systemd-launchctl`, launchctl's verbs over systemd's user manager, is the
+  default launcher off macOS for dispatch, dispatch-queue and the core's `regatta check` (a RunAtLoad plist is a
+  transient unit, run with `--expand-environment=no`, an interval or calendar plist a unit pair with an enabled
+  timer, `Persistent=true` on a calendar one; the plist stays the job's definition, so every reader of it is
+  unchanged, and Darwin runs launchctl as before). Its `manager` verb asks whether a user manager answers here. `dispatch-queue jobs`
+  installs the sweep as a user timer there. dispatch reads the host name (`local_host`), dates (`dateat`,
+  `epochof`) and caffeinate portably; dispatch-rc's watcher holds no caffeinate where there is none. The fleet
+  fence on every host: a fleet entry for a confidential scope's repo is never claimed, a torn registry claims
+  nothing from the fleet, and the new optional key `wharf-runs/queue-repos` narrows what a host claims
+  (`<key> pinned`: only entries pinned to it; an unreadable file claims nothing). Each run is denied Read, Edit
+  and Bash on every path `scope_paths()` names for each confidential repo cloned beside it (checkouts, worktrees,
+  transcripts, each login dir's auto-memory), and, when the registry does not read or the fence cannot be drawn,
+  every other checkout in the projects folder bar the run's own and its tools', at every level. New suite `tests/test_systemd.sh`
+  (on LINUX_OK).
 - `pickup seed --beside`'s wording has its case (routed comments S5, TODO 29 (e)): no "behind origin" for a seed off a
   branch's tip, and a blueprint already on that branch is said to be on it.
 - dispatch-queue S10, the requeue (docs/dispatch-queue-requeue-2026-10-25.md): `dispatch --requeue TOPIC|--all

@@ -32,12 +32,13 @@ if [ -f "$M/lib/core_path.py" ] && [ -f "$M/../wharf/lib/core_path.py" ]; then
 else
   echo "  --   skipped: no lib/core_path.py here, or no wharf beside it"
 fi
-# Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), and test_autofinish (made
+# Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
+# Linux launcher, stood in), and test_autofinish (made
 # portable and run on ubuntu in the overlay's CI since 2026-10-07). The rest read launchd, plutil,
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
-LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom "
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_wharf"
+LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd "
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_systemd test_wharf"
 # Lane 2 is named; lane 3 is every other suite, so a suite added to SUITES lands there by itself.
 # Balanced on measured passes (the build Mac, load 8–12, 2026-10-27; seconds): test_dispatch 413 alone; lane 2
 # 669 (harness 64, pickup 335, autofinish 270); lane 3 830, test_autofinish_run 335 and test_wharf 244

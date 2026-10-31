@@ -273,9 +273,20 @@ def queue_rows():
     if not v or v.lower() == "off":
         return 0
     print("  ok  queue home: %s" % v)
+    lc = os.environ.get("DISPATCH_LAUNCHCTL") or "launchctl"
     if sys.platform != "darwin":
-        print("  ..  queue-sweep: no launchd here (its systemd timer is dispatch-queue's S7)")
-        return 0
+        # Linux (S7): the same plist, loaded into systemd's user manager through wharf-runs' systemd-launchctl
+        # A user manager must answer, not a systemctl merely sit on PATH: the shim's own `manager` probe asks
+        sl = common.tool("systemd-launchctl")
+        try:
+            up = bool(sl) and subprocess.run([sys.executable, str(sl), "manager"], capture_output=True,
+                                             timeout=20).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            up = False
+        if not up:
+            print("  ..  queue-sweep: no launchd or systemd user manager here (wharf-runs' systemd-launchctl)")
+            return 0
+        lc = os.environ.get("DISPATCH_LAUNCHCTL") or str(sl)
     prefix = common.config_line("wharf-runs/label-prefix") or "org.regatta.claude"
     job = Path.home() / "Library" / "LaunchAgents" / ("%s.queue-sweep.plist" % prefix)
     # a label move (wharf-runs/label-prefix-previous): the sweep under the previous prefix sweeps until the
@@ -286,9 +297,8 @@ def queue_rows():
     if prev and prev != prefix and not job.is_file() and old.is_file():
         prefix, job, moved = prev, old, True
     if job.is_file():
-        # the file is not the job: launchd must hold it (S2a's landing review, item 3). DISPATCH_LAUNCHCTL
-        # is dispatch's own stand-in, which the suites set
-        lc = os.environ.get("DISPATCH_LAUNCHCTL") or "launchctl"
+        # the file is not the job: launchd (or systemd, through the shim) must hold it (S2a's landing review,
+        # item 3). DISPATCH_LAUNCHCTL is dispatch's own stand-in, which the suites set
         try:
             held = subprocess.run([lc, "print", "gui/%d/%s.queue-sweep" % (os.getuid(), prefix)],
                                   capture_output=True, timeout=10).returncode == 0

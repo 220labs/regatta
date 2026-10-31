@@ -451,6 +451,18 @@ jobbin="$mainco/modules/wharf-runs/bin/dispatch"
 [ -n "$overlay" ] && [ -f "$overlay/bin/dispatch" ] && jobbin="$overlay/bin/dispatch"
 RCH="${DISPATCH_RCHOSTS:-$here/bin/rc-hosts}"
 LC="${DISPATCH_LAUNCHCTL:-launchctl}"
+# The launcher (dispatch-queue S7's Linux half): launchd's launchctl on a Mac, as before; elsewhere this module's
+# systemd-launchctl, the same verbs over systemd's user manager (its header says why one shim). Every job below
+# goes through $LC and every job's plist stays in $LA, so this line is the whole seam. $OSTYPE, not uname: no fork
+case "${DISPATCH_LAUNCHCTL:-}$OSTYPE" in darwin*) ;; linux*) LC="$here/bin/systemd-launchctl";; esac
+# this host's name, as the config keys and the queue spell it: macOS's LocalHostName, else the kernel's short one,
+# lower-cased and every character but [a-z0-9-] a hyphen — the core's host_name() exactly, which dispatch-queue
+# reads, so `srv_01` is one host to both (the landing review)
+local_host() { { scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//' -e 's/^$/host/'; }
+# BSD date on a Mac, GNU elsewhere (AGENTS.md's date trap), each failing cleanly on the other: an epoch's local
+# time in FORMAT (dateat EPOCH +FORMAT), and a local "YYYY-MM-DD HH:MM" as an epoch (epochof)
+dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
+epochof() { date -j -f '%Y-%m-%d %H:%M' "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }   # host names compare lower-case (bash 3.2 has no ${x,,})
 # --on NAME: a host `wharf-runs/ssh` names, case-blind -> $pname (as the key spells it) and $peer (its
 # ssh alias); 1 when the key names no such host
@@ -484,7 +496,7 @@ fi
 # beside the runs, and every check there took twice its quiet time; 2026-10-25, 6: "it's too slow" at 8). So: 6 on the
 # dispatch host, 3 on any other Mac. DISPATCH_MAX_RUNS overrides either; DISPATCH_HOST is
 # machine()'s, for the tests. The only home of these numbers: every other reader asks `--cap`.
-self_host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
+self_host="${DISPATCH_HOST:-$(local_host)}"
 if [ -n "$dispatch_host" ] && [ "$(lc "$self_host")" = "$(lc "$dispatch_host")" ]; then
   max_runs="${DISPATCH_MAX_RUNS:-6}"
 else
@@ -1107,7 +1119,7 @@ manager_env() {
   if [ -z "$mgr" ] && [ -z "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     mgr="$CLAUDE_CODE_SESSION_ID"; macct=$(acct_dir); mtyped=1
     # where the manager runs: bin/ask reads "no record here" as an ended manager only on its own Mac
-    mhost="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"
+    mhost="${DISPATCH_HOST:-$(local_host)}"
   fi
   [ -n "$mgr" ] || return 0
   [ -n "$mplan" ] || mplan="$mgr"   # one ship per skipper by default (bin/helm ship)
@@ -1614,7 +1626,11 @@ queue_refused() {   # WHY [skip]
 queue_fire() {
   local when out rc q_res="" q_qid="" q_ours=0 q_rank="" q_off="" q_why=""
   # the seconds spelled out: BSD date fills a field the format leaves out from the clock
-  when=$(date -j -f %Y%m%d%H%M%S "${DISPATCH_LABEL##*.}00" +%s 2>/dev/null) || when=""
+  # GNU date reads no packed stamp: a one-shot's twelve digits spelled out for epochof (a claimed job's `q` stamp
+  # reads on neither, as before)
+  when=$(date -j -f %Y%m%d%H%M%S "${DISPATCH_LABEL##*.}00" +%s 2>/dev/null) \
+    || { m="${DISPATCH_LABEL##*.}"; case "$m" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+         when=$(epochof "${m:0:4}-${m:4:2}-${m:6:2} ${m:8:2}:${m:10:2}");; *) false;; esac; } || when=""
   manager_env; queue_args
   # a one-shot sent to a typed host stays there (DISPATCH_HOST_PIN, its plist's): unpinned, any host's claim took it
   out=$(python3 "$Q" enqueue --repo "$repo" --branch "$branch" --priority "$prio" ${when:+--queued-at "$when"} \
@@ -1767,7 +1783,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     [ "$effort_given" = 1 ] && cmd="$cmd --effort $(printf '%q' "$effort")"
     # another repo: its path under the projects folder, whose home differs per host (one login name each)
     [ "$repo" != "$primary" ] && case "$repo" in "$projects/"*) cmd="$cmd --repo \$HOME/projects/$(printf '%q' "${repo#"$projects"/}")";; *) echo "dispatch: --on needs a repo under $projects" >&2; exit 2;; esac
-    echo "scheduling on $on for epoch ${at#@} ($(date -r "${at#@}" '+%F %H:%M %Z') on this Mac)" >&2
+    echo "scheduling on $on for epoch ${at#@} ($(dateat "${at#@}" '+%F %H:%M %Z') on this Mac)" >&2
     [ -n "$note" ] && cmd="$cmd --note $(printf '%q' "$note")"
     [ -n "$origin" ] && cmd="$cmd --origin $(printf '%q' "$origin")"
     [ "$probe" = 1 ] && cmd="$cmd --probe"
@@ -1868,12 +1884,12 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
       echo "dispatch: the queue could not take it — scheduling it as before, a one-shot" >&2
     fi
   fi
-  case "$at" in @*) at="$(date -r "${at#@}" '+%Y-%m-%d %H:%M')";; esac
+  case "$at" in @*) at="$(dateat "${at#@}" '+%Y-%m-%d %H:%M')";; esac
   # "YYYY-MM-DD HH:MM" -> the four keys launchd matches on
   read -r d t <<<"$at"; IFS=- read -r yr mo dy <<<"$d"; IFS=: read -r hr mi <<<"$t"
   [ -n "${mi:-}" ] || { echo "dispatch: --at wants \"YYYY-MM-DD HH:MM\"" >&2; exit 2; }
   # launchd's calendar has no year: a time already past would sit loaded and fire next year
-  when=$(date -j -f '%Y-%m-%d %H:%M' "$at" +%s 2>/dev/null) && [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at is not in the future" >&2; exit 2; }
+  when=$(epochof "$at") && [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at is not in the future" >&2; exit 2; }
   # …and one a year or more ahead would fire at the first match, meet the year guard and vanish
   [ $((when - $(date +%s))) -lt 31536000 ] || { echo "dispatch: $at is a year or more ahead; launchd's calendar has no year" >&2; exit 2; }
   # here, the page after every refusal; a publish that outlasted the margin to the fire minute is refused
@@ -1883,7 +1899,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     [ "$when" -gt "$(date +%s)" ] || { echo "dispatch: $at passed while the skipper's page published; dispatch again — the page is kept" >&2; exit 2; }
   fi
   # its own label: a job that has fired has a minute at or before now, this one's is after it
-  label="$base.$(date -r "$when" +%Y%m%d%H%M)"; plist="$LA/$label.plist"
+  label="$base.$(dateat "$when" +%Y%m%d%H%M)"; plist="$LA/$label.plist"
   args="<string>$jobbin</string><string>$branch</string><string>--repo</string><string>$repo</string>"
   # only the flags given, as over ssh: the job reads the brief's Tier: line when it fires (tier_run)
   [ "$model_given" = 1 ] && args="$args<string>--model</string><string>$model</string>"
@@ -1994,6 +2010,112 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
 # dispatch-queue poll and jobs (they load and boot out launchd jobs), unreserve (it frees a claim's slot)
 # — S2a's landing review, item 6
 denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" "Bash(*dispatch --claim*)" "Bash(*dispatch --poll*)" "Bash(*dispatch-queue poll*)" "Bash(*dispatch-queue jobs*)" "Bash(*dispatch-queue unreserve*)" "Bash(*dispatch --requeue*)" "Bash(*dispatch-queue requeue*)" AskUserQuestion)
+# The fence (dispatch-queue S7's Linux half): a run never reads a confidential scope's work it was not started
+# in. A host that carries one beside open repos (a scope's node opened to fleet work) denies the run's Read and
+# Edit of every path the core's scope_paths() names for each such repo cloned here (its checkout, its worktrees,
+# PROJECTS/transcripts/<repo>/, each login dir's projects/<slug>/: the transcripts and the auto-memory), and any
+# Bash line naming one — a guard against an accident, as every command-text rule is (AGENTS.md); the scope's
+# own hooks are the wall. Each cloned key is judged by the core's scope_of_repo against each confidential scope
+# in turn (a glob, a key the registry's `repos` lacks; an umbrella scope listed first hides nothing), and a run
+# inside a confidential scope keeps its own scope's. Nothing confidential cloned here: no rule, as before.
+# One read of the registry: scope_paths is handed a registry of the fenced keys alone, written from that read,
+# so a second read can neither tear nor widen it. A torn read (the fence trap: torn reads as no scopes, which
+# is open) exits 3, and any other exit but 0 (a crash, a config the overlay left incomplete: the core will not
+# import) draws the same wide deny in bash below, with no core: every folder in the projects folder bar the
+# ones the run needs (its repo, this module's checkout, the core's, the overlay's), walking into a group folder
+# on the way to one of those. The run goes ahead, as the torn read's own rule has it (ask for
+# this run, the follow-ups' item 6): a fence that cannot be drawn narrows the run, it never stops one (the
+# second landing review: an incomplete config stopped every dispatched run on every host).
+# A Bash rule names a path from its parent folder's name (`*/projects/vault-kb/*`, then the path at the end
+# of the line and before a space): the bare key had no boundary, and `*/220labs*` denied a run in 220labs.dev
+# its own checkout (the landing reviews); the parent's name keeps a top-level key from matching a nested
+# repo or a folder of the run's own (`docs`, `bin`).
+# One python -c, its text free of apostrophes (bash 3.2 and a quote inside "$(…)", AGENTS.md)
+rhome="${REGATTA_CONFIG:-$HOME/.config/regatta}/home"   # the config dir's `home`; its overlay marker beside it
+fence_keep=()
+for fkp in "$repo" "$mainco" "${core%/modules/regatta/hooks}" "$overlay" "$(head -1 "$rhome" 2>/dev/null)" \
+           "$(head -1 "${rhome%/home}/regatta/overlay" 2>/dev/null)"; do
+  case "$fkp" in "~"*) fkp="$HOME${fkp#\~}";; esac
+  [ -n "$fkp" ] && fkp=$(cd "$fkp" 2>/dev/null && pwd -P) && fence_keep+=("$fkp")
+done
+fence=$(python3 -c '
+import json, os, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import common
+reg, torn = common.read_registry()
+if torn:
+    sys.exit(3)
+P = common.PROJECTS
+mine = Path(sys.argv[2]).resolve()
+keep = [Path(k) for k in sys.argv[3:] if k]
+def needed(p):   # a path the run needs, inside one, or a folder holding one
+    r = Path(os.path.realpath(p))
+    return any(r == k or k in r.parents or r in k.parents for k in keep)
+repos = (reg or {}).get("repos") or {}
+conf = common.confidential_scopes(reg=reg)
+def held(key, n, sc):
+    return common.scope_of_repo(key, reg={"scopes": {n: sc}, "repos": repos})[0] == n
+def walk(d, depth):   # each git checkout under d, never into one, three folders down at most
+    try:
+        kids = sorted((e for e in os.scandir(d) if e.is_dir() and not e.name.startswith(".")), key=lambda e: e.name)
+    except OSError:
+        return
+    for e in kids:
+        if os.path.exists(os.path.join(e.path, ".git")):
+            yield Path(e.path)
+        elif depth < 3:
+            yield from walk(e.path, depth + 1)
+cloned = {str(p.relative_to(P)) for p in walk(P, 1)} if conf and P.is_dir() else set()
+for sc in conf.values():
+    cloned |= {k for k in common.scope_members(sc, repos) if (P / k).is_dir()}
+mykey = common.repo_key(str(mine))
+seen, out = set(), []
+for n, sc in conf.items():
+    if mykey and held(mykey, n, sc):
+        continue
+    ks = sorted(k for k in cloned if held(k, n, sc) and not needed(P / k))
+    if not ks:
+        continue
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"repos": {k: {} for k in ks}, "scopes": {n: {"repos": ks}}}, f)
+    try:
+        paths = common.scope_paths(n, path=f.name)
+    finally:
+        os.unlink(f.name)
+    for p in paths:
+        if str(p) in seen or needed(p) or any(str(p).startswith(x + "/") for x in seen):
+            continue
+        seen.add(str(p))
+        try:
+            word = "%s/%s" % (P.name, p.relative_to(P))
+        except ValueError:
+            word = "/".join(p.parts[-2:])
+        out.append("%s\t%s" % (p, word))
+print("\n".join(out))
+' "$core" "$repo" ${fence_keep[@]+"${fence_keep[@]}"} 2>/dev/null); frc=$?
+# the wide deny: $1's folders, bar the ones the run needs; into a folder that holds one
+fence_wide() {
+  local c r k on
+  for c in "$1"/*/; do
+    c="${c%/}"; [ -d "$c" ] || continue
+    r=$(cd "$c" 2>/dev/null && pwd -P) || continue
+    on=0
+    for k in ${fence_keep[@]+"${fence_keep[@]}"}; do
+      case "$r/" in "$k/"*) on=2; break;; esac
+      case "$k/" in "$r/"*) on=1;; esac
+    done
+    case $on in 0) printf '%s\t%s\n' "$c" "${projects##*/}/${c#"$projects"/}";; 1) fence_wide "$c";; esac
+  done
+}
+if [ "$frc" != 0 ]; then
+  if [ "$frc" = 3 ]; then fwhy="the registry does not read"; else fwhy="the fence's registry check exited $frc (a crash, or a config the core will not load)"; fi
+  echo "== $fwhy: every other checkout in the projects folder is denied to this run (the fence)"
+  fence=$([ -d "$projects" ] && fence_wide "$projects")
+fi
+while IFS=$'\t' read -r fp fk; do
+  [ -n "$fp" ] && denied+=("Read(/$fp/**)" "Edit(/$fp/**)" "Bash(*/$fk/*)" "Bash(*/$fk)" "Bash(*/$fk *)")
+done <<<"$fence"
 # --start's changes to both lists (bash 3.2: an empty array under set -u needs the ${a[@]+…} form)
 for t in ${extra_allow[@]+"${extra_allow[@]}"}; do
   case " ${tools[*]} " in *" $t "*) ;; *) tools+=("$t");; esac
@@ -2169,7 +2291,8 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   # (its sleep dies with it, and neither leaves a "Terminated" line in the log)
   ( trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$max_s" & wait $!
     kill -0 "$cpid" 2>/dev/null && { echo "$(date +%T) ending claude $cpid: still running after ${DISPATCH_MAX_H:-8} h (DISPATCH_MAX_H)"; kill -TERM "$cpid"; } ) 2>/dev/null & dog=$!
-  caffeinate -i -w "$kpid" & wait "$kpid"; rc=$?
+  # no caffeinate off macOS (a node that never sleeps): the wait alone
+  command -v caffeinate >/dev/null && { caffeinate -i -w "$kpid" & }; wait "$kpid"; rc=$?
   # its sleep first: a TERM that reaches the watchdog after its trap is set but before its `wait`
   # starts runs the trap only once that wait returns — bash 3.2 — so the watchdog, and this run,
   # sat 8 h (two test runs of 2026-10-06, each a stub claude that exits at once)
@@ -2184,7 +2307,7 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
 
 machine() {   # $host, and $shown: the name as the config keys spell it (regatta/laptop, the dispatch host, the ssh peers)
   local n
-  host="${DISPATCH_HOST:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z')}"; shown="$host"
+  host="${DISPATCH_HOST:-$(local_host)}"; shown="$host"
   for n in "$laptop" "$dispatch_host" ${peers}; do
     n="${n%%:*}"; [ -n "$n" ] && [ "$(lc "$n")" = "$(lc "$host")" ] && { shown="$n"; return 0; }
   done
