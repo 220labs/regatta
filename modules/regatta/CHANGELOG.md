@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ORCA_ROW`, an Orca login no registry row names, takes `free_below` 70: under 70% of its 5-hour window it
+  runs whatever the limit or pace, as every registry row (the owner, 2026-10-30; lighthouse's pace-window).
 - `cost ratio` lists every provider's entry with the date it was measured (subscription-bags D3-B,
   2026-10-29); `--json` gains `others`. An entry `cost --provider` would not apply reads "no usable ratio",
   a hand-written field that is no number `$?`. With Anthropic's entry alone the output is the one line as before.

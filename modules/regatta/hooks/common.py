@@ -663,9 +663,11 @@ def account_home(a, home=None):
         return None
 
 
-# A secondary seat's rules, as the registry's secondary rows carry them. The repos it may never
+# A secondary seat's rules, as the registry's secondary rows carry them (free_below: the owner,
+# 2026-10-30, "Under 70% we can run anything", set on every row). The repos it may never
 # open are the overlay's (`regatta/orca-deny`, one per line); none without the key.
-ORCA_ROW = {"rules": {"week_max": 70, "window_max": 50, "reserve": {"last_hours": 24, "week_max": 100}},
+ORCA_ROW = {"rules": {"week_max": 70, "window_max": 50, "free_below": 70,
+                      "reserve": {"last_hours": 24, "week_max": 100}},
             "repos": {"deny": config_lines("regatta/orca-deny") or []}}
 
 
