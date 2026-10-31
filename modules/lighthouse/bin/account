@@ -71,6 +71,23 @@ the binding window at any level, 68% included, 2026-10-03). Pick skips the accou
 window resets (cooldown) and asks it for MARGIN more points of 5-hour headroom per record in the
 last MARGIN_DAYS days, up to MARGIN_CAP.
 
+Pace (2026-10-30, the owner: "if the spend is lower than pace and we still have 5-10% to go, we should
+just launch"): a row over its 5-hour limit (window_max less the margin) still runs while its 5-hour
+spend is under the window's elapsed share, `pace = 100 * (1 - (five_hour_resets - now) / 5 h)`, and
+`rules.pace_headroom` points (PACE_HEADROOM, 10) are left. 45% four hours and 35 minutes in reads
+"5h 45% under pace 92% (10 points headroom)". With no reset inside the window's future, the flat
+limit alone. Pace is read at the reading's own sample time, not now: a cached 60% with 3 h left
+stays refused however old it grows (else a failed probe's stale reading, which pick falls back
+to, would turn eligible on the clock alone; the landing review, 2026-10-30). A non-number in
+either rule is off, with one stderr line, so a hand-edited registry never stops every pick. Pace lifts only that limit: the week ceiling, a cooldown, paid overage and the deny
+list judge as before, and every caller (pick, limits, dispatch, pickup, tier_check, helm) takes
+judge's verdict, so none keeps a 5-hour rule of its own.
+
+Free below (the owner, 2026-10-30: "if the window is under 70% then the pace rule doesn't apply. Under 70% we can run anything."):
+a 5-hour spend under a row's `rules.free_below` (FREE_BELOW, 0: off unless a row sets it; the owner's
+registry is to set 70) runs whatever window_max, the margin or the pace
+say; the flat limit, the margin and pace judge only from there up. The week ceiling still judges below it.
+
 The logins file (work-account design E1, docs/work-account-2026-10-06.md) is what the owner would
 otherwise carry in mind: per label, the e-mail, plan, who pays and which Macs carry a dir — kept
 on a shared drive, never git (it names e-mails, not secrets). {"logins": {label: {email, plan,
@@ -227,6 +244,9 @@ SAME_RESET = 300      # seconds: two exhaustion records whose resets are this cl
 MARGIN = 10           # D6: points of 5-hour headroom an exhaustion asks for…
 MARGIN_DAYS = 7       # …for this long…
 MARGIN_CAP = 30       # …stacking to at most this
+FIVE_HOUR_S = 5 * 3600   # the 5-hour window's length, where a reading does not say its own
+PACE_HEADROOM = 10    # points a row under pace keeps free to start (rules.pace_headroom): the owner's "5-10%", its safe end
+FREE_BELOW = 0        # a 5-hour spend under a row's rules.free_below runs whatever the limit, margin or pace; off by default
 WINDOWS = ("five_hour", "seven_day")
 
 
@@ -1483,6 +1503,8 @@ def parse_codex(rl, acct=None):
         if out[w] is not None and out[w] >= x["usedPercent"]:
             continue  # two windows of one class: the fuller one binds
         out[w], out[w + "_resets"] = x["usedPercent"], epoch(x.get("resetsAt"))
+        if w == "five_hour":
+            out["five_hour_window_s"] = x["windowDurationMins"] * 60   # pace()'s span: not every plan's is five hours
         if w not in out["kinds"]:
             out["kinds"].append(w)
         if x["usedPercent"] >= 100 and w not in out["locked"]:
@@ -1712,9 +1734,32 @@ def ceiling(a, lim, t):
     return rules.get("week_max", 100), "week ceiling"
 
 
-def judge(a, lim, t, allow_overage=False):
+def rule_num(a, key, default):
+    """A row's optional numeric rule; anything but a number reads as the default, said once on stderr
+    (AGENTS.md's optional-key trap: a TypeError in judge would fail every pick)."""
+    v = a["rules"].get(key, default)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        print(f"account: {a['label']}'s rules.{key} {v!r} is not a number; using {default}", file=sys.stderr)
+        return default
+    return v
+
+
+def pace(lim, t):
+    """The 5-hour window's elapsed share now, in percent (the owner, 2026-10-30: "if the spend is lower
+    than pace and we still have 5-10% to go, we should just launch"), or None with no reset time inside
+    the window's future: a missing or past reset, or one further off than the window is long (a stale or
+    misnamed reading), leaves the flat limit alone. A Codex window says its own length; Claude's
+    is five hours. t is when lim was sampled (judge's at), never a later now."""
+    end, span = lim.get("five_hour_resets"), lim.get("five_hour_window_s") or FIVE_HOUR_S
+    if not end or not 0 < end - t <= span:
+        return None
+    return 100 * (1 - (end - t) / span)
+
+
+def judge(a, lim, t, allow_overage=False, at=None):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
-    whose paid extra usage is on (header, "Paid overage")."""
+    whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
+    the window as it stood then (header, "Pace")."""
     if a.get("same_as"):
         other, email = a["same_as"]
         return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
@@ -1742,7 +1787,16 @@ def judge(a, lim, t, allow_overage=False):
     if wk >= week_max:
         return False, f"week {wk}% ≥ {week_max}% ({why}); resets {when(lim.get('seven_day_resets'))}"
     if fh > win_max:
+        free = rule_num(a, "free_below", FREE_BELOW)
+        if fh < free:
+            return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% under {free}% (runs whatever the pace)"
         extra = f", {m} points of margin after an exhaustion" if m else ""
+        p, room = pace(lim, at or t), rule_num(a, "pace_headroom", PACE_HEADROOM)
+        if p is not None and fh < p and 100 - fh >= room:
+            return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% under pace {min(p, 99):.0f}% ({room} points headroom)"
+        if p is not None:
+            extra += (f"; under pace {min(p, 99):.0f}%, but {100 - fh:g} points left < {room} of headroom" if fh < p
+                      else f", over pace {min(p, 99):.0f}%")
         return False, f"5h {fh}% > {win_max}%{extra}; resets {when(lim.get('five_hour_resets'))}"
     return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% ≤ {win_max}%"
 
@@ -1787,8 +1841,8 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
             skipped.append((a["label"], judge(a, None, t)[1]))
             continue
-        lim, _ = limits(a, cached=cached)
-        ok, why = judge(a, lim, t, allow_overage)
+        lim, at = limits(a, cached=cached)
+        ok, why = judge(a, lim, t, allow_overage, at)
         if ok:
             return a, why, skipped
         if a.get("primary") and (lim is None or why.startswith("limits unknown")):
@@ -2363,6 +2417,8 @@ def parse_orca(x):
         if k in ORCA_WINDOWS:
             w = ORCA_WINDOWS[k]
             out[w], out[w + "_resets"] = v["usedPercent"], ms(v.get("resetsAt"))
+            if w == "five_hour" and isinstance(v.get("windowMinutes"), (int, float)):
+                out["five_hour_window_s"] = v["windowMinutes"] * 60   # pace()'s span, as parse_codex's
             out["kinds"].append(w)
             if v["usedPercent"] >= 100 and not (groups and w == "seven_day"):
                 out["locked"].append(w)
@@ -2822,8 +2878,8 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                 or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}")
             if not gone:
                 t = now()
-                lim = None if cooldown(a, t) else limits(a, cached=cached)[0]
-                ok, why = judge(a, lim, t, allow_overage)
+                lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached)
+                ok, why = judge(a, lim, t, allow_overage, at)
                 if not ok and lim is None and a.get("primary") and not cooldown(a, t):
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
                 elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
@@ -3536,7 +3592,7 @@ def fable_word(lim):
 
 
 def limits_json(a, lim, at, t, repo=None):
-    ok, why = judge(a, lim, t)
+    ok, why = judge(a, lim, t, at=at)
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)

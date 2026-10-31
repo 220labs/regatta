@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Free below (the owner, 2026-10-30: "if the window is under 70% then the pace rule doesn't apply. Under 70% we can run anything."): a 5-hour spend under a row's `rules.free_below`
+  runs whatever `window_max`, the margin after an exhaustion or the pace say; those judge only from 70% up, and the
+  week ceiling as before. Off by default (0); the owner's registry is to set 70 per row (the overlay's own free-below change; until it lands, off everywhere). The reason reads `5h 60% under 70% (runs whatever the pace)`. 6 cases in `tests/account.sh`.
+- Pace (2026-10-30, the owner: "if the spend is lower than pace and we still have 5-10% to go, we should just
+  launch"): `account`'s judge lets a row over its flat 5-hour limit run while its 5-hour spend is under the window's
+  elapsed share, `100 * (1 - (reset - now) / 5 h)`, with `rules.pace_headroom` points left (default 10). The reason
+  names it (`5h 55% under pace 92% (10 points headroom)`), so `pick`, `limits`, tier_check and dispatch's queue lines
+  say why a row passed; a refusal names the pace it is over, or the headroom it lacks. No reset inside the window's
+  future, the flat limit alone. The week ceiling, a cooldown, paid overage and the deny list judge as before. A Codex
+  reading keeps its window's own length (`five_hour_window_s`) for the pace (an Orca report row's is shown, never judged). Every other reader of a 5-hour
+  verdict takes this one, so none changed. 17 cases in `tests/account.sh`; the two margin cases moved off pace.
+- Pace is read at the reading's sample time, not now (landing review, 2026-10-30): a failed probe's stale
+  reading, which `pick` falls back to, stayed refused only until the clock lifted its pace. And a `free_below` or
+  `pace_headroom` that is no number reads as its default, with one stderr line, rather than a TypeError in every
+  pick. Pace prints at most 99%, so a window not yet over never reads "pace 100%". 6 cases.
 - secrets_guard's fence covers a confidential scope's scratch folders (guard-scratch, 2026-10-29): Claude Code's
   `<tmp>/claude-<uid>/<slug>/` for each of the scope's trees and each removed worktree's
   (`<slug>--claude-worktrees-<topic>`), as the core's `scope_match` fences them for usage-report since
