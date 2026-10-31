@@ -1772,21 +1772,31 @@ def ago(epoch):
     return "%d min ago" % m if m < 120 else "%.1f h ago" % (m / 60)
 
 
-def label_prefix():
+def label_prefix(key="wharf-runs/label-prefix", default="org.regatta.claude"):
     """The launchd label prefix every dispatch job carries: `wharf-runs/label-prefix` (the overlay's
     jobs keep the one they always had), else org.regatta.claude. Read through the core; where it
     could not load (common is None), the file itself, so the tidier keeps its label either way."""
     if common:
-        return common.config_line("wharf-runs/label-prefix") or "org.regatta.claude"
+        return common.config_line(key) or default
     cfg = os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
     try:
-        with open(os.path.join(cfg, "wharf-runs", "label-prefix"), encoding="utf-8-sig") as f:
-            return next((l.strip() for l in f if l.strip()), "") or "org.regatta.claude"
+        with open(os.path.join(cfg, key), encoding="utf-8-sig") as f:
+            return next((l.strip() for l in f if l.strip()), "") or default
     except (OSError, ValueError):
-        return "org.regatta.claude"
+        return default
+
+
+def label_prefix_previous():
+    """`wharf-runs/label-prefix-previous`: the prefix the jobs had before a move, whose jobs are still
+    ours while they drain; "" when absent or the same as the current one."""
+    prev = label_prefix("wharf-runs/label-prefix-previous", "").strip()
+    return "" if prev == label_prefix() else prev
 
 
 TIDIER = label_prefix() + ".dispatch-tidy"
+# the tidier under the previous prefix: it still marks this Mac as one that tidies (tidy_soon, refresh_tidy),
+# and refresh_tidy relabels it once it is idle
+TIDIER_PREV = label_prefix_previous() + ".dispatch-tidy" if label_prefix_previous() else ""
 
 
 def primary_bin(name):
@@ -1829,8 +1839,9 @@ def tidy_soon():
     after its last turn; the turn that handed off may run a few minutes more, hence three passes.
     A second hand-off reloads the job and starts the three over. RunAtLoad only: the job stays
     loaded and idle after, and at most re-runs three tidies at the next login — harmless."""
-    # only on a Mac that runs the tidier (schedule-tidy): it is opt-in per Mac, as refresh_tidy reads it
-    if not os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")):
+    # only on a Mac that runs the tidier (schedule-tidy): it is opt-in per Mac, as refresh_tidy reads it;
+    # one still under the previous prefix counts (a label move, wharf-runs/label-prefix-previous)
+    if not any(t and os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", t + ".plist")) for t in (TIDIER, TIDIER_PREV)):
         return 0
     lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
     label = "gui/%d/%s" % (os.getuid(), TIDY_SOON)
@@ -1877,20 +1888,44 @@ def tidier_plist():
 def schedule_tidy(install=True):
     """The job every TIDY_EVERY (10 min since 2026-10-08). rc-hosts' own loader does the bootout, the wait for the label to go and the
     bootstrap with one retry — the same dance, not a second copy of it."""
-    label = "gui/%d/%s" % (os.getuid(), TIDIER)
-    plist = os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")
     if not install:
-        subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "bootout", label],
-                       capture_output=True)
-        if os.path.exists(plist):
-            os.remove(plist)
+        for t in (TIDIER, TIDIER_PREV):   # the previous prefix's too: unscheduled is none under either
+            if t:
+                drop_job(t)
         print("  tidier: removed")
         return 0
     os.makedirs(os.path.dirname(RUNS), exist_ok=True)
-    RC.load(TIDIER, tidier_plist())
+    # one tidier: the previous prefix's goes once the new one is loaded (a failed load keeps the old one tidying)
+    if RC.load(TIDIER, tidier_plist()):
+        drop_tidy_prev()
     print("  tidier: every %d min, windows whose session is gone, handed off, or idle %d min+ (%s)"
           % (TIDY_EVERY // 60, IDLE // 60, os.path.join(os.path.dirname(RUNS), "tidy.log")))
     return 0
+
+
+def job_state(label):
+    """(loaded, running) as launchd reads LABEL."""
+    r = subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "print", "gui/%d/%s" % (os.getuid(), label)],
+                       capture_output=True, text=True)
+    return r.returncode == 0, "\tstate = running" in r.stdout
+
+
+def drop_tidy_prev():
+    """The previous prefix's tidier and its -soon dropped, each only while launchd says it is not running
+    (a bootout would end it mid-pass, between closing a window and signalling its session): one left is
+    dropped by a later refresh_tidy."""
+    for t in (TIDIER_PREV, TIDIER_PREV + "-soon") if TIDIER_PREV else ():
+        if os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", t + ".plist")) and not job_state(t)[1]:
+            drop_job(t)
+
+
+def drop_job(label):
+    """LABEL's job booted out and its plist removed (either may already be gone)."""
+    subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "bootout", "gui/%d/%s" % (os.getuid(), label)],
+                   capture_output=True)
+    plist = os.path.join(HOME, "Library", "LaunchAgents", label + ".plist")
+    if os.path.exists(plist):
+        os.remove(plist)
 
 
 def refresh_tidy():
@@ -1900,17 +1935,24 @@ def refresh_tidy():
     job, since a tidier reloading itself would be booted out mid-pass. Not installed: nothing (it
     is opt-in per Mac); running now: next time."""
     plist = os.path.join(HOME, "Library", "LaunchAgents", TIDIER + ".plist")
+    # installed under the previous prefix only (wharf-runs/label-prefix-previous): the Mac tidies, so the
+    # tidier is relabelled — schedule_tidy writes the new one and drops the old, once the old is not mid-pass
+    prev = TIDIER_PREV and not os.path.exists(plist) and \
+        os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", TIDIER_PREV + ".plist"))
     try:
         with open(plist, "rb") as f:
             if plistlib.load(f) == tidier_plist():
+                # the new one in place: a previous-prefix tidier left behind (running then, or the new
+                # load failed once) goes once launchd holds the new one
+                if TIDIER_PREV and job_state(TIDIER)[0]:
+                    drop_tidy_prev()
                 return 0
     except FileNotFoundError:
-        return 0
+        if not prev:
+            return 0
     except Exception:
         pass   # unreadable (a truncated XML plist raises expat's ExpatError, not a ValueError): write it again
-    lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
-    r = subprocess.run([lc, "print", "gui/%d/%s" % (os.getuid(), TIDIER)], capture_output=True, text=True)
-    if "\tstate = running" in r.stdout:
+    if job_state(TIDIER_PREV if prev else TIDIER)[1]:
         return 0
     return schedule_tidy()
 

@@ -16,3 +16,4 @@ wharf-runs/load-margin
 # Nor wharf-runs/queue-mode (absent: every host with a home claims) or wharf-runs/power (absent: only the core's
 # laptop may sleep), both optional (README; dispatch-queue S10).
 # Not listed either: wharf-runs/finisher-rotation, a window that is off when absent (autofinish-run's header).
+# Nor wharf-runs/label-prefix-previous and wharf-runs/launcher-id: optional, a label move's (README).

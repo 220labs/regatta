@@ -278,6 +278,34 @@ check "$(ls "$HOME"/Library/LaunchAgents/org.regatta.claude.dispatch.repo.demo.[
 check "$(python3 -c 'import importlib.machinery, sys; print(importlib.machinery.SourceFileLoader("rc", sys.argv[1]).load_module().TIDIER)' "$B/dispatch-rc")" "org.regatta.claude.dispatch-tidy" "  for the tidier too"
 "$B/dispatch" $BR --repo "$T/repo" --cancel >/dev/null
 echo org.example.claude > "$KEYS/label-prefix"
+echo "a label move: wharf-runs/label-prefix-previous names the prefix whose jobs still drain"
+LAJ="$HOME/Library/LaunchAgents"; OLDJ="$LAJ/org.old.jobs.dispatch.repo.demo.209901010410.plist"
+OLDSEED="$LAJ/org.old.jobs.run-seed.repo.demo.plist"
+: > "$OLDJ"; : > "$OLDSEED"
+out=$("$B/dispatch" $BR --repo "$T/repo" --cancel 2>&1)
+check "$(ls "$OLDJ" "$OLDSEED" 2>/dev/null | wc -l | tr -d ' ')" "2" "  no previous key: a job under another prefix is not this branch's (today's behaviour)"
+echo org.old.jobs > "$KEYS/label-prefix-previous"
+: > "$T/calls"
+out=$("$B/dispatch" $BR --repo "$T/repo" --cancel 2>&1)
+check "$(ls "$OLDJ" "$OLDSEED" 2>/dev/null | wc -l | tr -d ' ')" "0" "  with it: --cancel clears the branch's jobs under the previous prefix, dated and run-seed's"
+echo "$out" | grep -qx "cancelled org.old.jobs.dispatch.repo.demo.209901010410"; check "$?" "0" "    naming each"
+has "$T/calls" "bootout gui/$(id -u)/org.old.jobs.dispatch.repo.demo.209901010410" "    and booting it out"
+: > "$OLDJ"; touch "$T/running.org.old.jobs.dispatch.repo.demo.209901010410"
+out=$("$B/dispatch" $BR --repo "$T/repo" --cancel 2>&1)
+check "$(ls "$OLDJ" 2>/dev/null | wc -l | tr -d ' ')" "1" "  a run going under the previous prefix is left, as under the current one"
+echo "$out" | grep -q "^left org.old.jobs.dispatch.repo.demo.209901010410: its run is going"; check "$?" "0" "    saying so"
+rm -f "$T/running.org.old.jobs.dispatch.repo.demo.209901010410"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>"$T/err"
+check "$(ls "$LAJ"/org.example.claude.dispatch.repo.demo.[0-9]*.plist 2>/dev/null | wc -l | tr -d ' ')" "1" "  a new job takes the current prefix only"
+has "$T/err" "replaced the pending org.old.jobs.dispatch.repo.demo.209901010410" "    replacing the pending one under the previous prefix: one pending run per branch"
+check "$(ls "$OLDJ" 2>/dev/null | wc -l | tr -d ' ')" "0" "    whose plist is gone"
+: > "$OLDJ"
+"$B/dispatch" $BR --repo "$T/repo" --cancel >/dev/null 2>&1
+check "$(ls "$OLDJ" "$LAJ"/org.example.claude.dispatch.repo.demo.[0-9]*.plist 2>/dev/null | wc -l | tr -d ' ')" "0" "  --cancel clears both prefixes' jobs"
+check "$(python3 -c 'import importlib.machinery, sys; print(importlib.machinery.SourceFileLoader("rc", sys.argv[1]).load_module().TIDIER_PREV)' "$B/dispatch-rc")" "org.old.jobs.dispatch-tidy" "  the tidier under the previous prefix is known"
+echo org.example.claude > "$KEYS/label-prefix-previous"
+check "$(python3 -c 'import importlib.machinery, sys; print(repr(importlib.machinery.SourceFileLoader("rc", sys.argv[1]).load_module().TIDIER_PREV))' "$B/dispatch-rc")" "''" "  a previous key equal to the current one is none"
+rm -f "$KEYS/label-prefix-previous"
 
 "$B/dispatch" $BR --repo "$T/repo" --at "2020-01-01 00:00" 2>/dev/null; check "$?" "2" "a past time is refused"
 "$B/dispatch" $BR --repo "$T/repo" --at "$(date -v+400d +%Y-%m-%d) 04:10" 2>/dev/null; check "$?" "2" "a time a year or more ahead is refused"
@@ -2312,6 +2340,34 @@ check "$([ -f "$SP2" ] && echo present || echo gone)" "gone" "unschedule-tidy re
 : > "$T/launchctl.calls"
 PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
 check "$([ -f "$SP2" ] && echo present || echo absent) $(wc -c < "$T/launchctl.calls" | tr -d ' ')" "absent 0" "  refresh-tidy where none is installed: nothing (opt-in per Mac)"
+echo "tidy: a label move (wharf-runs/label-prefix-previous)"
+LAD=$(dirname "$SP2"); OTP="$LAD/org.old.jobs.dispatch-tidy.plist"; OTS="$LAD/org.old.jobs.dispatch-tidy-soon.plist"
+TS2="$LAD/org.example.claude.dispatch-tidy-soon.plist"; rm -f "$TS2"
+: > "$OTP"; : > "$T/launchctl.calls"; : > "$T/calls"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
+check "$([ -f "$SP2" ] && echo present || echo absent) $([ -f "$OTP" ] && echo old)" "absent old" "  no previous key: a tidier under another prefix is not this Mac's (today's behaviour)"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" tidy-soon > "$T/out" 2>&1
+check "$([ -f "$TS2" ] && echo loaded || echo none)" "none" "    nor does it bring a tidy-soon"
+echo org.old.jobs > "$REGATTA_CONFIG/wharf-runs/label-prefix-previous"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" tidy-soon > "$T/out" 2>&1
+check "$([ -f "$TS2" ] && echo loaded || echo none)" "loaded" "  with it: a tidier under the previous prefix marks a Mac that tidies (tidy-soon)"
+touch "$T/running.org.old.jobs.dispatch-tidy"; : > "$T/launchctl.calls"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
+check "$([ -f "$SP2" ] && echo present || echo absent) $([ -f "$OTP" ] && echo old)" "absent old" "  the old tidier mid-pass: refresh-tidy leaves it for next time"
+rm -f "$T/running.org.old.jobs.dispatch-tidy"; : > "$OTS"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
+check "$([ -f "$SP2" ] && echo present) $([ -f "$OTP" ] || [ -f "$OTS" ] || echo gone)" "present gone" "  idle: refresh-tidy relabels it — the new tidier written, the old one and its tidy-soon gone"
+has "$T/calls" "bootout gui/$(id -u)/org.old.jobs.dispatch-tidy" "    the old one booted out"
+: > "$OTS"; touch "$T/running.org.old.jobs.dispatch-tidy-soon"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
+check "$([ -f "$OTS" ] && echo kept)" "kept" "  the new tidier in place, an old tidy-soon left mid-pass: kept while it runs"
+rm -f "$T/running.org.old.jobs.dispatch-tidy-soon"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" refresh-tidy > "$T/out" 2>&1
+check "$([ -f "$OTS" ] || echo gone)" "gone" "    and dropped by the next refresh-tidy, the new one loaded"
+: > "$OTP"
+PATH="$T/stub:$PATH" python3 "$B/dispatch-rc" unschedule-tidy > "$T/out" 2>&1
+check "$([ -f "$SP2" ] || [ -f "$OTP" ] || echo gone)" "gone" "  unschedule-tidy removes the tidier under either prefix"
+rm -f "$REGATTA_CONFIG/wharf-runs/label-prefix-previous" "$TS2"
 
 echo "session-asks R2: a managed run that ends on the WAITING line without bin/ask is failed"
 GW="$T/gw"; mkdir -p "$GW" "$HOME/.claude/projects/-g"; git -C "$GW" init -q
