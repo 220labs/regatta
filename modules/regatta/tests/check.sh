@@ -193,6 +193,7 @@ check "$(py 'P = common.PENDING_PREFIX; print(common.closing_kind(common.HANDOVE
   "  the hand-over reads as handed (the fixed line and the two free forms of 2026-10-24); a line naming something else first stays pending"
 check "$(py 'print(common.OVERRIDE_BY, common.ORCA_ROW["repos"]["deny"])')" "owner []" "  the override marker is owner's, no repo denied an Orca login"
 check "$(py 'print(common.orca_row("x")["rules"]["free_below"], common.orca_row("x")["rules"]["window_max"])')" "70 50" "  an unnamed Orca login runs freely under 70% of its 5-hour window, as every registry row (pace-window)"
+check "$(py 'print(common.orca_row("x")["rules"]["week_max"])')" "90" "  an unnamed Orca login takes work up to 90% of its week (the owner, 2026-10-31)"
 check "$(jp 'print(j.GUARDED, j.WHO)')" "() the owner" "  jev guards nothing and asks the owner"
 check "$(jp 'print(j.log_dir())')" "$H/.local/state/regatta" "  the logs go to .local/state/regatta in the home folder"
 check "$(sp 'print(s.PROJECTS)') $(py 'print(common.PROJECTS)')" "$H/projects $H/projects" "  secrets and cloned_repos() read repos under projects in the home folder"
