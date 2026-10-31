@@ -12,6 +12,8 @@
 #                Beside it the intake (S4): `ops ingest` every 10 minutes, the same host rule and
 #                environment, its own agent (`<label>.ingest`) or, on Linux, its own unit's lines.
 #   --remove     unload both agents and delete their plists
+#   --vendor     the same guards and global rules in Codex's and Antigravity's own sockets: bin/vendor-hooks
+#                apply, which names the main checkout's modules (vendor-hooks, 2026-10-29); --check reports them
 # Nothing here runs by itself: the job exists only after someone runs --schedule on the ops host.
 # Environment (the tests use it, so they never touch the real launchd):
 #   LIGHTHOUSE_LAUNCH_DIR  where the plist goes   (default ~/Library/LaunchAgents)
@@ -62,6 +64,11 @@ PY
         echo "$n:  off ($(python3 "$here/bin/ops" is-host 2>&1 || true))"
       fi
     done
+    # each Codex and Antigravity home: its guard entries, Codex's review of them, its rules pointer
+    python3 "$here/bin/vendor-hooks" check | sed 's/^/vendor:   /' || true
+    ;;
+  --vendor)
+    python3 "$here/bin/vendor-hooks" apply   # it names the main checkout itself (its root())
     ;;
   --schedule)
     # the host rule first: only the ops host gets the job (two samplers would write two desks' rows)
@@ -148,6 +155,6 @@ PY
     rm -f "$plist" "$iplist"
     echo "lighthouse: removed $label and $label.ingest"
     ;;
-  "") echo "lighthouse: nothing to install outside the plugin; for cc, add to the shell's rc file: . '$here/shell/cc.zsh'; --schedule adds the desk's sampler and intake on the ops host" ;;
-  *) echo "usage: install.sh [--check | --schedule | --remove]" >&2; exit 2 ;;
+  "") echo "lighthouse: nothing to install outside the plugin; for cc, add to the shell's rc file: . '$here/shell/cc.zsh'; --schedule adds the desk's sampler and intake on the ops host; --vendor wires the guards into Codex and Antigravity" ;;
+  *) echo "usage: install.sh [--check | --schedule | --remove | --vendor]" >&2; exit 2 ;;
 esac

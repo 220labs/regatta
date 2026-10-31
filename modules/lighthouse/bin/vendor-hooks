@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""vendor-hooks — the guards and the global rules a Claude session gets, wired into Codex's and Antigravity's own sockets.
+
+    vendor-hooks apply [--dry-run]   write each CLI home's PreToolUse entries and its rules pointer; idempotent
+    vendor-hooks check               per CLI home: each entry there, each Codex entry reviewed, the pointer; exit 1 on a gap
+    vendor-hooks homes               the CLI homes this Mac has: `<cli>\t<home>`, one per line
+
+Why (the owner's D2-A, 2026-10-29, docs/codex-agy-gaps-2026-10-29.md): one rule set, each CLI's own socket. A
+hand-started or Orca-started Codex or Antigravity session meets the same guards a Claude session does, through
+hooks/vendor_hook.py, which runs each guard unchanged on a translated payload (its docstring has the shapes).
+
+What it writes, per CLI home this Mac has (a home is never created; a hooks file is, beside an existing home):
+- Codex — every home: `$CODEX_HOME`, else `~/.codex`, and each Codex row the account registry names (its
+  `home`, or for an Orca login the home orca-sync read back). `<home>/hooks.json` gains one PreToolUse group per
+  guard (GUARDS), matcher "" (vendor_hook passes a tool it does not translate), timeout 30. Codex keys its review
+  by position (`<file>:pre_tool_use:<group>:<handler>`, keel's sheep `codex_unreviewed`), so ours are rewritten
+  where they stand and a missing one appended, never moved: an entry of Orca's or sessionpipe's after ours keeps
+  its review. `<home>/AGENTS.md` becomes the rules pointer (below); an `AGENTS.override.md` that is not empty
+  shadows it, and check says so (Codex reads the first non-empty of the two: its AGENTS.md docs).
+- Antigravity — `$GEMINI_CLI_HOME`, else `~/.gemini` (keel's sheep reads it the same way). `<home>/config/
+  hooks.json` gets our key, `regatta` (hook names are its top-level keys), replaced whole, an owner's
+  `enabled: false` kept. `<home>/GEMINI.md`, one of the four global rules files its rules docs list, is the
+  pointer.
+
+The rules pointer names, never copies, what a Claude Code session of the same tenant loads, less what must not
+leave for another vendor (the landing review, 2026-10-30): every `.md` under the tenant's Claude login dir's
+`rules/`, the files its CLAUDE.md names after an `@` that are also SHARED, and the bulletin (atlas's
+`bulletin.py --list`). Never the CLAUDE.md itself, whose `@` lines would lead to the rest. The tenant: the
+tenants file's tenant whose `logins` hold the Codex home's registry label, and its first Claude login with a
+`home`; a home no tenant holds (Antigravity's, `~/.codex`) takes the default dir, `~/.claude`. SHARED: the
+config key `lighthouse/vendor-layer` (one path a line, `~` allowed) when it is there; else the `@` files
+every Claude login dir on this Mac loads, so a file only one seat loads (the owner's private layer, which an
+employer seat's CLAUDE.md leaves out) is never named; with one login dir, what it loads. Paths are resolved at
+each apply, so a moved file is a re-apply away. A pointer file that is not ours (its first line is not MARK) is
+never written, whatever else holds — an `AGENTS.override.md` beside it included — and is reported.
+
+Codex's review: Codex runs a hook only once its current hash is trusted (`codex` → /hooks), and how the hash is
+computed is neither documented nor recoverable here (no form of the entry reproduced the hashes this Mac's
+config.toml holds, 2026-10-29). So `apply` cannot leave an entry trusted: it says how many wait for review, and
+`check` counts each with no trust table. A rewritten entry whose old table stands reads as reviewed while Codex
+asks again; `apply` names every Codex entry it changed. A run Regatta starts can pass Codex's
+`--dangerously-bypass-hook-trust` instead (the vendor-fence slice's `_argv`).
+
+Each entry runs the adapter through a two-line python launcher (launcher()): when a re-layout moved the
+adapter away, the entry prints one stderr line and the CLI's "carry on" (nothing for Codex, `{}` for agy)
+rather than python's exit 2, which Codex would read as a deny of every call. A group of ours that loses its
+entry stays, empty, so no later group's index (Codex's review key) shifts.
+
+Environment: HOME, CODEX_HOME, GEMINI_CLI_HOME as the CLIs read them; ACCOUNTS_FILE, ACCOUNT_ORCA_FILE and
+TENANTS_FILE as `account` reads them; REGATTA_CONFIG the config dir; VENDOR_HOOKS_ROOT the checkout whose modules the entries name (default: this repo's main
+checkout, as lighthouse's install.sh names its job — /finish removes a worktree). Tests: tests/parity.sh.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HOME = Path.home()
+MARK = "<!-- regatta vendor-hooks: written by lighthouse's bin/vendor-hooks apply, rewritten at each apply; edit nothing here -->"
+TIMEOUT = 30
+AG_KEY = "regatta"
+
+
+def root():
+    """The checkout whose modules the entries name: VENDOR_HOOKS_ROOT, else this repo's main checkout, else this one."""
+    if os.environ.get("VENDOR_HOOKS_ROOT"):
+        return Path(os.environ["VENDOR_HOOKS_ROOT"]).resolve()
+    mine = HERE.parent.parent.parent
+    try:
+        c = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        c = ""
+    main = Path(c).parent if c.endswith("/.git") else None
+    return main if main and (main / "modules" / "lighthouse").is_dir() else mine
+
+
+def guards():
+    """[(name, guard argument)] — the Claude PreToolUse guards a vendor call meets, then the trailer. A guard whose
+    module is absent here is left out (check names it)."""
+    r = root() / "modules"
+    out = []
+    for name, path in (("secrets_guard", r / "lighthouse" / "hooks" / "secrets_guard.py"),
+                       ("checkpoint", r / "wharf" / "hooks" / "checkpoint.py")):
+        if path.is_file():
+            out.append((name, str(path)))
+    return out + [("trailer", "trailer")]
+
+
+def adapter():
+    return root() / "modules" / "lighthouse" / "hooks" / "vendor_hook.py"
+
+
+# Runs the adapter when it is there; else one stderr line and the CLI's carry-on (the docstring). Python, not
+# `test -f … ||`: it reads the same whether the CLI hands the line to a shell or splits it itself.
+LAUNCHER = ("import os,runpy,sys;a=sys.argv[1];sys.argv=sys.argv[1:];os.path.isfile(a) and runpy.run_path(a,run_name='__main__');"
+            "print('{}' if sys.argv[1:2]==['antigravity'] else '',end='');"
+            "sys.stderr.write('regatta vendor-hooks: %s is gone, so no guard ran; run vendor-hooks apply\\n'%a)")
+
+
+def command(cli, arg):
+    # -I: the CLI's cwd is the repo it works in, which `-c` would put first on sys.path (a repo's `json.py`
+    # would run inside the hook; the finish review, 2026-10-31)
+    return f'python3 -I -c "{LAUNCHER}" "{adapter()}" {cli} ' + (arg if arg == "trailer" else f'"{arg}"')
+
+
+def ours(cmd):
+    return isinstance(cmd, str) and "/hooks/vendor_hook.py" in cmd
+
+
+def guard_of(cmd):
+    """Which guard an entry of ours runs: the basename of its last word, `.py` dropped."""
+    last = cmd.strip().split()[-1].strip('"') if cmd.strip() else ""
+    return re.sub(r"\.py$", "", os.path.basename(last))
+
+
+# --- the homes ---------------------------------------------------------------------------------
+
+def _core():
+    try:
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import find_core
+        sys.path.insert(0, find_core.hooks())
+        import common
+        return common
+    except Exception:
+        return None
+
+
+def config_dir():
+    common = _core()
+    return Path(getattr(common, "CONFIG", None) or os.environ.get("REGATTA_CONFIG") or HOME / ".config" / "regatta").expanduser()
+
+
+def registry_rows():
+    """The account registry's rows (`account`'s load_registry rule), or [] when it does not read."""
+    common = _core()
+    if common is None:
+        return []
+    try:
+        f = Path(os.environ.get("ACCOUNTS_FILE") or common.CONFIG / "lighthouse" / "accounts.json")
+        return common.account_rows((json.loads(f.read_text()) or {}).get("accounts"), HOME)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return []
+
+
+def registry_codex_homes():
+    """[(home, label)] for the Codex homes the account registry names, Orca's read-back ones included."""
+    common = _core()
+    try:
+        synced = json.loads(common.orca_file(HOME).read_text()) if common and common.orca_file(HOME).exists() else {}
+    except (OSError, ValueError, AttributeError, TypeError):
+        synced = {}
+    out = []
+    for a in registry_rows():
+        if a.get("provider") != "codex":
+            continue
+        home = (synced.get(a.get("label")) or {}).get("home") if a.get("via") == "orca" else a.get("home")
+        if home:
+            out.append((Path(os.path.expanduser(str(home))), a.get("label")))
+    out += [(Path(os.path.expanduser(str(v["home"]))), k) for k, v in synced.items()
+            if isinstance(v, dict) and v.get("provider") == "codex" and v.get("home")]
+    return out
+
+
+def homes():
+    """[(cli, home, registry label or None)] for each CLI home this Mac has, each once."""
+    reg = registry_codex_homes()
+    by_path = {}
+    for h, label in reg:
+        if h.is_dir():
+            by_path.setdefault(h.resolve(), label)
+    first = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+    codex = [(first, by_path.get(first.resolve()) if first.is_dir() else None)] + reg
+    ag = [(Path(os.environ.get("GEMINI_CLI_HOME") or HOME / ".gemini"), None)]
+    out, seen = [], set()
+    for cli, hs in (("codex", codex), ("antigravity", ag)):
+        for h, label in hs:
+            if h.is_dir() and (cli, h.resolve()) not in seen:
+                seen.add((cli, h.resolve()))
+                out.append((cli, h, label))
+    return out
+
+
+# --- the tenant's layer ------------------------------------------------------------------------
+
+def tenants():
+    """{tenant: [login label]} from the tenants file as `account` finds it (a fixture registry's beside it, else
+    the config dir's, its last good copy first), else the registry's rows' `tenant`; {} when neither reads."""
+    reg_file = os.environ.get("ACCOUNTS_FILE")
+    live = config_dir() / "lighthouse" / "tenants.json"
+    if os.environ.get("TENANTS_FILE"):
+        cands = [Path(os.environ["TENANTS_FILE"])]
+    elif reg_file and Path(reg_file).resolve() != (config_dir() / "lighthouse" / "accounts.json").resolve():
+        cands = [Path(reg_file + ".tenants")]
+    else:
+        cands = [live.with_name(".tenants.json.last"), live]
+    for f in cands:
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict):
+            return {n: [x for x in (t.get("logins") or []) if isinstance(x, str)]
+                    for n, t in d.items() if isinstance(t, dict)}
+    out = {}
+    for a in registry_rows():
+        if isinstance(a.get("tenant"), str) and a.get("label"):
+            out.setdefault(a["tenant"], []).append(a["label"])
+    return out
+
+
+def claude_dirs():
+    """{label or None: Path} of every Claude login dir: the default, None, and each registry row with a `home`."""
+    out = {None: HOME / ".claude"}
+    for a in registry_rows():
+        if a.get("provider", "claude") == "claude" and a.get("home") and a.get("label"):
+            out[a["label"]] = Path(os.path.expanduser(str(a["home"])))
+    return out
+
+
+def login_dir(label):
+    """The Claude login dir whose layer a CLI home of registry LABEL gets (the docstring)."""
+    dirs = claude_dirs()
+    for logins in tenants().values():
+        if label and label in logins:
+            for x in logins:
+                if x in dirs and x is not None and dirs[x].is_dir():
+                    return dirs[x]
+    return dirs[None]
+
+
+def imports(d):
+    """The files the CLAUDE.md in login dir D names after an `@`, by absolute path, those that are files."""
+    md = d / "CLAUDE.md"
+    if not md.is_file():
+        return None
+    out = []
+    for line in md.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\s*@(\S+)\s*$", line)
+        if m:
+            p = Path(os.path.expanduser(m.group(1)))
+            p = p if p.is_absolute() else md.parent / p
+            if p.is_file() and p not in out:
+                out.append(p)
+    return out
+
+
+def shared():
+    """The `@` files a CLI may be pointed at (the docstring's SHARED), as real paths."""
+    key = config_dir() / "lighthouse" / "vendor-layer"
+    if key.is_file():
+        return {os.path.realpath(os.path.expanduser(l.strip())) for l in key.read_text().splitlines()
+                if l.strip() and not l.lstrip().startswith("#")}
+    sets = [set(os.path.realpath(p) for p in got) for got in (imports(d) for d in set(claude_dirs().values())) if got is not None]
+    return set.intersection(*sets) if sets else set()
+
+
+def hooks_file(cli, home):
+    return home / "hooks.json" if cli == "codex" else home / "config" / "hooks.json"
+
+
+def pointer_file(cli, home):
+    return home / "AGENTS.md" if cli == "codex" else home / "GEMINI.md"
+
+
+# --- the files ---------------------------------------------------------------------------------
+
+class Refused(Exception):
+    pass
+
+
+def read_json(path):
+    if not path.exists():
+        return {}
+    try:
+        v = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"{path} does not read ({exc}): not touched")
+    if not isinstance(v, dict):
+        raise Refused(f"{path} is not a JSON object: not touched")
+    return v
+
+
+def write_text(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.vendor-hooks.{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)   # the link, if the file is one, is replaced by a file: neither CLI links these
+
+
+def codex_handler(cli, arg):
+    return {"type": "command", "command": command(cli, arg), "timeout": TIMEOUT}
+
+
+def plan_codex(cfg):
+    """(new cfg, changes) for Codex's hooks.json: ours rewritten where they stand, a missing one appended."""
+    hooks = cfg.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise Refused("its `hooks` is not an object: not touched")
+    groups = hooks.get("PreToolUse", [])
+    if not isinstance(groups, list):
+        raise Refused("its `PreToolUse` is not a list: not touched")
+    want = {name: codex_handler("codex", arg) for name, arg in guards()}
+    changes, seen, keep = [], set(), []
+    for g in groups:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
+            keep.append(g)
+            continue
+        hs = []
+        for h in g["hooks"]:
+            if isinstance(h, dict) and ours(h.get("command")):
+                name = guard_of(h["command"])
+                if name in want and name not in seen:
+                    seen.add(name)
+                    if h != want[name] or g.get("matcher") != "":
+                        changes.append(f"rewrote {name}")
+                    hs.append(want[name])
+                else:
+                    changes.append(f"dropped {name}")   # a guard no longer wired, or a second copy
+                continue
+            hs.append(h)
+        # a group of ours takes matcher "": vendor_hook judges which tools it reads. One left empty stays, so no
+        # later group's index — Codex's review key — shifts (the docstring)
+        keep.append(dict(g, hooks=hs, matcher="") if any(ours(h.get("command")) for h in hs) or not hs else dict(g, hooks=hs))
+    for name, h in want.items():
+        if name not in seen:
+            keep.append({"matcher": "", "hooks": [h]})
+            changes.append(f"added {name}")
+    new = dict(cfg, hooks=dict(hooks, PreToolUse=keep))
+    return new, changes
+
+
+def plan_ag(cfg):
+    have = cfg.get(AG_KEY) if isinstance(cfg.get(AG_KEY), dict) else {}
+    want = {"enabled": have.get("enabled") is not False,
+            "PreToolUse": [{"matcher": "*", "hooks": [codex_handler("antigravity", arg) for _, arg in guards()]}]}
+    if cfg.get(AG_KEY) == want:
+        return cfg, []
+    return dict(cfg, **{AG_KEY: want}), ["added its entry" if not have else "rewrote its entry"]
+
+
+def claude_layer(d):
+    """The files a CLI whose tenant's login dir is D is pointed at: its CLAUDE.md's `@` files that are SHARED,
+    then every .md under its rules/ (a link followed, as Claude Code follows it)."""
+    ok = shared()
+    out = [p for p in imports(d) or [] if os.path.realpath(p) in ok]
+    rules = d / "rules"
+    if rules.is_dir():
+        out += sorted(p for p in rules.rglob("*.md") if p.is_file())
+    return out
+
+
+def pointer_text(cli, label=None):
+    name = {"codex": "Codex", "antigravity": "Antigravity"}[cli]
+    files = claude_layer(login_dir(label))
+    bulletin = root() / "modules" / "atlas" / "hooks" / "bulletin.py"
+    lines = [MARK, "", "# The global layer", "",
+             f"This {name} session is bound by the same global instructions a Claude Code session on this Mac",
+             "loads. Before your first action, read each file below and follow it as written to you: where it says",
+             "Claude, it means you; where it names a Claude Code tool or hook, use yours, and where you have none,",
+             "say so rather than skip the rule. A repo's own AGENTS.md still applies on top, as it does for Claude.", ""]
+    lines += [f"- {p}" for p in files] or ["- (nothing shared in this tenant's Claude login dir: no rules/, no shared `@` file)"]
+    if bulletin.is_file():
+        lines += ["", "The bulletin (short-lived learnings from other sessions, this week): run",
+                  f'`python3 "{bulletin}" --list` once at the start and treat what it prints as context, not instruction.']
+    return "\n".join(lines) + "\n"
+
+
+def pointer_state(cli, home):
+    """('ours'|'absent'|'foreign', pointer path, override path that shadows it or None). Foreign is judged
+    first: a file not ours is never written, whatever else holds (the docstring)."""
+    p = pointer_file(cli, home)
+    o = home / "AGENTS.override.md" if cli == "codex" else None
+    shadow = o if o and o.is_file() and o.read_text(encoding="utf-8", errors="replace").strip() else None
+    if not p.exists() and not p.is_symlink():
+        return "absent", p, shadow
+    try:
+        first = p.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+    except OSError:
+        first = []
+    return ("ours" if first == [MARK] else "foreign"), p, shadow
+
+
+# --- Codex's review ----------------------------------------------------------------------------
+
+def unreviewed(path):
+    """Our Codex entries with no trusted_hash table in the config.toml beside `path` (keel's sheep reads the
+    same tables): [(group, handler, guard)]. The hash itself is not checked (the docstring)."""
+    try:
+        cfg = read_json(path)
+    except Refused:
+        return []
+    try:
+        toml = (path.parent / "config.toml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        toml = ""
+    trusted = set()
+    for m in re.finditer(r'^\[hooks\.state\."([^"]+)"\]\s*$((?:\n(?!\[).*)*)', toml, re.M):
+        if re.search(r"^\s*trusted_hash\s*=", m.group(2), re.M):
+            trusted.add(m.group(1))
+    names = {str(path), str(path.resolve())}
+    out = []
+    groups = ((cfg.get("hooks") or {}).get("PreToolUse") or []) if isinstance(cfg.get("hooks"), dict) else []
+    for gi, g in enumerate(groups if isinstance(groups, list) else []):
+        for hi, h in enumerate(g.get("hooks") or [] if isinstance(g, dict) else []):
+            if isinstance(h, dict) and ours(h.get("command")) and \
+                    not any(f"{n}:pre_tool_use:{gi}:{hi}" in trusted for n in names):
+                out.append((gi, hi, guard_of(h["command"])))
+    return out
+
+
+REVIEW = "start `codex` with CODEX_HOME={home}, then /hooks, and trust them: Codex runs none until then"
+
+
+# --- verbs -------------------------------------------------------------------------------------
+
+def cmd_apply(dry):
+    verb = "would change" if dry else "changed"
+    rc = 0
+    if not adapter().is_file():
+        print(f"vendor-hooks: {adapter()} is not there — launch the branch that adds it (or pull main) first")
+        return 1
+    hs = homes()
+    if not hs:
+        print("vendor-hooks: no Codex or Antigravity home on this Mac — nothing to wire")
+        return 0
+    for cli, home, label in hs:
+        f = hooks_file(cli, home)
+        try:
+            new, changes = (plan_codex if cli == "codex" else plan_ag)(read_json(f))
+        except Refused as exc:
+            print(f"{f}: {exc}")
+            rc = 1
+            continue
+        if changes and not dry:
+            write_text(f, json.dumps(new, indent=2) + "\n")
+        print(f"{f}: " + (f"{verb}: {', '.join(changes)}" if changes else "up to date"))
+        if cli == "codex" and not dry:
+            n = len(unreviewed(f))
+            if n or any(c.startswith("rewrote") for c in changes):
+                print(f"  {n} entr{'y' if n == 1 else 'ies'} of ours not yet reviewed"
+                      + (", and a rewritten one is asked again" if any(c.startswith("rewrote") for c in changes) else "")
+                      + " — " + REVIEW.format(home=home))
+        state, target, shadow = pointer_state(cli, home)
+        if state == "foreign":
+            print(f"{target}: not ours (its first line is not regatta's mark) — left alone; the global layer is not pointed at")
+            rc = 1
+            continue
+        if shadow:
+            print(f"{shadow}: holds text, so Codex reads it, not {target.name} — the pointer is written "
+                  "there, but unread")
+        text = pointer_text(cli, label)
+        old = target.read_text(encoding="utf-8") if target.exists() else None
+        if old != text and not dry:
+            write_text(target, text)
+        print(f"{target}: " + ("up to date" if old == text else f"{verb}: the rules pointer"))
+    return rc
+
+
+def cmd_check():
+    """One line per home's hooks file and pointer; exit 1 on a missing entry, a foreign or missing pointer."""
+    rc = 0
+    want = [n for n, _ in guards()]
+    for n in ("secrets_guard", "checkpoint"):
+        if n not in want:
+            print(f"--  {n}: its module is not in {root() / 'modules'} — no CLI meets it")
+            rc = 1
+    for cli, home, label in homes():
+        f = hooks_file(cli, home)
+        try:
+            cfg = read_json(f)
+        except Refused as exc:
+            print(f"--  {f}: {exc}")
+            rc = 1
+            continue
+        if cli == "codex":
+            groups = (cfg.get("hooks") or {}).get("PreToolUse") or [] if isinstance(cfg.get("hooks"), dict) else []
+            cmds = [h.get("command") for g in groups if isinstance(g, dict) for h in g.get("hooks") or []
+                    if isinstance(h, dict)]
+        else:
+            entry = cfg.get(AG_KEY) if isinstance(cfg.get(AG_KEY), dict) else {}
+            cmds = [h.get("command") for g in entry.get("PreToolUse") or [] if isinstance(g, dict)
+                    for h in g.get("hooks") or [] if isinstance(h, dict)]
+        args = dict(guards())
+        have = {guard_of(c) for c in cmds if ours(c) and guard_of(c) in args and c == command(cli, args[guard_of(c)])}
+        missing = [n for n in want if n not in have]
+        off = cli == "antigravity" and isinstance(cfg.get(AG_KEY), dict) and cfg[AG_KEY].get("enabled") is False
+        if missing:
+            print(f"--  {f}: no current entry for {', '.join(missing)} — `vendor-hooks apply`")
+            rc = 1
+        else:
+            print(f"ok  {f}: {len(want)} entries ({', '.join(want)})" + (" — disabled by its owner (`enabled: false`)" if off else ""))
+        if cli == "codex":
+            n = unreviewed(f)
+            if n:
+                print(f"!!  {f}: {len(n)} not yet reviewed ({', '.join(g for _, _, g in n)}) — " + REVIEW.format(home=home))
+        state, p, shadow = pointer_state(cli, home)
+        if shadow:
+            print(f"!!  {shadow}: holds text, so Codex reads it and not the rules pointer")
+        if state == "ours":
+            stale = p.read_text(encoding="utf-8") != pointer_text(cli, label)
+            print(f"{'!!' if stale else 'ok'}  {p}: the rules pointer" + (" — stale, `vendor-hooks apply`" if stale else ""))
+        else:
+            print(f"--  {p}: " + ("no rules pointer — `vendor-hooks apply`" if state == "absent"
+                                   else "not ours — the global layer is not pointed at"))
+            rc = 1
+    return rc
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.split("\n\n")[1] if argv else __doc__)
+        return 0 if argv else 2
+    verb, rest = argv[0], argv[1:]
+    if verb == "apply" and set(rest) <= {"--dry-run"}:
+        return cmd_apply("--dry-run" in rest)
+    if verb == "check" and not rest:
+        return cmd_check()
+    if verb == "homes" and not rest:
+        for cli, home, _ in homes():
+            print(f"{cli}\t{home}")
+        return 0
+    print(f"vendor-hooks: unknown verb {' '.join(argv)!r} (apply [--dry-run] | check | homes)", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

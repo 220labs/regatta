@@ -280,6 +280,46 @@ PUSH_BYPASS_RE = re.compile(r"--no-verify|hooksPath|--receive-pack|--exec\b", re
 QUOTED_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 
 ROOT = "."
+# Another CLI's call, through lighthouse's hooks/vendor_hook.py (vendor-hooks, the owner's D2-A,
+# docs/codex-agy-gaps-2026-10-29.md): its payload carries `regatta_cli` (`codex`, `antigravity`), and
+# main() sets this. Such a call meets every gate here — D1's deletions, the push and tracking denies, a
+# write on a primary's main, a moved branch — but takes and honours no lock and records no carry: the
+# lock frees at a session's end, which only Claude Code's hooks report to this hook today, so a Codex or
+# Antigravity session would hold every worktree it wrote in for OWNER_TTL (the gaps doc's D3 asks
+# whether a CLI's session end should free it instead; D3-A: no lock). An unattended one, its marker under
+# either name (unattended_mark), is also refused what dispatch's launch-time `denied=(…)` list refuses a
+# Claude run (vendor_denied), since a Codex or Antigravity run never reads Claude's permission rules.
+VENDOR = ""
+# dispatch's denied list, verb by verb, judged on each simple command's words (a commit message that
+# mentions `pr merge` is a word, never a verb): (what the refusal names, a test of the words). The
+# Claude rules are prefixes (`Bash(gh:*)`) or substrings (`Bash(*bin/pr merge*)`); this reads the verb
+# itself, so `git -C x push` and `env X=1 gh …` are caught too. wharf's test_checkpoint.sh reads the list
+# from wharf-runs' dispatch and fails on an entry no test here covers.
+DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue"}
+DISPATCH_FLAGS = ("--claim", "--poll", "--requeue")
+
+
+def vendor_denied(command):
+    """The first verb of dispatch's launch-time deny list that COMMAND runs, as text, or None."""
+    for words, _, _ in simple_commands(command):
+        if not words or words[0] in ("(", ")"):
+            continue
+        base = [os.path.basename(w) for w in words]
+        if base[0] == "git" and git_verb(words)[0] == "push":
+            return "git push"
+        if base[0] in ("gh", "ssh"):
+            return base[0]
+        if any(w.endswith("scripts/deploy.py") for w in words[:2]):
+            return "scripts/deploy.py"
+        for i, b in enumerate(base[:-1]):
+            # `pr` as the verb: bin/pr or libexec/pr by path, `regatta pr`, `gh pr` — never `echo pr merge`
+            if b == "pr" and words[i + 1] in ("merge", "ready") and (i == 0 or "/" in words[i] or base[i - 1] in ("regatta", "gh")):
+                return f"pr {words[i + 1]}"
+            if b == "dispatch-queue" and words[i + 1] in DISPATCH_QUEUE_VERBS:
+                return f"dispatch-queue {words[i + 1]}"
+            if b == "dispatch" and any(w.split("=", 1)[0] in DISPATCH_FLAGS for w in words[i + 1:]):
+                return "dispatch " + next(w.split("=", 1)[0] for w in words[i + 1:] if w.split("=", 1)[0] in DISPATCH_FLAGS)
+    return None
 
 
 def git(*args, input=None, check=True):
@@ -732,7 +772,7 @@ def carry_sources(command, root, default=None):
 
 def record_carries(gitdir, records):
     """Append the (kind, commit, branch) records this worktree's file lacks; returns them."""
-    if not records:
+    if not records or VENDOR:
         return []
     path = Path(gitdir) / "claude" / CARRIES_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -753,6 +793,8 @@ def claim(state, session, branch, withdraw=False):
     docs/subagent-cache-2026-10-04.md) survives its own writes and Stop commit — that turn's
     end commits after the tab opens, and dropping the mark there would lock the new tab out —
     and is withdrawn only by `withdraw`: a new prompt here means the owner came back to this one."""
+    if VENDOR:
+        return True  # another CLI's call takes no lock (VENDOR)
     old = read_owner(state)
     # Re-read, never trust the read at hook start: since a hand-over lets another session in,
     # it may have taken the lock while this hook committed — writing over it would lock that
@@ -765,8 +807,9 @@ def claim(state, session, branch, withdraw=False):
 
 
 def held_by_other(owner, session):
-    """A handed-over lock holds nobody out: the next session's first write takes it."""
-    return bool(owner and owner.get("session") != session and not owner.get("handover")
+    """A handed-over lock holds nobody out: the next session's first write takes it. Another CLI's
+    call is held out by none (VENDOR)."""
+    return not VENDOR and bool(owner and owner.get("session") != session and not owner.get("handover")
                 and time.time() - owner.get("seen", 0) < OWNER_TTL)
 
 
@@ -1670,8 +1713,8 @@ def remember_claim(session_target, target, session):
     """A lock taken in ANOTHER checkout is remembered per session, so SessionEnd frees it with
     the session's own instead of leaving it to OWNER_TTL. Nothing to remember from a plain
     folder (no git dir of its own) or for the session's own checkout."""
-    if not session_target.gitdir.exists() or target.gitdir.resolve() == session_target.gitdir.resolve():
-        return
+    if VENDOR or not session_target.gitdir.exists() or target.gitdir.resolve() == session_target.gitdir.resolve():
+        return   # another CLI's call takes no lock, so it has none to remember (VENDOR)
     path = session_target.state / f"claimed-{session}"
     path.parent.mkdir(parents=True, exist_ok=True)
     have = path.read_text().splitlines() if path.exists() else []
@@ -1864,7 +1907,10 @@ def adopt_spawned(toplevel, branch, main, quiet=False):
     not at SessionStart (code review, 2026-10-02): a read-only session then leaves no branch and
     pushes nothing empty, and sync.py has brought main down by then. Never onto a name that
     exists. `quiet`: no note for a branch with commits of its own — PreToolUse would repeat it
-    on every write; Stop says it, once a turn, beside the off-workflow nag."""
+    on every write; Stop says it, once a turn, beside the off-workflow nag. Never for another CLI's
+    call (VENDOR): a rename is a write to the checkout's state, as a claim is."""
+    if VENDOR:
+        return branch, None
     can = adoptable(toplevel, branch, main)
     if can is None:
         return branch, f"⚠ git was too slow to tell whether {branch} can join the workflow; not renamed this time"
@@ -2849,9 +2895,11 @@ def already_handled(state, event, raw):
 
 
 def main():
-    global ROOT, MAIN
+    global ROOT, MAIN, VENDOR
     raw = sys.stdin.read()
     data = json.loads(raw)
+    cli = data.get("regatta_cli")
+    VENDOR = cli if isinstance(cli, str) and cli not in ("", "claude-code") else ""
     # cwd first: after EnterWorktree the session runs in the worktree, while
     # CLAUDE_PROJECT_DIR may still name the checkout it was started from.
     ROOT = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or "."
@@ -2904,6 +2952,16 @@ def main():
                              ensure_ascii=False))
             return
 
+        # the raw text: QUOTED_RE blanked `bash -c '<script>'`, whose script simple_commands parses as its own
+        hit = VENDOR and unattended_mark() and vendor_denied((data.get("tool_input") or {}).get("command", ""))
+        if hit:
+            print(json.dumps(deny(
+                f"⛔ Unattended {VENDOR} run ({unattended_mark()}): `{hit}` is on the list a dispatched Claude run "
+                "is denied at its launch (dispatch's `denied=(…)`: pushes, GitHub, ssh, deploys, merging or "
+                f"readying a pull request, the queue's verbs), and this hook is the same rule in {VENDOR}'s own "
+                "socket (docs/codex-agy-gaps-2026-10-29.md, D2-A). Commit on the claude/* branch and stop there; "
+                "the checkpoint pushes and /finish lands it."), ensure_ascii=False))
+            return
         if CONFIRMED_RE.search(cmd):
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",

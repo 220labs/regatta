@@ -1829,4 +1829,64 @@ ok "  absent (no module has it; an overlay's copy is no fallback since B14b): th
 ok "  found (CLAUDE_AUTOFINISH_BIN, the stand-in for common.tool's answer): the child starts" \
   '[ "$(g1 CLAUDE_AUTOFINISH_BIN="$T/g1-legacy/bin/autofinish")" = rc=0 ] && i=0 && while [ ! -s "$T/g1-calls" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done && grep -q -- "--worktree $AF1" "$T/g1-calls"'
 
+echo "another CLI's call (VENDOR, vendor-hooks): every gate, no lock taken or honoured, no carry"
+VW="$R/.claude/worktrees/vendor"; git -C "$R" worktree add -q "$VW" -b claude/laptop/2026-10-29-vendor main
+VG="$(git -C "$VW" rev-parse --absolute-git-dir)/claude"
+# vtool <cli> <tool> <input-json> [cwd] [env…] — as lighthouse's vendor_hook.py hands it on: `regatta_cli` set
+vtool() { jq -nc --arg t "$2" --argjson i "$3" --arg c "${4:-$R}" --arg cli "$1" \
+  '{hook_event_name:"PreToolUse",tool_name:$t,tool_input:$i,session_id:($cli+":t1"),cwd:$c,regatta_cli:$cli}' \
+  | env "${@:5}" python3 "$HOOK" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null | grep . || echo allow; }
+ok "a Codex write in a free worktree: allowed, and no lock written" \
+  '[ "$(vtool codex Write "{\"file_path\":\"$VW/v.txt\"}" "$VW")" = allow ] && [ ! -e "$VG/owner.json" ]'
+ok "  nor by a git write in Bash" \
+  '[ "$(vtool codex Bash "{\"command\":\"git commit -qam x\"}" "$VW")" = allow ] && [ ! -e "$VG/owner.json" ]'
+ok "a Claude session takes it as before" \
+  '[ "$(tool A Edit "{\"file_path\":\"$VW/v.txt\"}" "$VW")" = allow ] && jq -e ".session==\"sessA-0000\"" "$VG/owner.json" >/dev/null'
+ok "  and an Antigravity write beside it is not locked out, nor takes it over" \
+  '[ "$(vtool antigravity Write "{\"file_path\":\"$VW/w.txt\"}" "$VW")" = allow ] && jq -e ".session==\"sessA-0000\"" "$VG/owner.json" >/dev/null'
+ok "  while Claude's other session still is" '[ "$(tool B Edit "{\"file_path\":\"$VW/v.txt\"}" "$VW")" = deny ]'
+ok "a Codex write on the primary's main: denied" '[ "$(vtool codex Write "{\"file_path\":\"$R/v.txt\"}" "$R")" = deny ]'
+ok "a Codex --no-verify push: denied" \
+  '[ "$(vtool codex Bash "{\"command\":\"git push --no-verify origin claude/laptop/2026-10-29-vendor\"}" "$VW")" = deny ]'
+ok "a Codex delete of a claude/* branch: denied" \
+  '[ "$(vtool codex Bash "{\"command\":\"git branch -D claude/laptop/2026-10-29-vendor\"}" "$VW")" = deny ]'
+for m in CLAUDE_UNATTENDED REGATTA_UNATTENDED; do
+  ok "unattended ($m), a Codex \`pr merge\`: denied" \
+    '[ "$(vtool codex Bash "{\"command\":\"~/projects/regatta/modules/wharf/bin/pr merge 7\"}" "$VW" $m=1)" = deny ]'
+  ok "  and \`gh pr ready\`" '[ "$(vtool antigravity Bash "{\"command\":\"gh pr ready 7\"}" "$VW" $m=1)" = deny ]'
+done
+ok "  attended, a Codex \`pr merge\`: allowed, as for Claude" \
+  '[ "$(vtool codex Bash "{\"command\":\"gh pr merge 7\"}" "$VW")" = allow ]'
+ok "  a Claude payload, unattended: not this rule's (dispatch's deny list is Claude's socket)" \
+  '[ "$(CLAUDE_UNATTENDED=1 tool A Bash "{\"command\":\"gh pr view 7 && echo pr merge\"}" "$VW")" = allow ]'
+ok "  a merge named in quoted text: no act" \
+  '[ "$(vtool codex Bash "{\"command\":\"git commit -qm \\\"pr merge later\\\"\"}" "$VW" CLAUDE_UNATTENDED=1)" = allow ]'
+# The whole of dispatch's launch-time deny list (the landing review, 2026-10-30: the rule had pr merge/ready
+# alone): each Bash entry read from wharf-runs' dispatch, spelled as a command, denied an unattended vendor run
+# under either marker name. A new entry with no spelling here fails the count.
+DISPATCH_FILE="$(dirname "$MOD")/wharf-runs/bin/dispatch"
+if [ -f "$DISPATCH_FILE" ]; then
+  python3 - "$DISPATCH_FILE" > "$T/vdeny.txt" <<'PY'
+import re, sys
+line = next(l for l in open(sys.argv[1]) if l.startswith("denied=("))
+for e in re.findall(r'"Bash\(([^)]*)\)"', line):
+    cmd = e[:-2] + " x" if e.endswith(":*") else e.strip("*")
+    print(cmd)
+PY
+  n=0; while IFS= read -r c; do
+    n=$((n+1)); m=CLAUDE_UNATTENDED; [ $((n % 2)) = 0 ] && m=REGATTA_UNATTENDED
+    ok "unattended ($m), dispatch's \`$c\`: denied a Codex run" \
+      '[ "$(vtool codex Bash "$(jq -nc --arg c "$c" "{command:\$c}")" "$VW" $m=1)" = deny ]'
+  done < "$T/vdeny.txt"
+  ok "  every Bash entry of dispatch's list judged (at least the 18 of 2026-10-30)" '[ "$n" -ge 18 ]'
+else
+  echo "note: wharf-runs' dispatch is not in this tree — its list is not read here"
+fi
+ok "  \`git -C x push\` and a script inside \`bash -lc '…'\`: denied too" \
+  '[ "$(vtool codex Bash "{\"command\":\"git -C . push origin claude/laptop/2026-10-29-vendor\"}" "$VW" CLAUDE_UNATTENDED=1)" = deny ] && [ "$(vtool codex Bash "{\"command\":\"bash -lc '"'"'ssh h ls'"'"'\"}" "$VW" REGATTA_UNATTENDED=1)" = deny ]'
+ok "  attended, \`gh api\`: allowed (the list is the unattended run's)" \
+  '[ "$(vtool codex Bash "{\"command\":\"gh api user\"}" "$VW")" = allow ]'
+ok "a Codex write into another checkout remembers no claim (remember_claim, VENDOR)" \
+  '[ "$(vtool codex Write "{\"file_path\":\"$VW/r.txt\"}" "$R")" = allow ] && ! ls "$(git -C "$R" rev-parse --absolute-git-dir)/claude/" 2>/dev/null | grep -q "^claimed-codex"'
+
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }
