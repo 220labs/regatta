@@ -166,6 +166,10 @@ FLAGS = {"--model": r"[A-Za-z0-9.\[\]_-]{1,40}", "--effort": r"low|medium|high|x
          "--needs": r"[a-z0-9][a-z0-9._-]{0,39}(,[a-z0-9][a-z0-9._-]{0,39})*"}
 ENV_OK = re.compile(r"DISPATCH_(DEPTH|MODE|SKIPPER|MANAGER|SKIPPER_ACCOUNT|MANAGER_ACCOUNT|SHIP|PLAN|PLAN_SPACE|SKIPPER_HOST|MANAGER_HOST)")
 BRANCH_OK = re.compile(r"claude/[A-Za-z0-9._/-]{1,200}")
+# The launcher (S7's Linux half): launchd's launchctl on a Mac, as before; elsewhere bin/systemd-launchctl, the
+# same verbs over systemd's user manager (its header says why one shim and not a branch per caller). Every job
+# here goes through a launchctl word, so the default is the whole seam; dispatch passes its own (--launchctl).
+LAUNCHCTL = "launchctl" if sys.platform == "darwin" else str(HERE / "systemd-launchctl")
 
 
 def now():
@@ -1015,7 +1019,7 @@ def job_running(launchctl, label):
     return "\tstate = running" in r.stdout
 
 
-def reservations(launchctl="launchctl"):
+def reservations(launchctl=LAUNCHCTL):
     """{file: reservation} not yet spent: younger than the lease, or with a job launchd says is running
     (one waiting in after() keeps its reservation only while it lives), and with no record of its run
     yet. Whether one holds a slot now is held()'s. A record whose `queue` names the claim, started since, is the run live() counts now: its
@@ -1115,7 +1119,7 @@ def live_runs():
     return [st for _, st in m.live(None, None, False) if not m.parked(st)]
 
 
-def held(launchctl="launchctl", except_qid=None, runs=None):
+def held(launchctl=LAUNCHCTL, except_qid=None, runs=None):
     """The reservations that hold a slot now, bar EXCEPT_QID's: every one but a waiting one whose earlier
     run still holds its own (a live run of its repo's topic)."""
     m, out = rc_mod(), []
@@ -1326,8 +1330,51 @@ def fleet_hosts(e, local=False):
     return sorted(set(cands) | set(features()) | ({pin} if pin else set()))   # the pin names a host whatever this config says
 
 
-def claimable(e, h, t=None):
-    """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features)."""
+def fleet_fence(e, h=None):
+    """Why host H (this one) may not claim fleet entry E by the fence (S7's Linux half, kept on every host), or None.
+    A fleet entry never runs a confidential scope's repo — route() keeps those in a node-local queue, so one
+    on the ref is a put this host's registry would not have made — and every scope is walked, not the first
+    that lists the repo (AGENTS.md: an umbrella scope hides a confidential one). A torn registry refuses
+    them all (the fence trap). `wharf-runs/queue-repos`, one repo key per line, narrows what this host
+    claims from the fleet ref: a host opened to fleet work for a few repos (a scope's node) lists those;
+    absent, every repo cloned here, as before it. A line `<key> pinned` takes that repo's entries only when
+    they are pinned to this host: the opening's first step, and how a test entry is proved while every
+    other session's entry of the repo stays the Macs'. A file that is there but will not read refuses every
+    entry (read as absent, it would open the host to every repo); a line that is only `pinned` belongs to the
+    key before it, as the overlay's bootstrap writes a value one word per line (AGENTS.md's trap). Each
+    confidential scope judges the key with the core's scope_of_repo, as route() does: a glob member matches a
+    key the registry's `repos` lacks, which scope_members would drop (the landing reviews)."""
+    h = (h or host_name()).lower()
+    word = str(e.get("repo") or "")
+    allow, why = common.config_read("wharf-runs/queue-repos")
+    if why:
+        return "wharf-runs/queue-repos does not read here (%s): this host claims nothing from the fleet" % why
+    key = common.repo_key(str(repo_path(word))) or word
+    if allow is not None:
+        rows, last = {}, None
+        for words in (l.split() for l in allow):
+            if words == ["pinned"] and last:
+                rows[last].append("pinned")
+            elif words:
+                last = words[0]
+                rows.setdefault(last, []).extend(words[1:])
+        if key not in rows:
+            return "%s is not one wharf-runs/queue-repos lets this host claim" % word
+        if "pinned" in rows[key] and (e.get("host") or "").lower() != h:
+            return "wharf-runs/queue-repos lets this host claim %s only when pinned here" % word
+    reg, torn = common.read_registry()
+    if torn:
+        return "the registry does not read here (a fleet entry waits until its scopes read)"
+    repos = (reg or {}).get("repos") or {}
+    for name, sc in common.confidential_scopes(reg=reg).items():
+        if common.scope_of_repo(key, reg={"scopes": {name: sc}, "repos": repos})[0] == name:
+            return "its repo is in a confidential scope: a fleet entry never runs one"
+    return None
+
+
+def claimable(e, h, t=None, fleet=False):
+    """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features).
+    FLEET: E is the fleet ref's, and the fence (fleet_fence) judges it too."""
     t = now() if t is None else t
     if e.get("state") != "queued":
         return "it is %s" % e.get("state")
@@ -1350,6 +1397,8 @@ def claimable(e, h, t=None):
         return bad_args(e)
     if e.get("kind") == "landing" and not land_waiter_alive(e):
         return "a landing whose dispatch --start is gone"
+    if fleet:
+        return fleet_fence(e, h)
     return None
 
 
@@ -1609,7 +1658,7 @@ def claim(ctx, out=None):
             continue   # one torn store stops its own claims, never the other stores'
         seen = None
         for k, e in entries.items():
-            if claimable(e, h):
+            if claimable(e, h, fleet=isinstance(s, Fleet)):
                 if e.get("kind") == "landing" and e.get("state") == "queued" and isinstance(s, Local) \
                         and (e.get("host") or "").lower() == h and not land_waiter_alive(e):
                     # its dispatch --start is gone (killed, or its waiter's end): nobody would run it, and
@@ -2567,7 +2616,7 @@ def cmd_list(a, ctx):
         bits = ["%s %s" % (e.get("state"), e.get("priority"))]
         if e.get("state") == "queued":
             bits.append("rank %d" % (i + 1))
-            why = claimable(e, h)
+            why = claimable(e, h, fleet=isinstance(s, Fleet))
             if why:
                 bits.append("not here: " + why)
             if e.get("kind") == "landing":
@@ -3415,12 +3464,26 @@ def job_out(ctx, label):
     return had or r.returncode == 0
 
 
+def launcher_here():
+    """A job loader runs here: launchd on a Mac; elsewhere a systemd user manager that answers, which
+    systemd-launchctl drives — asked through the shim's `manager` (the one home of that probe, `regatta
+    check` asks it too): a systemctl on PATH with no user bus (a container, a minimal host) is no manager,
+    and every pass would then fail its bootstraps (the landing review). Without one, no queue job here."""
+    if sys.platform == "darwin":
+        return True
+    try:
+        return subprocess.run([sys.executable, str(HERE / "systemd-launchctl"), "manager"],
+                              capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def cmd_jobs(a, ctx):
     """The sweep where a home is, nothing where none is: dispatch runs this at each start beside the
     tidier's refresh, so a host gets its sweep at its first dispatch once a home is set, and loses both
-    jobs once it is unset. Linux's systemd timer is S7's."""
-    if sys.platform != "darwin":
-        print("queue jobs: no launchd here (a systemd timer is S7's)")
+    jobs once it is unset. On Linux the same plist through systemd-launchctl: a user timer (S7)."""
+    if not launcher_here():
+        print("queue jobs: no launchd or systemd user manager here; no sweep")
         return 0
     sweep, poll = job_labels(ctx)
     if not home():
@@ -3456,9 +3519,9 @@ def reached(h):
 def may_take(e, h):
     """E is an entry host H may yet take: queued, pinned nowhere else, its repo cloned here. What H cannot
     take now (its hour's skip, the branch live elsewhere, no room) may become takeable without any event
-    that reaches it; an entry pinned to another host never does."""
+    that reaches it; an entry pinned to another host never does, nor one the fence keeps from H."""
     return e.get("state") == "queued" and not eligibility(e, h) \
-        and (repo_path(e.get("repo") or "/nonexistent") / ".git").exists()
+        and (repo_path(e.get("repo") or "/nonexistent") / ".git").exists() and fleet_fence(e, h) is None
 
 
 def poll_tend(ctx):
@@ -3467,7 +3530,7 @@ def poll_tend(ctx):
     no network) holds an entry it may yet take; booted out otherwise — an empty queue, or a full host,
     whose runs' ends claim. 'loaded', 'out', or None for no change. Never raises: a caller's claim stands."""
     try:
-        if sys.platform != "darwin":
+        if not launcher_here():
             return None
         _, poll = job_labels(ctx)
         h = host_name()
@@ -3516,7 +3579,7 @@ def cmd_poll(a, ctx):
         seen = apply_all(f.read(f.cached()), outbox_ops())
     except Torn:
         seen = {}
-    if sha != f.cached() or outbox_files() or any(not claimable(e, h) for e in seen.values()):
+    if sha != f.cached() or outbox_files() or any(not claimable(e, h, fleet=True) for e in seen.values()):
         flush(f)
         ctx.after_cached = True   # S9: the poll's claim reuses a young after hold (after_holds)
         for qid, label, log in claim(ctx):
@@ -3564,8 +3627,8 @@ def cmd_land(a, ctx):
             ents = st_.view()[0] if isinstance(st_, Local) else st_.read(st_.cached())   # the last fetch: no network
         except Exception:   # a store that does not read only leaves the rank unsaid
             continue
-        order += [(rank(x), "%s:%s" % (st_.name, kk)) for kk, x in ents.items() if x.get("state") == "queued" and not claimable(x, h)]
-    order.sort()
+        order += [(rank(x), "%s:%s" % (st_.name, kk)) for kk, x in ents.items() if x.get("state") == "queued" and not claimable(x, h, fleet=isinstance(st_, Fleet))]
+    order.sort()   # a fleet entry the fence keeps from this host is no entry ahead of the landing
     qid = "%s:%s" % (s.name, k)
     event("enqueued", key=qid, host=h, entry_kind="landing", result=r, pid=a.pid)
     print(json.dumps({"qid": qid, "result": r, "rank": next((i + 1 for i, (_, q) in enumerate(order) if q == qid), None)}))
@@ -3679,7 +3742,7 @@ def main(argv=None):
         sp.add_argument("--jobbin", default=str(HERE / "dispatch"))
         sp.add_argument("--prefix", default="org.regatta.claude")
         sp.add_argument("--prefix-previous", default="")   # wharf-runs/label-prefix-previous: jobs still draining
-        sp.add_argument("--launchctl", default="launchctl")
+        sp.add_argument("--launchctl", default=LAUNCHCTL)
         sp.add_argument("--rch", default="")
     sub.add_parser("home")
     e = sub.add_parser("enqueue")

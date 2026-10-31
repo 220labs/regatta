@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""systemd-launchctl — launchctl's verbs over systemd's user manager: the one launcher seam that lets
+dispatch and dispatch-queue run their launchd jobs on a Linux host unchanged. (dispatch-rc's tidier still
+calls launchctl by name: its plist is opt-in on a Mac and never written on Linux.)
+
+    systemd-launchctl bootstrap gui/UID PLIST        load the plist's job (a RunAtLoad job starts now)
+    systemd-launchctl bootout gui/UID/LABEL          stop the job and unload it; exit 3 when nothing was loaded
+    systemd-launchctl print gui/UID/LABEL            exit 0 while loaded (113 when not), `\tstate = running` while it runs
+    systemd-launchctl kickstart [-k] gui/UID/LABEL   start its service now (-k: restart it)
+    systemd-launchctl manager                        exit 0 when a systemd user manager answers here, 1 when
+                                                     none does (no launchctl verb: asked off a Mac only)
+
+Why a shim and not a second launcher in each script (dispatch-queue S7's Linux half, the
+linux-queue-node brief): every reader of "is the job defined" already reads the job's plist in
+the home folder's Library/LaunchAgents — the claim's reservations ask whether a job's plist is gone, `jobs` compares the
+sweep's plist before reloading it, the fired dispatch removes its own plist at its end — and every writer
+already takes its launchctl as a word (DISPATCH_LAUNCHCTL, dispatch-queue's --launchctl). So the plist
+stays the job's definition on both systems, the folder included (a plain folder on Linux, read by nobody
+else), and only the loader changes: on Darwin each script runs `launchctl` as before, byte for byte; on
+Linux its default is this file. A seam in each script would have been three copies of one mapping.
+
+The mapping, per plist:
+  - RunAtLoad and no timer key (a claimed start): a transient unit, `systemd-run --user --unit LABEL
+    --collect`, gone once it exits, failed or not; no file is written. A reboot loses it where launchd's
+    RunAtLoad job is re-run at login, which the fired job's `mine` check exists to judge; its plist stays
+    until the branch's next clear_jobs, and the reservation reads it as spent once its lease is out.
+    `--expand-environment=no` (systemd 254+; the node's 255 has it, probed 2026-10-30): systemd-run
+    expands `${VAR}` in a transient unit's argv by default, and an entry's argv carries free text (its
+    `--note`) any host with write on the queue ref may set.
+  - StartInterval or StartCalendarInterval (the queue's sweep and poll, a one-shot `--at`): a unit file
+    pair in the home folder's .config/systemd/user (LABEL.service, LABEL.timer), the timer enabled, so it outlives a
+    reboot as a plist in LaunchAgents outlives a login. StartInterval N is `OnActiveSec=N` and
+    `OnUnitActiveSec=N` (launchd's first run is N after load too); a calendar dict is `OnCalendar=`
+    with each missing key a `*` (launchd's calendar has no year, nor has this one), and
+    `Persistent=true`: launchd runs a calendar job it missed while asleep at wake, where systemd drops a
+    missed OnCalendar unless told (a one-shot `--at` on a node down at its minute would be lost). Its stamp
+    file is cleaned at bootout, so a label loaded again never fires on an old run's stamp. RunAtLoad
+    beside a timer starts the service at once as well.
+  - Every unit: the plist's ProgramArguments, EnvironmentVariables, StandardOutPath/StandardErrorPath
+    (appended), WorkingDirectory; `KillMode=process`, because launchd leaves a job's detached children
+    alone (autofinish-run's /finish outlives the run that started it) where systemd's default kills the
+    whole cgroup when the main process ends; and XPC_SERVICE_NAME=LABEL, the variable launchd sets in
+    each job, which dispatch-queue's job_load reads so a pass never reloads the job it runs in.
+  - bootout from inside the job itself (dispatch's cleanup, last, as on launchd where it SIGTERMs the
+    script) stops without waiting: a blocking stop would wait on its own caller.
+
+What it does not do: launchd's KeepAlive, ProcessType, the `system/` domain — no caller here uses them.
+An unknown key is ignored, as launchd ignores one it does not know.
+
+The tests stand commands in: SYSTEMD_LAUNCHCTL_SYSTEMCTL (default `systemctl`), SYSTEMD_LAUNCHCTL_RUN
+(`systemd-run`), SYSTEMD_LAUNCHCTL_UNITS (the unit folder, default the home folder's .config/systemd/user). Stdlib only.
+"""
+import os
+import plistlib
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SYSTEMCTL = os.environ.get("SYSTEMD_LAUNCHCTL_SYSTEMCTL") or "systemctl"
+RUN = os.environ.get("SYSTEMD_LAUNCHCTL_RUN") or "systemd-run"
+UNITS = Path(os.environ.get("SYSTEMD_LAUNCHCTL_UNITS") or Path.home() / ".config" / "systemd" / "user")
+# a unit name's characters (systemd.unit(5)); a label outside them is refused, never mangled: two labels
+# mangled alike would be one unit
+LABEL_OK = re.compile(r"[A-Za-z0-9:_.\-]{1,200}")
+RUNNING = ("active", "activating", "deactivating", "reloading")
+NOT_FOUND = 113   # launchctl print's exit for "Could not find service"
+STOP_WAIT = 60
+
+
+def ctl(*a, timeout=STOP_WAIT):
+    try:
+        return subprocess.run([SYSTEMCTL, "--user", *a], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as x:
+        return subprocess.CompletedProcess([SYSTEMCTL, *a], 1, "", str(x))
+
+
+def label_of(target):
+    """gui/UID/LABEL -> LABEL; anything else exits 2 as launchctl's usage does."""
+    lab = target.rsplit("/", 1)[-1] if target.startswith("gui/") and target.count("/") >= 2 else ""
+    if not LABEL_OK.fullmatch(lab):
+        sys.exit("systemd-launchctl: %r is not gui/<uid>/<label> with a unit name's characters" % target)
+    return lab
+
+
+def state(label):
+    """{unit: {LoadState, ActiveState, MainPID}} for LABEL's service and timer."""
+    out = {}
+    r = ctl("show", "%s.service" % label, "%s.timer" % label, "-p", "Id", "-p", "LoadState", "-p", "ActiveState",
+            "-p", "MainPID", timeout=20)
+    # one block per unit, a blank line between; within a block the properties come in systemd's order,
+    # not the order asked, so a block is keyed by its Id wherever that line sits
+    for block in (r.stdout or "").split("\n\n"):
+        d = dict(l.partition("=")[::2] for l in block.splitlines() if "=" in l)
+        if d.get("Id"):
+            out[d["Id"]] = d
+    return out
+
+
+def loaded(st):
+    return any(u.get("LoadState") == "loaded" for u in st.values())
+
+
+def q(word, dollar=True):
+    """One argument of ExecStart= (or, DOLLAR false, one Environment= assignment), quoted as systemd.syntax(7)
+    unquotes it: C escapes inside double quotes, `%` doubled (specifiers apply in both). `$` is doubled for
+    ExecStart= only, which expands `$VAR`; in Environment= "the $ character has no special meaning"
+    (systemd.exec(5), read on the node's systemd 255), so a doubled one would reach the job doubled."""
+    s = str(word).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t").replace("%", "%%")
+    return '"%s"' % (s.replace("$", "$$") if dollar else s)
+
+
+def argv_of(p):
+    a = p.get("ProgramArguments") or ([p["Program"]] if p.get("Program") else [])
+    if not a:
+        sys.exit("systemd-launchctl: the plist names no program")
+    return [str(x) for x in a]
+
+
+def env_of(p, label):
+    env = {str(k): str(v) for k, v in (p.get("EnvironmentVariables") or {}).items()}
+    env["XPC_SERVICE_NAME"] = label
+    return env
+
+
+def calendar(c):
+    """launchd's StartCalendarInterval dict -> OnCalendar=: `*-MM-DD HH:MM:00`, each missing key a `*`.
+    A list of dicts (launchd allows one) is one OnCalendar= line each."""
+    def two(k):
+        return "%02d" % int(c[k]) if k in c else "*"
+    if "Weekday" in c:   # launchd: 0 and 7 are Sunday
+        days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        return "%s *-%s-%s %s:%s:00" % (days[int(c["Weekday"])], two("Month"), two("Day"), two("Hour"), two("Minute"))
+    return "*-%s-%s %s:%s:00" % (two("Month"), two("Day"), two("Hour"), two("Minute"))
+
+
+def service_text(label, p):
+    out = ["[Unit]", "Description=%s (its launchd plist, loaded by systemd-launchctl)" % label, "",
+           "[Service]", "Type=exec", "KillMode=process", "ExecStart=" + " ".join(q(a) for a in argv_of(p))]
+    for k, v in sorted(env_of(p, label).items()):
+        out.append("Environment=" + q("%s=%s" % (k, v), dollar=False))
+    # a path setting is not unquoted (systemd.exec(5): it takes the path as written), so a quoted one is no
+    # absolute path and the unit fails; specifiers still apply, so `%` is doubled
+    if p.get("WorkingDirectory"):
+        out.append("WorkingDirectory=" + str(p["WorkingDirectory"]).replace("%", "%%"))
+    if p.get("StandardOutPath"):
+        out.append("StandardOutput=append:%s" % str(p["StandardOutPath"]).replace("%", "%%"))
+    if p.get("StandardErrorPath"):
+        out.append("StandardError=append:%s" % str(p["StandardErrorPath"]).replace("%", "%%"))
+    return "\n".join(out) + "\n"
+
+
+def timer_text(label, p):
+    out = ["[Unit]", "Description=%s's timer (its launchd plist, loaded by systemd-launchctl)" % label, "", "[Timer]",
+           "Unit=%s.service" % label, "AccuracySec=1s"]
+    if p.get("StartInterval"):
+        n = int(p["StartInterval"])
+        out += ["OnActiveSec=%d" % n, "OnUnitActiveSec=%d" % n]
+    cal = p.get("StartCalendarInterval")
+    for c in (cal if isinstance(cal, list) else [cal] if cal else []):
+        out.append("OnCalendar=" + calendar(c))
+    if cal:
+        out.append("Persistent=true")   # a run missed while down fires at boot, as launchd's at wake
+    return "\n".join(out + ["", "[Install]", "WantedBy=timers.target"]) + "\n"
+
+
+def files(label):
+    return UNITS / ("%s.service" % label), UNITS / ("%s.timer" % label)
+
+
+def bootstrap(plist_path):
+    try:
+        p = plistlib.loads(Path(plist_path).read_bytes())
+    except Exception as x:   # an unreadable plist: launchctl's own "Bootstrap failed" kind
+        print("Bootstrap failed: 5: Input/output error (%s)" % x, file=sys.stderr)
+        return 5
+    label = p.get("Label") or ""
+    if not LABEL_OK.fullmatch(label):
+        print("Bootstrap failed: the label %r is no unit name" % label, file=sys.stderr)
+        return 5
+    st = state(label)
+    if any(u.get("ActiveState") in RUNNING for u in st.values()):
+        # launchd refuses a label it holds; the callers boot out first and retry once
+        print("Bootstrap failed: 5: Input/output error (%s is loaded)" % label, file=sys.stderr)
+        return 5
+    ctl("reset-failed", "%s.service" % label, "%s.timer" % label, timeout=20)
+    timed = bool(p.get("StartInterval") or p.get("StartCalendarInterval"))
+    if not timed:
+        out = p.get("StandardOutPath")
+        err = p.get("StandardErrorPath") or out
+        cmd = [RUN, "--user", "--unit", label, "--collect", "--quiet", "--service-type=exec", "--expand-environment=no",
+               "-p", "KillMode=process"]
+        if out:
+            cmd += ["-p", "StandardOutput=append:%s" % out]
+        if err:
+            cmd += ["-p", "StandardError=append:%s" % err]
+        if p.get("WorkingDirectory"):
+            cmd += ["--working-directory", str(p["WorkingDirectory"])]
+        for k, v in sorted(env_of(p, label).items()):
+            cmd.append("--setenv=%s=%s" % (k, v))
+        if not p.get("RunAtLoad"):
+            # loaded and never run is no job a transient unit can be: a file pair, its service never started
+            return write_units(label, p, start=False)
+        try:
+            r = subprocess.run(cmd + ["--"] + argv_of(p), capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as x:
+            print("Bootstrap failed: 5: %s" % x, file=sys.stderr)
+            return 5
+        if r.returncode:
+            print("Bootstrap failed: 5: %s" % (r.stderr or "").strip()[:300], file=sys.stderr)
+            return 5
+        return 0
+    return write_units(label, p, start=bool(p.get("RunAtLoad")))
+
+
+def write_units(label, p, start):
+    svc, tmr = files(label)
+    UNITS.mkdir(parents=True, exist_ok=True)
+    svc.write_text(service_text(label, p))
+    timed = bool(p.get("StartInterval") or p.get("StartCalendarInterval"))
+    if timed:
+        tmr.write_text(timer_text(label, p))
+    else:
+        tmr.unlink(missing_ok=True)
+    r = ctl("daemon-reload", timeout=60)
+    if r.returncode:
+        print("Bootstrap failed: 5: daemon-reload: %s" % (r.stderr or "").strip()[:300], file=sys.stderr)
+        return 5
+    if timed:
+        r = ctl("enable", "--now", "%s.timer" % label, timeout=60)
+        if r.returncode:
+            print("Bootstrap failed: 5: %s" % (r.stderr or "").strip()[:300], file=sys.stderr)
+            return 5
+    if start:
+        ctl("start", "--no-block", "%s.service" % label, timeout=30)
+    return 0
+
+
+def bootout(label):
+    st = state(label)
+    svc, tmr = files(label)
+    had = loaded(st) or svc.exists() or tmr.exists()
+    # from inside the job (dispatch's cleanup, its last act): launchd's bootout signals the caller, and a
+    # blocking stop would wait for the caller it is about to end
+    nb = ["--no-block"] if os.environ.get("XPC_SERVICE_NAME") == label else []
+    if tmr.exists():
+        ctl("disable", "%s.timer" % label, timeout=30)
+    if loaded(st):
+        ctl("stop", *nb, "%s.timer" % label, "%s.service" % label)
+    if tmr.exists():
+        ctl("clean", "--what=state", "%s.timer" % label, timeout=20)   # the stamp Persistent= keeps (the header)
+    removed = False
+    for f in (tmr, svc):
+        if f.exists():
+            f.unlink()
+            removed = True
+    if removed:
+        ctl("daemon-reload", timeout=60)
+    ctl("reset-failed", "%s.service" % label, "%s.timer" % label, timeout=20)
+    if not had:
+        print("Boot-out failed: 3: No such process", file=sys.stderr)
+        return 3
+    return 0
+
+
+def print_job(label):
+    st = state(label)
+    if not loaded(st):
+        print("Bad request.\nCould not find service \"%s\" in domain for user gui: %d" % (label, os.getuid()), file=sys.stderr)
+        return NOT_FOUND
+    s = st.get("%s.service" % label) or {}
+    run = s.get("ActiveState") in RUNNING
+    print("gui/%d/%s = {" % (os.getuid(), label))
+    print("\tstate = %s" % ("running" if run else "not running"))
+    if run and (s.get("MainPID") or "0") != "0":
+        print("\tpid = %s" % s["MainPID"])
+    t = st.get("%s.timer" % label) or {}
+    if t.get("LoadState") == "loaded":
+        print("\ttimer = %s" % (t.get("ActiveState") or "?"))
+    print("}")
+    return 0
+
+
+def kickstart(label, kill):
+    r = ctl("restart" if kill else "start", "--no-block", "%s.service" % label, timeout=30)
+    if r.returncode:
+        print("Could not kickstart service \"%s\": %s" % (label, (r.stderr or "").strip()[:200]), file=sys.stderr)
+        return NOT_FOUND
+    return 0
+
+
+LIVE = ("running", "degraded", "starting", "initializing")
+
+
+def manager():
+    """0 when systemd's user manager answers here — `is-system-running` says it is up, degraded included
+    (one failed unit is not a dead manager) — else 1: no systemctl, no user bus (a container, a minimal
+    host, a login with no lingering session). A systemctl binary on PATH alone proves nothing."""
+    r = ctl("is-system-running", timeout=10)
+    return 0 if (r.stdout or "").strip() in LIVE else 1
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.split("\n\n")[1])
+        return 0 if argv else 2
+    verb, rest = argv[0], argv[1:]
+    if verb == "bootstrap" and len(rest) == 2 and rest[0].startswith("gui/"):
+        return bootstrap(rest[1])
+    if verb == "bootout" and len(rest) == 1:
+        return bootout(label_of(rest[0]))
+    if verb == "print" and len(rest) == 1:
+        return print_job(label_of(rest[0]))
+    if verb == "kickstart" and [a for a in rest if not a.startswith("-")]:
+        kill = "-k" in rest
+        return kickstart(label_of([a for a in rest if not a.startswith("-")][-1]), kill)
+    if verb == "manager" and not rest:
+        return manager()
+    print("systemd-launchctl: unknown or malformed verb: %s (bootstrap, bootout, print, kickstart)" % " ".join(argv), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
