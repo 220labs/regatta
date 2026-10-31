@@ -1704,6 +1704,36 @@ def inline(s):
     return s
 
 
+def cell_text(c):
+    """A table cell as a reader sees it: link text kept, markup dropped."""
+    return re.sub(r"[*`]|~~", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", c)).strip()
+
+
+# A table's layout, from the length of its text. The column holds about 90 characters a line
+# (42rem at .92rem); a table wider than that either breaks out of the column or, once its cells
+# are paragraphs, reads as one record per row (a five-column receipt of sentence cells wrapped
+# every cell into a tower of three-word lines and ran off the right edge; the owner, 2026-10-30).
+# Measured over 474 tables in the owner's design docs: half are such records.
+TABLE_WIDE = 100      # natural width, in characters, past which a table leaves the column
+TABLE_STACK = 260     # ... past which, with three columns or more, each row becomes a record
+TABLE_PROSE = 120     # one cell this long is a paragraph: the table is records whatever its width
+
+
+def table_fit(head, body):
+    """The class a table's wrapper takes: " stack", " wide" or ""."""
+    if not head or not body:
+        # records take their labels from the head and hide it, and a phone stacks a wide table: a table
+        # with no head would lose its columns' names, one with no body would vanish
+        return ""
+    rows = [head] + body
+    ncol = len(head)  # the head's count: a stray `|` in a body cell splits it, and must not make a third column
+    widths = [max((len(cell_text(r[k])) for r in rows if k < len(r)), default=0) for k in range(ncol)]
+    if ncol >= 3 and (max(widths) > TABLE_PROSE or sum(widths) > TABLE_STACK):
+        return " stack"
+    # two columns stay in the column: a term beside its prose reads well there, and wider lines would not
+    return " wide" if ncol >= 3 and sum(widths) > TABLE_WIDE else ""
+
+
 def render_md(lines, base=None, shift=0, ctx=None, pick=False):
     """The Markdown subset as HTML. With `ctx` and `base` (the source line of lines[0]), every block
     the owner can note carries `data-at` — the source line a note goes after — and `data-q`, that
@@ -1789,7 +1819,8 @@ def render_md(lines, base=None, shift=0, ctx=None, pick=False):
                 head, body = rows[0], rows[2:]
             else:
                 head, body = None, rows
-            t = ["<div class=\"tbl\"><table>"]
+            t = ["<div class=\"tbl%s\"><table>" % table_fit(head, body)]
+            labels = [html.escape(cell_text(c), quote=True) for c in head or []]
             if head:
                 t.append("<thead><tr>%s</tr></thead>" % "".join("<th>%s</th>" % inline(c.strip()) for c in head))
             t.append("<tbody>")
@@ -1802,7 +1833,10 @@ def render_md(lines, base=None, shift=0, ctx=None, pick=False):
                 if seen[label] > 1:
                     label = "%s (%d)" % (label, seen[label])
                 t.append("<tr%s>%s</tr>" % (mark(last, ind(lines[first]), label),
-                                            "".join("<td>%s</td>" % inline(c.strip()) for c in r)))
+                                            "".join("<td%s>%s</td>" % (' data-label="%s"' % labels[j]
+                                                                       if j < len(labels) and labels[j] else "",
+                                                                       inline(c.strip()))
+                                                    for j, c in enumerate(r))))
             t.append("</tbody></table></div>")
             out.append("".join(t))
             continue
@@ -2923,7 +2957,38 @@ tr.noted td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
 .note .h{display:flex;justify-content:space-between;align-items:baseline;font-size:.75rem;font-weight:600;color:var(--warn);margin-bottom:.3rem}
 .note textarea{background:var(--card);min-height:2.6rem}
 @media (prefers-reduced-motion: no-preference){.chip{transition:background .2s}}
+/* only a table at the page's top level breaks out: inside a card or a quote it would run past the card's border */
+main > .tbl.wide{--w:max(100%,min(64rem,calc(100vw - 48px)));width:var(--w);margin-inline:calc((100% - var(--w)) / 2)}
 """
+
+
+def stacked_css(sel):
+    """A table as records under `sel`: the first cell the record's title, every other cell
+    behind its column's name (the td's data-label). The label floats into the cell's own left
+    padding, so a cell's text and code stay one flow and a long label wraps without overlap."""
+    return (
+        "{s} table,{s} tbody,{s} tr,{s} td{{display:block}}"
+        "{s} table{{min-width:0}}"
+        "{s} thead{{display:none}}"
+        "{s} tr{{padding:.6rem .5rem .7rem;border-bottom:1px solid var(--line)}}"
+        "{s} tr:first-child{{border-top:1px solid var(--line)}}"
+        "{s} td{{display:flow-root;border:0;padding:.12rem 0 .12rem 9rem}}"
+        "{s} td::before{{content:attr(data-label);float:left;width:8.25rem;margin-left:-9rem;padding-top:.18rem;"
+        "font-size:.7rem;font-weight:600;line-height:1.3;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}}"
+        "{s} td:not([data-label]){{padding-left:0}}"
+        "{s} td:first-child{{padding:0 0 .3rem;font-weight:600;font-size:1rem}}"
+        "{s} td:first-child::before{{content:none}}"
+        "{s} td:empty{{display:none}}"
+        "{s} tr.noted{{box-shadow:inset 3px 0 0 var(--warn)}}"
+        "{s} tr.noted td:first-child{{box-shadow:none}}"
+    ).format(s=sel)
+
+
+# Records on a page wide enough; on a phone a wide table is records too, its labels above the text.
+CSS += stacked_css(".tbl.stack") + "\n@media (max-width:40rem){" + stacked_css(".tbl.wide") + (
+    ".tbl.stack td,.tbl.wide td{padding-left:0}"
+    ".tbl.stack td::before,.tbl.wide td::before{float:none;display:block;width:auto;margin:0 0 .05rem;padding:0}"
+    "main > .tbl.wide{width:auto;margin-inline:0}}\n")
 
 JS = r"""
 (function(){

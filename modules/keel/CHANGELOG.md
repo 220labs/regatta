@@ -3,6 +3,13 @@
 ## Unreleased
 
 - Routed comments S6, notes (judge section 4): `keel routed notes` reads sextant's `sparks acts` (a fresh `status: new` note of the ideas pool, an open promise of the owner's in a meeting note's `## Promises`), drops a fenced source's notes before any batch (one `fenced` row each, never asked again), holds a held verb by the rules, judges the rest with the same `keel.comment` call, one a source, and cards every act on `lookout --status` and helm's board, naming the note's folder, day and a promise's line, never its words or its file name. T2 only: a note's `by:` and git author are not the owner, `## Asks` is never read. `notes go <id>` (refused unattended) is the owner's yes in chat, a `pickup seed` in the note's repo after a fresh read, the card's age and the repo's fence are asked again; `notes dismiss <id>` drops a card; both honour `--dry-run` and write under the lookout's lock. A card closes when its note leaves the read and reopens if it comes back; only `dismissed` and `seeded` end one, and only a read that answered a list closes anything (a failed read, or a Mac sparks does not read the notes on, closes nothing). The fence: an unreadable registry reads nothing, a guarded source or a confidential scope's repo never reaches the call. The lookout's pass runs it after its pages (a dry pass judges nothing); routed.jsonl's `event: note, source: note` rows are G5's measure and `routed status` counts them (`--json`: `{"docs", "notes"}`).
+- Tables on a doc's page take a layout from their text: one too wide for the column but of short cells breaks out
+  of it (up to 64rem, centred); one of three columns or more whose cells are paragraphs, or whose
+  columns together run past about 260 characters, reads as records, the first
+  cell a record's title and every other cell behind its column's name (a cell's `data-label`). On a phone a wide
+  table is records too. A row's note still anchors to its row, its marker inside the record. Only a
+  table at the page's top level breaks out, never one in a card. Two-column tables, and a table without a head or
+  without a body, stay as they were.
 - Routed comments S5, after landing: a routed doc whose `Routed:` line `main` holds is read under `main`'s key on
   every host, its page from the line where no pin is (the branch's pin first, until a deploy on main adopts it).
   No run holds a landed doc: an owner's T1 ask, and an answer committed on `main` to a doc routed within 14 days,

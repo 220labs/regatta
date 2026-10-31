@@ -611,6 +611,39 @@ has "$T/r1.html" '<span class="k">Recommended</span>A hybrid: keep both</div>' "
 has "$T/r1.html" 'Why: cheaper.' "the lines between Recommended and Answer are on the card"
 has "$T/r1.html" 'data-row="row 1"' "an empty first cell is named by its row"
 has "$T/r1.html" 'data-row="row 2"' "…so two rows never share a note"
+has "$T/r1.html" '<div class="tbl"><table>' "a two-column table stays in the column"
+cat > "$T/tf.md" <<'EOF'
+# Table fit
+
+| Arm | Requested / observed | Cost |
+| --- | --- | --- |
+| pen | Fable 5.1 `xhigh` on all 48 priced messages, read by the parent from its task transcript, the session file under this id being the parent's own | $49.64 |
+
+| Step | What changes | Owner | Landed | Check that proves it | Status |
+| --- | --- | --- | --- | --- | --- |
+| S1 | the parser reads the header labels into each cell | keel | 2026-10-30 | keel.sh passes on the laptop and in CI | done |
+
+| A | B | C |
+| --- | --- | --- |
+| 1 | two | three |
+
+| Only a head, its first label longer than a paragraph cell would be, one hundred and twenty characters and then some more | B | C |
+| --- | --- | --- |
+
+| Flag | Meaning |
+| --- | --- |
+| `a \| b` | either one, a cell long enough to be a paragraph were it a third column: one hundred and twenty characters and on |
+EOF
+"$B/keel" build "$T/tf.md" -o "$T/tf.html" > /dev/null
+has "$T/tf.html" '<div class="tbl stack"><table>' "a table of paragraph cells reads as records"
+has "$T/tf.html" '<td data-label="Requested / observed">Fable 5.1 <code>xhigh</code>' "…each cell behind its column's name"
+has "$T/tf.html" '<div class="tbl wide"><table>' "a table of short cells too wide for the column breaks out of it"
+has "$T/tf.html" '<div class="tbl"><table><thead><tr><th>A</th>' "a narrow table stays as it was"
+has "$T/tf.html" '@media (max-width:40rem){.tbl.wide table' "on a phone a wide table is records too"
+has "$T/tf.html" '<div class="tbl"><table><thead><tr><th>Only a head' "a table with a head and no body keeps its layout: stacked, its hidden head would leave nothing"
+has "$T/tf.html" '<div class="tbl"><table><thead><tr><th>Flag' "a two-column table with a pipe in a cell is still two columns"
+has "$T/tf.html" 'main > .tbl.wide{--w' "only a top-level table breaks out, never one in a card"
+has "$T/tf.html" '.tbl.stack tr.noted{box-shadow:inset 3px' "a noted record's marker sits inside the table's scroll box"
 printf '{"items": {"D2": "A"}}' > "$T/r1.json"
 "$B/keel" merge "$T/r1.md" "$T/r1.json" > "$T/r1.out" 2> "$T/r1.err"; rc=$?
 check "$rc" "0" "a D-list closed with --- merges"
@@ -1377,7 +1410,7 @@ has "$S/page.html" 'data-ss-id="D1"' "the page anchors D1's card"
 has "$S/page.html" 'data-ss-id="D2"' "…and D2's"
 PID=$(python3 -c 'import hashlib; print("b-" + hashlib.sha1(b"Some context worth a note.\x00").hexdigest()[:8])')
 has "$S/page.html" "data-ss-id=\"$PID\"" "a paragraph is a block anchor, by its text, not its line number"
-check "$(grep -o 'data-ss-id="b-[0-9a-f]*"[^>]*><td>Keep' "$S/page.html" | wc -l | tr -d ' ')" "1" "a table row is one too"
+check "$(grep -o 'data-ss-id="b-[0-9a-f]*"[^>]*><td[^>]*>Keep' "$S/page.html" | wc -l | tr -d ' ')" "1" "a table row is one too"
 check "$(python3 -c 'import re,sys; h=open(sys.argv[1]).read(); c=re.search(r"<section class=\"card\" id=\"card-D2\".*?</section>", h, re.S).group(0); print(c.count(" data-ss-id=\"D2\""), c.count("class=\"opt\""), c.count("id=\"ans-D2\""))' "$S/page.html")" "1 2 1" "the page is the form (2026-10-14): D2's card anchored, its options buttons, its answer box"
 has "$S/page.html" '"emit": "memo-save"' "…its Save goes out as the memo-save event"
 has "$S/page.html" "\"sha\": \"$(git -C "$G/sh" rev-parse HEAD)\"" "…naming the commit the page shows"
