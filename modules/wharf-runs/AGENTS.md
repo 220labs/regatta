@@ -55,7 +55,9 @@ Read `README.md` first: it is the chart. For an agent:
   cleaner's own version, the symlink's, each locked one and the 2 newest others, and the version
   lock has a single holder: once the first process on a version exits, no other process protects
   it (2.1.309's bundle, read 2026-10-23). `rc-hosts --check` (exit 1) and `--broken` (exit 3) fail on
-  such a host, and `--reap` restarts it once every session has been idle 10 minutes. The probes and D1
+  such a host, and `--reap` restarts it once every session has been idle 10 minutes (on a Mac the
+  `wharf-runs/rc-hosts` key leaves out, its hosts are unwanted: `--check` and `--reap` leave them to retire,
+  and `--broken` alone still fails one). The probes and D1
   (answered A: the cleanup is not held off; revisit if `--broken` posts monthly): the private repo's
   `docs/rc-hosts-versions-2026-10-23.md`.
 - check: `bash modules/wharf-runs/tests/check.sh`.
