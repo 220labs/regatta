@@ -157,7 +157,8 @@ MARK_AGE = 30 * 60       # a force mark older than this is not this turn's words
 TRIES = 3
 OUTBOX_TTL = 24 * 3600   # a put still unsent after a day is dropped, never replayed onto a branch that moved on
 RANKS = {"force": 0, "high": 1, "normal": 2, "low": 3}
-# S9: a landing ranks above every build but force (the owner's word for one run), by its kind — which dispatch
+# S9: a landing ranks above every build but force (the owner's word for one run, or a run the verb requeued: S10), by its
+# kind — which dispatch
 # --start alone writes, from what it runs, never from a caller's flag or variable (the brief; S4's unattended
 # refusal stands: no rank is raised by a word)
 LAND_RANK = 0.5
@@ -790,8 +791,16 @@ def apply_op(entries, op):
             cur["refused_by"] = dict(cur.get("refused_by") or {}, **{op["host"]: op["at"]})
         if op.get("args") is not None:
             cur["args"] = op["args"]
-        if cur.get("priority") == "force":
-            # force spent its one slot over the cap on the run that was cut: the step goes on at high (the verb)
+        if op.get("force"):
+            # The verb's own requeue (dispatch --requeue, which an unattended caller is refused) hands a run back at
+            # force, whatever its rank was (the owner, 2026-10-30: "we want to get them as soon as possible, so they
+            # don't block other work"). Only that op carries the flag: the sweep's D8-B op reads a branch-tip subject
+            # any run on the branch could write, and an outbox op from before this rule never had it, so both keep
+            # the old rule below. Force's claim rules apply as to any force entry (cap_for, claim)
+            cur["priority"] = "force"
+            cur["args"] = _rank_args(cur.get("args"), "force")
+        elif cur.get("priority") == "force":
+            # force spent its one slot over the cap on the run that was cut: the step goes on at high
             cur["priority"] = "high"
             cur["args"] = _rank_args(cur.get("args"), "high")
         return True, "requeued"
@@ -2836,10 +2845,11 @@ REC_ENV = {"manager": "DISPATCH_SKIPPER", "plan": "DISPATCH_SHIP", "plan_space":
 
 def entry_of_record(st, h, t):
     """A queued entry built from a run record with none (a run from before the home, a writes-only host's own):
-    the verb's put. Its rank is the record's (force as high), its flags and env what the record kept."""
+    the verb's put. Its rank is force whatever the record's was (the owner, 2026-10-30: "we want to get them as soon
+    as possible, so they don't block other work"; the requeue op's rule, a standing one and no caller's flag), its
+    flags and env what the record kept."""
     repo = str(Path(st["repo"]).resolve())
-    prio = st.get("prio") if st.get("prio") in RANKS else "normal"
-    prio = "high" if prio == "force" else prio
+    prio = "force"
     env = {"DISPATCH_DEPTH": str(st.get("depth") or 0)}
     if st.get("task_mode") in ("default", "ask", "dnd", "yolo"):
         env["DISPATCH_MODE"] = st["task_mode"]
@@ -3087,7 +3097,8 @@ def cmd_requeue(a, ctx):
                 {"id": e.get("id"), "running_on": e.get("running_on"), "claimed_at": e.get("claimed_at")}
             if e.get("session") or e.get("synth"):
                 cond["session"] = e.get("session") or st.get("session")   # empty in a cache that lags `started`: no test
-            op = {"op": "requeue", "key": e["key"], "host": h, "at": t, "hold": hold, "cond": cond}
+            # force: the verb's word, which apply_op alone raises on (the sweep's D8-B op carries none)
+            op = {"op": "requeue", "key": e["key"], "host": h, "at": t, "hold": hold, "cond": cond, "force": True}
             if not e.get("synth"):
                 op["args"] = run_flags(e.get("args"), st)
             if not lid:

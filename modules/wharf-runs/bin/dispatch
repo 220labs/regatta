@@ -198,6 +198,9 @@
 #               An unattended caller never raises: a --next inherits its own run's rank from its record
 #               (the record whose claude is an ancestor of this dispatch, never a session id), force as
 #               high; a --priority high it names passes only when that record is high, force never.
+#               A run handed back by dispatch --requeue (S10) goes back at force whatever its rank was (the owner,
+#               2026-10-30): the verb's own op, refused to an unattended caller, so the refusal above stands; the
+#               sweep's tip-word requeue (D8-B) keeps the run's rank, force as high.
 #   --queue     the entries this Mac could run, or every one (--all); --json for a reader, whose rule is that
 #               an unreadable queue counts as an entry (dispatch-queue has: exit 4).
 #   --sweep     the outbox, this Mac's own entries reconciled with its records, cards, then a claim — what the

@@ -3789,8 +3789,9 @@ g("add", "-A", cwd=wt); g("commit", "-qm", "seed", cwd=wt); g("push", "-q", "ori
 g("checkout", "-qb", br, cwd=wt); open(os.path.join(wt, "f"), "a").write("two\n")
 g("commit", "-qam", "Build: half of it", cwd=wt); g("push", "-q", "origin", br, cwd=wt)
 h, sid, t = q.host_name(), "s-%s-0000-0000" % case, q.now()
+RANK = {"force": "force", "low": "low", "high": "high"}   # a case named for a rank: the entry (and record) hold it
 st = {"session": sid, "branch": br, "repo": wt, "topic": topic, "wt": wt, "brief": brief, "started": t - 600, "model": "opus-x",
-      "effort": "max", "prio": "force" if case == "force" else "normal", "depth": 2, "pid": 1, "proc_start": "x", "mode": "rc"}
+      "effort": "max", "prio": RANK.get(case, "low" if case == "entryless" else "normal"), "depth": 2, "pid": 1, "proc_start": "x", "mode": "rc"}
 if case == "confidential":
     st["origin"] = "vault"
 d = q.logdir() / "run-seed-runs"; d.mkdir(parents=True, exist_ok=True)
@@ -3813,13 +3814,14 @@ if case == "tipword":
     q.claim = lambda ctx, out=None: []
     q.poll_tend = lambda ctx: None
     q.cmd_sweep(ctx, ctx)
-    print("W state=%s from=%s" % ((f.entries().get(e["key"]) or {}).get("state"), (f.entries().get(e["key"]) or {}).get("requeued_from")))
+    ent = f.entries().get(e["key"]) or {}
+    print("W state=%s from=%s prio=%s args=%s" % (ent.get("state"), ent.get("requeued_from"), ent.get("priority"), ",".join(ent.get("args") or [])))
     sys.exit(0)
 if case != "entryless":
     e = {"id": "e-" + case, "key": q.key_of(wt, br), "repo": q.repo_word(wt), "branch": br, "topic": topic,
-         "priority": "force" if case == "force" else "normal", "state": "running", "running_on": h, "claimed_by": h,
+         "priority": RANK.get(case, "normal"), "state": "running", "running_on": h, "claimed_by": h,
          "claimed_at": t - 700, "seen_at": t - 60, "session": sid, "host": h if case == "pinned" else "", "queued_at": t - 800,
-         "args": ["--model", "opus", "--note", "keep me"] + (["--priority", "force"] if case == "force" else []), "env": {"DISPATCH_DEPTH": "2"}}
+         "args": ["--model", "opus", "--note", "keep me"] + (["--priority", RANK[case]] if case in RANK else []), "env": {"DISPATCH_DEPTH": "2"}}
     f.do([{"op": "put", "key": e["key"], "entry": e}], "seed")
 # the turn's dirt: a changed file and a new one
 open(os.path.join(wt, "f"), "a").write("three, uncommitted\n"); open(os.path.join(wt, "new.txt"), "w").write("new\n")
@@ -3885,14 +3887,17 @@ check "$(echo "$out" | grep '^WIPFILES')" "WIPFILES f,new.txt" "  …the WIP com
 check "$(rqw "$w" head)/$(rqw "$w" origin_eq)" "Requeue: rq-basic from laptop/True" "  …the brief's section committed as the host's word, and pushed"
 check "$(rqw "$w" author)" "t" "  …in the user's own git identity, never the queue clone's"
 check "$(rqw "$w" skip)" "laptop" "  …by hand, this Mac skips it the hour, or its own poll claims it back before the lid shuts"
-check "$(rqw "$w" args)" "--note,keep me,--model,opus-x,--effort,max" "  …the record's model and effort carried, the entry's other flags kept"
+check "$(rqw "$w" args)" "--note,keep me,--model,opus-x,--effort,max,--priority,force" "  …the record's model and effort carried, the entry's other flags kept, the rank in them"
+check "$(rqw "$w" prio)" "force" "  …a normal entry goes back at force, in the entry and in its --priority (the owner, 2026-10-30)"
 b=$(echo "$out" | grep '^BRIEF ')
 case "$b" in *"## Continue from here (requeued from laptop, "*"Build: half of it"*"uncommitted: in "*", new.txt"*"  > Tier: principal-architect"*"transcript: session=s-basic-0000-0000 host=laptop archive=projects/transcripts/rq-basic/"*) r=ok;; *) r="$b";; esac
 check "$r" ok "  …the brief's section: the run's commits, the WIP files, the last reply quoted, the transcript: pointer"
-w=$(rq force 2>&1)
-check "$(rqw "$w" state)/$(rqw "$w" prio)/$(rqw "$w" args)" "queued/high/--note,keep me,--model,opus-x,--effort,max,--priority,high" "  a force entry is requeued as high, its carried flag too"
+for c in low high force; do
+  w=$(rq $c 2>&1)
+  check "$(rqw "$w" state)/$(rqw "$w" prio)/$(rqw "$w" args)" "queued/force/--note,keep me,--model,opus-x,--effort,max,--priority,force" "  a $c entry is requeued at force, its --priority flag too"
+done
 w=$(rq entryless 2>&1)
-check "$(rqw "$w" state)/$(rqw "$w" from)/$(rqw "$w" prio)" "queued/laptop/normal" "  a run with no entry: a put built from its record, queued for any host"
+check "$(rqw "$w" state)/$(rqw "$w" from)/$(rqw "$w" prio)/$(rqw "$w" args)" "queued/laptop/force/--model,opus-x,--effort,max,--priority,force" "  a run with no entry (its record low): a put built from it, at force, queued for any host"
 w=$(rq unattended 2>&1)
 check "$(rqw "$w" rc)/$(rqw "$w" state)/$(rqw "$w" ended)" "2/running/False" "  an unattended caller is refused, nothing ended"
 w=$(rq offline 2>&1)
@@ -3988,11 +3993,11 @@ mkdir -p "$T/rq3/home" "$T/rq3/cfg/wharf-runs" && git init -q --bare "$T/rq3/que
 check "$(cd "$T/rq3" && HOME="$T/rq3/home" REGATTA_CONFIG="$T/rq3/cfg" DISPATCH_HOST=laptop DISPATCH_POWER=off python3 "$T/rq3.py" "$QB" "$T/rq3/queue.git" 2>&1 | tail -1)" \
   "strand=None owed=running" "  …a requeued run whose op was dropped is removed by its host's sweep; one whose op is owed stays running"
 RQX=own; w=$(rq tipword 2>&1 | grep "^W ")
-check "$w" "W state=queued from=studio" "S10 D8-B: a host unseen a sweep whose branch tip is its own Requeue: commit — its entry is queued again"
+check "$w" "W state=queued from=studio prio=normal args=" "S10 D8-B: a host unseen a sweep whose branch tip is its own Requeue: commit — its entry is queued again, at its own rank (a subject is no word for force)"
 RQX=other; w=$(rq tipword 2>&1 | grep "^W ")
-check "$w" "W state=running from=None" "  …any other tip is no word: it stays running (silence proves nothing)"
+check "$w" "W state=running from=None prio=normal args=" "  …any other tip is no word: it stays running (silence proves nothing)"
 RQX=old; w=$(rq tipword 2>&1 | grep "^W ")
-check "$w" "W state=running from=None" "  …a Requeue: tip older than the claim is a requeue the host took back: ignored"
+check "$w" "W state=running from=None prio=normal args=" "  …a Requeue: tip older than the claim is a requeue the host took back: ignored"
 unset RQX
 # an orphan's end (its watcher gone) claims at finish() — never when it was requeued: its Mac is about to sleep
 cat > "$T/fin.py" <<'PYFIN'
