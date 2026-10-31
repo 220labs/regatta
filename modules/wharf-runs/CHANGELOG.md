@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A named node's clone unit writes the core's `home` file, best effort (TODO 25 (b)): from a clone the clones list
+  carried that holds the core whole, else the marketplace clone `known_marketplaces.json` records; a home that names
+  a core is kept, and a node with no core still finishes rather than retrying every minute.
 - `pickup seed --beside`'s wording has its case (routed comments S5, TODO 29 (e)): no "behind origin" for a seed off a
   branch's tip, and a blueprint already on that branch is said to be on it.
 - dispatch-queue S10, the requeue (docs/dispatch-queue-requeue-2026-10-25.md): `dispatch --requeue TOPIC|--all
