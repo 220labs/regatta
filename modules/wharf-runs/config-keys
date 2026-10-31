@@ -17,3 +17,5 @@ wharf-runs/load-margin
 # laptop may sleep), both optional (README; dispatch-queue S10).
 # Not listed either: wharf-runs/finisher-rotation, a window that is off when absent (autofinish-run's header).
 # Nor wharf-runs/label-prefix-previous and wharf-runs/launcher-id: optional, a label move's (README).
+# Nor wharf-runs/kick-roads (absent: the kick is off, nobody is kicked and every host polls) or wharf-runs/kick-stream
+# (absent: each host's stream is kick/<host>), both optional (README; dispatch-queue S8).

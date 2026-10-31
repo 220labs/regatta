@@ -2645,6 +2645,14 @@ has "$T/out" "queued as fleet:repo--step (normal)" "  …queued, not refused"
 has "$T/out" "SESSION IS WAITING FOR SOMETHING — queued $NB (normal); the next step waits for a run to end; the skipper finishes it" \
   "  the one closing line: the pending kind, the cap's waiting words in it (CAP_RE, ASK_EXEMPT_RE)"
 check "$(qget repo--step state)" "queued" "  the entry waits in the ref"
+qreset; own sess-A
+# S8: the full host kicks its peer as it enqueues (the kick in this process, its ssh the suite's stand-in)
+echo "buildbox:ssh" > "$REGATTA_CONFIG/wharf-runs/kick-roads"; : > "$T/ssh.calls"
+FIRE=" " DISPATCH_MAX_RUNS=0 DISPATCH_KICK_SYNC=1 nx > "$T/out" 2>&1; check "$?" "0" "S8: --next on a full host with a kick road: queued, exit 0…"
+has "$T/ssh.calls" '--claim --full laptop --from laptop' "  …and the peer kicked over its ssh alias, host names only"
+check "$(grep -c 'step\|claude/' "$T/ssh.calls")" "0" "  no branch or topic crosses the wire"
+check "$(qget repo--step state)" "queued" "  the entry still waits: the peer's sweep claims it"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-roads"
 qreset
 
 echo "  a claim whose running write fails, past the lease: never re-claimed"

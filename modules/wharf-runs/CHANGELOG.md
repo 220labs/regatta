@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- The S8 review's second pass: `kick-listen install` and `remove` refuse a host whose `kick-stream` names a shared
+  listener (use `--shared`); `dispatch --roads` never prints `<host>:none` for this host; the watchdog moves a refused
+  plist out of LaunchAgents; `REGATTA_UNATTENDED` joins the refusal marks; the mid-pass flush survives a torn ref;
+  the hold-back never reads the cached view; `program()` keeps only a completed `rc-hosts --launcher` answer; the receiver kickstarts the previous label prefix's sweep while a label move drains.
+- dispatch-queue S8, the kick roads (docs/dispatch-queue-kick-2026-10-25.md; `bin/kicklib.py`): a host that enqueues
+  a fleet entry it does not take kicks every eligible peer, in parallel and detached, over the first road
+  `wharf-runs/kick-roads` names for it (`sheep`: a press on its spacesheep stream; `orca`: one terminal on its serve,
+  `; exit`, waited for and closed; `ssh`: its alias, the core from its own `home` file), else what exists (orca where
+  `orca-pairs` pairs this way, ssh where `wharf-runs/ssh` has the alias). The payload is `{kick, from, full}`, host
+  names only; each verdict goes to `claude-weekly/kicks.jsonl`. The kick is off where no `kick-roads` file is.
+  `dispatch --kick QID` by hand, refused for a node-local entry and from a confidential checkout (and on a torn
+  registry). The receiver, `dispatch --claim --full HOSTS --from HOST` (the sheep button: `--claim --from-stream`,
+  which parses SS_STREAM_DATA), notes the kick and kickstarts the host's own queue-sweep job; the sweep holds back
+  3 s per higher-ranked berth of unknown room, 9 s at most, then claims. `dispatch-rc kick-listen install|remove|status
+  [--shared DIR]`: the listener's button, one bounded proving run, the CLI's own `--service` in its own
+  SPACESHEEP_CONFIG_DIR (refused unattended; exit 3 names the owner's key step); the sweep's watchdog boots out a
+  listener its log shows refused. `dispatch --roads` prints the lines what exists gives. Carried from the S2a review:
+  `hash-object --no-filters` (7.5), the sweep claims past a busy clone lock (7.3), rc-hosts asked once per process
+  (7.9), `poll_tend` reads no ref when nothing can change (8), the deny list names `--kick` and says its rules are
+  habit guards (11), `reached()` stated (12), the git-count label (7.10).
+  The landing review's fix round: the hold-back fetches once and counts only berths the entry lets take it; a
+  kick heard mid-sweep gets one more hold and claim; the Orca road reads the receiver's exit code and closes with
+  `--tab`; kick threads run to their roads' own bounds; `kick-roads` reads a value split one word per line, a
+  note after `#` or `(`, a host's first line (the core's check alike), and `--roads` prints notes on `#` lines;
+  the confidential fence (`confidential_scope`, so `route()` too) walks every scope; the watchdog counts refused
+  starts since the listener last listened and moves the plist aside, and an install starts a fresh log;
+  `kick-listen` writes refuse every unattended mark, and a run's deny list names them; a refusal counts as full
+  for its hour only; the core's listener row is a note off macOS.
 - Every node guest gets sessionpipe (the owner, 2026-10-30: "keep sessionpipe installed, and update the machine
   builders"): `sessionpipe-install` puts Node v22.23.4 (checked against a committed sha256) and sessionpipe 0.5.0
   into `/usr/local` at first boot, and a named node's clone unit installs sessionpipe's hooks with no backfill and

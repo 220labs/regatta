@@ -4,6 +4,8 @@
 
 - `ORCA_ROW`, an Orca login no registry row names, takes `free_below` 70: under 70% of its 5-hour window it
   runs whatever the limit or pace, as every registry row (the owner, 2026-10-30; lighthouse's pace-window).
+- `regatta check`'s kick listener row (dispatch-queue S8): where this host's `wharf-runs/kick-roads` line names
+  sheep, launchd must hold the spacesheep listener service on its kick stream; a finding when it does not.
 - `cost ratio` lists every provider's entry with the date it was measured (subscription-bags D3-B,
   2026-10-29); `--json` gains `others`. An entry `cost --provider` would not apply reads "no usable ratio",
   a hand-written field that is no number `$?`. With Anthropic's entry alone the output is the one line as before.
