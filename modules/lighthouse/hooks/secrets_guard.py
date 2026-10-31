@@ -114,8 +114,28 @@ yard node first among them. The same tools and shapes as above, with its own ref
 variable (any expansion: `$X`, `${X:-…}`, `$(…)`, a backtick body) is caught when it spells the folder's tail after it (the part below the config dir,
 else its last two names); the tail alone, a grep pattern or a doc's mention, passes. An accident guard like the rest: the file stays readable by any process of its user.
 
+Also, since 2026-10-29 (vendor-hooks; docs/codex-agy-gaps-2026-10-29.md F2): the other CLIs' own logins,
+closed the way `_secrets` is, to every session, Claude's included — Codex's `auth.json` in every Codex home
+(`$CODEX_HOME`, `~/.codex`, a `~/.codex-<label>` home the account registry names, an Orca Codex login's
+`codex-accounts/<id>/home`), and in Antigravity's home (`$GEMINI_CLI_HOME`, else `~/.gemini`) the Gemini CLI's
+`oauth_creds.json` and the files agy falls back to when a login outgrows the macOS keychain, where it keeps
+them first (its binary, 0.x of 2026-10-30: `authstore.keychainStore`, and the changelog line "such tokens are
+now stored in the CLI's private secrets file"): `jetski-standalone-oauth-token`, `mcp_oauth_tokens.json`,
+`plugin-secrets.json`. A keychain item is out of a file guard's reach; `security find-generic-password -w` is
+the road to it, and only an agent's own shell could take it, which no guard here reads (said in the doc). A
+spelled path is caught by its shape (CLI_LOGINS_LITERAL) whether or not the file is here; a word the shell
+expands (`cat ~/.codex/auth*`, `~/.cod*/*.json`) by its matches; a relative read after `cd` into the home by
+the tracked cwd; a recursive reader over a folder that holds one (`cp -R ~/.codex …`) is refused. The CLIs read
+their own logins in their own processes (`codex login status`, `account limits`), which this never sees.
+Each CLI's own hooks and trust files (Codex's `hooks.json` and `config.toml`, which holds the reviews; agy's
+`config/hooks.json`) are closed to a file tool the way the live settings.json is (CLI_HOOKS_REASON): the
+entries there are what make that CLI meet these guards, and `vendor-hooks apply` is their writer.
+
+The same decisions reach a Codex or Antigravity session through hooks/vendor_hook.py, which turns that CLI's
+PreToolUse payload into this one's and this answer into that CLI's (bin/vendor-hooks writes the entries).
+
 Fails open: an error in here lets the call through rather than blocking every tool in every
-session. Tests: tests/hooks.sh, "secrets_guard" and "the fence".
+session. Tests: tests/hooks.sh, "secrets_guard" and "the fence"; tests/parity.sh, each rule per CLI.
 """
 import fnmatch
 import functools
@@ -299,14 +319,75 @@ def guarded_rules():
     return Rules(GUARDED, literal, candidate, HARMLESS)
 
 
+# The other CLIs' logins (the docstring): the files this Mac has, real paths, for a recursive reader's
+# holds() and a link's resolve; the literal catches the same files spelled, here or not, behind a variable
+# included (`$CODEX_HOME/auth.json`), and an Orca Codex login's home by its folder's shape.
+AG_LOGINS = ("oauth_creds.json", "jetski-standalone-oauth-token", "mcp_oauth_tokens.json", "plugin-secrets.json")
+_AG_NAMES = "|".join(re.escape(n) for n in AG_LOGINS)
+CLI_LOGINS_LITERAL = re.compile(r"(?:^|/)(?:(?:\.codex[^/\s'\"]*|\$\{?CODEX_HOME\}?|codex-accounts/[^/\s'\"]+/home)/auth\.json"
+                                r"|(?:\.gemini|\$\{?GEMINI_CLI_HOME\}?)/(?:[^\s'\"]*/)?(?:" + _AG_NAMES + r"))(?=$|[\s'\"])")
+CLI_LOGINS_CANDIDATE = re.compile(r"[^\s'\"()\[\]{},;=<>|&`]*(?:auth\.json|" + _AG_NAMES + r")[^\s'\"()\[\]{},;=<>|&`]*")
+CLI_LOGINS_REASON = ("⛔ {what}: a coding CLI's own login (Codex's auth.json, Antigravity's oauth_creds.json and token files) is "
+                     "closed to agents of every CLI — it is the account itself, and a transcript that holds it "
+                     "leaves with the session. The CLI reads it in its own process: `codex login status`, "
+                     "`account limits`. A login goes in by {owner}'s hand (`codex login`). Only naming the path "
+                     "(a grep pattern, a message)? The spelled path is refused too: put the text in a file and pass "
+                     "the file. Don't retry in another shape.")
+
+
+def codex_homes():
+    """Every Codex home this Mac may have (the docstring); registry homes found by their shape, without the core."""
+    home = os.path.expanduser("~")
+    homes = {os.environ.get("CODEX_HOME") or "", os.path.join(home, ".codex")}
+    homes |= set(glob.glob(os.path.join(home, ".codex-*")))
+    # Orca's own data folder only (lighthouse's `account`, ORCA_DATA): a glob over every app's folder lstat'd
+    # TCC-guarded ones on every tool call (the finish review, 2026-10-31); another app's login, spelled, still
+    # meets CLI_LOGINS_LITERAL by its `codex-accounts/<id>/home` shape
+    orca = os.environ.get("ACCOUNT_ORCA_DATA") or os.path.join(home, "Library", "Application Support", "orca")
+    homes |= set(glob.glob(os.path.join(orca, "codex-accounts", "*", "home")))
+    return sorted(h for h in homes if h)
+
+
+def ag_home():
+    return os.environ.get("GEMINI_CLI_HOME") or os.path.join(os.path.expanduser("~"), ".gemini")
+
+
+def cli_logins():
+    """The CLI login files on this Mac (the docstring), real paths. agy's fallback files sit in its home or a
+    folder or two below it (one per product: `antigravity-cli/`, a plugin's own)."""
+    files = [os.path.join(h, "auth.json") for h in codex_homes()]
+    ag = ag_home()
+    for n in AG_LOGINS:
+        files += [os.path.join(ag, n)] + glob.glob(os.path.join(ag, "*", n)) + glob.glob(os.path.join(ag, "*", "*", n))
+    return sorted({os.path.realpath(f) for f in files if os.path.lexists(f)})
+
+
+def cli_logins_rules():
+    return Rules(cli_logins(), CLI_LOGINS_LITERAL, CLI_LOGINS_CANDIDATE, HARMLESS, files=True)
+
+
+CLI_HOOKS_REASON = ("⛔ {tool} of {path} is refused: a coding CLI's own hooks and trust file hold the entries that "
+                    "make its sessions meet these guards (lighthouse's vendor-hooks). Change them with "
+                    "`{vh} apply` (it rewrites ours where they stand), or tell {owner} what should change and why; "
+                    "Codex's config.toml (its model, MCP servers, profiles) is {owner}'s to edit at a terminal.")
+
+
+def cli_hooks_files():
+    """Real paths of each CLI's hooks and trust files, there or not (a Write may create one)."""
+    out = [os.path.join(h, n) for h in codex_homes() for n in ("hooks.json", "config.toml")]
+    out.append(os.path.join(ag_home(), "config", "hooks.json"))
+    return {os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)) for p in out}
+
+
 class Rules:
     """What one wall refuses: its folders (real paths), the raw-text pattern for a path the hook
     cannot resolve, the token pattern code is judged by, the verbs that never open a file, and —
     the fence only — whether a command after a `cd` into a folder counts as touching it, git
     judged by the tree it runs in and a grep's pattern taken as text."""
 
-    def __init__(self, dirs, literal, candidate, harmless, fence=False):
+    def __init__(self, dirs, literal, candidate, harmless, fence=False, files=False):
         self.dirs, self.literal, self.candidate, self.harmless, self.fence = dirs, literal, candidate, harmless, fence
+        self.files = files   # the wall's entries are files (the CLI logins): a word the shell expands is judged by its matches
         self.present = [d for d in dirs if os.path.lexists(d)] if fence else dirs
 
 
@@ -324,6 +405,9 @@ def inside(path, cwd, r, follow=True):
         return False
     if r.literal and r.literal.search(path):
         return True
+    if r.files and any(c in path for c in "*?["):   # `cat ~/.codex/auth*`: each match judged, the file itself included
+        if any(resolve(hit, cwd, follow) in r.dirs for hit in expand(path, cwd)):
+            return True
     if r.fence and any(c in path for c in "*?["):   # a word the shell expands: `cat <projects>/*/memory/x.md`
         # a match below a fenced folder; the folder's own name is a name, as glob_reaches() lets a Glob
         # of the repos' names pass (`ls -d <projects>/*`, `for r in <projects>/*/`); a walker counts it (fence_hit)
@@ -1219,6 +1303,16 @@ def main():
                 "permissionDecisionReason": SETTINGS_REASON.format(
                     tool=tool, owner=OWNER, cs=os.path.join(TOOLS, "bin", "claude-settings"))}}, ensure_ascii=False))
             return
+        try:
+            hooked = bool(path) and resolve(path, cwd, follow=False) in cli_hooks_files()
+        except Exception:
+            hooked = False
+        if hooked:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": CLI_HOOKS_REASON.format(
+                    tool=tool, path=path, owner=OWNER, vh=os.path.join(TOOLS, "bin", "vendor-hooks"))}}, ensure_ascii=False))
+            return
     if tool == "Bash":   # before the vault lookup: a Mac without Drive mounted is guarded too
         hit = sessionpipe_hit(inp.get("command") or "")
         if hit:
@@ -1238,7 +1332,8 @@ def main():
         return
     dirs = secrets_dirs()
     walls = ([(Rules(dirs, LITERAL, CANDIDATE, HARMLESS), REASON)] if dirs else []) \
-        + [(r, GUARDED_REASON) for r in (guarded_rules(),) if r]   # guarded dirs: with or without Drive
+        + [(r, GUARDED_REASON) for r in (guarded_rules(),) if r] \
+        + [(cli_logins_rules(), CLI_LOGINS_REASON)]   # guarded dirs and the CLI logins: with or without Drive
     for r, reason in walls:
         what = touches(tool, inp, cwd, r)
         if what:

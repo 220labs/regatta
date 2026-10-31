@@ -16,10 +16,13 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `bin/tiling` | yabai's window layout, applied at every yabai start |
 | `bin/ops` | the operations desk's own verbs: `usage` reads CI minutes and credits per budgeted account with the owner's token, in the desk's job only; `pick` runs wharf's `ci-provider --pick` over the repos (lighthouse-ops S1); `sample` appends the desk's metrics row to the log dir's `ops.jsonl` — queue, run and check slots, load, memory, budgets, the token's standing (`token.plan`, `token.project`), token weeks, cost — every 15 minutes on the ops host (`install.sh --schedule`), and `status` prints the last row, which helm's board shows as its ops row (S2); `ingest` appends every fleet repo's new issues and comments, and the configured Projects' items, to the log dir's `intake.jsonl` — a row an event, metadata and the body's hash, never a body — every 10 minutes on the ops host, a confidential scope's repos only on its own yard and nothing on a torn registry, and `intake` lists the open issues, a card each on helm's board (S4); `classify`, in the same job, takes each new open issue through four gate rows (`lighthouse.*`), the ladder and every cap of `lighthouse/ops.json` into the log dir's `ops-verdicts.jsonl`, laying nothing (S5: log-only), and `digest` counts the logged week (S5) |
 | `hooks/account_guard.py` | refuses a prompt in a repo the session's login may not open |
-| `hooks/secrets_guard.py` | closes the secrets folders and the live settings file to agents, and a confidential scope's paths to a session outside it (the fence) |
+| `hooks/secrets_guard.py` | closes the secrets folders, the coding CLIs' own logins and the live settings file to agents, and a confidential scope's paths to a session outside it (the fence) |
+| `hooks/vendor_hook.py` | runs a Claude PreToolUse guard unchanged inside Codex's or Antigravity's own hooks: their payload in, their answer out; and adds the CLI's `Co-Authored-By` to its commits |
+| `bin/vendor-hooks` | `apply`, `check`, `homes`: those entries and a rules pointer in every Codex and Antigravity home this Mac has (`install.sh --vendor`) |
 | `hooks/design_route.py` | a new design artifact is made on the primary login, and shared as it is made |
 | `hooks/tool_path.py` | the package managers' bin dirs on every session's Bash PATH |
 | `tests/check.sh` | every suite; scratch dirs only, no network |
+| `tests/parity.sh` | each guard rule, a deny and an allow case, against Claude Code's, Codex's and Antigravity's payloads (`parity_rules.py`, the table): a rule a CLI cannot meet is a red row |
 
 ## Tenants
 
@@ -159,6 +162,21 @@ the path) to `<log-dir>/fence.log`. The paths are the core's `scope_paths()`, mi
 and scratch folders; a scratch folder walls the scope but never makes a session inside it. A walker over
 the temp folder (`find /tmp`) is refused while such a scratch folder exists, as one over the projects folder is;
 `tests/hooks.sh` proves the two agree.
+
+**Every CLI, one rule set** (since 2026-10-29, the owner's D2-A in docs/codex-agy-gaps-2026-10-29.md): a Codex
+or Antigravity session, hand-started or Orca's, meets `secrets_guard` and wharf's checkpoint through its own
+PreToolUse hooks. `bin/vendor-hooks apply` (or `install.sh --vendor`, once the branch is on main) writes one
+entry per guard into each Codex home's `hooks.json` (`$CODEX_HOME`, `~/.codex`, each Codex row of the account
+registry) and our `regatta` key into Antigravity's `config/hooks.json`; `hooks/vendor_hook.py` translates the
+payload, runs the guard as it is, and answers in the CLI's own shape. Beside them a rules pointer —
+`<codex home>/AGENTS.md`, `~/.gemini/GEMINI.md` — names, never copies, what a Claude session of the same tenant
+loads that may leave for another vendor: its seat's `rules/`, the `@` files every seat's CLAUDE.md loads (or the
+config key `lighthouse/vendor-layer`), and the bulletin; never a file only one seat loads, never the CLAUDE.md. Codex runs a hook only once it is
+reviewed (`codex` → /hooks); `vendor-hooks check` (and `install.sh --check`) counts the entries waiting for it.
+What differs, and why: wharf's worktree lock is Claude's alone (a vendor session reports no end that would free
+it; checkpoint's VENDOR), and dispatch's launch-time deny list (pushes, GitHub, ssh, deploys, the queue's verbs)
+is checkpoint's rule for an unattended vendor run, where Claude's own permission rules carry it for a Claude run.
+Antigravity keeps its login in the macOS keychain first, which no file guard reaches; its fallback files are walled. `tests/parity.sh` runs each rule on each CLI.
 
 ## beacon — support: a site's contact form and its bot
 

@@ -36,6 +36,30 @@
   probe holds the queue, no try spent, when a row's provider command (`$CLAUDE_BIN`, else `claude`) is not on the
   job's PATH, naming the command and the PATH (the home as `~`), or when a row has no classify adapter in the gate (a
   `codex` row); the Linux face's printed units carry the same PATH. The desk's first pass had spent a try on each issue.
+- Every CLI, one rule set (vendor-hooks, the owner's D2-A, 2026-10-29): `hooks/vendor_hook.py` runs a Claude
+  PreToolUse guard unchanged inside Codex's and Antigravity's own hooks — Codex's `Bash` and `apply_patch` (each
+  file of a patch judged), Antigravity's `run_command` and file tools, under both the names its docs give and the
+  ones it sends — and answers in each CLI's shape; a `git commit` there gains `Co-Authored-By: <CLI> <model>`.
+  `bin/vendor-hooks apply|check|homes` writes the entries for `secrets_guard` and wharf's checkpoint, and a rules
+  pointer naming the files a Claude session loads, into every Codex home the registry names and Antigravity's,
+  in place beside Orca's and sessionpipe's (Codex keys its review by position); `install.sh --vendor` runs it,
+  `--check` reports it. `secrets_guard` closes Codex's `auth.json` and Antigravity's `oauth_creds.json` to every
+  session, Claude's included. `tests/parity.sh`: each rule, a deny and an allow case, on all three CLIs.
+  The landing review's fixes (2026-10-30): a Codex argv `[<sh>, -lc, <script>]` is judged as its script; the
+  trailer rewrites only one simple `git commit` that both guards pass (Codex's rewrite needs an allow; agy's
+  `overwrite` goes without a `decision`); agy's other readers and shell input (`view_code_item`,
+  `read_url_content` for a `file:` URL, `codebase_search`, `send_command_input`, `write_stdin`, …) are judged; one
+  25 s budget per call. The logins wall takes globs and agy's keychain fallback files
+  (`jetski-standalone-oauth-token`, `mcp_oauth_tokens.json`, `plugin-secrets.json`), and each CLI's hooks and trust
+  files are closed to a file tool. The pointer is the tenant's: its Claude seat's `rules/` and only the `@` files
+  every seat loads (or `lighthouse/vendor-layer`), never the CLAUDE.md; a foreign AGENTS.md is never written,
+  a group of ours is never dropped (Codex's review indexes), and an entry whose adapter moved fails open with one line.
+  The finish review's (2026-10-31): the trailer's allow needs a clean pass from each guard (one out of time,
+  absent, exiting abnormally or reporting its own crash is no pass, so no rewrite); its one-simple-commit test
+  reads quotes in context (an apostrophe inside double quotes had let an operator ride along) and refuses
+  ANSI-C `$'…'` quoting and any `${…}`; a commit with `--no-verify` (abbreviated too), `-n`, a `core.hooksPath`
+  or any `-c` but the author's name and address gets no trailer; agy's `CodeEdit` is text; and the entry runs `python3 -I`, so a repo's own `json.py` never loads inside the hook.
+
 - The desk's sense, logged (lighthouse-ops S5, 2026-10-28): `ops classify` takes each new open issue the intake
   holds through four rows of the core's gate (`lighthouse.importance`, `.urgency`, `.cost`, `.clarity`; Sonnet in
   the shipped table), derives the ladder's rung from the labels and the issue's kind and author, judges every cap

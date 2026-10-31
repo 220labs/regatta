@@ -4,8 +4,14 @@
 
 - The finish and evacuate skills state their lines with their marks (✅, ⏳, 🛑); checkpoint's declared-line
   refusal suggests the marked WAITING FOR SOMETHING line.
-
 - `session_status` reads WAITING FOR NOTHING (the core's `idle` kind) as done.
+- checkpoint judges another CLI's call (vendor-hooks, 2026-10-29): a payload from lighthouse's
+  `vendor_hook.py` carries `regatta_cli`, and meets every gate — D1's deletions, the push and tracking denies, a
+  write on a primary's main — but takes and honours no worktree lock and records no carry (VENDOR: no vendor
+  session reports the end that frees a lock). An unattended one (either marker name, the core's helper) is refused
+  every verb on dispatch's launch-time deny list (`vendor_denied`: `git push`, `gh`, `ssh`, `scripts/deploy.py`,
+  `pr merge|ready`, the queue's verbs, `requeue` among them since the finish review of 2026-10-31), each judged on a simple command's words; test_checkpoint.sh reads the list
+  from dispatch and fails on an entry it does not deny. A vendor call remembers no claim either.
 
 - checkpoint denies every session, attended or not, a hand write of the force mark
   (`force/` in run-seed's cache folder, dispatch-queue S4): it stands for the owner saying "use the force";
