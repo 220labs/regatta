@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A requeued run goes back to the queue at `force`, whatever its rank was (the owner, 2026-10-30: "we want to get them
+  as soon as possible, so they don't block other work"): the verb's `requeue` op (`force`) sets the entry's priority and
+  its `--priority` arg, while the sweep's D8-B op keeps the rank (force as high), and a run with no entry gets its put at force (`entry_of_record`). Force's own rules apply at the
+  claim (one slot over the cap, a second force entry first in line, the force floor); an unattended caller's own
+  `--priority force` stays refused. Cases: `tests/test_dispatch.sh` (S10), `tests/test_priority.sh`.
 - build-review (the owner, 2026-10-30: "Review inside the build"): dispatch's build prompt has every run loop
   review, fix and check in its own session before its last line: merge `origin/<main>` in once (a merge, never a rebase:
   the branch is on origin and the checkpoint push never forces), run the reviewers `/finish` step 1 runs as

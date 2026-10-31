@@ -77,6 +77,32 @@ check "$(python3 "$QB" cap --priority force --cap 6) $(python3 "$QB" cap --prior
 check "$(grep -c '"$n" -ge "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -lt "$(pcap)"' "$B/dispatch")" "1 3" \
   "  dispatch's fire path and its no-queue refusals count against it (pcap)"
 
+echo "a requeued run goes back at force (S10; the owner, 2026-10-30), and force's claim rules apply to it"
+qreset
+cat > "$T/rqf.py" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys, time
+l = m.SourceFileLoader("dq", sys.argv[1]); q = u.module_from_spec(u.spec_from_loader("dq", l)); l.exec_module(q)
+f = q.Fleet(sys.argv[2]); t = int(time.time())
+# runs of this host, running, then handed back by the verb's requeue op (force: the verb's word)
+for k in sys.argv[3:]:
+    f.do([{"op": "set", "key": k, "fields": {"state": "running", "running_on": "laptop", "claimed_by": "laptop",
+                                              "claimed_at": t, "session": "s-" + k}}], "seed")
+    f.do([{"op": "requeue", "key": k, "host": "laptop", "at": t, "force": True}], "requeue")
+PY
+enq n1 > /dev/null; enq r1 > /dev/null; enq r2 > /dev/null
+python3 "$T/rqf.py" "$QB" "$T/queue.git" repo--r1 repo--r2
+check "$(qget repo--r1 state priority) $(qget repo--r2 state priority) $(qget repo--n1 state priority)" "queued force queued force queued normal" \
+  "a normal entry requeued by the op is force; an entry nobody requeued keeps its rank"
+python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null
+check "$(qget repo--r1 state) $(qget repo--r2 state) $(qget repo--n1 state)" "claimed queued queued" \
+  "  claimed on a full host (cap 0): the first requeued entry took force's one slot over it, the second and the normal entry wait"
+python3 "$QB" list --json "${QC[@]}" > "$T/list"
+check "$(python3 -c 'import json,sys; print([e["topic"] for e in json.load(open(sys.argv[1]))["entries"] if e["state"] == "queued"][0])' "$T/list")" "r2" \
+  "  the second requeued entry is first in line, ahead of the normal one"
+check "$(qget repo--r1 args)" "['--priority', 'force']" "  its args carry --priority force"
+check "$(python3 -c 'import glob, plistlib, sys; print(" ".join(a for f in glob.glob(sys.argv[1] + "/*.plist") for a in plistlib.load(open(f, "rb"))["ProgramArguments"] if a in ("--priority", "force")))' "$LA")" "--priority force" \
+  "  …and the claim's job plist hands --priority force to the fired dispatch"
+
 echo "the claim: force's memory floor (headroom --floor 5: avail 5 %, swap and rate kept)"
 qreset
 printf '%s\n' "*:avail=15,rate=30" > "$REGATTA_CONFIG/wharf-runs/headroom"
