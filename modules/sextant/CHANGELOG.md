@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `sparks acts [--days N]` (routed comments S6): the ideas pool's fresh `status: new` notes and the owner's open promises in a meeting note's `## Promises` (`- [me] …` or navigate's `- <owner>: …`, the line's own owner only, a ticked `[x]` line not) as JSON, for keel's notes reader, each with `rel`, the path as every Mac reads it, and an id from `rel` and the words. No model; a note's `by:` is not read; a note's day is its name's date or its front matter's `date:`, never its mtime. Read on the Mac the ideas pool's configs name (exit 3 elsewhere, so one host cards a note); an unreadable registry reads nothing and exits 4, a confidential scope's repo is never read, and with an overlay but no `sextant/source` no pool note is read.
+
 - `soundings refresh` reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4): one
   `list --all --json` per refresh, not one `has` per entry, and a torn store holds only its own branches.
 

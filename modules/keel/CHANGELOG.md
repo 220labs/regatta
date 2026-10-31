@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Routed comments S6, notes (judge section 4): `keel routed notes` reads sextant's `sparks acts` (a fresh `status: new` note of the ideas pool, an open promise of the owner's in a meeting note's `## Promises`), drops a fenced source's notes before any batch (one `fenced` row each, never asked again), holds a held verb by the rules, judges the rest with the same `keel.comment` call, one a source, and cards every act on `lookout --status` and helm's board, naming the note's folder, day and a promise's line, never its words or its file name. T2 only: a note's `by:` and git author are not the owner, `## Asks` is never read. `notes go <id>` (refused unattended) is the owner's yes in chat, a `pickup seed` in the note's repo after a fresh read, the card's age and the repo's fence are asked again; `notes dismiss <id>` drops a card; both honour `--dry-run` and write under the lookout's lock. A card closes when its note leaves the read and reopens if it comes back; only `dismissed` and `seeded` end one, and only a read that answered a list closes anything (a failed read, or a Mac sparks does not read the notes on, closes nothing). The fence: an unreadable registry reads nothing, a guarded source or a confidential scope's repo never reaches the call. The lookout's pass runs it after its pages (a dry pass judges nothing); routed.jsonl's `event: note, source: note` rows are G5's measure and `routed status` counts them (`--json`: `{"docs", "notes"}`).
 - Routed comments S5, after landing: a routed doc whose `Routed:` line `main` holds is read under `main`'s key on
   every host, its page from the line where no pin is (the branch's pin first, until a deploy on main adopts it).
   No run holds a landed doc: an owner's T1 ask, and an answer committed on `main` to a doc routed within 14 days,
@@ -17,7 +18,6 @@
   another, left running, carded — a resumed run is still the one); an offer still open on the page goes into a T1 seed's `--routing`; in a repo
   that is not `physical: none` the `would start` mark names the skipper and invites no `go`; a dry pass spends no
   `keel.comment` call; `keel routed bench` makes one call for every writer.
-
 - The third wait, narrowed (the finish review, 2026-10-30): a WAITING FOR YOU line that opens with a nothing
   phrase but asks after it ("nothing pending; merge the PR", "…waits for your merge", "…beyond the pick")
   stays an ask and is still relayed in a managed run; WAITING FOR NOTHING also blocks on an imperative, a

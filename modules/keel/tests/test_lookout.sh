@@ -17,6 +17,8 @@ export LOOKOUT_PICKUP="$T/bin/pickup" LOOKOUT_DISPATCH="$T/bin/dispatch" LOOKOUT
 # the fleet queue (routed comments S3's host rule): `has` answers from queue-on (a host: an entry live there)
 # and queue-rc (4: unreadable); the claim's 10 s read-back and its one-pass wait off, each case's passes explicit
 export LOOKOUT_DISPATCH_QUEUE="$T/bin/dispatch-queue" LOOKOUT_CLAIM_WAIT=0 LOOKOUT_CLAIM_PASS=0
+# sparks (the notes reader, routed comments S6): none, so no pass of another case reads this Mac's notes; the notes section sets a stub
+export LOOKOUT_SPARKS=""
 unset KEEL_VIEWER DISPATCH_LABEL
 # the gate's table: keel.comment off and skipped (routed comments S4), so no case spends a call on this Mac's own
 # table; the S4 section turns it on behind a stub claude
@@ -76,15 +78,37 @@ EOF
 # comments S3): logged as `seed --beside B --repo R`, the brief kept as brief-<n>.md, the seed named B-seed;
 # the topic and the routing in seed-args.log, its cwd in seed-cwd.log. Exit from pickup-rc, its refusal
 # from pickup-why; while pickup-hold exists it waits first, up to 30 s, for the case to write pickup-go.
-# With no --beside (a landed doc's seed off main, routed comments S5) the seed is claude/laptop/<day>-TOPIC
+# With no --beside (a landed doc's seed off main, routed comments S5) the seed is claude/laptop/<day>-TOPIC.
+# The arguments are read as the real `pickup seed` reads them (pickup-args, its parser's flags): a call it would
+# refuse exits 2 here too, never taken by a stub that accepts anything (AGENTS.md, Traps; S6's landing review)
+cat > "$T/bin/pickup-args" <<'EOF'
+import argparse, os, sys
+ap = argparse.ArgumentParser(prog="pickup seed")
+ap.add_argument("cmd", choices=["seed"])
+ap.add_argument("ref")
+for f in ("--repo", "--account", "--beside", "--from"):
+    ap.add_argument(f)
+ap.add_argument("--file", required=True)
+ap.add_argument("--routing", nargs="+", default=[])
+for f in ("--force", "--dry-run", "--no-blueprint", "--json", "--no-fetch"):
+    ap.add_argument(f, action="store_true")
+when = ap.add_mutually_exclusive_group()
+when.add_argument("--start", action="store_true")
+when.add_argument("--no-start", action="store_true")
+a = ap.parse_args()
+if a.ref.startswith("-") or not os.path.isfile(a.file):
+    sys.exit("pickup seed: a ref and a readable --file")
+EOF
 cat > "$T/bin/pickup" <<EOF
 #!/usr/bin/env bash
+python3 "$T/bin/pickup-args" "\$@" || exit 2
 [ -f "$T/pickup-hold" ] && for _ in \$(seq 1 300); do [ -f "$T/pickup-go" ] && break; sleep 0.1; done
 printf '%s\n' "\$1 \$5 \$6 \$7 \$8" >> "$T/pickup.log"
 printf '%s\n' "\$*" >> "$T/seed-args.log"
 pwd -P >> "$T/seed-cwd.log"
 n=\$(wc -l < "$T/pickup.log" | tr -d ' ')
 cp "\$4" "$T/brief-\$n.md"
+[ -f "$T/pickup-taken" ] && { echo "pickup seed: \$2 is already open as claude/laptop/2026-10-21-\$2" >&2; exit 1; }
 rc=\$(cat "$T/pickup-rc" 2>/dev/null || echo 0)
 s="\$6-seed"; [ "\$5" = --beside ] || s="claude/laptop/2026-10-21-\$2"
 [ "\$rc" = 0 ] && echo "seeded \$s in demo — docs/handoff/x.md, 9 lines; pushed" || echo "pickup: \$(cat "$T/pickup-why" 2>/dev/null || echo refused)" >&2
@@ -2167,6 +2191,222 @@ PY
 check "$(python3 "$T/s5-standing.py" "$B/keel")" "acme ['acme']
 abc ['acme', 'abc']
 None []" "a question on a landed doc: the repo's narrowest scope's skipper before an umbrella's; a torn registry hails nobody"
+
+echo "lookout — the notes (routed comments S6): a card per act, naming where; go seeds, dismiss drops; the fence"
+export MEMO_STATE_DIR="$T/state"   # the cases read $T/state; S5's after-landing cases above leave a `fresh` dir of their own
+# a stub `sparks acts` that prints the fixture (sparks-rc: its exit, sparks-why: its stderr line); the stub
+# claude (above) labels every item it is sent with claude-label; note_acts sets, adds or drops fixture items
+mkdir -p "$T/shopnotes/docs/meetings"; git -C "$T/shopnotes" init -q -b main
+printf '# Sync\n\n## Promises\n\n- [me] Ship the deck\n' > "$T/shopnotes/docs/meetings/m.md"
+mkdir -p "$T/nv/vault/docs/meetings"; git -C "$T/nv/vault" init -q -b main; printf '# V\n' > "$T/nv/vault/docs/meetings/v.md"
+cat > "$T/bin/sparks" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = acts ] || exit 2
+printf '%s\n' "\$*" >> "$T/sparks.log"
+[ -f "$T/sparks-rc" ] && { echo "sparks acts: \$(cat "$T/sparks-why" 2>/dev/null || echo boom)" >&2; exit "\$(cat "$T/sparks-rc")"; }
+cat "$T/acts.json"
+EOF
+chmod +x "$T/bin/sparks"
+cat > "$T/acts.py" <<'EOF'
+import json, sys
+T, op, rest = sys.argv[1], sys.argv[2], sys.argv[3:]
+f = T + "/acts.json"
+d = [] if op == "set" else json.load(open(f))
+if op == "drop":
+    d = [x for x in d if x["id"] not in rest]
+else:   # ID|KIND|SOURCE|PATH UNDER T|LINE|WORDS
+    for spec in rest:
+        i, kind, src, path, line, text = spec.split("|")
+        x = {"kind": kind, "id": i, "path": T + "/" + path, "rel": path, "source": src, "text": text, "day": "2026-10-29"}
+        if line:
+            x["line"] = int(line)
+        d = [y for y in d if y["id"] != i] + [x]
+json.dump(d, open(f, "w"))
+EOF
+note_acts() { python3 "$T/acts.py" "$T" "$@"; }
+ncards() { "$B/keel" lookout --status --json | python3 -c "import json,sys; print(len([c for c in json.load(sys.stdin)['cards'] if c.get('event') == 'note']))"; }
+M=shopnotes/docs/meetings/m.md
+note_acts set "promise-aaaaaaaaaaaa|promise|shop|$M|5|Ship the deck to Alex" "note-bbbbbbbbbbbb|note|shop|$M||Tidy the glaze page please" \
+  "note-cccccccccccc|note|vault|shopnotes/n.md||GUARDED WORDS the call must never see" "promise-hhhhhhhhhhhh|promise|shop|$M|7|Send Alex the invoice"
+export LOOKOUT_SPARKS="$T/bin/sparks"
+rm -f "$T/claude.log" "$T/sparks.log" "$T/seed-args.log" "$T/pickup-rc" "$T/pickup.log" "$T/routed-snapshot"
+echo act-plain > "$T/claude-label"
+out=$("$B/keel" routed notes 2>&1)
+check "$(echo "$out" | head -1)" "notes: 4 read, 3 judged, 3 carded, 0 closed, 1 fenced (vault is private — it is never mirrored)" "a pass reads, judges and cards; a guarded source's note is fenced"
+check "$(cat "$T/claude.log")" "2 items" "one call for the two items the rules leave; the guarded source's words never reach it"
+check "$(grep '"promise-hhhhhhhhhhhh"' "$T/state/routed.jsonl" | grep -c '"by": "rules", .*"label": "act-held"')" "1" "  a held verb is act-held by the rules, before any call (a note took no judge_rules)"
+cards=$("$B/keel" lookout --status --json | python3 -c "import json,sys; print(json.dumps([c for c in json.load(sys.stdin)['cards'] if c.get('event') == 'note']))")
+check "$(echo "$cards" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")" "3" "three cards on lookout --status, one per act"
+check "$(echo "$cards" | python3 -c "import json,sys; print(sum(1 for c in json.load(sys.stdin) for w in ('Ship the deck', 'Tidy the glaze', 'GUARDED', 'invoice', 'm.md') if w in c['card'] + c['doc']))")" "0" "  no card names a note's words, nor its file, whose slug holds them"
+has <(echo "$cards") "a promise of yours in the meeting note of 2026-10-29 in shopnotes/docs/meetings, line 5 reads as an act (act-plain)" "  a promise's card names its folder, its day and its line"
+has <(echo "$cards") "shop@note:promise-aaaaaaaaaaaa" "  the doc is <source>@note:<id>, which helm parses as a repo and a branch"
+"$B/keel" routed notes > "$T/o2" 2>&1
+check "$(cat "$T/o2")" "notes: nothing to read, judge or card" "a second pass judges nothing and cards nothing twice"
+check "$(wc -l < "$T/claude.log" | tr -d ' ') $(grep -c '"action": "fenced"' "$T/state/routed.jsonl")" "1 1" "  spends no call, and the fenced note has one row, never asked again"
+check "$(ncards)" "3" "  still three cards"
+has <("$B/keel" routed status) "notes — 3 carded, 1 fenced, 3 judged" "routed status counts them (G5's rows)"
+"$B/keel" routed status --json | python3 -c "import json,sys; d = json.load(sys.stdin); print(sorted(d), d['notes'])" > "$T/o3"
+check "$(cat "$T/o3")" "['docs', 'notes'] {'carded': 3, 'fenced': 1, 'judged': 3}" "  and as JSON, the notes beside the docs, never in their map"
+
+# finding 1: fenced notes no longer take the batch — 45 of them and one promise: the promise is judged at once
+for i in $(seq 10 54); do printf '%s\n' "note-ffff000000$i|note|vault|shopnotes/f$i.md||fenced $i"; done > "$T/fenced.txt"
+note_acts add $(cat "$T/fenced.txt" | tr ' ' '_') "promise-iiiiiiiiiiii|promise|shop|$M|9|Write up the glaze notes"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 50 read, 1 judged, 1 carded, 0 closed, 45 fenced (vault is private — it is never mirrored)" "45 fenced notes and a promise: the promise is judged and carded in the first pass"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: nothing to read, judge or card" "  and the fenced ones are never batched again"
+note_acts drop $(cut -d'|' -f1 "$T/fenced.txt") promise-iiiiiiiiiiii
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 4 read, 0 judged, 0 carded, 1 closed" "  the promise gone from the read, its card closes"
+
+# finding 2: one empty read closes the cards, and a later read brings them back; a failed read closes nothing
+cp "$T/acts.json" "$T/acts.json.keep"; echo '[]' > "$T/acts.json"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 0 read, 0 judged, 0 carded, 3 closed" "an empty read closes the open cards"
+cp "$T/acts.json.keep" "$T/acts.json"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 4 read, 0 judged, 3 carded, 0 closed" "  and the next read reopens them: gone is no final row, and nothing is judged again"
+check "$(grep -c '"action": "reopened"' "$T/state/routed.jsonl") $(ncards)" "3 3" "  logged as reopened, three cards again"
+echo 4 > "$T/sparks-rc"; echo "the registry does not read — nothing is read until it does" > "$T/sparks-why"
+check "$("$B/keel" routed notes 2>&1 | head -1) $(ncards)" "notes: sparks acts failed: sparks acts: the registry does not read — nothing is read until it does 3" "a failed read (sparks' torn registry) is one line and closes no card"
+echo 3 > "$T/sparks-rc"; echo "the notes are read on elsewhere" > "$T/sparks-why"
+check "$("$B/keel" routed notes 2>&1 | head -1) $(ncards)" "notes: sparks acts: the notes are read on elsewhere — nothing read here 3" "a Mac sparks does not read the notes on: nothing read, no card closed (one host cards a note)"
+rm -f "$T/sparks-rc" "$T/sparks-why"
+
+# the words change: a new id, judged again; the label remark cards nothing
+note_acts drop note-bbbbbbbbbbbb; note_acts add "note-dddddddddddd|note|shop|$M||What do you think of the glaze page?"
+echo remark > "$T/claude-label"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 4 read, 1 judged, 0 carded, 1 closed" "a changed note is judged again; a remark cards nothing; the old id's card closes"
+check "$(ncards)" "2" "  two cards left"
+
+# go: the owner's yes seeds a run from the note's repo; the brief names the path in that repo, not the words
+id=promise-aaaaaaaaaaaa
+CLAUDE_UNATTENDED=1 "$B/keel" routed notes go "$id" > "$T/o4" 2>&1; rc=$?
+check "$rc $(grep -c 'does not say go for the owner' "$T/o4")" "1 1" "go refuses an unattended caller (a flag that stands for the owner's yes)"
+"$B/keel" routed notes go promise-aaa --dry-run > "$T/o4" 2>&1; rc=$?
+check "$rc $(grep -c "would seed $id in $T/shopnotes from docs/meetings/m.md, line 5" "$T/o4") $([ -f "$T/seed-args.log" ] && echo seeded || echo none) $(ncards)" "0 1 none 2" "go --dry-run says what it would seed, and seeds and closes nothing"
+"$B/keel" routed notes go promise-aaa --no-start > "$T/o4" 2>&1
+check "$(cut -d' ' -f1-2 "$T/seed-args.log")" "seed promise-aaaaaaaaaaaa" "go: pickup seed <id>, by a unique prefix of the id"
+has "$T/seed-args.log" "--repo $T/shopnotes --no-start" "  in the note's repository, with arguments pickup's own parser takes"
+n=$(wc -l < "$T/pickup.log" | tr -d ' ')
+has "$T/brief-$n.md" "Do what Sam promised in docs/meetings/m.md, line 5" "  the brief names the path in the repo and the line"
+lacks "$T/brief-$n.md" "Ship the deck" "  and never the words"
+lacks "$T/brief-$n.md" "$T/" "  nor a Mac's path"
+check "$(ncards)" "1" "  the card is closed once the seed is made"
+"$B/keel" routed notes go "$id" > "$T/o5" 2>&1; check "$(grep -c 'is settled (seeded)' "$T/o5")" "1" "  a settled card takes no second go"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: nothing to read, judge or card" "  and the next pass does not card it again"
+
+# go asks again: the note no longer in the read is no go; dismiss --dry-run writes nothing
+note_acts drop promise-hhhhhhhhhhhh
+"$B/keel" routed notes go promise-hhh > "$T/o6" 2>&1; rc=$?
+check "$rc $(grep -c 'promise-hhhhhhhhhhhh is no longer a fresh ask' "$T/o6") $(ncards)" "1 1 1" "go re-reads the notes: one no longer there seeds nothing and keeps its card"
+note_acts add "promise-hhhhhhhhhhhh|promise|shop|$M|7|Send Alex the invoice"
+"$B/keel" routed notes dismiss promise-hhh --dry-run > "$T/o6" 2>&1
+check "$(cat "$T/o6") $(ncards)" "notes: promise-hhhhhhhhhhhh would be dismissed (a dry run writes nothing) 1" "dismiss --dry-run writes nothing"
+"$B/keel" routed notes dismiss promise-hhh > /dev/null 2>&1
+check "$(ncards)" "0" "dismiss closes the card"
+
+# a refused seed leaves the card; a prefix matches the open cards, never a settled one
+echo act-held > "$T/claude-label"
+note_acts add "note-eeeeeeeeeeee|note|shop|shopnotes/e.md||Tidy the old glaze page"
+"$B/keel" routed notes > /dev/null 2>&1
+has <("$B/keel" lookout --status) "reads as an act (act-held)" "an act-held note is carded too (T2 is the only road)"
+echo 1 > "$T/pickup-rc"; echo "the repo is busy" > "$T/pickup-why"
+"$B/keel" routed notes go note-eeee > "$T/o6" 2>&1; rc=$?
+check "$rc $(grep -c 'pickup seed refused: pickup: the repo is busy' "$T/o6")" "1 1" "a refused seed says why"
+has <("$B/keel" lookout --status) "note-eeeeeeeeeeee" "  and leaves the card"
+rm -f "$T/pickup-rc" "$T/pickup-why"
+"$B/keel" routed notes dismiss note-eeee > /dev/null 2>&1
+check "$("$B/keel" lookout --status | grep -c 'note-eeeeeeeeeeee')" "0" "dismiss closes the card"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: nothing to read, judge or card" "  for good"
+note_acts add "note-eeeeffffffff|note|shop|shopnotes/e2.md||Tidy the new glaze page"
+"$B/keel" routed notes > /dev/null 2>&1
+check "$("$B/keel" routed notes dismiss note-eeee 2>&1)" "notes: note-eeeeffffffff dismissed" "a prefix that also matches a dismissed card's id takes the one open card"
+note_acts add "note-eeeeaaaaaaaa|note|shop|shopnotes/e3.md||Tidy the third glaze page"
+"$B/keel" routed notes > /dev/null 2>&1
+n0=$(wc -l < "$T/pickup.log" | tr -d ' ')
+"$B/keel" routed notes go note-eeee --no-start > "$T/o6" 2>&1; rc=$?
+check "$rc $(grep -c 'notes: note-eeee also matches note-eeeeeeeeeeee, note-eeeeffffffff — give the whole id' "$T/o6") $(wc -l < "$T/pickup.log" | tr -d ' ')" "1 1 $n0" "go refuses a prefix that also matches a settled card: the owner's yes is for one card (S6's landing review)"
+CLAUDE_UNATTENDED=1 "$B/keel" routed notes dismiss note-eeeeaaaa > "$T/o6" 2>&1; rc=$?
+check "$rc $(grep -c 'does not dismiss for the owner' "$T/o6") $("$B/keel" lookout --status | grep -c 'note-eeeeaaaaaaaa')" "1 1 1" "dismiss refuses an unattended caller and the card stays (the owner's no, as go is the yes)"
+rm -f "$T/dispatch.log"
+"$B/keel" routed notes go note-eeeeaaaaaaaa > "$T/o6" 2>&1; rc=$?
+check "$rc $(cat "$T/dispatch.log")" "0 claude/laptop/2026-10-21-note-eeeeaaaaaaaa --next --repo $T/shopnotes" "go without --no-start: pickup seeds with --no-start, then dispatch starts the seed, each under its own timeout"
+has "$T/o6" "notes: note-eeeeaaaaaaaa seeded as claude/laptop/2026-10-21-note-eeeeaaaaaaaa in $T/shopnotes" "  the seed is recorded before the start"
+check "$("$B/keel" lookout --status | grep -c 'note-eeeeaaaaaaaa')" "0" "  and its card is closed"
+note_acts add "note-eeeebbbbbbbb|note|shop|shopnotes/e4.md||Tidy the fourth glaze page"
+"$B/keel" routed notes > /dev/null 2>&1
+touch "$T/pickup-taken"; rm -f "$T/dispatch.log"
+"$B/keel" routed notes go note-eeeebbbbbbbb > "$T/o6" 2>&1; rc=$?
+check "$rc $(cat "$T/dispatch.log") $("$B/keel" lookout --status | grep -c 'note-eeeebbbbbbbb')" "0 claude/laptop/2026-10-21-note-eeeebbbbbbbb --next --repo $T/shopnotes 0" "a seed an earlier go made but never recorded: pickup's already-open names it, go records and starts it"
+rm -f "$T/pickup-taken"
+
+# the repo's fence, asked at the go: a card from a guarded repo seeds nothing
+echo act-plain > "$T/claude-label"
+note_acts add "promise-vvvvvvvvvvvv|promise|shop|nv/vault/docs/meetings/v.md|3|Tidy the vault page"
+"$B/keel" routed notes > /dev/null 2>&1
+n0=$(wc -l < "$T/pickup.log" | tr -d ' ')
+"$B/keel" routed notes go promise-vvv > "$T/o7" 2>&1; rc=$?
+check "$rc $(grep -c 'vault is private — it is never mirrored — nothing is seeded there from a note' "$T/o7") $(wc -l < "$T/pickup.log" | tr -d ' ')" "1 1 $n0" "go asks the note's repo's fence: a guarded repo seeds nothing"
+
+# the lookout's lock: go and dismiss write lookout.jsonl under it, so the pass's trim drops none of their rows
+python3 -c "import fcntl, sys, time; f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], 'w').close(); time.sleep(8)" \
+  "$T/state/lookout.lock" "$T/locked" &
+holder=$!
+for _ in $(seq 1 50); do [ -f "$T/locked" ] && break; sleep 0.1; done
+LOOKOUT_LOCK_WAIT=1 "$B/keel" routed notes dismiss promise-vvv > "$T/o8" 2>&1; rc=$?
+check "$rc $(grep -c 'notes dismiss: a lookout pass holds its lock past 1 s — nothing written' "$T/o8") $(ncards)" "1 1 1" "dismiss waits for the lookout's lock, and writes nothing without it"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -f "$T/locked"
+"$B/keel" routed notes dismiss promise-vvv > /dev/null 2>&1
+check "$(ncards)" "0" "  once the lock is free, it does"
+
+# the fence and the failures
+echo '{ broken' > "$T/torn-repos.json"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" "$B/keel" routed notes 2>&1 | head -1)" "notes: the registry does not read — no note is read until it does" "an unreadable registry reads nothing, before sparks runs"
+n0=$(wc -l < "$T/sparks.log" | tr -d ' ')
+CLAUDE_REPOS_JSON="$T/torn-repos.json" "$B/keel" routed notes > /dev/null 2>&1
+check "$(wc -l < "$T/sparks.log" | tr -d ' ')" "$n0" "  sparks is not even asked"
+echo 1 > "$T/sparks-rc"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: sparks acts failed: sparks acts: boom" "a failing reader is one line, not a failure"
+rm "$T/sparks-rc"
+cp "$T/acts.json" "$T/acts.json.keep"; printf 'not json' > "$T/acts.json"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: sparks acts answered garbled" "  a garbled one too"
+echo '[{"kind": "note", "id": "x"}, "junk", {"kind": "other", "id": "y", "path": "p", "source": "s", "text": "t"}]' > "$T/acts.json"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: nothing to read, judge or card" "an item without the keys the pass reads, or of another kind, is dropped"
+cp "$T/acts.json.keep" "$T/acts.json"
+
+# off: the call is off, a note is unjudged and cards nothing; a dry pass spends nothing
+export GATE_TABLE="$T/models.json"
+note_acts set "note-ffffffffffff|note|shop|shopnotes/f.md||Rename the page"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: 1 read, 0 judged, 0 carded, 0 closed, 1 unjudged (the keel.comment call is off)" "the call off: unjudged, no card"
+export GATE_TABLE="$T/models-on.json"
+check "$("$B/keel" routed notes 2>&1 | head -1)" "notes: nothing to read, judge or card" "  asked again only after NOTES_RETRY"
+grep '"note-ffffffffffff"' "$T/state/routed.jsonl" | tail -1 >> "$T/state/routed.jsonl"   # the retry an hour on: a second row
+check "$("$B/keel" routed status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['notes'].get('unjudged'))")" "1" "  routed status counts the note once, not its rows (S6's landing review)"
+cat > "$T/held.py" <<'PY'
+import os, sys, tempfile
+from importlib.machinery import SourceFileLoader as L
+os.environ["MEMO_STATE_DIR"] = tempfile.mkdtemp()
+k = L("keel", sys.argv[1]).load_module()
+real = k.never_mirrored("vault", "")
+print(k.fence_stands(real), k.fence_stands("the registry's confidential scopes do not read — nothing is mirrored until they do"))
+k.notes_read = lambda: ([{"id": "note-gggggggggggg", "kind": "note", "path": "/x/n.md", "source": "shop", "text": "Rename it", "day": "d"}], None, None)
+k.never_mirrored = lambda repo, rel: "hooks/sheep_gate.py did not load (boom) — nothing is mirrored without the private list"
+print(k.notes_pass(by_hand=True)[0])
+print(k.notes_pass(dry=True)[0])
+print(len([r for r in k.routed_rows() if r.get("event") == "note"]))
+PY
+check "$(python3 "$T/held.py" "$B/keel")" "True False
+notes: 1 read, 0 judged, 0 carded, 0 closed, 1 held this pass (hooks/sheep_gate.py did not load (boom) — nothing is mirrored without the private list)
+notes: 1 read, 0 would be judged, 0 held by the rules, 0 fenced, 1 held this pass (hooks/sheep_gate.py did not load (boom) — nothing is mirrored without the private list) (a dry pass spends no call)
+0" "never_mirrored's own private answer stands; a gate that did not answer holds the note this pass, says so, and writes no row"
+c0=$(wc -l < "$T/claude.log" | tr -d ' ')
+note_acts set "note-999999999999|note|shop|shopnotes/g.md||Rename another"
+check "$("$B/keel" routed notes --dry-run 2>&1 | head -1)" "notes: 1 read, 1 would be judged, 0 held by the rules, 0 fenced (a dry pass spends no call)" "--dry-run counts and judges nothing"
+check "$(wc -l < "$T/claude.log" | tr -d ' ')" "$c0" "  no call"
+
+# the lookout's pass runs it, after the pages
+"$B/keel" lookout --arm > /dev/null 2>&1
+lk
+has "$T/out" "  notes: 1 read, 1 judged, 1 carded, 0 closed" "keel lookout prints the notes line after its pages"
+export LOOKOUT_SPARKS=""
+rm -f "$T/bin/sparks"
+
 export GATE_TABLE="$T/models.json"; unset CLAUDE_BIN
 session sessaskl ended
 doc claude/laptop/2026-10-21-plain   # the checkin cases below copy the last doc written: one with no plan
