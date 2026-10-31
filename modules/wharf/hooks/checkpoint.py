@@ -295,8 +295,11 @@ VENDOR = ""
 # Claude rules are prefixes (`Bash(gh:*)`) or substrings (`Bash(*bin/pr merge*)`); this reads the verb
 # itself, so `git -C x push` and `env X=1 gh …` are caught too. wharf's test_checkpoint.sh reads the list
 # from wharf-runs' dispatch and fails on an entry no test here covers.
-DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue"}
-DISPATCH_FLAGS = ("--claim", "--poll", "--requeue")
+# kick, --kick and dispatch-rc kick-listen: dispatch-queue S8 added them to dispatch's list (landed beside this
+# rule, which then failed its own count on main; build-review's landing, 2026-10-31)
+DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue", "kick"}
+DISPATCH_FLAGS = ("--claim", "--poll", "--requeue", "--kick")
+DISPATCH_RC_VERBS = {"kick-listen"}
 
 
 def vendor_denied(command):
@@ -315,6 +318,8 @@ def vendor_denied(command):
             # `pr` as the verb: bin/pr or libexec/pr by path, `regatta pr`, `gh pr` — never `echo pr merge`
             if b == "pr" and words[i + 1] in ("merge", "ready") and (i == 0 or "/" in words[i] or base[i - 1] in ("regatta", "gh")):
                 return f"pr {words[i + 1]}"
+            if b == "dispatch-rc" and words[i + 1] in DISPATCH_RC_VERBS:
+                return f"dispatch-rc {words[i + 1]}"
             if b == "dispatch-queue" and words[i + 1] in DISPATCH_QUEUE_VERBS:
                 return f"dispatch-queue {words[i + 1]}"
             if b == "dispatch" and any(w.split("=", 1)[0] in DISPATCH_FLAGS for w in words[i + 1:]):
