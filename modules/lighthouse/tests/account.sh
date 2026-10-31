@@ -62,7 +62,8 @@ cat > "$ACCOUNTS_FILE" <<'EOF'
  "capabilities": {"codex": ["review"]}}
 EOF
 # The stub: usage from <dir>/stub-usage.json as "5h week [locked]", where <dir> is
-# CLAUDE_CONFIG_DIR or ~/.claude; one line per probe in $T/probes.
+# CLAUDE_CONFIG_DIR or ~/.claude; one line per probe in $T/probes. <dir>/stub-resets, when present,
+# is the 5-hour reset as a JSON value (a quoted time, or null): pace's cases set it.
 cat > "$T/claude" <<'EOF'
 #!/bin/sh
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -79,6 +80,7 @@ echo "$dir" >> "$T_PROBES"
 [ -f "$dir/stub-usage" ] || exit 1
 set -- $(cat "$dir/stub-usage")
 lock=null; [ "${3:-}" = locked ] && lock='"rate_limited"'
+fr='"2026-10-07T22:00:00+00:00"'; [ -f "$dir/stub-resets" ] && fr=$(cat "$dir/stub-resets")
 echo '{"type":"system","subtype":"init"}'
 lim=''
 [ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":37,"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]'
@@ -87,14 +89,16 @@ lim=''
 [ -f "$dir/stub-overage" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"monthly_limit":4000,"used_credits":120,"utilization":3,"currency":"USD","user_disabled":false,"spend_limit_reached":false}'
 # on for the org, switched off by the user: it cannot bill (the /usage cache's field; the finish review)
 [ -f "$dir/stub-overage-off" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"user_disabled":true}'
-echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":\"2026-10-07T22:00:00+00:00\",\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":\"2026-10-10T20:00:00+00:00\",\"locked_reason\":null}$lim}}}}"
+echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":$fr,\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":\"2026-10-10T20:00:00+00:00\",\"locked_reason\":null}$lim}}}}"
 EOF
 chmod +x "$T/claude"
 export T_PROBES="$T/probes" T_NOVERSION="$T/no-version" ACCOUNT_SETTLE=0
 at() { python3 -c "import datetime as d,zoneinfo as z;print(d.datetime($1,tzinfo=z.ZoneInfo('America/Los_Angeles')).timestamp())"; }
 WED=$(at 2026,10,7,12); SAT=$(at 2026,10,10,10); THU=$(at 2026,10,8,12)
 A() { python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
-reset() { rm -f "$P1/usage-probe.json" "$S1/usage-probe.json" "$P1/exhaustion.jsonl" "$S1/exhaustion.jsonl" "$T/probes"; }
+reset() { rm -f "$P1/usage-probe.json" "$S1/usage-probe.json" "$P1/exhaustion.jsonl" "$S1/exhaustion.jsonl" "$T/probes" "$P1/stub-resets" "$S1/stub-resets"; }
+# the 5-hour reset <minutes> after <epoch>, as the stub's stub-resets wants it (a quoted UTC time)
+resets() { python3 -c "import datetime as d;print('\"%s\"' % d.datetime.fromtimestamp($2 + $3 * 60, d.timezone.utc).isoformat())" > "$1/stub-resets"; }
 use() { echo "$2" > "$1/stub-usage"; }
 field() { python3 -c "import json,sys;d=json.load(open('$T/out'));print(d$1)"; }
 
@@ -122,8 +126,8 @@ mkdir -p "$S1"; echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a locked window → skipped until it resets"
 has "$T/out" "cooling down until" "…with the reason"
 check "$(grep -c "$S1" "$T/probes")" 0 "…and never probed"
-rm -f "$T/probes"; use "$S1" "45 10"
-check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 7200)") A pick --json) $(field "['account']")" "0 main" "after the reset, 45% is over 50 − 10 points of margin"
+rm -f "$T/probes"; use "$S1" "45 10"; resets "$S1" "$WED" 390   # 270 min left at the case's time, two hours on: pace 10%
+check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 7200)") A pick --json) $(field "['account']")" "0 main" "after the reset, 45% is over 50 − 10 points of margin (and over pace)"
 has "$T/out" "10 points of margin after an exhaustion" "…and the margin is named"
 check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 8 * 86400)") A pick --json) $(field "['account']")" "0 spare" "a week later the margin is gone"
 reset; use "$S1" "100 20 locked"; use "$P1" "10 10"
@@ -143,7 +147,7 @@ ACCOUNT_NOW=$WED python3 "$B/account" limits spare > /dev/null
 rm -f "$S1/usage-probe.json"; ACCOUNT_NOW=$(python3 -c "print($WED + 120)") python3 "$B/account" limits spare > /dev/null
 check "$(grep -c five_hour "$S1/exhaustion.jsonl")" 2 "one lock read by the status line and twice by probes is one record (microseconds and seconds agree)"
 sed -i.bak 's/2026-10-07T22:00:00.202144+00:00/2026-10-07T22:00:00+00:00/' "$T/claude" && rm -f "$T/claude.bak"
-reset; use "$S1" "25 10"; use "$P1" "10 10"
+reset; use "$S1" "25 10"; use "$P1" "10 10"; resets "$S1" "$WED" 270
 for i in 1 2 3 4; do echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED - $i * 3600)")}" >> "$S1/exhaustion.jsonl"; done
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "four exhaustions in a week: margin capped at 30 points"
 has "$T/out" "5h 25% > 20%, 30 points of margin" "…50 − 30, not 50 − 40"
@@ -156,6 +160,81 @@ check "$(ACCOUNT_NOW=$WED A limits main)" 0 "a probe of the primary at 98% of it
 rm "$P1/stub-usage"
 check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 600)") A pick --json)" 3 "…then a failed probe uses that stale reading: refused, not guessed"
 has "$T/out" "week 98% ≥ 95% (week ceiling)" "…naming the stale figure"
+
+echo "pace — a 5-hour window under its elapsed share runs (2026-10-30)"
+# WED is 12:00; the spare row's flat limit is 50%, its week 70%. resets <dir> WED <m>: the window ends m minutes on.
+reset; use "$S1" "55 10"; use "$P1" "10 10"; resets "$S1" "$WED" 25
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "55% with 25 minutes left (pace 92%, 45 points free) → runs, over the flat 50% limit"
+check "$(field "['reason']")" "week 10% < 70% (week ceiling), 5h 55% under pace 92% (10 points headroom)" "…and the reason names pace"
+check "$(ACCOUNT_NOW=$WED A limits --all --cached --json; field "[0]['eligible']")" "0
+True" "limits --all agrees (dispatch and tier_check read this verdict)"
+reset; use "$S1" "95 10"; use "$P1" "10 10"; resets "$S1" "$WED" 2
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "95% with 2 minutes left: under pace 99%, but 5 points free < 10 → refused"
+check "$(field "['skipped'][0][1]" | sed 's/; resets .*//')" "5h 95% > 50%; under pace 99%, but 5 points left < 10 of headroom" "…saying why"
+reset; use "$S1" "60 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "60% with 3 hours left (pace 40%) → over pace, refused"
+check "$(field "['skipped'][0][1]" | sed 's/; resets .*//')" "5h 60% > 50%, over pace 40%" "…naming the pace it is over"
+reset; use "$S1" "45 10"; use "$P1" "10 10"; resets "$S1" "$WED" 25; echo "{\"at\": $(python3 -c "print($WED - 86400)"), \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED - 72000)")}" > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "an exhaustion yesterday (flat limit 40%) → pace still applies"
+check "$(field "['reason']" | sed 's/.*, 5h/5h/')" "5h 45% under pace 92% (10 points headroom)" "…the same reason"
+for r in null '"2026-10-07T18:00:00+00:00"' '"2026-10-08T01:00:00+00:00"'; do
+  reset; use "$S1" "60 10"; use "$P1" "10 10"; echo "$r" > "$S1/stub-resets"
+  check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(field "['skipped'][0][1]" | sed 's/; resets .*//')" "0 main 5h 60% > 50%" "no reset inside the window's future ($r) → the flat limit alone"
+done
+python3 - "$ACCOUNTS_FILE" <<'PY2'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["accounts"][0]["rules"]["pace_headroom"] = 30
+json.dump(d, open(p + ".room", "w"))
+PY2
+reset; use "$S1" "75 10"; use "$P1" "10 10"; resets "$S1" "$WED" 10
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "75% with 10 minutes left: 25 points free ≥ the default 10 → runs"
+reset; use "$S1" "75 10"; use "$P1" "10 10"; resets "$S1" "$WED" 10
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.room" ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "…and with the row's pace_headroom 30, refused"
+has "$T/out" "but 25 points left < 30 of headroom" "…naming the row's own headroom"
+reset; use "$S1" "10 75"; use "$P1" "10 10"; resets "$S1" "$WED" 25
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "pace lifts the 5-hour limit only: a week at 75% ≥ 70% still refuses"
+
+echo "free below 70% — under it the 5-hour window runs whatever the limit, margin or pace (2026-10-30)"
+# free_below is off by default, so the cases above judge the flat limit, margin and pace; .free sets 70 on the spare row
+python3 - "$ACCOUNTS_FILE" <<'PY2'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["accounts"][0]["rules"]["free_below"] = 70
+json.dump(d, open(p + ".free", "w"))
+PY2
+F() { ACCOUNTS_FILE="$ACCOUNTS_FILE.free" ACCOUNT_NOW=$WED A pick --json; }
+reset; use "$S1" "60 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(F) $(field "['account']")" "0 spare" "60% with 3 hours left (over pace 40%) → runs: under the row's free_below 70%"
+check "$(field "['reason']")" "week 10% < 70% (week ceiling), 5h 60% under 70% (runs whatever the pace)" "…and the reason says so"
+reset; use "$S1" "45 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180; echo "{\"at\": $(python3 -c "print($WED - 86400)"), \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED - 72000)")}" > "$S1/exhaustion.jsonl"
+check "$(F) $(field "['account']")" "0 spare" "45% after an exhaustion (flat limit 40%), over pace → runs: the margin judges only from 70% up"
+reset; use "$S1" "75 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(F) $(field "['account']")" "0 main" "75% with 3 hours left → pace judges again: over pace 40%, refused"
+reset; use "$S1" "70 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(F) $(field "['account']")" "0 main" "exactly 70% is not under 70%: pace judges, over pace 40%, refused"
+reset; use "$S1" "75 10"; use "$P1" "10 10"; resets "$S1" "$WED" 10
+check "$(F) $(field "['account']")" "0 spare" "75% with 10 minutes left → under pace 97% with 25 points free: runs"
+reset; use "$S1" "10 75"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(F) $(field "['account']")" "0 main" "a week at 75% ≥ 70% still refuses with the 5-hour window under 70%"
+
+echo "pace reads a reading at its own sample time, and a rule that is no number is off (landing review, 2026-10-30)"
+reset; use "$S1" "60 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "60% with 3 hours left, sampled now: over pace 40%, refused"
+rm "$S1/stub-usage"
+check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 9000)") A pick --json) $(field "['account']")" "0 main" "…2.5 hours on a failed probe falls back to that reading: still refused, not under a pace of 90%"
+check "$(field "['skipped'][0][1]" | sed 's/; resets .*//')" "5h 60% > 50%, over pace 40%" "…judged at the pace it was sampled at"
+python3 - "$ACCOUNTS_FILE" <<'PY2'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["accounts"][0]["rules"]["free_below"] = "70"
+d["accounts"][0]["rules"]["pace_headroom"] = None
+json.dump(d, open(p + ".bad", "w"))
+PY2
+reset; use "$S1" "60 10"; use "$P1" "10 10"; resets "$S1" "$WED" 180
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.bad" ACCOUNT_NOW=$WED A pick)" 0 "free_below \"70\" and pace_headroom null: pick still answers (no TypeError)"
+has "$T/out" "rules.free_below '70' is not a number; using 0" "…free_below reads as off, said on stderr"
+has "$T/out" "over pace 40%" "…and the row is judged by pace, refused"
 
 echo "the end of the walk"
 reset; use "$S1" "10 80"; use "$P1" "10 96"
@@ -1004,6 +1083,14 @@ print(l["seven_day"], l["five_hour"], l["locked"])
 PY
 check "$(python3 "$T/parse.py" "$B/account")" "10 None ['seven_day']" \
   "parse_codex: a per-model bucket feeds no window, but its spend control locks the login's"
+cat > "$T/parse.py" <<'PY'
+import runpy, sys
+m = runpy.run_path(sys.argv[1], run_name="account_test")
+l = m["parse_codex"]({"rateLimits": {"primary": {"usedPercent": 60, "windowDurationMins": 120, "resetsAt": 1000 + 1800}}})
+print(l["five_hour_window_s"], round(m["pace"](l, 1000)), m["pace"]({"five_hour_resets": 1000 + 1800}, 1000))
+PY
+check "$(python3 "$T/parse.py" "$B/account")" "7200 75 90.0" \
+  "parse_codex keeps a short window's length, and pace reads it (30 min left of 2 h → 75%, not 5 h's 90%)"
 rm -f "$P1/account-orca.json"
 cat > "$ACCOUNTS_FILE.l" <<'EOF'
 {"accounts": [
