@@ -7,7 +7,7 @@
 # job, session or network is touched. Every name is synthetic.
 #   bash modules/wharf-runs/tests/test_queue.sh
 set -u
-unset WEEKLY_RUN CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME
+unset WEEKLY_RUN REGATTA_UNATTENDED CLAUDE_UNATTENDED AUTOFINISH_CALLER_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME
 unset $(compgen -v | grep '^DISPATCH_')   # every DISPATCH_* a run carries (AGENTS.md: a fixed list goes stale)
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -189,6 +189,90 @@ elif case == "noreap":
     (d / "n1.json").write_text(json.dumps({"topic": q.topic_of(branch), "repo": url, "session": "s-n1"}))
     q.claim(ctx)
     print(m.CLAIM_AT_END, len(spawned), True in reaps)
+elif case == "reached-of":
+    print(q.reached(sys.argv[5]))
+elif case == "hold":
+    # S8's hold-back: the berths' order stood in (alpha, beta above this host), the kicks' full sets as given;
+    # the sleep recorded, never slept
+    q.berth_candidates = lambda repo, h: (sys.argv[5].split(","), {"berths": sys.argv[5].split(",")})
+    q.eligibility = lambda e, h, feats=None: "barred" if h in os.environ.get("HOLD_INELIG", "").split(",") else None
+    slept = []
+    # the hold's own sleeps only (whole seconds): a clone lock a detached kicker holds adds its backoff's steps
+    q.time.sleep = lambda s: slept.append(s) if s >= 1 else None
+    q.kicks_dir().mkdir(parents=True, exist_ok=True)
+    for i, full in enumerate(sys.argv[6:]):
+        (q.kicks_dir() / ("%d-k%d.json" % (q.now(), i))).write_text(json.dumps({"at": q.now(), "from": "x", "full": [f for f in full.split(",") if f]}))
+    print(q.kick_hold(ctx, "laptop"), slept, len(list(q.kicks_dir().glob("*.json"))))
+elif case == "midpass":
+    # the S8 review: a kick heard while the sweep ran (its kickstart started nothing) gets one more hold and claim
+    calls, held = [], []
+    def claim(c, out=None):
+        calls.append(1)
+        if len(calls) == 1:
+            q.kicks_dir().mkdir(parents=True, exist_ok=True)
+            (q.kicks_dir() / ("%d-late.json" % q.now())).write_text(json.dumps({"at": q.now(), "from": "x", "full": ["x"]}))
+        return []
+    q.claim = claim
+    q.kick_hold = lambda c, h: held.append(h) or 0
+    q.poll_tend = lambda c: None
+    q.cmd_sweep(ctx, ctx)
+    print(len(calls), len(held))
+elif case == "midpass-torn":
+    # the S8 review, pass 2: a torn ref at the mid-pass flush skips that flush, never the claim or poll_tend
+    calls, tended = [], []
+    def claim(c, out=None):
+        calls.append(1)
+        if len(calls) == 1:
+            q.kicks_dir().mkdir(parents=True, exist_ok=True)
+            (q.kicks_dir() / ("%d-late.json" % q.now())).write_text(json.dumps({"at": q.now(), "from": "x", "full": ["x"]}))
+            def torn(*a, **k):
+                raise q.Torn("a torn ref (a test)")
+            q.flush = torn
+        return []
+    q.claim = claim
+    q.kick_hold = lambda c, h: 0
+    q.poll_tend = lambda c: tended.append(1)
+    print(q.cmd_sweep(ctx, ctx), len(calls), len(tended))
+elif case == "hold-fresh":
+    # the S8 review, pass 2: the hold never reads the 5 s cached view, which may predate the kicked entry
+    q.berth_candidates = lambda repo, h: (["alpha", "laptop"], {"berths": ["alpha", "laptop"]})
+    q.eligibility = lambda e, h, feats=None: None
+    q.time.sleep = lambda s: None
+    q._FRESH[q.home()] = (q.time.monotonic(), json.dumps({}))
+    q.kicks_dir().mkdir(parents=True, exist_ok=True)
+    (q.kicks_dir() / ("%d-k.json" % q.now())).write_text(json.dumps({"at": q.now(), "from": "x", "full": []}))
+    print(q.kick_hold(ctx, "laptop"))
+elif case == "rch-retry":
+    # the S8 review, pass 2: an rc-hosts that timed out is asked again, never cached as no launcher
+    ctx.rch = sys.argv[5]
+    real = q.subprocess.run
+    n = []
+    def run(cmd, *a, **k):
+        if cmd and cmd[0] == ctx.rch and not n:
+            n.append(1)
+            raise q.subprocess.TimeoutExpired(cmd, 20)
+        return real(cmd, *a, **k)
+    q.subprocess.run = run
+    print(q.program(ctx, "x")[0] == ctx.jobbin, q.program(ctx, "x")[0])
+elif case == "sweep-busy":
+    # S2a review, item 7.3: a clone lock held past its wait skips the flush and the collection, never the claim
+    def locked(self, wait=75):
+        raise q.Unreachable("this host's queue clone is busy (a test)")
+    q.Fleet.locked = locked
+    claimed = []
+    q.claim = lambda c, out=None: claimed.append(1) or []
+    q.poll_tend = lambda c: None
+    print(q.cmd_sweep(ctx, ctx), len(claimed))
+elif case == "rch-once":
+    # S2a review, item 7.9: rc-hosts asked once per process, not at every plist compare
+    ctx.rch = sys.argv[5]
+    q.job_plist(ctx, "a", "sweep", 600); q.job_plist(ctx, "b", "poll", 60)
+    print(open(sys.argv[6]).read().count("x"))
+elif case == "tend-quiet":
+    # S2a's finish review, item 8: a host a road reaches, no poll loaded: poll_tend reads no ref
+    reads = []
+    q.Fleet.cached = lambda self: reads.append(1) or ""
+    print(q.poll_tend(ctx), len(reads))
 PY
 qpy() { python3 "$T/q.py" "$QB" "$T/launchctl" "$B/dispatch" "$@"; }
 # dispatch-rc loaded, for the watcher's cases
@@ -435,7 +519,7 @@ qreset
 check "$(qpy noreap "$T/repo" | tail -1)" "False 0 False" "S2a review item 1: the queue's claim reaps nothing, and its process never claims from finish()"
 qreset
 check "$(rcpy alive "$QB")" "False True" "first review's item 2: a live pid with another start time is not the run (a reused pid)"
-check "$(qpy git-count "$T/queue.git")" "4 1 True" "first review's item 7, fourth's item 15: five entries written in 4 git calls, read in one more (cat-file --batch)"
+check "$(qpy git-count "$T/queue.git")" "4 1 True" "first review's item 7, fourth's item 15: five entries written in 4 git calls; read in two, ls-tree counted here and cat-file --batch run apart (S2a review, item 7.10)"
 qreset
 qpy contended "$T/queue.git" 9 "$T/repo" claude/laptop/2026-10-27-c5 > "$T/out" 2>/dev/null
 has "$T/out" '"offline": "the lease lost 3 times' "fourth review's item 11: a put that lost the lease thrice says so (the outbox), never 'online'"
@@ -490,11 +574,11 @@ check "$(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'python3 -
 qreset
 
 echo "S2a's landing review, item 6: the new verbs meet the old guards"
-for v in "--claim" "--poll" "--event-at 1"; do
+for v in "--claim" "--poll" "--event-at 1" "--kick fleet:x" "--claim --full laptop --from laptop" "--claim --from-stream"; do
   WEEKLY_RUN=t "$B/dispatch" claude/laptop/2026-10-27-wk --repo "$T/repo" --at reset --if-room $v > /dev/null 2> "$T/err"
   check "$?:$(grep -c 'under WEEKLY_RUN=t only' "$T/err")" "2:1" "WEEKLY_RUN refuses the one shape with $v"
 done
-for r in 'dispatch --claim' 'dispatch --poll' 'dispatch-queue poll' 'dispatch-queue jobs' 'dispatch-queue unreserve'; do
+for r in 'dispatch --claim' 'dispatch --poll' 'dispatch-queue poll' 'dispatch-queue jobs' 'dispatch-queue unreserve' 'dispatch --kick' 'dispatch-queue kick' 'dispatch-rc kick-listen'; do
   check "$(grep '^denied=(' "$B/dispatch" | grep -cF "\"Bash(*$r*)\"")" "1" "  a run's deny list names $r"
 done
 
@@ -741,4 +825,231 @@ check "$(grep -c '"claim-skipped".*DarkWake' "$QL")" "1" "  no host claims in a 
 : > "$QL"; DISPATCH_PMSET="$T/pmset-awake" python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
 check "$(grep -c '"claim-skipped"' "$QL")" "0" "  …and claims as before once fully awake"
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
+# ---- S8: the kick roads (docs/dispatch-queue-kick-2026-10-25.md) -------------------------------------------------
+# Every road is a stand-in: ssh, orca and the spacesheep press record their words and touch no host. The kick runs
+# in this process (DISPATCH_KICK_SYNC) so its verdicts are read at once; kicks.jsonl is the record.
+qreset
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+KJ="$HL/Logs/claude-weekly/kicks.jsonl"; KR="$REGATTA_CONFIG/wharf-runs/kick-roads"; KD="$HL/Caches/run-seed/queue/kicks"
+cat > "$T/ssh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/ssh.calls"
+exit 0
+EOF
+CN="$(basename "$(head -1 "$REGATTA_CONFIG/home")")"
+cat > "$T/orca" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/orca.calls"
+case "\$1 \$2" in
+  "repo list") printf '{"ok":true,"result":{"repos":[{"path":"/peer/$CN"}]}}\n';;
+  "terminal create") printf '{"ok":true,"result":{"terminal":{"handle":"term-1"}}}\n';;
+  "terminal wait") printf '{"ok":true,"result":{"wait":{"satisfied":true,"exitCode":%s}}}\n' "\${ORCA_EXIT:-0}";;
+  *) printf '{"ok":true,"result":{}}\n';;
+esac
+EOF
+cat > "$T/press" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$T/press.calls"
+exit \${PRESS_RC:-0}
+EOF
+chmod +x "$T/ssh" "$T/orca" "$T/press"
+export DISPATCH_SSH="$T/ssh" DISPATCH_ORCA="$T/orca" DISPATCH_SHEEP_PRESS="$T/press" DISPATCH_KICK_SYNC=1
+kreset() { rm -f "$T/ssh.calls" "$T/orca.calls" "$T/press.calls" "$KJ" "$REGATTA_CONFIG/wharf-runs/orca-pairs"; }
+
+kreset; rm -f "$KR"
+DISPATCH_HOST=laptop python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-30-k0 "${QC[@]}" > /dev/null 2>&1
+check "$([ -f "$T/ssh.calls" ] && echo kicked || echo none)" "none" "S8: no kick-roads file, no kick (the switch, as queue-repo is the queue's)"
+check "$(qpy reached-of buildbox)" "False" "  …and no host reads as reached"
+python3 "$QB" kick fleet:repo--k0 "${QC[@]}" > "$T/out" 2>&1; has "$T/out" "kick: off" "  dispatch-queue kick says the kick is off"
+
+echo "buildbox:ssh" > "$KR"; kreset
+python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-30-k1 "${QC[@]}" > "$T/out" 2>&1
+check "$(wc -l < "$T/ssh.calls" | tr -d ' ')" "1" "an enqueue this host did not take kicks the peer once, over the road its line names"
+has "$T/ssh.calls" "BatchMode=yes -o ConnectTimeout=10 buildbox-ssh" "  ssh through the peer's wharf-runs/ssh alias, batch mode"
+has "$T/ssh.calls" '/modules/wharf-runs/bin/dispatch" --claim --full laptop --from laptop' "  the peer's core from its own home file; the receiver's --claim --full --from"
+check "$(sed 's/.*bin\/dispatch"//' "$T/ssh.calls" | grep -c '[/]')" "0" "  the payload names hosts only: no path, branch, repo or scope after the receiver's own path"
+check "$(grep -c 'claude/\|k1\|repo' "$T/ssh.calls")" "0" "  …nor the entry's branch, topic or repo anywhere on the line"
+has "$KJ" '"ok": true, "road": "ssh"' "  the verdict in kicks.jsonl"
+check "$(qget repo--k1 state)" "queued" "  the entry stays queued: a kick carries nothing, the peer's sweep claims"
+
+echo "buildbox:sheep,ssh" > "$KR"; kreset
+PRESS_RC=1 python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > "$T/out" 2>&1
+check "$(grep -c '"road": "sheep"' "$KJ") $(grep -c '"ok": true, "road": "ssh"' "$KJ")" "1 1" "a road that fails passes the kick to the next its line names (sheep, then ssh)"
+has "$T/press.calls" 'kick/buildbox kick {"from": "laptop", "full": ["laptop"], "kick": 1}' "  the press: kick on kick/buildbox, its data {from, full} and nothing else"
+kreset; python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > "$T/out" 2>&1
+check "$([ -f "$T/ssh.calls" ] && echo ssh || echo first)" "first" "  the first road that takes it ends the kick"
+printf 'buildbox:kick/shared-one\n' > "$REGATTA_CONFIG/wharf-runs/kick-stream"; kreset
+python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+has "$T/press.calls" "kick/shared-one kick" "  a shared listener's stream, as wharf-runs/kick-stream names it"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-stream"
+
+echo "buildbox:none" > "$KR"; kreset
+python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+check "$([ -f "$T/ssh.calls" ] && echo kicked || echo none)" "none" "buildbox:none: no road is tried"
+has "$KJ" '"why": "no road (kick-roads)"' "  said in kicks.jsonl"
+check "$(qpy reached-of buildbox)" "False" "  …and the host is not reached (the poll is its way)"
+
+echo "elsewhere:none" > "$KR"; kreset
+python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+has "$KJ" '"source": "derived"' "no line for the peer: its roads derived from what exists (S2a review, item 12)"
+check "$(wc -l < "$T/ssh.calls" | tr -d ' ')" "1" "  ssh, where wharf-runs/ssh has its alias"
+check "$(qpy reached-of buildbox)" "True" "  …and reached() reads the same: an alias for it, the kick on"
+check "$(qpy reached-of nohost)" "False" "  a host nothing reaches is not"
+
+kl_line() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import kicklib; print(kicklib.line_of(sys.argv[2]))' "$B" "$1"; }
+printf 'buildbox:\nsheep,\nssh\n' > "$KR"
+check "$(kl_line buildbox)" "['sheep', 'ssh']" "the S8 review: a value the overlay wrote one word per line reads as one line"
+printf 'buildbox:orca,ssh   (derived from laptop)\n' > "$KR"
+check "$(kl_line buildbox)" "['orca', 'ssh']" "  a note after the roads swallows none of them"
+printf '# derived from laptop\nbuildbox:ssh\nbuildbox:sheep\n' > "$KR"
+check "$(kl_line buildbox)" "['ssh']" "  a # line is no road; a host's first line wins"
+printf 'buildbox: sheep, ssh\n' > "$KR"
+check "$(kl_line buildbox)" "['sheep', 'ssh']" "  spaces after the colon and commas"
+printf 'laptop:buildbox\n' > "$REGATTA_CONFIG/wharf-runs/orca-pairs"; echo "elsewhere:none" > "$KR"
+python3 "$QB" roads "${QC[@]}" > "$T/roads"; grep -v '^#' "$T/roads" > "$KR"
+check "$(kl_line buildbox)" "['orca', 'ssh']" "  dispatch --roads' output, written as it is, reads back as printed"
+check "$(grep -c '^laptop:sheep' "$T/roads")" "1" "  this host's listener loaded: its own line, laptop:sheep"
+printf '#!/bin/sh\ncase "$1" in print) exit 1;; esac\n' > "$T/launchctl-none"; chmod +x "$T/launchctl-none"
+python3 "$QB" roads --cap 3 --launchctl "$T/launchctl-none" --prefix org.example.claude --jobbin "$B/dispatch" > "$T/roads2"
+check "$(grep -c '^laptop:' "$T/roads2"):$(grep -c "^# this host's listener on kick/laptop: not loaded" "$T/roads2")" "0:1" "  pass 2: not loaded, no laptop: line at all, only its note (a laptop:none written first would switch off the peers' roads here)"
+echo "buildbox:orca" > "$KR"; kreset; echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/orca-pairs"
+python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c '^terminal create --environment buildbox --worktree path:/peer/'"$CN"' --command ' "$T/orca.calls")" "1" "the orca road: one terminal on the peer's serve, at its core's checkout"
+has "$T/orca.calls" '/modules/wharf-runs/bin/dispatch" --claim --full laptop --from laptop; exit --json' "  its command ends in ; exit (a login shell would outlive it)"
+has "$T/orca.calls" "terminal wait --environment buildbox --terminal term-1 --for exit --timeout-ms 10000" "  waited for, with --environment (a handle is its server's)"
+check "$(grep -c '^terminal create' "$T/orca.calls") $(grep -c '^terminal close --environment buildbox --terminal term-1 --tab' "$T/orca.calls")" "1 1" "  …and closed with --tab: no tab is left on the peer"
+has "$KJ" '"ok": true, "road": "orca"' "  the verdict"
+echo "buildbox:orca,ssh" > "$KR"; kreset; echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/orca-pairs"
+ORCA_EXIT=127 python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+has "$KJ" '"ok": false, "road": "orca"' "the S8 review: a receiver that exited 127 on the peer (no home file) is no kick taken"
+has "$KJ" 'the receiver on buildbox exited 127' "  its exit said"
+check "$(wc -l < "$T/ssh.calls" | tr -d ' ')" "1" "  and the next road is tried"
+echo "buildbox:orca" > "$KR"
+rm -f "$REGATTA_CONFIG/wharf-runs/orca-pairs"; kreset
+python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+check "$([ -f "$T/orca.calls" ] && echo ran || echo none)" "ran" "  a named road is tried as named, whatever exists (the overlay's word wins)"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import kicklib; print(kicklib.derived("buildbox", "laptop"))' "$B")" "['ssh']" "  derived: no orca where orca-pairs names no pair this way"
+
+echo "  the refusals: a node-local entry, a confidential checkout, a torn registry"
+echo "buildbox:ssh" > "$KR"; kreset
+python3 "$QB" kick local=vault:repo--k9 "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" "--kick refuses a node-local entry: a node's queue never kicks out"
+has "$T/err" "node-local entry" "  saying why"
+mkdir -p "$T/vaultrepo"; git init -q "$T/vaultrepo"
+printf '{"repos": {}, "scopes": {"vault": {"confidential": true, "repos": ["%s"]}}}' "$(cd "$T/vaultrepo" && pwd -P)" > "$T/reg-k.json"
+CLAUDE_REPOS_JSON="$T/reg-k.json" python3 "$QB" kick fleet:repo--k1 --cwd "$T/vaultrepo" "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" "--kick refuses a caller in a confidential scope's checkout"
+check "$([ -f "$T/ssh.calls" ] && echo kicked || echo none)" "none" "  and kicks nobody"
+printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "vault": {"confidential": true, "repos": ["%s"]}}}' "$(cd "$T/vaultrepo" && pwd -P)" > "$T/reg-um.json"
+CLAUDE_REPOS_JSON="$T/reg-um.json" python3 "$QB" kick fleet:repo--k1 --cwd "$T/vaultrepo" "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" "  an umbrella scope listed before the confidential one hides nothing: every scope walked (the S8 review)"
+echo '{"repos": ' > "$T/reg-torn.json"
+CLAUDE_REPOS_JSON="$T/reg-torn.json" python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" "  a registry that will not read: refused (fails closed)"
+(cd "$T/vaultrepo" && CLAUDE_REPOS_JSON="$T/reg-k.json" "$B/dispatch" --kick fleet:repo--k1 > /dev/null 2> "$T/err"); check "$?" "2" "  dispatch --kick from that checkout: the same refusal"
+
+echo "  the receiver: noted, the sweep kickstarted, nothing claimed in the caller's process"
+rm -f "$T/calls"; rm_own "$KD"
+python3 "$QB" kicked --from buildbox --full buildbox "${QC[@]}" > "$T/out" 2>&1; check "$?" "0" "kicked: exit 0"
+check "$(ls "$KD" | wc -l | tr -d ' ')" "1" "  the kick noted in queue/kicks/"
+has "$T/calls" "kickstart gui/$(id -u)/org.example.claude.queue-sweep" "  and this host's own queue-sweep job kickstarted"
+check "$(grep -c '^bootstrap\|^bootout' "$T/calls")" "0" "  no job loaded or booted out by the receiver"
+has "$KJ" '"event": "heard"' "  heard, in kicks.jsonl"
+check "$(qget repo--k1 state)" "queued" "  nothing claimed by the receiver itself"
+printf '#!/bin/sh\necho "$*" >> "%s/calls"\ncase "$1 $2" in "kickstart gui/"*/org.example.claude.queue-sweep) exit 1;; esac\nexit 0\n' "$T" > "$T/launchctl-moved"; chmod +x "$T/launchctl-moved"
+rm -f "$T/calls"; python3 "$QB" kicked --from buildbox --full buildbox --cap 3 --launchctl "$T/launchctl-moved" --prefix org.example.claude --prefix-previous org.old.jobs --jobbin "$B/dispatch" > "$T/out" 2>&1
+has "$T/calls" "kickstart gui/$(id -u)/org.old.jobs.queue-sweep" "  pass 2: mid label move, the new sweep not loaded: the previous prefix's sweep is kickstarted"
+has "$T/out" "the sweep started" "    and said started"
+python3 "$QB" kicked --from 'a/b' --full laptop "${QC[@]}" > /dev/null 2>&1; check "$?" "2" "a payload naming more than a host: refused"
+SS_STREAM_DATA='{"from":"buildbox","full":["buildbox"],"kick":1,"repo":"x"}' python3 "$QB" kicked --from-stream "${QC[@]}" > /dev/null 2>&1; check "$?" "2" "  a press whose data holds more than kick, from and full: refused"
+rm_own "$KD"; SS_STREAM_DATA='{"from":"buildbox","full":["buildbox"],"kick":1}' python3 "$QB" kicked --from-stream "${QC[@]}" > "$T/out" 2>&1
+check "$?" "0" "  a good press (--from-stream): heard"; has "$T/out" "(sheep)" "  …by the sheep road"
+rm_own "$KD"; "$B/dispatch" --claim --full buildbox --from buildbox > "$T/out" 2>&1; check "$?" "0" "dispatch --claim --full --from: the receiver"
+check "$(ls "$KD" | wc -l | tr -d ' ')" "1" "  noted"
+"$B/dispatch" --full buildbox > /dev/null 2>&1; check "$?" "2" "  --full without --claim: refused"
+rm_own "$KD"
+
+echo "  the hold-back in the sweep: 3 s per higher-ranked berth of unknown room, 9 s at most"
+qreset; enq kh
+check "$(qpy hold alpha,beta,laptop alpha)" "3 [3] 0" "S8: a kick naming alpha full; beta ranks above this host, room unknown: 3 s"
+check "$(qpy hold alpha,beta,laptop alpha,beta)" "0 [] 0" "  every higher berth known full: no hold"
+check "$(qpy hold alpha,beta,laptop '')" "6 [6] 0" "  two unknown: 6 s"
+check "$(qpy hold a,b,c,d,e,laptop '')" "9 [9] 0" "  five unknown: the 9 s cap"
+check "$(qpy hold laptop,alpha '')" "0 [] 0" "  this host first in the berths: no hold"
+check "$(HOLD_INELIG=beta qpy hold alpha,beta,laptop alpha)" "0 [] 0" "  a higher berth the entry's needs or pin bar is not waited for (the S8 review)"
+qreset; mkdir -p "$T/hA"; HOME="$T/hA" enq kh2
+check "$(qpy hold alpha,beta,laptop alpha)" "3 [3] 0" "  the entry put on another host a second ago: the hold fetches, and sees it (the S8 review: 0 from the cached view)"
+check "$(qpy midpass)" "2 2" "a kick heard while the sweep ran: one more hold and claim before the pass ends"
+check "$(qpy midpass-torn)" "0 2 1" "  pass 2: a torn ref at that flush skips it, never the second claim or poll_tend"
+qreset; enq kh3
+check "$(qpy hold-fresh)" "3" "  pass 2: the hold fetches past a cached view a CAS round left 5 s fresh"
+echo "laptop:ssh" > "$KR"
+check "$(qpy tend-quiet)" "None 0" "S2a's finish review, item 8: a host a road reaches, no poll loaded: poll_tend reads no ref"
+rm -f "$KR"
+
+echo "  the sheep listener: kick-listen, its proving run, the watchdog"
+LD="$T/kick-listen"; export DISPATCH_KICK_LISTEN_DIR="$LD" DISPATCH_KICK_PROVE_S=1
+cat > "$T/spacesheep" <<EOF
+#!/bin/sh
+printf '%s|%s\n' "\$*" "\$SPACESHEEP_CONFIG_DIR" >> "$T/sheep.calls"
+case "\$*" in *--service*|*--remove-service*) exit 0;; esac
+[ -n "\$SHEEP_REFUSE" ] && { echo "  ✗ the server refused the key (HTTP 401)"; exit 3; }
+echo "  listening for kick"; sleep 5
+EOF
+chmod +x "$T/spacesheep"; export DISPATCH_SPACESHEEP="$T/spacesheep"
+rm -f "$T/sheep.calls"
+python3 "$B/dispatch-rc" kick-listen install > "$T/out" 2>&1; check "$?" "3" "kick-listen install with no streams-only key saved: exit 3"
+has "$T/out" "keys create --scope stream --name laptop | SPACESHEEP_CONFIG_DIR=$LD spacesheep keys save" "  naming the owner's step, a local pipe (minted signed in, never here)"
+check "$([ -f "$T/sheep.calls" ] && echo ran || echo none)" "none" "  and nothing run"
+mkdir -p "$LD"; echo '{}' > "$LD/config.json"; echo old > "$LD/stream-kick-laptop.log"
+CLAUDE_UNATTENDED=dispatch python3 "$B/dispatch-rc" kick-listen install > "$T/out" 2>&1; check "$?" "2" "  refused under CLAUDE_UNATTENDED: an unattended run installs no service"
+SHEEP_REFUSE=1 python3 "$B/dispatch-rc" kick-listen install > "$T/out" 2>&1; check "$?" "3" "  a proving run the server refuses: exit 3"
+check "$(grep -c -- '--service' "$T/sheep.calls")" "0" "  …and no service installed"
+rm -f "$T/sheep.calls"; python3 "$B/dispatch-rc" kick-listen install > "$T/out" 2>&1; check "$?" "0" "  a proving run that listens: the CLI's own --service"
+has "$T/sheep.calls" "stream kick/laptop --on-dir $LD/buttons --service|$LD" "  on this host's kick stream, its on-dir, in the listener's own SPACESHEEP_CONFIG_DIR"
+check "$(grep -c "stream kick/laptop --on-dir $LD/buttons|$LD" "$T/sheep.calls")" "1" "  one bounded proving run before it"
+check "$([ -x "$LD/buttons/kick" ] && grep -c -- '--claim --from-stream' "$LD/buttons/kick")" "1" "  the kick button: the receiver, reading the press's own data"
+check "$([ -f "$LD/stream-kick-laptop.log" ] && echo kept || echo fresh)" "fresh" "  a fresh service log: refusals from before the install never count (the S8 review)"
+CLAUDE_UNATTENDED=dispatch python3 "$B/dispatch-rc" kick-listen remove > /dev/null 2>&1; check "$?" "2" "  remove refused under an unattended caller (the S8 review)"
+REGATTA_UNATTENDED=1 python3 "$B/dispatch-rc" kick-listen remove > /dev/null 2>&1; check "$?" "2" "  and under REGATTA_UNATTENDED, the rename's new mark (pass 2)"
+DISPATCH_LABEL=org.example.x python3 "$B/dispatch-rc" kick-listen install --shared "$T" > /dev/null 2>&1; check "$?" "2" "  --shared refused in a fired job too: no button in a live listener"
+printf 'laptop:nav/laptop\n' > "$REGATTA_CONFIG/wharf-runs/kick-stream"; rm -f "$T/sheep.calls"
+python3 "$B/dispatch-rc" kick-listen remove > "$T/out" 2>&1; check "$?" "2" "the S8 review, pass 2: kick-stream names this host a shared listener's stream, plain remove refused"
+has "$T/out" "use --shared DIR" "  naming --shared"
+python3 "$B/dispatch-rc" kick-listen install > /dev/null 2>&1; check "$?" "2" "  plain install refused too (the CLI finds the other listener's service by its label)"
+check "$([ -f "$T/sheep.calls" ] && echo ran || echo none)" "none" "  and the CLI never called"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-stream"
+python3 "$B/dispatch-rc" kick-listen remove > /dev/null 2>&1; check "$?" "0" "kick-listen remove"
+has "$T/sheep.calls" "stream kick/laptop --remove-service|$LD" "  through the CLI's --remove-service"
+mkdir -p "$T/shared-on"; python3 "$B/dispatch-rc" kick-listen install --shared "$T/shared-on" > "$T/out" 2>&1
+check "$? $([ -x "$T/shared-on/kick" ] && echo button)" "0 button" "  --shared: the button in a running listener's on-dir, no process added"
+printf 'x\n  ✗ the server refused the key (HTTP 401)\n  ✗ the server refused the key (HTTP 401)\n' > "$LD/stream-kick-laptop.log"
+rm -f "$T/calls"; python3 "$QB" sweep "${QC[@]}" > "$T/out" 2>&1
+has "$T/calls" "bootout gui/$(id -u)/dev.spacesheep.stream.kick-laptop" "the watchdog: a listener its log shows refused twice is booted out by the sweep"
+has "$KJ" '"event": "listener-refused"' "  said in kicks.jsonl"
+printf 'streaming to\n  ✗ invalid key\nstreaming to\n  ✗ invalid key\nstreaming to\n  listening for kick\n' > "$LD/stream-kick-laptop.log"; rm -f "$T/calls"
+python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c 'bootout gui/[0-9]*/dev.spacesheep' "$T/calls")" "0" "the S8 review: refusals followed by a healthy start are no loop (the reinstalled listener stays)"
+touch "$LA/dev.spacesheep.stream.kick-laptop.plist"
+printf 'streaming to\n  listening for kick\nstreaming to\n  ✗ invalid key\nstreaming to\n  ✗ invalid key\n' > "$LD/stream-kick-laptop.log"; rm -f "$T/calls"
+python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+has "$T/calls" "bootout gui/$(id -u)/dev.spacesheep.stream.kick-laptop" "  two refused starts since it listened, whatever the server's error text: booted out"
+check "$([ -f "$LD/dev.spacesheep.stream.kick-laptop.plist.refused" ] && [ -z "$(ls "$LA" | grep kick-laptop)" ] && echo aside)" "aside" "  its plist moved out of LaunchAgents, so the next login loads no loop (pass 2: not renamed in place)"
+rm_own "$LA"/dev.spacesheep.stream.* "$LD"/dev.spacesheep.stream.*
+printf 'x\n  ✗ the server refused the key (HTTP 401)\n' > "$LD/stream-kick-laptop.log"; rm -f "$T/calls"
+python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c 'dev.spacesheep.stream' "$T/calls")" "0" "  one refusal is no loop: nothing booted out"
+printf 'x\n  ✗ the server refused the key (HTTP 401)\n  ✗ the server refused the key (HTTP 401)\n' > "$LD/stream-nav-laptop.log"
+printf 'laptop:nav/laptop\n' > "$REGATTA_CONFIG/wharf-runs/kick-stream"; rm -f "$T/calls"
+python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+check "$(grep -c 'bootout' "$T/calls")" "0" "  pass 2: a host on a shared listener: the watchdog never boots out that listener's service"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-stream"
+unset DISPATCH_KICK_LISTEN_DIR DISPATCH_KICK_PROVE_S DISPATCH_SPACESHEEP
+
+echo "  the S2a review's item 7, carried"
+check "$(qpy sweep-busy | tail -1)" "0 1" "item 7.3: a clone lock held past its wait skips the flush, never the sweep's claim"
+printf '#!/bin/sh\nprintf x >> "%s"\necho\n' "$T/rch.count" > "$T/rch"; chmod +x "$T/rch"; rm -f "$T/rch.count"
+check "$(qpy rch-once "$T/rch" "$T/rch.count")" "1" "item 7.9: rc-hosts asked once per process, not at every plist compare"
+printf '#!/bin/sh\necho /opt/stand-in/launcher\n' > "$T/rch2"; chmod +x "$T/rch2"
+check "$(qpy rch-retry "$T/rch2")" "True /opt/stand-in/launcher" "  pass 2: an ask that timed out is not cached; the next start asks again and gets its launcher"
+printf '*.json filter=up\n' > "$T/attrs"
+check "$(GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.attributesFile GIT_CONFIG_VALUE_0="$T/attrs" GIT_CONFIG_KEY_1=filter.up.clean GIT_CONFIG_VALUE_1='tr a-z A-Z' qpy git-count "$T/queue.git" | cut -d' ' -f3)" "True" "item 7.5: an entry written with a host's clean filter set reads back as written (--no-filters)"
+unset DISPATCH_SSH DISPATCH_ORCA DISPATCH_SHEEP_PRESS DISPATCH_KICK_SYNC
+qreset; rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

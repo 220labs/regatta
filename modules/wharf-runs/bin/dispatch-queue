@@ -28,6 +28,16 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
     dispatch-queue poll CTX                the pending poll's pass (S2): one ls-remote, a claim only when the
                                            ref moved or a cached entry is claimable here, then the poll job
                                            kept or booted out
+    dispatch-queue kick QID [--cwd DIR] [--full a,b] CTX
+                                           S8: kick every eligible peer of a queued fleet entry over its roads
+                                           (bin/kicklib.py), in parallel; the payload names hosts only. Exit 2 for
+                                           a node-local entry or a confidential cwd. enqueue runs it detached for
+                                           a fleet entry this host did not take, where `wharf-runs/kick-roads` exists
+    dispatch-queue kicked --from H --full a,b | --from-stream CTX
+                                           S8, the receiver: the kick noted in queue/kicks/ and this host's
+                                           queue-sweep job kickstarted, nothing more; the sweep holds back
+                                           (3 s per higher-ranked berth of unknown room, 9 s cap), then claims
+    dispatch-queue roads CTX               S8: the kick-roads lines what exists here gives
     dispatch-queue jobs CTX                the queue-sweep job installed where a home is (its plist rewritten
                                            only when it differs), both jobs removed where none is
     dispatch-queue list [--all] [--json] [--status]
@@ -81,8 +91,10 @@ turns parked (warm or waiting: no longer counted) and the fire path when its run
 queue_claim); the queue-sweep job, every SWEEP seconds on every host with a home (`jobs` installs it at
 each dispatch here, beside the tidier; `regatta check` fails a host with a home and no sweep); and the
 pending poll, a POLL-second job loaded only on a host no kick road reaches (`wharf-runs/kick-roads`;
-absent, no road reaches any host), with room, while the fleet ref holds an entry it may yet take, and
-booted out once the ref holds none or this host is full (its runs' ends claim then). G3's event_at:
+absent, no road reaches any host; kicklib.reached states the reading), with room, while the fleet ref
+holds an entry it may yet take, and booted out once the ref holds none or this host is full (its runs'
+ends claim then); and, from S8, a kick: a host that enqueued what it does not take kicks every eligible
+peer over its first road (sheep, orca, ssh), whose receiver kickstarts its own sweep. G3's event_at:
 the claim stamps it — the later of the entry's queue time and the slot's freeing (the watcher's
 --event-at, else the last end recorded here) — and the run's `started` line in queue.jsonl carries it
 beside its `wait_s`.
@@ -440,14 +452,15 @@ class Fleet:
         lines = []
         keys = sorted(entries)
         if keys:
-            # one `hash-object --stdin-paths` for every entry, not a process each (the fourth review's item 15)
+            # one `hash-object --stdin-paths` for every entry, not a process each (the fourth review's item 15);
+            # --no-filters: the bytes as written, never a host's own attributes or autocrlf (S2a review, item 7.5)
             with tempfile.TemporaryDirectory(prefix="queue-write.") as d:
                 paths = []
                 for i, k in enumerate(keys):
                     paths.append(os.path.join(d, "%d.json" % i))
                     with open(paths[-1], "w") as f:
                         f.write(json.dumps(entries[k], indent=1, sort_keys=True) + "\n")
-                r = self.git("hash-object", "-w", "--stdin-paths", input="\n".join(paths) + "\n")
+                r = self.git("hash-object", "-w", "--no-filters", "--stdin-paths", input="\n".join(paths) + "\n")
             blobs = r.stdout.split()
             if r.returncode != 0 or len(blobs) != len(keys) or not all(SHA.fullmatch(x) for x in blobs):
                 raise Unreachable("the cache clone could not write the entries (%s)" % ((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]))
@@ -1571,13 +1584,23 @@ def program(ctx, args):
     main checkout's or the overlay's), through its launcher where rc-hosts names one (ctx.rch)."""
     out = [ctx.jobbin] + list(args)
     if ctx.rch:
-        try:
-            lr = subprocess.run([ctx.rch, "--launcher", ctx.jobbin], capture_output=True, text=True, timeout=20)
-            if lr.returncode == 0 and lr.stdout.strip():
-                out = [lr.stdout.strip()] + out
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # once per process: every plist compare (jobs, each poll_tend) asked rc-hosts again (S2a review, item 7.9)
+        if (ctx.rch, ctx.jobbin) not in _LAUNCHER:
+            lr = None
+            try:
+                lr = subprocess.run([ctx.rch, "--launcher", ctx.jobbin], capture_output=True, text=True, timeout=20)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if lr is not None:
+                # only a completed answer is kept: a timeout cached as "" started every later claimed run of a
+                # long-lived watcher without its launcher (the S8 review, pass 2)
+                _LAUNCHER[(ctx.rch, ctx.jobbin)] = lr.stdout.strip() if lr.returncode == 0 else ""
+        if _LAUNCHER.get((ctx.rch, ctx.jobbin)):
+            out = [_LAUNCHER[(ctx.rch, ctx.jobbin)]] + out
     return out
+
+
+_LAUNCHER = {}   # (rc-hosts, jobbin) -> its launcher, or "" — program()'s one ask per process
 
 
 def start_job(ctx, store, key, e, label):
@@ -1803,11 +1826,16 @@ def toplevel(d):
 
 
 def confidential_scope(path, reg):
-    """PATH's confidential scope in REG, the registry route() parsed once (None: no registry, no scopes)."""
+    """PATH's confidential scope in REG, the registry route() parsed once (None: no registry, no scopes). Every
+    scope is walked: scope_of_repo answers the first scope listing a path, so an umbrella scope ("*") listed before a
+    confidential one hid it (AGENTS.md's fence trap; the S8 review, for --kick's fence and route() alike)."""
     if not path or reg is None:
         return None
-    name, sc = common.scope_of_repo(path, reg=reg)
-    return name if isinstance(sc, dict) and sc.get("confidential") is True else None
+    for name, sc in (reg.get("scopes") or {}).items():
+        if isinstance(sc, dict) and sc.get("confidential") is True \
+                and common.scope_of_repo(path, reg={"scopes": {name: sc}})[0] == name:
+            return name
+    return None
 
 
 def has_review(repo, branch):
@@ -2278,6 +2306,11 @@ def cmd_enqueue(a, ctx):
             if out["qid"] not in out["claimed"]:
                 out["no_room"] = getattr(ctx, "no_room", None)
             poll_tend(ctx)
+        if isinstance(store, Fleet) and not store.offline and r in ("queued", "replaced") \
+                and out["qid"] not in (out["claimed"] or []):
+            # this host enqueued what it does not take now (full, refused at fire time, ineligible): kick the
+            # peers that may (S8). Detached; a fleet entry only (route() keeps a confidential caller's local)
+            kick_soon(out["qid"], a.cwd, ctx, full={h})
     except Exception as x:   # any: an exit 1 here would read as "the queue refused it" (AGENTS.md's exit-1 trap)
         out["claimed"] = out["claimed"] or []
         out["error"] = "%s: %s" % (type(x).__name__, x)
@@ -2429,11 +2462,19 @@ def cmd_sweep(a, ctx):
             print("queue sweep on %s (queue-mode writes): %d op(s) from the outbox written, %d owed"
                   % (h, n, len(outbox_files())))
         return 0
+    kick_hold(ctx, h)
+    try:
+        why = kl().watchdog(h, ctx.launchctl)
+        if why:
+            event("listener-refused", host=h, why=why)
+            print(why)
+    except Exception as x:   # the watchdog never stops a sweep
+        event("watchdog-error", host=h, why="%s: %s" % (type(x).__name__, x))
     recs = records()
     for s in stores():
-        if isinstance(s, Fleet):
-            flush(s, replay=True)
         try:
+            if isinstance(s, Fleet):
+                flush(s, replay=True)
             entries = s.entries()
         except (Unreachable, Torn) as x:
             print("queue unreachable (%s): %s" % (s.name, x))
@@ -2551,11 +2592,29 @@ def cmd_sweep(a, ctx):
         if isinstance(s, Fleet):
             # every write and fetch leaves an orphan commit, its trees and blobs; the clone runs with
             # gc.auto=0 so a claim never waits on a collection: the sweep collects instead, under the
-            # clone's lock (its pack-refs takes the ref's lock as a fetch does)
-            with s.locked():
-                s.git("-c", "gc.auto=1000", "gc", "--auto", "-q", timeout=120)
+            # clone's lock (its pack-refs takes the ref's lock as a fetch does). A lock held past its wait
+            # skips the collection, never the claim below (S2a review, item 7.3: Unreachable there, or from
+            # the flush above, ended the sweep before it claimed anything)
+            try:
+                with s.locked():
+                    s.git("-c", "gc.auto=1000", "gc", "--auto", "-q", timeout=120)
+            except (Unreachable, subprocess.TimeoutExpired) as x:
+                event("sweep-gc-skipped", store=s.name, why=str(x)[:200])
     for qid, label, log in claim(ctx):
         print("claimed %s: job %s, log %s" % (qid, label, log))
+    if any(kicks_dir().glob("*.json")):
+        # a kick heard while this pass ran: its kickstart found this job running and started nothing (launchctl
+        # kickstart without -k), and the pass may have fetched before its entry existed — one more hold and claim,
+        # or the entry waited for the next interval (the S8 review, G3's 30 s)
+        kick_hold(ctx, h)
+        for s in stores():
+            if isinstance(s, Fleet):
+                try:
+                    flush(s)
+                except (Unreachable, Torn):   # as the pass's own loop: a torn ref skips the flush, not the claim
+                    pass
+        for qid, label, log in claim(ctx):
+            print("claimed %s: job %s, log %s (a kick heard mid-pass)" % (qid, label, log))
     poll_tend(ctx)
     return 0
 
@@ -3506,14 +3565,25 @@ def cmd_jobs(a, ctx):
     return 0
 
 
+_KL = []
+
+
+def kl():
+    """wharf-runs' kicklib.py, the kick roads (S8), loaded once."""
+    if not _KL:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        ld = SourceFileLoader("kicklib", str(HERE / "kicklib.py"))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+        ld.exec_module(m)
+        _KL.append(m)
+    return _KL[0]
+
+
 def reached(h):
-    """A kick road reaches host H: a `wharf-runs/kick-roads` line names it with a road (S2's second half
-    writes them). Absent, or `none`, nothing does, and the pending poll is H's way to hear of room."""
-    for line in common.config_lines("wharf-runs/kick-roads") or []:
-        name, _, roads = line.partition(":")
-        if name.strip().lower() == h and any(r.strip() not in ("", "none") for r in roads.split(",")):
-            return True
-    return False
+    """A kick road reaches host H: kicklib.reached, which states how a `wharf-runs/kick-roads` line is read
+    (the S2a review's item 12). No roads file, or `none`, is not reached: the pending poll is H's way to hear."""
+    return kl().reached(h)
 
 
 def may_take(e, h):
@@ -3535,6 +3605,8 @@ def poll_tend(ctx):
         _, poll = job_labels(ctx)
         h = host_name()
         url = home()
+        if not (agents() / ("%s.plist" % poll)).exists() and (not url or not claims_here() or reached(h)):
+            return None   # no poll loaded and none wanted: nothing to judge, no read of the ref (S2a review, item 8)
         want = False
         if url and claims_here() and not reached(h):
             f = Fleet(url)
@@ -3554,6 +3626,186 @@ def poll_tend(ctx):
     except Exception as x:   # Torn, Unreachable, a launchctl that will not run: the sweep is the bound
         event("poll-unread", why="%s: %s" % (type(x).__name__, x))
         return None
+
+
+# ---- the kick (S8; docs/dispatch-queue-kick-2026-10-25.md) ---------------------------------------------------
+
+HOLD_PER = 3   # the sweep holds back this many seconds per higher-ranked host of unknown room (the component)
+HOLD_CAP = 9   # …and never longer
+
+
+def kicks_dir():
+    return qdir() / "kicks"
+
+
+def kick_hold(ctx, h):
+    """The capped hold-back (the component's "The receiver"): when a kick was heard here since the last pass,
+    the sweep — a job that outlives every caller, so no kicker's call waits on it — waits HOLD_PER seconds per
+    host ranked above this one (the order of the scope's `berths`) whose room is unknown (not in any kick's
+    `full`) and that the entry's pin, berths and features let take it, HOLD_CAP at most, so a better berth with room
+    claims first. One fetch: the entry a kick is about was put a second ago, after this host's last fetch, and the
+    cached view never held it (the S8 review: the hold read 0 on every fresh kick). The kicks heard are consumed; one
+    older than a sweep is dropped unread. Seconds held."""
+    d = kicks_dir()
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    if not files:
+        return 0
+    t, full, heard = now(), set(), 0
+    for p in files:
+        try:
+            k = json.loads(p.read_text())
+            if t - int(k.get("at") or 0) <= SWEEP:
+                full |= {x for x in k.get("full") or [] if isinstance(x, str)}
+                heard += 1
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        p.unlink(missing_ok=True)
+    if not heard:
+        return 0
+    n = 0
+    try:
+        url = home()
+        if url:
+            # never the 5 s cached view: a CAS round just before (the mid-pass road's flush) may predate the entry
+            # the kick is about (the S8 review, pass 2)
+            _FRESH.pop(url, None)
+            entries, _ = Fleet(url).view()
+            for e in entries.values():
+                if e.get("state") != "queued" or eligibility(e, h):
+                    continue
+                cands, why = berth_candidates(e.get("repo") or "/nonexistent", h)
+                if not (isinstance(why.get("berths"), list) and why["berths"]) or h not in cands:
+                    continue   # no berths: no ranking, nobody to wait for
+                n = max(n, len([x for x in cands[:cands.index(h)] if x not in full and not eligibility(e, x)]))
+    except Exception as x:   # a hold it cannot judge is no hold: the claim goes ahead
+        event("kick-hold-unread", host=h, why="%s: %s" % (type(x).__name__, x))
+    s = min(HOLD_CAP, HOLD_PER * n)
+    event("kick-hold", host=h, kicks=heard, full=sorted(full), held_s=s)
+    if s:
+        time.sleep(s)
+    return s
+
+
+def kick_peers(e, h, full):
+    """The peers to kick for E: every host the config names for it, bar this one and the known-full, that
+    E's pin, berths and features let take it."""
+    return [x for x in fleet_hosts(e) if x != h and x not in full and not eligibility(e, x)]
+
+
+def cmd_kick(a, ctx):
+    """`dispatch --kick QID`: kick every eligible peer of a queued fleet entry over its roads (kicklib), in
+    parallel, each verdict in kicks.jsonl. Refused (exit 2) for a node-local entry — a node's queue never kicks
+    out, a press across hosts would tell the spacesheep account a host was kicked — and for a caller whose cwd
+    is in a confidential scope, or a registry that will not read (the fence trap). The kick's payload names
+    hosts only. Off (exit 0, said) where no `wharf-runs/kick-roads` file is."""
+    store, key = split_qid(a.qid)
+    if not isinstance(store, Fleet):
+        raise Refused("dispatch --kick: %s is a node-local entry; a node's queue never kicks out" % a.qid)
+    reg, torn = common.read_registry()
+    if torn:
+        raise Refused("dispatch --kick: the registry will not read, so the caller's scope cannot be judged (fails closed)")
+    cwd = a.cwd or os.getcwd()
+    if confidential_scope(toplevel(cwd) or cwd, reg):
+        raise Refused("dispatch --kick: refused from a confidential scope's checkout")
+    if not kl().kicks_on():
+        print("kick: off — no %s here" % kl().ROADS_KEY)
+        return 0
+    h = host_name()
+    e = store.view()[0].get(key)
+    if not e or e.get("state") != "queued":
+        print("kick: %s is %s; nothing to kick for" % (a.qid, (e or {}).get("state") or "gone"))
+        return 0
+    # a host's refusal counts as full for the hour claimable() skips it, never longer (the S8 review)
+    full = {h} | {x.lower() for x, at in (e.get("refused_by") or {}).items()
+                  if isinstance(x, str) and now() - int(at or 0) < SKIP} \
+        | {x.strip().lower() for x in (a.full or "").split(",") if x.strip()}
+    full = {x for x in full if kl().host_ok(x)}
+    peers = kick_peers(e, h, full)
+    kid = uuid.uuid4().hex[:8]
+    got = kl().kick(peers, h, full, kid) if peers else {}
+    event("kick", key=a.qid, host=h, kid=kid, peers=peers, took=got)
+    print(json.dumps({"qid": a.qid, "kid": kid, "full": sorted(full), "kicked": got}, sort_keys=True))
+    return 0
+
+
+def kick_soon(qid, cwd, ctx, full=()):
+    """enqueue's kick: a queued fleet entry this host did not take. Detached — the kicker's call returns now and
+    each road's verdict lands in kicks.jsonl (the component's risk: no caller waits on a road);
+    DISPATCH_KICK_SYNC runs it in this process (the suites). Never raises."""
+    try:
+        if not kl().kicks_on():
+            return
+        args = ["kick", qid, "--cwd", cwd or os.getcwd(), "--host", host_name(), "--cap", str(ctx.cap), "--jobbin",
+                ctx.jobbin, "--prefix", ctx.prefix, "--launchctl", ctx.launchctl, "--rch", ctx.rch or ""]
+        if full:
+            args += ["--full", ",".join(sorted(full))]
+        if os.environ.get("DISPATCH_KICK_SYNC"):
+            out = sys.stdout
+            sys.stdout = sys.stderr   # enqueue's one JSON line stays alone on stdout
+            try:
+                main(args)
+            finally:
+                sys.stdout = out
+            return
+        logdir().mkdir(parents=True, exist_ok=True)
+        with open(logdir() / "kicks.log", "a") as lf:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve())] + args, stdin=subprocess.DEVNULL,
+                             stdout=lf, stderr=lf, start_new_session=True)
+    except Exception as x:
+        event("kick-unsent", key=qid, why="%s: %s" % (type(x).__name__, x))
+
+
+def cmd_kicked(a, ctx):
+    """The receiver (`dispatch --claim --full HOSTS --from HOST`, or the sheep button's `--from-stream`, which reads
+    the press's SS_STREAM_DATA): the kick noted in queue/kicks/ and this host's own queue-sweep job kickstarted —
+    nothing else. The sweep claims under its own identity, after its hold-back: nothing reads the registry or a
+    Drive link inside an Orca terminal, an ssh command or a listener (AGENTS.md's trap). Exit 0 once noted (a
+    sweep job that will not start is said: its 10-minute bound stands); 2 for a payload that is not host names."""
+    try:
+        if a.from_stream:
+            frm, full = kl().parse_payload(os.environ.get("SS_STREAM_DATA") or "null")
+            road = "sheep"
+        else:
+            frm, full = kl().parse_payload({"kick": 1, "from": (a.from_ or "").lower(),
+                                            "full": [x.strip().lower() for x in (a.full or "").split(",") if x.strip()]})
+            road = "peer"
+    except (ValueError, TypeError) as x:
+        raise Refused("dispatch --claim: %s" % x)
+    h = host_name()
+    if not home() or not claims_here():
+        print("kick heard from %s; no queue home that claims here — nothing to start" % frm)
+        return 0
+    t = now()
+    kicks_dir().mkdir(parents=True, exist_ok=True)
+    (kicks_dir() / ("%d-%s-%s.json" % (t, frm, uuid.uuid4().hex[:6]))).write_text(
+        json.dumps({"at": t, "from": frm, "full": full, "road": road}, sort_keys=True))
+    # this prefix's sweep, else the previous prefix's while a label move drains (main's rule: every reader of the
+    # label prefix takes the previous one; the S8 review, pass 2)
+    ok = False
+    for label in (job_labels(ctx)[0],) + tuple(prev_labels(ctx)[:1]):
+        if sys.platform == "darwin" or os.environ.get("DISPATCH_LAUNCHCTL"):
+            cmd = [ctx.launchctl, "kickstart", "gui/%d/%s" % (os.getuid(), label)]
+        else:
+            cmd = ["systemctl", "--user", "start", label + ".service"]   # the timer's unit is S7's
+        try:
+            ok = subprocess.run(cmd, capture_output=True, text=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        if ok:
+            break
+    kl().log("heard", host=h, by=frm, full=full, road=road, sweep_started=ok)
+    print("kick heard from %s (%s); %s" % (frm, road, "the sweep started" if ok else
+                                           "the sweep job did not start (not loaded?) — its 10-minute pass is the bound"))
+    return 0
+
+
+def cmd_roads(a, ctx):
+    """`dispatch --roads`: the `kick-roads` lines what exists here gives (kicklib.roads_lines), for the overlay."""
+    for ln in kl().roads_lines(host_name(), ctx.launchctl):
+        print(ln)
+    if not kl().kicks_on():
+        print("(the kick is off here: no %s file)" % kl().ROADS_KEY)
+    return 0
 
 
 def cmd_poll(a, ctx):
@@ -3829,6 +4081,17 @@ def main(argv=None):
     ctxargs(m)
     m.add_argument("qid")
     m.add_argument("--label", default="")
+    k = sub.add_parser("kick")
+    ctxargs(k)
+    k.add_argument("qid")
+    k.add_argument("--cwd")
+    k.add_argument("--full", default="")
+    kd = sub.add_parser("kicked")
+    ctxargs(kd)
+    kd.add_argument("--from", dest="from_")
+    kd.add_argument("--full", default="")
+    kd.add_argument("--from-stream", action="store_true")
+    ctxargs(sub.add_parser("roads"))
     u = sub.add_parser("unreserve")
     ctxargs(u)
     u.add_argument("qid")
@@ -3856,6 +4119,12 @@ def main(argv=None):
             return cmd_poll(a, a)
         if a.verb == "jobs":
             return cmd_jobs(a, a)
+        if a.verb == "kick":
+            return cmd_kick(a, a)
+        if a.verb == "kicked":
+            return cmd_kicked(a, a)
+        if a.verb == "roads":
+            return cmd_roads(a, a)
         if a.verb == "unreserve":
             return cmd_unreserve(a, a)
         if a.verb == "list":

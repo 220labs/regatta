@@ -419,6 +419,21 @@ echo org.example.claude > "$T/config/wharf-runs/label-prefix-previous"
 out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
 echo "$out" | grep -q "under the previous label prefix"; check $? 1 "  a previous key equal to the prefix is none: no move named"
 rm -f "$OSW" "$T/config/wharf-runs/label-prefix-previous"
+if [ "$(uname)" = Darwin ]; then   # the listener row is a note off macOS
+  # S8: a kick-roads line naming sheep for this host wants its listener service held by launchd
+  printf '#!/bin/sh\ncase "$2" in *queue-sweep) exit 0;; *dev.spacesheep.stream.*) [ -f "%s/heard" ];; *) exit 1;; esac\n' "$T" > "$T/launchctl"
+  out=$(DISPATCH_HOST=hosta DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?:$(echo "$out" | grep -c 'kick listener')" "0:0" "  no kick-roads line: no listener row"
+  echo "hosta:sheep,ssh" > "$T/config/wharf-runs/kick-roads"
+  out=$(DISPATCH_HOST=hosta DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  a line naming sheep and no listener: exit 1"
+  echo "$out" | grep -q -- "--  kick listener: wharf-runs/kick-roads names sheep for hosta, and launchd holds no listener on kick/hosta (dev.spacesheep.stream.kick-hosta)"; check $? 0 "    the row names the stream and the CLI's label"
+  printf 'hosta:\nsheep,\nssh\n' > "$T/config/wharf-runs/kick-roads"
+  out=$(DISPATCH_HOST=hosta DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?:$(echo "$out" | grep -c -- '--  kick listener')" "1:1" "  the line written one word per line reads the same (S8 review)"
+  touch "$T/heard"
+  out=$(DISPATCH_HOST=hosta DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  the listener held: exit 0"
+  echo "$out" | grep -q "^  ok  kick listener: kick/hosta"; check $? 0 "    its row ok"
+  out=$(DISPATCH_HOST=hostb DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$(echo "$out" | grep -c 'kick listener')" 0 "  another host's line: no row here"
+  rm -f "$T/heard" "$T/config/wharf-runs/kick-roads"
+fi
 rm -f "$SWEEP" "$T/held" "$T/launchctl"
 unset SYSTEMD_LAUNCHCTL_SYSTEMCTL
 rm -r "$T/config/wharf-runs"

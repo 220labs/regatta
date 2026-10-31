@@ -264,6 +264,61 @@ def berth_problems():
 
 
 def queue_rows():
+    """The queue's rows: the home and its sweep (sweep_rows), and the kick listener (listener_row)."""
+    return sweep_rows() + listener_row()
+
+
+def listener_row():
+    """The kick's listener (S8 of the dispatch-queue design): where this host's `wharf-runs/kick-roads` line names
+    sheep, launchd must hold the spacesheep CLI's listener service on its kick stream (`kick/<host>`, or the stream
+    `wharf-runs/kick-stream` names): kickers press there, and a press nobody hears waits for the 10-minute sweep. A
+    finding when it is absent; no row where no line names sheep, or where the queue is off. Read as text: the core
+    loads no module (the label is the CLI's own: dev.spacesheep.stream.<slug>). → the number of findings."""
+    v = (common.config_line("wharf-runs/queue-repo") or "").strip()
+    if not v or v.lower() == "off":
+        return 0
+    me = (os.environ.get("DISPATCH_HOST") or common.host_name() or "").lower()
+    # read as wharf-runs' kicklib.road_lines reads it: a line with no `host:` continues the one before (the
+    # overlay writes a value one word per line), notes after `#` or `(` cut, a host's first line wins
+    text, last = {}, None
+    for ln in common.config_lines("wharf-runs/kick-roads") or []:
+        ln = re.split(r"[#(]", ln, 1)[0].strip()
+        if not ln:
+            continue
+        name, sep, rest = ln.partition(":")
+        if sep and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", name.strip().lower()):
+            last = name.strip().lower()
+            if last in text:
+                last = None
+                continue
+            text[last] = rest
+        elif last:
+            text[last] += " " + ln
+    if "sheep" not in re.findall(r"\b(sheep|orca|ssh)\b", text.get(me, "").lower()):
+        return 0
+    if sys.platform != "darwin":
+        print("  ..  kick listener: no launchd here (`dispatch-rc kick-listen status` asks systemd)")
+        return 0
+    stream = "kick/%s" % me
+    for ln in common.config_lines("wharf-runs/kick-stream") or []:
+        name, sep, rest = ln.partition(":")
+        if sep and name.strip().lower() == me and rest.strip():
+            stream = rest.strip()
+    label = "dev.spacesheep.stream.%s" % (re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", stream.lower()))[:60] or "stream")
+    lc = os.environ.get("DISPATCH_LAUNCHCTL") or "launchctl"
+    try:
+        held = subprocess.run([lc, "print", "gui/%d/%s" % (os.getuid(), label)], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        held = False
+    if held:
+        print("  ok  kick listener: %s (%s)" % (stream, label))
+        return 0
+    print("  --  kick listener: wharf-runs/kick-roads names sheep for %s, and launchd holds no listener on %s (%s) — "
+          "`dispatch-rc kick-listen install` with its streams-only key, or drop sheep from the line" % (me, stream, label))
+    return 1
+
+
+def sweep_rows():
     """The fleet queue's two rows (wharf-runs' dispatch-queue; S2 of the dispatch-queue design): its home,
     and the queue-sweep job that claims what waits for this host. A home with no sweep is a finding: a
     queued entry would wait for some unrelated dispatch here (any dispatch run here installs the job:

@@ -13,6 +13,9 @@
 # dispatch --queue [--all] [--json]
 # dispatch --sweep
 # dispatch --claim [--event-at EPOCH]
+# dispatch --claim --full HOSTS --from HOST | --claim --from-stream
+# dispatch --kick QID
+# dispatch --roads
 # dispatch --poll
 # dispatch --end TOPIC [--repo DIR]
 # dispatch --requeue TOPIC|--all [--repo DIR] [--why TEXT] [--dry-run]
@@ -204,6 +207,15 @@
 #               ends with no fire path behind it (dispatch-rc); --event-at, when the slot freed (G3's start).
 #   --poll      one pass of the pending poll, the 60 s job loaded only while entries pend on a Mac no kick
 #               road reaches and with room (dispatch-queue poll). Without a home, each is a no-op.
+#   --kick QID  kick every eligible peer of a queued fleet entry over its roads (S8; bin/kicklib.py: a spacesheep
+#               press, an Orca terminal, an ssh alias, in the order `wharf-runs/kick-roads` names them, else what
+#               exists), each verdict in claude-weekly/kicks.jsonl; the payload names hosts only. Refused for a
+#               node-local entry or from a confidential checkout. An enqueue here kicks by itself, detached, for a
+#               fleet entry it did not take; nothing kicks where no kick-roads file is.
+#   --claim --full HOSTS --from HOST, --claim --from-stream  the receiver of a kick (ssh and Orca; the sheep
+#               button reads the press's SS_STREAM_DATA): notes it and kickstarts this Mac's queue-sweep job,
+#               which holds back 3 s per higher-ranked berth of unknown room (9 s at most) and then claims.
+#   --roads     the kick-roads lines what exists here gives, for the overlay to write.
 # The caller's contract (S3; docs/dispatch-queue-contract-2026-10-25.md): dispatch, hand off, close — wait
 # only with a reason, never retry. Once the queue holds the step the caller ends its turn on the line
 # dispatch prints, `<the WAITING FOR SOMETHING prefix>queued <branch> (<priority>); the next step waits for
@@ -570,6 +582,7 @@ branch=""; repo="$primary"; repo_given=""; at=""; on=""; cancel=0; next=0; note=
 account=""; force=0; fallback=""; on_here=0; on_typed=0; on_default=0; at_default=0; on_auto=0; ifroom=0
 start=0; lprompt=""; ldir=""; lname=""; lsid=""; lresume=""; lfork=0; extra_allow=(); undeny=()
 prio=normal; prio_given=0; fromq=""; qdone=0; sweep=0; qverb=""; evat=""; waitwhy=""; replace=0; needs=""
+kfull=""; kfrom=""; kstream=0; kick=""   # S8: the receiver's payload, the sheep button's, and --kick QID
 requeue=0; rqtopic=""; rqall=0; rqwhy=""   # S10: dispatch --requeue TOPIC|--all [--why]
 afters=(); brief_afters=(); landq=""   # S9: --after's predecessors; a queued landing's own queue id (dispatch --start, no room)
 # before the flags: --slots counts the queue's claims (qreserved) under $cache, and every later home path is
@@ -627,6 +640,12 @@ while [ $# -gt 0 ]; do
              afters+=("$2"); shift 2;;
     --claim|--poll) qverb="${1#--}"; shift;;
     --event-at) evat="${2:-}"; case "$evat" in ''|*[!0-9]*) echo "dispatch: --event-at takes an epoch" >&2; exit 2;; esac; shift 2;;
+    # S8: a kick's payload, host names only (dispatch-queue kicked judges each); --kick names a queue id
+    --full) kfull="${2:-}"; [ -n "$kfull" ] || { echo "dispatch: --full takes host names, a,b" >&2; exit 2; }; shift 2;;
+    --from) kfrom="${2:-}"; [ -n "$kfrom" ] || { echo "dispatch: --from takes the kicking host" >&2; exit 2; }; shift 2;;
+    --from-stream) kstream=1; shift;;
+    --kick) kick="${2:-}"; [ -n "$kick" ] || { echo "dispatch: --kick takes a queue id (dispatch --queue names each)" >&2; exit 2; }; shift 2;;
+    --roads) exec python3 "$Q" roads "${qctx[@]}";;
     --status) python3 "$here/bin/dispatch-rc" status; rc=$?
               python3 "$Q" list --status --host "$self_host" 2>/dev/null; exit "$rc";;
     --cap) echo "$max_runs"; exit 0;;
@@ -650,7 +669,7 @@ done
 if [ -n "${WEEKLY_RUN:-}" ]; then
   case "$at" in reset|reset+30|reset+60) slot=1;; *) slot=0;; esac
   if [ "$slot" = 0 ] || [ "$ifroom" = 0 ] || [ -z "$branch" ] \
-     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end${requeue#0}$rqwhy$account$note$bg$on$mode$origin$fromq${prio_given#0}$qverb$evat$waitwhy${replace#0}$needs${afters[*]+x}" ] || [ "$sweep" = 1 ] \
+     || [ "$cancel$next$yolo$start$probe$force$headless" != 0000000 ] || [ -n "$end${requeue#0}$rqwhy$account$note$bg$on$mode$origin$fromq${prio_given#0}$qverb$evat$waitwhy${replace#0}$needs${afters[*]+x}$kfull$kfrom${kstream#0}$kick" ] || [ "$sweep" = 1 ] \
      || [ "$model/$effort" != opus/high ]; then
     echo "dispatch: under WEEKLY_RUN=$WEEKLY_RUN only <branch> --repo R --at reset|reset+30|reset+60 --if-room" >&2; exit 2
   fi
@@ -696,8 +715,18 @@ fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "dispatch: no such repo" >&2; exit 2; }   # launchd starts in /
 [ "$sweep" = 0 ] || exec python3 "$Q" sweep "${qctx[@]}"
 # a claim now (a run's watcher, as its slot frees) and the pending poll's pass: nothing without a home
+if [ -n "$kfull$kfrom" ] || [ "$kstream" = 1 ]; then
+  [ "$qverb" = claim ] || { echo "dispatch: --full, --from and --from-stream go with --claim (a kick's receiver)" >&2; exit 2; }
+fi
+if [ -n "$kick" ]; then
+  queue_on || { echo "dispatch: --kick: no queue home here" >&2; exit 0; }
+  exec python3 "$Q" kick "$kick" --cwd "${DISPATCH_ORIGIN:-$PWD}" "${qctx[@]}"
+fi
 if [ -n "$qverb" ]; then
   queue_on || [ "$qverb" = poll ] || exit 0   # the poll's pass removes a poll job left by a home since unset
+  # a kick's receiver (S8): note it, kickstart the sweep, return — never a claim inside an Orca terminal or a listener
+  if [ -n "$kfull$kfrom" ]; then exec python3 "$Q" kicked --from "$kfrom" --full "$kfull" "${qctx[@]}"; fi
+  if [ "$kstream" = 1 ]; then exec python3 "$Q" kicked --from-stream "${qctx[@]}"; fi
   [ "$qverb" = claim ] && exec python3 "$Q" claim ${evat:+--event-at "$evat"} "${qctx[@]}"
   exec python3 "$Q" poll "${qctx[@]}"
 fi
@@ -2008,8 +2037,13 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
 # first; enqueue repeats them (its raise_refusal), and this is the habit guard (queue-s1 review, item 1).
 # S2's verbs beside them: dispatch --claim and --poll (the watcher's and the poll job's, never a session's),
 # dispatch-queue poll and jobs (they load and boot out launchd jobs), unreserve (it frees a claim's slot)
-# — S2a's landing review, item 6
-denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" "Bash(*dispatch --claim*)" "Bash(*dispatch --poll*)" "Bash(*dispatch-queue poll*)" "Bash(*dispatch-queue jobs*)" "Bash(*dispatch-queue unreserve*)" "Bash(*dispatch --requeue*)" "Bash(*dispatch-queue requeue*)" AskUserQuestion)
+# — S2a's landing review, item 6. S8's --kick and dispatch-queue kick (a kick reaches other hosts) join them, and
+# dispatch-rc kick-listen (it writes the owner's listener service; it refuses an unattended caller too).
+# Each is a habit guard, not a fence (S2a's finish review, item 11): a rule reads the words as typed, so
+# `dispatch --event-at 1 --claim` (flag order) passes `*dispatch --claim*`, and `--sweep` claims too and stays
+# allowed (S1's hand fallback); what holds is that each verb judges its caller, and a claim starts only what the
+# queue holds
+denied=("Bash(git push:*)" "Bash(gh:*)" "Bash(ssh:*)" "Bash(*bin/pr ready*)" "Bash(*bin/pr merge*)" "Bash(*libexec/pr ready*)" "Bash(*libexec/pr merge*)" "Bash(*regatta pr ready*)" "Bash(*regatta pr merge*)" "Bash(python3 scripts/deploy.py:*)" "Bash(*dispatch-queue enqueue*)" "Bash(*dispatch-queue claim*)" "Bash(*dispatch-queue sweep*)" "Bash(*dispatch --claim*)" "Bash(*dispatch --poll*)" "Bash(*dispatch-queue poll*)" "Bash(*dispatch-queue jobs*)" "Bash(*dispatch-queue unreserve*)" "Bash(*dispatch --requeue*)" "Bash(*dispatch-queue requeue*)" "Bash(*dispatch --kick*)" "Bash(*dispatch-queue kick*)" "Bash(*dispatch-rc kick-listen*)" AskUserQuestion)
 # The fence (dispatch-queue S7's Linux half): a run never reads a confidential scope's work it was not started
 # in. A host that carries one beside open repos (a scope's node opened to fleet work) denies the run's Read and
 # Edit of every path the core's scope_paths() names for each such repo cloned here (its checkout, its worktrees,

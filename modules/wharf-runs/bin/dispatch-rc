@@ -61,6 +61,15 @@
                                a headless run's end (bin/dispatch run_headless): store on its record
                                whether it handed the owner an ask past a live skipper (session-asks R2)
     dispatch-rc arrange        even out the tiles on the claude desktop (yabai's --balance)
+    dispatch-rc kick-listen install|remove|status [--shared DIR]
+                               the sheep road's listener on this host (S8 of docs/dispatch-queue-2026-10-25.md;
+                               bin/kicklib.py): a `kick` button that runs `dispatch --claim --from-stream`, one
+                               bounded proving run, then the spacesheep CLI's own `--service` on the host's kick
+                               stream, in its own SPACESHEEP_CONFIG_DIR holding a streams-only key the owner saves
+                               there (exit 3 names the step; never minted, read or printed here). --shared DIR puts
+                               the button in a running listener's --on-dir instead (no new process). install is
+                               refused under CLAUDE_UNATTENDED. The sweep's watchdog boots out a listener whose log
+                               shows the server refusing its key.
     dispatch-rc status         every run of the last 7 days: running/ended, last activity, session id,
                                the VS Code link (what `dispatch --status` prints); ends an orphan
                                (its watcher gone, claude still there) that is idle
@@ -2225,6 +2234,25 @@ def end_run(path, st, reason):
     return 0
 
 
+def kick_listen(verb, shared=None):
+    """`kick-listen install|remove|status` — kicklib's listener, for this host (DISPATCH_HOST, else its short name)."""
+    loader = importlib.machinery.SourceFileLoader("kicklib", os.path.join(HERE, "kicklib.py"))
+    kl = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(kl)
+    me = (os.environ.get("DISPATCH_HOST") or kl.common.host_name() or "").lower()
+    lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
+    if not kl.host_ok(me):
+        print("kick-listen: this host's name (%r) is no host name" % me)
+        return 2
+    if verb == "install":
+        return kl.listen_install(me, lc, shared)
+    if verb == "remove":
+        return kl.listen_remove(me, shared)
+    lo = kl.listener_loaded(lc, kl.stream_of(me))
+    print("kick-listen: %s on %s — %s" % (me, kl.stream_of(me), {True: "loaded", False: "not loaded", None: "could not tell"}[lo]))
+    return 0 if lo else 1
+
+
 if __name__ == "__main__":
     verb = sys.argv[1] if len(sys.argv) > 1 else ""
     if verb in ("window", "watch") and len(sys.argv) == 3:
@@ -2270,6 +2298,9 @@ if __name__ == "__main__":
         sys.exit(0 if RC.trusted(sys.argv[2], cj) else 1)
     if verb == "ask-guard" and len(sys.argv) == 3:
         sys.exit(store_ask_guard(sys.argv[2]))
+    if verb == "kick-listen" and len(sys.argv) in (3, 5) and sys.argv[2] in ("install", "remove", "status") \
+            and (len(sys.argv) == 3 or sys.argv[3] == "--shared"):
+        sys.exit(kick_listen(sys.argv[2], sys.argv[4] if len(sys.argv) == 5 else None))
     if verb == "arrange":
         sys.exit(arrange())
     if verb == "status":
