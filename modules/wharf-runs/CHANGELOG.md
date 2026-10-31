@@ -66,6 +66,11 @@
   transcripts, each login dir's auto-memory), and, when the registry does not read or the fence cannot be drawn,
   every other checkout in the projects folder bar the run's own and its tools', at every level. New suite `tests/test_systemd.sh`
   (on LINUX_OK).
+- `rc-hosts` reads an optional `wharf-runs/rc-hosts` key, the Macs that run Remote Control hosts (names, lower-case
+  compared; absent: every Mac, as before). A Mac it leaves out wants no host and holds none, so the existing converge
+  road retires each host once empty, a busy one waiting for its last session; `--check` says the key keeps hosts off
+  (not "missing"), and `--agents` shows a host plist unwanted only for this as `--` pending while the hourly reaper is
+  scheduled (a FAIL without it).
 - `pickup seed --beside`'s wording has its case (routed comments S5, TODO 29 (e)): no "behind origin" for a seed off a
   branch's tip, and a blueprint already on that branch is said to be on it.
 - dispatch-queue S10, the requeue (docs/dispatch-queue-requeue-2026-10-25.md): `dispatch --requeue TOPIC|--all

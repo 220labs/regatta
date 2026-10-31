@@ -10,6 +10,10 @@ commit on any of its refs, local or fetched, in the last ACTIVE_DAYS (30) days (
 2026-10-13, rc-slots D4: "A, but let's limit this to repos I worked on in the last 30 days").
 A repo that looks idle is fetched first (at most daily), so work from the other Mac counts;
 one whose commits cannot be read keeps its host.
+The config key `wharf-runs/rc-hosts` (optional) narrows that to the Macs it names: the host names,
+space or line separated, compared lower-case. Absent, every Mac runs its hosts; present and not naming
+this Mac, it wants none here — the plain run and the hourly --reap retire each host as it empties,
+the way they retire any unwanted one (a host holding a session stays until its last one is gone).
 An `"rc": {…}` object overrides label, name, capacity, spawn or permission_mode (the owner,
 2026-10-07: every repo, and every new one from /new-project). Before this, the build Mac's
 first host was a hand-made plist.
@@ -63,7 +67,8 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
   rc-hosts --agents [--fix] FAILS (once this Mac's sitting is done) on an empty host or an idle
                             job that starts claude, or a claude-starting script of the primary
                             checkout, without claude-host (a host holding a session, a job running
-                            now: pending); --fix rewrites the idle <label prefix>.* ones, and
+                            now: pending; a host on a Mac wharf-runs/rc-hosts leaves out, while the
+                            reaper is scheduled: pending, it retires); --fix rewrites the idle <label prefix>.* ones, and
                             --reap runs it hourly (hosts move by converge). Then the clock's Orca
                             automations: Orca launches each run, and its launcher line must name the
                             primary checkout's script (OUTSIDE otherwise; bin/clock)
@@ -280,9 +285,14 @@ def machines():
 MACHINES = machines()
 
 
-def machine():
-    name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True,
+def local_name():
+    """This Mac's LocalHostName, lower-case; asks nothing of the config."""
+    return subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True,
                           text=True).stdout.strip().lower()
+
+
+def machine():
+    name = local_name()
     if name not in MACHINES:
         sys.exit(f"rc-hosts: unknown machine {name!r} (the config names {', '.join(MACHINES)})")
     return name
@@ -425,6 +435,36 @@ def ident(path, rc, host):
     return slug, rc.get("label") or f"{HOST_LABEL}.{slug}", f"{rc.get('name') or path.split('/')[-1]} · {MACHINES[host]}"
 
 
+_ALLOWED = []   # hosts_allowed()'s answer once read: a run reads the key once, and says an unreadable one once
+
+
+def hosts_allowed():
+    """The Macs `wharf-runs/rc-hosts` lets run Remote Control hosts: a set of lower-case host names,
+    or None for every Mac (the key is absent, or cannot be read: today's behaviour either way). The
+    names may sit on one line or on several (bootstrap writes one word per line), separated by
+    spaces or commas (`a, b` is two Macs: a stray comma must not read a Mac out of the set, which
+    would retire its hosts), so every line is joined before it is split. A key written empty names no
+    Mac. Never raises: it runs on every path (AGENTS.md, Traps). A key that exists and cannot be read
+    turns the feature off, one stderr line saying so."""
+    if _ALLOWED:
+        return _ALLOWED[0]
+    lines, why = common.config_read("wharf-runs/rc-hosts") if common else (None, None)
+    if why:
+        print(f"rc-hosts: wharf-runs/rc-hosts does not read ({why}) — every Mac runs its hosts",
+              file=sys.stderr)
+    _ALLOWED.append(None if lines is None else
+                    {w.lower() for line in lines for w in re.split(r"[\s,]+", line) if w})
+    return _ALLOWED[0]
+
+
+def hosts_off(host, allowed=False):
+    """True when `wharf-runs/rc-hosts` is set and does not name HOST: no host runs here. A caller
+    that already read the key passes it as ALLOWED (hosts_allowed()'s answer), so one run reads it once."""
+    if allowed is False:
+        allowed = hosts_allowed()
+    return allowed is not None and host.lower() not in allowed
+
+
 def wanted(host):
     """(label, name, plist dict, repo dir) for every repo this host clones and someone worked on in
     the last ACTIVE_DAYS, bar a public twin, "rc": false and a held confidential one."""
@@ -435,7 +475,10 @@ def hosts_here(host):
     """(wanted, held): wanted() as above, and (label, name, why) for every confidential repo this
     host clones whose host is held — no `"rc": {…}`, a scope with no login, a login with no home of
     its own here (login_home). `"rc": false` is held too, with why None: main() says nothing of it
-    unless its host is still loaded."""
+    unless its host is still loaded. A Mac `wharf-runs/rc-hosts` leaves out wants none (every host
+    plist here is then unwanted, and the converge road retires it) but still holds what it held, so a
+    confidential scope's host loaded against its hold stays a --check FAIL there (hosts_off)."""
+    off = hosts_off(host)
     doc = registry_doc()
     repos = doc["repos"]
     conf = confidential_of(doc)
@@ -462,7 +505,7 @@ def hosts_here(host):
             if rc is False or why:
                 holds.append((label, name, why))
                 continue
-        if rc is False:
+        if rc is False or off:
             continue
         if not active(PROJECTS / path):
             continue
@@ -709,6 +752,8 @@ def heal(host, only, dry):
     nothing, 2026-10-23). A busy one is mid-turn: the host waits, said once per run. So does one idle
     under HEAL_IDLE_MIN: between two turns of a conversation from the phone (review, 2026-10-23)."""
     stamp = time.strftime("%Y-%m-%d %H:%M")
+    if hosts_off(host):   # every host here is unwanted: converge retires it, a restart would be for nothing
+        return
     for label, name, plist, repo in served(host):
         if only and name.split(" · ")[0] not in only:
             continue
@@ -1250,7 +1295,8 @@ def retire(hosts, dry, quiet=False, moving=()):
                 print(f"  waiting  {label}: no longer wanted here, holds a session — retires once empty")
             continue
         print(f"  {'would retire' if dry else 'retiring'} {label}: no longer wanted here"
-              f" (idle {ACTIVE_DAYS:g} days+, \"rc\": false, or unregistered)  ({time.strftime('%Y-%m-%d %H:%M')})")
+              f" (idle {ACTIVE_DAYS:g} days+, \"rc\": false, unregistered, or wharf-runs/rc-hosts leaves this Mac out)"
+              f"  ({time.strftime('%Y-%m-%d %H:%M')})")
         if dry:
             continue
         stop(label)
@@ -1699,7 +1745,9 @@ def agents(fix=False, quiet=False):
     (OUTSIDE: claude-host refuses to start it, so it stays bare whatever runs), and an
     <label prefix>.* job that names claude-host but is not loaded (UNLOADED: a --fix whose reload
     launchd refused leaves exactly that, and the next run would otherwise say ok); --fix loads it
-    again — a host's is converge's."""
+    again — a host's is converge's. On a Mac the `wharf-runs/rc-hosts` key leaves out, every host
+    plist is unwanted, so a bare or unloaded one is `--` pending, never a count: the hourly --reap's
+    converge retires it (the overlay's `bootstrap.sh --check` runs this and must stay green meanwhile)."""
     bad = []
     skipped = 0
     for p in sorted(AGENTS.glob("*.plist")):
@@ -1723,6 +1771,12 @@ def agents(fix=False, quiet=False):
                   + "that starts claude starts through claude-host")
         return 1 if not quiet and automations(on) else 0
     counted = 0
+    # --agents needs no registry machine (no machine() exit), and no scutil while the key is absent.
+    # Masked only while the reaper is scheduled: nothing else retires a host hourly, and without it
+    # the host would stay pending for good with the overlay's check green.
+    allowed = hosts_allowed()
+    off_here = (allowed is not None and hosts_off(local_name(), allowed)
+                and (AGENTS / f"{REAPER}.plist").exists())
     for label, plist, why, kind in bad:
         host = is_host(label)
         mine = ours(label)
@@ -1730,6 +1784,10 @@ def agents(fix=False, quiet=False):
         prev = mine and not label.startswith(OURS)
         if not on:
             tag, note = "--      ", ""
+        elif host and off_here:
+            # wharf-runs/rc-hosts leaves this Mac out: the host is unwanted whatever else is wrong
+            # with it (bare, unloaded), and the hourly --reap's converge retires it once it is empty
+            tag, note = "--      ", " (a host wharf-runs/rc-hosts keeps off here: the hourly reap retires it)"
         elif kind == "outside":
             tag, note = "OUTSIDE ", ""
             counted += 1
@@ -2385,10 +2443,16 @@ def main():
           + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else
              f"hourly, under {PREV_REAPER} (a plain run relabels it)" if prev_reaper else "not scheduled (--schedule-reap)"))
     print(f"  {launcher_report()}")
+    allowed = hosts_allowed()
+    if hosts_off(host, allowed):   # not "missing": the owner's key, not a gap (hosts_here wants none here)
+        print(f"  --       hosts: the config key wharf-runs/rc-hosts keeps Remote Control hosts off on {host}"
+              f" (it names {', '.join(sorted(allowed)) or 'no Mac'}) — any host here retires once empty")
     failed = 0
     refused = restart - {n.split(" · ")[0] for _, n, _, _ in hosts} - {l for l, _, _, _ in hosts}
     for r in refused:
-        print(f"  --       {r}: no such host here ({', '.join(n.split(' · ')[0] for _, n, _, _ in hosts)})")
+        print(f"  --       {r}: no such host here ("
+              + (f"wharf-runs/rc-hosts keeps hosts off on {host}: a host still here retires once empty"
+                 if hosts_off(host, allowed) else ", ".join(n.split(" · ")[0] for _, n, _, _ in hosts)) + ")")
     for label, name, plist, repo in hosts:
         dest = AGENTS / f"{label}.plist"
         if not repo.is_dir():
