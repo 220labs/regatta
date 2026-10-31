@@ -298,6 +298,33 @@ check "$(sed -n '/^queue_jobs() {/,/^}/p' "$B/dispatch" | grep -c 'python3 "$Q" 
 check "$(grep -c '\[ "$dry" = 1 \] || queue_jobs' "$B/dispatch") $(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'queue_jobs')" "1 1" \
   "  …as each run starts, beside the tidier's refresh, and at each enqueue here"
 check "$(sed -n '/^queue_jobs() {/,/^}/p' "$B/dispatch" | grep -c 'qkeys')" "1" "  and starts no python where no key and no job is"
+echo "a label move (wharf-runs/label-prefix-previous): the previous prefix's sweep and poll go once the new sweep loads"
+OSW="$LA/org.old.jobs.queue-sweep.plist"; OPO="$LA/org.old.jobs.queue-poll.plist"
+python3 "$QB" jobs "${QC[@]}" > /dev/null
+: > "$OSW"; : > "$OPO"; : > "$T/calls"
+python3 "$QB" jobs "${QC[@]}" > "$T/out"
+check "$([ -f "$OSW" ] && [ -f "$OPO" ] && echo kept)" "kept" "  no --prefix-previous: another prefix's jobs are not the queue's (today's behaviour)"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.old.jobs > "$T/out"
+check "$(ls "$OSW" "$OPO" 2>/dev/null | wc -l | tr -d ' ') $([ -f "$SW" ] && echo new)" "0 new" "  with it: both removed, the new sweep in place"
+has "$T/out" "removed org.old.jobs.queue-sweep, org.old.jobs.queue-poll (the previous label prefix; org.example.claude.queue-sweep sweeps)" "  said"
+has "$T/calls" "bootout gui/$(id -u)/org.old.jobs.queue-sweep" "  and booted out"
+: > "$OSW"
+touch "$T/running.org.old.jobs.queue-sweep"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.old.jobs > /dev/null
+check "$([ -f "$OSW" ] && echo kept)" "kept" "  never while it runs: this pass may be that job (its bootout would end it)"
+rm -f "$T/running.org.old.jobs.queue-sweep"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.example.claude > /dev/null
+check "$([ -f "$OSW" ] && [ -f "$SW" ] && echo kept)" "kept" "  a previous prefix equal to the current one is none"
+rm -f "$SW"; : > "$T/calls"
+python3 "$QB" jobs --cap 3 --launchctl "$T/lc-fail" --prefix org.example.claude --prefix-previous org.old.jobs --jobbin "$B/dispatch" > /dev/null
+check "$([ -f "$OSW" ] && echo kept)" "kept" "  a new sweep that did not load: the old one keeps sweeping"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.old.jobs > /dev/null
+check "$([ -f "$OSW" ] && echo kept || echo gone) $([ -f "$SW" ] && echo new)" "gone new" "  the next pass that loads the new one drops it"
+echo off > "$REGATTA_CONFIG/wharf-runs/queue-repo"; : > "$OSW"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.old.jobs > "$T/out"
+check "$(ls "$LA" | grep -c queue-)" "0" "  a home set off: the previous prefix's jobs removed too"
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+check "$(grep -c 'qctx+=(--prefix-previous "$lprev")' "$B/dispatch")" "1" "  dispatch hands the queue the previous prefix (wharf-runs/label-prefix-previous)"
 
 echo "the sweep claims what nothing else would (the third review's item 17, the fourth's item 9)"
 qreset
@@ -319,6 +346,11 @@ check "$(qget repo--p1 state)" "queued" "an entry refused here within the hour: 
 check "$([ -f "$PO" ] && echo yes || echo no)" "yes" "  …and the poll loaded: room here, and it may become claimable"
 check "$(pkey "$PO" StartInterval) $(pkey "$PO" ProgramArguments)" "60 $B/dispatch --poll" "  every 60 s, dispatch --poll"
 has "$QL" '"event": "poll-loaded"' "  logged"
+SWHAD=$([ -f "$SW" ] && echo 1); rm -f "$PO"; : > "$LA/org.old.jobs.queue-poll.plist"
+python3 "$QB" jobs "${QC[@]}" --prefix-previous org.old.jobs > /dev/null
+check "$([ -f "$LA/org.old.jobs.queue-poll.plist" ] && echo old) $([ -f "$PO" ] && echo new)" " new" \
+  "a label move drops the old poll while an entry pends: the new poll loaded at once, not at the sweep's next pass"
+[ -n "$SWHAD" ] || rm -f "$SW"
 echo "laptop:sheep" > "$REGATTA_CONFIG/wharf-runs/kick-roads"
 check "$(qpy reached)" "True" "a kick-roads line naming this host with a road: reached"
 python3 "$QB" claim "${QC[@]}" > /dev/null

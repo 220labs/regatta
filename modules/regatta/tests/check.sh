@@ -398,6 +398,20 @@ if [ "$(uname)" = Darwin ]; then
   touch "$T/held"
   out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with the job loaded: exit 0"
   echo "$out" | grep -q "^  ok  queue-sweep: every 10 min"; check $? 0 "    its row ok"
+  # a label move (wharf-runs/label-prefix-previous): the sweep under the previous prefix is read while the new one is absent
+  OSW="$LA/org.old.jobs.queue-sweep.plist"; rm -f "$SWEEP"; touch "$OSW"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 1 "  no previous key: a sweep under another prefix is not this host's (today's behaviour)"
+  echo org.old.jobs > "$T/config/wharf-runs/label-prefix-previous"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check); check "$?" 0 "  with it, the sweep under the previous prefix loaded: exit 0"
+  echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($OSW) — under the previous label prefix; the next dispatch here relabels it"; check $? 0 "    its row names it and what moves it"
+  touch "$SWEEP"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
+  echo "$out" | grep -qF "  ok  queue-sweep: every 10 min ($SWEEP)"; check $? 0 "    both there: the current prefix's is the one read"
+  echo "$out" | grep -q "under the previous label prefix"; check $? 1 "    and its row names no move"
+  echo org.example.claude > "$T/config/wharf-runs/label-prefix-previous"
+  out=$(DISPATCH_LAUNCHCTL="$T/launchctl" "$RG" check)
+  echo "$out" | grep -q "under the previous label prefix"; check $? 1 "  a previous key equal to the prefix is none: no move named"
+  rm -f "$OSW" "$T/config/wharf-runs/label-prefix-previous"
   rm -f "$SWEEP" "$T/held" "$T/launchctl"
 else
   check "$rc" 0 "  a queue home off macOS: exit 0, the sweep a note (a systemd timer is S7's)"

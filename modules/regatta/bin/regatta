@@ -278,6 +278,13 @@ def queue_rows():
         return 0
     prefix = common.config_line("wharf-runs/label-prefix") or "org.regatta.claude"
     job = Path.home() / "Library" / "LaunchAgents" / ("%s.queue-sweep.plist" % prefix)
+    # a label move (wharf-runs/label-prefix-previous): the sweep under the previous prefix sweeps until the
+    # next dispatch here loads the new one and drops it, so it is the job read while the new one is absent
+    prev = (common.config_line("wharf-runs/label-prefix-previous") or "").strip()
+    old = Path.home() / "Library" / "LaunchAgents" / ("%s.queue-sweep.plist" % prev)
+    moved = False
+    if prev and prev != prefix and not job.is_file() and old.is_file():
+        prefix, job, moved = prev, old, True
     if job.is_file():
         # the file is not the job: launchd must hold it (S2a's landing review, item 3). DISPATCH_LAUNCHCTL
         # is dispatch's own stand-in, which the suites set
@@ -288,10 +295,12 @@ def queue_rows():
         except (OSError, subprocess.TimeoutExpired):
             held = False
         if held:
-            print("  ok  queue-sweep: every 10 min (%s)" % job)
+            print("  ok  queue-sweep: every 10 min (%s)%s" % (job, " — under the previous label prefix; the next dispatch here relabels it"
+                                                              if moved else ""))
             return 0
         print("  --  queue-sweep: its plist is here but launchd does not hold it (%s) — any dispatch run here "
-              "reloads it (dispatch-queue jobs)" % job)
+              "%s (dispatch-queue jobs)" % (job, "installs it under the current label prefix and drops this one"
+                                            if moved else "reloads it"))
         return 1
     print("  --  queue-sweep: no job here (%s) — a queued entry waits for some dispatch on this host; any dispatch "
           "run here installs it (dispatch-queue jobs)" % job)

@@ -23,6 +23,9 @@
   lookout's one call on an owner's free-text page comments; a Mac whose table lacks the site runs it as a
   module default.
 
+- A label move (label-move, 2026-10-30): `regatta check`'s queue-sweep row reads the job under
+  `wharf-runs/label-prefix-previous` while none is under `wharf-runs/label-prefix`, and says the next
+  dispatch relabels it (wharf-runs' README, the key).
 - The gate's module rows (gate-module-rows, 2026-10-29): a site the config table lacks runs the row in
   `settings/models.json` beside the gate, filled from that table's own defaults, so a module ships its call
   sites' rows and the owner's table names only what it changes. A site in both runs the config row whole; a

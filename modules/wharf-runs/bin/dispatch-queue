@@ -63,7 +63,8 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            again for any host; --why lid is the watcher's, at a sleep (no offline
                                            refusal; warm runs left). Exit 3 refused offline by hand, nothing ended
     dispatch-queue mine QID [--label L]    the fired job's check: still its claim? exit 0 yes, 3 no, 4 unreadable
-  CTX: --host H --cap N --jobbin PATH --prefix P [--launchctl CMD] [--rch CMD]
+  CTX: --host H --cap N --jobbin PATH --prefix P [--prefix-previous P0] [--launchctl CMD] [--rch CMD]
+  (P0: wharf-runs/label-prefix-previous; `jobs` drops its sweep and poll once the new sweep loads)
 
 The home: `wharf-runs/queue-repo` in the regatta config dir, set on purpose (`off` or empty: no queue);
 `owner/name` is a GitHub repo over https, a path or URL is taken as it is — set the URL this host's git
@@ -3322,6 +3323,34 @@ def job_labels(ctx):
     return ctx.prefix + ".queue-sweep", ctx.prefix + ".queue-poll"
 
 
+def prev_labels(ctx):
+    """The sweep's and the poll's labels under the previous prefix (dispatch's `--prefix-previous`, from
+    wharf-runs/label-prefix-previous): jobs of ours still draining after a label move. Empty without one."""
+    prev = (getattr(ctx, "prefix_previous", "") or "").strip()
+    if not prev or prev == ctx.prefix:
+        return ()
+    return prev + ".queue-sweep", prev + ".queue-poll"
+
+
+def drop_previous(ctx):
+    """The previous prefix's sweep and poll booted out and removed — never one launchd says is running, or
+    that it could not tell of: this pass may be that job (a bootout would end it mid-pass), or it is mid-pass
+    for another; the next dispatch here drops it. Asked of launchd, not XPC_SERVICE_NAME, which python does not
+    read reliably: a launchd job's python read "0" (sparks, 2026-09-29), and once Apple's /bin/bash 3.2 has
+    exported or unset it, its children read "0" too (probed, the label-move landing review, 2026-10-30).
+    → the labels dropped."""
+    out = []
+    for label in prev_labels(ctx):
+        try:
+            r = subprocess.run([ctx.launchctl, "print", "gui/%d/%s" % (os.getuid(), label)],
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if "\tstate = running" not in r.stdout and job_out(ctx, label):
+            out.append(label)
+    return out
+
+
 def job_plist(ctx, label, verb, every):
     """A StartInterval job running `dispatch --VERB` as this host's launchd runs dispatch (program()): the
     queue context is dispatch's to give (the cap, the prefix, the launcher), so the job asks dispatch."""
@@ -3395,7 +3424,7 @@ def cmd_jobs(a, ctx):
         return 0
     sweep, poll = job_labels(ctx)
     if not home():
-        gone = [l for l in (sweep, poll) if job_out(ctx, l)]
+        gone = [l for l in (sweep, poll) if job_out(ctx, l)] + drop_previous(ctx)
         if gone:
             print("queue jobs: no queue home here — removed %s" % ", ".join(gone))
         return 0
@@ -3403,6 +3432,14 @@ def cmd_jobs(a, ctx):
         print("queue jobs: %s loaded, every %d min (log %s)" % (sweep, SWEEP // 60, logdir() / "queue-jobs.log"))
     elif not (agents() / ("%s.plist" % sweep)).exists():
         print("queue jobs: %s did not load (launchctl bootstrap failed twice); the next dispatch here tries again" % sweep)
+        return 0   # the previous prefix's sweep keeps sweeping meanwhile
+    gone = drop_previous(ctx)   # a label move (wharf-runs/label-prefix-previous): one sweep, the new one
+    if gone:
+        print("queue jobs: removed %s (the previous label prefix; %s sweeps)" % (", ".join(gone), sweep))
+        # the old poll was pending work here: the new one now, as the sweep's pass would load it (the
+        # same cached read), not up to SWEEP later
+        if any(l.endswith(".queue-poll") for l in gone):
+            poll_tend(ctx)
     return 0
 
 
@@ -3641,6 +3678,7 @@ def main(argv=None):
         sp.add_argument("--cap", type=int, default=3)
         sp.add_argument("--jobbin", default=str(HERE / "dispatch"))
         sp.add_argument("--prefix", default="org.regatta.claude")
+        sp.add_argument("--prefix-previous", default="")   # wharf-runs/label-prefix-previous: jobs still draining
         sp.add_argument("--launchctl", default="launchctl")
         sp.add_argument("--rch", default="")
     sub.add_parser("home")

@@ -374,10 +374,11 @@ here="$(cd "$(dirname "$0")/.." && pwd)"   # this module (wharf-runs), anchored 
 core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
 # The private values (the scrub's conventions): the peers and their ssh aliases (`wharf-runs/ssh`,
 # <host>:<alias> a line), the dispatch host (`wharf-runs/dispatch-host`), the launchd label prefix
-# (`wharf-runs/label-prefix`), the laptop and the owner (the core's), the projects folder. Read
+# (`wharf-runs/label-prefix`, and `wharf-runs/label-prefix-previous`: the one before a move, whose jobs
+# are still ours while they drain — found and cleared, never written), the laptop and the owner (the core's), the projects folder. Read
 # through the core; where it cannot load (a config the overlay left incomplete), the files
 # themselves, so a missing key is a default and never a broken run.
-peers=""; dhost=""; lprefix="org.regatta.claude"; laptop="laptop"; owner=""; handover=""; pendpre=""; projects="$HOME/projects"; qkeys=""
+peers=""; dhost=""; lprefix="org.regatta.claude"; lprev=""; laptop="laptop"; owner=""; handover=""; pendpre=""; projects="$HOME/projects"; qkeys=""
 eval "$(python3 - "$here" <<'CORE'
 import os, shlex, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
@@ -402,6 +403,8 @@ out["peers"] = " ".join("%s:%s" % (n.strip(), a.strip()) for n, a in
                         (l.split(":", 1) for l in lines("wharf-runs/ssh") if ":" in l) if n.strip() and a.strip())
 out["dhost"] = first("wharf-runs/dispatch-host")
 out["lprefix"] = first("wharf-runs/label-prefix", "org.regatta.claude")
+out["lprev"] = first("wharf-runs/label-prefix-previous")
+out["lprev"] = "" if out["lprev"] == out["lprefix"] else out["lprev"]
 out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") or first("regatta/laptop", "laptop"))
 out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
 out["handover"] = common.marked("handed", common.HANDOVER_LINE) if common else ""   # ⏳ first: MARKS in the core (no apostrophe: bash 3.2 heredoc)
@@ -492,6 +495,7 @@ fi
 Q="${DISPATCH_QUEUE_BIN:-$here/bin/dispatch-queue}"   # the tests stand one in: a queue verb that crashes
 QG="$here/bin/dispatch-queue"   # the rank gates (force-ok, caller-prio) never take the stand-in: a variable is no gate
 qctx=(--host "$self_host" --cap "$max_runs" --jobbin "$jobbin" --prefix "$lprefix" --launchctl "$LC" --rch "$RCH")
+[ -z "$lprev" ] || qctx+=(--prefix-previous "$lprev")   # the queue's jobs under it are dropped once the new sweep loads
 queue_on() {
   if [ -z "${qhome+x}" ]; then
     # no queue-repo key in the config dir (qkeys, read with the core above): no home, without one more python start
@@ -502,7 +506,7 @@ queue_on() {
 # the queue's jobs (dispatch-queue jobs): the sweep where a home is, neither where none is — a plist compare
 # when nothing changed, and no python at all with no queue key and no job left behind (S2)
 queue_jobs() {
-  [ -n "$qkeys" ] || ls "$LA/$lprefix".queue-*.plist >/dev/null 2>&1 || return 0
+  [ -n "$qkeys" ] || ls "$LA/$lprefix".queue-*.plist >/dev/null 2>&1 || { [ -n "$lprev" ] && ls "$LA/$lprev".queue-*.plist >/dev/null 2>&1; } || return 0
   python3 "$Q" jobs "${qctx[@]}"
 }
 # the slots this host reserved for claims whose run has no record yet, bar this run's own (dispatch-queue reserved)
@@ -1022,6 +1026,11 @@ deep() { echo "dispatch: this would be run $depth of a chain of unattended runs,
 base="$lprefix.dispatch.$(basename "$repo").$topic"
 [ "$probe" = 1 ] && base="$base.probe"
 old="$lprefix.run-seed.${base#"$lprefix".dispatch.}"   # the label before 2026-10-05
+# the same two under the previous prefix (wharf-runs/label-prefix-previous): a job scheduled before a label
+# move is still this branch's, for --cancel, a reschedule and yolo's "a next step is scheduled"; a new job
+# takes the new prefix only
+pbase=""; pold=""
+[ -z "$lprev" ] || { pbase="$lprev.dispatch.${base#"$lprefix".dispatch.}"; pold="$lprev.run-seed.${base#"$lprefix".dispatch.}"; }
 # A peer runs its own core (the scrub's conventions): the regatta checkout its config dir's `home`
 # file names, read there by the peer's shell. Its projects folder is taken as ~/projects, the core's
 # default (PROJECTS): a repo is named relative to this Mac's projects folder, the primary by its
@@ -1029,7 +1038,7 @@ old="$lprefix.run-seed.${base#"$lprefix".dispatch.}"   # the label before 2026-1
 rbin='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
 # this branch's jobs here: one per fire minute, the undated label of before 2026-10-04, and both
 # under the old name, so --cancel and a reschedule still find a job run-seed scheduled
-jobs() { local b; for b in "$base" "$old"; do ls "$LA/$b.plist" "$LA/$b".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].plist 2>/dev/null; done; }
+jobs() { local b; for b in "$base" "$old" $pbase $pold; do ls "$LA/$b.plist" "$LA/$b".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].plist 2>/dev/null; done; }
 # a job whose run is going now; booting it out kills that run (probed: one tab, then this line)
 running() { "$LC" print "gui/$(id -u)/$1" 2>/dev/null | grep -qx $'\tstate = running'; }
 # every job of the branch but one that is running: pending, or a leftover of a run that died

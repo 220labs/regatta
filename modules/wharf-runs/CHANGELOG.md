@@ -43,6 +43,23 @@
   sweep cards an entry no host's config lets claim (`queue-unclaimed`, each host's reason). With a queue home
   berth's load pick retires for a run now (the queue places it); berth keeps its filters and peer probe for
   `--status` and for a one-shot. Cases: `tests/test_queue.sh`, `test_dispatch.sh`, `test_pickup.sh`.
+- A label move (label-move, 2026-10-30): `wharf-runs/label-prefix-previous` names the prefix the jobs had
+  before; every reader of `wharf-runs/label-prefix` takes its jobs as ours while they drain. `dispatch`'s
+  `jobs()` finds a branch's job under it (`--cancel`, a reschedule, yolo's "a next step is scheduled") and
+  hands it to the queue (`--prefix-previous`), whose `jobs` drops that prefix's `queue-sweep` and `queue-poll`
+  once the new sweep loads, never while that job runs (launchd asked: python does not read `XPC_SERVICE_NAME` reliably); `dispatch-rc` counts a tidier under it
+  as installed (tidy-soon) and `refresh-tidy` relabels it once idle; `rc-hosts` relabels each host under it
+  to the new prefix, and the reaper (a plain run and `--reap`'s converge; `--check` and `--reap --dry-run`
+  say it), ending a host's sessions as the owner accepted, and reports the count; `--agents` reads its jobs
+  as ours. New jobs take the new prefix only. `wharf-runs/launcher-id` sets claude-host's codesign
+  identifier (default `<label-prefix>-host`, as before), so a move leaves the build's stamp and its grants
+  until the next signing. The run cap counts run records, never labels: a run under the old prefix counts
+  as before. clock reads its own `clock-labels` globs (list both prefixes while the old jobs drain).
+  The relabel notes each session it ends as a planned close, leaves a host this run is a session of for the
+  hourly `--reap`, moves no untrusted host, counts only the hosts that loaded, and drops the old reaper (and
+  the old tidier and its tidy-soon) only once the new one is loaded and the old one is not running;
+  `--restart NAME` relabels NAME first, and `--agents --fix` never reloads a job under the previous prefix;
+  `dispatch-queue jobs` that drops the old poll tends the new one at once.
 - dispatch-queue S4, priorities and the force (docs/dispatch-queue-2026-10-25.md, D2-A and D3-A): a `force`
   entry is claimed one slot over the host's cap (at most one run ever above it; a second force entry waits
   first in line) and on headroom's force floor, `headroom check --floor 5` (avail 5 %, swap and rate kept);

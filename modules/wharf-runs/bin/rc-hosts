@@ -27,7 +27,9 @@ idle session in every host's directory at start — the constant "1/8" in every 
 and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Mac, 2026-10-13).
 
   rc-hosts                  write and load every host that is missing; retire an empty host
-                            whose repo is no longer wanted here
+                            whose repo is no longer wanted here; first, relabel each host and the
+                            reaper still under wharf-runs/label-prefix-previous (a host's sessions
+                            end with it), saying how many (--check: which would move)
   rc-hosts --check          report only: in sync / missing / differs / not cloned, and every
                             repo under ~/projects that is not in repos.json (no host until it is);
                             FAIL (exit 1) on a host whose claude version was deleted under it,
@@ -41,7 +43,7 @@ and a slot each, used by nobody. An empty host idles at 60–75 MB (the build Ma
                             restart a host whose claude was deleted under it, idle sessions and
                             all, unless one is busy or idle under 10 min (heal), then
                             restart an empty host that reconnected since the last run, then
-                            converge: load a missing or unloaded host, reload an empty one whose
+                            converge: relabel a previous-prefix host, load a missing or unloaded host, reload an empty one whose
                             plist changed, retire an empty unwanted one — wanted or not, every
                             host's idle sessions are reaped, so a changed flag reaches a host and
                             an unwanted one retires once its last session is gone; last, cut
@@ -165,7 +167,16 @@ LAUNCHER = HOME / ".local" / "bin" / "claude-host"          # bin/claude-host.c;
 LABEL_PREFIX = ((common.config_line("wharf-runs/label-prefix") if common else "")
                 or "org.regatta.claude")                   # dispatch's launchd prefix (wharf-runs/label-prefix)
 OURS = LABEL_PREFIX + "."                                  # a job label of ours starts so
-LAUNCHER_ID = LABEL_PREFIX + "-host"                       # its codesign identifier, in the stamp
+# The prefix the jobs had before a move (wharf-runs/label-prefix-previous, optional): a job under it is
+# still ours while it drains, and a host or the reaper under it is relabelled (relabel(), the plain run).
+# Equal to LABEL_PREFIX, or absent, it is none.
+PREV_PREFIX = ((common.config_line("wharf-runs/label-prefix-previous") if common else "") or "").strip()
+PREV_PREFIX = "" if PREV_PREFIX == LABEL_PREFIX else PREV_PREFIX
+PREV_OURS = PREV_PREFIX + "." if PREV_PREFIX else ""
+# claude-host's codesign identifier, in the stamp (wharf-runs/launcher-id, else the prefix's `-host`): its
+# own key, so a label move leaves the identifier, and every grant keyed on it, as signed until the
+# launcher is next built (the owner, 2026-10-30: "next time we need to sign, we use the new one")
+LAUNCHER_ID = ((common.config_line("wharf-runs/launcher-id") if common else "") or "").strip() or LABEL_PREFIX + "-host"
 BUILT = LAUNCHER.with_name("claude-host.source-sha256")    # the stamp the binary was built from
 GRANTED = LAUNCHER.with_name("claude-host.granted")        # the stamp --grant's probe passed for
 PROBE = OURS + "fda-probe"   # never under HOST_LABEL: unwanted() would retire it as a host
@@ -204,6 +215,24 @@ REAP_HOURS = 12.0
 ACTIVE_DAYS = float(os.environ.get("RC_ACTIVE_DAYS", "30"))
 REAPER = OURS + "rc-reap"
 HOST_LABEL = OURS + "host"   # every host's label starts so (a repo's own `rc.label` may be exactly this)
+PREV_REAPER = PREV_OURS + "rc-reap" if PREV_OURS else ""
+PREV_HOST_LABEL = PREV_OURS + "host" if PREV_OURS else ""
+
+
+def ours(label):
+    """A job label under this Mac's prefix, or the previous one's while its jobs drain."""
+    return label.startswith(OURS) or bool(PREV_OURS) and label.startswith(PREV_OURS)
+
+
+def is_host(label):
+    """A host's label, under either prefix."""
+    return label.startswith(HOST_LABEL) or bool(PREV_HOST_LABEL) and label.startswith(PREV_HOST_LABEL)
+
+
+def host_plists():
+    """Every host plist in LaunchAgents, under either prefix."""
+    globs = [f"{HOST_LABEL}*.plist"] + ([f"{PREV_HOST_LABEL}*.plist"] if PREV_HOST_LABEL else [])
+    return sorted({p for g in globs for p in AGENTS.glob(g)})
 # What a plist read can raise. plistlib passes the XML parser's ExpatError through, and it is no
 # ValueError: launchd accepts a plist Python does not (a `--` inside an XML comment, as in a project's
 # runner on the build Mac, 2026-10-19), and one such file crashed --agents for every job.
@@ -778,7 +807,7 @@ def broken_report():
     repos.json — wanted() may fetch a repo it would call idle, and an unknown machine name would
     read as a failure."""
     found = 0
-    for p in sorted(AGENTS.glob(f"{HOST_LABEL}*.plist")):
+    for p in host_plists():
         args = (read_plist(p) or {}).get("ProgramArguments") or []
         label, name = p.stem, args[args.index("--name") + 1] if "--name" in args[:-1] else p.stem
         hit = broken(label)
@@ -1101,13 +1130,121 @@ def unwanted(hosts):
     # a wanted repo whose clone is gone (moved to ~/projects-attic) claims nothing: its host
     # would respawn every 30 s in a missing directory (review, 2026-10-14)
     claimed = {label for label, _, _, repo in hosts if repo.is_dir()}
-    return sorted(p.stem for p in AGENTS.glob(f"{HOST_LABEL}*.plist") if p.stem not in claimed)
+    return sorted(p.stem for p in host_plists() if p.stem not in claimed)
 
 
-def retire(hosts, dry, quiet=False):
+def relabels(hosts, only=()):
+    """[(old, new, name, plist)]: each host plist under the previous prefix whose label, moved to the
+    current prefix, is a wanted host's here (its clone present, its workspace trusted: converge never
+    loads an untrusted one, so its old host is unwanted()'s to retire). One a wanted host claims as it
+    is (a repo's own `rc.label`) is the registry's to move; one no wanted host maps onto is unwanted()'s."""
+    if not PREV_HOST_LABEL:
+        return []
+    want = {label: (name, plist, repo) for label, name, plist, repo in hosts}
+    out = []
+    for p in sorted(AGENTS.glob(f"{PREV_HOST_LABEL}*.plist")):
+        old = p.stem
+        new = HOST_LABEL + old[len(PREV_HOST_LABEL):]
+        if old in want or new not in want or not want[new][2].is_dir():
+            continue
+        name, plist, repo = want[new]
+        if only and name.split(" · ")[0] not in only:
+            continue
+        if not trusted(repo, claude_json_of(plist)):
+            continue
+        out.append((old, new, name, plist))
+    return out
+
+
+def ancestors():
+    """This process and every parent up to launchd: a host whose claude is among them is the one
+    running this script (a phone session's `rc-hosts`), and stopping it would end this run mid-move.
+    /bin/ps by path: the real process tree, never a stand-in for the hosts' own pids."""
+    out, pid = set(), os.getpid()
+    while pid > 1 and pid not in out:
+        out.add(pid)
+        r = subprocess.run(["/bin/ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True)
+        try:
+            pid = int(r.stdout.strip())
+        except ValueError:
+            break
+    return out
+
+
+def relabel(hosts, dry, only=()):
+    """The previous prefix's jobs moved to the current one (wharf-runs/label-prefix-previous): each host
+    relabels() names is stopped, its plist removed, and the wanted plist loaded under the new label —
+    its sessions end with it, as the owner accepted (2026-10-30: the hosts relabel "right away"), each
+    noted in the host's log as a planned close (note_close). A host this run is a session of is left
+    for a run from outside it (the hourly --reap). The reaper moves too, under the new label with the
+    program its old plist runs (never this copy's path: a worktree's goes with the worktree), unless it
+    is running now — this run may be that very job (a bootout would end it mid-pass: the next plain run
+    or --schedule-reap moves it); the old one goes only once the new one is loaded. Asked of launchd,
+    not XPC_SERVICE_NAME, which python does not read reliably (dispatch-queue's drop_previous).
+    dry: say it only (--check, --dry-run).
+    → [(old, new)] relabelled (or that would be)."""
+    if not PREV_PREFIX:
+        return []
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    mine = ancestors() if not dry else set()
+    done = []
+    for old, new, name, plist in relabels(hosts, only):
+        pid = host_pid(old)
+        if pid and pid in mine:
+            print(f"  waiting  {name}: this run is one of its sessions — the hourly --reap relabels it")
+            continue
+        busy = " — ends its sessions" if kids(old) else ""
+        print(f"  {'would relabel' if dry else 'relabel  '} {name}: {old} → {new}{busy}  ({stamp})")
+        if dry:
+            done.append((old, new))
+            continue
+        for c, rec in sessions_of(pid) if pid else []:
+            note_close(read_plist(AGENTS / f"{old}.plist") or plist, c, rec,
+                       f"rc-hosts relabels this host to {new} (label move)")
+        stop(old)
+        (AGENTS / f"{old}.plist").unlink(missing_ok=True)
+        LOGS.mkdir(parents=True, exist_ok=True)
+        have = read_plist(AGENTS / f"{new}.plist")
+        if (have == plist and loaded(new)) or load(new, plist):
+            done.append((old, new))
+        else:
+            print(f"  FAILED   {name}: {new} did not load — the next run loads it")
+    if done:
+        print(f"  {'would relabel' if dry else 'relabelled'} {len(done)} host(s) from {PREV_PREFIX} to {LABEL_PREFIX}")
+    if not only:
+        relabel_reaper(dry)
+    return done
+
+
+def relabel_reaper(dry):
+    """The reaper under the previous prefix moves to the current one (relabel()'s last step, and
+    --schedule-reap's): the old job goes only once launchd holds the new one, so a failed bootstrap
+    leaves the Mac its old reaper, never none."""
+    old = AGENTS / f"{PREV_REAPER}.plist"
+    if not PREV_REAPER or not old.exists() or running(PREV_REAPER):
+        return
+    print(f"  {'would relabel' if dry else 'relabel  '} reaper: {PREV_REAPER} → {REAPER}")
+    if dry:
+        return
+    LOGS.mkdir(parents=True, exist_ok=True)
+    want = reaper_plist()
+    prog = (read_plist(old) or {}).get("ProgramArguments")
+    if prog:
+        want["ProgramArguments"] = prog
+    if not (loaded(REAPER) or load(REAPER, want)):
+        print(f"  FAILED   reaper: {REAPER} did not load — {PREV_REAPER} keeps reaping")
+        return
+    stop(PREV_REAPER)
+    old.unlink(missing_ok=True)
+
+
+def retire(hosts, dry, quiet=False, moving=()):
     """Unload and remove an unwanted host with no session; one holding a session waits, since
-    unloading it would end the session (the reaper retires it once the session is reaped)."""
+    unloading it would end the session (the reaper retires it once the session is reaped). One
+    relabel() is still to move (moving: its old labels) is relabel()'s, not retired."""
     for label in unwanted(hosts):
+        if label in moving:
+            continue
         if kids(label):
             if not quiet:
                 print(f"  waiting  {label}: no longer wanted here, holds a session — retires once empty")
@@ -1171,9 +1308,15 @@ def converge(host, only, dry):
     never reloaded — its sessions would end — so a new flag reaches it after the reaper has
     ended its last idle session. Untrusted repos are left to `rc-hosts --check` to name."""
     hosts = wanted(host)
+    relabel(hosts, dry, only)   # first: a host still under the previous prefix is not loaded twice
+    # what is still under the previous prefix (dry: all it would move; else one it left, as a host this
+    # run is a session of): its new label is not loaded beside it, nor its old one retired
+    moving = {new: old for old, new, _, _ in relabels(hosts, only)}
     stamp = time.strftime("%Y-%m-%d %H:%M")
     for label, name, plist, repo in hosts:
         if (only and name.split(" · ")[0] not in only) or not repo.is_dir() or not trusted(repo, claude_json_of(plist)):
+            continue
+        if label in moving:
             continue
         dest = AGENTS / f"{label}.plist"
         have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
@@ -1189,7 +1332,7 @@ def converge(host, only, dry):
             LOGS.mkdir(parents=True, exist_ok=True)
             load(label, plist)
     if not only:
-        retire(hosts, dry, quiet=True)
+        retire(hosts, dry, quiet=True, moving=set(moving.values()))
 
 
 def repo_roots(d, depth):
@@ -1570,7 +1713,7 @@ def agents(fix=False, quiet=False):
         hit = agent_problem([str(a) for a in args])
         if hit:
             bad.append((p.stem, plist) + hit)
-        elif (args and str(args[0]) == str(LAUNCHER) and p.stem.startswith(OURS)
+        elif (args and str(args[0]) == str(LAUNCHER) and ours(p.stem)
               and p.stem not in (PROBE, TCC_JOB) and not loaded(p.stem)):
             bad.append((p.stem, plist, "names claude-host, but launchd has not loaded it", "unloaded"))
     on = ready()
@@ -1581,29 +1724,32 @@ def agents(fix=False, quiet=False):
         return 1 if not quiet and automations(on) else 0
     counted = 0
     for label, plist, why, kind in bad:
-        host = label.startswith(HOST_LABEL)
-        ours = label.startswith(OURS)
+        host = is_host(label)
+        mine = ours(label)
+        # one under the previous prefix is draining: --fix never brings it back beside its new copy
+        prev = mine and not label.startswith(OURS)
         if not on:
             tag, note = "--      ", ""
         elif kind == "outside":
             tag, note = "OUTSIDE ", ""
             counted += 1
         elif kind == "unloaded":
-            done = fix and not host and load(label, plist)
+            done = fix and not host and not prev and load(label, plist)
             tag, note = ("loaded  ", "") if done else \
-                ("UNLOADED", " (a host: converge loads it)" if host else " (rc-hosts --agents --fix loads it)")
+                ("UNLOADED", " (a host: converge loads it)" if host else
+                 " (under the previous prefix: not reloaded, drain it)" if prev else " (rc-hosts --agents --fix loads it)")
             counted += not done
         elif host and kids(label):
             tag, note = "--      ", " (a host holding a session: it moves once empty)"
         elif not host and running(label):
             tag, note = "--      ", " (running now: the hourly reap moves it once it ends)"
-        elif fix and not host and ours and (done := fix_agent(label, plist)):
+        elif fix and not host and mine and not prev and (done := fix_agent(label, plist)):
             tag, note = ("fixed   ", "") if done == "ok" else ("FAILED  ", " (rewritten, but launchd did not load it: it is not running)")
             counted += done != "ok"
         else:
             tag = "BARE    "
             note = (" (an empty host: rc-hosts moves it)" if host else
-                    "" if ours else f" (not a job under {LABEL_PREFIX}: rc-hosts leaves it to a hand)")
+                    "" if mine else f" (not a job under {LABEL_PREFIX}: rc-hosts leaves it to a hand)")
             counted += 1
         if not quiet or tag.strip() in ("fixed", "BARE", "FAILED", "OUTSIDE", "UNLOADED", "loaded"):
             print(f"  {tag} {label}: {why}{note}")
@@ -1626,7 +1772,7 @@ def fix_agent(label, plist):
     """One idle script job through claude-host: its ProgramArguments rewritten as through() would
     write them (a /bin/sh -c line: each quoted script path prefixed), the job reloaded. True if done.
     Never anyone else's job, never a host (converge's), never a running one."""
-    if label.startswith(HOST_LABEL) or not label.startswith(OURS) or running(label):
+    if is_host(label) or not ours(label) or running(label):
         return False
     args = [str(a) for a in plist.get("ProgramArguments") or []]
     if args and args[0] == "/bin/sh" and len(args) == 3 and args[1] == "-c":
@@ -2074,7 +2220,7 @@ def pending_pids():
             continue
         hit = agent_problem([str(a) for a in plist.get("ProgramArguments") or []])
         pid = job_pid(p.stem) if hit and hit[1] == "bare" else None
-        if not pid or (p.stem.startswith(HOST_LABEL) and not kids(p.stem)):   # an empty bare host counts
+        if not pid or (is_host(p.stem) and not kids(p.stem)):   # an empty bare host counts
             continue
         todo = [pid]
         while todo:
@@ -2195,11 +2341,15 @@ def main():
         return sessions_report(host, only)
     if "--schedule-reap" in args:
         LOGS.mkdir(parents=True, exist_ok=True)
-        load(REAPER, reaper_plist())
+        # one reaper: the previous prefix's goes, once launchd holds this one
+        if load(REAPER, reaper_plist()) and PREV_REAPER and (AGENTS / f"{PREV_REAPER}.plist").exists():
+            stop(PREV_REAPER)
+            (AGENTS / f"{PREV_REAPER}.plist").unlink(missing_ok=True)
         return print(f"  reaper: every hour, sessions idle {REAP_HOURS:g} h+ ({LOGS / 'reap.log'})")
     if "--unschedule-reap" in args:
-        stop(REAPER)
-        (AGENTS / f"{REAPER}.plist").unlink(missing_ok=True)
+        for label in [REAPER] + ([PREV_REAPER] if PREV_REAPER else []):
+            stop(label)
+            (AGENTS / f"{label}.plist").unlink(missing_ok=True)
         return print("  reaper: removed")
     if "--end" in args:
         i = args.index("--end")
@@ -2223,11 +2373,18 @@ def main():
     if not CLAUDE.exists():
         sys.exit(f"rc-hosts: {CLAUDE} missing — install Claude Code first")
     LOGS.mkdir(parents=True, exist_ok=True)
-    reaper = AGENTS / f"{REAPER}.plist"
-    print(f"  {'ok      ' if reaper.exists() else '--      '} reaper: "
-          + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else "not scheduled (--schedule-reap)"))
-    print(f"  {launcher_report()}")
     hosts, holds = hosts_here(host)
+    # the previous prefix's hosts and reaper first (--check: what a plain run would move), so the walk
+    # below finds each under its new label and never loads a second host beside the old one
+    relabel(hosts, check, restart)   # --restart NAME touches NAME only (review, 2026-10-14)
+    # still under the previous prefix (--check: all a plain run would move; else one relabel() left)
+    moving = {new: old for old, new, _, _ in relabels(hosts, restart)}
+    reaper = AGENTS / f"{REAPER}.plist"
+    prev_reaper = bool(PREV_REAPER) and (AGENTS / f"{PREV_REAPER}.plist").exists()
+    print(f"  {'ok      ' if reaper.exists() or prev_reaper else '--      '} reaper: "
+          + (f"hourly, idle {REAP_HOURS:g} h+" if reaper.exists() else
+             f"hourly, under {PREV_REAPER} (a plain run relabels it)" if prev_reaper else "not scheduled (--schedule-reap)"))
+    print(f"  {launcher_report()}")
     failed = 0
     refused = restart - {n.split(" · ")[0] for _, n, _, _ in hosts} - {l for l, _, _, _ in hosts}
     for r in refused:
@@ -2238,6 +2395,8 @@ def main():
             print(f"  skip     {name}: {repo} not cloned here (bin/repos clones it)")
             continue
         have = plistlib.loads(dest.read_bytes()) if dest.exists() else None
+        if have is None and label in moving:   # said above as "would relabel" (or left, "waiting")
+            continue
         asked = name.split(" · ")[0] in restart or label in restart
         hit = broken(label) if have is not None and not asked else None
         if hit:   # before "in sync" and "differs": either read as fine while every new session fails
@@ -2292,10 +2451,12 @@ def main():
             print(f"  held     {name}: {why}")
     if check:
         for label in unwanted(hosts):
+            if label in moving.values():   # said above as "would relabel"
+                continue
             print(f"  unwanted {label}: " + ("holds a session — retires once empty" if kids(label)
                                               else "retires on the next run"))
     elif not only and not restart:   # --restart NAME touches NAME only (review, 2026-10-14)
-        retire(hosts, False)
+        retire(hosts, False, moving=set(moving.values()))
     for r in unregistered() if check else []:   # --check's question; a plain run (repos --clone) acts
         print(f"  unregistered  {r.relative_to(PROJECTS)}: no host until repos.json lists it"
               f" (bin/github-repo registers it; /new-project adopts a folder)")

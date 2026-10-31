@@ -1020,5 +1020,78 @@ has "$T/out" "the registry does not read" "…refuses, naming why"
 test -f "$NP"; check $? 1 "…and writes no host on the default login"
 unset ACCOUNTS_FILE ACCOUNT_ORCA_FILE
 
+echo "a label move: wharf-runs/label-prefix-previous, and claude-host's identifier its own key (2026-10-30)"
+LA="$HOME/Library/LaunchAgents"; rm_own "$LA"/*.plist; rm -f "$T/pids/"* "$T/kids/"*
+OH="$LA/org.old.jobs.host.demo.plist"; NH="$LA/org.example.claude.host.demo.plist"
+echo '{"repos": {"demo": {"hosts": ["laptop"]}}}' > "$T/coding/repos.json"
+check "$(RC)" "0" "demo's host written under the current prefix"
+mv "$NH" "$OH"; mv "$T/pids/org.example.claude.host.demo" "$T/pids/org.old.jobs.host.demo"   # as if written before the move
+: > "$LA/org.old.jobs.host.gone.plist"
+check "$(RC --check)" "0" "no previous key: --check"
+has "$T/out" "missing  demo · laptop" "…a host under another prefix is not demo's (today's behaviour)"
+hasnt "$T/out" "org.old.jobs" "…nor any job of the other prefix"
+echo org.old.jobs > "$REGATTA_CONFIG/wharf-runs/label-prefix-previous"
+L=org.old.jobs.host.demo session 901 idle 30; : > "$T/calls"
+check "$(RC --check)" "0" "with it: --check"
+has "$T/out" "would relabel demo · laptop: org.old.jobs.host.demo → org.example.claude.host.demo — ends its sessions" "…names the relabel, and that it ends a session"
+has "$T/out" "would relabel 1 host(s) from org.old.jobs to org.example.claude" "…counts it"
+hasnt "$T/out" "missing  demo" "…never also as a missing host"
+has "$T/out" "unwanted org.old.jobs.host.gone: retires on the next run" "…a previous-prefix host no repo wants is unwanted, as under the current prefix"
+hasnt "$T/calls" "bootout" "…and changes nothing"
+check "$(RC --reap --dry-run)" "0" "--reap --dry-run"
+has "$T/out" "would relabel demo · laptop" "…says the relabel converge would make"
+hasnt "$T/out" "would load" "…and no load beside it (the relabel is the load)"
+hasnt "$T/out" "would retire org.old.jobs.host.demo" "…nor a retire of the host it moves"
+test -f "$OH"; check $? 0 "…and leaves it"
+DP=$(cat "$T/pids/org.old.jobs.host.demo"); echo $$ > "$T/pids/org.old.jobs.host.demo"   # this suite's shell: an ancestor of the run
+check "$(RC)" "0" "a plain run from one of the old host's own sessions"
+has "$T/out" "waiting  demo · laptop: this run is one of its sessions — the hourly --reap relabels it" "…leaves it for a run from outside"
+check "$(test -f "$OH" && echo old) $(test -f "$NH" && echo new)" "old " "…old host kept, no second host loaded beside it"
+hasnt "$T/out" "org.old.jobs.host.demo:" "…nor retired"
+echo "$DP" > "$T/pids/org.old.jobs.host.demo"; : > "$LA/org.old.jobs.host.gone.plist"   # that run retired it
+check "$(RC)" "0" "a plain run"
+has "$T/out" "relabel   demo · laptop: org.old.jobs.host.demo → org.example.claude.host.demo — ends its sessions" "…relabels the host, session and all (the owner accepted it)"
+has "$T/out" "relabelled 1 host(s) from org.old.jobs to org.example.claude" "…and reports the count"
+has "$T/calls" "bootout gui/$(id -u)/org.old.jobs.host.demo" "…the old job booted out"
+has "$LOG" "rc-hosts relabels this host to org.example.claude.host.demo (label move)" "…each session it ends noted in the host's log as a planned close"
+check "$(test -f "$OH" && echo old) $(test -f "$NH" && echo new) $(cat "$T/pids/org.example.claude.host.demo" 2>/dev/null)" " new 500" "…its plist gone, the new one written and running"
+has "$T/out" "retiring org.old.jobs.host.gone" "…and the unwanted one retired"
+check "$(RC --check)" "0" "--check after"
+has "$T/out" "ok       demo · laptop: in sync, running" "…in sync"
+hasnt "$T/out" "relabel" "…nothing left to relabel"
+rm -f "$T/kids/"*
+: > "$LA/org.old.jobs.rc-reap.plist"
+check "$(RC --check)" "0" "the reaper under the previous prefix: --check"
+has "$T/out" "reaper: hourly, under org.old.jobs.rc-reap (a plain run relabels it)" "…reads it as scheduled"
+has "$T/out" "would relabel reaper: org.old.jobs.rc-reap → org.example.claude.rc-reap" "…and says it would move"
+echo 777 > "$T/pids/org.old.jobs.rc-reap"   # running: this --reap may be that very job
+RC --reap > /dev/null
+test -f "$LA/org.old.jobs.rc-reap.plist"; check $? 0 "…never while it runs (a bootout would end the pass it may be)"
+rm -f "$T/pids/org.old.jobs.rc-reap"
+touch "$T/bootstrap-fails"
+RC > /dev/null
+has "$T/out" "FAILED   reaper: org.example.claude.rc-reap did not load — org.old.jobs.rc-reap keeps reaping" "a failed load of the new reaper says so"
+test -f "$LA/org.old.jobs.rc-reap.plist"; check $? 0 "…and keeps the old one: never no reaper"
+rm -f "$T/bootstrap-fails" "$LA/org.example.claude.rc-reap.plist"
+check "$(RC)" "0" "a plain run"
+check "$(test -f "$LA/org.old.jobs.rc-reap.plist" && echo old) $(plutil -extract Label raw -o - "$LA/org.example.claude.rc-reap.plist" 2>/dev/null)" " org.example.claude.rc-reap" "…relabels the reaper"
+: > "$LA/org.old.jobs.rc-reap.plist"
+RC --unschedule-reap > /dev/null
+check "$(ls "$LA" | grep -c rc-reap)" "0" "--unschedule-reap removes the reaper under either prefix"
+rh() { python3 -c 'import importlib.machinery, sys; m = importlib.machinery.SourceFileLoader("rh", sys.argv[1]).load_module(); print(eval(sys.argv[2]))' "$T/coding/bin/rc-hosts" "$1"; }
+check "$(rh '(m.ours("org.old.jobs.autofinish"), m.is_host("org.old.jobs.host.x"), m.ours("com.example.other"))')" "(True, True, False)" \
+  "--agents and its --fix read a job under the previous prefix as ours"
+echo org.example.claude > "$REGATTA_CONFIG/wharf-runs/label-prefix-previous"
+check "$(rh '(m.PREV_PREFIX, m.ours("org.old.jobs.autofinish"))')" "('', False)" "a previous key equal to the current one is none"
+rm -f "$REGATTA_CONFIG/wharf-runs/label-prefix-previous"
+check "$(rh 'm.LAUNCHER_ID')" "org.example.claude-host" "no launcher-id key: claude-host's identifier is the prefix's, as before"
+STAMP=$(rh 'm.source_sha()')
+echo org.new.claude > "$REGATTA_CONFIG/wharf-runs/label-prefix"
+check "$(rh 'm.source_sha()' | grep -c "^$STAMP\$")" "0" "…so a label move alone changes the stamp, which reads as a rebuild owed"
+echo org.example.claude-host > "$REGATTA_CONFIG/wharf-runs/launcher-id"
+check "$(rh '(m.LAUNCHER_ID, m.SIGN[-1])')" "('org.example.claude-host', 'org.example.claude-host')" "wharf-runs/launcher-id: the identifier codesign is given"
+check "$(rh 'm.source_sha()')" "$STAMP" "…and the stamp stays the build's across the move"
+echo org.example.claude > "$REGATTA_CONFIG/wharf-runs/label-prefix"; rm -f "$REGATTA_CONFIG/wharf-runs/launcher-id"
+
 echo
 [ "$fails" -eq 0 ] && echo "all rc-hosts tests pass" || { echo "$fails rc-hosts test(s) FAILED"; exit 1; }
