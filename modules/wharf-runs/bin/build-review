@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""build-review — the record of a build's own review loop, which dispatch's build prompt asks each run to keep.
+
+    build-review round <worktree> --found N --fixed N [--left N] [--check green|red] [--reviewers a,b] [--note TEXT]
+    build-review end   <worktree> --outcome clean|cap|held [--why TEXT]
+    build-review show  <worktree>
+    build-review gate  <worktree> --session ID
+
+Why (build-review, the owner, 2026-10-30): a build ended when its brief was done, and `/finish --unattended`
+then reviewed, fixed and stopped on what it may not do; each stop cost the skipper a fix-round dispatch, a
+queue wait and a new finish, 1-3 h each on the build Mac and 4-5 rounds on some branches. Since this step
+the build loops review -> fix -> check -> fix in its own session until a round finds nothing to fix and the
+check is green, at most MAX_ROUNDS rounds (the prompt's words: dispatch's build prompt, the build-review
+paragraph after its Steps: line). `/finish` keeps its
+own review (the owner: "for now I'm ok with double review"); this record is the data a later decision on
+that second review reads (docs/task-shape-2026-10-29.md, phase 2).
+
+Where: `<git dir>/claude/build-review.json`, per worktree, beside autofinish.json (the git dir read back
+from git, never built). One object: branch, session ($CLAUDE_CODE_SESSION_ID),
+repo (the main checkout), project (its folder name, review-gate.jsonl's `project`), worktree (review-gate's
+`repo`), rounds [{round, tip, at, reviewers, found, fixed, left, check, note}], and once `end` ran: ended,
+outcome, why, tip. `found` counts the real S1, S2 and WRONG findings (the prompt's words), S3s and those
+judged not real go in `note`. A round's `tip` is HEAD when it is recorded: the round's fixes included.
+
+`round` refuses a round past MAX_ROUNDS with exit 3 and the cap's words, and `end` then takes
+`--outcome cap`. A record already ended, or kept by another session (a run that died before `end`), is
+replaced by a fresh one at the next `round` or `end`, so a fix round after a stopped landing gets its own
+five, and another session's unended record is logged with outcome `died` first, so no rounds are lost. Once a
+session ended its record clean or cap, its next `round` or `end` is refused (exit 2): one loop and one log line per
+session. A record ended `held` (a D-item relayed) is reopened by that session's next `round`, rounds kept against
+the cap, and its next end is a second line for the same (session, started): a reader keeps the last. A clean end
+is refused (exit 2) unless the last round found nothing with the check green. `end` also appends the whole record as one JSON line to the durable
+log, $BUILD_REVIEW_LOG, else review-gate.jsonl's folder ($REVIEW_GATE_LOG's, else plumb's usage-report
+data folder, else the core's log dir): a worktree goes away at its landing, and the log is what the decision reads. Join it to
+review-gate.jsonl by project and branch; that log also holds a line for each build round's own merge, so
+the finish's lines are those after the last line's `ended` for that project and branch (each step of a
+branch keeps its own record).
+
+`gate` is yolo_launch's read (dispatch): exit 1 with the reason when session ID's own loop stopped (cap,
+held) or recorded rounds and never ended, so no launch starts on unfixed findings whatever the run's last
+line said (the build-review finish review: the prompt alone guarded it); exit 0 when the record is clean,
+absent, or another session's (a run that opted out, or a loop an earlier run kept).
+
+A call needs $CLAUDE_CODE_SESSION_ID: without one every caller would read as the same session, and one
+run's end would refuse every later run on the worktree (exit 2; the same review).
+
+Exit: 0 written or shown; 1 `gate` refuses; 2 a usage error, no session id, a worktree that is no git
+checkout, an `end` already made, or an end whose log line could not be written (the record stays open, so
+the end can be made again); 3 the round cap.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MAX_ROUNDS = 5
+RECORD = "build-review.json"
+OUTCOMES = ("clean", "cap", "held")
+HERE = Path(__file__).resolve().parent
+
+
+def git(wt, *args):
+    r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def where(wt):
+    """(record path, branch, main checkout) for the worktree, or exit 2."""
+    gd = git(wt, "rev-parse", "--absolute-git-dir")
+    if not gd:
+        print("build-review: %s is no git checkout" % wt, file=sys.stderr)
+        sys.exit(2)
+    common_dir = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir") or gd
+    repo = os.path.dirname(common_dir) if common_dir.endswith("/.git") else common_dir
+    return Path(gd) / "claude" / RECORD, git(wt, "rev-parse", "--abbrev-ref", "HEAD") or "", repo
+
+
+def load(path):
+    try:
+        d = json.loads(path.read_text())
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def save(path, d):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(d, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def log_path():
+    """review-gate.jsonl's folder, found as review-gate's log_path() finds it, so the two logs sit together."""
+    if os.environ.get("BUILD_REVIEW_LOG"):
+        return Path(os.environ["BUILD_REVIEW_LOG"])
+    if os.environ.get("REVIEW_GATE_LOG"):
+        return Path(os.environ["REVIEW_GATE_LOG"]).parent / "build-review.jsonl"
+    try:
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import core_path  # noqa: PLC0415
+        core_path.add()
+        import common  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — no core: the core's default log dir
+        return Path.home() / ".local" / "state" / "regatta" / "build-review.jsonl"
+    try:
+        from importlib.machinery import SourceFileLoader  # noqa: PLC0415
+        ur = common.tool("usage-report")
+        if ur:
+            return Path(SourceFileLoader("usage_report", str(ur)).load_module().data_dir()) / "build-review.jsonl"
+    except Exception:  # noqa: BLE001 — review-gate's own fallback: the core's log dir
+        pass
+    return Path(common.LOG_DIR) / "build-review.jsonl"
+
+
+def log(d, path=None):
+    """One JSON line of the record in the durable log; True once written. A failure says so."""
+    lp = log_path()
+    try:
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with open(lp, "a", encoding="utf-8") as f:
+            f.write(json.dumps(d, sort_keys=True) + "\n")
+        return True
+    except OSError as err:
+        print("build-review: the log line was not written (%s)%s" % (err, "; the record is in %s" % path if path else ""),
+              file=sys.stderr)
+        return False
+
+
+def count(v):
+    if v < 0:
+        raise argparse.ArgumentTypeError("a count is 0 or more")
+    return v
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="build-review", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="verb", required=True)
+    r = sub.add_parser("round")
+    r.add_argument("worktree")
+    r.add_argument("--found", type=lambda s: count(int(s)), required=True)
+    r.add_argument("--fixed", type=lambda s: count(int(s)), required=True)
+    r.add_argument("--left", type=lambda s: count(int(s)), default=None)   # unset: found - fixed
+    r.add_argument("--check", choices=("green", "red"))
+    r.add_argument("--reviewers", default="")
+    r.add_argument("--note", default="")
+    e = sub.add_parser("end")
+    e.add_argument("worktree")
+    e.add_argument("--outcome", choices=OUTCOMES, required=True)
+    e.add_argument("--why", default="")
+    s = sub.add_parser("show")
+    s.add_argument("worktree")
+    g = sub.add_parser("gate")
+    g.add_argument("worktree")
+    g.add_argument("--session", required=True)
+    a = ap.parse_args(argv)
+
+    path, branch, repo = where(a.worktree)
+    d = load(path)
+    if a.verb == "gate":
+        if not d or not a.session or d.get("session") != a.session or d.get("branch") != branch:
+            return 0
+        if d.get("ended") and d.get("outcome") == "clean":
+            return 0
+        if d.get("ended"):
+            print("its review loop ended %s%s" % (d.get("outcome"), ": %s" % d["why"] if d.get("why") else ""))
+            return 1
+        if d.get("rounds"):
+            print("its review loop recorded %d round(s) and never ended" % len(d["rounds"]))
+            return 1
+        return 0
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if a.verb != "show" and not session:
+        print("build-review: no CLAUDE_CODE_SESSION_ID: run it from the build's own session", file=sys.stderr)
+        return 2
+    fresh = {"branch": branch, "session": session, "repo": repo, "project": os.path.basename(repo),
+             "worktree": git(a.worktree, "rev-parse", "--show-toplevel") or "", "started": int(time.time()), "rounds": []}
+    # this run's record, or a fresh one: an ended record, another branch's, or another session's (a run that
+    # died before `end`) never lends its rounds to the cap or a second log line (the build-review review)
+    same = bool(d) and d.get("branch") == branch and d.get("session", "") == session
+    # one loop per session: after its end, neither a second end nor a new round (a capped run must not
+    # restart its own cap, nor log its build twice; the round-3 review)
+    if a.verb in ("round", "end") and same and d.get("ended") and d.get("outcome") != "held":
+        print("build-review: this session ended the record already (%s): one loop, one end, per session" % d.get("outcome"),
+              file=sys.stderr)
+        return 2
+    if a.verb in ("round", "end") and same and d.get("ended"):
+        # a held loop reopened by the session the answer woke: its rounds still count against the cap, and its next
+        # end writes a second log line for the same (session, started), which a reader takes the last of. An end
+        # reopens it too: a held loop at the cap must still be able to end cap (the finish review)
+        for k in ("ended", "outcome", "why", "tip"):
+            d.pop(k, None)
+        d["reopened"] = d.get("reopened", 0) + 1
+    mine = same and not d.get("ended")
+    if a.verb != "show" and not mine:
+        if d and not d.get("ended") and d.get("rounds"):
+            # another session's loop that never ended (the run died): logged as `died`, never lost
+            log({**d, "ended": int(time.time()), "outcome": "died", "why": "replaced by session %s" % session})
+        d = fresh
+        # saved at once: a call refused below (a clean end with no round) must not leave the dead record to be
+        # logged `died` again by the next call (the finish review)
+        save(path, d)
+    if d:
+        d.setdefault("rounds", [])
+    if a.verb == "show":
+        print(json.dumps(d, indent=2) if d else "none")
+        return 0
+    if a.verb == "round":
+        n = len(d["rounds"]) + 1
+        if n > MAX_ROUNDS:
+            print("build-review: %d rounds already, the cap: fix nothing more in this run; end the record "
+                  "(build-review end %s --outcome cap) and end naming what is left" % (MAX_ROUNDS, a.worktree),
+                  file=sys.stderr)
+            return 3
+        d["rounds"].append({"round": n, "tip": git(a.worktree, "rev-parse", "HEAD") or "", "at": int(time.time()),
+                            "reviewers": [x.strip() for x in a.reviewers.split(",") if x.strip()], "found": a.found,
+                            "fixed": a.fixed, "left": max(a.found - a.fixed, 0) if a.left is None else a.left, "check": a.check, "note": a.note})
+        save(path, d)
+        # clean only when the round found nothing: a round whose findings were all fixed needs one more
+        # review of the fixes (the brief: "until a pass finds nothing to fix and the check is green")
+        clean = a.found == 0 and a.check == "green"
+        print("build-review: round %d of %d recorded%s" % (n, MAX_ROUNDS,
+              " — nothing found and the check green: end it (--outcome clean)" if clean
+              else "" if n < MAX_ROUNDS else " — the cap: end it (--outcome cap) and name what is left"))
+        return 0
+    # end
+    last = d["rounds"][-1] if d.get("rounds") else None
+    if a.outcome == "clean" and not (last and last.get("found") == 0 and last.get("check") == "green"):
+        print("build-review: a clean end wants a last round that found nothing with the check green (%s): record that "
+              "round first, or end cap or held" % ("no round yet" if not last else "found %s, check %s" % (last.get("found"), last.get("check"))),
+              file=sys.stderr)
+        return 2
+    d.update(ended=int(time.time()), outcome=a.outcome, why=a.why,
+             tip=git(a.worktree, "rev-parse", "HEAD") or "")
+    # the log first, and no save without it: a record saved ended and never logged could not be ended again
+    if not log(d, path):
+        print("build-review: not ended: the record stays open, end it again once the log is writable", file=sys.stderr)
+        return 2
+    save(path, d)
+    print("build-review: ended %s after %d round(s)" % (a.outcome, len(d["rounds"])))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

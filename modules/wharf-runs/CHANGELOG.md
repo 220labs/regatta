@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- build-review (the owner, 2026-10-30: "Review inside the build"): dispatch's build prompt has every run loop
+  review, fix and check in its own session before its last line: merge `origin/<main>` in once (a merge, never a rebase:
+  the branch is on origin and the checkpoint push never forces), run the reviewers `/finish` step 1 runs as
+  `review-gate plan --base origin/<main>` names them (a prose-only diff skips them, as `/finish` does), fix each real
+  S1, S2 and WRONG, run `check <worktree>`, and repeat until a round finds nothing real and the check is green, at
+  most 5 rounds; then mark its steps done. A capped or held loop ends on the WAITING line, never the hand-over line,
+  in every mode. The new `bin/build-review` keeps the record (`<git dir>/claude/build-review.json`, per session: each
+  round's tip, reviewers, found, fixed, left, check), refuses a sixth round (exit 3) and logs the ended loop to
+  `build-review.jsonl` beside review-gate.jsonl (project and branch keys), for the later decision on `/finish`'s
+  second review (docs/task-shape-2026-10-29.md phase 2, TODO 36). A brief's `Review: finish only` line opts its run
+  out. `/finish` keeps its own review. On `autofinish_exclude`. Cases: test_dispatch (the loop's text, the opt-out),
+  test_build_review (the record, a dead run's rounds, the cap, a clean end borne out, a held one reopened, the log).
 - The S8 review's second pass: `kick-listen install` and `remove` refuse a host whose `kick-stream` names a shared
   listener (use `--shared`); `dispatch --roads` never prints `<host>:none` for this host; the watchdog moves a refused
   plist out of LaunchAgents; `REGATTA_UNATTENDED` joins the refusal marks; the mid-pass flush survives a torn ref;

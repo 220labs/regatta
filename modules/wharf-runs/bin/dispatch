@@ -383,7 +383,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"   # this module (wharf-runs), anchored 
 # The regatta core (lib/core_path.py, C2) and the peers it finds (common.tool): keel (M4), account and
 # trust-projects (lighthouse, G12), ask and helm (helm, G22; the overlay's until B12). One call, read
 # once; a missing peer is an empty value and its caller's fallback.
-core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""
+core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""; p_gate=""
 # The private values (the scrub's conventions): the peers and their ssh aliases (`wharf-runs/ssh`,
 # <host>:<alias> a line), the dispatch host (`wharf-runs/dispatch-host`), the launchd label prefix
 # (`wharf-runs/label-prefix`, and `wharf-runs/label-prefix-previous`: the one before a move, whose jobs
@@ -434,7 +434,7 @@ if common:
                             capture_output=True, text=True).stdout.strip()
         out["overlay"] = os.path.dirname(gd) if gd.endswith("/.git") else str(old.resolve())
     for var, name in (("p_account", "account"), ("p_trust", "trust-projects"), ("p_keel", "keel"),
-                      ("p_ask", "ask"), ("p_helm", "helm")):
+                      ("p_ask", "ask"), ("p_helm", "helm"), ("p_gate", "review-gate")):
         found = common.tool(name)
         out[var] = str(found) if found else ""
 for k, v in out.items():
@@ -445,12 +445,14 @@ CORE
 # (2026-10-23): until then it named the overlay's shims, the paths each account dir's allow rules
 # named. The overlay's bootstrap.sh --hooks writes rules for the module paths since that step, and it
 # runs on both Macs before this lands — a run refused its report stalls its ship (S5 review).
-# DISPATCH_ASK, DISPATCH_HELM: the tests' stand-ins; set but empty is "not installed" (G22's case)
+# DISPATCH_ASK, DISPATCH_HELM, DISPATCH_GATE: the tests' stand-ins; set but empty is "not installed" (G22's case)
 [ -n "${DISPATCH_ASK+x}" ] && p_ask="$DISPATCH_ASK"
 [ -n "${DISPATCH_HELM+x}" ] && p_helm="$DISPATCH_HELM"
+[ -n "${DISPATCH_GATE+x}" ] && p_gate="$DISPATCH_GATE"   # the tests' stand-in for wharf's review-gate; set but empty is "not installed"
 # the check runner the run prompt names: this module's own, in the checkout dispatch runs from (since
 # B14b every helper names the module path; no allow rule names it, the classifier judges the call)
 p_check="$here/bin/check"
+p_review="$here/bin/build-review"   # the build's review record (build-review), this module's own like the check runner
 [ -n "$core" ] || { echo "dispatch: the regatta core is missing — install the \`regatta\` plugin, or name a clone in the regatta config dir's \`home\` file" >&2; exit 2; }
 # The default repo: the overlay's checkout where one is installed (the config dir's `regatta/overlay`),
 # else the main checkout of the clone this file sits in — never a worktree, whose branch is not the run's.
@@ -2030,6 +2032,10 @@ tools=(Read Write Edit Glob Grep Agent "Bash(./bootstrap.sh --check)"
        "Bash(git log:*)" "Bash(git show:*)" "Bash(git add:*)" "Bash(git commit:*)")
 # a bound run is account work (hooks/design_route.py): it publishes Artifacts and shares them in Chrome
 [ "$account" = bound ] && tools+=(Artifact mcp__claude-in-chrome)
+# build-review's two tools, by the paths the build prompt names and the verbs it runs (AGENTS.md Traps: a path
+# a prompt hands a run is one an allow rule names; autofinish-run's FINISH_TOOLS allows review-gate the same way
+# for /finish). Fixed tools, unlike the check line, which the classifier still judges (the finish review)
+[ -n "$p_gate" ] && tools+=("Bash($p_gate plan*)" "Bash($p_gate merge*)" "Bash($p_review round*)" "Bash($p_review end*)" "Bash($p_review show*)")
 # bin/pr (and wharf's libexec/pr, the no-overlay path /finish names, and the core's `regatta pr`, its C1 way in) by its launch verbs only: `*bin/pr*` would also refuse /usr/bin/printf and `git log -- bin/pr`
 # AskUserQuestion: nobody watches a run, and in auto mode the classifier would answer it (R2 of
 # docs/session-asks-2026-10-09.md); the PreToolUse hook (hooks/ask_guard.py) is the guard, this the belt
@@ -2657,6 +2663,12 @@ PY
 ) || why="its launch gate failed (exit $?)${why:+: $why}"   # a crash is a reason, never an empty pass (review D3)
   if [ -n "$why" ]; then declined "$why"; return 0; fi
   if [ -n "$(git -C "$wt" status --porcelain)" ]; then declined "$wt has uncommitted changes"; return 0; fi
+  # build-review: a loop this run stopped (cap, held) or never ended leaves findings unfixed. The prompt asks
+  # for the WAITING line then; this holds when the run printed the hand-over line anyway (the finish review)
+  if [ -n "$p_gate" ] && [ -n "${sid:-}" ]; then
+    why=$(python3 "$p_review" gate "$wt" --session "$sid" 2>&1)
+    case $? in 0) ;; 1) declined "$why"; return 0;; *) declined "its review record does not read (${why:-build-review gate failed})"; return 0;; esac
+  fi
   local base open
   base=$(python3 -c 'import json, sys
 try:
@@ -2996,7 +3008,30 @@ First run \`$p_ask apply\`: it writes and commits any answer your skipper sent w
 
 When the brief leaves a decision you cannot make from it, do not ask (AskUserQuestion is denied): write it as a D-item in the doc you are writing — Reversible: yes|no, ➤ Recommended:, an empty ➤ Answer: — commit it, park what rests on that item, build the rest, and end on the WAITING line naming it. $land"
   fi
-  prompt="$prompt When the brief names steps of a Course doc (a \`Steps:\` line), mark each one done once its check is green — \`python3 ${p_keel:-$here/bin/keel} step <doc> <S> done --branch $branch --stamp\` — and commit it: /finish and autofinish refuse a branch whose brief names an open step."
+  prompt="$prompt When the brief names steps of a Course doc (a \`Steps:\` line), mark each one done once its check is green (and, where the review loop below runs, once it ended clean) — \`python3 ${p_keel:-$here/bin/keel} step <doc> <S> done --branch $branch --stamp\` — and commit it: /finish and autofinish refuse a branch whose brief names an open step."
+  # build-review (the owner, 2026-10-30: "Review inside the build"; "sometimes we go for 4-5 rounds of fixes
+  # after checks, and each sits in queue"): the build loops review -> fix -> check in this one session before
+  # it ends, so /finish has little to stop on. A merge of origin/main, never a rebase: the branch is on origin,
+  # the checkpoint push never forces, and a rebased branch diverges from origin, which every later dispatch of
+  # it refuses; /finish curates from the merge-base and rebases, as after_merge's merge relies on. /finish keeps
+  # its own review ("for now I'm ok with double review"); bin/build-review keeps the record that decision reads.
+  # A brief opts out with a `Review: finish only` line (a doc-only or seed-only run).
+  if [ -z "$p_gate" ]; then
+    prompt="$prompt
+
+wharf's review-gate is not installed here, so this run has no review loop of its own: run the check as above, and leave the review to /finish."
+  elif grep -qiE '^[[:space:]*>_-]*review[*_]*:[*_[:space:]]*finish only' "$brief"; then
+    prompt="$prompt
+
+This brief opts out of the build's own review loop (its Review: finish only line): run the check as above, and leave the review to /finish."
+  else
+    rv_gate="$p_gate"
+    rv_main=$(python3 "$here/bin/landed.py" main "$repo" 2>/dev/null) || rv_main=main   # the repo's main, as after_merge reads it
+    [ -n "$rv_main" ] || rv_main=main
+    prompt="$prompt
+
+Before your last line, review your own build until it is clean (build-review, the owner 2026-10-30), every round in this session and never a new dispatch: first, once, (a) merge origin/$rv_main into the branch (\`git -C $wt fetch origin +refs/heads/$rv_main:refs/remotes/origin/$rv_main\`, then \`git -C $wt merge --no-edit --no-ff origin/$rv_main\`; a merge, never a rebase: the branch is on origin and the checkpoint push never forces) and resolve every conflict, committing the merge (once: a main that moves during the rounds is /finish's to rebase onto, and re-merging it each round would review and check other branches' work); then each round (b) run the review /finish step 1 runs, against origin/$rv_main (local main may be behind it): \`$rv_gate plan --base origin/$rv_main\` in the worktree names the agents and the level; spawn them in one message with model opus, the reviewer briefed with the branch, the worktree, the intent and its slice \`git diff origin/$rv_main...HEAD\`, the code reviewer with the worktree and the plan's arguments; write each final report to a file outside the worktree, beside the check's <dir>, and run \`$rv_gate merge --base origin/$rv_main --reviewer <file> --code-review <file>\` with a Bash timeout of 600000. A plan line saying not spawned, plan refused or principal is read as /finish step 1 reads it; skip (b) and (c) when that diff changes no code or config (prose only), recording the round with --note prose-only, never in a repo whose .claude/workflow.json has in_place; (c) check every finding against the code, fix each real S1, S2 and WRONG one, and commit; (d) run the check through \`$p_check $wt\` as above and fix what fails; (e) record the round — \`$p_review round $wt --found <real S1, S2 and WRONG findings> --fixed <how many of those you fixed> --left <real ones left> --check green|red --reviewers <agents, comma-separated> --note <S3s and findings judged not real, counted>\` — and repeat (b) to (e) until a round finds nothing real to fix and the check is green, at most 5 rounds ($p_review refuses a sixth). Then (f), once a round found nothing real and the check is green, run \`$p_review end $wt --outcome clean\` (it refuses a clean end the last round does not bear out), then mark the brief's steps done as above. Past 5 rounds, or on a finding this run may not fix (a live write, a gated change the brief does not cover), record the round first, then run \`$p_review end $wt --outcome cap\` or \`--outcome held --why '<what>'\` instead, leave the brief's steps open, and make your closing line the WAITING line naming why the loop stopped (relayed as above when a skipper has it), never the hand-over line, whatever your mode says below, so no launch starts on unfixed findings. A finding that needs a decision the brief leaves open is a D-item, as above: finish the round (the rest fixed, the check, the round recorded with --left counting the item), then run \`$p_review end $wt --outcome held --why 'D<n> open'\`, leave the brief's steps open and end on the line the D-item road above names (a session woken by the answer reopens its held record with its next round). A stopped loop (cap, held) schedules no next step (no dispatch --next); a clean one writes the next step's brief and runs dispatch --next only after (f), since the merge and the fixes count as work after a brief. S3 findings and those you judged not real go into your reply, one line each. /finish still reviews the landing itself."
+  fi
   # The gate per mode travels in the prompt (E12: "the brief carries the gate"; skipper-modes S3): keel
   # yolo is the mechanism, the mode read at fire time (resolve_mode) says which form.
   case "$mode" in

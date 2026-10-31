@@ -563,6 +563,32 @@ has "$T/claude.calls" "bin/ask relay <doc> <Dn>" "the prompt carries the three s
 has "$T/claude.calls" "bin/helm report --task demo" "  and the ship's reports (the stand-in helm)"
 has "$T/claude.calls" "bin/keel step <doc> <S> done --branch" "  and a brief's Steps: are marked done by the run (entry S7, the done prompt)"
 has "$T/claude.calls" "AskUserQuestion" "AskUserQuestion is on the denied list (R2's belt)"
+# build-review (the owner, 2026-10-30): the build reviews, fixes and checks itself before it ends
+has "$T/claude.calls" "review your own build until it is clean" "build-review: the prompt holds the review loop by default"
+has "$T/claude.calls" "bin/review-gate plan" "  the reviewers /finish step 1 runs, through wharf's review-gate"
+has "$T/claude.calls" "refs/remotes/origin/main\`, then \`git -C $T/repo/.claude/worktrees/demo merge --no-edit --no-ff origin/main" "  (a) main merged in first"
+has "$T/claude.calls" "a merge, never a rebase" "    never a rebase: the branch is on origin and the push never forces"
+has "$T/claude.calls" "bin/build-review round $T/repo/.claude/worktrees/demo --found" "  (e) each round recorded by the module's build-review"
+has "$T/claude.calls" "at most 5 rounds (" "  the round cap's words"
+has "$T/claude.calls" "bin/build-review end $T/repo/.claude/worktrees/demo --outcome clean" "  (f) the record ended clean"
+has "$T/claude.calls" "never a new dispatch" "  every round in this session"
+has "$T/claude.calls" "plan --base origin/main\` in the worktree" "  reviewed against origin/main, which (a) merged in, not a local main that may be behind"
+has "$T/claude.calls" "merge --base origin/main --reviewer" "    the merge too"
+has "$T/claude.calls" "changes no code or config (prose only)" "  a prose-only diff skips the reviewers, as /finish step 1 does"
+has "$T/claude.calls" "--found <real S1, S2 and WRONG findings>" "  found counts the real findings only, so a round of S3s ends the loop"
+has "$T/claude.calls" "never the hand-over line, whatever your mode says below" "  a capped or held loop ends on WAITING, so no launch starts on unfixed findings"
+has "$T/claude.calls" "fetch origin +refs/heads/main:refs/remotes/origin/main" "  (a) fetches origin's main by its refspec, as after_merge does"
+has "$T/claude.calls" "leave the brief's steps open" "  a stopped loop leaves its steps open"
+has "$T/claude.calls" "once it ended clean) — " "  and the Steps: sentence waits for a clean loop"
+has "$T/claude.calls" "--outcome held --why 'D<n> open'" "  a decision left open ends the record held, and goes the D-item road"
+has "$T/claude.calls" "schedules no next step" "  a stopped loop schedules no next step"
+has "$T/claude.calls" "first, once, (a) merge" "  (a) once at the start; each round repeats (b) to (e)"
+has "$T/claude.calls" "repeat (b) to (e) until" "    and never re-merges a moving main"
+has "$T/claude.calls" "never in a repo whose .claude/workflow.json has in_place" "  the prose-only skip keeps /finish's in_place exception"
+has "$T/claude.calls" "bin/build-review round*)" "  build-review's verbs have allow rules, by the path the prompt names (AGENTS.md Traps)"
+has "$T/claude.calls" "bin/review-gate merge*)" "    and review-gate's plan and merge"
+has "$T/claude.calls" "only after (f)" "  a next step's brief is written after the loop, so dispatch --next does not refuse it"
+check "$(grep -c 'python3 "$p_review" gate "$wt" --session "$sid"' "$B/dispatch")" "1" "  yolo_launch asks build-review gate before a launch (a stopped loop never lands; its cases: test_build_review.sh)"
 check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its skipper, plan and page"
 # no stand-ins for the paths: with an overlay installed the prompt still names helm's module paths,
 # which tool() finds and the overlay's allow rules name since B14a — never the overlay's shims, as it
@@ -600,6 +626,32 @@ grep -q "ask apply" "$T/claude.calls"; check "$?" "1" "G22, no helm: the prompt 
 grep -q "helm report" "$T/claude.calls"; check "$?" "1" "  nor a helm report"
 has "$T/claude.calls" "end on the WAITING line naming it" "  a decision it cannot make ends it on WAITING"
 has "$T/claude.calls" "step <doc> <S> done --branch" "  the Steps: line stays"
+has "$T/claude.calls" "review your own build until it is clean" "  and so does the review loop (no helm needed)"
+
+echo "build-review: a brief's Review: finish only line opts its run out of the loop"
+BRD=claude/laptop/2026-10-02-docrun
+git -C "$T/repo" checkout -q -b $BRD main
+mkdir -p "$T/repo/docs/handoff"; printf '# doc run\n\n**Review:** finish only\n' > "$T/repo/docs/handoff/2026-10-02-docrun.md"
+git -C "$T/repo" add docs/handoff/2026-10-02-docrun.md; git -C "$T/repo" commit -qm seed-docrun
+git -C "$T/repo" checkout -q main
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$BRD:refs/heads/$BRD" >/dev/null 2>&1
+git -C "$T/repo" branch -q -D $BRD
+"$B/dispatch" $BRD --repo "$T/repo" --at "$FUT 04:10" >/dev/null
+PLD=$(basename "$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.docrun.[0-9]*.plist | head -1)" .plist)
+: > "$T/claude.calls"
+DISPATCH_LOG="$T/docrun.log" DISPATCH_LABEL=$PLD "$B/dispatch" $BRD --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/docrun.log" "== exit 0" "  it ran"
+hasnt "$T/claude.calls" "review your own build until it is clean" "  no review loop in its prompt"
+hasnt "$T/claude.calls" "bin/build-review round /" "  and no record asked (the allow rules stay: harmless)"
+has "$T/claude.calls" "opts out of the build's own review loop" "  the prompt says it opted out, and leaves the review to /finish"
+
+echo "build-review: no review-gate installed (wharf's peer lookup finds none): no loop, said once"
+"$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; PLG=$(basename "$(pl)" .plist)
+: > "$T/claude.calls"
+DISPATCH_GATE= DISPATCH_LOG="$T/nogate.log" DISPATCH_LABEL=$PLG "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/nogate.log" "== exit 0" "  it ran"
+hasnt "$T/claude.calls" "review your own build until it is clean" "  no review loop in its prompt"
+has "$T/claude.calls" "review-gate is not installed here" "  the prompt says why, and leaves the review to /finish"
 
 echo "a plan with no skipper (wharf's tick seeds a block from launchd): the run still reports to it"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
