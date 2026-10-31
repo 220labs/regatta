@@ -13,6 +13,7 @@ how-to, launcher.c.in and install.sh beside it the launcher a stranger builds.
     sparks --chain                  this config's pass, then each `also` config's (what a watcher runs)
     sparks --inboxes                the inbox of this config and of each `also` config, one per line
     sparks related "<words>"        notes and proposals in the ideas pool that mention any word (no model)
+    sparks acts [--days N]          the ideas pool's fresh `status: new` notes and the owner's open promises in meeting notes' `## Promises`, as JSON (no model; exit 3 on a Mac that does not read them)
 
 Reads the folder a Shortcut drops recordings into, transcribes each new one on this Mac, asks
 Claude to turn the transcript into a note, asks Claude again — read-only — which project and
@@ -857,18 +858,21 @@ def slug(text, when):
 
 # ---------------------------------------------------------------- routing (D18)
 
-def candidates():
+def candidates(repos=None):
     """Every repo in repos.json that is cloned on this Mac: name → dir, knowledge, main.
     A repo marked "published" is never a candidate: a note merged onto its main goes out to
     the world unreviewed (a site that serves its main; its own check keeps private names out,
     and sparks never runs it). Review 2026-10-04.
     "memos_to": "<repo>" sends a skipped repo's notes elsewhere: the target is listed to the
     router as also taking notes about it (a repo shared with a friend and going public sends its
-    notes to a private one; D1, 2026-10-05)."""
-    try:
-        repos = json.loads(CFG["repos"].read_text())["repos"]
-    except (OSError, ValueError, KeyError, AttributeError):   # AttributeError: no registry at all
-        return {}
+    notes to a private one; D1, 2026-10-05).
+    `repos`: the registry's map, already read by a caller that judged the tear first (acts), so the
+    two reads never see two different files."""
+    if repos is None:
+        try:
+            repos = json.loads(CFG["repos"].read_text())["repos"]
+        except (OSError, ValueError, KeyError, AttributeError):   # AttributeError: no registry at all
+            return {}
     also = {}
     for name, meta in repos.items():
         if meta.get("memos_to"):
@@ -1994,7 +1998,14 @@ def pool_dirs():
     Without SPARKS_CONFIG it reads sextant.json beside the default too: sparks.json's `also` is
     empty and the ideas configs hang off the job's root (launcher.c.in; bin/redactions reads the
     same two roots)."""
-    dirs = [OUT] if CFG["split"] and OUT else []
+    return list(dict.fromkeys(d for d, _host in pool_configs()))
+
+
+def pool_configs(present=True):
+    """[(notes folder, the `host` its config names, "" for any)] of the ideas pool, in pool_dirs' order:
+    `acts` reads a pool where its config's pass runs, so one Mac cards a note (S6's landing review).
+    `present` False keeps a folder this Mac lacks: acts_hosts asks which Mac reads, not what is here."""
+    dirs = [(OUT, CFG["host"])] if CFG["split"] and OUT else []
     todo = ([] if os.environ.get("SPARKS_CONFIG") else [CONFIG.parent / "sextant.json"]) + CFG["also"]
     seen = set()
     while todo:
@@ -2007,9 +2018,9 @@ def pool_dirs():
         except (OSError, ValueError):
             continue
         if cfg.get("split") == "topics" and cfg.get("notes"):
-            dirs.append(Path(cfg["notes"]).expanduser())
+            dirs.append((Path(cfg["notes"]).expanduser(), str(os.environ.get("SPARKS_HOST", cfg.get("host") or ""))))
         todo += [(c.resolve().parent / a).expanduser() for a in (cfg.get("also") or [])]
-    return [d for d in dict.fromkeys(dirs) if d.is_dir()]
+    return [(d, h) for d, h in dirs if not present or d.is_dir()]
 
 
 def related(args):
@@ -2130,12 +2141,145 @@ def bad_args(argv):
     return None
 
 
+ACT_DAYS = 14   # a note older than this is no fresh ask (routed comments S6: G5's "within a day" needs no backlog)
+DAY_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+ACTS_ELSEWHERE = 3   # `acts` on a Mac the pool's configs do not name: nothing read, nothing to close (keel reads it)
+ACTS_UNREAD = 4      # the registry does not read: nothing read, and keel closes no card on it (never 1: a crash)
+
+
+def note_day(p, fm=None):
+    """A note's day: its name's date prefix (sparks files `<yyyy-mm-dd>-<slug>.md`), else its front matter's
+    `date:`, else "" — never fresh. Never the mtime: a fresh clone or a checkout dates every old note today
+    (S6's landing review)."""
+    m = DAY_PREFIX_RE.match(p.name) or DAY_PREFIX_RE.match(str((fm or {}).get("date") or ""))
+    return m.group(1) if m else ""
+
+
+def promise_lines(text, owner=""):
+    """[(line number, the promise without its owner)]: the open promises of the `## Promises` section that
+    the owner made. navigate writes each as `- <owner>: <what>` (its notes prompt); a `[me]` line counts as
+    the owner's too. Only the line's own owner, its first word, counts: a `[them]` line that mentions
+    `[me]` is theirs. A ticked `- [x]` line is kept, not fresh. A note's `## Asks` is never read: an ask is a
+    question (routed comments judge, section 4)."""
+    who = r"\[me\]|me" + ("|" + re.escape(owner) if owner else "")
+    rx = re.compile(r"^\s*[-*+]\s+(?:\[([ xX])\]\s+)?\**(?:\[me\]\**\s*:?|(?:%s)\**\s*:)\**\s+(\S.*)$" % who, re.I)
+    out, inside = [], False
+    for n, line in enumerate(text.splitlines(), 1):
+        if re.match(r"^##\s", line):
+            inside = bool(re.match(r"^##\s+Promises\s*$", line))
+            continue
+        m = rx.match(line) if inside else None
+        if m and (m.group(1) or " ").strip().lower() != "x":
+            out.append((n, " ".join(m.group(2).split())))
+    return out
+
+
+def stable_rel(p):
+    """The note's path as every Mac reads it alike: `<repo folder>/<path in it>` inside a git checkout,
+    else `<folder>/<file>` — an id hashed from the absolute path differed per host (S6's landing review)."""
+    for d in p.parents:
+        if (d / ".git").exists():
+            return "%s/%s" % (d.name, p.relative_to(d))
+    return "%s/%s" % (p.parent.name, p.name)
+
+
+def acts_hosts():
+    """The Macs that read the acts: the hosts the ideas pool's configs name, else the root config's; empty
+    for any Mac (an install without a host). One host reads, so one host cards (S6's landing review)."""
+    # every config, its folder here or not: a Mac without the pool's folder must not fall back to the root
+    # config's host and read the promises beside the pool's own Mac (S6's landing review)
+    hosts = {h.lower() for _d, h in pool_configs(present=False) if h}
+    return hosts or ({CFG["host"].lower()} if CFG["host"] else set())
+
+
+def acts(args):
+    """`sparks acts [--days N]`: the candidate acts a card may come of (routed comments S6, judge section
+    4), as one JSON list, no model: a `status: new` note of the ideas pool within the window (kind `note`),
+    and each open promise the owner made under `## Promises` in a meeting note under a candidate repo's
+    `docs/meetings/` (kind `promise`). Each carries its path, `rel` (the path as every Mac reads it), the
+    `source` the gate names it by, the words (cut) and an id from `rel` and the words, which changes when
+    they do. A note's `by:` is a model's reading of a voice memo and its git author is the filer: neither
+    is read, because neither is the owner. The fence: an unreadable registry reads nothing and exits
+    ACTS_UNREAD; a repo of a confidential scope is never read, and a published repo is no candidate
+    (candidates()); and with an overlay but no `sextant/source`, no pool note leaves (redact_guard's
+    refusal), because the gate would else see it as `sparks`, which it does not guard. Read on the Mac the
+    pool's configs name (acts_hosts); elsewhere nothing, exit ACTS_ELSEWHERE.
+    Not read: a meeting note the router left in the vault's inbox. It has no repo for `go` to seed a run
+    in (the vault is no candidate), and the meeting configs deny the vault (S6's landing review, ruled)."""
+    days = ACT_DAYS
+    if "--days" in args:
+        i = args.index("--days")
+        try:
+            days = int(args[i + 1])
+            if days < 1:
+                raise ValueError
+        except (IndexError, ValueError):
+            print("usage: sparks acts [--days N]", file=sys.stderr)
+            return 2
+    hosts = acts_hosts()
+    if hosts and common.host_name().lower() not in hosts:
+        print("sparks acts: the notes are read on %s" % ", ".join(sorted(hosts)), file=sys.stderr)
+        return ACTS_ELSEWHERE
+    reg, torn = common.read_registry(CFG["repos"]) if CFG["repos"] else (None, False)
+    if torn:
+        print("sparks acts: the registry does not read — nothing is read until it does", file=sys.stderr)
+        return ACTS_UNREAD
+    repos = (reg or {}).get("repos") or {}
+    fenced = set()
+    for sc in common.confidential_scopes(reg=reg or {}).values():
+        fenced.update(common.scope_members(sc, repos))
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
+    out, seen = [], {}
+
+    def item(kind, p, source, words, day, line=None):
+        rel = stable_rel(p)
+        key = (kind, rel, words)
+        seen[key] = seen.get(key, 0) + 1   # the same words twice in one note: two ids, neither tied to a line number
+        h = hashlib.sha1(("%s\0%s\0%s\0%d" % (kind, rel, words, seen[key])).encode("utf-8")).hexdigest()[:12]
+        out.append({"kind": kind, "id": "%s-%s" % (kind, h), "path": str(p), "rel": rel, "source": source,
+                    "text": words[:1500], "day": day, **({"line": line} if line else {})})
+
+    if peer_state("sparks")[0] != "off":
+        if REDACT_SOURCE_MISSING:
+            print("sparks acts: %s/sextant/source is missing — no pool note is read (the guarded source a note "
+                  "counts as; run your overlay's bootstrap.sh --config)" % common.CONFIG, file=sys.stderr)
+        else:
+            for d in pool_dirs():
+                for p in sorted(d.glob("*.md")):
+                    try:
+                        fm, body = front(p.read_text())
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    day = note_day(p, fm)
+                    if fm.get("status") != "new" or not day or day < since:
+                        continue
+                    item("note", p, REDACT_SOURCE, body.strip(), day)
+    owner = common.config_line("regatta/owner") or ""
+    for name, meta in sorted(candidates(repos).items()):
+        if name in fenced or meta["knowledge"]:   # the vault's own notes are the ideas pool's business
+            continue
+        for p in sorted((meta["dir"] / "docs" / "meetings").glob("*.md")):
+            try:
+                text = p.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            day = note_day(p, front(text)[0])
+            if not day or day < since:
+                continue
+            for n, words in promise_lines(text, owner):
+                item("promise", p, name, words, day, line=n)
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    return 0
+
+
 def main():
     if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
         print(__doc__.split("\n\n")[2])
         return 0
     if sys.argv[1:2] == ["related"]:  # before the argument check and the host check: a lookup, any Mac, nothing filed
         return related(sys.argv[2:])
+    if sys.argv[1:2] == ["acts"]:    # the same: a read, any Mac, nothing filed (routed comments S6)
+        return acts(sys.argv[2:])
     why = bad_args(sys.argv[1:])
     if why:
         print(f"sparks: {why} — nothing ran; `sparks --help` lists the calls", file=sys.stderr)

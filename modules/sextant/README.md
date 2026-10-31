@@ -91,6 +91,8 @@ dropped notes and a friend's count like the owner's. An architect agent runs it 
 With `"sparks": "off"` in an optional `regatta/peers.json` in the config dir (`$REGATTA_PEERS`) it reads nothing and
 says so in one line.
 
+**What may be asked of the system**: `sparks acts [--days N]` prints, as JSON, the ideas pool's fresh `status: new` notes (14 days by default, a note's day its name's date or its front matter's `date:`) and each open promise the owner made under `## Promises` in a meeting note under a candidate repo's `docs/meetings/` (`- [me] …`, or navigate's `- <owner>: …` with `regatta/owner`): the candidates a reader may turn into a card (keel's `routed notes`). No model. A note's `by:` and its git author are not read, since neither is the owner. It reads on the Mac the ideas pool's configs name and exits 3 on any other, so one Mac cards a note; an unreadable registry reads nothing (exit 4), a confidential scope's repo, a published repo and the vault's own are never read, and with an overlay but no `sextant/source` no pool note is read. A meeting note the router left in the vault's inbox is not read: it has no repo for a run. The same `peers.json` switch turns the pool read off.
+
 ## The weekly pass, `/sextant`
 
 Once a week (Monday 02:00 unless the installer says otherwise) launchd starts `/sextant`
