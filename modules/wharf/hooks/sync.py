@@ -16,6 +16,11 @@ At every start, unthrottled, a repo that keeps its opt-in in the layer's repos.j
 repo shared with people off this workflow: a shared repo) gets it written into its primary checkout
 as an untracked, git-excluded .claude/workflow.json (overlay_workflow), after the layer's fast-forward.
 
+Then every scope's VS Code workspace is written from the registry (spawn_scope_files): wharf's
+`bin/scopes write --from <the session's primary>` in a detached child — every open scope, a
+confidential one only from a session in it. What it refused is kept in that repo's git dir and said
+once at its next start there. REGATTA_SCOPE_FILES=off (any value but empty or inline) skips it, =inline runs it in place.
+
 Before pruning, the same pass tends the repo's `claude/*` worktrees that nobody is in — no
 fresh lock, no running session owning, queued in or standing in them, no rebase or /finish
 under way (docs/record/shipping-and-pickup-2026-09-25.md, the owner's D4 and D5):
@@ -93,8 +98,8 @@ merged after the stop gets its `launched` line there (settle_landed), so helm's 
 Rate-limited to once per SYNC_EVERY per repo, since many sessions start in a day. Stdlib
 only; never blocks a session from starting; offline is a quiet no-op.
 
-One exception to the rate limit, and it costs the start nothing: every start also runs
-the INDICATOR, detached — the launched and probably-launched claude/* worktrees go into VS Code's
+Two exceptions to the rate limit, each costing the start nothing: every start also runs
+`bin/scopes write --from <the session's primary>` detached (scope_files, below), and the INDICATOR, detached — the launched and probably-launched claude/* worktrees go into VS Code's
 `git.branchProtection`, which draws a lock on their branch in the Repositories view (the owner's
 D1, 2026-09-29, docs/record/landed-indicator-2026-09-29.md). Its one message, a file it cannot
 write, reaches the owner at the next start, once.
@@ -1050,6 +1055,76 @@ def indicator_notes(repo):
     return [f"⚠ {repo.name}: launched-worktree lock not shown — {problem}"] if problem else []
 
 
+SCOPE_FILES = "scope-files"   # per repo (common git dir): what the last detached `scopes write` there refused
+# REGATTA_SCOPE_FILES: unset or empty runs the step detached; `off` (or any value but `inline`) skips it (a suite whose config copies the live registry link:
+# the knowledge layer's hook suite), `inline` runs it in place (this module's tests read its record)
+SCOPE_FILES_ENV = "REGATTA_SCOPE_FILES"
+SCOPES_NOT_RUN = 3   # `scopes write --from`'s exit when another write held its lock past its wait
+
+
+def scope_files_record(repo):
+    """Where `repo`'s scope-files record lives: its own git dir, so what a run there refused is said
+    only in that repo's sessions — a confidential scope's refusal never reaches an open session's
+    start (the /finish review, 2026-11-01). None outside git."""
+    d = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    return Path(d) / "claude" / SCOPE_FILES if d else None
+
+
+def spawn_scope_files(repo):
+    """`bin/scopes write --from REPO` in a detached child: every scope has its VS Code workspace and
+    it follows the registry — a scope added to repos.json gets its file at the next start on each
+    Mac, with nobody running `write` by hand (the owner, 2026-10-31: "make sure every new scope
+    created, as well as the existing ones, have a VS workspace of their own"; one scope's had
+    missed three repos). Detached: its `code --status` reading can take 30 s."""
+    mode = os.environ.get(SCOPE_FILES_ENV, "")
+    if mode not in ("", "inline") or repo is None:
+        return   # `off`, and any value it cannot read (`0`, `no`, a typo): the safe side is no write
+    if mode == "inline":
+        scope_files(repo)
+        return
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--scope-files-run", str(repo)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def scope_files(repo):
+    """Run the write; keep its ✗ and ⚠ lines (an open window refused, a bad registry) for the next
+    start in this repo. A run that fails without one (a torn registry, a missing core, a crash) is a
+    ✗ line of its own: never an empty record, which would read as clean and drop a line not yet said."""
+    record = scope_files_record(repo)
+    if record is None:
+        return
+    tool = Path(__file__).resolve().parent.parent / "bin" / "scopes"
+    try:
+        r = subprocess.run([sys.executable, str(tool), "write", "--from", str(repo)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode == SCOPES_NOT_RUN:
+            return   # another write held the lock throughout: nothing judged, the record stands
+        out = (r.stdout + r.stderr).splitlines()
+        bad = [l for l in out if l.startswith(("✗", "⚠"))]
+        if r.returncode != 0 and not bad:
+            bad = [f"✗ bin/scopes write exited {r.returncode}: {(out or ['no output'])[-1]}"]
+    except Exception as exc:
+        bad = [f"✗ bin/scopes write: {exc}"]
+    text = "".join(l + "\n" for l in bad)
+    if (record.read_text() if record.exists() else "") != text:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(record, text)
+
+
+def scope_files_notes(repo):
+    """What the last scope-files run in `repo` refused, once per distinct set of lines (indicator_notes' way)."""
+    record = scope_files_record(repo) if repo is not None else None
+    if record is None:
+        return []
+    said = record.with_name(SCOPE_FILES + ".said")
+    text = record.read_text() if record.exists() else ""
+    if text == (said.read_text() if said.exists() else ""):
+        return []
+    write_atomic(said, text)
+    return [f"scope workspaces: {l}" for l in text.splitlines()]
+
+
 def secrets_notes(repo):
     """`secrets check --fix` for the session's repo (the core's bin/secrets): a key its
     .env.example names and Drive's file lacks becomes an empty `KEY=` there, and the lines worth
@@ -1177,6 +1252,10 @@ def main():
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         indicator(Path(sys.argv[2]))
         return
+    if len(sys.argv) > 2 and sys.argv[1] == "--scope-files-run":  # spawn_scope_files' detached child
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        scope_files(Path(sys.argv[2]))
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--indicator":
         mode = sys.argv[2] if sys.argv[2:3] in (["off"], ["on"]) else None
         rest = sys.argv[3:] if mode else sys.argv[2:]
@@ -1248,6 +1327,13 @@ def main():
             overlaid = [f"⚠ {r.name}: the repos.json opt-in failed: {exc}"]
         for_user.extend(overlaid)
         for_model.extend(overlaid)
+    try:  # after the fast-forward too: the registry it writes from is current; never costs the start
+        scopes = scope_files_notes(primary(cwd))
+        spawn_scope_files(primary(cwd))
+    except Exception as exc:
+        scopes = [f"⚠ scope workspaces: {exc}"]
+    for_user.extend(scopes)
+    for_model.extend(scopes)
     # The secrets lines are for both readers: the owner acts on a `!!`, the model must not
     # build on a key that is still `--` waiting.
     secrets = secrets_notes(primary(cwd))

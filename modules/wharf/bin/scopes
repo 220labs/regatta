@@ -8,12 +8,18 @@
                           the file when it exists, else the first declared repo on this Mac
   scopes workspace REPO   the absolute path of REPO's scope's workspace file, when it exists;
                           exit 1 otherwise
-  scopes write [--dry-run]
+  scopes write [--dry-run] [--from PATH]
                           write every scope's workspace file where repos.json says it lives,
                           keeping the worktree folders VS Code added; move a retired file into
                           ~/projects/.scopes-retired/ (one tracked in git is named, never moved).
                           A file a VS Code window has open is never moved, nor rewritten with a
-                          new first folder: refused with a ✗ line and exit 1 (2026-10-15 crash)
+                          new first folder: refused with a ✗ line and exit 1 (2026-10-15 crash).
+                          A file inside a git checkout goes into its .git/info/exclude. --from:
+                          a session at PATH (wharf's sync.py at every start) — every open scope,
+                          a confidential one only when PATH is under one of its own folders, no
+                          retired file moved; it waits up to LOCK_WAIT for another write's lock
+                          and exits 3, writing nothing, if it never frees; a fault naming a
+                          confidential scope PATH is outside reads as one line naming none of it
   scopes check            exit 1, naming each fault, when a repo is in no scope or two, a scope
                           names a repo the registry lacks, two scopes share a file, an anchor
                           is a glob or a twin, a flag is not true/false, a login no label or a
@@ -77,12 +83,14 @@ both Macs; a folder missing on this Mac is left out of the file, with a note.
 Python 3.9, stdlib only.
 """
 import datetime
+import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -101,18 +109,34 @@ LAYER = HERE.name if HERE else None
 WORKTREES = "/.claude/worktrees/"
 RETIRED = ".scopes-retired"
 EXT = ".code-workspace"
+LOCK_WAIT = float(os.environ.get("REGATTA_SCOPES_LOCK_WAIT") or 60)   # s a session start's `write --from` waits for another write's lock (sync.py allows 120)
 OWNED_ELSEWHERE = ("git.branchProtection",)  # hooks/sync.py's landed-branch locks: never declared, never dropped
 
 
-def registry(root=None):
+def registry_data(root=None):
+    """The registry's one parse: every decision a run makes reads this dict, never the file again."""
     if not root and not REGISTRY:
         sys.exit(f"scopes: no registry — set CLAUDE_REPOS_JSON, or link one at {common.CONFIG / 'wharf' / 'repos.json'}")
     p = root / "repos.json" if root else REGISTRY
     try:
-        data = json.loads(p.read_text())
+        return json.loads(p.read_text())
     except OSError as e:   # a dangling link: the core returns it, so the read refuses here
         sys.exit(f"scopes: the registry {p} cannot be read — {e.strerror}")
+
+
+def registry(root=None, data=None):
+    data = data if data is not None else registry_data(root)
     return data["repos"], data.get("scopes") or {}, data.get("folder_names") or {}
+
+
+def inside(name, src, reg):
+    """Is path `src` under one of scope `name`'s own folders — the core's scope_paths: its checkouts,
+    their worktrees, its transcripts and login dirs, from `reg`, the run's one parse? Never by a slug
+    in the path, which scope_match also counts: a scratch folder named after the scope is not in it
+    (AGENTS.md's guard-scratch trap; the /finish review, 2026-11-01)."""
+    s = os.path.realpath(src)
+    return any(s == r or s.startswith(r + os.sep)
+               for r in (os.path.realpath(p) for p in common.scope_paths(name, reg=reg)))
 
 
 def primary(root=None):
@@ -567,18 +591,55 @@ def tracked(path):
     return r.returncode == 0
 
 
-def write(repos, scopes, names, base, dry, retired=(), opened=None):
-    """Write every scope's file; move each retired one aside. → the lines to print. A file a VS
-    Code window has open (opened, read live when not given) is never moved, nor rewritten with
-    another first folder: refused with a ✗ line, the rest done."""
-    opened = opened or opened_now()
+def exclude(path, dry):
+    """Put scope file `path` in its checkout's .git/info/exclude when git would see it → the line
+    to print, or None. The file is VS Code's to write into (it adds a folder at every worktree
+    entry), so in git it would dirty the repo each time; the exclude is local, so a scope whose
+    anchor is a fresh knowledge repo (2026-10-31) needs no commit there first. A line
+    already there is never added again: a `.gitignore` that un-ignores the file beats it, and that
+    is named instead (the /finish review, 2026-11-01: three runs had left three copies)."""
+    def git(*a):
+        return subprocess.run(["git", "-C", str(path.parent), *a], capture_output=True, text=True)
+    top = git("rev-parse", "--show-toplevel")
+    if top.returncode != 0 or git("check-ignore", "-q", path.name).returncode == 0 or tracked(path):
+        return None  # outside git, ignored already, or tracked (a retired-file case, named there)
+    info = Path(git("rev-parse", "--path-format=absolute", "--git-path", "info/exclude").stdout.strip())
+    rel = "/" + os.path.relpath(os.path.realpath(path), os.path.realpath(top.stdout.strip()))
+    # a pattern, not a path: escape what gitignore reads as one (the leading / already makes a
+    # leading `#` or `!` literal); a trailing space would be dropped (the /finish review, 2026-11-03)
+    rel = re.sub(r"([\\*?\[])", r"\\\1", rel)
+    rel = rel[:-1] + "\\ " if rel.endswith(" ") else rel
+    have = info.read_text() if info.exists() else ""
+    if rel in (l.strip() for l in have.splitlines()):
+        return f"⚠ {rel} is in {top.stdout.strip()}'s .git/info/exclude, but its .gitignore un-ignores it — git sees it"
+    if not dry:
+        info.parent.mkdir(parents=True, exist_ok=True)
+        info.write_text(have + ("" if not have or have.endswith("\n") else "\n") + rel + "\n")
+    return f"{'would exclude' if dry else 'excluded'} {rel} in {top.stdout.strip()}'s .git/info/exclude"
+
+
+def write(repos, scopes, names, base, dry, retired=(), opened=None, only=None):
+    """Write every scope's file (only: the names to write, None for all); move each retired one
+    aside. → the lines to print. A file a VS Code window has open (opened, read live when not
+    given) is never moved, nor rewritten with another first folder: refused with a ✗ line, the
+    rest done. VS Code is asked only once a file would change or move: every session start runs
+    this, and `code --status` can take 30 s (the /finish review, 2026-11-01)."""
+    seen = [opened]
+
+    def held(p):
+        if seen[0] is None:
+            seen[0] = opened_now()
+        return seen[0].holds(p)
     out = []
     for name, scope in scopes.items():
+        if only is not None and name not in only:
+            continue
         path = base / scope["file"]
-        current = None
+        current, raw = None, None
         if path.exists():
             try:
-                current = load_jsonc(path.read_text())
+                raw = path.read_text()
+                current = load_jsonc(raw)
             except ValueError as e:
                 out.append(f"✗ {scope['file']} is not readable JSON ({e}) — left as it is")
                 continue
@@ -587,17 +648,26 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None):
             continue
         body, notes = render(name, scope, repos, names, base, current)
         out += [f"  {n}" for n in notes]
+        kept_out = exclude(path, dry)   # before the write: git never sees the file appear
+        if kept_out:
+            out.append(kept_out)
         if current == body:
             continue  # content, not text: the home repo's script and sync.py format it their own way
         text = json.dumps(body, indent=2, ensure_ascii=False) + "\n"
-        why = opened.holds(path) if current is not None else None
+        why = held(path) if current is not None else None
         if why and first_folder(current, path) != first_folder(body, path):
             out.append(f"✗ {scope['file']} not written: its first folder would change and {why} — close"
-                       f" that window, then run `bin/scopes write` again")
+                       f" that window, then run `bin/scopes write` (a session start writes it too: any"
+                       f" start for an open scope, one inside it for a confidential one)")
+            continue
+        if (path.read_text() if path.exists() else None) != raw:
+            # VS Code or sync.py's indicator wrote it while `code --status` ran: never over their
+            # write with a body built from the old text (the /finish review, 2026-11-03)
+            out.append(f"  {scope['file']} changed while this run read it — left for the next run")
             continue
         out.append(f"{'would write' if dry else 'wrote'} {scope['file']}")
         if not dry:
-            path.write_text(text)
+            path.write_text(text)   # in place, never a rename: the 2026-10-15 crash shape (header)
     stamp = datetime.date.today().isoformat()
     for rel in retired:
         path = base / rel
@@ -606,7 +676,7 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None):
         if tracked(path):
             out.append(f"⚠ {rel} is retired but tracked in git — remove it there with a commit")
             continue
-        why = opened.holds(path)
+        why = held(path)
         if why:
             out.append(f"✗ {rel} not retired: {why} — moving it would crash that window; close it,"
                        f" then run `bin/scopes write` again")
@@ -621,7 +691,8 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None):
 
 def main(argv):
     cmd = argv[0] if argv else "list"
-    repos, scopes, names = registry()
+    data = registry_data()
+    repos, scopes, names = registry(data=data)
     if cmd in ("list", "-l"):
         for name, scope in scopes.items():
             flag = (" [confidential" + (f", login {scope['login']}" if scope.get("login") else "") + "]"
@@ -716,18 +787,72 @@ def main(argv):
             return 0
         path = projects() / scopes[name]["file"]
         if not path.is_file():
-            print(f"scopes: {name}'s file {path} does not exist — run bin/scopes write", file=sys.stderr)
+            print(f"scopes: {name}'s file {path} does not exist — a session start writes it (any"
+                  f" start for an open scope, one inside it for a confidential one), or bin/scopes write", file=sys.stderr)
             return 1
         print(path)
         return 0
     if cmd == "write":
+        rest, src, stray, i = argv[1:], None, [], 0
+        while i < len(rest):
+            if rest[i] == "--dry-run":
+                i += 1
+            elif rest[i] == "--from" and src is None and i + 1 < len(rest) and rest[i + 1] \
+                    and not rest[i + 1].startswith("-"):   # `--from ""` (an unset variable) is refused too
+                src, i = rest[i + 1], i + 2
+            else:
+                stray, i = stray + [rest[i]], i + 1
+        if stray:   # `--from=PATH`, a misspelt flag, `--from --dry-run`: refused, never read as a write of all
+            print(f"scopes write [--dry-run] [--from PATH] — not understood: {' '.join(stray)}", file=sys.stderr)
+            return 2
+        only, retired = None, data.get("scope_files_retired") or []
+        if src:
+            # the fence (knowledge-layers D3): a session outside a confidential scope never reads its
+            # folders, so it never writes that scope's file either — a session inside it does
+            only = {n for n, sc in scopes.items() if sc.get("confidential") is not True or inside(n, src, data)}
+            retired = []   # moving one aside stays a deliberate run by hand
         bad = faults(repos, scopes)
+        if bad and only is not None:
+            # a fault naming a confidential scope this session is outside (its name, a repo of it) is
+            # kept in this repo's record and said at its start: one line that names none of it instead
+            # (the /finish review, 2026-11-03); `bin/scopes check` inside the scope names it
+            hidden = set()
+            for n, sc in scopes.items():
+                if n not in only:
+                    try:
+                        hidden |= {n, *members(sc, repos)}
+                    except Exception:   # a malformed scope: its name alone, and nothing else is shown
+                        hidden.add(n)
+            word = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, sorted(hidden, key=len, reverse=True)))
+                              + r")(?![\w-])") if hidden else None
+            kept = [b for b in bad if not (word and word.search(b))]
+            if len(kept) < len(bad):
+                kept.append("the registry has a fault in a confidential scope this session is outside —"
+                            " `bin/scopes check` in a session inside it names it")
+            bad = kept
         if bad:
             print("\n".join(f"✗ {b}" for b in bad), file=sys.stderr)
             return 1
-        retired = json.loads(REGISTRY.read_text()).get("scope_files_retired") or []
-        lines = write(repos, scopes, names, projects(), "--dry-run" in argv[1:], retired)
-        print("\n".join(lines) if lines else f"✓ {len(scopes)} scope files current")
+        lock = common.CONFIG / "wharf" / "scopes-write.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "w") as held:
+            # sessions starting at once write one after another: each run's `only` differs (a
+            # confidential session's scope is not an open one's), so a run never skips for another's
+            # (the /finish review, 2026-11-03). A session start's run gives up after LOCK_WAIT with
+            # exit 3 and no ✓, which sync.py reads as "nothing judged" and keeps its record; by hand, wait
+            deadline = datetime.datetime.now().timestamp() + LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | (fcntl.LOCK_NB if src else 0))
+                    break
+                except BlockingIOError:
+                    if datetime.datetime.now().timestamp() >= deadline:
+                        print(f"scopes write: another write held the lock for {LOCK_WAIT} s — not run",
+                              file=sys.stderr)
+                        return 3
+                    time.sleep(0.5)
+            lines = write(repos, scopes, names, projects(), "--dry-run" in rest, retired, only=only)
+        print("\n".join(lines) if lines else f"✓ {len(only if only is not None else scopes)} scope files current")
         return 1 if any(l.startswith("✗") for l in lines) else 0
     if cmd == "check":
         bad = faults(repos, scopes)
