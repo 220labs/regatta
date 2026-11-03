@@ -7,7 +7,9 @@ peer's line names that takes it, each verdict a line in claude-weekly/kicks.json
 
   sheep  a press named `kick` on the peer's spacesheep stream (`kick/<peer>`, or the stream
          `wharf-runs/kick-stream` names for it), heard by the peer's `spacesheep stream … --on-dir` listener; the
-         press goes through a web session this host's full key mints (the CLI has no press verb)
+         press goes over the page runtime's stream socket (`wss://<origin>/api/space/<id>/streams/ws`) through the
+         space `wharf-runs/kick-space` names, whose page declares `kick/*`, signed in by a web session this host's
+         full key mints (the CLI has no press verb; "S8's first case, run" in the doc found the socket road)
   orca   `orca terminal create --environment <peer> --worktree path:<its core> --command "<dispatch> --claim …;
          exit"`, then `terminal wait --for exit` and `terminal close`, each with `--environment`
   ssh    `ssh -o BatchMode=yes -o ConnectTimeout=10 <alias> "<the peer's core>/…/dispatch" --claim …`, the core
@@ -24,10 +26,12 @@ what exists — `orca` where `wharf-runs/orca-pairs` names this host's pair with
 or `wharf-runs/kick-ssh` has its alias. `wharf-runs/kick-ssh` (`<host>:<alias>`) is read by the kick alone: a host
 this road may reach that every other reader of `wharf-runs/ssh` must not, a scope's node above all (the overlay's
 table keeps such a node off that key: berth would probe it and place one-shots there, pickup, stalls and `account
-doctor` would read it). `sheep` only where a line names it: a kicker cannot see another host's listener, and a press
-from a script is unprobed until the probe lands one (docs/dispatch-queue-2026-10-25/kick_probe.py). The kick is
-on only where the `kick-roads` file exists, the switch as `queue-repo` is the queue's: a fleet that set no line
-kicks nobody, and no suite with an ssh fixture reaches a real alias. Python 3.9, stdlib.
+doctor` would read it). `sheep` only where a line names it: a kicker cannot see another host's listener, and a line names it only once a
+press is proved from there (docs/dispatch-queue-2026-10-25/kick_probe.py). The kick is on only where the `kick-roads`
+file exists, the switch as `queue-repo` is the queue's: a fleet that set no line kicks nobody, and no suite with an
+ssh fixture reaches a real alias. Python 3.9, stdlib — bar the sheep road's socket client, the `websockets` package
+(14.0+, its blocking client; the owner's pick, 2026-11-02), imported inside the road as blueprintlib imports PyYAML:
+a python3 without it makes the sheep road one line in kicks.jsonl saying so, and the next road is tried.
 """
 import json
 import os
@@ -54,10 +58,15 @@ TIMEOUT = 15             # one road's call, at most: each returns well under it 
 ORCA_WAIT_MS = 10000     # `terminal wait --for exit`, as the component names it
 PROVE_S = float(os.environ.get("DISPATCH_KICK_PROVE_S") or 8)   # kick-listen's one bounded proving run (the suites shorten it)
 REFUSALS = 2             # refusals in the listener's log tail that make the watchdog boot it out (a restart loop)
-# The press's route. UNPROBED: the CLI has no press verb and the docs show a press only as a page viewer's act;
-# kick_probe.py's first case finds whether this route takes one (and its latency). Until it lands a press, the
-# sheep road runs only where `kick-roads` names it.
-PRESS_PATH = "/api/streams/%s/-/press"
+# The press's road, as the page runtime presses (viewer-streams.js, read 2026-11-01; ws_probe.sh landed 3 of 3): a
+# socket into one space, which may press only the streams its page declares (`<meta name="ss-streams">`; the server's
+# `ready` frame lists them as `allow`). The POST route S8 guessed answered 404 (kick_probe-1793596350.json).
+WS_PATH = "/api/space/%s/streams/ws"
+SPACE_KEY = "wharf-runs/kick-space"   # the space id of the page that declares kick/*, published once by the owner
+SPACE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
+WS_MIN = (14, 0)   # 11.0 and 11.0.1 hang leaving a socket with a frame unread; 11.0.2-13.x wait out close_timeout
+WS_FLOOR = "websockets 14.0+ (its blocking client)"
+ACK_TAKEN = ("started", "done")       # the listener's ack: its button began (a kick asks no more of it)
 KEY_SLOT = "full key"    # what the sheep road needs on a kicker; never read here but by sheep_press, never printed
 
 # The receiver's dispatch on a peer: its core from its own `home` file, read by the peer's shell (dispatch's rbin)
@@ -371,39 +380,188 @@ def can_press():
     return bool(os.environ.get("SPACESHEEP_KEY")) or cfg.exists()
 
 
-def sheep_press(stream, name, data, key=None, timeout=TIMEOUT):
-    """Press NAME on STREAM with DATA through a web session the full key mints (POST /api/account/web-session,
-    as keel does). (ok, why, seconds). Redirects are refused: urllib would carry the cookie anywhere. The
-    route is PRESS_PATH's, unprobed: kick_probe.py says whether it lands."""
-    import urllib.error
+PRESS_WINDOW = 0.5   # seconds a press needs for its sent and first ack (the probe saw 100-340 ms; finish review)
+
+
+def ws_client():
+    """(connect, errors): websockets' blocking client and the exceptions a press may meet, imported here and only
+    here, or None where this python3 lacks the package or has one before WS_MIN (the landing review, round 1: on
+    11.0 and 11.0.1 a close with the listener's `done` unread hung the kick for good). Never raises."""
+    try:
+        from websockets.exceptions import WebSocketException
+        from websockets.sync.client import connect
+        from websockets.version import version
+        if tuple((int(x) for x in re.findall(r"\d+", version)[:2] + ["0", "0"]))[:2] < WS_MIN:
+            return None
+    except Exception:   # a broken install (a SyntaxError, an AttributeError) reads as none (finish review)
+        return None
+    # ImportError: websockets 15 reads a proxy from the environment, and a socks one needs python-socks (round 2)
+    return connect, (WebSocketException, OSError, ValueError, TypeError, ImportError)
+
+
+def _ws_logger():
+    """A logger the socket client writes to, held at WARNING: at DEBUG websockets logs every request header, the
+    session's Cookie among them, so nothing a caller sets on the root logger may reach it."""
+    import logging
+    lg = logging.getLogger("kicklib.socket")
+    lg.setLevel(logging.WARNING)
+    lg.propagate = False
+    return lg
+
+
+def kick_space():
+    """The space id `wharf-runs/kick-space` names (its first line that reads as one), or None."""
+    for ln in common.config_lines(SPACE_KEY) or []:
+        ln = re.split(r"[#(]", ln, maxsplit=1)[0].strip()
+        if SPACE_RE.fullmatch(ln):
+            return ln
+    return None
+
+
+def press_ready():
+    """None where this host can press over the socket, else the one line saying what it lacks (the package, the
+    space, the full key). Presence only: no key is read."""
+    if ws_client() is None:
+        return "unavailable: no %s for %s" % (WS_FLOOR, sys.executable)
+    if not kick_space():
+        return "unavailable: no kick space (%s, the id of the page that declares kick/*)" % SPACE_KEY
+    if not can_press():
+        return "unavailable: no %s on this host" % KEY_SLOT
+    return None
+
+
+def web_session(key, timeout):
+    """A web session's cookie (`<name>=<token>`) minted from the full KEY (POST /api/account/web-session, as keel
+    does). Redirects are refused: urllib would carry the bearer anywhere. Raises urllib's errors, OSError,
+    ValueError or KeyError; the cookie is never printed."""
     import urllib.request
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **kw):
             return None
 
+    req = urllib.request.Request(app_origin() + "/api/account/web-session", data=b"{}", method="POST",
+                                 headers={"User-Agent": "dispatch-kick/1", "Content-Type": "application/json",
+                                          "Authorization": "Bearer " + key})
+    with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as r:
+        s = json.loads(r.read().decode())
+    return "%s=%s" % (s["cookie"], s["token"])
+
+
+def _allowed(stream, pats):
+    """STREAM is among the paths a space's `ready` allows (`kick/*`, or the stream itself)."""
+    import fnmatch
+    return any(isinstance(p, str) and fnmatch.fnmatchcase(stream, p) for p in pats)
+
+
+def socket_press(conn, stream, name, data, nonce, until):
+    """One press over an open socket CONN (`send(str)`, `recv(timeout=)` raising TimeoutError), as the page runtime
+    sends it: `{t:"sub",p:[stream]}`, then `{t:"send",path,name,data,id}`. The server answers `ready` (the paths the
+    space allows, and `press`), `sent` (our id, ok, the seq it stored the press under, whether a listener is on), then
+    the listener's `ack`s for that seq (`started`, `done`; `failed`, `refused`, `unheard`). (ok, why): ok at the first
+    ack that says the button began, never waiting for its end. UNTIL is a time.monotonic() deadline."""
+    if until - time.monotonic() < PRESS_WINDOW:
+        return False, "no time left to press"   # never a press sent and then called failed (the review, round 1)
+    conn.send(json.dumps({"t": "sub", "p": [stream]}))
+    conn.send(json.dumps({"t": "send", "path": stream, "name": name, "data": data, "id": nonce}))
+    seq, early = None, {}
+
+    def verdict(st, note):
+        if st in ACK_TAKEN:
+            return True, "ack %s" % st
+        return False, "ack %s%s" % (st, (": %s" % note) if note else "")
+
+    while True:
+        left = until - time.monotonic()
+        if left <= 0:
+            return False, ("sent, no ack from the listener in time" if seq is not None else "no answer to the press in time")
+        try:
+            m = conn.recv(timeout=left)
+        except TimeoutError:
+            continue
+        if isinstance(m, bytes):
+            m = m.decode("utf-8", "replace")
+        try:
+            f = json.loads(m)
+        except ValueError:
+            continue   # the keepalive's "pong", or anything else not a frame
+        if not isinstance(f, dict):
+            continue
+        t = f.get("type")
+        if t == "ready":
+            if f.get("press") is False:
+                return False, "the space grants no press"
+            if isinstance(f.get("allow"), list) and not _allowed(stream, f["allow"]):
+                return False, "refused: the space declares no %s (it allows %s)" % (
+                    stream, ", ".join(str(p) for p in f["allow"])[:120] or "nothing")
+        elif t == "sent" and f.get("id") == nonce:
+            if f.get("ok") is not True:
+                return False, "refused: %s" % str(f.get("error") or f.get("reason") or "the server did not store it")[:160]
+            if f.get("listening") is False:
+                return False, "sent, but nothing listens on %s" % stream
+            seq = f.get("seq")
+            if not isinstance(seq, int) or isinstance(seq, bool):
+                return False, "the server's sent named no seq for the press"
+            if seq in early:
+                return verdict(*early[seq])
+        elif t == "ack" and f.get("path") == stream:
+            note = str(f.get("note") or "")[:120]
+            if not isinstance(f.get("seq"), int):
+                continue   # no seq we could ever match
+            if seq is None:
+                early.setdefault(f.get("seq"), (f.get("status"), note))   # an ack read before our `sent`
+            elif f.get("seq") == seq:
+                return verdict(f.get("status"), note)
+        elif t == "error":
+            return False, "the socket said: %s" % str(f.get("error") or f.get("message") or "error")[:160]
+
+
+def ws_origin():
+    return re.sub(r"^http", "ws", app_origin())
+
+
+def _ws_why(x):
+    """What a socket error says, never its headers: the handshake's HTTP status where there is one, else its type."""
+    code = getattr(getattr(x, "response", None), "status_code", None)
+    return "HTTP %d" % code if isinstance(code, int) else type(x).__name__
+
+
+def sheep_press(stream, name, data, key=None, timeout=TIMEOUT, space=None):
+    """Press NAME on STREAM with DATA over the stream socket of SPACE (`wharf-runs/kick-space`), signed in by a web
+    session the full key mints. (ok, why, seconds), ok on the listener's ack that its button began. A host lacking the
+    package, the space or the key says so in WHY and presses nothing; nothing here raises, prints or logs the key or
+    the cookie."""
+    import http.client
+    import urllib.error
+    t0 = time.monotonic()
+    until = t0 + timeout
+    ws = ws_client()
+    if ws is None:
+        return False, "unavailable: no %s for %s" % (WS_FLOOR, sys.executable), 0.0
+    connect, errors = ws
+    sp = space or kick_space()
+    if not sp or not SPACE_RE.fullmatch(sp):
+        return False, "unavailable: no kick space (%s)" % SPACE_KEY, 0.0
     k = key or _full_key()
     if not k:
         return False, "no %s on this host" % KEY_SLOT, 0.0
-    op = urllib.request.build_opener(NoRedirect)
-    ua = {"User-Agent": "dispatch-kick/1", "Content-Type": "application/json"}
-    t0 = time.monotonic()
     try:
-        req = urllib.request.Request(app_origin() + "/api/account/web-session", data=b"{}", method="POST",
-                                     headers=dict(ua, Authorization="Bearer " + k))
-        with op.open(req, timeout=timeout) as r:
-            s = json.loads(r.read().decode())
-        cookie = "%s=%s" % (s["cookie"], s["token"])
-        path = PRESS_PATH % "/".join(urllib.request.quote(p, safe="") for p in stream.split("/"))
-        req = urllib.request.Request(app_origin() + path, method="POST", headers=dict(ua, Cookie=cookie),
-                                     data=json.dumps({"name": name, "data": data}).encode())
-        with op.open(req, timeout=timeout) as r:
-            r.read()
+        cookie = web_session(k, max(0.5, until - time.monotonic()))
     except urllib.error.HTTPError as x:
-        return False, "press: HTTP %d" % x.code, time.monotonic() - t0
-    except (OSError, ValueError, KeyError, TypeError) as x:
-        return False, "press: %s" % type(x).__name__, time.monotonic() - t0
-    return True, "pressed", time.monotonic() - t0
+        return False, "web session: HTTP %d" % x.code, time.monotonic() - t0
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as x:   # a garbled reply too
+        return False, "web session: %s" % type(x).__name__, time.monotonic() - t0
+    left = until - time.monotonic()
+    if left < 2 * PRESS_WINDOW:
+        return False, "web session: no time left to press", time.monotonic() - t0
+    nonce = "kick-%s" % os.urandom(6).hex()
+    try:
+        with connect(ws_origin() + WS_PATH % sp, origin=app_origin(), additional_headers={"Cookie": cookie},
+                     open_timeout=left - PRESS_WINDOW, close_timeout=1, logger=_ws_logger()) as conn:
+            ok, why = socket_press(conn, stream, name, data, nonce, until)
+    except errors as x:
+        return False, "socket: %s" % _ws_why(x), time.monotonic() - t0
+    return ok, why, time.monotonic() - t0
 
 
 def road_sheep(peer, pl):
@@ -609,7 +767,7 @@ def listen_install(me, launchctl, shared=None):
     if r.returncode != 0:
         print("kick-listen: the CLI's --service failed (exit %d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[-200:]))
         return 1
-    print("kick-listen: %s listens on %s (%s); add sheep to %s's line in %s where every kicker holds a full key"
+    print("kick-listen: %s listens on %s (%s); add sheep to %s's line in %s once a press from each kicker is proved (kick_probe.py --peer)"
           % (me, stream, service_label(stream), me, ROADS_KEY))
     log("listen-installed", host=me, stream=stream)
     return 0
@@ -693,9 +851,12 @@ def roads_lines(me, launchctl):
         roads, src = roads_for(p, me)
         out += ["# %s from %s" % (src, me), "%s:%s" % (p, ",".join(roads) or "none")]
     lo = listener_loaded(launchctl, stream_of(me))
-    out += ["# this host's listener on %s: %s; sheep belongs on a line only where every kicker holds a %s"
+    out += ["# this host's listener on %s: %s; sheep belongs on a line only where every kicker can press (a %s, websockets, the kick space)"
             % (stream_of(me), {True: "loaded", False: "not loaded", None: "could not tell"}[lo], KEY_SLOT),
             ] + (["%s:sheep" % me] if lo else [])
+    # the other half of the sheep road: whether this host can press a peer's stream (the socket's package, the
+    # space, the full key), a note only — a peer's line names sheep once a press from each kicker is proved
+    out.append("# this host's sheep press: %s" % (press_ready() or "ready (space %s)" % kick_space()))
     # no `<me>:none` line: written first into the merged file, a host's first line wins, and `none` there would
     # switch off the orca and ssh roads the peers derive to this host (the S8 review, pass 2)
     return out

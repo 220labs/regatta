@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- kicklib: the sheep kick road presses over spacesheep's stream socket (kick-socket; TODO.md [sheep-kick], the owner's
+  "yes, websockets", 2026-11-02), as the page runtime does: the full key's web session, the socket of the space
+  `wharf-runs/kick-space` names (its page declares `kick/*`), `sub` then `send`, ok at the listener's first ack that
+  its button began. The POST route S8 guessed (404) is gone. Its client is the `websockets` package's blocking one
+  (14.0+), imported inside the road: a python3 without it, or a host with no space or key, writes one line in
+  `kicks.jsonl` and the kick goes on to orca, ssh or the poll; `dispatch --roads` notes whether this host can
+  press. A refused stream, a space with no press, nothing listening and no ack in time are each a verdict inside the
+  road's 15 s, which the mint and the connect share; no press is sent once it is spent. 14.0 is the floor: older
+  sync clients hang or wait out the close (the landing review). `tests/test_kick_socket.sh` (on the Linux list): the frame road against a stand-in
+  socket, the package missing, the space key, and the whole press against a local stub server where the package
+  imports. `kick-roads` names `sheep` nowhere until `kick_probe.py --peer` lands a press from each kicker.
 - The builder coin draws 3 in 5 Sonnet 5.5 `high` (was 1 in 5), and plain-Opus briefs join it: a `Tier:` line naming Opus alone, no tier word and no effort but `high` (blueprintlib's `brief_rotates`). Plain Opus is the rules' default line and nothing more (`PLAIN_OPUS_RE`: a reason, another model or effort keeps a brief off). The rotation row's `brief_class` says `specced` or `plain` and its `odds` the draw's; `buildercoin.py rotates` reads a brief's class. The owner, 2026-11-03: more Sonnet rows sooner, fewer credits.
 
 - `wharf apply --yard` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
